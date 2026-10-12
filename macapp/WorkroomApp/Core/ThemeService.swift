@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import Foundation
 import SwiftUI
+import Synchronization
 
 /// A named theme **family** that bundles a dark and a light variant (issue #36: every theme must
 /// support both modes). The user picks one family; the active variant follows the appearance, so
@@ -243,18 +244,15 @@ final class ThemeService {
   /// `~/.config` is re-read on every call (below) precisely so a user editing their own theme still
   /// sees it change.
   ///
-  /// `nonisolated(unsafe)` + a lock rather than `@MainActor`: `themePreview` is `nonisolated` and
+  /// A `Mutex` rather than `@MainActor`: `themePreview` is `nonisolated` and
   /// `GhosttyApp.writeThemeConfig` resolves off the main actor, so main-actor-isolating the storage
-  /// would force call-site changes there. The lock keeps the isolation contract unchanged.
-  private nonisolated(unsafe) static var bundledPreviewCache: [String: ThemePreview] = [:]
-  private static let bundledPreviewCacheLock = NSLock()
+  /// would force call-site changes there. The state lives inside the lock, so no access can skip it.
+  private nonisolated static let bundledPreviewCache = Mutex<[String: ThemePreview]>([:])
 
   /// Drop the bundled cache. Tests only — a process-lifetime static otherwise leaks state across
   /// test cases and makes the "a user override still wins" case impossible to isolate.
   nonisolated static func resetPreviewCacheForTesting() {
-    bundledPreviewCacheLock.lock()
-    bundledPreviewCache.removeAll()
-    bundledPreviewCacheLock.unlock()
+    bundledPreviewCache.withLock { $0.removeAll() }
   }
 
   /// Resolve one theme name to its parsed colours, with `~/.config` winning over bundled — the
@@ -273,19 +271,16 @@ final class ThemeService {
       return theme
     }
 
-    bundledPreviewCacheLock.lock()
-    defer { bundledPreviewCacheLock.unlock() }
-    if let hit = bundledPreviewCache[name] { return hit }
-    if let bundledDir = bundledThemeDirectory() {
+    return bundledPreviewCache.withLock { cache in
+      if let hit = cache[name] { return hit }
+      guard let bundledDir = bundledThemeDirectory() else { return nil }
       let path = bundledDir + "/" + name
-      if FileManager.default.fileExists(atPath: path),
+      guard FileManager.default.fileExists(atPath: path),
         let theme = parseThemeFile(atPath: path, name: name)
-      {
-        bundledPreviewCache[name] = theme
-        return theme
-      }
+      else { return nil }
+      cache[name] = theme
+      return theme
     }
-    return nil
   }
 
   /// User config dir first (wins on resolution), bundled dir second. A convenience over the two
@@ -300,9 +295,7 @@ final class ThemeService {
   /// dropped there overrides a bundled theme of the same name in the terminal AND the chrome.
   /// User-writable, therefore never cached.
   nonisolated static func userThemeDirectory() -> String {
-    userThemeDirectoryLock.lock()
-    defer { userThemeDirectoryLock.unlock() }
-    return userThemeDirectoryOverride ?? NSHomeDirectory() + "/.config/ghostty/themes"
+    userThemeDirectoryOverride.withLock { $0 } ?? NSHomeDirectory() + "/.config/ghostty/themes"
   }
 
   /// The bundled theme dir. Immutable for the process lifetime, which is what makes caching its parsed
@@ -311,8 +304,7 @@ final class ThemeService {
     Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes").path
   }
 
-  private nonisolated(unsafe) static var userThemeDirectoryOverride: String?
-  private static let userThemeDirectoryLock = NSLock()
+  private nonisolated static let userThemeDirectoryOverride = Mutex<String?>(nil)
 
   /// Redirect `userThemeDirectory()` at `path` for the duration of `body`. **Tests only.**
   ///
@@ -328,14 +320,8 @@ final class ThemeService {
   nonisolated static func withUserThemeDirectory<T>(_ path: String, _ body: () throws -> T) rethrows
     -> T
   {
-    userThemeDirectoryLock.lock()
-    userThemeDirectoryOverride = path
-    userThemeDirectoryLock.unlock()
-    defer {
-      userThemeDirectoryLock.lock()
-      userThemeDirectoryOverride = nil
-      userThemeDirectoryLock.unlock()
-    }
+    userThemeDirectoryOverride.withLock { $0 = path }
+    defer { userThemeDirectoryOverride.withLock { $0 = nil } }
     return try body()
   }
 
