@@ -519,12 +519,12 @@ final class TerminalSessions: ObservableObject {
   ///   read-decode-encode-atomic-write if this ran inline. This app has two prior documented
   ///   AppHang incidents of exactly this shape (unbounded synchronous work in a main-thread runtime
   ///   callback) — this must not be a third.
-  /// - **Skip under `UITestFixture.isActive`.** Every other side-effecting path added around this
+  /// - **Skip under `AppEnvironment.current.isFixture`.** Every other side-effecting path added around this
   ///   era of the codebase gates on it; without it, any XCUITest run (or an ordinary `⌘R`/`make
   ///   app-run` Dev session) writes real entries into the same file the developer inspects for
   ///   curation signal, defeating the feature's own purpose.
   var recordUnrecognizedTool: (String) -> Void = { name in
-    guard !UITestFixture.isActive else { return }
+    guard !AppEnvironment.current.isFixture else { return }
     DispatchQueue.global(qos: .utility).async {
       UnrecognizedToolUsage.recordUnrecognized(name)
     }

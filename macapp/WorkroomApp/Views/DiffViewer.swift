@@ -412,7 +412,7 @@ struct DiffViewer: View {
     // In UI-test fixture mode the workroom path is a fake temp dir with no repo, so serve a canned
     // diff instead of shelling out to git (issue #66 UI tests).
     let result =
-      UITestFixture.isActive
+      AppEnvironment.current.isFixture
       ? UITestFixture.diff(for: descriptor)
       : await resolveRepositoryDiff()
     // Stale-write guard. This path had NO staleness check at all, so a slow diff for the file this
@@ -475,7 +475,7 @@ struct DiffViewer: View {
     }
     // New-side content: canned in fixture mode, else the guarded VCS fetch folded into DiffResolver.
     let content =
-      UITestFixture.isActive
+      AppEnvironment.current.isFixture
       ? UITestFixture.fileContent(for: descriptor)
       : await repositoryFileContent(old: false)
     guard !Task.isCancelled, activeHighlightKey == key else { return }
@@ -505,7 +505,7 @@ struct DiffViewer: View {
     // (no pre-image source there → deletions render plain). Reuses the same grammar (same file).
     guard diff.hunks.contains(where: { $0.lines.contains { $0.kind == .deletion } }) else { return }
     let oldContent =
-      UITestFixture.isActive
+      AppEnvironment.current.isFixture
       ? nil : await repositoryFileContent(old: true)
     guard !Task.isCancelled, activeHighlightKey == key, let oldContent else { return }
     let oldSpans = await Task.detached(priority: .utility) {

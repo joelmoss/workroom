@@ -146,7 +146,7 @@ final class AppStore: ObservableObject {
   /// becoming key never changes it). Defaults to `true` until the first window registers, so the
   /// initial single window persists from the very first edit.
   ///
-  /// Also `false` under `UITestFixture.isActive`, for the same reason `applyFixtureDefaults` writes
+  /// Also `false` under `AppEnvironment.current.isFixture`, for the same reason `applyFixtureDefaults` writes
   /// fixture-forced state instead of just reading it: a fixture run that TOGGLES the sidebar (e.g.
   /// `ViewMenuShortcutsUITests`) would otherwise persist that into the real Dev `Defaults` domain —
   /// invisible to the fixture-mode launch that caused it (its own `sidebarVisible` is forced open
@@ -155,7 +155,8 @@ final class AppStore: ObservableObject {
   /// reads the real Default straight through. Same hazard, opposite direction, as the read-side one
   /// `sidebarVisible`'s own initializer already guards against.
   private var persistsSidebarPrefs: Bool {
-    !UITestFixture.isActive && (WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true)
+    !AppEnvironment.current.isFixture
+      && (WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true)
   }
 
   /// The list of configured projects — proxied to the shared `ProjectStore` so every window sees the
@@ -250,7 +251,7 @@ final class AppStore: ObservableObject {
   /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection`, so a background window can't clobber the
   /// active window's choice.
   ///
-  /// Forced open under `UITestFixture.isActive` — same idiom as `commitHistory`/`remoteState` above.
+  /// Forced open under `AppEnvironment.current.isFixture` — same idiom as `commitHistory`/`remoteState` above.
   /// The real persisted value is whatever a PRIOR launch (human or automated) last left it as, and
   /// that's true WITHIN one `xcodebuild test` invocation too: this key is real `Defaults`, not
   /// fixture-isolated, so one sidebar-toggle test's launch persists into the very next test class's
@@ -259,7 +260,7 @@ final class AppStore: ObservableObject {
   /// fails BOTH the tests that need the sidebar open (`WorkroomWorkflowUITests`,
   /// `ViewMenuShortcutsUITests`) and the ones that broke when it's open (see below), never a clean
   /// pass either way.
-  var sidebarVisible: Bool = (UITestFixture.isActive ? true : Defaults[.sidebarVisible])
+  var sidebarVisible: Bool = (AppEnvironment.current.isFixture ? true : Defaults[.sidebarVisible])
   {
     didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
   }
@@ -876,7 +877,7 @@ final class AppStore: ObservableObject {
   /// which also skips a `fixture: false` UI launch; this one does not. `VCSToolVersionsTests` drives
   /// the probe directly with a stub runner.
   func refreshVCSToolReport() {
-    guard !UITestFixture.isActive,
+    guard !AppEnvironment.current.isFixture,
       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
     else { return }
     let cache = vcsToolVersionCache
@@ -983,7 +984,7 @@ final class AppStore: ObservableObject {
     // stub to observe the live-refresh triggers; production/fixture keep the default.
     self.commitHistory =
       commitHistory
-      ?? (UITestFixture.isActive
+      ?? (AppEnvironment.current.isFixture
         ? HistoryModel(resolve: { _ in UITestFixture.vcsProvider })
         : HistoryModel())
     // Same seam as `commitHistory` above: fixture mode serves seeded state and records actions instead
@@ -991,7 +992,7 @@ final class AppStore: ObservableObject {
     // an automatic action would race whatever the test is asserting.
     self.remoteState =
       remoteState
-      ?? (UITestFixture.isActive
+      ?? (AppEnvironment.current.isFixture
         ? RemoteStateModel(
           makeWriter: { _ in FixtureVCSWriter() }, debounce: 0, ttl: 0,
           autoFetchInterval: .greatestFiniteMagnitude)
@@ -1260,7 +1261,7 @@ final class AppStore: ObservableObject {
       // 1450 the detail column is ~880pt: comfortably past the 604pt split floor, and still short of
       // the ~1000pt of chip content `TabStripOverflowUITests`/`TabStripScrollIntoViewUITests` need to
       // NOT fit, so overflow still triggers.
-      if UITestFixture.isActive {
+      if AppEnvironment.current.isFixture {
         if let frame = UITestFixture.windowFrame {
           window.setFrame(frame, display: false)
         } else {
@@ -1724,7 +1725,7 @@ final class AppStore: ObservableObject {
     // sibling arrives here with `shouldRestore == false` — without this, the clear below would wipe
     // what the claim just set and every restored sibling would come back with nothing selected.
     let restoresOwnSession = pendingSessionRestore != nil
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       fixtureAutoSelect = shouldRestore || restoresOwnSession
       loadFixture()
       return
@@ -1760,7 +1761,7 @@ final class AppStore: ObservableObject {
   /// at the next launch: the move is idempotent.
   static func claimProvisionedOnce(
     _ cli: any WorkroomCLIProtocol, bundleID: String? = Bundle.main.bundleIdentifier,
-    isTestProcess: Bool = UITestFixture.isTestProcess
+    isTestProcess: Bool = AppEnvironment.current.isTestProcess
   ) async {
     guard !isTestProcess, let bundleID, WorkroomCLI.configPath(bundleID: bundleID) != nil
     else { return }
@@ -1792,7 +1793,7 @@ final class AppStore: ObservableObject {
   private func load(warnings: String, surfaceErrors: Bool = true) async {
     // In UI-test fixture mode every load resolves to the same fake projects — never shell out to
     // the CLI (so an on-focus `reloadIfStale` can't replace the fixture with the real config).
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       loadFixture()
       return
     }
@@ -2201,7 +2202,7 @@ final class AppStore: ObservableObject {
   /// that went away. Called from `apply` so the watch set tracks the live projects. No-op in fixture
   /// mode (the temp-dir paths aren't real repos — match `resolveBranches`, which skips them too).
   func updateRootBranchWatches() {
-    guard !UITestFixture.isActive else {
+    guard !AppEnvironment.current.isFixture else {
       for w in rootBranchWatchers.values { w.stop() }
       rootBranchWatchers.removeAll()
       for t in rootBranchRefreshTasks.values { t.cancel() }
@@ -2238,7 +2239,7 @@ final class AppStore: ObservableObject {
   /// doesn't invalidate the sidebar). Cancel-and-replace per project so a write burst resolves once;
   /// `.none` never clobbers a prior label (matches `resolveBranches`).
   func handleRootBranchChange(projectID: Project.ID) {
-    guard !UITestFixture.isActive, let p = projects.first(where: { $0.id == projectID })
+    guard !AppEnvironment.current.isFixture, let p = projects.first(where: { $0.id == projectID })
     else { return }
     // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / ref
     // update in the project or one of its workrooms (git worktree refs land in the shared `.git`, so
@@ -2289,7 +2290,7 @@ final class AppStore: ObservableObject {
     // which meant a UI test driving the wizard's real Add Project step (issue #151) genuinely
     // registered a project in the developer's own `~/.config/workroom/config.json` (the CLI has no
     // config-path override to isolate against instead). Simulate the same success shape locally.
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       let canonical = AddProjectSheetModel.normalize(path)
       if !projects.contains(where: { $0.path == canonical }) {
         projects.append(Project(path: canonical, vcs: "git", workrooms: []))
@@ -2866,7 +2867,7 @@ final class AppStore: ObservableObject {
   /// `?? true` ("has exited") batch of only those never prompts (issue #7).
   private func closeNeedsConfirm(_ tabs: [TerminalTab]) -> Bool {
     Self.resolveConfirmOnClose(override: confirmOnCloseOverrideForTesting)
-      && !UITestFixture.isActive
+      && !AppEnvironment.current.isFixture
       && tabs.contains { !($0.surface?.processHasExited ?? true) }
   }
 
@@ -2893,7 +2894,7 @@ final class AppStore: ObservableObject {
   /// surface and closes any detached window, so this never orphans a window or leaks a PTY.
   private func performClose(_ tabIDs: [TerminalTab.ID], for target: TerminalTarget) {
     for id in tabIDs {
-      if UITestFixture.isActive {
+      if AppEnvironment.current.isFixture {
         terminals.closeTab(id, for: target)
       } else {
         closingRunTab(id, for: target.id) { [weak self] in

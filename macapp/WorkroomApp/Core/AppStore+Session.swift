@@ -194,7 +194,7 @@ extension AppStore {
   /// real session would look orphaned. An empty listing is skipped for the same reason: a config
   /// that read as nothing must not end everything.
   func endOrphanedSessionsOnce(
-    in projects: [Project], isTestProcess: Bool = UITestFixture.isTestProcess
+    in projects: [Project], isTestProcess: Bool = AppEnvironment.current.isTestProcess
   ) {
     guard !Self.sweptOrphanedSessions, !isTestProcess, !projects.isEmpty else { return }
     Self.sweptOrphanedSessions = true

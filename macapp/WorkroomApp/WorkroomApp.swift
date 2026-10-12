@@ -62,7 +62,7 @@ struct WorkroomApp: App {
     // (create/remove/scripts) and `NewWorkroomDialog` still call `refresh()` on demand, under the
     // `SHELL`/`ZDOTDIR` set above, so they read no developer rc files either — which is why that
     // `setenv` must land before anything can call `refresh()`.
-    if UITestFixture.runsLaunchShellProbe() {
+    if AppEnvironment.runsLaunchShellProbe() {
       Task.detached(priority: .utility) { await ShellEnvironment.refresh() }
     }
 
@@ -337,8 +337,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // into existence early, so its key-window observer is live before the first window appears.
     menuBarController = MenuBarController(registry: .shared)
 
-    // Not under test (`UITestFixture.isTestProcess`): it would replace the developer's real agent.
-    if !UITestFixture.isTestProcess {
+    // Not under test (`AppEnvironment.current.isTestProcess`): it would replace the developer's real agent.
+    if !AppEnvironment.current.isTestProcess {
       // Hand an older running agent to the bundled one (#230), before panes are likely to attach.
       MainActor.assumeIsolated { AgentHandOff.start() }
     }
@@ -697,7 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // UI-test fixture quits cleanly (no modal, no waiting) so XCUITest teardown never blocks. The
     // session still flushes here: this branch IS terminating, and a UI test that relaunches to check
     // what was restored must not race the coalescing timer (issue #46).
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       SessionCoordinator.shared.flushAndFreeze()
       return .terminateNow
     }

@@ -740,7 +740,7 @@ final class RemoteHosts: @unchecked Sendable {
 
   /// `hosts`, except under test (a hosted unit run or a UI-test launch), which must never sweep
   /// the developer's own runtime.
-  static var pendingIn: URL? { UITestFixture.isTestProcess ? nil : hosts }
+  static var pendingIn: URL? { AppEnvironment.current.isTestProcess ? nil : hosts }
 
   /// Which of `keys` this call sweeps: each whose sweep has neither run this launch nor is running,
   /// so no key is swept twice in a launch, which the two-launch rule would count as two launches

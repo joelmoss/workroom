@@ -52,7 +52,7 @@ enum BaseRetirement {
   @MainActor
   static func retireOnce(
     _ projects: [Project], effects: Effects, onChange: @escaping @MainActor () -> Void,
-    isTestProcess: Bool = UITestFixture.isTestProcess
+    isTestProcess: Bool = AppEnvironment.current.isTestProcess
   ) {
     guard !isTestProcess, !started, projects.contains(where: { $0.host != nil }) else { return }
     started = true

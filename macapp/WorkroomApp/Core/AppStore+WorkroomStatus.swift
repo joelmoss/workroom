@@ -81,7 +81,7 @@ extension AppStore {
   func refreshWorkroomStatuses(force: Bool = false) {
     // Fixture mode never shells out to git/gh — keep the deterministic seeded status (and let the
     // manual Refresh button re-apply it rather than wipe it to "unknown").
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       seedFixtureStatuses()
       return
     }
@@ -144,7 +144,7 @@ extension AppStore {
   /// task" — is wrong: a cancelled probe holds no fact at all. A `nil` here means the same thing (the
   /// probe told us nothing and there was no prior verdict), so leave the mirror alone in both cases.
   func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
-    if UITestFixture.isActive { return }
+    if AppEnvironment.current.isFixture { return }
     guard let status = await ghAuthCache.status(force: force, resolver: resolver) else { return }
     if Task.isCancelled { return }
     githubCLIStatus = status
@@ -164,7 +164,7 @@ extension AppStore {
   /// when the file-watcher lane is busiest — so like every other lane it hands its read time to
   /// `mergeLocalStatus`, which is where the cross-lane ordering lives.
   func refreshLocalStatus(for sid: SidebarID) {
-    if UITestFixture.isActive { return }
+    if AppEnvironment.current.isFixture { return }
     guard let item = selectedStatusWorkItem(for: sid) else { return }
     // Same two suppressions the selection path applies — another create/commit may still be writing.
     if isCreating(sid) || isCommittingProject(item.sharedLocation) { return }
@@ -185,7 +185,7 @@ extension AppStore {
     updateSelectedWorkroomWatch()
     // Fixture mode keeps the deterministic seeded status — selecting a target must not fork a real
     // probe that would overwrite it.
-    if UITestFixture.isActive { return }
+    if AppEnvironment.current.isFixture { return }
     guard let sid = selectedTargetID, let item = selectedStatusWorkItem(for: sid) else { return }
     // Don't probe a workroom whose setup is still writing its worktree — the watcher is already
     // suppressed above; this skips the debounced local+CI probe too. Re-armed post-setup by
@@ -258,7 +258,7 @@ extension AppStore {
   /// exercisable hermetically — the fixture paths aren't real repos, so the live probe would only
   /// ever report "unknown". No-ops outside fixture mode.
   func seedFixtureStatuses() {
-    guard UITestFixture.isActive, let project = projects.first else { return }
+    guard AppEnvironment.current.isFixture, let project = projects.first else { return }
     workroomStatuses[.root(project: project.path)] = UITestFixture.rootStatus
     if let workroom = project.workrooms.first {
       workroomStatuses[.workroom(project: project.path, name: workroom.name)] =
@@ -619,7 +619,9 @@ extension AppStore {
   /// refresh B — leaving the row that actually changed stale and re-probing one that didn't. Every
   /// post-commit refresh therefore names the sid it captured when the sheet opened.
   func refreshStatus(for sid: SidebarID) {
-    guard !UITestFixture.isActive, let item = selectedStatusWorkItem(for: sid) else { return }
+    guard !AppEnvironment.current.isFixture, let item = selectedStatusWorkItem(for: sid) else {
+      return
+    }
     let resolver = statusResolver
     Task { [weak self] in
       let fresh = await resolver.resolve(item: item)
@@ -634,7 +636,7 @@ extension AppStore {
   /// setup script is actively writing). No-ops in fixture mode (the seeded status must stay
   /// deterministic).
   func updateSelectedWorkroomWatch() {
-    guard !UITestFixture.isActive, let sid = selectedTargetID, !isCreating(sid),
+    guard !AppEnvironment.current.isFixture, let sid = selectedTargetID, !isCreating(sid),
       let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else {
       workroomFileWatcher.stop()
@@ -650,7 +652,7 @@ extension AppStore {
   /// `overflow` means some changes are unlisted (or the watch was interrupted and resumed), so `paths`
   /// cannot be trusted to be complete and the `.jj`-internal filter below must not apply.
   func handleWorkroomFileChange(_ paths: [String], overflow: Bool = false) {
-    guard !UITestFixture.isActive, let sid = selectedTargetID,
+    guard !AppEnvironment.current.isFixture, let sid = selectedTargetID,
       let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else { return }
     // Defensive: never probe a mid-setup worktree. The watcher shouldn't be armed while creating

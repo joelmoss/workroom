@@ -34,4 +34,25 @@ final class UITestFixtureConflictTests: XCTestCase {
     XCTAssertTrue(UITestFixture.workroomStatus.conflicted)
     XCTAssertEqual(conflictedPaths, [UITestFixture.conflictedFilePath])
   }
+
+  // Value: protects=a UI test's real-bootstrap launch (`fixture: false`) keeps its preferences out of
+  // the developer's real domain; fails_when=the selector maps that launch to no isolation;
+  // why_new=the selector type is new (D10); seam=none
+  /// The four launch shapes and the environment each selects (D10): services and isolation are
+  /// separate axes, so a `fixture: false` UI launch is live yet still a test process.
+  func testEachLaunchShapeSelectsItsEnvironment() {
+    let select = AppEnvironment.select
+    XCTAssertEqual(
+      select(false, false, false), AppEnvironment(services: .live, isolation: .none),
+      "a user's launch: real services, real preferences")
+    XCTAssertEqual(
+      select(true, false, false), AppEnvironment(services: .fixture, isolation: .testProcess),
+      "a fixture UI launch")
+    XCTAssertEqual(
+      select(false, true, false), AppEnvironment(services: .live, isolation: .testProcess),
+      "a real-bootstrap UI launch (`fixture: false`)")
+    XCTAssertEqual(
+      select(false, false, true), AppEnvironment(services: .live, isolation: .testProcess),
+      "a hosted unit run")
+  }
 }

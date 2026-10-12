@@ -281,7 +281,7 @@ final class GhosttyApp {
   /// without writing a fixture key into the defaults domain that parallel workers share.
   nonisolated static func themeConfigURLForCurrentEnvironment(
     fixturePath: String? = UITestFixture.ghosttyConfigFilePath,
-    underTest: Bool = UITestFixture.isTestProcess
+    underTest: Bool = AppEnvironment.current.isTestProcess
   ) -> URL {
     #if DEBUG
       if let fixturePath { return URL(fileURLWithPath: fixturePath) }
