@@ -1355,12 +1355,12 @@ final class RunCommandTests: XCTestCase {
 
   func testRunOutcomeBannerWorthiness() {
     // A genuine failure warrants a banner; a clean exit or a user Stop does not (Arch #7).
-    XCTAssertTrue(AppStore.runOutcomeIsBannerWorthy(.exited(code: 1)))
-    XCTAssertTrue(AppStore.runOutcomeIsBannerWorthy(.exited(code: 137)))
-    XCTAssertTrue(AppStore.runOutcomeIsBannerWorthy(.failedToStart))
-    XCTAssertFalse(AppStore.runOutcomeIsBannerWorthy(.exited(code: 0)))
-    XCTAssertFalse(AppStore.runOutcomeIsBannerWorthy(.stoppedByUser))
-    XCTAssertFalse(AppStore.runOutcomeIsBannerWorthy(nil))
+    XCTAssertTrue(RunCommandController.runOutcomeIsBannerWorthy(.exited(code: 1)))
+    XCTAssertTrue(RunCommandController.runOutcomeIsBannerWorthy(.exited(code: 137)))
+    XCTAssertTrue(RunCommandController.runOutcomeIsBannerWorthy(.failedToStart))
+    XCTAssertFalse(RunCommandController.runOutcomeIsBannerWorthy(.exited(code: 0)))
+    XCTAssertFalse(RunCommandController.runOutcomeIsBannerWorthy(.stoppedByUser))
+    XCTAssertFalse(RunCommandController.runOutcomeIsBannerWorthy(nil))
   }
 
   func testTappingRunToastOpensTheRunAndDismissesIt() {
@@ -1385,11 +1385,13 @@ final class RunCommandTests: XCTestCase {
   // MARK: Success/failure detection (issue #79)
 
   func testRunOutcomeIsFailure() {
-    XCTAssertFalse(AppStore.RunOutcome.exited(code: 0).isFailure, "a clean exit is not a failure")
-    XCTAssertTrue(AppStore.RunOutcome.exited(code: 1).isFailure)
-    XCTAssertTrue(AppStore.RunOutcome.exited(code: 137).isFailure)
-    XCTAssertTrue(AppStore.RunOutcome.failedToStart.isFailure)
-    XCTAssertFalse(AppStore.RunOutcome.stoppedByUser.isFailure, "a user stop is not a failure")
+    XCTAssertFalse(
+      RunCommandController.RunOutcome.exited(code: 0).isFailure, "a clean exit is not a failure")
+    XCTAssertTrue(RunCommandController.RunOutcome.exited(code: 1).isFailure)
+    XCTAssertTrue(RunCommandController.RunOutcome.exited(code: 137).isFailure)
+    XCTAssertTrue(RunCommandController.RunOutcome.failedToStart.isFailure)
+    XCTAssertFalse(
+      RunCommandController.RunOutcome.stoppedByUser.isFailure, "a user stop is not a failure")
   }
 
   func testRunFailedTracksOutcome() {
