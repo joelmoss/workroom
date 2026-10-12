@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import WorkroomDomain
 import XCTest
 
@@ -135,5 +136,19 @@ final class ModalShortcutRoutingTests: XCTestCase {
         store.hasModalPresentation,
         "\(name) is a modal presentation — menu shortcuts must go inert behind it")
     }
+  }
+
+  /// The modal state lives on `ModalState` and the store forwards it. A view or menu reading the store
+  /// must still be invalidated by a write, or every sheet and the inert-shortcut gate stop updating.
+  func testAReadThroughTheStoreIsInvalidatedByAModalWrite() {
+    let store = AppStore()
+    var invalidated = false
+    withObservationTracking {
+      _ = store.hasModalPresentation
+    } onChange: {
+      invalidated = true
+    }
+    store.activePicker = .open
+    XCTAssertTrue(invalidated, "a forwarded read must track ModalState")
   }
 }
