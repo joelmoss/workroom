@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 
 /// Read-only, fully selectable code view backed by `NSTextView` — SwiftUI `Text` can only select

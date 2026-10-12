@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 
 /// Theme chooser (issue #36). A searchable list of **families**, each row a dual (light + dark)
@@ -23,8 +24,8 @@ struct ThemePicker: View {
 
   private var filteredFamilies: [ThemeFamily] {
     let q = query.trimmingCharacters(in: .whitespaces)
-    guard !q.isEmpty else { return ThemeService.families }
-    return ThemeService.families.filter { $0.name.localizedCaseInsensitiveContains(q) }
+    guard !q.isEmpty else { return ThemeCatalog.families }
+    return ThemeCatalog.families.filter { $0.name.localizedCaseInsensitiveContains(q) }
   }
 
   private func familyRow(_ family: ThemeFamily, highlighted: Bool = false) -> some View {

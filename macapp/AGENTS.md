@@ -346,7 +346,7 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
 
 ## Gotchas
 
-- **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomWire`,
+- **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomWire`, `DesignSystem`,
   `SyntaxHighlighting`), each in Swift 6 language mode with its own tests, run by
   `make app-package-test` rather than `make app-test`. A file that names a package's type imports
   that package itself; nothing re-exports one. A package depends on Foundation, its own pins and

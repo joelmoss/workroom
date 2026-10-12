@@ -235,7 +235,7 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertTrue(
       target.waitForExistence(timeout: 5),
       "'\(family)' did not appear in the picker — either its files are missing from the built bundle "
-        + "or it is not registered in ThemeService.families")
+        + "or it is not registered in ThemeCatalog.families")
 
     for variant in [darkVariantFile, lightVariantFile] {
       let resolved = app.descendants(matching: .any)
@@ -243,7 +243,7 @@ final class ThemePickerUITests: XCTestCase {
       XCTAssertTrue(
         resolved.waitForExistence(timeout: 3),
         "the '\(variant)' swatch did not render as resolved — that file is missing from the bundle or "
-          + "misnamed in ThemeService.families, so the row is drawing the grey fallback")
+          + "misnamed in ThemeCatalog.families, so the row is drawing the grey fallback")
 
       let unresolved = app.descendants(matching: .any)
         .matching(identifier: "theme-swatch-\(variant)-unresolved").firstMatch

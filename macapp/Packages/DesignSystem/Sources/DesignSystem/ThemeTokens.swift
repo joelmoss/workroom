@@ -13,93 +13,94 @@ import SwiftUI
 /// Derivation mirrors muxy's `MuxyTheme.Snapshot`. When no theme resolves (first launch before a
 /// theme is applied, or a deleted file), the fallbacks are the macOS system colours, so the chrome
 /// degrades to the pre-theming native look rather than crashing.
-struct ThemeTokens {
+public struct ThemeTokens {
   // Bases.
-  let nsBg: NSColor
-  let nsFg: NSColor
-  let bg: Color
-  let fg: Color
+  public let nsBg: NSColor
+  public let nsFg: NSColor
+  public let bg: Color
+  public let fg: Color
   // The chrome panel surrounding the terminals (tab bar, pane gutters, title bar): the theme
   // background nudged slightly toward the foreground, so the panel reads as a distinct surface from
   // the terminals themselves (subtly lighter in dark themes, darker in light) without breaking the
   // overall blend.
-  let panel: Color
-  let nsPanel: NSColor
-  let fgMuted: Color  // fg @ 0.65 — secondary text
-  let fgDim: Color  // fg @ 0.40 — tertiary text / placeholders
-  let surface: Color  // fg @ 0.08 — raised row / panel fill
-  let border: Color  // fg @ 0.12 — hairline dividers
-  let hover: Color  // fg @ 0.06 — hover wash
-  let tabActive: Color  // fg @ 0.16 — selected tab fill: distinctly stronger than hover/surface
+  public let panel: Color
+  public let nsPanel: NSColor
+  public let fgMuted: Color  // fg @ 0.65 — secondary text
+  public let fgDim: Color  // fg @ 0.40 — tertiary text / placeholders
+  public let surface: Color  // fg @ 0.08 — raised row / panel fill
+  public let border: Color  // fg @ 0.12 — hairline dividers
+  public let hover: Color  // fg @ 0.06 — hover wash
+  // fg @ 0.16 — selected tab fill: distinctly stronger than hover/surface
+  public let tabActive: Color
   // Opaque changed-file row fills (issue #93). Baked solid (panel blended toward fg / accent) rather
   // than a translucent wash, so a row's highlight and the hover toolbar painted over it are the exact
   // same colour — a wash double-composites over the toolbar's own backing and never matches.
-  let rowHover: Color  // panel + 6% fg, opaque
-  let rowSelection: Color  // panel + 22% accent, opaque
+  public let rowHover: Color  // panel + 6% fg, opaque
+  public let rowSelection: Color  // panel + 22% accent, opaque
 
   // Accent (palette[4]).
-  let accent: Color
-  let nsAccent: NSColor
-  let accentSoft: Color  // accent @ 0.10 — selection wash
-  let accentForeground: Color  // black/white for legibility on the accent
-  let warning: Color  // palette[3] (yellow)
+  public let accent: Color
+  public let nsAccent: NSColor
+  public let accentSoft: Color  // accent @ 0.10 — selection wash
+  public let accentForeground: Color  // black/white for legibility on the accent
+  public let warning: Color  // palette[3] (yellow)
   // palette[1] (red) — run-command failure (icon + toast); a distinct token from `warning`.
-  let failure: Color
+  public let failure: Color
   // A VCS conflict needs its OWN token: `warning` is already the modified/renamed colour and
   // `diffRemoveFg` is deletion's, so reusing either makes "needs resolving" read as "changed" or
   // "removed" (the state the Changes panel used to conflate). Orange — the hue
   // `DiffViewer`/`ChangesetDetailView` already use for conflicts — has no ANSI slot, so it's mixed
   // from the palette's red + yellow to stay theme-derived like every other token.
-  let conflict: Color
+  public let conflict: Color
 
   // Diff / VCS semantics (palette green/red/cyan).
-  let diffAddFg: Color
-  let diffRemoveFg: Color
+  public let diffAddFg: Color
+  public let diffRemoveFg: Color
   // NSColor forms of the two diff foregrounds. Present so a contrast check never has to round-trip a
   // SwiftUI `Color` back through `NSColor(_:)`: that yields a lazily-resolved, SwiftUI-backed NSColor
   // whose `usingColorSpace` returns nil outside a view update, and re-wrapping THAT in a `Color`
   // crashes in `Color._apply` during layout. Always start from the source NSColor.
-  let nsDiffAddFg: NSColor
-  let nsDiffRemoveFg: NSColor
-  let diffHunkFg: Color
-  let diffAddBg: Color
-  let diffRemoveBg: Color
-  let diffHunkBg: Color
+  public let nsDiffAddFg: NSColor
+  public let nsDiffRemoveFg: NSColor
+  public let diffHunkFg: Color
+  public let diffAddBg: Color
+  public let diffRemoveBg: Color
+  public let diffHunkBg: Color
   // Intra-line (character-level) change emphasis: a deeper tint drawn behind just the characters
   // that changed within a replaced line, over the flat `diffAddBg`/`diffRemoveBg` line tint.
-  let diffAddEmphasisBg: Color
-  let diffRemoveEmphasisBg: Color
+  public let diffAddEmphasisBg: Color
+  public let diffRemoveEmphasisBg: Color
 
   // Syntax highlighting (tree-sitter diff highlighting, phase 1). A small sub-palette derived from
   // the ANSI `palette` — the same source as `diffAddFg`/etc., so highlight colours match the
   // terminal's. `syntaxColor(forCapture:onAddedBackground:)` resolves a tree-sitter capture name to
   // a colour; `nsAddBackgroundOpaque` is the opaque colour an added line composites to (theme bg +
   // the green add tint), used by the contrast guard so token colours stay legible on the tint.
-  let syntaxByCategory: [SyntaxCategory: NSColor]
-  let nsAddBackgroundOpaque: NSColor
+  public let syntaxByCategory: [SyntaxCategory: NSColor]
+  public let nsAddBackgroundOpaque: NSColor
 
   /// The coarse grouping a tree-sitter highlight capture maps to. We colour by category (≈12) rather
   /// than per-capture (hundreds, grammar-specific) — `category(for:)` collapses any capture name.
-  enum SyntaxCategory: String, CaseIterable, Sendable {
+  public enum SyntaxCategory: String, CaseIterable, Sendable {
     case keyword, function, type, namespace, constant, number, string, comment, variable, property,
       tag, attribute, punctuation, escape
   }
 
   // Focused-pane border + unfocused-pane scrim (issue #23 follow-up).
-  let focused: Color
-  let terminalDim: Color
+  public let focused: Color
+  public let terminalDim: Color
 
   // Workroom-split group fills (issue #110): the raised card behind a split member. The focused member
   // is tinted by the accent so focus reads as a colour, not just a border; the rest take a faint neutral
   // lift. Dedicated tokens (not the `hover`/`accentSoft` washes) so the group treatment can be tuned
   // without dragging hover/selection along with it.
-  let splitGroupFill: Color  // fg @ 0.06 — unfocused member's raised fill
-  let splitGroupFocusedFill: Color  // accent @ 0.10 — focused member's accent-tinted fill
+  public let splitGroupFill: Color  // fg @ 0.06 — unfocused member's raised fill
+  public let splitGroupFocusedFill: Color  // accent @ 0.10 — focused member's accent-tinted fill
 
-  let colorScheme: ColorScheme
+  public let colorScheme: ColorScheme
 
   /// Resolve a parsed theme (or fall back to system colours) into the full token set.
-  init(
+  public init(
     preview: ThemePreview?,
     fallbackBackground: NSColor = .textBackgroundColor,
     fallbackForeground: NSColor = .textColor
@@ -217,7 +218,7 @@ struct ThemeTokens {
   ///
   /// For "is this colour light or dark to look at" use `perceivedBrightness` instead — that question is
   /// about the encoded value, not about contrast.
-  static func luminance(of color: NSColor) -> CGFloat {
+  public static func luminance(of color: NSColor) -> CGFloat {
     guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
     func linear(_ component: CGFloat) -> CGFloat {
       component <= 0.04045 ? component / 12.92 : pow((component + 0.055) / 1.055, 2.4)
@@ -232,7 +233,7 @@ struct ThemeTokens {
   /// is "light" when it looks light, and WCAG luminance is deliberately not perceptual (mid-grey
   /// `#808080` is 0.216 linearized, which would read as a dark background). This is exactly the formula
   /// `luminance` used to be, so `colorScheme` behaves as it always has.
-  static func perceivedBrightness(of color: NSColor) -> CGFloat {
+  public static func perceivedBrightness(of color: NSColor) -> CGFloat {
     guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
     return 0.2126 * srgb.redComponent + 0.7152 * srgb.greenComponent + 0.0722 * srgb.blueComponent
   }
@@ -243,7 +244,7 @@ struct ThemeTokens {
   /// (`luminance > 0.6 ? .black : .white`) and which fails in a whole band: a tile at 0.54 apparent
   /// brightness took white at 1.77:1 where black gives 11.8:1 — a real, illegible monogram, found on a
   /// dark-theme fixture. Comparing both ratios has no threshold to get wrong.
-  static func contrastingForeground(for color: NSColor) -> NSColor {
+  public static func contrastingForeground(for color: NSColor) -> NSColor {
     contrastRatio(.black, color) >= contrastRatio(.white, color) ? .black : .white
   }
 
@@ -252,7 +253,7 @@ struct ThemeTokens {
   /// The colour for a tree-sitter highlight capture, or `nil` (⇒ render in the default foreground).
   /// `onAddedBackground` applies the contrast guard against the green add tint so token colours
   /// don't wash out on added lines; context lines (≈ theme background) use the base colour.
-  func syntaxColor(forCapture capture: String, onAddedBackground: Bool = false) -> Color? {
+  public func syntaxColor(forCapture capture: String, onAddedBackground: Bool = false) -> Color? {
     guard let category = Self.category(for: capture), let base = syntaxByCategory[category] else {
       return nil
     }
@@ -264,7 +265,7 @@ struct ThemeTokens {
   /// to a colour category by its leading dotted component. Unknown captures return `nil` (default
   /// foreground). This is the whole capture→colour vocabulary — grammar-specific leaf captures fold
   /// into their family.
-  static func category(for capture: String) -> SyntaxCategory? {
+  public static func category(for capture: String) -> SyntaxCategory? {
     let head = capture.split(separator: ".").first.map(String.init) ?? capture
     switch head {
     case "keyword", "conditional", "repeat", "include", "exception", "define", "storageclass",
@@ -305,7 +306,9 @@ struct ThemeTokens {
   /// Nudge `color` toward `fg` until it has at least a 3:1 WCAG contrast ratio against `bg`, so a
   /// token colour close to the add-tint hue (e.g. a green string on the green add background) stays
   /// readable. Capped iterations; returns the best achieved if the target is unreachable.
-  static func legible(_ color: NSColor, on bg: NSColor, towards fg: NSColor, target: CGFloat = 3.0)
+  public static func legible(
+    _ color: NSColor, on bg: NSColor, towards fg: NSColor, target: CGFloat = 3.0
+  )
     -> NSColor
   {
     guard let srgb = color.usingColorSpace(.sRGB), let fgSrgb = fg.usingColorSpace(.sRGB) else {
@@ -321,7 +324,7 @@ struct ThemeTokens {
   }
 
   /// WCAG relative-luminance contrast ratio between two colours (1…21).
-  static func contrastRatio(_ a: NSColor, _ b: NSColor) -> CGFloat {
+  public static func contrastRatio(_ a: NSColor, _ b: NSColor) -> CGFloat {
     let la = luminance(of: a)
     let lb = luminance(of: b)
     let hi = max(la, lb)

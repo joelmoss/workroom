@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 import XCTest
 
@@ -11,7 +12,7 @@ import XCTest
 /// These tests pin every case so the next kind added can't quietly reuse another's identity.
 @MainActor
 final class ChangeBadgeTests: XCTestCase {
-  private func ns(_ hex: String) -> NSColor { ThemeService.parseHex(hex)! }
+  private func ns(_ hex: String) -> NSColor { ThemeCatalog.parseHex(hex)! }
 
   /// A theme with a known palette: red at 1, green at 2, yellow at 3 (the slots the badge colours
   /// derive from).

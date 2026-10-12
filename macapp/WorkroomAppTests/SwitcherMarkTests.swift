@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import XCTest
 
 @testable import Workroom

@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import DesignSystem
 import Foundation
 import SyntaxHighlighting
 import WorkroomDomain
@@ -824,7 +825,7 @@ enum UITestFixture {
   /// `applyFixtureDefaults` avoids both traps.
   static var themeFamily: String {
     let raw = text("WorkroomUITestThemeFamily") ?? ""
-    return ThemeService.family(named: raw) != nil ? raw : ThemeService.defaultFamilyName
+    return ThemeCatalog.family(named: raw) != nil ? raw : ThemeCatalog.defaultFamilyName
   }
 
   /// Force a deterministic **UI** state in fixture mode: the inspector open, parked on

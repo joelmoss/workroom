@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import DesignSystem
 import SwiftUI
 import XCTest
 
@@ -57,7 +58,7 @@ final class ThemePickerInvalidationTests: XCTestCase {
       FamilyRow.bodyPasses, 0, "the fixture must actually render family rows")
 
     let otherFamily = try XCTUnwrap(
-      ThemeService.families.first { $0.name != "Workroom" }?.name,
+      ThemeCatalog.families.first { $0.name != "Workroom" }?.name,
       "fixture needs a second family to switch to")
 
     // The fastest of several switches, back and forth, not one: the time is wall-clock, so a

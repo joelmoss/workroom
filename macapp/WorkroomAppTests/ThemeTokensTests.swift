@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 import XCTest
 
@@ -9,7 +10,7 @@ import XCTest
 /// filesystem-free — previews are built in-memory.
 @MainActor
 final class ThemeTokensTests: XCTestCase {
-  private func ns(_ hex: String) -> NSColor { ThemeService.parseHex(hex)! }
+  private func ns(_ hex: String) -> NSColor { ThemeCatalog.parseHex(hex)! }
 
   private func preview(bg: String, fg: String, palette: [String]) -> ThemePreview {
     ThemePreview(name: "T", background: ns(bg), foreground: ns(fg), palette: palette.map(ns))

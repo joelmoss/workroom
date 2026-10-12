@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 
 /// The rail's geometry and colour decisions, kept pure so the parts that are easy to get *silently*

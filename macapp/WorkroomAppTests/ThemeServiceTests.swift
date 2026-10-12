@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Defaults
+import DesignSystem
 import XCTest
 
 @testable import Workroom
@@ -27,71 +28,9 @@ final class ThemeServiceTests: XCTestCase {
 
   // MARK: parseHex
 
-  func testParseHexWithAndWithoutHash() {
-    let a = ThemeService.parseHex("#282a36")
-    let b = ThemeService.parseHex("282a36")
-    for c in [a, b] {
-      let srgb = c?.usingColorSpace(.sRGB)
-      XCTAssertEqual(srgb?.redComponent ?? -1, 0x28 / 255, accuracy: 0.001)
-      XCTAssertEqual(srgb?.greenComponent ?? -1, 0x2a / 255, accuracy: 0.001)
-      XCTAssertEqual(srgb?.blueComponent ?? -1, 0x36 / 255, accuracy: 0.001)
-    }
-  }
-
-  func testParseHexRejectsBadInput() {
-    XCTAssertNil(ThemeService.parseHex("#fff"))  // 3-char shorthand not supported by ghostty files
-    XCTAssertNil(ThemeService.parseHex("#12345"))  // wrong length
-    XCTAssertNil(ThemeService.parseHex("nothex"))
-    XCTAssertNil(ThemeService.parseHex(""))
-  }
-
   // MARK: parseThemeFile
 
-  private func writeTheme(_ contents: String) -> String {
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try! contents.write(to: url, atomically: true, encoding: .utf8)
-    return url.path
-  }
-
-  func testParseValidThemeFile() {
-    var lines = (0..<16).map { "palette = \($0)=#0000\(String(format: "%02x", $0))" }
-    lines.append("background = #1c1c1e")
-    lines.append("foreground = #d8d8dc")
-    lines.append("cursor-color = #3b9ec4")  // ignored by the parser
-    let path = writeTheme(lines.joined(separator: "\n"))
-    let preview = ThemeService.parseThemeFile(atPath: path, name: "T")
-    XCTAssertNotNil(preview)
-    XCTAssertEqual(preview?.palette.count, 16)
-    XCTAssertEqual(
-      preview?.background.usingColorSpace(.sRGB)?.blueComponent ?? -1, 0x1e / 255, accuracy: 0.001)
-    XCTAssertEqual(
-      preview?.palette[4].usingColorSpace(.sRGB)?.blueComponent ?? -1, 0x04 / 255, accuracy: 0.001)
-  }
-
-  func testParseMissingBackgroundReturnsNil() {
-    let path = writeTheme("foreground = #ffffff\npalette = 0=#000000")
-    XCTAssertNil(ThemeService.parseThemeFile(atPath: path, name: "T"))
-  }
-
-  func testParseIgnoresForeignAndDashedLines() {
-    // background-blur / foreground-... and comments must not be mistaken for background/foreground.
-    let path = writeTheme(
-      "# a comment\nbackground-blur = true\nbackground = #102030\nforeground = #fefefe\nrandom junk"
-    )
-    let preview = ThemeService.parseThemeFile(atPath: path, name: "T")
-    XCTAssertEqual(
-      preview?.background.usingColorSpace(.sRGB)?.redComponent ?? -1, 0x10 / 255, accuracy: 0.001)
-    // No palette entries → empty palette, but still valid because bg + fg are present.
-    XCTAssertEqual(preview?.palette.count, 0)
-  }
-
   // MARK: sanitisation
-
-  func testSanitizeStripsDangerousCharacters() {
-    XCTAssertEqual(ThemeService.sanitizedThemeName("Foo\"\n\rBar"), "FooBar")
-    XCTAssertEqual(ThemeService.sanitizedThemeName("../etc/passwd"), "..etcpasswd")
-    XCTAssertEqual(ThemeService.sanitizedThemeName("Catppuccin Mocha"), "Catppuccin Mocha")
-  }
 
   // MARK: family / override resolution
 
@@ -106,20 +45,6 @@ final class ThemeServiceTests: XCTestCase {
     Defaults[.themeFamily] = "DoesNotExist"
     XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
     XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Workroom Light")
-  }
-
-  func testEveryBundledFamilyIsPairComplete() {
-    // Issue #36: every theme supports dark AND light — both variant names must be non-empty and
-    // distinct (a family is never a single-variant orphan).
-    for family in ThemeService.families {
-      XCTAssertFalse(family.dark.isEmpty, "\(family.name) missing dark variant")
-      XCTAssertFalse(family.light.isEmpty, "\(family.name) missing light variant")
-      XCTAssertNotEqual(family.dark, family.light, "\(family.name) dark == light")
-    }
-  }
-
-  func testWorkroomFamilyIsFirst() {
-    XCTAssertEqual(ThemeService.families.first?.name, ThemeService.defaultFamilyName)
   }
 
   // MARK: registry ↔ bundle integrity
@@ -141,7 +66,7 @@ final class ThemeServiceTests: XCTestCase {
     let dir = try bundledThemeDir()
     let names = try FileManager.default.contentsOfDirectory(atPath: dir)
     return Set(
-      names.filter { ThemeService.parseThemeFile(atPath: dir + "/" + $0, name: $0) != nil })
+      names.filter { ThemeCatalog.parseThemeFile(atPath: dir + "/" + $0, name: $0) != nil })
   }
 
   /// 1 + 2: every declared variant resolves to a real bundled file, AND that file carries a complete
@@ -153,9 +78,9 @@ final class ThemeServiceTests: XCTestCase {
   /// file resolves fine and then silently paints the whole chrome with macOS system colours.
   func testEveryFamilyVariantResolvesToACompleteBundledTheme() throws {
     let dir = try bundledThemeDir()
-    for family in ThemeService.families {
+    for family in ThemeCatalog.families {
       for (role, name) in [("dark", family.dark), ("light", family.light)] {
-        let preview = ThemeService.parseThemeFile(atPath: dir + "/" + name, name: name)
+        let preview = ThemeCatalog.parseThemeFile(atPath: dir + "/" + name, name: name)
         XCTAssertNotNil(
           preview, "\(family.name): the \(role) variant '\(name)' is not a bundled theme file")
         XCTAssertEqual(
@@ -175,10 +100,10 @@ final class ThemeServiceTests: XCTestCase {
   /// dark mode and searches the wrong way for legible mark tiles.
   func testEveryFamilyVariantIsOnTheCorrectSideOfTheAppearance() throws {
     let dir = try bundledThemeDir()
-    for family in ThemeService.families {
+    for family in ThemeCatalog.families {
       guard
-        let dark = ThemeService.parseThemeFile(atPath: dir + "/" + family.dark, name: family.dark),
-        let light = ThemeService.parseThemeFile(
+        let dark = ThemeCatalog.parseThemeFile(atPath: dir + "/" + family.dark, name: family.dark),
+        let light = ThemeCatalog.parseThemeFile(
           atPath: dir + "/" + family.light, name: family.light)
       else {
         XCTFail("\(family.name): variants must resolve before orientation can be checked")
@@ -193,23 +118,13 @@ final class ThemeServiceTests: XCTestCase {
     }
   }
 
-  /// 4: family names are unique. `ThemeFamily.id` IS `name`, and `ThemePicker` uses it as the
-  /// `ForEach` id — duplicates are a SwiftUI identity bug, not a cosmetic one.
-  func testFamilyNamesAreUnique() {
-    let names = ThemeService.families.map(\.name)
-    XCTAssertEqual(
-      names.count, Set(names).count,
-      "duplicate family names: \(Dictionary(grouping: names, by: { $0 }).filter { $0.value.count > 1 }.keys)"
-    )
-  }
-
   /// 5: the registry and the themes dir are in exact correspondence — compared as **sets**, not by
   /// count. A count check passes when two families share a variant and an unregistered file pads the
   /// total back to even, which is precisely the mistake it is supposed to catch.
   ///
   /// Consequence worth knowing: shipping a theme file without registering it here fails this test.
   func testRegistryAndBundledThemesAreInExactCorrespondence() throws {
-    let declared = ThemeService.families.flatMap { [$0.dark, $0.light] }
+    let declared = ThemeCatalog.families.flatMap { [$0.dark, $0.light] }
     let onDisk = try parseableBundledThemeNames()
 
     XCTAssertEqual(
@@ -220,20 +135,7 @@ final class ThemeServiceTests: XCTestCase {
       declared.count, Set(declared).count,
       "two families share a variant file: \(Dictionary(grouping: declared, by: { $0 }).filter { $0.value.count > 1 }.keys)"
     )
-    XCTAssertEqual(declared.count, ThemeService.families.count * 2)
-  }
-
-  /// 6: `Workroom` pinned first, everything else A→Z.
-  ///
-  /// Non-vacuous because `families` is an authored literal, not a `sorted(...)` result — appending a
-  /// family in the wrong place fails here. The comparator is deliberately locale-independent;
-  /// `localizedStandardCompare` would make the picker's order vary by system language.
-  func testFamiliesAreAlphabeticalAfterTheDefault() {
-    let rest = ThemeService.families.dropFirst().map(\.name)
-    let sorted = rest.sorted {
-      $0.compare($1, options: [.caseInsensitive, .numeric]) == .orderedAscending
-    }
-    XCTAssertEqual(rest, sorted, "the families literal is not in Workroom-then-A→Z order")
+    XCTAssertEqual(declared.count, ThemeCatalog.families.count * 2)
   }
 
   /// 7: the shipped bytes are the vetted bytes. Structural tests cannot catch this — an upstream
@@ -286,13 +188,13 @@ final class ThemeServiceTests: XCTestCase {
   /// The override lands in a temp dir via `withUserThemeDirectory`, so this never touches the
   /// developer's real `~/.config/ghostty/themes`.
   func testAUserOverrideBeatsAWarmBundledCache() throws {
-    let name = try XCTUnwrap(ThemeService.families.first?.dark)
+    let name = try XCTUnwrap(ThemeCatalog.families.first?.dark)
     let userDir = URL(fileURLWithPath: NSTemporaryDirectory())
       .appendingPathComponent("workroom-theme-override-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: userDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: userDir) }
 
-    ThemeService.resetPreviewCacheForTesting()
+    ThemeCatalog.resetPreviewCacheForTesting()
     // Warm the cache from the bundle first — that is the state the hazard needs.
     let bundled = try XCTUnwrap(ThemeService.themePreview(named: name))
 
@@ -302,11 +204,11 @@ final class ThemeServiceTests: XCTestCase {
     // Parsed through the same code path as the assertion below, so this can't fail on NSColor
     // colour-space equality rather than on precedence.
     let expected = try XCTUnwrap(
-      ThemeService.parseThemeFile(atPath: overridePath, name: name))
+      ThemeCatalog.parseThemeFile(atPath: overridePath, name: name))
     XCTAssertNotEqual(
       expected.background, bundled.background, "the fixture must differ from the bundled theme")
 
-    try ThemeService.withUserThemeDirectory(userDir.path) {
+    try ThemeCatalog.withUserThemeDirectory(userDir.path) {
       let resolved = try XCTUnwrap(ThemeService.themePreview(named: name))
       XCTAssertEqual(
         resolved.background, expected.background,
@@ -330,12 +232,12 @@ final class ThemeServiceTests: XCTestCase {
   }
 
   func testResetPreviewCacheForTestingClearsIt() throws {
-    let name = try XCTUnwrap(ThemeService.families.first?.dark)
+    let name = try XCTUnwrap(ThemeCatalog.families.first?.dark)
     // Reset FIRST: the cache is a process-lifetime static, so without this the test silently inherits
     // whatever an earlier case in the same process left warm and proves nothing about a cold start.
-    ThemeService.resetPreviewCacheForTesting()
+    ThemeCatalog.resetPreviewCacheForTesting()
     let cold = try XCTUnwrap(ThemeService.themePreview(named: name))
-    ThemeService.resetPreviewCacheForTesting()
+    ThemeCatalog.resetPreviewCacheForTesting()
     // Same colours after a reset — the cache is an optimisation, never the source of truth, so a
     // repopulated entry must be indistinguishable from the one it replaced.
     let repopulated = try XCTUnwrap(ThemeService.themePreview(named: name))
