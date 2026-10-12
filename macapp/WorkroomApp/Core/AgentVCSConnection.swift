@@ -501,8 +501,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func sendForward(
     stream: UInt32, opcode: UInt8, body: Data, then: (@Sendable () -> Void)? = nil
   ) {
-    var payload = Data([opcode])
-    payload.append(body)
+    let payload = Data([opcode]) + body
     writes.async { [self] in
       defer { then?() }
       guard lock.withLock({ !closed }) else { return }

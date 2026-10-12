@@ -298,14 +298,16 @@ struct PaneTitleBar: View {
   private var overflowMenu: some View {
     Menu {
       if controls.diffMode {
-        Picker("View", selection: Binding(get: { diffMode }, set: onSetDiffMode)) {
+        Picker("View", selection: Binding(get: { diffMode }, set: { onSetDiffMode($0) })) {
           Label("Unified", systemImage: "text.alignleft").tag(DiffViewMode.unified)
           Label("Side by Side", systemImage: "rectangle.split.2x1").tag(DiffViewMode.sideBySide)
         }
         .pickerStyle(.inline)
       }
       if controls.markdownMode {
-        Picker("View", selection: Binding(get: { markdownPreview }, set: onSetMarkdownPreview)) {
+        Picker(
+          "View", selection: Binding(get: { markdownPreview }, set: { onSetMarkdownPreview($0) })
+        ) {
           Label("Rendered Preview", systemImage: "eye").tag(true)
           Label("Source", systemImage: "chevron.left.forwardslash.chevron.right").tag(false)
         }

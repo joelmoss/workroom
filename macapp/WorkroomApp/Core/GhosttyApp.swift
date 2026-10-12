@@ -79,24 +79,35 @@ final class GhosttyApp {
     rt.supports_selection_clipboard = false
     // @convention(c) callbacks capture nothing — they route through the shared singleton.
     rt.wakeup_cb = { _ in GhosttyApp.shared.scheduleTick() }
+    // The rest fire on the main thread (`GhosttyRuntimeAdapter`'s Threading note).
     rt.action_cb = { app, target, action in
-      GhosttyRuntimeAdapter.shared.handleAction(app: app, target: target, action: action)
+      MainActor.assumeIsolated {
+        GhosttyRuntimeAdapter.shared.handleAction(app: app, target: target, action: action)
+      }
     }
     rt.read_clipboard_cb = { userdata, location, state, mimes, mimeCount, wantsAvailable in
-      GhosttyRuntimeAdapter.shared.readClipboard(
-        userdata: userdata, location: location, state: state, mimes: mimes, mimeCount: mimeCount,
-        wantsAvailable: wantsAvailable)
+      MainActor.assumeIsolated {
+        GhosttyRuntimeAdapter.shared.readClipboard(
+          userdata: userdata, location: location, state: state, mimes: mimes, mimeCount: mimeCount,
+          wantsAvailable: wantsAvailable)
+      }
     }
     rt.confirm_read_clipboard_cb = { userdata, confirm, state, request in
-      GhosttyRuntimeAdapter.shared.confirmReadClipboard(
-        userdata: userdata, confirm: confirm, state: state, request: request)
+      MainActor.assumeIsolated {
+        GhosttyRuntimeAdapter.shared.confirmReadClipboard(
+          userdata: userdata, confirm: confirm, state: state, request: request)
+      }
     }
     rt.write_clipboard_cb = { userdata, location, content, count, confirm in
-      GhosttyRuntimeAdapter.shared.writeClipboard(
-        userdata: userdata, location: location, content: content, count: count, confirm: confirm)
+      MainActor.assumeIsolated {
+        GhosttyRuntimeAdapter.shared.writeClipboard(
+          userdata: userdata, location: location, content: content, count: count, confirm: confirm)
+      }
     }
     rt.close_surface_cb = { userdata, needsConfirm in
-      GhosttyRuntimeAdapter.shared.closeSurface(userdata: userdata, needsConfirm: needsConfirm)
+      MainActor.assumeIsolated {
+        GhosttyRuntimeAdapter.shared.closeSurface(userdata: userdata, needsConfirm: needsConfirm)
+      }
     }
 
     guard let createdApp = ghostty_app_new(&rt, cfg) else {
@@ -131,10 +142,10 @@ final class GhosttyApp {
     let center = NotificationCenter.default
     let onActive = center.addObserver(
       forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-    ) { [weak self] _ in self?.setAppFocus(true) }
+    ) { [weak self] _ in MainActor.assumeIsolated { self?.setAppFocus(true) } }
     let onResign = center.addObserver(
       forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
-    ) { [weak self] _ in self?.setAppFocus(false) }
+    ) { [weak self] _ in MainActor.assumeIsolated { self?.setAppFocus(false) } }
     appFocusObservers = [onActive, onResign]
   }
 

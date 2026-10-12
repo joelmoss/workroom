@@ -177,12 +177,13 @@ final class GhosttySurfaceView: NSView {
   private var currentKeyEvent: NSEvent?
   private var commandSelectorCalled = false
 
-  // Surface-config C strings must outlive `ghostty_surface_new`; freed on teardown.
-  private var surfaceCStrings: [UnsafeMutablePointer<CChar>] = []
+  // Surface-config C strings must outlive `ghostty_surface_new`; freed on teardown. These three are
+  // `nonisolated(unsafe)` only so `deinit` can free them: every other access is on the main actor.
+  nonisolated(unsafe) private var surfaceCStrings: [UnsafeMutablePointer<CChar>] = []
   // Backing buffer for the surface config's `env_vars` array; held for the surface's lifetime
   // alongside `surfaceCStrings` and freed on teardown.
-  private var envVarsBuffer: UnsafeMutablePointer<ghostty_env_var_s>?
-  private var envVarCount = 0
+  nonisolated(unsafe) private var envVarsBuffer: UnsafeMutablePointer<ghostty_env_var_s>?
+  nonisolated(unsafe) private var envVarCount = 0
   private var pendingSurfaceCreation = false
   private var isShowingHandCursor = false
   /// Set in mouseDown when a ⌘-click opened a file (no terminal press was sent); makes the matching
@@ -431,7 +432,7 @@ final class GhosttySurfaceView: NSView {
     }
   }
 
-  private func freeSurfaceCStrings() {
+  private nonisolated func freeSurfaceCStrings() {
     for ptr in surfaceCStrings { free(ptr) }
     surfaceCStrings.removeAll()
     envVarsBuffer?.deinitialize(count: envVarCount)
@@ -641,7 +642,7 @@ final class GhosttySurfaceView: NSView {
     startAccessibilityPolling()
     occlusionObserver = NotificationCenter.default.addObserver(
       forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
-    ) { [weak self] _ in self?.updateWindowVisibility() }
+    ) { [weak self] _ in MainActor.assumeIsolated { self?.updateWindowVisibility() } }
     // Report focus in/out when THIS window gains or loses key without a first-responder change —
     // switching between two Workroom windows / the Quick Terminal, and app activate/deactivate
     // (a window is not key while its app is inactive). Scoped to `window`; torn down above on the
@@ -650,10 +651,10 @@ final class GhosttySurfaceView: NSView {
     keyWindowObservers = [
       center.addObserver(
         forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
-      ) { [weak self] _ in self?.syncFocusToKeyWindow() },
+      ) { [weak self] _ in MainActor.assumeIsolated { self?.syncFocusToKeyWindow() } },
       center.addObserver(
         forName: NSWindow.didResignKeyNotification, object: window, queue: .main
-      ) { [weak self] _ in self?.syncFocusToKeyWindow() },
+      ) { [weak self] _ in MainActor.assumeIsolated { self?.syncFocusToKeyWindow() } },
     ]
     updateWindowVisibility()
     updateMetalLayerSize()
@@ -1014,9 +1015,12 @@ final class GhosttySurfaceView: NSView {
     progressTimeoutTimer = Timer.scheduledTimer(
       withTimeInterval: Self.progressTimeout, repeats: false
     ) { [weak self] _ in
-      self?.progressTimeoutTimer = nil
-      self?.progressActive = false
-      self?.onProgressReport?(false)
+      // Scheduled from the main actor, so it fires on the main run loop.
+      MainActor.assumeIsolated {
+        self?.progressTimeoutTimer = nil
+        self?.progressActive = false
+        self?.onProgressReport?(false)
+      }
     }
   }
 
@@ -1181,7 +1185,7 @@ final class GhosttySurfaceView: NSView {
     guard accessibilityPollTimer == nil else { return }
     accessibilityPollTimer = Timer.scheduledTimer(
       withTimeInterval: Self.accessibilityPollInterval, repeats: true
-    ) { [weak self] _ in self?.pollAccessibilityContent() }
+    ) { [weak self] _ in MainActor.assumeIsolated { self?.pollAccessibilityContent() } }
   }
 
   private func stopAccessibilityPolling() {

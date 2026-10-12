@@ -57,7 +57,7 @@ enum ThemePreference: String, CaseIterable, Defaults.Serializable, Defaults.Pref
   /// dark/light toggle (⌘⇧L, issue #57). `.light`/`.dark` flip to their opposite; `.system` resolves
   /// the live OS appearance first, so the toggle always inverts what's on screen. Always a forced
   /// mode (never `.system`), so repeated presses flip cleanly between light and dark.
-  var toggledLightDark: ThemePreference {
+  @MainActor var toggledLightDark: ThemePreference {
     switch self {
     case .light: return .dark
     case .dark: return .light

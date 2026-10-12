@@ -413,7 +413,7 @@ struct HistoryRow: View, Equatable {
 
   /// True when the focused content tab is this commit's changeset — so the row showing in the pane
   /// reads as selected. Now a comparison against a value the panel resolved, not a store read.
-  fileprivate var isSelected: Bool { selectedCommitID == commit.commitID }
+  nonisolated fileprivate var isSelected: Bool { selectedCommitID == commit.commitID }
 }
 
 /// The history row's hover card — a peek, not the whole commit: the summary, then the same

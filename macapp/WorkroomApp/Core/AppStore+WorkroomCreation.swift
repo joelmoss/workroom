@@ -306,13 +306,13 @@ extension AppStore {
         }
       }
       let path = project.path
-      let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { step in
-        Task { @MainActor [weak self] in
+      let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { [weak self] step in
+        Task { @MainActor in
           self?.showRemoteCreateStep(Self.createStep(step), in: path, row: row)
         }
       }
-      let report: @Sendable (Double?) -> Void = { fraction in
-        Task { @MainActor [weak self] in
+      let report: @Sendable (Double?) -> Void = { [weak self] fraction in
+        Task { @MainActor in
           // A report that arrives after the create ended shows nothing.
           guard let self, self.isBusyProject(path) else { return }
           self.imagePulls[path] = fraction

@@ -83,9 +83,9 @@ struct ExternalEditor: Identifiable {
 /// Invalidated when any app launches or quits, so installing (or deleting) an editor is picked up
 /// without relaunching Workroom. Main-thread-confined in practice: every reader is a view body or a
 /// menu builder, and the observers deliver on `.main`.
-private final class EditorCache {
-  // Main-thread-confined in practice (the note above), so the unchecked shared instance is sound.
-  nonisolated(unsafe) static let shared = EditorCache()
+// `@unchecked Sendable`: main-thread-confined in practice (the note above).
+private final class EditorCache: @unchecked Sendable {
+  static let shared = EditorCache()
 
   private var cachedEditors: [ExternalEditor]?
   private var cachedIcons: [String: NSImage] = [:]
