@@ -162,9 +162,8 @@ public enum ThemeCatalog {
   /// `~/.config` is re-read on every call (below) precisely so a user editing their own theme still
   /// sees it change.
   ///
-  /// A `Mutex` rather than `@MainActor`: `themePreview` is `nonisolated` and
-  /// `GhosttyApp.writeThemeConfig` resolves off the main actor, so main-actor-isolating the storage
-  /// would force call-site changes there. The state lives inside the lock, so no access can skip it.
+  /// A `Mutex` rather than `@MainActor`: this package has no actor of its own, so `themePreview`
+  /// stays callable from any isolation. The state lives inside the lock, so no access can skip it.
   private static let bundledPreviewCache = Mutex<[String: ThemePreview]>([:])
 
   /// Drop the bundled cache. Tests only — a process-lifetime static otherwise leaks state across
@@ -201,9 +200,10 @@ public enum ThemeCatalog {
     }
   }
 
-  /// User config dir first (wins on resolution), bundled dir second. A convenience over the two
-  /// accessors below — `themePreview` deliberately does NOT resolve through this, because the
-  /// user/bundled distinction is what decides cacheability and a position in an array can't carry that.
+  /// User config dir first (wins on resolution), bundled dir second: `userThemeDirectory()` below
+  /// and the caller's bundled directory. `themePreview` deliberately does NOT resolve through this,
+  /// because the user/bundled distinction is what decides cacheability and a position in an array
+  /// can't carry that.
   public static func themeDirectories(bundledDirectory: String?) -> [String] {
     guard let bundled = bundledDirectory else { return [userThemeDirectory()] }
     return [userThemeDirectory(), bundled]

@@ -9,7 +9,7 @@
 - `shell-integration/` — per-shell scripts Ghostty auto-injects; these report OSC 7 pwd
   (the cwd source for ⌘-click path resolution — see plan CMT-1) and more.
 
-- `themes/` — **ours, not upstream's.** 116 curated theme files whose names `ThemeService.families`
+- `themes/` — **ours, not upstream's.** 116 curated theme files whose names `ThemeCatalog.families`
   parses — 114 vendored from iTerm2-Color-Schemes plus the two hand-authored `Workroom` themes,
   forming 58 dark/light families. Do NOT regenerate this directory from a ghostty checkout; it would
   break the theme picker. Its provenance is recorded separately in `themes/SOURCE.md` +
