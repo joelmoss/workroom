@@ -1,3 +1,4 @@
+import AgentConnection
 import XCTest
 
 @testable import Workroom

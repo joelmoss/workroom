@@ -1,3 +1,4 @@
+import AgentConnection
 import Darwin
 import Foundation
 import WorkroomWire
