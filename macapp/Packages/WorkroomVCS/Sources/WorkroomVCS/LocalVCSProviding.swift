@@ -1,10 +1,9 @@
 import Foundation
-import WorkroomVCS
 
 /// Local engine interface. RepositoryRouter wraps these engines in a context-bound VCSProviding;
 /// application callers never supply an engine with a remote path. Synchronous native operations
 /// are offloaded by BoundLocalReader and keep their coordination tail until actual completion.
-protocol LocalVCSProviding: Sendable {
+public protocol LocalVCSProviding: Sendable {
   /// A bounded, newest-first page of history.
   ///
   /// "Newest-first" is deliberately git's OWN CLI order — the page is what `git log` would print, so
@@ -56,16 +55,18 @@ extension LocalVCSProviding {
   /// silently reported every workroom clean would look like a working app with a broken badge,
   /// which is the kind of failure that survives a whole release. A throw surfaces as
   /// `.notRepository` on the row instead.
-  func workingStatus(root: URL) throws -> WorkroomStatus {
+  public func workingStatus(root: URL) throws -> WorkroomStatus {
     throw VCSError.unsupportedRepo("\(Self.self) does not implement workingStatus")
   }
 
   /// Default: no pre-image source, so deletions render plain. `GitProvider` overrides
   /// these; other conformers (tests, fixtures) inherit the no-op.
-  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
+  public func commitParentFileContent(root: URL, commitID: String, path: String) async throws
+    -> String?
+  {
     nil
   }
-  func workingBaseFileContent(root: URL, path: String) async throws
+  public func workingBaseFileContent(root: URL, path: String) async throws
     -> String?
   { nil }
 }
@@ -78,7 +79,7 @@ extension LocalVCSProviding {
 ///
 /// This is the only guard for a folder whose parent contains `:`, which gets no discovery ceiling
 /// (see `StatusCommandRunner.discoveryCeiling`).
-func isGitRepo(at root: URL) -> Bool {
+public func isGitRepo(at root: URL) -> Bool {
   let dotGit = root.appendingPathComponent(".git").resolvingSymlinksInPath()
   let kind = try? dotGit.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
   if kind?.isDirectory == true {
