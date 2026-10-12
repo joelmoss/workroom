@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import Observation
 import WorkroomDomain
 import XCTest
 
@@ -1520,5 +1521,19 @@ final class RunCommandTests: XCTestCase {
     let view = GhosttySurfaceView(
       workingDirectory: "/tmp", command: "bin/rails s", spawnsSurface: true)
     XCTAssertTrue(view.canSpawnSurface, "a live view must still be able to spawn its surface")
+  }
+
+  /// The run state lives on `RunCommandController` and the store forwards it. The toolbar's Run/Stop
+  /// toggle reads it through the store, so a write must still invalidate that read.
+  func testAReadThroughTheStoreIsInvalidatedByARunStateWrite() {
+    let store = makeStore([])
+    var invalidated = false
+    withObservationTracking {
+      _ = store.isRunCommandRunning(for: "t")
+    } onChange: {
+      invalidated = true
+    }
+    store.armAutoRun(forWorkroom: "t")
+    XCTAssertTrue(invalidated, "a forwarded read must track RunCommandController")
   }
 }
