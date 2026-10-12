@@ -65,7 +65,8 @@ final class FileTreeModel: ObservableObject {
   deinit {
     loadTask?.cancel()
     listing?.task.cancel()
-    watcher?.stop()
+    // No `watcher?.stop()`: this model is the watcher's only owner, and `HostFileWatcher` stops its
+    // watch in its own `deinit` (a nonisolated deinit can't reach the main-actor property anyway).
   }
 
   /// Point the model at `target`'s tree: a remote workroom's by its location on its host, which its

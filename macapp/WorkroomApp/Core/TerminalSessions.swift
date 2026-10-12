@@ -548,7 +548,7 @@ final class TerminalSessions: ObservableObject {
   ///
   /// 300pt is also about 41 terminal columns, which is the first width where a terminal is honestly
   /// usable rather than merely non-degenerate.
-  static let minPaneWidth: CGFloat = 300
+  nonisolated static let minPaneWidth: CGFloat = 300
   /// Smallest usable pane HEIGHT (points). Raised 120 → 150 with issue #150: a pane now carries 56pt
   /// of horizontal chrome (a 28pt title bar above the content and a 28pt status bar below it) where it
   /// used to carry 28. 150 keeps the same ~94pt of actual content the old 120 left, rather than
@@ -556,11 +556,11 @@ final class TerminalSessions: ObservableObject {
   ///
   /// Read together with `fits(splitting:)`, which measures the whole PANE rect — chrome included — for
   /// every content kind, so this number means the same thing for a terminal and a diff pane.
-  static let minPaneHeight: CGFloat = 150
+  nonisolated static let minPaneHeight: CGFloat = 150
   /// Inter-pane gutter thickness (points), shared by the fit guard and the renderer. No separator
   /// rule is drawn anymore, so this is just the gap between panes and the width of the (invisible)
   /// resize hit-zone — kept tight, since the panes' own rounded borders mark the boundary.
-  static let dividerThickness: CGFloat = 2
+  nonisolated static let dividerThickness: CGFloat = 2
 
   /// The inline terminal agent (issue #49). Owned here so the per-tab callbacks can feed it; injected
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.

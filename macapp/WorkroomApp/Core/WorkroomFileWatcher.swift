@@ -21,7 +21,9 @@ import Foundation
 /// VCS-internal churn (e.g. git writing under `.git/`, which would otherwise self-trigger).
 /// One watch at a time — `start(path:)` replaces any prior watch and resets coalescing state;
 /// `stop()` tears down the stream and cancels any pending trailing emit.
-final class WorkroomFileWatcher {
+// `@unchecked Sendable`: main-thread-only by contract (`start`/`stop`), so a watcher crosses threads
+// only to be used on the main actor, as `HostFileWatcher`'s fallback hands it there.
+final class WorkroomFileWatcher: @unchecked Sendable {
   private var stream: FSEventStreamRef?
   private var watchedPath: String?
   private let queue = DispatchQueue(label: "com.developwithstyle.workroom.fswatch")

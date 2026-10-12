@@ -33,7 +33,8 @@ extension UserDefaults {
   /// `.standard` before this existed. "One at a time" is per Mac, not per checkout, and is enforced
   /// rather than assumed: `make app-uitest` holds the GUI session exclusively
   /// (`Scripts/gui-lock.py`), so another workroom's UI-test run cannot interleave with this suite.
-  static let app: UserDefaults = {
+  // `nonisolated(unsafe)`: `UserDefaults` is documented thread-safe; the suite is chosen once here.
+  nonisolated(unsafe) static let app: UserDefaults = {
     #if DEBUG
       // `isTestProcess` is the shared three-signal answer (`UITestFixture`), not this file's own:
       // `isolatesPreferences` is separate from `isActive` on purpose — a UI test that launches

@@ -688,7 +688,7 @@ struct ChangedFileRow: View, Equatable {
   /// publish re-creates every row value, and only the ones whose file, group or selected-ness actually
   /// changed get a body. `@EnvironmentObject`/`@State`/`@Default` still invalidate past this gate, so
   /// hover, the editor-preference label and store-driven updates are unaffected.
-  static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
+  nonisolated static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
     lhs.file == rhs.file && lhs.source == rhs.source && lhs.isSelected == rhs.isSelected
       && lhs.themeGeneration == rhs.themeGeneration
   }

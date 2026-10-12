@@ -130,7 +130,8 @@ final class AppStore: ObservableObject {
   /// several restored windows doesn't fan out duplicate dialogs.
   var isRestoreWindow = false
   /// Retained `NSWindow` frame-change observers that persist this window's size for the next launch.
-  @ObservationIgnored private var frameObservers: [NSObjectProtocol] = []
+  // `nonisolated(unsafe)`: appended on the main actor, read again only in `deinit`.
+  @ObservationIgnored nonisolated(unsafe) private var frameObservers: [NSObjectProtocol] = []
   /// Retains the `NSWindow.didUpdate` observer that keeps the title out of the title bar (issue #70).
   @ObservationIgnored private var titleVisibilityObserver: NSObjectProtocol?
 
@@ -3475,7 +3476,9 @@ final class AppStore: ObservableObject {
 /// The live log for one create/delete run. Lines stream in from the CLI's NDJSON
 /// stderr (see WorkroomCLI). A plain ObservableObject — all mutations happen on the
 /// main thread (the store hops there before appending), so SwiftUI sees them safely.
-final class ScriptLogSession: ObservableObject, Identifiable {
+// `@unchecked Sendable`: every mutation happens on the main thread (the note above), and the CLI's
+// callbacks hop there before they touch it.
+final class ScriptLogSession: ObservableObject, Identifiable, @unchecked Sendable {
   let id = UUID()
   let title: String
   let phase: String

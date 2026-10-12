@@ -380,7 +380,9 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
           drain.leave()
         }
 
-        let timeoutItem = DispatchWorkItem {
+        // `nonisolated(unsafe)`: `DispatchWorkItem` isn't marked Sendable, but `cancel()` from the
+        // termination handler is thread-safe by design.
+        nonisolated(unsafe) let timeoutItem = DispatchWorkItem {
           state.markTimedOut()
           if proc.isRunning { proc.terminate() }  // SIGTERM
         }
@@ -390,7 +392,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
         // so `terminationHandler` — the only place the continuation resumes — would never fire and the
         // awaiting Task would hang forever, defeating the timeout. SIGKILL is uncatchable, guaranteeing
         // the process exits and we resume. A 2s grace after SIGTERM lets well-behaved children exit.
-        let killItem = DispatchWorkItem {
+        nonisolated(unsafe) let killItem = DispatchWorkItem {
           if proc.isRunning { ProcessTree.killTree(proc.processIdentifier) }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout + 2, execute: killItem)

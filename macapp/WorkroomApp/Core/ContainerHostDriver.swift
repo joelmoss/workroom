@@ -119,13 +119,15 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       // platform of a multi-arch image unless told which, and it runs on Apple silicon only.
       let report = Self.pullProgress
       let progress = PullReader()
+      var onOutput: (@Sendable (Data, Bool) -> Void)?
+      if let report {
+        onOutput = { @Sendable data, stderr in
+          if let fraction = progress.read(data, stderr: stderr) { report(fraction) }
+        }
+      }
       _ = try await runtime(
         apple ? ["image", "pull", "--arch", "arm64", image] : ["pull", image], timeout: 900,
-        onOutput: report.map { report in
-          { data, stderr in
-            if let fraction = progress.read(data, stderr: stderr) { report(fraction) }
-          }
-        })
+        onOutput: onOutput)
       // The rest of the create (the setup, the clone) can take minutes, and isn't a download.
       report?(nil)
     } catch {

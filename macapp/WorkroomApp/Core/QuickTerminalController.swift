@@ -42,7 +42,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
   /// Surface factory — overridable in tests to inject a non-spawning surface (`spawnsSurface: false`)
   /// so no real PTY / Metal renderer is created. Defaults to a login shell at the user's home dir.
-  var makeSurface: () -> GhosttySurfaceView = {
+  var makeSurface: @MainActor () -> GhosttySurfaceView = {
     GhosttySurfaceView(workingDirectory: NSHomeDirectory())
   }
 

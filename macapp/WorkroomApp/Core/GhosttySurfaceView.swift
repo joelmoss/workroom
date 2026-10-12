@@ -73,12 +73,17 @@ final class GhosttySurfaceView: NSView {
   let attachToken = UUID()
   /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
   /// launches `workroom-session attach` instead of a login shell.
-  var persistentSessionID: UUID? {
+  // `nonisolated(unsafe)`, like the two timers: set on the main actor, and read again in the
+  // nonisolated `deinit`, which runs once nothing else holds the view.
+  nonisolated(unsafe) var persistentSessionID: UUID? {
     // Pointed at another session (the detached-sessions list): the old one's ssh goes with the
     // surface it is about to lose, so it no longer counts as attached to its remote host (#356).
     didSet {
       if let oldValue, oldValue != persistentSessionID {
-        PersistentSessionService.shared.paneDetached(oldValue, by: attachToken)
+        // Only ever set on the main actor (the `nonisolated(unsafe)` note above).
+        MainActor.assumeIsolated {
+          PersistentSessionService.shared.paneDetached(oldValue, by: attachToken)
+        }
       }
     }
   }
@@ -207,7 +212,7 @@ final class GhosttySurfaceView: NSView {
   // task doesn't stop spinning mid-run (issue #38). OSC 9;4 is edge-triggered — Claude emits it once at
   // the start (and once at finish), Codex never — but both animate their title ~1–10×/s the whole time
   // they work, so the title is the liveness heartbeat the progress signal itself lacks.
-  private var progressTimeoutTimer: Timer?
+  nonisolated(unsafe) private var progressTimeoutTimer: Timer?
   private var progressActive = false
   private static let progressTimeout: TimeInterval = 30
 
@@ -219,7 +224,7 @@ final class GhosttySurfaceView: NSView {
   // itself is near-free when VoiceOver is off (one boolean check), which is the common case for every
   // user of every pane, so the timer runs unconditionally and the real work — materializing the
   // viewport into a `String` and diffing it — happens only while VoiceOver is actually listening.
-  private var accessibilityPollTimer: Timer?
+  nonisolated(unsafe) private var accessibilityPollTimer: Timer?
   private static let accessibilityPollInterval: TimeInterval = 0.4
   private var lastAccessibilityValue: String?
   /// Set while a `GHOSTTY_ACTION_SELECTION_CHANGED` hop is already queued — see
@@ -1911,7 +1916,9 @@ extension GhosttySurfaceView {
 
 // MARK: - NSTextInputClient (IME / marked text)
 
-extension GhosttySurfaceView: NSTextInputClient {
+// `@preconcurrency`: AppKit calls the text-input methods on the main thread but the SDK leaves the
+// protocol unannotated, so the main-actor view's conformance would otherwise read as crossing actors.
+extension GhosttySurfaceView: @preconcurrency NSTextInputClient {
   func insertText(_ string: Any, replacementRange: NSRange) {
     let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
     unmarkText()

@@ -39,7 +39,9 @@ struct TitlebarAccessoryHost<Content: View>: NSViewRepresentable {
     let hosting = NSHostingController(rootView: AnyView(EmptyView()))
     private var installed = false
     private weak var window: NSWindow?
-    private var observers: [NSObjectProtocol] = []
+    // `nonisolated(unsafe)`: appended on the main actor, and read again only in `deinit`, which
+    // runs once nothing else holds the coordinator.
+    nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
     deinit {
       for observer in observers { NotificationCenter.default.removeObserver(observer) }

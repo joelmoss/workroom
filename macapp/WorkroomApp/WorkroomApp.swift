@@ -408,25 +408,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // so ⌃Tab must still reach a TUI). Both trigger modifiers are preferences — a global hotkey
       // grabber like AltTab beats this monitor and can't be detected.
       if QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) != nil {
-        return MainActor.assumeIsolated {
+        // Decided on the main actor; the event itself goes back out here, since `NSEvent` isn't
+        // Sendable and can't be the closure's result.
+        let passes = MainActor.assumeIsolated { () -> Bool in
           switch Self.switcherGate(for: window) {
-          case .passThrough: return event
-          case .swallow: return nil
+          case .passThrough: return true
+          case .swallow: return false
           case .act(let store):
             // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
             // Tested INSIDE `.act`, not above the gate: above it, a held ⌃Tab in the quick terminal or
             // in a single-pane workroom — the cases deliberately handed to the TUI — passed its first
             // keystroke through and had every repeat after it silently eaten.
-            if event.isARepeat { return nil }
+            if event.isARepeat { return false }
             guard let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) else {
-              return event
+              return true
             }
             // Consumed only when it switched, so ⌃Tab still reaches a TUI in a single-pane workroom —
             // the same rule as the ⌥⌘digit / ⌥⌘arrow branches below.
             return QuickSwitcherController.shared.handleTrigger(
-              hit.kind, reverse: hit.reverse, in: store) ? nil : event
+              hit.kind, reverse: hit.reverse, in: store) == false
           }
         }
+        return passes ? event : nil
       }
       // Escape and ←/→ while a switcher session is live (issue #132). Ahead of every other branch that
       // could claim them, because a live session owns the keyboard until it ends — and behind the Tab
@@ -569,8 +572,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // of the SwiftUI view's reach. The ⌥§ hotkey calls the controller directly (see updateGlobalHotkey).
     quickTerminalObserver = NotificationCenter.default.addObserver(
       forName: .showQuickTerminal, object: nil, queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated { self?.quickTerminal.show() }
+    ) { [quickTerminal] _ in
+      // The controller, not `self`: it is main-actor-isolated, so the `Sendable` handler can hold it,
+      // and it lives exactly as long as the app delegate that owns it.
+      MainActor.assumeIsolated { quickTerminal.show() }
     }
 
     installSigtermHandler()
@@ -640,8 +645,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           showHideHotkey = GlobalHotkey.commandSection { AppDelegate.toggleAppVisibility() }
         }
         if quickTerminalHotkey == nil {
-          quickTerminalHotkey = GlobalHotkey.optionSection { [weak self] in
-            MainActor.assumeIsolated { self?.quickTerminal.toggle() }
+          // The controller, not `self`, as for the toolbar button's observer above.
+          quickTerminalHotkey = GlobalHotkey.optionSection { [quickTerminal] in
+            MainActor.assumeIsolated { quickTerminal.toggle() }
           }
         }
       } else {

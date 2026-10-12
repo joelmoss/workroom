@@ -18,7 +18,9 @@ import os
 /// engine read from that stack deadlocks the main thread. `GHOSTTY_ACTION_SELECTION_CHANGED` is the
 /// known case (see its comment below); assume any new action may be one until checked against
 /// ghostty's source, and defer engine reads with `DispatchQueue.main.async` when in doubt.
-final class GhosttyRuntimeAdapter {
+// `@unchecked Sendable`: every callback that reaches it fires on the main thread (the Threading
+// note above), so its one mutable flag is only ever touched there.
+final class GhosttyRuntimeAdapter: @unchecked Sendable {
   static let shared = GhosttyRuntimeAdapter()
 
   private let logger = Logger(
@@ -392,6 +394,8 @@ final class GhosttyRuntimeAdapter {
     then resolve: @escaping (Bool) -> Void
   ) {
     let copy = Self.clipboardConfirmation(for: kind, preview: preview, requester: requester)
+    // Resolved on the main thread, where libghostty delivers the request (the Threading note).
+    nonisolated(unsafe) let resolve = resolve
     DispatchQueue.main.async { [weak self] in
       guard let self, !isPresentingClipboardConfirmation else { return resolve(false) }
       isPresentingClipboardConfirmation = true

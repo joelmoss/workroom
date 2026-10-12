@@ -796,13 +796,15 @@ enum VCSSyncPresenter {
 
   // MARK: Relative time
 
-  private static let fullFormatter: RelativeDateTimeFormatter = {
+  // `nonisolated(unsafe)`: configured once here and only read after; Foundation's formatters are
+  // thread-safe for formatting.
+  nonisolated(unsafe) private static let fullFormatter: RelativeDateTimeFormatter = {
     let f = RelativeDateTimeFormatter()
     f.unitsStyle = .full
     return f
   }()
 
-  private static let shortFormatter: RelativeDateTimeFormatter = {
+  nonisolated(unsafe) private static let shortFormatter: RelativeDateTimeFormatter = {
     let f = RelativeDateTimeFormatter()
     f.unitsStyle = .abbreviated
     return f

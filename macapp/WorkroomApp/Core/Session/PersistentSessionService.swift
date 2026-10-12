@@ -126,7 +126,7 @@ final class PersistentSessionService {
 
   /// How the agent's health is measured. Injected so a test can drive the unhealthy path without
   /// a real `wr-agent` to break.
-  private let probe: (SessionBackend) -> SessionBackendAvailability
+  private let probe: @Sendable (SessionBackend) -> SessionBackendAvailability
   /// What the shipped daemon says about a session, or nil to ask a real one over its socket.
   /// Injected for the same reason, and separately: the two answers combine, and the case that
   /// matters most (unhealthy agent, daemon-owned session) needs both driven at once.
@@ -162,7 +162,7 @@ final class PersistentSessionService {
 
   /// Test seam. `shared` never uses it; every other behaviour is identical.
   init(
-    probe: @escaping (SessionBackend) -> SessionBackendAvailability,
+    probe: @escaping @Sendable (SessionBackend) -> SessionBackendAvailability,
     ownership: @escaping (UUID) -> SessionOwnership,
     now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
     endRemote: @escaping (UUID, HostID) async throws -> Bool = { _, _ in false },

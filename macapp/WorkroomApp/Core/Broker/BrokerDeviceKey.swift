@@ -133,15 +133,10 @@ extension BrokerCredentials.SecretStore {
   /// keychain-access-groups entitlement ad hoc Dev builds lack), so a keychain migrated to another
   /// Mac carries a software key with it; an enclave blob is useless there.
   static func keychain(service: String) -> Self {
-    let query: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: service,
-      kSecAttrAccount as String: "device-key",
-    ]
-    return Self(
+    Self(
       read: {
         var result: AnyObject?
-        var search = query
+        var search = keychainQuery(service: service)
         search[kSecReturnData as String] = true
         guard SecItemCopyMatching(search as CFDictionary, &result) == errSecSuccess else {
           return nil
@@ -152,9 +147,10 @@ extension BrokerCredentials.SecretStore {
         // Update in place when the item exists, so a failed write never deletes the key it was
         // replacing.
         var status = SecItemUpdate(
-          query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+          keychainQuery(service: service) as CFDictionary,
+          [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
-          var item = query
+          var item = keychainQuery(service: service)
           item[kSecValueData as String] = data
           item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
           status = SecItemAdd(item as CFDictionary, nil)
@@ -163,6 +159,16 @@ extension BrokerCredentials.SecretStore {
           throw BrokerError.keyStorage("Keychain error \(status)")
         }
       },
-      delete: { SecItemDelete(query as CFDictionary) })
+      delete: { SecItemDelete(keychainQuery(service: service) as CFDictionary) })
+  }
+
+  /// The device key's item in the login keychain. Built per call from the `Sendable` service name,
+  /// since the `[String: Any]` query itself can't be captured by the `Sendable` accessors.
+  private static func keychainQuery(service: String) -> [String: Any] {
+    [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: "device-key",
+    ]
   }
 }

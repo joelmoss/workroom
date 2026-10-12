@@ -7,7 +7,7 @@ import UserNotifications
 /// One delivered notification per tab — the request identifier IS the tab id — so repeated
 /// activity in the same terminal REPLACES the banner instead of stacking. `userInfo` carries the
 /// ids a click needs to route back to the terminal (consumed in `AppDelegate`).
-protocol SystemNotifying {
+protocol SystemNotifying: Sendable {
   /// Request authorization lazily, the first time we'd actually post (a cold launch prompt
   /// hurts grant rate — issue #10 review, tension 3). Returns whether posting is permitted.
   func ensureAuthorized() async -> Bool
