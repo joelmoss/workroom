@@ -36,15 +36,12 @@ fn usage() -> &'static str {
   wr-agent handoff-check <table>
         whether this build can restore the sessions a hand-off table describes; run by the agent
         handing off, before it replaces itself
-  wr-agent enrol --workroom <id> --broker <url>
-        enrol this remote workroom with the Workroom credential broker, reading the one-time code
-        from stdin, and make `wr-agent credential` git's helper for https://github.com
   wr-agent credential <get|store|erase>
-        git's credential helper: answers github.com with an installation token from the broker,
-        or for a workroom that never enrolled, with what the Mac relays
+        git's credential helper for a local container workroom: answers github.com with what the
+        Mac relays
   wr-agent credential relay --port <port>
-        have a workroom that never enrolled ask the Mac for git's credentials through <port> on
-        this box's loopback, reading the relay's secret from stdin, and make `wr-agent credential`
+        have a local container workroom ask the Mac for git's credentials through <port> on this
+        box's loopback, reading the relay's secret from stdin, and make `wr-agent credential`
         git's helper for https://github.com
   wr-agent protocol
         print the protocol version this build speaks
@@ -75,8 +72,7 @@ fn main() -> ExitCode {
         Some("relay") => cli::relay::run_relay(&args),
         Some("list") => cli::list::run_list(&args),
         Some("hand-off") => cli::hand_off::run_hand_off(&args),
-        Some("enrol") => cli::broker::run_enrol(&args),
-        Some("credential") => cli::broker::run_credential(&args),
+        Some("credential") => cli::credential::run_credential(&args),
         Some("handoff-check") => cli::hand_off::run_handoff_check(&args),
         _ => {
             eprint!("{}", usage());

@@ -22,33 +22,23 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 # Only for the pty and process layers: forkpty, tcgetpgrp, sysctl, proc_pidinfo. No async runtime
-# and no C libraries beyond libc itself, except ring for the broker client (below), so the tree
-# stays as free of native deps as the VCS crates are.
+# and no C libraries beyond libc itself, except ring (below), so the tree stays as free of native
+# deps as the VCS crates are.
 libc = "0.2"
 serde = { workspace = true }
 serde_json = "1"
 # Filesystem change notification for the File service (FSEvents on macOS, inotify on Linux).
 notify = "8"
-# The credential broker client (`broker.rs`): HTTPS to Codaset and ES256 proofs. rustls on ring,
-# never native-tls, so the Linux build stays a static musl binary with no OpenSSL; ring compiles
-# its own C and assembly, which cargo-zigbuild handles for the musl targets. ring also signs the
-# proofs, so no separate ECDSA crate. webpki-roots bundles the CA roots, because a minimal
-# provider image may have none. Held to 3.4: `broker.rs` rebuilds ureq's default connector chain
-# from `ureq::unversioned` (#301), which semver does not cover, so a minor bump must re-check that
-# chain against ureq's `DefaultConnector`.
-ureq = { version = "~3.4", default-features = false, features = ["rustls"] }
-# Parses the broker's expiry and `Date` header.
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+# SHA-256 for the layout store's file names (`layout.rs`). ring compiles its own C and assembly,
+# which cargo-zigbuild handles for the musl targets.
 ring = "0.17"
-base64 = "0.22"
 wr-protocol = { path = "../wr-protocol" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
 
 [dev-dependencies]
-# The raw-mode test reads the pty's line discipline directly, and the broker's signal test calls
-# sigaction and pthread_kill. `libc` is already a runtime dependency, so this adds nothing to the
-# graph — it only makes it visible to `tests/`.
+# The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
+# dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
 libc = "0.2"
 
 [features]
