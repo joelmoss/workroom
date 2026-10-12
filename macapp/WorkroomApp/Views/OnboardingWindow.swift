@@ -142,8 +142,11 @@ struct OnboardingWindow: View {
         // Started, ⌘W, the red button): the user asked for the main window to open only once the
         // wizard is closed or finished, not underneath it the whole time. One-shot: this window only
         // ever closes once, so the observer removes itself right after firing.
-        var token: NSObjectProtocol?
-        token = NotificationCenter.default.addObserver(
+        // A box, not a captured `var`: the observer reads a token assigned only after `addObserver`
+        // returns, which Swift 6 rejects for a var a Sendable closure has captured. Main-thread only.
+        final class TokenBox: @unchecked Sendable { var token: NSObjectProtocol? }
+        let box = TokenBox()
+        box.token = NotificationCenter.default.addObserver(
           forName: NSWindow.willCloseNotification, object: window, queue: .main
         ) { [openWindow] _ in
           MainActor.assumeIsolated {
@@ -153,7 +156,7 @@ struct OnboardingWindow: View {
               openWindow(value: WindowSeed.launch)
             }
           }
-          if let token { NotificationCenter.default.removeObserver(token) }
+          if let token = box.token { NotificationCenter.default.removeObserver(token) }
         }
       }
     )

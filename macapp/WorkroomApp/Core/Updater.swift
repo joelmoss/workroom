@@ -13,9 +13,10 @@ import Sparkle
 /// background checks from forcing a window. The pill is cleared when the update is installed or no
 /// longer offered — but NOT on cancel/Later, so after the user dismisses Sparkle's prompt a
 /// still-available update keeps its affordance.
-// `@preconcurrency`: Sparkle calls both delegates on the main thread but leaves the protocols
-// unannotated, so the main-actor class's conformances would otherwise read as crossing actors.
-final class Updater: NSObject, ObservableObject, @preconcurrency SPUUpdaterDelegate,
+// `@preconcurrency`: Sparkle calls the user-driver delegate on the main thread but leaves the
+// protocol unannotated, so the main-actor class's conformance would otherwise read as crossing
+// actors. (`SPUUpdaterDelegate` needs no such marker.)
+final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate,
   @preconcurrency SPUStandardUserDriverDelegate
 {
   private var controller: SPUStandardUpdaterController!

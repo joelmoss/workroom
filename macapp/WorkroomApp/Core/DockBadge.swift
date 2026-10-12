@@ -10,7 +10,7 @@ import AppKit
 /// `onTotalChange` seam, so the badge tracks the count regardless of window/app state.
 enum DockBadge {
   /// Show `count` on the Dock icon, or restore the plain icon at zero.
-  static func apply(_ count: Int) {
+  @MainActor static func apply(_ count: Int) {
     let tile = NSApp.dockTile
     guard let text = label(for: count) else {
       tile.contentView = nil  // nil ⇒ the system draws the default app icon
@@ -32,7 +32,7 @@ enum DockBadge {
   }
 
   /// The app icon with a red badge (white, bold `text`) drawn in the top-right corner.
-  private static func badgedIcon(_ text: String) -> NSImage {
+  @MainActor private static func badgedIcon(_ text: String) -> NSImage {
     let side: CGFloat = 128
     let image = NSImage(size: NSSize(width: side, height: side))
     image.lockFocus()

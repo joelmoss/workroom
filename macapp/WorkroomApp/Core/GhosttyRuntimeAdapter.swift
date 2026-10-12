@@ -18,9 +18,11 @@ import os
 /// engine read from that stack deadlocks the main thread. `GHOSTTY_ACTION_SELECTION_CHANGED` is the
 /// known case (see its comment below); assume any new action may be one until checked against
 /// ghostty's source, and defer engine reads with `DispatchQueue.main.async` when in doubt.
-// `@unchecked Sendable`: every callback that reaches it fires on the main thread (the Threading
-// note above), so its one mutable flag is only ever touched there.
-final class GhosttyRuntimeAdapter: @unchecked Sendable {
+// `@MainActor`: every callback that reaches it fires on the main thread (the Threading note above).
+// `GhosttyApp`'s C trampolines enter it through `MainActor.assumeIsolated`, which traps if that ever
+// stops being true rather than racing AppKit.
+@MainActor
+final class GhosttyRuntimeAdapter {
   static let shared = GhosttyRuntimeAdapter()
 
   private let logger = Logger(
@@ -31,7 +33,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
 
   // MARK: Action dispatch
 
-  nonisolated func handleAction(
+  func handleAction(
     app: ghostty_app_t?, target: ghostty_target_s, action: ghostty_action_s
   ) -> Bool {
     switch action.tag {
@@ -221,7 +223,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
   /// `clipboard-write`, so it keeps ghostty's `allow` default. Honoured anyway rather than dropped:
   /// it is the engine telling us a write needs the user's consent, and ignoring that would silently
   /// downgrade the policy the moment the config gains the key.
-  nonisolated func writeClipboard(
+  func writeClipboard(
     userdata: UnsafeMutableRawPointer?,
     location: ghostty_clipboard_e,
     content: UnsafePointer<ghostty_clipboard_content_s>?,
@@ -264,7 +266,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
   /// eventually be called with this `state`; `UNAVAILABLE` means there is nothing servable to hand
   /// over; `UNSUPPORTED` means we cannot serve this request at all. The core decides what each
   /// non-started answer does — a paste binding, for instance, falls through to its default.
-  nonisolated func readClipboard(
+  func readClipboard(
     userdata: UnsafeMutableRawPointer?,
     location: ghostty_clipboard_e,
     state: UnsafeMutableRawPointer?,
@@ -348,7 +350,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
   /// out first. `state` is the exception by design: it is the engine's heap-allocated request, which
   /// `completeClipboardRequest` deliberately does NOT free on this route precisely so it survives
   /// until we answer.
-  nonisolated func confirmReadClipboard(
+  func confirmReadClipboard(
     userdata: UnsafeMutableRawPointer?,
     confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
     state: UnsafeMutableRawPointer?,
@@ -386,7 +388,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
   /// One prompt at a time. A hostile program can emit OSC 52 in a loop, and without this a single
   /// escape-sequence flood would stack an unbounded pile of alerts over the terminal; the surplus
   /// requests are denied rather than queued.
-  private nonisolated func confirmClipboard(
+  private func confirmClipboard(
     kind: ClipboardConfirmationKind,
     preview: String,
     requester: String?,
@@ -394,8 +396,6 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
     then resolve: @escaping (Bool) -> Void
   ) {
     let copy = Self.clipboardConfirmation(for: kind, preview: preview, requester: requester)
-    // Resolved on the main thread, where libghostty delivers the request (the Threading note).
-    nonisolated(unsafe) let resolve = resolve
     DispatchQueue.main.async { [weak self] in
       guard let self, !isPresentingClipboardConfirmation else { return resolve(false) }
       isPresentingClipboardConfirmation = true
@@ -437,7 +437,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
 
   // MARK: Close
 
-  nonisolated func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool) {
+  func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool) {
     // Workroom owns its tab lifecycle (plan A5): a surface/shell exiting leaves the tab in place (as
     // SwiftTerm did) until the user closes it, so libghostty's close request is intentionally ignored.
   }
@@ -479,14 +479,14 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
   /// Longest clipboard preview shown in a confirmation alert. A pasteboard can hold megabytes, and
   /// an `NSAlert` grown to that height is unreadable and unclickable — the point of the preview is
   /// to let the user recognise the content, not to display all of it.
-  static let clipboardPreviewLimit = 200
+  nonisolated static let clipboardPreviewLimit = 200
 
   /// Wording for a clipboard confirmation. Pure + side-effect-free so it is testable without a live
   /// terminal (same rationale as `terminalActivity` below).
   ///
   /// `requester` is the program name the protocol supplied, when it supplied one — naming who asked
   /// is most of what makes this prompt answerable, so it leads the message whenever it is present.
-  static func clipboardConfirmation(
+  nonisolated static func clipboardConfirmation(
     for kind: ClipboardConfirmationKind, preview: String, requester: String? = nil
   ) -> (title: String, message: String, allowButton: String, denyButton: String) {
     let shown = truncatedClipboardPreview(preview)
@@ -538,7 +538,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
   /// Clamp a preview to `clipboardPreviewLimit` characters, marking that it was cut. Counts
   /// Characters (grapheme clusters), so a multi-byte or emoji-heavy clipboard can't slip past the
   /// limit or be cut mid-character.
-  static func truncatedClipboardPreview(_ text: String) -> String {
+  nonisolated static func truncatedClipboardPreview(_ text: String) -> String {
     guard text.count > clipboardPreviewLimit else { return text }
     return String(text.prefix(clipboardPreviewLimit)) + "…"
   }
@@ -549,7 +549,7 @@ final class GhosttyRuntimeAdapter: @unchecked Sendable {
   /// Pure + side-effect-free so it's testable without a live terminal (replaces the deleted
   /// `OSCParserTests` coverage). The title is kept verbatim — including empty: the UI shows no
   /// placeholder for a titleless notification (it leads with the body instead). Empty body → nil.
-  static func terminalActivity(title: String, body: String?) -> TerminalActivity {
+  nonisolated static func terminalActivity(title: String, body: String?) -> TerminalActivity {
     let resolvedBody = (body?.isEmpty ?? true) ? nil : body
     return .osc(title: title, body: resolvedBody)
   }

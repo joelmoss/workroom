@@ -10,7 +10,9 @@ import OSLog
 /// The URL is injectable so unit tests point at a temp directory — which also keeps the whole
 /// feature clear of `Defaults`, and therefore clear of the single-writer rule parallel test workers
 /// impose on a shared UserDefaults domain (`SharedPrefDefaultsTests`).
-final class SessionStore {
+// `@unchecked Sendable`: the write queue reads only `let`s (`url`, `fileManager`, `logger`);
+// `writesDisabled`, the one var, is set and read on the caller's side.
+final class SessionStore: @unchecked Sendable {
   /// Where the file lives, **scoped by bundle id**.
   ///
   /// The scoping is mandatory, not tidiness: all three identities (Workroom, Workroom Dev, Workroom

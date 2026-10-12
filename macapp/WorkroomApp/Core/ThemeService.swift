@@ -120,7 +120,7 @@ final class ThemeService {
 
   // MARK: Appearance
 
-  nonisolated static func isCurrentAppearanceDark() -> Bool {
+  static func isCurrentAppearanceDark() -> Bool {
     // Honour a forced ThemePreference; otherwise follow the OS effective appearance.
     switch Defaults[.theme] {
     case .light: return false

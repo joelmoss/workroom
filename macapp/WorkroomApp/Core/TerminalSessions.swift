@@ -242,7 +242,7 @@ extension TabSession {
   /// behind it, orphaned on its port. They are identified by the surface carrying a command
   /// (`isRunCommandSurface`) rather than by `AppStore.runStates`, so a tab whose run bookkeeping has
   /// already moved on still cannot leak into the file.
-  init?(key: String, tab: TerminalTab) {
+  @MainActor init?(key: String, tab: TerminalTab) {
     switch tab.content {
     case .terminal(let state):
       guard state.view.isRunCommandSurface == false else { return nil }

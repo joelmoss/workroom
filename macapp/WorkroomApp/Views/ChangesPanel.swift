@@ -680,7 +680,7 @@ struct ChangedFileRow: View, Equatable {
   /// to the History pane's equivalent: the file match ignores `source` since a file tab has no
   /// revision; the diff match keeps it so the same path from the worktree vs a commit selects the right
   /// row.
-  fileprivate var isSelected: Bool {
+  nonisolated fileprivate var isSelected: Bool {
     selection?.selectsChangedFile(path: file.path, source: source) ?? false
   }
 

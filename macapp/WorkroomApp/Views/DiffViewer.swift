@@ -696,7 +696,8 @@ struct DiffViewer: View {
   /// The unified find source: every line's text + identity, in document order across all hunks.
   /// Excludes chrome that isn't rendered via `styledText` (hunk headers, the renamed-from note, the
   /// truncated footer) — nothing there has a natural `DiffLineID`. Pure — unit-tested.
-  static func findSource(for diff: UnifiedDiff) -> (lines: [String], ids: [DiffLineID]) {
+  nonisolated static func findSource(for diff: UnifiedDiff) -> (lines: [String], ids: [DiffLineID])
+  {
     let flat = diff.hunks.flatMap { $0.lines }
     return (flat.map(\.text), flat.map(DiffLineID.id(for:)))
   }
@@ -707,7 +708,7 @@ struct DiffViewer: View {
   /// right, since `sideBySideRows` pairs a deletion run with the addition run that follows it into
   /// shared rows). A context row's `left`/`right` are the SAME line (see `sideBySideRows`'s doc), so
   /// it contributes exactly one entry, not two. Pure — unit-tested.
-  static func findSourceSideBySide(sbsRows: [[UnifiedDiff.SideBySideRow]])
+  nonisolated static func findSourceSideBySide(sbsRows: [[UnifiedDiff.SideBySideRow]])
     -> (lines: [String], ids: [DiffLineID])
   {
     var lines: [String] = []
@@ -733,7 +734,9 @@ struct DiffViewer: View {
   /// Whether `ids` contains a duplicate — the debug-only guard on the `(kind, oldLine, newLine)`
   /// identity invariant (verified true for every current call path: a single file's diff). Kept as a
   /// plain function rather than an inline `precondition` so it's unit-testable directly.
-  static func hasDuplicateIDs(_ ids: [DiffLineID]) -> Bool { Set(ids).count != ids.count }
+  nonisolated static func hasDuplicateIDs(_ ids: [DiffLineID]) -> Bool {
+    Set(ids).count != ids.count
+  }
 
   /// A side-by-side row's scroll-to identity — its left line's id, or its right's if left is absent.
   /// Non-optional (`.id()` and `ScrollViewProxy.scrollTo` must agree on the SAME concrete `ID` type —

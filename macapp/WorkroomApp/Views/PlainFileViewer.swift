@@ -63,7 +63,7 @@ struct PlainFileViewer: View {
 
   /// Whether the file at `path` is Markdown — the one file kind that offers a rendered preview. Shared
   /// with the tab strip so its Source/Preview switch appears for exactly these tabs.
-  static func isMarkdown(_ path: String) -> Bool {
+  nonisolated static func isMarkdown(_ path: String) -> Bool {
     SyntaxLanguage.grammar(forPath: path) == .markdown
   }
 

@@ -1095,7 +1095,8 @@ private struct PaneClickFocusCatcher: NSViewRepresentable {
   final class ClickFocusCatchView: NSView {
     var onActivate: () -> Void
     var isBlocked: () -> Bool
-    private var monitor: Any?
+    // Main-thread only; `nonisolated(unsafe)` so `deinit` can remove it.
+    nonisolated(unsafe) private var monitor: Any?
 
     init(onActivate: @escaping () -> Void, isBlocked: @escaping () -> Bool) {
       self.onActivate = onActivate
@@ -1127,7 +1128,7 @@ private struct PaneClickFocusCatcher: NSViewRepresentable {
       }
     }
 
-    func teardownMonitor() {
+    nonisolated func teardownMonitor() {
       if let monitor { NSEvent.removeMonitor(monitor) }
       monitor = nil
     }

@@ -18,7 +18,9 @@ enum TerminalFocusReconciliation {
 
   /// The decision, taken against a real `NSWindow` so it is unit-testable without a live libghostty
   /// surface (the same approach `GhosttySurfaceView.holdsFirstResponder`/`canSpawnSurface` use).
-  static func shouldRestoreFirstResponder(in window: NSWindow, to surface: NSView) -> Bool {
+  @MainActor static func shouldRestoreFirstResponder(in window: NSWindow, to surface: NSView)
+    -> Bool
+  {
     // A sheet or an app-modal panel owns the keyboard for as long as it is up.
     guard window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
     // A surface that has been unmounted (or moved to another window) is not a focus target.

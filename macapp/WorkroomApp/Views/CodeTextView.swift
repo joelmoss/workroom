@@ -88,7 +88,7 @@ struct CodeTextView: NSViewRepresentable {
     textScroll.contentView.postsBoundsChangedNotifications = true
     coordinator.scrollObserver = NotificationCenter.default.addObserver(
       forName: NSView.boundsDidChangeNotification, object: textScroll.contentView, queue: .main
-    ) { [weak coordinator] _ in coordinator?.syncGutterScroll() }
+    ) { [weak coordinator] _ in MainActor.assumeIsolated { coordinator?.syncGutterScroll() } }
 
     setText(textView, coordinator: coordinator)
     coordinator.layout(in: container)
@@ -133,7 +133,7 @@ struct CodeTextView: NSViewRepresentable {
   }
 
   /// Holds the live views + bookkeeping across SwiftUI updates.
-  final class Coordinator {
+  @MainActor final class Coordinator {
     weak var textView: NSTextView?
     weak var textScroll: NSScrollView?
     weak var gutterScroll: NSScrollView?
