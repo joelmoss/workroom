@@ -204,7 +204,9 @@ struct HistoryPanel: View {
 
 /// The abbreviated relative-time formatter shared by every History row. One instance, not one per
 /// row: `RelativeDateTimeFormatter` is not cheap to construct, and no row keeps formatter state.
-private let historyRelativeFormatter: RelativeDateTimeFormatter = {
+// `nonisolated(unsafe)`: configured once here and only read after; Foundation's formatters are
+// thread-safe for formatting.
+nonisolated(unsafe) private let historyRelativeFormatter: RelativeDateTimeFormatter = {
   let f = RelativeDateTimeFormatter()
   f.unitsStyle = .abbreviated
   return f
@@ -257,7 +259,7 @@ struct HistoryRow: View, Equatable {
   /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
   /// row to another, only the two rows whose own selected-ness changed compare unequal — the rest of
   /// the realized page stays elided.
-  static func == (lhs: HistoryRow, rhs: HistoryRow) -> Bool {
+  nonisolated static func == (lhs: HistoryRow, rhs: HistoryRow) -> Bool {
     lhs.commit == rhs.commit && lhs.pushScope == rhs.pushScope
       && lhs.isSelected == rhs.isSelected && lhs.themeGeneration == rhs.themeGeneration
   }

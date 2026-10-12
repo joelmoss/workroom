@@ -125,7 +125,7 @@ struct FileTreeRowView: View, Equatable {
 
   /// The closures are excluded (same reasoning as `HistoryRow.open`): `FilesPanel` builds them from
   /// `[store, row.node]`, so two rows differing only in closure identity are behaviourally identical.
-  static func == (lhs: FileTreeRowView, rhs: FileTreeRowView) -> Bool {
+  nonisolated static func == (lhs: FileTreeRowView, rhs: FileTreeRowView) -> Bool {
     lhs.row == rhs.row && lhs.isExpanded == rhs.isExpanded
       && lhs.canOpenInEditor == rhs.canOpenInEditor
   }

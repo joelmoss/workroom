@@ -127,25 +127,25 @@ private final class StderrCollector: @unchecked Sendable {
 /// The subset of `WorkroomCLI` that `AppStore` drives, expressed as a protocol so
 /// tests can inject a fake (issue #103). `WorkroomCLI` is the production conformer;
 /// `bundledBinaryURL` and the process plumbing stay concrete (not used by AppStore).
-protocol WorkroomCLIProtocol {
+protocol WorkroomCLIProtocol: Sendable {
   func list(warnings: String, project: String?) async throws -> ListResponse
   func addProject(_ path: String, create: Bool) async throws -> String
   func create(
     project: String,
-    onLog: ((String) -> Void)?,
-    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?
+    onLog: (@Sendable (String) -> Void)?,
+    onReady: (@Sendable (_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?
   ) async throws -> CreateResponse
   /// `create`, also handing `onWarning` the create's fetch warning as soon as the workroom exists,
   /// so a setup script that then fails doesn't lose it.
   func create(
     project: String,
-    onLog: ((String) -> Void)?,
-    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
-    onWarning: ((String) -> Void)?
+    onLog: (@Sendable (String) -> Void)?,
+    onReady: (@Sendable (_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
+    onWarning: (@Sendable (String) -> Void)?
   ) async throws -> CreateResponse
-  func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws
+  func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws
   func deleteProject(
-    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: (@Sendable (String) -> Void)?
   ) async throws -> [URL]
   func setHost(project: String, workroom: String?, descriptor: Data?) async throws
   /// Sets the branch a project's new workrooms start from; nil clears it.
@@ -160,9 +160,9 @@ extension WorkroomCLIProtocol {
   /// Fakes that report no warning need not implement it.
   func create(
     project: String,
-    onLog: ((String) -> Void)?,
-    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
-    onWarning: ((String) -> Void)?
+    onLog: (@Sendable (String) -> Void)?,
+    onReady: (@Sendable (_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
+    onWarning: (@Sendable (String) -> Void)?
   ) async throws -> CreateResponse {
     try await create(project: project, onLog: onLog, onReady: onReady)
   }
@@ -284,17 +284,17 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   @discardableResult
   func create(
     project: String,
-    onLog: ((String) -> Void)? = nil,
-    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)? = nil
+    onLog: (@Sendable (String) -> Void)? = nil,
+    onReady: (@Sendable (_ name: String, _ path: String, _ hasSetup: Bool) -> Void)? = nil
   ) async throws -> CreateResponse {
     try await create(project: project, onLog: onLog, onReady: onReady, onWarning: nil)
   }
 
   func create(
     project: String,
-    onLog: ((String) -> Void)?,
-    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
-    onWarning: ((String) -> Void)?
+    onLog: (@Sendable (String) -> Void)?,
+    onReady: (@Sendable (_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
+    onWarning: (@Sendable (String) -> Void)?
   ) async throws -> CreateResponse {
     // Setup scripts run inside this call, so resolve the user's environment first — freshly, in
     // case a tool was installed or a dotfile edited since launch. Usually already warm: the New
@@ -316,7 +316,9 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     return try decode(CreateResponse.self, from: result)
   }
 
-  func delete(name: String, project: String, onLog: ((String) -> Void)? = nil) async throws {
+  func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)? = nil)
+    async throws
+  {
     await ShellEnvironment.refresh()  // a teardown script may run inside this call
     let result = try await run(
       ["delete", name, "--json", "--project", project, "--confirm", name], timeout: 600,
@@ -347,7 +349,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
   @discardableResult
   func deleteProject(
-    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)? = nil
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: (@Sendable (String) -> Void)? = nil
   ) async throws -> [URL] {
     var args = ["delete-project", path, "--json", "--confirm", path]
     if withWorkrooms { args.append("--with-workrooms") }
@@ -474,7 +476,9 @@ final class WorkroomCLI: WorkroomCLIProtocol {
         collector.consume(data)
       }
 
-      let timeoutItem = DispatchWorkItem {
+      // `nonisolated(unsafe)`: `DispatchWorkItem` isn't marked Sendable, but `cancel()` from the
+      // termination handler is thread-safe by design.
+      nonisolated(unsafe) let timeoutItem = DispatchWorkItem {
         guard !state.isFinished, proc.isRunning else { return }
         state.markTimedOut()
         proc.terminate()

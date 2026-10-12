@@ -275,7 +275,7 @@ struct PaneTreeView: View {
 /// last non-empty value: sibling subtrees contribute nothing, so an empty map must not clobber a
 /// real measurement (same shape as `ContentFrameKey`'s non-zero rule).
 private struct PaneRectsKey: PreferenceKey {
-  static var defaultValue: [TerminalTab.ID: CGRect] = [:]
+  static let defaultValue: [TerminalTab.ID: CGRect] = [:]
   static func reduce(
     value: inout [TerminalTab.ID: CGRect], nextValue: () -> [TerminalTab.ID: CGRect]
   ) {
@@ -288,7 +288,7 @@ private struct PaneRectsKey: PreferenceKey {
 /// non-empty value for the same reason `PaneRectsKey` does — an empty sibling contribution must not
 /// erase a real measurement.
 private struct PaneSpaceKey: PreferenceKey {
-  static var defaultValue: CGRect = .zero
+  static let defaultValue: CGRect = .zero
   static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
     let next = nextValue()
     if next != .zero { value = next }

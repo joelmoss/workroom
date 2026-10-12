@@ -53,6 +53,8 @@ final class WindowRegistry: ObservableObject {
     NotificationCenter.default.addObserver(
       forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
     ) { [weak self] note in
+      // Delivered on the main queue (`queue: .main`), so the note never actually crosses threads.
+      nonisolated(unsafe) let note = note
       MainActor.assumeIsolated {
         guard let self, let window = note.object as? NSWindow,
           let store = self.store(for: window)
@@ -79,6 +81,8 @@ final class WindowRegistry: ObservableObject {
     NotificationCenter.default.addObserver(
       forName: NSWindow.willCloseNotification, object: nil, queue: .main
     ) { [weak self] note in
+      // Delivered on the main queue (`queue: .main`), so the note never actually crosses threads.
+      nonisolated(unsafe) let note = note
       MainActor.assumeIsolated {
         guard let self, let window = note.object as? NSWindow, self.store(for: window) != nil
         else { return }

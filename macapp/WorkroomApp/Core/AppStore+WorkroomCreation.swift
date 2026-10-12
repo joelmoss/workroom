@@ -630,9 +630,7 @@ final class CreationLandingBox: @unchecked Sendable {
   /// Await the registered landing. A no-op when the CLI never fired its "created" event (an older CLI,
   /// or a failure before the workroom existed) — `createWorkroom`'s own fallback covers that case.
   func finish() async {
-    lock.lock()
-    let pending = task
-    lock.unlock()
+    let pending = lock.withLock { task }
     await pending?.value
   }
 }

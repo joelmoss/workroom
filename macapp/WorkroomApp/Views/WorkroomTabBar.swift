@@ -733,7 +733,7 @@ private struct ProvisionalWorkroomChip: View {
 
 /// Collects each Workrooms tab chip's natural width for the drag gap math (issue #23).
 private struct WorkroomTabWidthKey: PreferenceKey {
-  static var defaultValue: [SidebarID: CGFloat] = [:]
+  static let defaultValue: [SidebarID: CGFloat] = [:]
   static func reduce(value: inout [SidebarID: CGFloat], nextValue: () -> [SidebarID: CGFloat]) {
     value.merge(nextValue()) { _, new in new }
   }

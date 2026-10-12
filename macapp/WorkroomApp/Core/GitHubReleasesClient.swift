@@ -26,7 +26,7 @@ struct GitHubRelease: Decodable, Equatable {
 /// Seam (mirrors the app's `CommandRunning` pattern) so `WhatsNewService`'s filtering / offline-retry
 /// logic is unit-testable with a fake instead of live network. The real implementation is
 /// `GitHubReleasesClient`.
-protocol ReleasesFetching {
+protocol ReleasesFetching: Sendable {
   func releases() async throws -> [GitHubRelease]
 }
 

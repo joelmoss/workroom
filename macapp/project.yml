@@ -238,7 +238,7 @@ targets:
         # mode) opening the mic is attributed to us, and without the entitlement the hardened
         # runtime refuses before TCC is even asked — no prompt, no error, voice simply fails.
         CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlements
-        SWIFT_VERSION: "5.0"
+        SWIFT_VERSION: "6.0"
         DEAD_CODE_STRIPPING: YES
         DEVELOPMENT_TEAM: B898J443L9
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

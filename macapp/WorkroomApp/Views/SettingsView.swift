@@ -112,8 +112,10 @@ private struct SettingsWindowThemer: NSViewRepresentable {
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
-  final class Coordinator {
-    private var observers: [NSObjectProtocol] = []
+  @MainActor final class Coordinator {
+    // `nonisolated(unsafe)`: appended on the main actor, and read again only in `deinit`, which runs
+    // once nothing else holds the coordinator.
+    nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
     private weak var probe: NSView?
 
     func attach(to probe: NSView) {
@@ -136,6 +138,8 @@ private struct SettingsWindowThemer: NSViewRepresentable {
       ] {
         observers.append(
           center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+            // Delivered on the main queue (`queue: .main`), so the note never crosses threads.
+            nonisolated(unsafe) let note = note
             MainActor.assumeIsolated {
               guard let window = self?.probe?.window,
                 (note.object as? NSWindow) === window

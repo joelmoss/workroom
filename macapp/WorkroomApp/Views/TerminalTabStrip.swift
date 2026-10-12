@@ -662,7 +662,7 @@ private struct TerminalTabChip: View {
 
 /// Collects each tab chip's natural width for the drag gap math.
 private struct TabWidthKey: PreferenceKey {
-  static var defaultValue: [TerminalTab.ID: CGFloat] = [:]
+  static let defaultValue: [TerminalTab.ID: CGFloat] = [:]
   static func reduce(
     value: inout [TerminalTab.ID: CGFloat], nextValue: () -> [TerminalTab.ID: CGFloat]
   ) {

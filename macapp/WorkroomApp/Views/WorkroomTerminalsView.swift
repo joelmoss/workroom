@@ -187,7 +187,7 @@ struct WorkroomTerminalsView: View {
 /// The pane area's global frame — lets the strip localise a chip drag and tell "over the strip"
 /// (reorder) from "over a pane" (drop-to-split).
 private struct ContentFrameKey: PreferenceKey {
-  static var defaultValue: CGRect = .zero
+  static let defaultValue: CGRect = .zero
   static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
     let next = nextValue()
     if next != .zero { value = next }

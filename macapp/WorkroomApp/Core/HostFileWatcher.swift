@@ -48,7 +48,9 @@ final class HostFileWatcher {
   func stop() { core.stop() }
 }
 
-private final class WatchCore {
+// `@unchecked Sendable`: every mutable field is read and written under `lock`, and the loop's task
+// and the owners' calls reach it from different threads by design.
+private final class WatchCore: @unchecked Sendable {
   private let router: RepositoryRouter
   private let onChange: @MainActor ([String], Bool) -> Void
 

@@ -228,8 +228,8 @@ final class DetachedPaneWindows {
   /// sizes share a baseline and the whole thing is one item the toolbar can centre.
   @MainActor
   final class ToolbarDelegate: NSObject, NSToolbarDelegate {
-    private static let labelItem = NSToolbarItem.Identifier("detachedPane.label")
-    private static let dockItem = NSToolbarItem.Identifier("detachedPane.dock")
+    nonisolated private static let labelItem = NSToolbarItem.Identifier("detachedPane.label")
+    nonisolated private static let dockItem = NSToolbarItem.Identifier("detachedPane.dock")
 
     private let label = NSTextField(labelWithString: "")
     private let onDock: () -> Void

@@ -514,10 +514,12 @@ final class CodingAgentUsageMonitor: ObservableObject {
   /// Cancels the in-flight read. Not `Task.isCancelled`: the read runs in `runBlocking`'s GCD
   /// closure, outside any task, where that flag is always `false`.
   private var activeRead: ReadCancellation?
-  private var debounce: DispatchWorkItem?
+  // `nonisolated(unsafe)`, like `watchRetry`: set on the main actor, and read again only in
+  // `deinit`, which runs once nothing else holds the monitor.
+  nonisolated(unsafe) private var debounce: DispatchWorkItem?
   private static let initialWatchRetryDelay: TimeInterval = 1
   private static let maximumWatchRetryDelay: TimeInterval = 60
-  private var watchRetry: DispatchWorkItem?
+  nonisolated(unsafe) private var watchRetry: DispatchWorkItem?
   private var watchRetryDelay: TimeInterval = initialWatchRetryDelay
 
   init(
