@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// Which host holds the files, and — when the repository is registered — where its shared

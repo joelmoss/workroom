@@ -30,6 +30,8 @@ packages:
     path: Packages/WorkroomDomain
   WorkroomVCS:
     path: Packages/WorkroomVCS
+  WorkroomSystem:
+    path: Packages/WorkroomSystem
   DesignSystem:
     path: Packages/DesignSystem
   WorkroomWire:
@@ -158,6 +160,7 @@ targets:
       - package: SyntaxHighlighting
       - package: WorkroomDomain
       - package: WorkroomVCS
+      - package: WorkroomSystem
       - package: WorkroomWire
       - target: workroom-session
         embed: false
@@ -373,6 +376,7 @@ targets:
       - package: SyntaxHighlighting
       - package: WorkroomDomain
       - package: WorkroomVCS
+      - package: WorkroomSystem
       - package: WorkroomWire
     settings:
       base:

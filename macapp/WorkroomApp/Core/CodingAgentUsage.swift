@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import WorkroomSystem
 
 enum CodingAgentQuotaWindowKind: Equatable, Sendable {
   case fiveHour

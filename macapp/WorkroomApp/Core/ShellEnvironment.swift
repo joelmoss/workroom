@@ -1,5 +1,6 @@
 import Foundation
 import Sentry
+import WorkroomSystem
 import os
 
 /// The environment the app hands to the processes it spawns.

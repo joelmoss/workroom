@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// One provider. Three methods, and the only one that is not provisioning is `openStream`

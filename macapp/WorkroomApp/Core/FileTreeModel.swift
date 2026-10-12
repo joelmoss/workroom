@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// The live data source behind the inspector's **Files** section: lists the selected target's

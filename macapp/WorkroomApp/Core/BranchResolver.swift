@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 import WorkroomVCS
 
 /// Resolves a project root's current branch for the sidebar root-row label — the current branch, or

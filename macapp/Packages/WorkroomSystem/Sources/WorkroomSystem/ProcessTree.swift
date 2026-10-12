@@ -8,10 +8,10 @@ import Foundation
 /// Child lookup is via `pgrep -P` rather than libproc: `proc_listchildpids`'s return value is
 /// ambiguous (bytes vs count across sources) and mis-reading it could target the wrong pid for a
 /// SIGKILL — a far worse failure than missing a child. `pgrep` returns only real children.
-enum ProcessTree {
+public enum ProcessTree {
   /// Breadth-first collection of every descendant pid under `pid`. Pure over an injected child
   /// lookup so the traversal (dedup + cycle-safety) is unit-tested without real processes.
-  static func descendants(of pid: pid_t, children: (pid_t) -> [pid_t]) -> [pid_t] {
+  public static func descendants(of pid: pid_t, children: (pid_t) -> [pid_t]) -> [pid_t] {
     var collected: [pid_t] = []
     var seen: Set<pid_t> = [pid]
     var queue = children(pid)
@@ -27,7 +27,7 @@ enum ProcessTree {
 
   /// Direct children of `pid` via `/usr/bin/pgrep -P`. Empty for a childless process (the no-tools
   /// `claude -p` inline call, and most `git`/`gh` probes) and on any error.
-  static func childPids(of pid: pid_t) -> [pid_t] {
+  public static func childPids(of pid: pid_t) -> [pid_t] {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
     proc.arguments = ["-P", String(pid)]
@@ -45,7 +45,7 @@ enum ProcessTree {
 
   /// SIGKILL the process and all its descendants, deepest first so a parent can't observe a child's
   /// death and respawn before it is itself killed.
-  static func killTree(_ pid: pid_t) {
+  public static func killTree(_ pid: pid_t) {
     guard pid > 1 else { return }
     for child in descendants(of: pid, children: childPids).reversed() {
       kill(child, SIGKILL)

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Thrown by `withTimeout` when the operation outruns its deadline.
-struct VCSTimeoutError: Error {}
+public struct VCSTimeoutError: Error { public init() {} }
 
 /// Run `operation`, throwing `VCSTimeoutError` if it doesn't finish within `seconds`. On timeout the
 /// operation task is cancelled and its eventual result dropped.
@@ -25,7 +25,7 @@ struct VCSTimeoutError: Error {}
 /// wait's own time and, downstream of `RepositoryWriteGate`, occupying that project's queue slot for
 /// nothing. `onCancel` only unblocks the WAIT early, with `VCSCancellationError`; the underlying
 /// synchronous native call is exactly as uncancellable as the timeout path already documents above.
-func withTimeout<T: Sendable>(
+public func withTimeout<T: Sendable>(
   seconds: TimeInterval, _ operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
   let cancelBox = TimeoutCancelBox()
@@ -56,7 +56,7 @@ func withTimeout<T: Sendable>(
 /// Swift's own `CancellationError` (so a `catch is CancellationError` elsewhere in this seam's
 /// callers can't accidentally swallow it; every caller of `withTimeout` already has explicit
 /// `catch is VCSTimeoutError` handling to extend).
-struct VCSCancellationError: Error {}
+public struct VCSCancellationError: Error { public init() {} }
 
 /// Bridges `withTaskCancellationHandler`'s `onCancel` — which Swift may invoke BEFORE `operation`
 /// even starts (a task already cancelled at the call site), concurrently with it, or not at all — to
@@ -114,7 +114,7 @@ private final class TimeoutGate<T: Sendable>: @unchecked Sendable {
 ///
 /// Like `withTimeout`'s detached read, the call can't be cancelled mid-flight; a cancelled caller
 /// just abandons the result once the closure returns.
-func runBlocking<T: Sendable>(
+public func runBlocking<T: Sendable>(
   qos: DispatchQoS.QoSClass = .userInitiated, _ work: @escaping @Sendable () throws -> T
 ) async throws -> T {
   try await withCheckedThrowingContinuation { continuation in

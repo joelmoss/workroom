@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 
 /// Serializes repository WRITES per project (VCS-foundation eng-review). git worktrees of one
 /// project share the backing `.git`, so two writes running at once — a commit in one workroom, a
