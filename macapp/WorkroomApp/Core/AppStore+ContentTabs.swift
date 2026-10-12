@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Opening diff, file and changeset content tabs, and opening a workroom's files in the external
 /// editor. Moved out of `AppStore.swift` as is; the openers hold no state of their own. They lean on

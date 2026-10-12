@@ -1,6 +1,7 @@
 import Defaults
 import SwiftUI
 import SyntaxHighlighting
+import WorkroomVCS
 
 /// Stable identity for a `UnifiedDiff.Line` within ONE loaded diff (`DiffResolver` always resolves a
 /// single file's diff, so `UnifiedDiff.parse`'s own multi-file generality never actually applies here)

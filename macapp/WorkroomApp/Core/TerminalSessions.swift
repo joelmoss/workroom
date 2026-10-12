@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import WorkroomDomain
+import WorkroomVCS
 import WorkroomWire
 
 /// The terminal split's concrete instantiation (issue #3): leaves are tab ids. Keeps terminal call

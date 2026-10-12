@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 
 /// The VCS write actions the status inspector offers: PR actions and merges through `gh`, and
 /// commits with their preflight. Moved out of `AppStore+WorkroomStatus.swift` as is, so that file

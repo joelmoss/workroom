@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomVCS
 
 /// Maps a status semantic to a concrete color. Color is *additive* — the SF Symbol shape
 /// already carries the meaning (so color-blind users and the issue-#43 window-blur dimming

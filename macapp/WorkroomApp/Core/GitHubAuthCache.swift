@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Owns the `gh auth status` verdict: one probe at a time, one freshness clock, for every window.
 ///
