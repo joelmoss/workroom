@@ -199,8 +199,6 @@ private struct GeneralSettingsPane: View {
         .help("Show the Workroom notifications item in the menu bar.")
 
       NewWorkroomsSection()
-
-      RemoteWorkroomsSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
@@ -256,42 +254,6 @@ private struct NewWorkroomsSection: View {
         failure = nil
       } catch {
         failure = error.localizedDescription
-      }
-    }
-  }
-}
-
-/// Signing this Mac in to Codaset, which gives remote workrooms their GitHub access (#251).
-private struct RemoteWorkroomsSection: View {
-  @ObservedObject private var broker = BrokerSession.shared
-
-  var body: some View {
-    Section("Remote workrooms") {
-      VStack(alignment: .leading, spacing: 4) {
-        LabeledContent("GitHub access") {
-          HStack(spacing: 8) {
-            switch broker.state {
-            case .signedOut:
-              Button("Sign in to Codaset…") { broker.startSignIn() }
-            case .signingIn:
-              ProgressView().controlSize(.small)
-              Text("Waiting for the browser…").foregroundStyle(.secondary)
-              Button("Cancel") { broker.cancelSignIn() }
-            case .signedIn(let account):
-              Text("@\(account.login)").foregroundStyle(.secondary)
-              Button("Sign out") { broker.signOut() }
-            }
-          }
-        }
-        if let error = broker.error {
-          Text(error).font(.caption).foregroundStyle(.red)
-        }
-        HStack(spacing: 4) {
-          Text("Remote workrooms push to GitHub through Codaset, even with this Mac closed.")
-          Link("Manage", destination: broker.accountPageURL)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
       }
     }
   }

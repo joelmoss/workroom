@@ -209,10 +209,9 @@ final class WorkroomCLI: WorkroomCLIProtocol {
         timeout: 5))
   }
 
-  /// The config a Dev build keeps for itself, beside its sessions and its Codaset sign-in, so a
-  /// workroom it creates never shows in Release or Nightly, nor theirs in it. Nil for those two,
-  /// which share the CLI's own (`sharedConfigPath`). Every Dev build has its own, a workroom's
-  /// included.
+  /// The config a Dev build keeps for itself, beside its sessions, so a workroom it creates never
+  /// shows in Release or Nightly, nor theirs in it. Nil for those two, which share the CLI's own
+  /// (`sharedConfigPath`). Every Dev build has its own, a workroom's included.
   static func configPath(bundleID: String? = Bundle.main.bundleIdentifier) -> String? {
     let dev = "com.developwithstyle.workroom.dev"
     guard let bundleID, bundleID == dev || bundleID.hasPrefix(dev + ".") else { return nil }

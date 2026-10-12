@@ -602,33 +602,21 @@ final class AppStore: ObservableObject {
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   var isLoadingInspectorState = false
 
-  /// Setting it drops `errorDetails` and `errorLink`, which belong to whatever error set them: a
-  /// later message from a direct setter must not show an earlier error's codes or its Install
-  /// button. `present(_:)` and its callers set them after it.
+  /// Setting it drops `errorDetails`, which belongs to whatever error set it: a later message from
+  /// a direct setter must not show an earlier error's codes. `present(_:)` sets it after.
   var errorMessage: String? {
-    didSet {
-      errorDetails = nil
-      errorLink = nil
-    }
+    didSet { errorDetails = nil }
   }
   /// Title for the error alert. Nil falls back to the generic title; specific
   /// failures (e.g. teardown) set their own.
   var errorTitle: String?
-  /// A link the error alert offers beside OK, cleared with it: where to fix the failure, such as
-  /// the Workroom GitHub App's install page for a remote workroom's repository (#253).
-  var errorLink: ErrorLink?
   /// The error's codes and raw text, under the error sheet's collapsed Details. Set only by
   /// `present(_:)`, cleared with the message.
   var errorDetails: String?
 
-  struct ErrorLink: Equatable {
-    let title: String
-    let url: URL
-  }
-
   /// Dismisses the error sheet.
   func clearError() {
-    errorMessage = nil  // and with it the details and the link
+    errorMessage = nil  // and with it the details
     errorTitle = nil
   }
 
@@ -2550,7 +2538,7 @@ final class AppStore: ObservableObject {
       return
     }
     // Every scope takes the project's remote workrooms and its base down (#253), even config-only:
-    // with its record dropped, a box would be left to the next launch's sweep and its grant live.
+    // with its record dropped, a box would be left to the next launch's sweep.
     // What that needs is checked here, before the local cleanup below kills this project's shells
     // and forgets its labels.
     let remoteWorkrooms = project.workrooms.filter(\.isRemote)
@@ -3455,21 +3443,11 @@ final class AppStore: ObservableObject {
     errorDetails = Self.errorDetails(error)
   }
 
-  /// The technical half of `error`, which the message leaves out: a refusal's HTTP status, code,
-  /// request and the broker's own words; for anything else its type and case, and its domain and
-  /// code.
+  /// The technical half of `error`, which the message leaves out: its type and case, and its
+  /// domain and code.
   nonisolated static func errorDetails(_ error: Error) -> String {
-    switch error {
-    case BrokerError.refused(let refusal), BrokerError.agentRefused(let refusal):
-      return [
-        refusal.status > 0 ? "HTTP \(refusal.status) · \(refusal.code)" : refusal.code,
-        refusal.request,
-        refusal.message == refusal.code ? nil : refusal.message,
-      ].compactMap { $0 }.joined(separator: "\n")
-    default:
-      let ns = error as NSError
-      return "\(String(reflecting: error))\n\(ns.domain) \(ns.code)"
-    }
+    let ns = error as NSError
+    return "\(String(reflecting: error))\n\(ns.domain) \(ns.code)"
   }
 }
 

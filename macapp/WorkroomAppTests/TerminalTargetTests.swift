@@ -113,14 +113,18 @@ final class TerminalTargetTests: XCTestCase {
   func testHostDescriptorRoundTripsTheAppsSchema() throws {
     let id = UUID()
     let descriptor = HostDescriptor(
-      driver: "container", id: id, grantID: "g1", repository: "o/r",
+      driver: "container", id: id, repository: "o/r",
       cloneURL: "https://github.com/o/r.git", path: "/home/workroom/r",
       container: ContainerHostRecord(
         address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA",
         image: nil))
     let json = try JSONEncoder().encode(descriptor)
     let object = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
-    XCTAssertEqual(object["grant_id"] as? String, "g1")
+    XCTAssertEqual(object["repository"] as? String, "o/r")
+    // A record a broker-era build wrote still names its host.
+    let older = try JSONDecoder().decode(
+      HostDescriptor.self, from: Data(#"{"id":"\#(id.uuidString)","grant_id":"g1"}"#.utf8))
+    XCTAssertEqual(older.id, id)
     XCTAssertEqual(
       (object["container"] as? [String: Any])?["host_key"] as? String, "ssh-ed25519 AAAA")
     XCTAssertNil(object["state"], "an unset field is written as absent, not null")

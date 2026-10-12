@@ -1,61 +1,24 @@
 #!/usr/bin/env python3
-"""The fixture's GitHub and credential broker (#252), so a derived workroom can be shown to fetch
-and push on its own, with no Mac attached.
+"""The fixture's GitHub (#252), so a workroom can be shown to fetch and push on its own, with no
+Mac attached.
 
-Two listeners in one process, both on the container's own loopback:
-
-- The broker, on http://127.0.0.1:8081: an enrolment is accepted, and each token request mints a
-  token. A fixed port, because every container derived from a base keeps the broker URL its agent
-  enrolled with.
-- GitHub, on https://github.com (entrypoint.sh maps the name to 127.0.0.1, and the image trusts
-  this certificate for github.com only): git's smart HTTP through git-http-backend, over the
-  repositories under /srv. A request without a token it accepts is answered 401 with a Basic
-  challenge, which is what makes git ask its credential helper. It accepts a token this broker
-  minted, or the base clone token baked into the image, and nothing else.
+GitHub, on https://github.com (entrypoint.sh maps the name to 127.0.0.1, and the image trusts this
+certificate for github.com only): git's smart HTTP through git-http-backend, over the repositories
+under /srv. A request without the token it accepts is answered 401 with a Basic challenge, which is
+what makes git ask its credential helper (git-credential-fixture, standing in for a provider's). It
+accepts the clone token baked into the image, and nothing else.
 
 Fixture only. It binds 443 as the ssh user with CAP_NET_BIND_SERVICE (entrypoint.sh).
 """
 
 import base64
-import datetime
 import http.server
-import json
-import secrets
 import ssl
 import subprocess
-import threading
 
 CONFIG = "/etc/workroom-fixture"
 with open(f"{CONFIG}/clone-token", encoding="utf-8") as handle:
     CLONE_TOKEN = handle.read().strip()
-MINTED = set()
-LOCK = threading.Lock()
-
-
-class Broker(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        if self.path == "/broker/enrolments":
-            self.reply(201, {"grant_id": "g1"})
-        elif self.path == "/broker/tokens":
-            token = "ghs_minted_" + secrets.token_hex(16)
-            with LOCK:
-                MINTED.add(token)
-            expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
-            self.reply(200, {"token": token, "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ")})
-        else:
-            self.reply(404, {"error": "not_found"})
-
-    def reply(self, status, body):
-        data = json.dumps(body).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, *args):
-        pass
 
 
 class GitHub(http.server.BaseHTTPRequestHandler):
@@ -67,8 +30,7 @@ class GitHub(http.server.BaseHTTPRequestHandler):
             user, _, token = base64.b64decode(credentials).decode().partition(":")
         except ValueError:
             return False
-        with LOCK:
-            return user == "x-access-token" and (token in MINTED or token == CLONE_TOKEN)
+        return user == "x-access-token" and token == CLONE_TOKEN
 
     def body(self):
         if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
@@ -132,12 +94,10 @@ class GitHub(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    broker = http.server.ThreadingHTTPServer(("127.0.0.1", 8081), Broker)
     github = http.server.ThreadingHTTPServer(("127.0.0.1", 443), GitHub)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(f"{CONFIG}/github.pem", f"{CONFIG}/github.key")
     github.socket = context.wrap_socket(github.socket, server_side=True)
-    threading.Thread(target=broker.serve_forever, daemon=True).start()
     github.serve_forever()
 
 

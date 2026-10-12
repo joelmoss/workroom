@@ -16,18 +16,18 @@
 #   machine boots with the same ssh host keys and `/etc/machine-id` (measured, 2026-10-10).
 #   boxd gives every machine its own hostname, so the marker holds the
 #   hostname the identity was minted for, and a machine whose hostname differs from it mints its
-#   own. A stop and start keeps the hostname, so it keeps the identity, and with it the agent's
-#   enrolment. The marker is written last: a boot that dies halfway mints again on the next one.
-#   Renaming the machine (`boxd machine rename`) would mint a new identity and drop its enrolment.
+#   own. A stop and start keeps the hostname, so it keeps the identity. The marker is written last:
+#   a boot that dies halfway mints again on the next one. Renaming the machine (`boxd machine
+#   rename`) would mint a new identity.
 # - workroom-agent: the agent's supervisor. It starts the agent the app installs beside its socket
 #   (`AgentBootstrap`), at boot and again whenever it exits, and waits for one to be installed
 #   when there is none yet, as the ssh fixture's loop does. `--idle-timeout never`, because a remote
 #   agent must keep running with no client attached; `--screens` on the home disk, which outlives
 #   a reboot (#232).
 #
-# Everything the agent keeps (its binary, socket, broker enrolment and token, and the screens) is
-# on the home disk, not under the tmpfs `/run`: a boxd machine that is stopped and started keeps its
-# enrolment, and its panes come back with their last screens.
+# Everything the agent keeps (its binary, socket and the screens) is on the home disk, not under the
+# tmpfs `/run`: a boxd machine that is stopped and started keeps its agent, and its panes come back
+# with their last screens.
 #
 # Safe to run again: it rewrites the units and restarts nothing that is running.
 set -eu
@@ -66,8 +66,6 @@ ssh-keygen -A
 rm -f /etc/machine-id /var/lib/dbus/machine-id
 systemd-machine-id-setup
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
-# With the agent's interrupted saves (.broker.json.<pid>), which can hold a key.
-rm -f "$agent_dir/broker.json" "$agent_dir/broker-token.json" "$agent_dir"/.broker*
 rm -rf "$screens"
 install -d -o "$user" -g "$user" -m 700 "$screens"
 hostname > "\$marker"

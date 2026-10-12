@@ -86,7 +86,6 @@ final class CLIContractTests: XCTestCase {
         context: "colima"))
     XCTAssertEqual(remote.id, UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF"))
     XCTAssertEqual(remote.workroomID, UUID(uuidString: "1B4E28BA-2FA1-11D2-883F-0016D3CCA427"))
-    XCTAssertEqual(remote.grantID, "grant-1")
     XCTAssertEqual(remote.repository, "acme/app")
     XCTAssertEqual(remote.cloneURL, "https://github.com/acme/app.git")
 

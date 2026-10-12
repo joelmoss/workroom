@@ -30,7 +30,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   private let mine = RemoteWorkrooms.provisioner
 
   /// Nothing live, nothing to take down: a destroyed host, or a create that crashed before its
-  /// driver made a box, is only dropped, and needs no broker or Docker.
+  /// driver made a box, is only dropped, and needs no provider or Docker.
   func testAWorkroomWithNothingLiveIsOnlyForgotten() async throws {
     let calls = Calls()
     try await RemoteWorkrooms.delete(
@@ -48,7 +48,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     let calls = Calls()
     do {
       try await RemoteWorkrooms.delete(
-        "theirs", host: HostDescriptor(provisioner: "another.build", id: UUID(), grantID: "g"),
+        "theirs", host: HostDescriptor(provisioner: "another.build", id: UUID()),
         environment: nil, recorder: calls.recorder)
       XCTFail("another build's workroom was deleted")
     } catch RemoteWorkrooms.Failure.anotherBuildsHost(let build) {
@@ -62,13 +62,13 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(calls.all, ["forget theirs"])
   }
 
-  /// A live host without the environment to take it down (signed out) is refused, not forgotten:
-  /// its record is the only one of the box and the grant.
+  /// A live host without the environment to take it down is refused, not forgotten: its record is
+  /// the only one of the box.
   func testALiveWorkroomIsNeverForgottenWithoutBeingTakenDown() async throws {
     let calls = Calls()
     do {
       try await RemoteWorkrooms.delete(
-        "live", host: HostDescriptor(provisioner: mine, id: UUID(), grantID: "g"),
+        "live", host: HostDescriptor(provisioner: mine, id: UUID()),
         environment: nil, recorder: calls.recorder)
       XCTFail("a live workroom was forgotten")
     } catch RemoteWorkrooms.Failure.signedOut {}
@@ -81,7 +81,10 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertFalse(try RemoteWorkrooms.checkDeletable([]))
     XCTAssertFalse(try RemoteWorkrooms.checkDeletable([HostDescriptor(state: "destroyed")]))
     XCTAssertTrue(
-      try RemoteWorkrooms.checkDeletable([HostDescriptor(provisioner: mine, grantID: "g")]))
+      try RemoteWorkrooms.checkDeletable([HostDescriptor(provisioner: mine, id: UUID())]))
+    XCTAssertFalse(
+      try RemoteWorkrooms.checkDeletable([HostDescriptor(provisioner: mine, workroomID: UUID())]),
+      "a create that crashed before its box is live")
     XCTAssertThrowsError(
       try RemoteWorkrooms.checkDeletable([
         HostDescriptor(provisioner: mine, id: UUID()),
@@ -337,27 +340,25 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   func testAFailedTeardownSaysWhatIsStillUp() {
     func message(_ cleanup: String) -> String? {
       RemoteProvisioning.Failure.rollbackIncomplete(
-        cause: "", host: nil, grantID: "g", cleanup: [cleanup]
-      ).errorDescription
+        cause: "", host: .remote(UUID()), cleanup: [cleanup]
+      )
+      .errorDescription
     }
     XCTAssertEqual(
-      message("cancelling grant g: down"), "Taking it down didn't finish: cancelling grant g: down."
-    )
+      message("destroying the instance: down"),
+      "Taking it down didn't finish: destroying the instance: down.")
     XCTAssertEqual(
-      message("cancelling grant g: Try again in a minute."),
-      "Taking it down didn't finish: cancelling grant g: Try again in a minute.")
+      message("destroying the instance: Try again in a minute."),
+      "Taking it down didn't finish: destroying the instance: Try again in a minute.")
   }
 
-  /// A later message replaces an earlier error's link as well as its details: the Install button
-  /// belongs to the error that offered it.
+  /// A later message replaces an earlier error's details: its codes belong to the error that
+  /// set them.
   @MainActor
-  func testANewErrorMessageDropsTheEarlierErrorsLink() throws {
+  func testANewErrorMessageDropsTheEarlierErrorsDetails() {
     let store = AppStore()
-    store.errorLink = AppStore.ErrorLink(
-      title: "Install", url: try XCTUnwrap(URL(string: "https://codaset.dev/install/o")))
     store.errorDetails = "HTTP 409"
     store.errorMessage = "Teardown failed"
-    XCTAssertNil(store.errorLink)
     XCTAssertNil(store.errorDetails)
   }
 

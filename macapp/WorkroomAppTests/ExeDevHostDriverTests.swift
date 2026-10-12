@@ -15,6 +15,15 @@ final class ExeDevHostDriverTests: XCTestCase {
     XCTAssertFalse(ExeDevHostDriver.isNotFound("ssh: Could not resolve hostname: not found"))
   }
 
+  // Value: protects=every exe.dev create can set up the VM's git; fails_when=the script is renamed,
+  // moved out of host-setup, or the name it is loaded by drifts; why_new=exedev-github_test.sh reads
+  // the source tree, not the app bundle, and the live suite is not run in CI; seam=none;
+  // no_claim=what the script does on a VM
+  /// The git setup a create runs on each VM ships in the app's bundle.
+  func testTheGitHubSetupScriptShipsInTheBundle() throws {
+    XCTAssertTrue(try HostSetup.exeDevGitHubScript().contains("github.int.exe.xyz"))
+  }
+
   /// The ssh-agent is the app's own when it was launched with one, else the login shell's.
   func testTheSSHAgentIsTheAppsElseTheShells() {
     XCTAssertEqual(

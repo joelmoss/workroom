@@ -1,4 +1,3 @@
-import CryptoKit
 import Defaults
 import WorkroomDomain
 import XCTest
@@ -520,8 +519,8 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(relays.calls, 2, "tried again once it had taken")
   }
 
-  // Value: protects=a workroom first recorded as relayed while its connection is up (a Debug
-  // create's enrolment connects first, then falls back) gets its relay at the next check;
+  // Value: protects=a workroom first recorded as relayed while its connection is up (its create
+  // opened the connection before it was recorded) gets its relay at the next check;
   // fails_when=adopt marks the host relayed with no pending relay; why_new=the retry test starts
   // from a failed install, never from adopt; seam=none
   /// A workroom first recorded as relayed while its host is connected already gets its relay at
@@ -1113,8 +1112,8 @@ final class RemoteHostsTests: XCTestCase {
 
   /// A delete of a remote provider's host asks for that provider's driver and environment, never
   /// Docker's; the environment's agent socket is the driver's own, on the host's home disk, never
-  /// the container image's tmpfs `/run/workroom` one; and its git never borrows the Mac's `gh`
-  /// (OQ20). One row per remote provider.
+  /// the container image's tmpfs `/run/workroom` one; its git never borrows the Mac's `gh`
+  /// (OQ20); and a clone that fails says the provider's own fix. One row per remote provider.
   @MainActor
   func testDeletingARemoteProviderHostUsesItsOwnDriver() throws {
     let rows: [(host: HostDescriptor, key: RemoteHosts.DriverKey, socket: String)] = [
@@ -1153,33 +1152,50 @@ final class RemoteHostsTests: XCTestCase {
       XCTAssertNotEqual(environment.agentSocket, RemoteWorkrooms.agentSocket, "\(row.key)")
       XCTAssertNil(
         environment.gitHubToken, "\(row.key): a remote host's git never borrows the Mac's gh")
+      // Value: protects=a provider's failed clone says how to give its host GitHub access;
+      // fails_when=RemoteHosts.environment stops passing its place's credentialHint;
+      // why_new=the provisioning test hands its hint in itself; seam=none; no_claim=the wording
+      let (_, creating) = try remote.environment(row.key)
+      XCTAssertNotNil(creating.credentialHint, "\(row.key)")
+      XCTAssertEqual(creating.credentialHint, row.key.place.credentialHint, "\(row.key)")
     }
   }
 
-  /// A workroom on a remote provider takes the broker's tokens only (OQ20): signed out of Codaset,
-  /// its create stops before anything is made. A local container doesn't need Codaset, since it can
-  /// take the Mac's relay (#309).
-  func testARemoteProviderCreateNeedsCodaset() {
-    let client = BrokerClient(
-      baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey()))
-    let rows: [(key: RemoteHosts.DriverKey, needsCodaset: Bool)] = [
-      (.boxd(org: "acme", account: "usr_1"), true),
-      (.exeDev(account: "me@x.dev"), true),
-      (RemoteHosts.DriverKey(), false),
-      (RemoteHosts.DriverKey(runtime: .apple), false),
-    ]
-    for row in rows {
-      XCTAssertNoThrow(
-        try RemoteWorkrooms.checkCredentials(for: row.key, client: client), "\(row.key)")
-      if row.needsCodaset {
-        XCTAssertThrowsError(
-          try RemoteWorkrooms.checkCredentials(for: row.key, client: nil), "\(row.key)"
-        ) { XCTAssertEqual($0 as? RemoteWorkrooms.Failure, .codasetRequired) }
-      } else {
-        XCTAssertNoThrow(
-          try RemoteWorkrooms.checkCredentials(for: row.key, client: nil), "\(row.key)")
-      }
-    }
+  /// A workroom clones the project's origin as it is, ssh form included, when it names the
+  /// repository; an origin naming another repository, or none, gives way to https.
+  func testAWorkroomClonesTheProjectsOriginAsItIs() throws {
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    let https = "https://github.com/o/r.git"
+    XCTAssertEqual(
+      RemoteWorkrooms.cloneURL(for: repository, origin: "git@github.com:o/r.git\n"),
+      "git@github.com:o/r.git")
+    XCTAssertEqual(
+      RemoteWorkrooms.cloneURL(for: repository, origin: "https://github.com/o/r"),
+      "https://github.com/o/r")
+    XCTAssertEqual(
+      RemoteWorkrooms.cloneURL(for: repository, origin: "git@github.com:someone/fork.git"), https)
+    XCTAssertEqual(
+      RemoteWorkrooms.cloneURL(for: repository, origin: "https://github.com/someone/fork.git"),
+      https)
+    XCTAssertEqual(
+      RemoteWorkrooms.cloneURL(for: repository, origin: "http://github.com/o/r"), https)
+    // No host rewrites these to https, so they would clone over ssh with no key there.
+    XCTAssertEqual(
+      RemoteWorkrooms.cloneURL(for: repository, origin: "ssh://git@github.com/o/r.git"), https)
+    XCTAssertEqual(RemoteWorkrooms.cloneURL(for: repository, origin: "github.com:o/r.git"), https)
+    XCTAssertEqual(RemoteWorkrooms.cloneURL(for: repository, origin: nil), https)
+  }
+
+  /// A remote provider's failed clone says how that provider gives a host GitHub access, the
+  /// command included; a container's is Workroom's own relay, which says so itself.
+  func testOnlyARemoteProviderSaysHowToGiveItsHostGitHubAccess() {
+    XCTAssertNil(RemoteWorkrooms.Place.container(.docker).credentialHint)
+    XCTAssertNil(RemoteWorkrooms.Place.container(.apple).credentialHint)
+    XCTAssertTrue(
+      RemoteWorkrooms.Place.boxd.credentialHint?.contains("boxd manage integrations connect git")
+        == true)
+    XCTAssertTrue(
+      RemoteWorkrooms.Place.exeDev.credentialHint?.contains("integrations add github") == true)
   }
 
   /// After a relaunch a boxd workroom is reached without Docker: its driver is made by name, with
@@ -1273,8 +1289,6 @@ final class RemoteHostsTests: XCTestCase {
     let environment = RemoteProvisioning.Environment(
       driver: driver,
       agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())),
       connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1304,7 +1318,7 @@ final class RemoteHostsTests: XCTestCase {
   // identity; fails_when=create records credentials from anything but the instance, or drops the
   // repository or clone URL; why_new=no test reaches a serving create's descriptor without Docker;
   // seam=none
-  /// A workroom made without a grant records `credentials: relay`, which is what a later launch
+  /// A workroom made with the Mac's token records `credentials: relay`, which is what a later launch
   /// reads to install the Mac's relay on its host, and the repository and clone URL it was made from.
   func testARelayedWorkroomIsRecordedAsSuch() async throws {
     let made = UUID()
@@ -1316,7 +1330,7 @@ final class RemoteHostsTests: XCTestCase {
     let environment = RemoteProvisioning.Environment(
       driver: driver,
       agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
-      client: nil, gitHubToken: { "gho_mac" },
+      gitHubToken: { "gho_mac" },
       connect: { host in
         try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
       })
@@ -1339,7 +1353,6 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(recorded.names.last, "x")
     XCTAssertEqual(serving.id, made)
     XCTAssertTrue(serving.isRelayed)
-    XCTAssertNil(serving.grantID)
     XCTAssertEqual(serving.repository, "o/r")
     XCTAssertEqual(serving.cloneURL, "https://github.com/o/r.git")
     XCTAssertNil(serving.state, "a serving workroom's descriptor has a state")
@@ -1357,9 +1370,7 @@ final class RemoteHostsTests: XCTestCase {
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
+      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket)
     let recorded = Recorded()
     let forgot = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1374,7 +1385,7 @@ final class RemoteHostsTests: XCTestCase {
         repository: repository, cloneURL: "https://github.com/o/r.git", key: key, driver: driver,
         environment: environment, recorder: recorder)
       XCTFail("a create that left its machine behind succeeded")
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, let cleanup) {
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let cleanup) {
       XCTAssertEqual(host, .remote(made))
       XCTAssertEqual(cleanup, ["machine x"])
     }
@@ -1382,7 +1393,6 @@ final class RemoteHostsTests: XCTestCase {
     let kept = try XCTUnwrap(recorded.all.last)
     XCTAssertEqual(kept.id, made)
     XCTAssertEqual(kept.state, "failed")
-    XCTAssertNil(kept.grantID)
     // Over the entry reserved for it, not beside it: the `creating` placeholder would dangle.
     XCTAssertEqual(recorded.names.last, "x")
   }
@@ -1398,8 +1408,6 @@ final class RemoteHostsTests: XCTestCase {
     let environment = RemoteProvisioning.Environment(
       driver: driver,
       agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())),
       connect: { _ in throw HostDriverError.provisioning("no agent") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1412,7 +1420,7 @@ final class RemoteHostsTests: XCTestCase {
         key: .boxd(org: "acme", account: "usr_1"), driver: driver, environment: environment,
         recorder: recorder)
       XCTFail("a create whose rollback failed succeeded")
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, _) {
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _) {
       XCTAssertEqual(host, .remote(made))
     }
     let failed = try XCTUnwrap(
@@ -1429,7 +1437,7 @@ final class RemoteHostsTests: XCTestCase {
           record: { _, _ in throw HostDriverError.provisioning("no record") },
           forget: { _ in }))
       XCTFail("a create whose rollback failed succeeded")
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, _) {
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _) {
       XCTAssertEqual(host, .remote(made))
     }
   }
@@ -2131,31 +2139,18 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(
       RemoteWorkrooms.unavailability(
         of: .docker, installed: true, appleSilicon: true, macOS26: true, signedIn: false),
-      "sign in to Codaset or run gh auth login")
+      "run gh auth login")
   }
 
-  /// A remote provider's create row shows the step it is on as a fraction of its five (#356).
-  func testARemoteCreateShowsItsStepOfFive() {
+  /// A remote provider's create row shows the step it is on as a fraction of its four (#356).
+  func testARemoteCreateShowsItsStepOfFour() {
     XCTAssertEqual(
       AppStore.createStep(.machine),
-      .init(fraction: 0, label: "Creating the workroom's machine (step 1 of 5)"))
-    XCTAssertEqual(AppStore.createStep(.clone).fraction, 3.0 / 5)
+      .init(fraction: 0, label: "Creating the workroom's machine (step 1 of 4)"))
+    XCTAssertEqual(AppStore.createStep(.clone).fraction, 2.0 / 4)
     XCTAssertEqual(
       AppStore.createStep(.checkout),
-      .init(fraction: 4.0 / 5, label: "Checking out the workroom's branch (step 5 of 5)"))
-  }
-
-  /// boxd's entry is off without its CLI, and without Codaset: a boxd workroom takes the broker's
-  /// tokens only, never the Mac's gh, so `gh auth login` is no way in (OQ20, #356). Whether boxd
-  /// itself is signed in is a CLI call, which a create makes rather than the menu.
-  func testTheBoxdEntrySaysWhyItIsOff() {
-    XCTAssertNil(RemoteWorkrooms.unavailability(ofBoxdInstalled: true, codasetSignedIn: true))
-    XCTAssertEqual(
-      RemoteWorkrooms.unavailability(ofBoxdInstalled: false, codasetSignedIn: false),
-      "not installed")
-    XCTAssertEqual(
-      RemoteWorkrooms.unavailability(ofBoxdInstalled: true, codasetSignedIn: false),
-      "sign in to Codaset")
+      .init(fraction: 3.0 / 4, label: "Checking out the workroom's branch (step 4 of 4)"))
   }
 
   /// A driver takes on only a host of its own context: its commands would not reach another's.
@@ -2176,9 +2171,7 @@ final class RemoteHostsTests: XCTestCase {
       RemoteProvisioning.Environment(
         driver: Self.driver(
           runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker),
-        agentSocket: RemoteWorkrooms.agentSocket,
-        client: BrokerClient(
-          baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
+        agentSocket: RemoteWorkrooms.agentSocket)
     }
     let keys = [
       RemoteHosts.DriverKey(runtime: .docker),

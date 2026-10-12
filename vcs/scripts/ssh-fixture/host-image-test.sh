@@ -47,7 +47,8 @@ fi
 read -r -a BUILD_FLAGS <<< "${WR_FIXTURE_BUILD_FLAGS:-}"
 read -r -a CONTROL_BUILD_FLAGS <<< "${WR_FIXTURE_CONTROL_BUILD_FLAGS:-}"
 mkdir "$STAGE/control"
-cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" "$STAGE/control/"
+cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" \
+  "$HERE/git-credential-fixture" "$STAGE/control/"
 printf '#!/bin/sh\nexit 0\n' > "$STAGE/control/wr-agent"
 "$RUNTIME" build --quiet --tag "$CONTROL" --build-arg FIXTURE=1 \
   ${CONTROL_BUILD_FLAGS[@]+"${CONTROL_BUILD_FLAGS[@]}"} "$STAGE/control" >/dev/null
@@ -105,6 +106,7 @@ PIECES=(
   "agent installed at boot"     'test -e /run/workroom/wr-agent'
   "github.com mapping"          "grep -qx '127\.0\.0\.1 github\.com' /etc/hosts"
   "git trusting the fixture CA" 'git config --system --get-regexp sslCAInfo >/dev/null'
+  "git asking the fixture helper" 'git config --system --get-regexp "credential\..*helper" >/dev/null'
 )
 
 # What a real host needs, which both variants must keep. The fixture's own tests run only against

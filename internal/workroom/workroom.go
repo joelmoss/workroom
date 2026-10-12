@@ -711,7 +711,7 @@ func (s *Service) RunTeardown(dir, name string) error {
 
 // destroyedRemote reports whether name is a remote workroom whose host is already destroyed, which
 // deleteByName drops from config with nothing to tear down (#253). A remote workroom whose host
-// is still there is refused: only the app can destroy it and cancel its grant.
+// is still there is refused: only the app can destroy it.
 func (s *Service) destroyedRemote(dir, name string) (bool, error) {
 	projects, err := s.Config.AllProjects()
 	if err != nil {

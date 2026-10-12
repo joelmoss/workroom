@@ -165,12 +165,17 @@ struct WorkroomStatusResolver: Sendable {
   }
 
   /// The GitHub repository `dir`'s `origin` remote names, from git alone (#260): for a remote
-  /// workroom's create when `gh` can't answer, since Codaset sign-in is enough for one and needs no
-  /// `gh`. nil with no origin, or one that names no GitHub-shaped repository.
+  /// workroom's create when `gh` can't answer, since a remote provider's workroom needs no `gh`.
+  /// nil with no origin, or one that names no GitHub-shaped repository.
   func originRepository(in dir: String) async -> GitHubRepository? {
+    await originURL(in: dir).flatMap(GitHubRepository.init(remote:))
+  }
+
+  /// `dir`'s origin URL, as git config has it; nil when git fails.
+  func originURL(in dir: String) async -> String? {
     let r = await runner.run("git", ["remote", "get-url", "origin"], in: dir, timeout: timeout)
     guard r.exitCode == 0, !r.timedOut else { return nil }
-    return GitHubRepository(remote: r.stdout)
+    return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   /// The names of `dir`'s git remotes, from local config; empty when git fails.
