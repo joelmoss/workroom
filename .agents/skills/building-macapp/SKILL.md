@@ -11,8 +11,9 @@ How to build, run, format, lint, and test the macOS app under `macapp/` via its 
 1. After adding or removing Swift files, run `make app-generate` first — it runs xcodegen to regenerate the Xcode project. New files are not in the build until you do this.
 2. Build with `make app-build`. Launch the app with `make app-run`.
 3. Format with `make app-format` — it rewrites files in place, so run it with the command sandbox DISABLED. Under the sandbox the in-place writes fail with `Operation not permitted`.
-4. Lint with `make app-lint` (runs `swift-format --strict`).
+4. Lint with `make app-lint` (runs `swift-format --strict`). `make app-check` runs steps 3 and 4 together.
 5. Test with `make app-test` (xcodebuild build + run tests). Run it with the command sandbox DISABLED — xcodebuild writes to system temp (`/var/folders/.../T`), which is outside the sandbox allowlist and otherwise fails with `Operation not permitted`.
+6. Read the verdict from the `Tests:` line `make app-test` and `make app-uitest` print last: pass/fail/skip counts, then one `FAIL` line per failing test. Don't query the `.xcresult` by hand. Check the skipped count too: a skipped test asserted nothing.
 
 ## Several workrooms at once
 Other workrooms of this repo may be building and testing at the same time as you; that is supported.

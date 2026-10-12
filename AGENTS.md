@@ -16,14 +16,15 @@ Run commands from the repository root; `make` lists available targets.
 
 - `make app-build`: build Rust dependencies, generate the Xcode project, and build Debug.
 - `make app-run`: rebuild and relaunch this checkout's Workroom Dev; stops its persisted session helpers.
-- `make app-test`: run app unit/integration tests; safe alongside other workrooms' runs.
+- `make app-test`: run app unit/integration tests; safe alongside other workrooms' runs. It ends with the run's pass/fail/skip counts and each failing test, read from its `.xcresult`; don't query the bundle by hand.
 - `make app-package-test`: run the tests of the local Swift packages in `macapp/Packages/` with `swift test`; `make app-test` does not run them.
 - `make app-uitest`: run XCUITest in a logged-in GUI session; it takes that session exclusively, so runs from several workrooms queue.
 - `make app-test-scripts`: check packaging/helper shell scripts.
 - `make app-scripts-lint`: run shellcheck over `macapp/Scripts/*.sh`.
-- `make app-format`, `make app-lint`: format Swift and enforce strict linting.
+- `make app-format`, `make app-lint`: format Swift and enforce strict linting. `make app-check` runs both, in that order.
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
+- `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `wr-agent` with `terminal-state`. Narrow both with `VCS_TEST_FLAGS="-p wr-agent --test <name>"`. No `PATH` changes needed.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.96.1.
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
 
@@ -32,6 +33,8 @@ Use `macapp/project.yml` for project configuration; do not edit generated `.xcod
 ## Coding Style & Naming Conventions
 
 Use gofmt/goimports for Go. Swift uses two-space indentation and a 100-column limit from `macapp/.swift-format`; name types in UpperCamelCase and members in lowerCamelCase. Follow adjacent Rust conventions and rustfmt. Keep changes focused and preserve established abstractions.
+
+Edit source files with your agent's file-editing tool, not with shell rewrites such as Python heredocs or `sed -i`. Those edits show no reviewable diff, and agents tend to run them with the command sandbox off.
 
 ## Testing Guidelines
 

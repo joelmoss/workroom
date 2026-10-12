@@ -12,15 +12,17 @@ root, not `macapp/`):
 ```bash
 make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
 make app-build      # xcodegen → xcodebuild (Debug)
-make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize
+make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize.
+                    # Ends with the run's counts + failing tests from its .xcresult (Scripts/test-summary.sh)
 make app-package-test # swift test in each macapp/Packages package — no app host, no GUI lock
 make app-uitest     # XCUITest — needs the GUI session to itself; queues behind other workrooms
 make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
-make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock)
+make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock, test summary)
 make app-scripts-lint # shellcheck over macapp/Scripts/*.sh
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
+make app-check      # app-format, then app-lint
 make app-release    # Release build → notarize → staple → DMG installer (Scripts/release.sh).
                     # Depends on app-test-scripts only: several assertions exist to stop a bad
                     # ARTIFACT shipping (bundled-resource checksums, universal-arch cases). app-test
