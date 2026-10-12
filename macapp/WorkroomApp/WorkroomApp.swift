@@ -642,7 +642,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     #if !DEBUG
       if Defaults[.globalHotkey] {
         if showHideHotkey == nil {
-          showHideHotkey = GlobalHotkey.commandSection { AppDelegate.toggleAppVisibility() }
+          showHideHotkey = GlobalHotkey.commandSection {
+            MainActor.assumeIsolated { AppDelegate.toggleAppVisibility() }
+          }
         }
         if quickTerminalHotkey == nil {
           // The controller, not `self`, as for the toolbar button's observer above.
@@ -659,7 +661,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
   /// Show/hide Workroom for the global hotkey: hide when we're frontmost, otherwise unhide and pull
   /// the app forward. Runs on the main thread (Carbon delivers hot-key events there).
-  private static func toggleAppVisibility() {
+  @MainActor private static func toggleAppVisibility() {
     if NSApp.isActive {
       NSApp.hide(nil)
     } else {
