@@ -11,14 +11,6 @@ import XCTest
 @MainActor
 final class AppStoreContentFindTests: XCTestCase {
 
-  private func makeStore(_ projects: [Project]) -> AppStore {
-    let store = AppStore()
-    // A GhosttySurfaceView only spawns its PTY once it enters a window, so this is inert in tests.
-    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    store.projects = projects
-    return store
-  }
-
   private func project(_ path: String, workrooms: [String]) -> Project {
     Project(
       path: path, vcs: "git",
