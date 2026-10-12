@@ -676,7 +676,7 @@ final class AppStore: ObservableObject {
   }
   var hasModalPresentation: Bool { modals.hasModalPresentation }
 
-  let terminals = TerminalSessions()
+  let terminals: TerminalSessions
   /// In-memory notification spine driving the badges + inspector (issue #10). Owned here,
   /// mirroring `terminals`; views observe it directly via `@EnvironmentObject`.
   let notifications = NotificationCenterStore()
@@ -906,6 +906,9 @@ final class AppStore: ObservableObject {
           makeWriter: { _ in FixtureVCSWriter() }, debounce: 0, ttl: 0,
           autoFetchInterval: .greatestFiniteMagnitude)
         : RemoteStateModel())
+    let terminals = TerminalSessions()
+    self.terminals = terminals
+    self.runCommand = RunCommandController(terminals: terminals)
     // Any pane change marks the saved session dirty (issue #46). `objectWillChange` fires BEFORE the
     // mutation, so the coordinator must always schedule a capture — never take one inline here.
     sessionObservation = terminals.objectWillChange.sink { [weak self] _ in
@@ -1534,88 +1537,96 @@ final class AppStore: ObservableObject {
 
   // MARK: Run command (issue #7)
 
-  // The run command's stored state. Its code is in `AppStore+RunCommand.swift`.
-
   /// Bumped by `setRunConfig` and read by `runConfig(forProject:)`, so views that show a run command
   /// re-render when it is saved: the config itself lives in `Defaults`, which Observation cannot see.
   var runConfigRevision = 0
 
-  /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
-  /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
-  /// `TerminalSessions` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
-  var runStates: [TerminalTarget.ID: RunState] = [:]
+  /// The run command's state and its process mechanics (issue #7). Starting a run and applying its
+  /// status stay in `AppStore+RunCommand.swift`, since they read the store. The members below forward
+  /// to it, so views and tests read run state through the store as before.
+  let runCommand: RunCommandController
+  typealias RunState = RunCommandController.RunState
+  typealias RunOutcome = RunCommandController.RunOutcome
+  typealias RunToastItem = RunCommandController.RunToastItem
 
-  /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
-  /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
-  /// second, independent process that can coexist with a target's real run command, and must NOT be
-  /// deduped across windows the way `WindowRegistry.runOwner` dedupes a run command. Only feeds
-  /// `hasLiveRunCommand`, so quit/window-close notice a live agent conversation instead of silently
-  /// SIGHUP'ing it. Not `@Published` — its only reader, `hasLiveRunCommand`, is read imperatively by
-  /// AppKit code at close/quit time (never by a SwiftUI view that needs a re-render), unlike
-  /// `runStates`, which the toolbar/sidebar/menu genuinely observe.
-  ///
-  ///        runStates                    investigateTabs
-  ///   [TargetID: RunState]          [TabID: TargetID]
-  ///   one slot per target      many tabs allowed per target
-  ///   (dev-server run)              (interactive claude)
-  ///            │                            │
-  ///            └─────────────┬──────────────┘
-  ///                          ▼
-  ///               hasLiveRunCommand (OR)
-  ///                          │
-  ///              ┌───────────┴────────────┐
-  ///              ▼                        ▼
-  ///   windowShouldClose confirm   stopRunCommandsThenTerminate (⌘Q)
-  ///   alert — now fires for a     — unaffected in practice: only
-  ///   live Investigate session    `runStates` feeds the actual
-  ///                                gracefully-stop loop
-  var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
-
-  /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
-  /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
-  var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
-
-  /// Targets whose run toast was explicitly dismissed (✕) or auto-dismissed after a terminal state.
-  /// Cleared when a fresh run starts. Open-terminal does NOT add here — it lets the visibility rule
-  /// hide the toast while the run is on screen, so it reappears when you navigate away.
-  var dismissedRunToasts: Set<TerminalTarget.ID> = []
-  /// Targets whose LIVE (running/restarting) toast auto-hid after lingering a while — separate from
-  /// `dismissedRunToasts` so a run that quietly auto-hid its "still running" toast can still surface
-  /// a later terminal (exited/failed) toast; only gates the non-terminal branch of `runToastItems`.
-  /// Cleared on a fresh "running" edge (start or restart), so the toast reappears each time.
-  var runningToastAutoHidden: Set<TerminalTarget.ID> = []
-  /// Pending auto-dismiss/auto-hide timers, one per target, cancelled on restart so a stale timer
-  /// can't dismiss the next run's toast (review: timer cancellation on restart).
-  var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
-  /// Test seam: how a delayed auto-dismiss is scheduled. Production schedules on the main queue; tests
-  /// capture the returned `DispatchWorkItem` to fire (or assert cancellation of) it deterministically.
-  var scheduleRunToastDismiss: (TimeInterval, @escaping () -> Void) -> DispatchWorkItem = {
-    delay, body in
-    let work = DispatchWorkItem(block: body)
-    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    return work
+  var runStates: [TerminalTarget.ID: RunState] {
+    get { runCommand.runStates }
+    set { runCommand.runStates = newValue }
+  }
+  var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] {
+    get { runCommand.investigateTabs }
+    set { runCommand.investigateTabs = newValue }
+  }
+  var runOutcomes: [TerminalTarget.ID: RunOutcome] {
+    get { runCommand.runOutcomes }
+    set { runCommand.runOutcomes = newValue }
+  }
+  var dismissedRunToasts: Set<TerminalTarget.ID> {
+    get { runCommand.dismissedRunToasts }
+    set { runCommand.dismissedRunToasts = newValue }
+  }
+  var runningToastAutoHidden: Set<TerminalTarget.ID> {
+    get { runCommand.runningToastAutoHidden }
+    set { runCommand.runningToastAutoHidden = newValue }
+  }
+  var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] {
+    get { runCommand.runToastDismissWork }
+    set { runCommand.runToastDismissWork = newValue }
+  }
+  var scheduleRunToastDismiss: (TimeInterval, @escaping () -> Void) -> DispatchWorkItem {
+    get { runCommand.scheduleRunToastDismiss }
+    set { runCommand.scheduleRunToastDismiss = newValue }
+  }
+  var runPidFiles: [TerminalTarget.ID: String] {
+    get { runCommand.runPidFiles }
+    set { runCommand.runPidFiles = newValue }
+  }
+  var runSessions: [TerminalTarget.ID: pid_t] {
+    get { runCommand.runSessions }
+    set { runCommand.runSessions = newValue }
+  }
+  var signalSupervisorForTesting: ((Int32, TerminalTarget.ID) -> Bool)? {
+    get { runCommand.signalSupervisorForTesting }
+    set { runCommand.signalSupervisorForTesting = newValue }
+  }
+  var lastRunStatus: [TerminalTarget.ID: String] {
+    get { runCommand.lastRunStatus }
+    set { runCommand.lastRunStatus = newValue }
   }
 
-  /// Per-target temp file holding the run command's pid (written by the run wrapper, read to resolve
-  /// + signal its process group). Generated fresh per start/respawn; cleared when the run exits or
-  /// its tab is removed so a reused pid can never be signalled.
-  var runPidFiles: [TerminalTarget.ID: String] = [:]
-
-  /// The run command's SESSION id, captured at launch via `getsid`. A process group isn't enough:
-  /// bin/dev-style launchers fork the leaf server into a *different* process group than the launcher,
-  /// so a captured group can miss it (issue #7). The SESSION is stable across those forks — every
-  /// process the run command spawns stays in the one session `login` created for it (unless it
-  /// daemonizes via setsid, which dev servers don't — a typed Ctrl-C stops them, proving it). The
-  /// session id stays valid after its leader exits, so it reaps a server that outlived the launcher.
-  var runSessions: [TerminalTarget.ID: pid_t] = [:]
-
-  /// Test seam: capture supervisor signals (and return whether a live supervisor was "signalled")
-  /// without a real process. Production signals the control-file pid via `kill`.
-  var signalSupervisorForTesting: ((Int32, TerminalTarget.ID) -> Bool)?
-
-  /// Last status line applied per target, so the poller reacts only to CHANGES (and doesn't re-fire
-  /// the auto-dismiss timer each tick). Cleared in `clearRunPidFile`.
-  var lastRunStatus: [TerminalTarget.ID: String] = [:]
+  func runFailed(for targetID: TerminalTarget.ID) -> Bool { runCommand.runFailed(for: targetID) }
+  func isRunCommandRunning(for targetID: TerminalTarget.ID) -> Bool {
+    runCommand.isRunCommandRunning(for: targetID)
+  }
+  func runTabID(for targetID: TerminalTarget.ID) -> TerminalTab.ID? {
+    runCommand.runTabID(for: targetID)
+  }
+  var hasAnyRunTerminal: Bool { runCommand.hasAnyRunTerminal }
+  var hasLiveRunCommand: Bool { runCommand.hasLiveRunCommand }
+  func dismissRunToast(for targetID: TerminalTarget.ID) {
+    runCommand.dismissRunToast(for: targetID)
+  }
+  func resetRunToast(for targetID: TerminalTarget.ID) { runCommand.resetRunToast(for: targetID) }
+  func clearRunPidFile(for targetID: TerminalTarget.ID) {
+    runCommand.clearRunPidFile(for: targetID)
+  }
+  func stopRunCommand(for target: TerminalTarget) { runCommand.stopRunCommand(for: target) }
+  func armAutoRun(forWorkroom targetID: TerminalTarget.ID) {
+    runCommand.armAutoRun(forWorkroom: targetID)
+  }
+  func gracefullyStopRuns(
+    _ targetIDs: [TerminalTarget.ID], timeout: TimeInterval = 6, then: @escaping () -> Void
+  ) {
+    runCommand.gracefullyStopRuns(targetIDs, timeout: timeout, then: then)
+  }
+  func closingRunTab(
+    _ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID, then proceed: @escaping () -> Void
+  ) {
+    runCommand.closingRunTab(tabID, for: targetID, then: proceed)
+  }
+  func gracefullyStopAllRunCommands(timeout: TimeInterval = 6, completion: @escaping () -> Void) {
+    runCommand.gracefullyStopAllRunCommands(timeout: timeout, completion: completion)
+  }
 
   // MARK: Loading
 
