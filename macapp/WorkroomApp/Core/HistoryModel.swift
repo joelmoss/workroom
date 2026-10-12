@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// Store-owned state for the History pane (issue #59): a paged, newest-first commit log for the

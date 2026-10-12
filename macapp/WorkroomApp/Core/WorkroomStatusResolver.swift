@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// What a CI probe decided. `keepPrior` means "don't overwrite the last good value" (a

@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// Services are bound to one routing snapshot; callers cannot substitute a path or backend.

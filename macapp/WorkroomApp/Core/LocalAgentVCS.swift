@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// One local service connection across windows. Acquisition may establish a new generation;

@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 
 /// The full result of a short status command: stdout, stderr, exit code, and whether the
 /// timeout fired. Unlike `CommandRunning` (which collapses everything to `String?`), this

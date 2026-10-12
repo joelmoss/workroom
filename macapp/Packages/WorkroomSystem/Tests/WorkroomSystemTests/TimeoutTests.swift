@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomSystem
 
 /// `withTimeout` had zero test coverage before this file, despite being the timeout seam every VCS
 /// read in the app relies on (`WorkroomStatusResolver`, `BranchResolver`, `RepositoryWriteGate`'s

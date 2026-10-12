@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 import WorkroomVCS
 
 /// Only completed validation can produce a key. Equality and hashing never touch the filesystem.

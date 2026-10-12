@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomSystem
 
 /// The pure descendant traversal behind `ProcessTree.killTree` (issue #49, X2). The real `pgrep`
 /// lookup and the SIGKILL need live processes; the traversal — dedup, cycle-safety, ordering — is
