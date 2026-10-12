@@ -1,4 +1,3 @@
-import AgentConnection
 import Darwin
 import Foundation
 import WorkroomSystem
@@ -9,9 +8,9 @@ import WorkroomWire
 /// relays keep their existing connections.
 /// Blocking socket work runs on GCD. Closing shuts down the descriptor; only deinit closes it,
 /// so an in-flight reader/writer can never act on a recycled descriptor.
-final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
-  let host: HostID
-  let disconnection: AsyncStream<Void>
+public final class AgentVCSConnection: @unchecked Sendable {
+  public let host: HostID
+  public let disconnection: AsyncStream<Void>
   private let disconnected: AsyncStream<Void>.Continuation
   private let descriptor: Int32
   private let lock = NSLock()
@@ -40,7 +39,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private var nextSubscription: UInt64 = 1
   /// The peer's raw greeting version. Kept (not just compared once in `connect()`) because the File
   /// service is gated on it separately from VCS: see `AgentHandshake.minFileVersion`.
-  private let helloVersion: UInt16
+  public let helloVersion: UInt16
   /// How the File service negotiation ended. Never a failed CONNECTION: VCS works regardless, and
   /// the agent is kept alive because it may own terminals. The three outcomes are different facts
   /// with different answers, and folding them together was a bug:
@@ -52,8 +51,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   ///   native access for the connection's whole life; `files(context:)` retires the connection so the
   ///   next acquisition reconnects and probes again.
   /// - `ready`.
-  private enum FileNegotiation { case unsupported, failed, ready }
+  public enum FileNegotiation: Sendable { case unsupported, failed, ready }
   private var _fileNegotiation: FileNegotiation = .unsupported
+  /// How the File service negotiation ended; read under the lock (`files(context:)`, in the app).
+  public var fileNegotiation: FileNegotiation { lock.withLock { _fileNegotiation } }
   /// Streams this connection gave up waiting on (request timeout) but whose reply may still
   /// arrive. Tracked so a late reply drains harmlessly instead of `receive()` treating an unknown
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
@@ -63,18 +64,18 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// write service at all — `writer(context:reader:)` treats that as `VCSError.backendVersion`,
   /// the same signal `RepositoryRouter` already falls back to native writes on.
   private var _capabilities: AgentVCSCapabilities?
-  private var capabilities: AgentVCSCapabilities? { lock.withLock { _capabilities } }
+  public var capabilities: AgentVCSCapabilities? { lock.withLock { _capabilities } }
   /// The exec wire version this client speaks. `AgentExecRequest.version` carries the same number on
   /// the wire and is declared separately, so this is a claim the compiler does not check — asserted
   /// in `AgentVCSProtocolTests` instead.
-  private static let execVersion = 1
+  public static let execVersion = 1
   /// The first exec service version that reassembles chunked requests. Separate from `execVersion`
   /// because it gates a FRAMING capability, not the request body: a version-1 agent speaks the same
   /// `AgentExecRequest` and is fully usable, it just cannot be sent one in pieces.
   private static let chunkedRequestVersion = 2
   /// The first exec service version a remote host's writes can use: it takes `host_environment`
   /// and answers `stat`.
-  private static let remoteWriteVersion = 3
+  public static let remoteWriteVersion = 3
   /// `MAX_ENVELOPE_PAYLOAD` in `wr-protocol/src/envelope.rs`.
   private static let maxEnvelopePayload = 1 << 20
   /// `MAX_REQUEST` in `rpc.rs` — the reassembled ceiling, mirroring the reply side's.
@@ -86,12 +87,12 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// envelope. Status is retired (#382) and never asked, but an agent from before then may still
   /// send on it, which is dropped rather than failing the connection.
   private static let vcsService: UInt8 = 2
-  private static let fileService: UInt8 = 3
+  public static let fileService: UInt8 = 3
   private static let statusService: UInt8 = 4
   private static let forwardService: UInt8 = 5
   /// `Service::Layout` (#255): JSON like the others, and chunked like VCS, since a layout can be
   /// larger than one envelope.
-  private static let layoutService: UInt8 = 6
+  public static let layoutService: UInt8 = 6
   /// `Service::Control`: the session list a terminal helper answers (#239). Its payloads are
   /// `SessionFrame`s, not a chunk flag and JSON.
   private static let controlService: UInt8 = 0
@@ -117,7 +118,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 
   deinit { Darwin.close(descriptor) }
 
-  static func connect(host: HostID, socketPath: String) async throws -> AgentVCSConnection {
+  public static func connect(host: HostID, socketPath: String) async throws -> AgentVCSConnection {
     let fd = try await runBlocking {
       let fd = socket(AF_UNIX, SOCK_STREAM, 0)
       guard fd >= 0 else { throw HostConnectionError.connectionLost }
@@ -150,7 +151,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// A handshake the stream never answered is `serviceUnavailable` with what the carrier said, not
   /// `connectionLost`. There is nothing to respawn on a remote host, and "Host key verification
   /// failed." or the relay's "no agent listening" is the whole diagnosis.
-  static func connect(host: HostID, stream: HostStream) async throws -> AgentVCSConnection {
+  public static func connect(host: HostID, stream: HostStream) async throws -> AgentVCSConnection {
     do {
       return try await negotiate(
         host: host, descriptor: stream.handOff(), carrier: stream,
@@ -170,7 +171,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// fails with `EPIPE` rather than killing the app. Not later: once the peer has gone, `setsockopt`
   /// itself fails, and a peer that greets and hangs up before the first write left the flag unset
   /// and the hello's `send` raising SIGPIPE.
-  static func noSignalOnWrite(_ fd: Int32) {
+  public static func noSignalOnWrite(_ fd: Int32) {
     var on: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
   }
@@ -264,76 +265,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     }
   }
 
-  func reader(context: RepositoryContext) throws -> VCSProviding {
-    guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
-    guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
-    return AgentVCSReader(context: context, connection: self)
-  }
-
-  /// `reader` is the SAME agent-routed `VCSProviding` `HostConnectionManager.writer(context:)` just
-  /// built — threaded through rather than reconstructed so `CLIVCSWriter.remoteState`'s `currentRef`
-  /// read goes through the agent too (`AgentCurrentRefProvider`), not a fresh native process. A
-  /// still-running pre-upgrade agent has no write service at all; that is reported the same way an
-  /// unsupported read version is, so `RepositoryRouter` falls back to native writes rather than
-  /// leaving the repository unwritable.
-  func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
-    guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
-    guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
-    // A remote host's writes need what exec version 3 added (#229): the host's own environment and
-    // `stat` for the classifier's disk facts. An older
-    // agent there fails closed rather than writing on Mac-side assumptions.
-    let remote = host != .local
-    if remote {
-      guard let exec = capabilities?.exec, exec >= Self.remoteWriteVersion else {
-        throw HostConnectionError.serviceUnavailable(
-          "The host's agent is too old to change a repository there.")
-      }
-    }
-    // Presence and version of the SERVICE, not a count of the caller's own methods. `>=` rather
-    // than `==` so an agent that gains a version 3 does not refuse a client speaking 1 — the agent
-    // is what decides whether it still accepts this request, and it answers that on the request
-    // itself (`exec`'s version guard), which is the only place that can know.
-    //
-    // KNOWN GAP in that reasoning: a per-request refusal does NOT reach the native fallback. A
-    // `BackendVersion` error arriving in a REPLY is decoded in `AgentCommandRunner.exec`, throws,
-    // and becomes `neverRan`/`launchFailed` — not the `VCSError.backendVersion` that
-    // `RepositoryRouter.writer(for:)` falls back on. So a future agent that DROPS version 1 would
-    // fail every write as "launch failed" rather than writing natively. Nothing can hit this today
-    // (no such agent exists, and 2 still accepts 1), but the `>=` is justified by a mechanism that
-    // is not wired up, and that is worth knowing before the first version that drops one.
-    guard let exec = capabilities?.exec, exec >= Self.execVersion else {
-      throw VCSError.backendVersion("Agent does not support VCS writes.")
-    }
-    var engine = CLIVCSWriter(
-      runner: AgentCommandRunner(connection: self),
-      makeProvider: { _ in AgentCurrentRefProvider(reader: reader) }, gate: .shared)
-    if remote {
-      engine.host = host
-      engine.stat = { [self] paths, read in try await stat(paths: paths, read: read) }
-    }
-    return try BoundLocalWriter(context: context, reader: reader, writer: engine)
-  }
-
-  /// Facts from the host's disk for `CLIVCSWriter`'s failure classifier (`stat` in `vcs.rs`):
-  /// whether each path exists, is a directory and when it changed, and the text of those in `read`.
-  func stat(paths: [String], read: [String]) async throws -> DiskSnapshot {
-    let reply = try await request(AgentStatRequest(paths: paths, read: read), timeout: 15)
-    var entries: [String: DiskEntry?] = [:]
-    var texts: [String: String] = [:]
-    for entry in try AgentVCSReply<AgentStatReply>.decode(reply).entries {
-      let found =
-        entry.exists
-        ? DiskEntry(
-          isDirectory: entry.isDir,
-          modifiedAt: entry.modifiedAt.map { Date(timeIntervalSince1970: $0) })
-        : nil
-      // `.some(nil)`: asked about and absent, which a snapshot tells apart from never asked.
-      entries[entry.path] = .some(found)
-      if let text = entry.text { texts[entry.path] = text }
-    }
-    return DiskSnapshot(entries: entries, texts: texts)
-  }
-
   /// Probe the File service, if the peer's greeting says it exists. Runs once in `connect()`, before
   /// this connection is shared, and NEVER fails it: an agent that predates the service, or one whose
   /// probe is unanswered or unreadable, leaves VCS fully working and just has no file service —
@@ -359,20 +290,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     lock.withLock { _fileNegotiation = outcome }
   }
 
-  func files(context: FileContext) throws -> FileProviding {
-    guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
-    guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
-    switch lock.withLock({ _fileNegotiation }) {
-    case .ready:
-      return AgentFileProvider(context: context, connection: self)
-    case .unsupported:
-      throw VCSError.backendVersion("Agent does not support the file service.")
-    case .failed:
-      Task { await close() }
-      throw HostConnectionError.serviceUnavailable("File service negotiation failed; reconnecting.")
-    }
-  }
-
   /// The working directory of terminal `session` on this connection's host, or nil when the agent
   /// holds no such session or could not read it (#239).
   ///
@@ -390,14 +307,14 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// repaint also holds, and on this connection's read thread, so a List that lands mid-repaint holds
   /// up the connection's other requests for up to that repaint. A per-session cwd request would not;
   /// add one if footer queries are ever seen to stall VCS.
-  func workingDirectory(of session: UUID) async throws -> String? {
+  public func workingDirectory(of session: UUID) async throws -> String? {
     let identifier = SessionIdentifier(uuidString: session.uuidString)
     let directory = try await sessions().first { $0.identifier == identifier }?.workingDirectory
     return directory?.isEmpty == false ? directory : nil
   }
 
   /// The host's session list: the same `List` frame the local control client sends.
-  func sessions() async throws -> [SessionDescriptor] {
+  public func sessions() async throws -> [SessionDescriptor] {
     let reply = try await request(
       bytes: Data(SessionFrame(kind: .list).encoded()), timeout: 30,
       service: Self.controlService)
@@ -414,25 +331,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return try SessionDescriptor.decodeList(frame.payload)
   }
 
-  /// The layout service on this connection, or `VCSError.backendVersion` when the peer predates it
-  /// (#255), checked against the peer's greeting as File is.
-  func layouts() throws -> AgentLayoutService {
-    try lock.withLock {
-      guard !closed else { throw HostConnectionError.connectionLost }
-      guard helloVersion >= AgentHandshake.minLayoutVersion else {
-        throw VCSError.backendVersion("Agent does not support the layout service.")
-      }
-    }
-    return AgentLayoutService(connection: self)
-  }
-
-  /// A Layout request. 15s: a `put` syncs a file and its directory, and a `get` reads one.
-  func layoutRequest(_ request: AgentLayoutRequest) async throws -> Data {
-    try await self.request(request, timeout: 15, service: Self.layoutService)
-  }
-
   /// The same `Kill` frame the local control client sends, on this connection's Control service.
-  func endSession(_ session: UUID) async throws -> Bool {
+  public func endSession(_ session: UUID) async throws -> Bool {
     guard let identifier = SessionIdentifier(uuidString: session.uuidString) else { return true }
     let reply = try await request(
       bytes: Data(
@@ -446,30 +346,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return frame.kind == .acknowledged
   }
 
-  /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer
-  /// predates it (issue #208).
-  ///
-  /// There is no probe and no negotiation state to keep: `Service::Forward` has no `capabilities`
-  /// method — its only request opens a real socket — so the peer's raw greeting version is the whole
-  /// answer, checked the way File checks its own. A protocol-4 agent drops a Forward
-  /// envelope without answering it, so it is never sent one.
-  func forwarding() throws -> AgentForwardService {
-    try lock.withLock {
-      guard !closed else { throw HostConnectionError.connectionLost }
-      guard helloVersion >= AgentHandshake.minForwardVersion else {
-        throw VCSError.backendVersion("Agent does not support port forwarding.")
-      }
-    }
-    return AgentForwardService(connection: self)
-  }
-
   /// Whether this connection has ended: a forward that outlives it (`PortForward`'s `reconnect`)
   /// makes a new one before it opens a stream.
-  var isClosed: Bool { lock.withLock { closed } }
+  public var isClosed: Bool { lock.withLock { closed } }
 
   /// One of the agent's `MAX_FORWARDS` slots, or nil when this connection holds them all. Released
   /// when the returned value is dropped.
-  func reserveForwardSlot() -> ForwardSlot? {
+  public func reserveForwardSlot() -> ForwardSlot? {
     let reserved = lock.withLock { () -> Bool in
       guard forwardsHeld < ForwardSlot.maxPerConnection else { return false }
       forwardsHeld += 1
@@ -486,7 +369,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// The id comes from the SAME counter every request uses, and is never handed out twice.
   /// `forward.rs` frees a stream id only once its CLOSE has been seen, and its module doc says a
   /// monotonic counter is how a client gets that rule for free — this is that counter.
-  func reserveForward(onOpcode: @escaping @Sendable (UInt8, Data) -> Void) throws -> UInt32 {
+  public func reserveForward(onOpcode: @escaping @Sendable (UInt8, Data) -> Void) throws -> UInt32 {
     try lock.withLock {
       guard !closed else { throw HostConnectionError.connectionLost }
       guard nextStream < UInt32.max else { throw HostConnectionError.notDispatched }
@@ -501,7 +384,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// has gone is told so by `fail()`, which is the only signal it needs. `then` runs once the
   /// envelope has left this process, or once it is certain never to: a forward's flow control and
   /// its open timer both need "on the wire", which the enqueue is not.
-  func sendForward(
+  public func sendForward(
     stream: UInt32, opcode: UInt8, body: Data, then: (@Sendable () -> Void)? = nil
   ) {
     let payload = Data([opcode]) + body
@@ -519,7 +402,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 
   /// Stop listening on a forward stream. Anything that still arrives for it is dropped by
   /// `receive()`, which is the normal end of a stream the client closed itself.
-  func releaseForward(_ stream: UInt32) {
+  public func releaseForward(_ stream: UInt32) {
     lock.withLock { _ = forwardHandlers.removeValue(forKey: stream) }
   }
 
@@ -528,14 +411,17 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// 45s, not the VCS default of 30: a generous margin over the listing's own 10s
   /// (`FileListing.timeout`), so the client never gives up on a listing the agent is still running
   /// and leaves its shared request slot busy while the caller starts another.
-  func fileRequest(_ request: AgentFileRequest, timeout: TimeInterval = 45) async throws -> Data {
+  public func fileRequest(_ request: AgentFileRequest, timeout: TimeInterval = 45) async throws
+    -> Data
+  {
     try await self.request(request, timeout: timeout, service: Self.fileService)
   }
 
   /// Subscribe to filesystem changes under `root`. The handler is registered BEFORE the request is
   /// sent: events follow the acknowledgement on the same socket, and one that arrived while this
   /// method was still resuming from its `await` would find no handler and be lost.
-  func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
+  public func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void)
+    async throws
     -> FileWatchHandle
   {
     let id: UInt64 = try lock.withLock {
@@ -610,9 +496,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return payloads
   }
 
-  func close() async { fail(HostConnectionError.connectionLost) }
+  public func close() async { fail(HostConnectionError.connectionLost) }
 
-  func request<Request: Encodable>(
+  public func request<Request: Encodable>(
     _ request: Request, timeout: TimeInterval = 30, service: UInt8 = 2
   ) async throws -> Data {
     let encoder = JSONEncoder()
@@ -976,9 +862,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   }
 }
 
-struct AgentVCSCapabilities: Decodable {
-  let version: Int
-  let reads: Int
+public struct AgentVCSCapabilities: Decodable {
+  public let version: Int
+  public let reads: Int
   /// The exec service's wire version, or nil on a still-running pre-upgrade agent that predates the
   /// service entirely.
   ///
@@ -988,41 +874,78 @@ struct AgentVCSCapabilities: Decodable {
   /// it true: adding a ninth method here, a change the passthrough fully supports, made the equality
   /// check below fail against a completely capable agent and silently dropped every user to native
   /// writes with no log line.
-  let exec: Int?
+  public let exec: Int?
+
+  public init(version: Int, reads: Int, exec: Int?) {
+    self.version = version
+    self.reads = reads
+    self.exec = exec
+  }
 }
 
 /// `StatRequest` in `vcs.rs`, which rejects unknown fields.
-struct AgentStatRequest: Encodable, Sendable {
-  var version = 1
-  var kind = "stat"
-  let paths: [String]
-  let read: [String]
-}
+public struct AgentStatRequest: Encodable, Sendable {
+  public var version = 1
+  public var kind = "stat"
+  public let paths: [String]
+  public let read: [String]
 
-struct AgentStatReply: Decodable {
-  struct Entry: Decodable {
-    let path: String
-    let exists: Bool
-    let isDir: Bool
-    let modifiedAt: Double?
-    let text: String?
+  public init(paths: [String], read: [String]) {
+    self.paths = paths
+    self.read = read
   }
-  let entries: [Entry]
 }
 
-struct AgentVCSRequest: Encodable, Sendable {
-  var version = 1
-  var root: String?
+public struct AgentStatReply: Decodable {
+  public struct Entry: Decodable {
+    public let path: String
+    public let exists: Bool
+    public let isDir: Bool
+    public let modifiedAt: Double?
+    public let text: String?
+
+    public init(path: String, exists: Bool, isDir: Bool, modifiedAt: Double?, text: String?) {
+      self.path = path
+      self.exists = exists
+      self.isDir = isDir
+      self.modifiedAt = modifiedAt
+      self.text = text
+    }
+  }
+  public let entries: [Entry]
+
+  public init(entries: [Entry]) {
+    self.entries = entries
+  }
+}
+
+public struct AgentVCSRequest: Encodable, Sendable {
+  public var version = 1
+  public var root: String?
   // ponytail: `shared_root` and `backend` are jj-era wire fields (#266). The agent ignores the first
   // and still requires the second ("git") on every read. Prune both with a protocol bump once no
   // supported agent predates #266.
-  var sharedRoot: String?
-  var backend: String?
-  let method: String
-  var limit: Int?
-  var revision: String?
-  var path: String?
-  var base: String?
+  public var sharedRoot: String?
+  public var backend: String?
+  public let method: String
+  public var limit: Int?
+  public var revision: String?
+  public var path: String?
+  public var base: String?
+
+  public init(
+    root: String? = nil, sharedRoot: String? = nil, backend: String? = nil, method: String,
+    limit: Int? = nil, revision: String? = nil, path: String? = nil, base: String? = nil
+  ) {
+    self.root = root
+    self.sharedRoot = sharedRoot
+    self.backend = backend
+    self.method = method
+    self.limit = limit
+    self.revision = revision
+    self.path = path
+    self.base = base
+  }
 }
 
 /// Bridges `withTaskCancellationHandler`'s `onCancel` — which Swift may invoke BEFORE `request`'s
