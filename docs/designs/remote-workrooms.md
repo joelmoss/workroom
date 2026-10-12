@@ -21,6 +21,10 @@ Mode: Builder
 
 ## Current Status — 2026-10-08
 
+**Since then:** #395 (2026-10-10) removed base machines and ADR 0049 (2026-10-12) removed the
+credential broker, so the broker service, its clients and the portable derivation named below are
+gone from the code.
+
 **Phase 4 is under way, and the app can now create, open and delete remote workrooms.** Since PR
 #375 (merged 2026-10-08) that works in every build, stable included: the owner removed the
 Nightly-only gate and the hidden `remoteWorkroomsPreview` setting before #260's success criteria
@@ -302,6 +306,8 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   a provider SDK's exec/attach call or a WebSocket can carry that relay too (subject to the
   SDK-language precondition in Phase 3).
   Without a stream-shaped contract, SDK-only sandbox platforms cannot be drivers at all.
+  **Superseded by #395 (2026-10-10):** there are no base machines. The driver's `create()` makes
+  each workroom's host, with its own clone, and `deriveFromBase` is gone.
 - **Capabilities the provider might lack are implemented in the agent, not required from the
   driver.** Port forwarding, primary-screen scrollback durability, and deciding whether a workroom
   is busy are all Workroom's job, and all provider-agnostic.
@@ -322,6 +328,8 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   (premise 6). Rejected a credential broker as correct-but-premature. **Reversed by OQ20
   (2026-09-27):** a credential broker that Workroom runs replaces the deploy keys, because a deploy
   key needs repo admin for every workroom.
+  **Superseded by ADR 0049 (2026-10-12):** Workroom runs no broker. A provider's host fetches and
+  pushes with the provider's own GitHub credentials, and a container workroom relays the Mac's `gh`.
 - **Sequencing: local-first unify, preceded by a throwaway spike.** Scoped at one day when chosen;
   the provider decision added two more measurements, so treat the day as a budget and let the
   lower-priority items come back unanswered rather than letting it sprawl.
@@ -395,6 +403,8 @@ cloned, agent present) and each workroom derived from it. On a live-fork provide
 sub-second; elsewhere it is a snapshot-derived instance plus a `fetch`. This recovers most of the
 per-project cost advantage while keeping per-workroom isolation — the base is a template, not a
 shared live box — and it is an evolution of the one-VM-per-workroom decision rather than a reversal.
+**Superseded by #395 (2026-10-10):** there are no base machines. The driver's `create()` makes each
+workroom's host, with its own clone, and `deriveFromBase` is gone.
 
 **What a live fork actually duplicates.** An earlier draft of this section claimed forks would
 collide on session UUIDs. That was wrong, and wrong in a way worth recording: by this document's own
@@ -554,6 +564,9 @@ driver seam is what makes boxd replaceable rather than load-bearing.
    resolved that way; running `gh` remotely would void it.
    **Superseded for repository credentials by OQ20 (2026-09-27):** a credential broker that Workroom
    runs replaces the deploy key, for admins and writers alike.
+   **Superseded by ADR 0049 (2026-10-12):** Workroom runs no broker. A provider's host fetches and
+   pushes with the provider's own GitHub credentials, and a container workroom relays the Mac's
+   `gh`.
 7. **Config absorbs a host descriptor with no migration.** `config.json` is read and written as an
    untyped `map[string]any` under a flock, and unknown keys round-trip untouched
    (`internal/config/config.go:91-148`). The typed read-side view is only `Workroom{Path}` and
@@ -1017,6 +1030,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   `create` provisions a **base**, `deriveFromBase` provisions a **workroom instance** from one,
   `destroy` takes either, and `openStream` connects to either. (Phase 3's "one creation path" rule
   is about workrooms; it does not orphan `create`, which is how a base comes to exist at all.)
+  **Superseded by #395 (2026-10-10):** there are no base machines. The driver's `create()` makes
+  each workroom's host, with its own clone, and `deriveFromBase` is gone.
   `start`/`suspend` are gone — lifecycle
   hinting is now driven by the agent's wakefulness reports, so each driver implements whatever its
   provider needs behind that rather than exposing suspend semantics upward. (Since #382 there are
@@ -1234,6 +1249,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   how they implement it (COW fork of a live machine, snapshot-derived instance, or a full clone where
   a provider has neither). The earlier draft branched creation on `liveFork` and therefore needed two
   code paths with two sets of bugs. It now needs one, and the accelerator lives inside a driver.
+  **Superseded by #395 (2026-10-10):** there are no base machines. The driver's `create()` makes
+  each workroom's host, with its own clone, and `deriveFromBase` is gone.
 - **The CI gap closes as a consequence.** Because the portable derivation is what ships and what the
   product uses everywhere, the container fixture exercises the real path rather than a fallback
   nobody runs. What remains uncovered by CI is boxd's *live-process* derivation specifically — a
@@ -1255,6 +1272,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   `ForwardAgent no` and `ClearAllForwardings yes`. git on the host authenticates with what the host
   has, which in production is a per-workroom deploy key minted on the box (Decisions Made; Phase 4).
   Now a broker-minted token instead of a deploy key (OQ20, 2026-09-27).
+  **Superseded by ADR 0049 (2026-10-12):** Workroom runs no broker. A provider's host fetches and
+  pushes with the provider's own GitHub credentials, and a container workroom relays the Mac's `gh`.
   Agent forwarding stays rejected (premise 6). The container driver also logs in with a key file
   and `IdentityAgent none`; whether a real driver may use the Mac's ssh agent to LOG IN, which is
   not forwarding it, is that driver's decision.
@@ -1281,9 +1300,15 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   credentials are its own (open questions 9 and 10) — inherited state is the failure mode wherever
   derivation copies a running machine. **Amended by OQ20 (2026-09-27):** the keypair minted on the
   instance now enrols with Workroom's credential broker, not with `gh api` as a deploy key.
+  **Superseded by #395 (2026-10-10):** there are no base machines. The driver's `create()` makes
+  each workroom's host, with its own clone, and `deriveFromBase` is gone. **Superseded by ADR 0049
+  (2026-10-12):** Workroom runs no broker. A provider's host fetches and pushes with the provider's
+  own GitHub credentials, and a container workroom relays the Mac's `gh`.
 - **Build order within this phase is fixed by the agnosticism decision:** the slowest correct
   derivation first (snapshot or clone, whichever the fixture supports), then boxd's live fork as an
   optimisation behind the same interface. Not the other way round.
+  **Moot since #395 (2026-10-10):** there is no derivation, and boxd's live fork (#258) was closed
+  as not planned on 2026-10-09.
 - **Who performs creation?** Provisioning and derivation are the Swift driver's job in the Mac app
   (OQ21). The **repo work** — clone, fetch, checkout — is the only part with a Go CLI
   shape, and the answer is to **keep the Go CLI on the Mac and run the repo commands through the
@@ -1297,15 +1322,21 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - **The credential broker is a new component (OQ20, 2026-09-27).** A hosted service that must exist
   before the first remote push, with its own sign-in, token store and GitHub App. It was not in the
   original plan.
+  **Superseded by ADR 0049 (2026-10-12):** Workroom runs no broker. A provider's host fetches and
+  pushes with the provider's own GitHub credentials, and a container workroom relays the Mac's `gh`.
 - **The base machine is a fourth kind of thing** the config and UI have to model: not a project, not
   a workroom, but a per-project template with its own lifecycle (build, refresh when deps change,
   destroy). Nothing in the current schema anticipates it, though premise 7's untyped map absorbs it.
+  **Superseded by #395 (2026-10-10):** there are no base machines. The driver's `create()` makes
+  each workroom's host, with its own clone, and `deriveFromBase` is gone. Bases older builds
+  recorded are retired at launch (`BaseRetirement`).
 - **Remote deletion needs its own path too (C5).** The local path is `git worktree remove` / `jj
   workspace forget` plus a teardown script. Remote is destroy-the-box plus revoke-the-key, and
   `delete-project --with-workrooms` cascades per-workroom teardown, so it needs the remote fork as
   well — not just `--from-disk`'s safety gate.
 - Config: a host descriptor on **both** the project and the workroom entry — not an either/or, since
-  one VM per workroom plus a per-project base machine means both levels carry host state. No
+  one VM per workroom plus a per-project base machine means both levels carry host state. (Since
+  #395 a project's `host` only marks an older build's base for `BaseRetirement` to take down.) No
   migration needed (premise 7). **But note what cannot be represented:** `add-project` requires PATH
   to be an existing local Git/JJ repo, and project keys are canonicalized local paths
   (`config.CanonicalPath`). So there is no such thing as a *remote project* — only remote workrooms
@@ -1802,6 +1833,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   link opener that routes through the file service. Done: see "As built (#254)" below.
 - Per-workroom credential: enrol on create, revoke on destroy, and revoke on the failure paths too.
   It is a broker grant, not a deploy key (OQ20).
+  **Superseded by ADR 0049 (2026-10-12):** Workroom runs no broker. A provider's host fetches and
+  pushes with the provider's own GitHub credentials, and a container workroom relays the Mac's `gh`.
+  There is no grant to enrol or revoke: revoking access is the provider's job.
 - Idle state per remote workroom in the sidebar. **Cost display is deliberately deferred** —
   it needs per-provider billing APIs and there is no spending policy yet (open question 7). Idle
   state done: see "As built (#254)" below.
@@ -2961,6 +2995,7 @@ disagreement passes every test on either side alone while presenting as an empty
 16. **Does the base machine need its own wakefulness answer?** It is idle by construction, so the
     busy signal never fires for it, so it always hibernates — which is correct for cost and
     inconvenient for derive latency. Possibly it wants the opposite policy from a workroom.
+    **Moot since #395 (2026-10-10):** there is no base machine.
 17. ~~**Where is the keepalive emitted from?**~~ **ANSWERED — a far-side per-driver lifecycle
     shim.** The agnostic agent decides busy/idle; the shim translates it into the provider's
     control-plane call, because a sleeping Mac can emit nothing. Premise 6 is rewritten to account
@@ -3259,13 +3294,16 @@ disagreement passes every test on either side alone while presenting as an empty
 - **The same workroom behaves identically on two different providers**, differing only in creation
   latency. This is the criterion the agnosticism decision exists to satisfy, and it cannot be
   claimed until a second real driver exists.
-- Two workrooms derived from one base share neither a broker enrolment key (a deploy key, before
-  OQ20) nor an ssh host key.
+- Two remote workrooms of one project share no ssh host key. **Restated (2026-10-12):** this read
+  "two workrooms derived from one base share neither a broker enrolment key nor an ssh host key".
+  ADR 0049 removed the broker, so there is no enrolment key to compare, and #395 replaced base
+  derivation with a fresh host per workroom.
 - On a live-fork provider, derivation from a warm base completes in well under a second (a
   hibernated base is wake-then-derive) — as a measured *speed-up* over the portable path,
   not as the only path that works. **Deferred to a later release (2026-10-06):** this criterion
   moved to #258 and does not gate the remote UI leaving Nightly (#260). boxd's portable snapshot
   path is what the gate measures.
+  **Moot (2026-10-12):** #258 was closed as not planned on 2026-10-09, and #395 removed bases.
 - ~~A job longer than the provider's idle window finishes with no client attached, on a provider
   whose idle policy would otherwise have stopped it.~~ **Removed (2026-10-09):** dropped from the
   gate (#260). Since #382, whether a box sleeps is up to the user, and Workroom no longer keeps a
@@ -4150,7 +4188,9 @@ service milestones below so each layer can be reviewed and landed independently.
 
 5. **Phase 4: credentials, provisioning, lifecycle and the Nightly UI.** Resolve the non-admin
    repository credential path (OQ20) before claiming ordinary organization-repository support. OQ20
-   is decided (2026-09-27): a credential broker that Workroom runs. Implement portable derivation
+   is decided (2026-09-27): a credential broker that Workroom runs (reversed by ADR 0049, 2026-10-12:
+   each provider's own credentials, no broker). Implement portable derivation (removed by #395,
+   2026-10-10: a fresh host per workroom)
    first, including identity/key isolation and cleanup of instances and credentials after partial
    failure. Apply the measured wakefulness policy through the far-side shim (#257: through the
    agent's own heartbeat instead). Add boxd's fast
@@ -4164,7 +4204,8 @@ service milestones below so each layer can be reviewed and landed independently.
    in the app; built 2026-10-02, PR #289) → #254 (pane parity; built 2026-10-04, PR #326) and #255
    (cross-machine reattach, OQ8; built 2026-10-05, PR #349); #256 (boxd driver; built 2026-10-02, PR
    #281) → #257 (keeping a busy box awake; built 2026-10-06 as an agent heartbeat, PR #353) and #258
-   (boxd live fork; deferred to a later release on 2026-10-06, so it no longer gates #260); #259
+   (boxd live fork; deferred to a later release on 2026-10-06, so it no longer gates #260; closed as
+   not planned on 2026-10-09); #259
    (the second real provider, exe.dev, decided 2026-09-27); and #260, the gate that runs the success
    criteria on two real providers.
 
@@ -4237,6 +4278,7 @@ Carried forward, unresolved by design:
   about the remedy: the bugs were real and none of them was a rollback away from being survivable.
 - **The base machine is real scope creep** — a fourth product object introduced by a provider
   capability. Justified, named, still unpriced.
+  **Resolved by #395 (2026-10-10):** the base machine is gone.
 - Round 2 has not re-reviewed the fixes made in response to it.
 
 ## What I noticed about how you think
