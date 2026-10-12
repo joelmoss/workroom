@@ -172,7 +172,7 @@ struct WindowSeed: Codable, Hashable {
 
 /// One window's root. The value-based `WindowGroup` gives each window its own `RootWindow`, so the
 /// `@StateObject` below is a fresh per-window `AppStore` sharing the one `ProjectStore`. It injects
-/// that store into the environment, exposes it to menu commands via `focusedSceneObject`, and
+/// that store into the environment, exposes it to menu commands via `focusedSceneValue`, and
 /// registers the window↔store pair with `WindowRegistry` (issue #70).
 struct RootWindow: View {
   let seed: WindowSeed
@@ -203,7 +203,7 @@ struct RootWindow: View {
       .environmentObject(store.terminals)
       .environmentObject(store.terminals.agentManager)
       .environmentObject(store.remoteState)
-      .focusedSceneObject(store)
+      .focusedSceneValue(store)
       .frame(minWidth: 900, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
       .background(
         WindowAccessor { window in
@@ -1029,10 +1029,11 @@ struct WorkroomCommands: Commands {
   /// claim: verified on the real build, with the Add Project sheet attached every File-menu item still
   /// read `enabled=true` and ⌘T created a second terminal tab behind it. That is why enablement has to
   /// AND in `AppStore.hasModalPresentation` explicitly (see `modalBlocked` and `MenuStateValues`).
-  /// `@FocusedObject`
-  /// re-evaluates this `Commands` body when the focused store changes, so checkmarks like Projects
-  /// track the focused window's `sidebarVisible` live (the role the old `@ObservedObject` played).
-  @FocusedObject private var store: AppStore?
+  /// The focused window's store, through the `Observable` form of `@FocusedValue`, so Observation
+  /// re-evaluates this `Commands` body when a store property it reads changes: checkmarks like
+  /// Projects track the focused window's `sidebarVisible` live. `@FocusedObject` would listen only to
+  /// `objectWillChange`, which the `@Observable` store never sends.
+  @FocusedValue(AppStore.self) private var store
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
@@ -1299,6 +1300,7 @@ struct WorkroomCommands: Commands {
               store?.activeInspectorSection = .changes
               showInspector = true
               store?.changesSectionCollapsed = false
+              store?.inspectorToggles += 1
             } else {
               store?.changesSectionCollapsed = true
             }
@@ -1321,6 +1323,7 @@ struct WorkroomCommands: Commands {
               store?.activeInspectorSection = .changes
               showInspector = true
               store?.historySectionCollapsed = false
+              store?.inspectorToggles += 1
             } else {
               store?.historySectionCollapsed = true
             }
@@ -1343,6 +1346,7 @@ struct WorkroomCommands: Commands {
               store?.activeInspectorSection = .changes
               showInspector = true
               store?.prSectionCollapsed = false
+              store?.inspectorToggles += 1
             } else {
               store?.prSectionCollapsed = true
             }
@@ -1354,7 +1358,8 @@ struct WorkroomCommands: Commands {
       // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
       // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
       // pane (Files has no sub-section to collapse). Bumping `inspectorToggles` makes the bar +
-      // inspector re-render synchronously, even when the section stays Files (see `AppStore.apply`).
+      // inspector re-render synchronously, even when the section stays Files (see `AppStore.apply`);
+      // the Changes, History and Pull Request reveals above bump it for the same reason.
       Toggle(
         "Files",
         isOn: Binding(

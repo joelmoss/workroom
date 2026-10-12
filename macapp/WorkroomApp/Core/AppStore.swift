@@ -71,7 +71,8 @@ struct PendingProjectSettings: Identifiable {
 // `ObservableObject` stays only so the window root can hold the store in a `@StateObject`, which
 // builds it once; a `@State` initial value is re-evaluated on every init of the view struct, and a
 // throwaway `AppStore` registers with `WindowRegistry` and subscribes to its terminals. Nothing reads
-// its `objectWillChange`: views observe the store through Observation.
+// its `objectWillChange`: views and the menu commands (`@FocusedValue(AppStore.self)`) observe the
+// store through Observation.
 final class AppStore: ObservableObject {
   /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
   /// it that is identical across windows (root labels, VCS/CI status cache, GitHub-CLI status, busy
