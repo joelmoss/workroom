@@ -1,4 +1,3 @@
-import CryptoKit
 import WorkroomDomain
 import XCTest
 
@@ -23,9 +22,6 @@ struct LiveProvider {
   let restart: (HostID) throws -> Void
   /// The names of the machines this test made that the provider still has.
   let leftovers: () throws -> [String]
-  /// Asserted on a workroom whose git the broker's helper serves, for a provider that installs a
-  /// helper of its own (boxd's), showing that the agent's wins over it.
-  var providerHelperCheck: ((HostID) throws -> Void)?
   /// Whether the machine's sshd host key survives `restart`, as boxd's (on the disk) does.
   var restartKeepsHostKey = true
 
@@ -95,11 +91,14 @@ class ProviderParityTestCase: XCTestCase {
 
   // MARK: Workrooms, through the provisioning sequence
 
-  /// A provider's driver whose hosts also run the ssh fixture's GitHub and broker
-  /// (`vcs/scripts/ssh-fixture/fake-github.py`), as systemd units so every workroom runs its own: https for github.com on the machine's loopback, trusted for that host
-  /// only, behind a token check. git reaches it through `http.curloptResolve`, not `/etc/hosts`,
-  /// and both settings are in the user's global config, not the system's: boxd rewrites
-  /// `/etc/hosts` and `/etc/gitconfig` at every boot (measured).
+  /// A provider's driver whose hosts also run the ssh fixture's GitHub
+  /// (`vcs/scripts/ssh-fixture/fake-github.py`), as a systemd unit so every workroom runs its own:
+  /// https for github.com on the machine's loopback, trusted for that host only, behind a token
+  /// check. git reaches it through `http.curloptResolve`, not `/etc/hosts`, and answers it with
+  /// the fixture's credential helper (`git-credential-fixture`) in place of the provider's own,
+  /// which would answer the real GitHub. Every setting is in the user's global config, not the
+  /// system's: boxd rewrites `/etc/hosts` and `/etc/gitconfig` at every boot (measured), and
+  /// exe.dev's system rewrite to its integration host is undone here.
   struct WithFakeGitHub: HostTerminalDriver {
     let driver: any HostTerminalDriver
     let user: String
@@ -130,15 +129,23 @@ class ProviderParityTestCase: XCTestCase {
 
     func create() async throws -> HostID {
       let host = try await driver.create()
-      let fake = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .appendingPathComponent("../../vcs/scripts/ssh-fixture/fake-github.py")
-      let program = try String(contentsOf: fake, encoding: .utf8)
+      let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("../../vcs/scripts/ssh-fixture")
+      let program = try String(
+        contentsOf: fixture.appendingPathComponent("fake-github.py"), encoding: .utf8)
+      let helper = try String(
+        contentsOf: fixture.appendingPathComponent("git-credential-fixture"), encoding: .utf8)
       let setup = """
         set -eu
         mkdir -p /etc/workroom-fixture
         cat > /usr/local/bin/fake-github.py <<'PY'
         \(program)
         PY
+        cat > /usr/local/bin/git-credential-fixture <<'SH'
+        \(helper)
+        SH
+        chmod 755 /usr/local/bin/git-credential-fixture
+        git config --system --unset-all url.https://github.int.exe.xyz/.insteadOf || true
         openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=github.com \
           -addext subjectAltName=DNS:github.com \
           -keyout /etc/workroom-fixture/github.key -out /etc/workroom-fixture/github.pem 2>/dev/null
@@ -147,6 +154,9 @@ class ProviderParityTestCase: XCTestCase {
         sudo -u \(user) -H git config --global \
           http.https://github.com/.sslCAInfo /etc/workroom-fixture/github.pem
         sudo -u \(user) -H git config --global http.curloptResolve github.com:443:127.0.0.1
+        sudo -u \(user) -H git config --global credential.https://github.com.helper ""
+        sudo -u \(user) -H git config --global --add \
+          credential.https://github.com.helper /usr/local/bin/git-credential-fixture
         seed=$(mktemp -d)
         git init -q -b main "$seed"
         echo origin > "$seed/README"
@@ -176,42 +186,24 @@ class ProviderParityTestCase: XCTestCase {
     }
   }
 
-  static let grant = BrokerStub.Answer(
-    status: 201,
-    body: #"{"grant_id":"g1","enrolment_code":"one-time","repository_id":1,"expires_at":"x"}"#)
-  static let cancelled = BrokerStub.Answer(body: #"{"grant_id":"g1","state":"cancelled"}"#)
-
-  var grantsCancelled: Int {
-    BrokerStub.requests.filter {
-      $0.request.httpMethod == "DELETE" && $0.request.url?.path == "/broker/grants/g1"
-    }.count
-  }
-
-  /// The provisioning sequence over `driver`. The Mac's broker calls go to `BrokerStub`; each
-  /// agent enrols with the fake broker on its own machine, `brokerURL` (or one that refuses).
-  func environment(
-    _ driver: any HostDriver, brokerURL: String = "http://127.0.0.1:8081"
-  ) -> RemoteProvisioning.Environment {
+  /// The provisioning sequence over `driver`, as the app runs it for a remote provider: Workroom
+  /// gives the host no credential.
+  func environment(_ driver: any HostDriver) -> RemoteProvisioning.Environment {
     let socket = driver.agentSocket
     return RemoteProvisioning.Environment(
       driver: driver, agentSocket: socket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey()),
-        session: BrokerStub.session),
-      agentBroker: .init(url: { _, _, _ in URL(string: brokerURL)! }, release: { _ in }),
       connect: { host in
         try await AgentBootstrap.connect(
           host: host, driver: driver, socket: socket, handOff: false)
       })
   }
 
-  /// AC 1 (through the sequence the app runs, `RemoteProvisioning`), AC 2 and AC 3 for enrolment,
-  /// and AC 4.
+  /// AC 1 (through the sequence the app runs, `RemoteProvisioning`), AC 2 and AC 4.
   ///
-  /// Two workrooms are made, each on a host of its own, on its own branch with its own enrolment
-  /// key. git on a workroom clones with a token from the agent's helper, which the broker minted,
-  /// and with the Mac's link gone it fetches and pushes. After its machine restarts, a pane comes back to
-  /// its last screen and git still mints: the enrolment is on the home disk.
+  /// Two workrooms are made, each on a host of its own, on its own branch. git on a workroom clones
+  /// with the host's own credential helper, and with the Mac's link gone it fetches and pushes.
+  /// After its machine restarts, a pane comes back to its last screen and git is still answered:
+  /// the helper's config is on the home disk.
   @MainActor
   func workroomsPushWithTheMacDisconnectedAndSurviveARestart(_ provider: LiveProvider)
     async throws
@@ -220,33 +212,22 @@ class ProviderParityTestCase: XCTestCase {
     let driver = WithFakeGitHub(driver: provider.driver, user: provider.user)
     let environment = environment(driver)
 
-    var instances: [(RemoteProvisioning.Instance, UUID)] = []
-    var keys: [String] = []
+    var instances: [RemoteProvisioning.Instance] = []
     for branch in ["wr-one", "wr-two"] {
-      BrokerStub.reset([Self.grant])
-      let workroom = UUID()
       let instance = try await RemoteProvisioning.provision(
-        repository: "o/r", cloneURL: "https://github.com/origin.git", path: path,
-        workroom: workroom, branch: branch, in: environment)
-      instances.append((instance, workroom))
+        cloneURL: "https://github.com/origin.git", path: path, branch: branch, in: environment)
+      instances.append(instance)
+      XCTAssertFalse(instance.relayed)
       let head = try await RemoteProvisioning.git(
         ["rev-parse", "--abbrev-ref", "HEAD"], in: instance.path, on: instance.connection)
       XCTAssertEqual(head.trimmingCharacters(in: .whitespacesAndNewlines), branch)
-      let state = try await onHost(
-        driver, instance.host, "cat ~/.local/state/workroom/agent/broker.json")
-      let enrolment = try XCTUnwrap(
-        JSONSerialization.jsonObject(with: Data(state.utf8)) as? [String: Any])
-      XCTAssertEqual(enrolment["workroom_id"] as? String, workroom.uuidString.lowercased())
-      keys.append(try XCTUnwrap(enrolment["key"] as? String))
     }
-    XCTAssertNotEqual(keys[0], keys[1], "two workrooms share an enrolment key")
 
-    let (first, _) = instances[0]
+    let first = instances[0]
     await first.connection.close()
     let onBox = { (line: String) in try provider.onBox(first.host, "cd \(path) && { \(line); }") }
     let fill = try onBox("printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill")
-    XCTAssertTrue(fill.contains("password=ghs_minted_"), fill)
-    try provider.providerHelperCheck?(first.host)
+    XCTAssertTrue(fill.contains("password=\(WithFakeGitHub.cloneToken)"), fill)
 
     let commit = try onBox(
       "git -c user.name=W -c user.email=w@example.com commit -q --allow-empty -m pushed"
@@ -304,44 +285,38 @@ class ProviderParityTestCase: XCTestCase {
       XCTAssertEqual(before[0], after[0], "a restart minted a new ssh host key")
     }
     let refill = try onBox("printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill")
-    XCTAssertTrue(refill.contains("password=ghs_minted_"), "the enrolment was lost: \(refill)")
+    XCTAssertTrue(
+      refill.contains("password=\(WithFakeGitHub.cloneToken)"), "the helper was lost: \(refill)")
 
-    for (instance, workroom) in instances {
-      BrokerStub.reset([Self.cancelled])
-      try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
-      XCTAssertEqual(grantsCancelled, 1, "destroying a workroom left its grant live")
-    }
+    for instance in instances { try await RemoteProvisioning.destroy(instance, in: environment) }
     XCTAssertEqual(try provider.leftovers(), [])
   }
 
-  /// AC 5, for the steps after the provider's: a workroom whose enrolment or checkout fails is
-  /// removed with its grant cancelled.
+  /// AC 5, for the steps after the provider's: a workroom whose clone or checkout fails is removed.
   @MainActor
   func aWorkroomThatFailsAfterItsMachineLeavesNothing(_ provider: LiveProvider) async throws {
     let driver = WithFakeGitHub(driver: provider.driver, user: provider.user)
 
-    // Nothing listens there, so the agent's enrolment fails after the grant is made; and git
-    // refuses the branch name only once the workroom is enrolled and cloned.
-    for (step, environment, branch) in [
-      ("enrol", environment(driver, brokerURL: "http://127.0.0.1:9"), "wr-enrol"),
-      ("checkout", environment(driver), "bad..name"),
+    // The fake GitHub has no such repository; and git refuses the branch name only once the
+    // workroom is cloned.
+    for (step, cloneURL, branch) in [
+      ("clone", "https://github.com/no-such.git", "wr-clone"),
+      ("checkout", "https://github.com/origin.git", "bad..name"),
     ] {
-      BrokerStub.reset([Self.grant, Self.cancelled])
       do {
         _ = try await RemoteProvisioning.provision(
-          repository: "o/r", cloneURL: "https://github.com/origin.git",
-          path: "\(provider.home)/project", workroom: UUID(), branch: branch, in: environment)
+          cloneURL: cloneURL, path: "\(provider.home)/project", branch: branch,
+          in: environment(driver))
         XCTFail("a workroom that failed at \(step) was made")
       } catch {
         switch (step, error) {
-        case ("enrol", BrokerError.agent),
+        case ("clone", RemoteProvisioning.Failure.git("clone", _)),
           ("checkout", RemoteProvisioning.Failure.git("switch", _)):
           break
         default: XCTFail("\(step) failed for another reason: \(error)")
         }
       }
       XCTAssertEqual(try provider.leftovers(), [], "a failure at \(step) left a machine")
-      XCTAssertEqual(grantsCancelled, 1, "a failure at \(step) left its grant live")
     }
   }
 
@@ -350,7 +325,7 @@ class ProviderParityTestCase: XCTestCase {
   /// A remote workroom made and taken down the way the app does it (`RemoteWorkrooms.create` and
   /// `delete` on the provider's driver key): it clones in the provider user's home, its record
   /// names the provider with its account and its own repository, the project records nothing, and
-  /// deleting the workroom leaves no machine and no live grant.
+  /// deleting the workroom leaves no machine.
   @MainActor
   func aRemoteWorkroomIsMadeAndTakenDownAsTheAppDoesIt(_ provider: LiveProvider) async throws {
     let driver = WithFakeGitHub(driver: provider.driver, user: provider.user)
@@ -366,7 +341,6 @@ class ProviderParityTestCase: XCTestCase {
       forget: { name in records.forget(name) })
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
 
-    BrokerStub.reset([Self.grant])
     let created = try await RemoteWorkrooms.create(
       repository: repository, cloneURL: "https://github.com/origin.git", key: key,
       driver: driver, environment: environment, recorder: recorder)
@@ -379,13 +353,12 @@ class ProviderParityTestCase: XCTestCase {
     XCTAssertEqual(workroom.account, key.account)
     XCTAssertEqual(workroom.repository, "o/r")
     XCTAssertNil(workroom.container)
+    XCTAssertNil(workroom.credentials, "a provider's workroom was relayed")
     XCTAssertEqual(RemoteHosts.DriverKey(workroom), key)
 
-    BrokerStub.reset([Self.cancelled])
     try await RemoteWorkrooms.delete(
       "w", host: workroom, environment: environment, recorder: recorder)
     XCTAssertNil(records.workrooms["w"], "the workroom's entry was kept")
-    XCTAssertEqual(grantsCancelled, 1, "deleting the workroom left its grant live")
     XCTAssertEqual(try provider.leftovers(), [])
   }
 

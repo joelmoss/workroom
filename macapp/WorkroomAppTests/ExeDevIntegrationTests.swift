@@ -118,7 +118,7 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
   }
 
   @MainActor
-  func testAWorkroomThatFailsAfterItsMachineLeavesNoVMAndNoGrant() async throws {
+  func testAWorkroomThatFailsAfterItsMachineLeavesNoVM() async throws {
     try await aWorkroomThatFailsAfterItsMachineLeavesNothing(provider())
   }
 

@@ -54,6 +54,24 @@ enum RemoteWorkrooms {
     /// The remote providers, in the order the New Workroom menu and picker list them (#259). A new
     /// provider is a case here and an entry in this list.
     static let remoteProviders: [Place] = [.boxd, .exeDev]
+
+    /// How the user gives this place's hosts GitHub access, said after git's own words when a clone
+    /// fails, or nil where Workroom gives it (a container takes the Mac's `gh` through the relay,
+    /// #309). A remote provider's host fetches and pushes with the provider's own credentials, so
+    /// it keeps working with this Mac closed. Worded for the one cause Workroom can't tell apart
+    /// from git's message: the clone fails the same way for a network or GitHub outage.
+    var credentialHint: String? {
+      switch self {
+      case .container: nil
+      case .boxd:
+        "If GitHub refused the clone: a boxd machine reaches GitHub through your boxd git "
+          + "integration. Connect it with `boxd manage integrations connect git`."
+      case .exeDev:
+        "If GitHub refused the clone: an exe.dev VM reaches a GitHub repository through an exe.dev "
+          + "integration for it. Add one with `ssh exe.dev integrations add github --name <name> "
+          + "--repository <owner/repo> --act-as-user --attach auto:all`."
+      }
+    }
   }
 
   /// Why a workroom can't be created at `place` now, as the New Workroom menu and picker show it
@@ -65,29 +83,12 @@ enum RemoteWorkrooms {
     case .boxd:
       // Only what is cheap to read: this runs in menus' and the picker's bodies. Whether boxd is
       // signed in is a CLI call, so a create checks that (`RemoteHosts.key(for:)`).
-      unavailability(
-        ofBoxdInstalled: RemoteHosts.boxdExecutable() != nil,
-        codasetSignedIn: BrokerSession.shared.isSignedIn)
+      RemoteHosts.boxdExecutable() == nil ? "not installed" : nil
     case .exeDev:
       // ssh is always there; whether exe.dev knows a key of the user's is an ssh call, which a
       // create makes (`RemoteHosts.key(for:)`).
-      BrokerSession.shared.isSignedIn ? nil : "sign in to Codaset"
+      nil
     }
-  }
-
-  /// A boxd workroom fetches and pushes with the broker's tokens, never the Mac's `gh` (OQ20): it
-  /// must keep working with the Mac closed. So Codaset is required, where a container is not.
-  static func unavailability(ofBoxdInstalled installed: Bool, codasetSignedIn: Bool) -> String? {
-    if !installed { return "not installed" }
-    if !codasetSignedIn { return "sign in to Codaset" }
-    return nil
-  }
-
-  /// Throws `codasetRequired` for a workroom on a remote provider with nobody signed in to Codaset:
-  /// it fetches and pushes with the broker's tokens only, so it keeps working with the Mac closed
-  /// (OQ20, #356). A local container needs no broker; signed out, it takes the Mac's relay (#309).
-  static func checkCredentials(for key: RemoteHosts.DriverKey, client: BrokerClient?) throws {
-    if key.isRemoteProvider, client == nil { throw Failure.codasetRequired }
   }
 
   /// The descriptor's `driver` for a Docker host.
@@ -109,9 +110,9 @@ enum RemoteWorkrooms {
       appleSilicon: appleSilicon,
       macOS26: ProcessInfo.processInfo.isOperatingSystemAtLeast(
         OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)),
-      // The session's state, not `client()`: that reads the Keychain and rebuilds the device key,
-      // and this runs in menus' and the picker's bodies. A create checks for real.
-      signedIn: BrokerSession.shared.isSignedIn || CredentialRelay.hasGitHubSignIn())
+      // gh's files, not `gh auth token`: this runs in menus' and the picker's bodies. A create
+      // checks for real.
+      signedIn: CredentialRelay.hasGitHubSignIn())
   }
 
   static func unavailability(
@@ -123,8 +124,8 @@ enum RemoteWorkrooms {
       if !macOS26 { return "needs macOS 26" }
     }
     if !installed { return "not installed" }
-    // Codaset's broker, or the Mac's own `gh` through the relay (#309).
-    if !signedIn { return "sign in to Codaset or run gh auth login" }
+    // The Mac's own `gh`, through the relay (#309).
+    if !signedIn { return "run gh auth login" }
     return nil
   }
   /// The descriptor's `provisioner`: this build, whose ssh key and Docker labels its hosts carry.
@@ -138,9 +139,9 @@ enum RemoteWorkrooms {
 
   /// Whether `own`'s build may open and take down `host`. Its own, always. Another
   /// build's only on a remote provider, and only between Release and Nightly: a boxd or exe.dev
-  /// machine is reached through the provider's CLI and the user's own ssh, and a grant cancels by
-  /// Codaset user, so nothing there is the build's. A container takes this build's ssh key and
-  /// Docker labels, so it stays the build's alone.
+  /// machine is reached through the provider's CLI and the user's own ssh, so nothing there is the
+  /// build's. A container takes this build's ssh key and Docker labels, so it stays the build's
+  /// alone.
   static func ownsHost(_ host: HostDescriptor, as own: String = provisioner) -> Bool {
     if host.provisioner == own { return true }
     guard let theirs = host.provisioner, RemoteHosts.DriverKey(host)?.isRemoteProvider == true
@@ -182,9 +183,18 @@ enum RemoteWorkrooms {
     return ("origin", base)
   }
 
-  /// How a workroom clones `repository`: over https, which is how the broker's tokens work.
-  static func cloneURL(for repository: GitHubRepository) -> String {
-    "https://\(repository.host)/\(repository.owner)/\(repository.name).git"
+  /// How a workroom clones `repository`: with the project's `origin` URL as it is, when it names
+  /// `repository` in a form every host rewrites to https: https, or `git@github.com:`, which boxd
+  /// rewrites itself and an exe.dev host and a container's relay are given a rewrite for. Any other
+  /// origin (another repository gh resolved, `ssh://` or a user-less scp form) gives way to https.
+  static func cloneURL(for repository: GitHubRepository, origin: String?) -> String {
+    if let origin = origin?.trimmingCharacters(in: .whitespacesAndNewlines),
+      origin.hasPrefix("https://github.com/") || origin.hasPrefix("git@github.com:"),
+      GitHubRepository(remote: origin) == repository
+    {
+      return origin
+    }
+    return "https://\(repository.host)/\(repository.owner)/\(repository.name).git"
   }
 
   /// Where a workroom clones its repository on a host of `key`: the home of the user its
@@ -197,13 +207,10 @@ enum RemoteWorkrooms {
 
   enum Failure: Error, LocalizedError, Equatable {
     case signedOut
-    /// Signed out of Codaset, which alone can cancel a workroom's grant.
-    case signedOutOfGrant
     case notOnGitHub(String)
     case noDocker
     case noAppleContainer
     case anotherBuildsHost(String)
-    case codasetRequired
     case boxdNotInstalled
     case baseBranchNotOnOrigin(String)
     case baseBranchOnOtherRemote(String)
@@ -211,18 +218,12 @@ enum RemoteWorkrooms {
     var errorDescription: String? {
       switch self {
       case .signedOut:
-        return "Sign in to Codaset in Settings → Remote workrooms, or to GitHub with "
-          + "`gh auth login`: one of them gives the workroom its GitHub access."
-      case .signedOutOfGrant:
-        return "Sign in to Codaset in Settings → Remote workrooms to cancel its grant."
+        return "Sign in to GitHub with `gh auth login`: it gives the workroom its GitHub access."
       case .notOnGitHub(let detail):
         return "A remote workroom needs a project whose origin is on github.com. \(detail)"
       case .anotherBuildsHost(let build):
         return "It runs on a remote host another Workroom build made (\(build)), which this build "
           + "can't take down. Delete it from that build."
-      case .codasetRequired:
-        return "A remote workroom fetches and pushes with Codaset's repository tokens, so it keeps "
-          + "working with this Mac closed. Sign in to Codaset in Settings → Remote workrooms."
       case .baseBranchNotOnOrigin(let branch):
         return "This project's new workrooms start from \(branch), which origin doesn't have. A "
           + "remote workroom can only start from origin's branches. Push \(branch), or change the "
@@ -260,8 +261,8 @@ enum RemoteWorkrooms {
     }
   }
 
-  /// A workroom's (or an older build's base's) `owner/name`, on github.com, the only host the
-  /// broker mints for.
+  /// A workroom's (or an older build's base's) `owner/name`, on github.com, the only host a remote
+  /// workroom is made for (`notOnGitHub`).
   static func gitHubRepository(_ repository: String) -> GitHubRepository? {
     let parts = repository.split(separator: "/", omittingEmptySubsequences: false)
     guard parts.count == 2 else { return nil }
@@ -306,7 +307,7 @@ enum RemoteWorkrooms {
   /// `PendingMachines` for a remote provider's machine, #373).
   ///
   /// When the create fails and undid itself, the entry is dropped. When undoing it failed too, the
-  /// entry keeps what is still live (host, grant) so deleting it can finish the job.
+  /// entry keeps the host that is still live so deleting it can finish the job.
   static func create(
     repository: GitHubRepository, cloneURL: String, startBranch: String? = nil,
     key: RemoteHosts.DriverKey = .init(),
@@ -326,29 +327,23 @@ enum RemoteWorkrooms {
     let instance: RemoteProvisioning.Instance
     do {
       instance = try await RemoteProvisioning.provision(
-        repository: origin, cloneURL: cloneURL, path: path, workroom: workroomID,
-        branch: branch(for: name), startBranch: startBranch, in: environment
-      ) { host, grant in
+        cloneURL: cloneURL, path: path, branch: branch(for: name), startBranch: startBranch,
+        in: environment
+      ) { host in
         // Still `creating`, but now naming what a delete has to take down.
         try await recorder.record(
           name,
           remaining(
-            state: "creating", workroomID: workroomID, host: host, grant: grant, key: key,
-            driver: driver))
+            state: "creating", workroomID: workroomID, host: host, key: key, driver: driver))
       }
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let host, let grant, let left)
-    {
-      // `destroyed` only with nothing live: the CLI deletes a destroyed entry, and a live grant
-      // must keep its record until the app's delete cancels it.
-      await recordLeftBehind(host, grant: grant) {
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let host, let left) {
+      await recordLeftBehind(host) {
         try await recorder.record(
           name,
           remaining(
-            state: host == nil && grant == nil ? "destroyed" : "failed", workroomID: workroomID,
-            host: host, grant: grant, key: key, driver: driver))
+            state: "failed", workroomID: workroomID, host: host, key: key, driver: driver))
       }
-      throw RemoteProvisioning.Failure.rollbackIncomplete(
-        cause: cause, host: host, grantID: grant, cleanup: left)
+      throw RemoteProvisioning.Failure.rollbackIncomplete(cause: cause, host: host, cleanup: left)
     } catch HostDriverError.leftBehind(let cause, let left, let host?) {
       // The driver could not remove the machine it made: the entry keeps it, `failed`, so deleting
       // the workroom takes it down. Forgotten, a paid machine would run on with nothing to find it.
@@ -356,11 +351,9 @@ enum RemoteWorkrooms {
         try await recorder.record(
           name,
           remaining(
-            state: "failed", workroomID: workroomID, host: host, grant: nil, key: key,
-            driver: driver))
+            state: "failed", workroomID: workroomID, host: host, key: key, driver: driver))
       }
-      throw RemoteProvisioning.Failure.rollbackIncomplete(
-        cause: cause, host: host, grantID: nil, cleanup: left)
+      throw RemoteProvisioning.Failure.rollbackIncomplete(cause: cause, host: host, cleanup: left)
     } catch {
       try? await recorder.forget(name)
       throw error
@@ -372,24 +365,22 @@ enum RemoteWorkrooms {
     do {
       var descriptor = describing(
         instance.host, key: key, driver: driver, credentials: instance.relayed)
-      descriptor.grantID = instance.grantID
       descriptor.workroomID = workroomID
       // Its own GitHub identity, for PR and CI status (`registrations`).
       descriptor.repository = origin
       descriptor.cloneURL = cloneURL
       try await recorder.record(name, descriptor)
     } catch {
-      // Unrecorded, the instance would be found by nothing but the sweep, and its grant by nothing.
+      // Unrecorded, the instance would be found by nothing but the sweep.
       do {
-        try await RemoteProvisioning.destroy(instance, workroom: workroomID, in: environment)
-      } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, _) {
+        try await RemoteProvisioning.destroy(instance, in: environment)
+      } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _) {
         // Something is still live: the entry stays, `failed`, for delete to finish.
-        await recordLeftBehind(host, grant: grant) {
+        await recordLeftBehind(host) {
           try await recorder.record(
             name,
             remaining(
-              state: "failed", workroomID: workroomID, host: host, grant: grant, key: key,
-              driver: driver))
+              state: "failed", workroomID: workroomID, host: host, key: key, driver: driver))
         }
         throw error
       } catch {
@@ -401,13 +392,13 @@ enum RemoteWorkrooms {
     return Created(name: name, instance: instance)
   }
 
-  /// The descriptor of a workroom whose undoing left `host` and `grant` live.
+  /// The descriptor of a workroom whose undoing left `host` live.
   private static func remaining(
-    state: String, workroomID: UUID, host: HostID?, grant: String?, key: RemoteHosts.DriverKey,
+    state: String, workroomID: UUID, host: HostID, key: RemoteHosts.DriverKey,
     driver: any HostTerminalDriver
   ) -> HostDescriptor {
     var descriptor = HostDescriptor(
-      state: state, driver: driverName(key), provisioner: provisioner, grantID: grant,
+      state: state, driver: driverName(key), provisioner: provisioner,
       workroomID: workroomID, org: key.org, account: key.account)
     if case .remote(let id) = host {
       descriptor.id = id
@@ -438,11 +429,11 @@ enum RemoteWorkrooms {
     }
   }
 
-  /// Whether `host` records anything still up: a box or a grant. A destroyed one has nothing, and
-  /// neither has one a create left at `creating` before its driver made a box, whose container (if
-  /// any) the sweep takes once no record names it.
+  /// Whether `host` records a box still up. A destroyed one has none, and neither has one a create
+  /// left at `creating` before its driver made a box, whose container (if any) the sweep takes once
+  /// no record names it.
   static func isLive(_ host: HostDescriptor) -> Bool {
-    !host.isDestroyed && (host.id != nil || host.grantID != nil)
+    !host.isDestroyed && host.id != nil
   }
 
   /// Refuses to take down `hosts` when one that is live is another build's: its key and labels are
@@ -475,49 +466,31 @@ enum RemoteWorkrooms {
       try await recorder.forget(name)
     }
     guard try checkDeletable([host]) else { return try await forget() }
-    guard let environment else { throw Failure.signedOut }
-    let box = host.id.map(HostID.remote)
-    if let box, let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
+    // `checkDeletable` found it live, so it has a box.
+    guard let environment, let id = host.id else { throw Failure.signedOut }
+    let box = HostID.remote(id)
+    if let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
       await HostConnectionManager.shared.disconnect(lease)
     }
     do {
-      try await RemoteProvisioning.tearDown(
-        host: box, grantID: host.grantID, workroom: host.workroomID, in: environment)
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(
-      let cause, let liveHost, let grant, let left)
-    {
+      try await RemoteProvisioning.tearDown(host: box, in: environment)
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let liveHost, let left) {
       var remaining = host
       remaining.state = "failed"
-      remaining.grantID = grant
-      if liveHost == nil {
-        // The box is gone though its grant is not: the record forgets the host, so a later delete
-        // could not find its forwards to stop (#380).
-        if let id = host.id {
-          await MainActor.run { PortForwardingModel.forgetHost(.remote(id)) }
-        }
-        (remaining.id, remaining.container) = (nil, nil)
-      }
-      await recordLeftBehind(liveHost, grant: grant) { try await recorder.record(name, remaining) }
+      await recordLeftBehind(liveHost) { try await recorder.record(name, remaining) }
       throw RemoteProvisioning.Failure.rollbackIncomplete(
-        cause: cause, host: liveHost, grantID: grant, cleanup: left)
+        cause: cause, host: liveHost, cleanup: left)
     }
-    if let id = host.id { await RemoteHosts.shared.forgetRelay(id) }
+    await RemoteHosts.shared.forgetRelay(id)
     try await forget()
   }
 
-  /// Records what a failure left live (a machine, a grant). A record that fails too is logged with
-  /// it named, since nothing else in the app will remember it (#356).
-  private static func recordLeftBehind(
-    _ host: HostID?, grant: String? = nil, _ write: () async throws -> Void
-  ) async {
+  /// Records what a failure left live (a machine). A record that fails too is logged with it named,
+  /// since nothing else in the app will remember it (#356).
+  private static func recordLeftBehind(_ host: HostID, _ write: () async throws -> Void) async {
     do { try await write() } catch {
-      let live = [host.map { String(describing: $0) }, grant.map { "grant \($0)" }].compactMap {
-        $0
-      }
-      let what =
-        live.isEmpty ? "the workroom as destroyed" : "\(live.joined(separator: ", ")) left live"
       logger.error(
-        "could not record \(what, privacy: .public): \(error.localizedDescription, privacy: .public)"
+        "could not record \(String(describing: host), privacy: .public) left live: \(error.localizedDescription, privacy: .public)"
       )
     }
   }
@@ -565,8 +538,9 @@ final class RemoteHosts: @unchecked Sendable {
     }
 
     /// Whether the key names a remote provider rather than a container runtime on this Mac. A
-    /// remote provider's workroom takes the broker's tokens only (OQ20), is reached by name with
-    /// nothing to adopt, and runs whether or not this Mac has a container runtime (#259).
+    /// remote provider's workroom takes git credentials from the provider, never the Mac's relay,
+    /// is reached by name with nothing to adopt, and runs whether or not this Mac has a container
+    /// runtime (#259).
     var isRemoteProvider: Bool { runtime == nil }
 
     /// The user its driver's hosts log in as, whose home holds the clone.
@@ -808,9 +782,9 @@ final class RemoteHosts: @unchecked Sendable {
       for descriptor in recorded {
         if let id = descriptor.id, let key = DriverKey(descriptor) { keys[id] = key }
         // A base never has git ask for credentials; only its workrooms are relayed. A newly relayed
-        // host can be connected already (a Debug create's enrolment opens its connection first,
-        // then falls back to the relay), so the next connection check installs its relay; one a
-        // connect installs it on clears this.
+        // host can be connected already (its create opened the connection before it was
+        // recorded), so the next connection check installs its relay; one a connect installs it on
+        // clears this.
         if let id = descriptor.id, descriptor.isRelayed, !bases.contains(id),
           relayed.insert(id).inserted
         {
@@ -940,28 +914,18 @@ final class RemoteHosts: @unchecked Sendable {
     return DriverKey(runtime: .docker, context: try await containerDriver().currentContext())
   }
 
-  /// The sequence's environment over `key`'s driver, signed in as this Mac.
+  /// The sequence's environment over `key`'s driver.
   @MainActor
   func environment(_ key: DriverKey = DriverKey()) throws -> (
     any HostTerminalDriver, RemoteProvisioning.Environment
   ) {
-    // Signed out of Codaset, a local container workroom's git credentials come from the Mac's own
-    // `gh` instead (#309). A remote host's never do: it must fetch and push with the Mac closed,
-    // so it takes the broker's repo-scoped tokens only (OQ20, #356).
-    let client = BrokerSession.shared.client()
+    // A local container workroom's git credentials come from the Mac's own `gh` (#309). A remote
+    // host's never do: it must fetch and push with the Mac closed, so it takes the provider's own.
     let driver = try driver(key)
-    var environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: driver.agentSocket, client: client,
-      gitHubToken: key.isRemoteProvider ? nil : CredentialRelay.gitHubToken)
-    #if DEBUG
-      // A Debug agent reaches this Mac's Codaset through a listener on its host, which lives on
-      // the host's service connection (`BrokerReverseForwards`), so that connection comes first.
-      let standard = environment.agentBroker
-      environment.agentBroker.url = { client, workroom, host in
-        try await self.connect(host, driver: driver)
-        return try await standard.url(client, workroom, host)
-      }
-    #endif
+    let environment = RemoteProvisioning.Environment(
+      driver: driver, agentSocket: driver.agentSocket,
+      gitHubToken: key.isRemoteProvider ? nil : CredentialRelay.gitHubToken,
+      credentialHint: key.place.credentialHint)
     return (driver, environment)
   }
 

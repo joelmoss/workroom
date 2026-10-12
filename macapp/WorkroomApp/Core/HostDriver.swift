@@ -12,7 +12,7 @@ import Foundation
 protocol HostDriver: Sendable {
   /// The supervised agent's socket on this driver's hosts: what the bootstrap installs the agent
   /// beside, and the relay and the attach connect to. A remote provider's is on the host's home
-  /// disk, so its enrolment and screens survive a stop (#259).
+  /// disk, so its binary and screens survive a stop (#259).
   var agentSocket: String { get }
   /// Provisions a workroom's host.
   func create() async throws -> HostID
@@ -76,11 +76,16 @@ extension HostDriver {
 enum HostSetup {
   /// `Resources/host-setup/systemd.sh`: the identity unit and the agent's supervisor, for a machine
   /// that runs systemd (boxd, exe.dev).
-  static func systemdScript() throws -> String {
+  static func systemdScript() throws -> String { try script("systemd") }
+
+  /// `Resources/host-setup/exedev-github.sh`: points an exe.dev VM's git and gh at exe.dev's
+  /// GitHub integration.
+  static func exeDevGitHubScript() throws -> String { try script("exedev-github") }
+
+  static func script(_ name: String) throws -> String {
     guard
-      let url = Bundle.main.url(
-        forResource: "systemd", withExtension: "sh", subdirectory: "host-setup")
-    else { throw HostDriverError.invalidConfiguration("this build has no host-setup/systemd.sh") }
+      let url = Bundle.main.url(forResource: name, withExtension: "sh", subdirectory: "host-setup")
+    else { throw HostDriverError.invalidConfiguration("this build has no host-setup/\(name).sh") }
     return try String(contentsOf: url, encoding: .utf8)
   }
 }

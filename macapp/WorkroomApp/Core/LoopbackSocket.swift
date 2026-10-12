@@ -2,8 +2,8 @@ import Darwin
 import Foundation
 
 /// An ephemeral TCP listener on 127.0.0.1, close-on-exec: nothing off this Mac can reach it, and no
-/// process this app spawns inherits it. Shared by the port forwards, the credential relay, the
-/// broker sign-in and the container port probe.
+/// process this app spawns inherits it. Shared by the port forwards, the credential relay and the
+/// container port probe.
 enum LoopbackSocket {
   /// The listening descriptor and the port it was given, or nil with `errno` set (nothing left
   /// open).

@@ -8,7 +8,6 @@ struct ErrorSheet: View {
   let title: String
   let message: String
   let details: String?
-  let link: AppStore.ErrorLink?
   let onDismiss: () -> Void
 
   @State private var showDetails = false
@@ -64,13 +63,6 @@ struct ErrorSheet: View {
           .accessibilityIdentifier("error.copy")
         }
         Spacer()
-        if let link {
-          Button(link.title) {
-            NSWorkspace.shared.open(link.url)
-            onDismiss()
-          }
-          .accessibilityIdentifier("error.link")
-        }
         Button("OK") { onDismiss() }
           .keyboardShortcut(.defaultAction)
           .accessibilityIdentifier("error.ok")

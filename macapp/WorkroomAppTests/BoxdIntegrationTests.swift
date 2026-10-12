@@ -1,4 +1,3 @@
-import CryptoKit
 import XCTest
 
 @testable import Workroom
@@ -101,15 +100,7 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
         try self.boxd(["machine", "stop", self.name(host)])
         try self.boxd(["machine", "start", self.name(host)])
       },
-      leftovers: { try self.leftovers("machine") + self.leftovers("snapshots") },
-      providerHelperCheck: { host in
-        // boxd's helper is still in system config, and the agent's comes after an empty entry
-        // that resets the list, so the password git is given is the broker's.
-        XCTAssertTrue(
-          try self.onBox(host, "git config --system --get credential.https://github.com.helper")
-            .contains("boxd"),
-          "boxd's own helper is gone, so this shows nothing about which one wins")
-      })
+      leftovers: { try self.leftovers("machine") + self.leftovers("snapshots") })
   }
 
   /// The signed-in account's key, for a workroom made the way the app does it.
@@ -200,7 +191,7 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
   }
 
   @MainActor
-  func testAWorkroomThatFailsAfterItsMachineLeavesNoMachineAndNoGrant() async throws {
+  func testAWorkroomThatFailsAfterItsMachineLeavesNoMachine() async throws {
     try await aWorkroomThatFailsAfterItsMachineLeavesNothing(provider())
   }
 

@@ -83,15 +83,6 @@ extension Defaults.Keys {
   /// `RemoteHosts.resources` picks. Hidden: `defaults write <bundle id> containerCPUs -int 6`.
   static let containerCPUs = Key<Int?>("containerCPUs", default: nil, suite: .app)
   static let containerMemory = Key<String?>("containerMemory", default: nil, suite: .app)
-  /// The Workroom credential broker (Codaset). Empty means the build's own: codaset.dev, or
-  /// `https://codaset.localhost` in a Debug build, which only ever reaches this Mac
-  /// (`BrokerEndpoint`). Hidden; override with `defaults write <bundle id> brokerURL <url>`.
-  static let brokerURL = Key<String>("brokerURL", default: "", suite: .app)
-  /// Debug builds only: the port of the development Codaset's Puma on this Mac, which a remote
-  /// agent's broker requests are carried to (`BrokerReverseForwards`). 0, the default, asks Caddy
-  /// where it routes the broker's host (`DevelopmentCodaset`): `bin/dev` gives Puma a free port each
-  /// start. Hidden; pin one with `defaults write <bundle id> brokerAgentTarget -int <port>`.
-  static let brokerAgentTarget = Key<Int>("brokerAgentTarget", default: 0, suite: .app)
 
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)

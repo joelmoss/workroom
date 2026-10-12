@@ -188,13 +188,6 @@ extension AppStore {
     return nil
   }
 
-  /// Whether a create must say that its workroom fell back to the Mac's own GitHub token (#309, D9):
-  /// signed in to Codaset, yet the workroom relays, which only an uninstalled Codaset App does.
-  /// Signed out, the relay is the only way, and expected.
-  nonisolated static func fellBackToGitHub(signedIn: Bool, relayed: Bool) -> Bool {
-    signedIn && relayed
-  }
-
   /// Whether creating a container workroom is on for `project`: not while another create holds it
   /// busy. A remote create holds it only until its workroom has a name.
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
@@ -267,10 +260,8 @@ extension AppStore {
     do {
       let key = try await RemoteHosts.shared.key(for: place)
       let (driver, environment) = try RemoteHosts.shared.environment(key)
-      // A remote host has no relay to fall back to (OQ20): say so before anything is made.
-      try RemoteWorkrooms.checkCredentials(for: key, client: environment.client)
-      // gh first, as it knows which remote is GitHub's; without it (not installed, or signed out
-      // while Codaset is signed in, which is enough for a remote workroom) origin says (#260).
+      // gh first, as it knows which remote is GitHub's; without it (not installed, or signed out,
+      // which a remote provider's workroom doesn't need) origin says (#260).
       let resolver = WorkroomStatusResolver()
       var repository: GitHubRepository?
       if case .found(let found) = await resolver.resolveRepository(in: project.path) {
@@ -305,6 +296,8 @@ extension AppStore {
           startBranch = branch
         }
       }
+      let cloneURL = RemoteWorkrooms.cloneURL(
+        for: repository, origin: await resolver.originURL(in: project.path))
       let path = project.path
       let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { [weak self] step in
         Task { @MainActor in
@@ -335,7 +328,7 @@ extension AppStore {
           // a download's percentage shows only on the project's.
           try await (driver as? ContainerHostDriver)?.ensureHostImage()
           return try await RemoteWorkrooms.create(
-            repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
+            repository: repository, cloneURL: cloneURL,
             startBranch: startBranch, key: key, driver: driver, environment: environment,
             recorder: recorder)
         }
@@ -357,24 +350,9 @@ extension AppStore {
             sid, beside: $0, edge: .right, destinationRect: workroomPaneRect(for: $0))
         } ?? false
       if !landedInSplit { selectedTargetID = sid }
-      if Self.fellBackToGitHub(
-        signedIn: environment.client != nil, relayed: created.instance.relayed)
-      {
-        errorTitle = "\(created.name) uses your own GitHub access"
-        errorMessage =
-          "The Codaset App isn't installed for \(repository.owner), so git in this workroom asks "
-          + "your gh sign-in on this Mac, with all of its access, as a workroom on this Mac does. "
-          + "It keeps doing so after the App is installed."
-      }
     } catch {
       await reload()
       present(error)
-      if case BrokerError.refused(let refusal) = error, refusal.code == "app_not_installed",
-        let install = refusal.installURL
-      {
-        errorTitle = "Workroom's GitHub App isn't installed"
-        errorLink = ErrorLink(title: "Install the App…", url: install)
-      }
     }
   }
 

@@ -258,8 +258,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(runner.calls.first?.args, ["repo", "view", "--json", "url", "-q", ".url"])
   }
 
-  /// A create without gh (signed in to Codaset only) reads the repository from the project's own
-  /// origin remote (#260); a project with no origin, or git failing, has none.
+  /// A create without gh (a remote provider's needs none) reads the repository from the project's
+  /// own origin remote (#260); a project with no origin, or git failing, has none.
   func testOriginRepositoryReadsGitAlone() async {
     let runner = RecordingStatusRunner { _, _ in ok("git@github.com:octo/repo.git\n") }
     let found = await WorkroomStatusResolver(runner: runner).originRepository(in: "/proj")

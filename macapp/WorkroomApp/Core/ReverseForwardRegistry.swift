@@ -2,13 +2,12 @@ import Foundation
 import os
 
 /// Listeners on remote hosts that carry each connection back to a port on this Mac, one per
-/// workroom, kept open across reconnects (`ReverseForward`). For the Debug builds' route to this
-/// Mac's development Codaset (`BrokerReverseForwards`), and for the git credential relay of a local
-/// container workroom that never enrolled (`CredentialRelay`, #309).
+/// workroom, kept open across reconnects (`ReverseForward`). For the git credential relay of a
+/// local container workroom (`CredentialRelay`, #309).
 ///
 /// **The listener lives only as long as the connection to the host** (every forward does), so this
-/// reopens it on each new connection, on the same port: what the agent saved (its broker URL, its
-/// relay's port) must keep working after a reattach.
+/// reopens it on each new connection, on the same port: what the agent saved (its relay's port)
+/// must keep working after a reattach.
 @MainActor
 final class ReverseForwardRegistry {
 

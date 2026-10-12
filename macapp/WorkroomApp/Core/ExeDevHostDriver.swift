@@ -30,8 +30,8 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// Checked before every create, destroy and rollback: another account's VM reads as
     /// "not found", which `destroy` would take for gone. Whoever records a host records this.
     var account: String?
-    /// The agent's socket on every host, on the home disk: the agent keeps its broker enrolment
-    /// beside it, and `/run` is a tmpfs (spike).
+    /// The agent's socket on every host, on the home disk: the agent's binary is installed beside
+    /// it, and `/run` is a tmpfs (spike).
     var agentSocket = "\(ExeDevHostDriver.stateDirectory)/agent/agent.sock"
     /// Where the supervisor has the agent keep each session's last screen (#232).
     var screens = "\(ExeDevHostDriver.stateDirectory)/screens"
@@ -98,6 +98,12 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       ).communicate(Data(try HostSetup.systemdScript().utf8), timeout: 120)
       guard status == 0 else {
         throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
+      }
+      // git and gh reach GitHub through exe.dev's integration, never with a token on the VM.
+      let (gitStatus, gitOutput) = try await exec("sudo sh -s -- /etc/profile.d", on: .remote(id))
+        .communicate(Data(try HostSetup.exeDevGitHubScript().utf8), timeout: 30)
+      guard gitStatus == 0 else {
+        throw HostDriverError.provisioning("setting up git on \(name) failed: \(gitOutput)")
       }
       try await awaitIdentity(of: id, named: name)
       return .remote(id)

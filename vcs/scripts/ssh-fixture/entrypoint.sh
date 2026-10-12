@@ -11,7 +11,7 @@ set -eu
 
 # The machine's identity is minted on its first boot, never inherited (#252, open question 9). A
 # container run from the image starts with the image's disk: the ssh host keys (which
-# openssh-server's install bakes into it), `/etc/machine-id`, and the agent's broker files beside its
+# openssh-server's install bakes into it), `/etc/machine-id`, and the agent's relay file beside its
 # socket. The marker holds the hostname
 # the identity was minted for. A restart keeps the container's hostname, so a reboot keeps its
 # identity and its pinned host key; a new container has a new hostname, so it mints its own. The
@@ -24,8 +24,6 @@ if [ "$(cat "$IDENTITY" 2>/dev/null)" != "$(hostname)" ]; then
   rm -f /etc/ssh/ssh_host_*
   ssh-keygen -A
   tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
-  # With the agent's interrupted saves (`.broker.json.<pid>`), which can hold a key.
-  rm -f /run/workroom/broker.json /run/workroom/broker-token.json /run/workroom/.broker*
   # The Mac's relay (#309): its port and secret are the image's, and the app installs its own.
   rm -f /run/workroom/relay.json /run/workroom/.relay*
   rm -rf /home/workroom/.local/state/workroom/screens
@@ -70,7 +68,7 @@ fi
   done
 ) &
 
-# The fixture's GitHub and broker (fake-github.py, #252), as the ssh user, with only the capability
+# The fixture's GitHub (fake-github.py, #252), as the ssh user, with only the capability
 # it needs for 443. `/etc/hosts` is the runtime's, written afresh at every start and never
 # committed, so the name is mapped here each boot.
 # Only in the fixture's image: a `workroom-host` talks to the real github.com (#253).

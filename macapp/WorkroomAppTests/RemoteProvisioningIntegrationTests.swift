@@ -1,16 +1,16 @@
-import CryptoKit
 import Defaults
 import WorkroomDomain
 import XCTest
 
 @testable import Workroom
 
-/// The provisioning sequence (#252) on the ssh fixture's containers: workrooms made, enrolled,
-/// cloned and checked out, each on a host of its own, with every failure undoing what it made.
-/// A workroom clones its host's `/srv/origin.git` by path unless a test says otherwise; the
-/// credentials' choice is pinned by `RemoteProvisioningTests`. The Mac's broker calls go to
-/// `BrokerStub`, and each agent's enrolment to a `StubBroker` on this Mac through the agent's own
-/// loopback, as a Debug build's does. Skipped unless run through the fixture script:
+/// The provisioning sequence (#252) on the ssh fixture's containers: workrooms made, cloned and
+/// checked out, each on a host of its own, with every failure undoing what it made. A workroom
+/// clones its host's `/srv/origin.git` by path unless a test says otherwise; the credentials'
+/// choice is pinned by `RemoteProvisioningTests`. The fixture's own git credential helper answers
+/// its GitHub (`fake-github.py`) as a provider's integration does, so most tests stand for a remote
+/// provider's host, which Workroom gives no credential. Skipped unless run through the fixture
+/// script:
 ///
 ///   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/RemoteProvisioningIntegrationTests
@@ -18,7 +18,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   private var directory: URL!
   private var label: String!
   private var runtime: URL!
-  private var broker: StubBroker!
   private var cleanups: [() async -> Void] = []
 
   /// The clone token the fixture's GitHub accepts (run.sh reads it out of the image), which stands
@@ -34,13 +33,11 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       "wr-provision-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     label = "workroom.test=\(UUID().uuidString.lowercased())"
-    broker = try StubBroker()
   }
 
   override func tearDown() async throws {
     for cleanup in cleanups.reversed() { await cleanup() }
     cleanups.removeAll()
-    broker?.stop()
     if let runtime, let label {
       for container in (try? leftovers("ps", label: label)) ?? [] {
         _ = try? docker(runtime, ["rm", "--force", "--volumes", container])
@@ -67,10 +64,9 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       return value
     }
     runtime = URL(fileURLWithPath: try need("WR_SSH_FIXTURE_RUNTIME_PATH"))
-    // Read where they are used (`token`, the disconnected test's broker); needed here so an
-    // older run.sh skips these tests rather than failing them.
+    // Read where it is used (`token`); needed here so an older run.sh skips these tests rather
+    // than failing them.
     _ = try need("WR_SSH_FIXTURE_CLONE_TOKEN")
-    _ = try need("WR_SSH_FIXTURE_BROKER_URL")
     return Fixture(
       provisioning: ContainerHostDriver.Provisioning(
         runtime: override ?? runtime, image: try need("WR_SSH_FIXTURE_IMAGE"),
@@ -81,42 +77,16 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       agent: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_AGENT")))
   }
 
-  /// The sequence's environment over `driver`. The agent's broker is a reverse forward to
-  /// `broker` (or `brokerURL`, to make the agent's enrolment fail), over a connection of its own
-  /// to the host, as the app's registry holds one.
+  /// The sequence's environment over `driver`, as a remote provider's: Workroom gives the host no
+  /// credential, and the fixture's own helper answers its GitHub.
   @MainActor
   private func environment(
     _ fixture: Fixture, driver: ContainerHostDriver,
-    connect: (@Sendable (HostID) async throws -> AgentVCSConnection)? = nil,
-    brokerURL: URL? = nil
+    connect: (@Sendable (HostID) async throws -> AgentVCSConnection)? = nil
   ) -> RemoteProvisioning.Environment {
-    let broker = self.broker!
-    let generation = UUID()
-    let registry = BrokerReverseForwards(
-      transport: .init(
-        forwarding: { host in
-          let connection = try await AgentVCSConnection.connect(
-            host: host, stream: try await driver.openStream(to: host))
-          return (.init(host: host, generation: generation), try connection.forwarding())
-        },
-        updates: { host in
-          AsyncStream {
-            $0.yield(.init(lease: .init(host: host, generation: generation), status: .connected))
-          }
-        }),
-      target: { broker.port })
     let agent = fixture.agent
     return RemoteProvisioning.Environment(
       driver: driver, agentSocket: fixture.provisioning.agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey()),
-        session: BrokerStub.session),
-      agentBroker: .init(
-        url: { _, workroom, host in
-          if let brokerURL { return brokerURL }
-          return try await registry.open(workroom: workroom, host: host)
-        },
-        release: { workroom in await registry.close(workroom: workroom) }),
       connect: connect ?? { host in
         try await AgentBootstrap.connect(
           host: host, driver: driver, socket: fixture.provisioning.agentSocket,
@@ -124,11 +94,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           resources: nil)
       })
   }
-
-  private static let grant = BrokerStub.Answer(
-    status: 201,
-    body: #"{"grant_id":"g1","enrolment_code":"one-time","repository_id":1,"expires_at":"x"}"#)
-  private static let cancelled = BrokerStub.Answer(body: #"{"grant_id":"g1","state":"cancelled"}"#)
 
   @discardableResult
   private func docker(_ runtime: URL, _ arguments: [String]) throws -> String {
@@ -159,19 +124,13 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   }
 
   private func provision(
-    _ environment: RemoteProvisioning.Environment, branch: String, workroom: UUID = UUID(),
+    _ environment: RemoteProvisioning.Environment, branch: String,
     cloneURL: String = "/srv/origin.git", startBranch: String? = nil,
-    checkpoint: @Sendable (_ host: HostID, _ grant: String?) async throws -> Void = { _, _ in }
+    checkpoint: @Sendable (_ host: HostID) async throws -> Void = { _ in }
   ) async throws -> RemoteProvisioning.Instance {
     try await RemoteProvisioning.provision(
-      repository: "o/r", cloneURL: cloneURL, path: Self.path, workroom: workroom, branch: branch,
-      startBranch: startBranch, in: environment, checkpoint: checkpoint)
-  }
-
-  private var grantsCancelled: Int {
-    BrokerStub.requests.filter {
-      $0.request.httpMethod == "DELETE" && $0.request.url?.path == "/broker/grants/g1"
-    }.count
+      cloneURL: cloneURL, path: Self.path, branch: branch, startBranch: startBranch,
+      in: environment, checkpoint: checkpoint)
   }
 
   /// The fixture with a runtime that runs the real one, except for the subcommand named in the
@@ -233,40 +192,31 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    // The workroom clones and fetches https://github.com with its own credentials, so its agent
-    // enrols with the fixture's own broker, which the fixture's GitHub takes tokens from.
-    let environment = environment(
-      fixture, driver: driver,
-      brokerURL: URL(string: ProcessInfo.processInfo.environment["WR_SSH_FIXTURE_BROKER_URL"] ?? "")
-    )
+    // The workroom clones https://github.com with the host's own credentials.
+    let environment = environment(fixture, driver: driver)
     let recorded = Recorded()
 
-    BrokerStub.reset([Self.grant])
     let first = try await RemoteWorkrooms.create(
       repository: Self.repository, cloneURL: Self.originURL, driver: driver,
       environment: environment, recorder: recorded.recorder)
     await first.instance.connection.close()
     cleanups.append { try? await driver.destroy(first.instance.host) }
 
-    guard recorded.calls.count == 4, case .reserve(let path, let creating) = recorded.calls[0],
+    guard recorded.calls.count == 3, case .reserve(let path, let creating) = recorded.calls[0],
       case .record("w1", let hostMade) = recorded.calls[1],
-      case .record("w1", let grantMade) = recorded.calls[2],
-      case .record("w1", let workroom) = recorded.calls[3]
+      case .record("w1", let workroom) = recorded.calls[2]
     else { return XCTFail("calls: \(recorded.calls)") }
     XCTAssertEqual(path, RemoteWorkrooms.clonePath(for: Self.repository))
     XCTAssertEqual(creating.state, "creating")
-    // Each live thing is recorded as soon as it exists, so a crash mid-create leaves a delete what to
-    // take down (#253).
+    // The host is recorded as soon as it exists, so a crash mid-create leaves a delete what to take
+    // down (#253).
     XCTAssertEqual(hostMade.state, "creating")
     XCTAssertEqual(hostMade.id, workroom.id)
     XCTAssertNotNil(hostMade.container)
-    XCTAssertNil(hostMade.grantID)
-    XCTAssertEqual(grantMade.state, "creating")
-    XCTAssertEqual(grantMade.grantID, "g1")
-    XCTAssertTrue(RemoteWorkrooms.isLive(hostMade) && RemoteWorkrooms.isLive(grantMade))
+    XCTAssertTrue(RemoteWorkrooms.isLive(hostMade))
     XCTAssertNil(workroom.state, "a serving workroom's descriptor has a state")
     XCTAssertEqual(workroom.driver, RemoteWorkrooms.containerDriver)
-    XCTAssertEqual(workroom.grantID, "g1")
+    XCTAssertNil(workroom.credentials, "a provider's host was relayed")
     XCTAssertEqual(workroom.workroomID, creating.workroomID)
     XCTAssertEqual(workroom.repository, "o/r")
     XCTAssertEqual(workroom.container, driver.record(of: first.instance.host))
@@ -296,7 +246,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(seen.contains("AT:\(path):ON:workroom/w1:END"), seen)
 
     // A second create makes a host of its own.
-    BrokerStub.reset([Self.grant])
     let second = try await RemoteWorkrooms.create(
       repository: Self.repository, cloneURL: Self.originURL, driver: driver,
       environment: environment, recorder: recorded.recorder)
@@ -307,22 +256,17 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(try leftovers("ps", label: label).count, 2, "two workrooms, and nothing else")
   }
 
-  /// Deleting a remote workroom from the app (#253) cancels its grant and removes its box, then
-  /// drops its entry. One whose grant can't be cancelled loses its box anyway and keeps its entry,
-  /// `failed` with the live grant, until deleting it again finishes the job.
+  /// Deleting a remote workroom from the app (#253) removes its box, then drops its entry. One whose
+  /// box can't be removed keeps its entry, `failed`, until deleting it again finishes the job.
   @MainActor
   func testDeletingRemoteWorkroomsTakesThemDown() async throws {
-    let fixture = try fixture()
+    let (fixture, failing) = try failingFixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    let environment = environment(
-      fixture, driver: driver,
-      brokerURL: URL(string: ProcessInfo.processInfo.environment["WR_SSH_FIXTURE_BROKER_URL"] ?? "")
-    )
+    let environment = environment(fixture, driver: driver)
     let recorded = Recorded()
     var made: [String: HostDescriptor] = [:]
     for name in ["w1", "w2"] {
-      BrokerStub.reset([Self.grant])
       let created = try await RemoteWorkrooms.create(
         repository: Self.repository, cloneURL: Self.originURL, driver: driver,
         environment: environment, recorder: recorded.recorder)
@@ -335,54 +279,47 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     }
     XCTAssertEqual(try leftovers("ps", label: label).count, 2, "two workrooms")
 
-    BrokerStub.reset([Self.cancelled])
     try await RemoteWorkrooms.delete(
       "w1", host: try XCTUnwrap(made["w1"]), environment: environment,
       recorder: recorded.recorder)
-    XCTAssertEqual(grantsCancelled, 1, "the grant was not cancelled")
     XCTAssertEqual(recorded.calls.last, .forget("w1"))
     XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the workroom's box was kept")
 
-    BrokerStub.reset([.init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    try "rm".write(to: failing, atomically: true, encoding: .utf8)
     do {
       try await RemoteWorkrooms.delete(
         "w2", host: try XCTUnwrap(made["w2"]), environment: environment,
         recorder: recorded.recorder)
-      XCTFail("a failed grant cancel was swallowed")
+      XCTFail("a failed removal was swallowed")
     } catch RemoteProvisioning.Failure.rollbackIncomplete {}
     guard case .record("w2", let left) = recorded.calls.last else {
       return XCTFail("what is still live was not recorded: \(recorded.calls)")
     }
     XCTAssertEqual(left.state, "failed")
-    XCTAssertEqual(left.grantID, "g1", "the live grant was not kept")
-    XCTAssertNil(left.id, "a box already gone was kept")
-    XCTAssertEqual(try leftovers("ps", label: label), [], "the second box was kept")
+    XCTAssertEqual(left.id, made["w2"]?.id, "the live box was not kept")
+    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the second box went")
 
-    BrokerStub.reset([Self.cancelled])
+    try FileManager.default.removeItem(at: failing)
     try await RemoteWorkrooms.delete(
       "w2", host: left, environment: environment, recorder: recorded.recorder)
-    XCTAssertEqual(grantsCancelled, 1)
     XCTAssertEqual(recorded.calls.last, .forget("w2"))
+    XCTAssertEqual(try leftovers("ps", label: label), [], "the second box was kept")
   }
 
-  /// A checkpoint that cannot be recorded is a failed step (#253): the create undoes itself, so the
-  /// grant it minted is cancelled and its box removed, rather than either living on unrecorded.
+  /// A checkpoint that cannot be recorded is a failed step (#253): the create undoes itself, so its
+  /// box is removed rather than living on unrecorded.
   @MainActor
   func testAProvisionWhoseCheckpointFailsUndoesItself() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    BrokerStub.reset([Self.grant, Self.cancelled])
 
     do {
-      _ = try await provision(
-        environment(fixture, driver: driver), branch: "wr-checkpoint"
-      ) { _, grant in
-        if grant != nil { throw WorkroomCLIError.timedOut }
+      _ = try await provision(environment(fixture, driver: driver), branch: "wr-checkpoint") { _ in
+        throw WorkroomCLIError.timedOut
       }
       XCTFail("a create whose checkpoint failed succeeded")
     } catch WorkroomCLIError.timedOut {}
-    XCTAssertEqual(grantsCancelled, 1, "the grant was left live")
     XCTAssertEqual(try leftovers("ps", label: label), [], "its box was left")
   }
 
@@ -409,13 +346,12 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(try leftovers("ps", label: label), [], "a box was left")
   }
 
-  /// A workroom whose clone fails is removed, and its grant cancelled.
+  /// A workroom whose clone fails is removed.
   @MainActor
-  func testAWorkroomWhoseCloneFailsIsRemovedWithItsGrant() async throws {
+  func testAWorkroomWhoseCloneFailsIsRemoved() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    BrokerStub.reset([Self.grant, Self.cancelled])
 
     do {
       _ = try await provision(
@@ -424,27 +360,22 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     } catch RemoteProvisioning.Failure.git(let command, _) {
       XCTAssertEqual(command, "clone")
     }
-    XCTAssertEqual(grantsCancelled, 1, "the grant was left live")
     XCTAssertEqual(try leftovers("ps", label: label), [], "a failed workroom was left running")
   }
 
   // MARK: Workrooms
 
   @MainActor
-  func testWorkroomsServeOnTheirOwnBranchWithTheirOwnEnrolment() async throws {
+  func testWorkroomsServeOnTheirOwnBranch() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     let environment = environment(fixture, driver: driver)
 
-    var keys: [String] = []
     for branch in ["wr-one", "wr-two"] {
-      BrokerStub.reset([Self.grant])
-      let workroom = UUID()
-      let instance = try await provision(environment, branch: branch, workroom: workroom)
+      let instance = try await provision(environment, branch: branch)
       cleanups.append { try? await driver.destroy(instance.host) }
 
-      XCTAssertEqual(instance.grantID, "g1")
       XCTAssertFalse(instance.relayed)
       let remote = try await onHost(
         driver, instance.host, "git -C \(Self.path) remote get-url origin")
@@ -454,18 +385,9 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       let head = try await RemoteProvisioning.git(
         ["rev-parse", "--abbrev-ref", "HEAD"], in: instance.path, on: instance.connection)
       XCTAssertEqual(head.trimmingCharacters(in: .whitespacesAndNewlines), branch)
-      let state = try await onHost(driver, instance.host, "cat /run/workroom/broker.json").output
-      let enrolment = try XCTUnwrap(
-        JSONSerialization.jsonObject(with: Data(state.utf8)) as? [String: Any])
-      XCTAssertEqual(enrolment["enrolled"] as? Bool, true)
-      XCTAssertEqual(enrolment["workroom_id"] as? String, workroom.uuidString.lowercased())
-      keys.append(try XCTUnwrap(enrolment["key"] as? String))
 
-      BrokerStub.reset([Self.cancelled])
-      try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
-      XCTAssertEqual(grantsCancelled, 1, "destroying a workroom left its grant live")
+      try await RemoteProvisioning.destroy(instance, in: environment)
     }
-    XCTAssertNotEqual(keys[0], keys[1], "two workrooms share an enrolment key")
     XCTAssertEqual(try leftovers("ps", label: label), [], "a workroom's box was left")
   }
 
@@ -478,7 +400,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     let environment = environment(fixture, driver: driver)
-    BrokerStub.reset([Self.grant])
     let instance = try await provision(environment, branch: "wr-read")
     await instance.connection.close()
     cleanups.append { try? await driver.destroy(instance.host) }
@@ -545,72 +466,56 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(gitDiff.output.contains("+edited"), gitDiff.output)
   }
 
-  /// A failure at each step leaves no host and no live grant behind.
+  /// A failure at each step leaves no host behind.
   @MainActor
-  func testAWorkroomThatFailsAtEachStepLeavesNoHostAndNoGrant() async throws {
+  func testAWorkroomThatFailsAtEachStepLeavesNoHost() async throws {
     // The runtime fails `run` only when told to.
     let (fixture, failing) = try failingFixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
 
     struct Injected: Error {}
-    // The step, the environment that fails it, the branch, and whether a grant was made by then.
-    let steps: [(String, RemoteProvisioning.Environment, String, Bool)] = [
-      ("machine", environment(fixture, driver: driver), "wr-a", false),
-      (
-        "connect", environment(fixture, driver: driver, connect: { _ in throw Injected() }),
-        "wr-b", false
-      ),
-      (
-        "enrol",
-        // Nothing listens there, so the agent's enrolment fails after the grant is made.
-        environment(fixture, driver: driver, brokerURL: URL(string: "http://127.0.0.1:9")),
-        "wr-c", true
-      ),
-      // git refuses the name only once the workroom is enrolled and cloned.
-      ("checkout", environment(fixture, driver: driver), "bad..name", true),
+    // The step, the environment that fails it, and the branch.
+    let steps: [(String, RemoteProvisioning.Environment, String)] = [
+      ("machine", environment(fixture, driver: driver), "wr-a"),
+      ("connect", environment(fixture, driver: driver, connect: { _ in throw Injected() }), "wr-b"),
+      // git refuses the name only once the workroom is cloned.
+      ("checkout", environment(fixture, driver: driver), "bad..name"),
     ]
-    for (step, environment, branch, granted) in steps {
+    for (step, environment, branch) in steps {
       if step == "machine" {
         try "run".write(to: failing, atomically: true, encoding: .utf8)
       } else {
         try? FileManager.default.removeItem(at: failing)
       }
-      BrokerStub.reset([Self.grant, Self.cancelled])
 
       do {
         _ = try await provision(environment, branch: branch)
         XCTFail("a workroom that failed at \(step) was made")
       } catch {
-        // The failure is the step's own, so the assertions below are about that step.
+        // The failure is the step's own, so the assertion below is about that step.
         switch (step, error) {
         case ("machine", HostDriverError.provisioning), ("connect", is Injected),
-          ("enrol", BrokerError.agent), ("checkout", RemoteProvisioning.Failure.git("switch", _)):
+          ("checkout", RemoteProvisioning.Failure.git("switch", _)):
           break
         default: XCTFail("\(step) failed for another reason: \(error)")
         }
       }
 
       XCTAssertEqual(try leftovers("ps", label: label), [], "a failure at \(step) left a host")
-      XCTAssertEqual(
-        grantsCancelled, granted ? 1 : 0, "a failure at \(step) left its grant live")
     }
   }
 
-  /// The box authenticates on its own (#252): it clones over https from the fixture's GitHub, and
-  /// with the Mac's connection gone it fetches and pushes there, its credential helper minting from
-  /// the fixture's broker on the box (`fake-github.py`). Commands run through the runtime's exec,
-  /// the provider's control plane, not over the Mac's link.
+  /// The box authenticates on its own (#252), as a remote provider's does: it clones over https
+  /// from the fixture's GitHub, and with the Mac's connection gone it fetches and pushes there, with
+  /// the credential helper the box came with (the fixture's stands in for boxd's). Commands run
+  /// through the runtime's exec, the provider's control plane, not over the Mac's link.
   @MainActor
   func testAWorkroomFetchesAndPushesWithTheMacDisconnected() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    let environment = environment(
-      fixture, driver: driver,
-      brokerURL: URL(string: ProcessInfo.processInfo.environment["WR_SSH_FIXTURE_BROKER_URL"] ?? "")
-    )
-    BrokerStub.reset([Self.grant])
+    let environment = environment(fixture, driver: driver)
     let instance = try await provision(
       environment, branch: "wr-pushed", cloneURL: "https://github.com/origin.git")
     cleanups.append { try? await driver.destroy(instance.host) }
@@ -652,12 +557,12 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       try onBox("git -C /srv/origin.git rev-parse refs/heads/wr-pushed"), "\(pushed)\nexit=0")
   }
 
-  /// Signed out of Codaset (#309), a local container workroom clones with the Mac's own GitHub
-  /// token, never enrols, and git in it gets credentials through the Mac's relay:
-  /// a push works while the app is connected and says so when it isn't. The fixture's GitHub takes
-  /// its clone token, which stands in for the Mac's `gh`.
+  /// A local container workroom (#309) clones with the Mac's own GitHub token, and git in it gets
+  /// credentials through the Mac's relay, ahead of any helper the box came with: a push works while
+  /// the app is connected and says so when it isn't. The fixture's GitHub takes its clone token,
+  /// which stands in for the Mac's `gh`.
   @MainActor
-  func testARelayedWorkroomPushesThroughTheMacWithoutEnrolling() async throws {
+  func testARelayedWorkroomPushesThroughTheMac() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
@@ -665,7 +570,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let socket = fixture.provisioning.agentSocket
     let token = Self.token
     let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: socket, client: nil, gitHubToken: { token },
+      driver: driver, agentSocket: socket, gitHubToken: { token },
       connect: { host in
         try await AgentBootstrap.connect(
           host: host, driver: driver, socket: socket,
@@ -676,7 +581,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       environment, branch: "wr-relayed", cloneURL: "https://github.com/origin.git")
     cleanups.append { try? await driver.destroy(instance.host) }
     XCTAssertTrue(instance.relayed)
-    XCTAssertNil(instance.grantID, "a relayed workroom enrolled")
 
     // The relay, over a connection of its own as the app's registry holds one.
     let generation = UUID()
@@ -706,9 +610,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           container, "sh", "-c", script + "; echo exit=$?",
         ])
     }
-    XCTAssertEqual(
-      try onBox("test -e \(socket.replacingOccurrences(of: "agent.sock", with: "broker.json"))"),
-      "exit=1", "a relayed workroom has a broker enrolment")
     _ = try onBox(
       "git -c user.name=W -c user.email=w@example.com commit -q --allow-empty -m relayed")
     let push = try onBox("git push -q origin HEAD 2>&1")
@@ -738,11 +639,9 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let environment = environment(fixture, driver: driver)
     let develop = Develop()
 
-    BrokerStub.reset([Self.grant])
     let instance = try await provision(
       environment, branch: "wr-develop", startBranch: "develop"
-    ) { host, grant in
-      guard grant == nil else { return }
+    ) { host in
       let (status, output) = try await driver.exec(
         "git -C /srv/origin.git -c user.name=t -c user.email=t@t commit-tree -p main"
           + " -m develop main^{tree} | xargs git -C /srv/origin.git branch develop"
@@ -813,99 +712,47 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     var all: [String] { lock.withLock { said } }
   }
 
+  /// A teardown whose removal fails names the box still up.
   @MainActor
-  func testDestroyingAWorkroomWhoseGrantCannotBeCancelledStillRemovesItsBox() async throws {
-    let fixture = try fixture()
-    let driver = ContainerHostDriver(
-      hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    let environment = environment(fixture, driver: driver)
-    BrokerStub.reset([Self.grant])
-    let workroom = UUID()
-    let instance = try await provision(environment, branch: "wr-cancel", workroom: workroom)
-
-    BrokerStub.reset([.init(status: 503, body: #"{"error":"github_unavailable"}"#)])
-    do {
-      try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
-      XCTFail("a failed grant cancel was swallowed")
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, let cleanup) {
-      XCTAssertNil(host, "the box is gone, but was reported live")
-      XCTAssertEqual(grant, "g1", "the grant still live was not named")
-      XCTAssertEqual(cleanup.count, 1, "\(cleanup)")
-    }
-    XCTAssertEqual(try leftovers("ps", label: label), [], "the workroom's box was kept")
-  }
-
-  /// Both halves of a workroom's teardown failing are both reported.
-  @MainActor
-  func testDestroyingAWorkroomReportsBothAFailedCancelAndAFailedRemoval() async throws {
+  func testDestroyingAWorkroomWhoseBoxCannotBeRemovedNamesIt() async throws {
     let (fixture, failing) = try failingFixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     let environment = environment(fixture, driver: driver)
-    BrokerStub.reset([Self.grant])
-    let workroom = UUID()
-    let instance = try await provision(environment, branch: "wr-both", workroom: workroom)
-    BrokerStub.reset([.init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    let instance = try await provision(environment, branch: "wr-both")
+    cleanups.append { try? await driver.destroy(instance.host) }
     try "rm".write(to: failing, atomically: true, encoding: .utf8)
     defer { try? FileManager.default.removeItem(at: failing) }
 
     do {
-      try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
+      try await RemoteProvisioning.destroy(instance, in: environment)
       XCTFail("a failed teardown was swallowed")
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, let cleanup) {
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let cleanup) {
       XCTAssertEqual(host, instance.host, "the box still up was not named")
-      XCTAssertEqual(grant, "g1", "the grant still live was not named")
-      XCTAssertEqual(cleanup.count, 2, "\(cleanup)")
+      XCTAssertEqual(cleanup.count, 1, "\(cleanup)")
     }
   }
 
-  /// A failure whose undoing fails too names what is still live (#252 review), rather than
-  /// leaving a box holding an enrolled key and a live grant that nothing records.
+  /// A failure whose undoing fails too names the box still live (#252 review), rather than leaving
+  /// one that nothing records.
   @MainActor
   func testAWorkroomWhoseRollbackFailsSaysWhatIsStillLive() async throws {
     let (fixture, failing) = try failingFixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     let environment = environment(fixture, driver: driver)
-    // The checkout fails on its branch name, then the grant cancel and the box's removal fail.
-    BrokerStub.reset([Self.grant, .init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    // The checkout fails on its branch name, then the box's removal fails.
     try "rm".write(to: failing, atomically: true, encoding: .utf8)
     defer { try? FileManager.default.removeItem(at: failing) }
 
     do {
       _ = try await provision(environment, branch: "bad..name")
       XCTFail("a workroom with an unusable branch was made")
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(
-      let cause, let host, let grant, let cleanup)
-    {
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let host, let cleanup) {
       XCTAssertTrue(cause.contains("switch"), cause)
       XCTAssertNotNil(host, "the box still up was not named")
-      XCTAssertEqual(grant, "g1", "the grant still live was not named")
-      XCTAssertEqual(cleanup.count, 2, "\(cleanup)")
-    }
-    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the workroom should still be up")
-  }
-
-  /// An enrolment whose own grant cancel fails hands that grant to the rollback's report rather
-  /// than losing it (#280 review).
-  @MainActor
-  func testAWorkroomWhoseEnrolmentAndGrantCancelFailNamesTheLiveGrant() async throws {
-    let fixture = try fixture()
-    let driver = ContainerHostDriver(
-      hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    // Nothing listens there, so the agent's enrolment fails after the grant is made.
-    let failing = environment(
-      fixture, driver: driver, brokerURL: URL(string: "http://127.0.0.1:9"))
-    BrokerStub.reset([Self.grant, .init(status: 503, body: #"{"error":"github_unavailable"}"#)])
-
-    do {
-      _ = try await provision(failing, branch: "wr-enrol")
-      XCTFail("a workroom that could not enrol was made")
-    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, let cleanup) {
-      XCTAssertNil(host, "the box is gone, but was reported live")
-      XCTAssertEqual(grant, "g1", "the enrolment's live grant was lost")
       XCTAssertEqual(cleanup.count, 1, "\(cleanup)")
     }
-    XCTAssertEqual(try leftovers("ps", label: label), [], "the workroom was kept")
+    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the workroom should still be up")
   }
 }

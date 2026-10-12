@@ -71,10 +71,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   public var provisioner: String? = nil
   /// The host's `HostID.remote` ID.
   public var id: UUID? = nil
-  /// A workroom's broker grant, which destroying it cancels.
-  public var grantID: String? = nil
-  /// The ID a workroom's grant and its agent's route to the broker are keyed by
-  /// (`RemoteProvisioning.provision`). Chosen before the host exists, so not the host's.
+  /// A workroom's own ID, chosen before its host exists, so not the host's.
   public var workroomID: UUID? = nil
   /// A workroom's GitHub repository, `owner/name`, and its clone URL, for its PR and CI status
   /// (`RemoteWorkrooms.registrations`). An older build's base recorded the same fields, with the
@@ -90,7 +87,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   /// build that made bases is in use.
   public var bases: [HostDescriptor]? = nil
   /// `relay` for a local container base or workroom whose git credentials come from the Mac's
-  /// relay instead of the broker (#309); nil for the broker.
+  /// relay (#309); nil for a remote provider's host, whose credentials are the provider's.
   public var credentials: String? = nil
   /// A boxd host's org, as `boxd auth` named the active one when it was made; nil is the account's
   /// own (#356).
@@ -107,14 +104,13 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   enum CodingKeys: String, CodingKey {
     case state, driver, provisioner, id, repository, path, container, bases, credentials, org
     case account
-    case grantID = "grant_id"
     case workroomID = "workroom_id"
     case cloneURL = "clone_url"
   }
 
   public init(
     state: String? = nil, driver: String? = nil, provisioner: String? = nil, id: UUID? = nil,
-    grantID: String? = nil, workroomID: UUID? = nil, repository: String? = nil,
+    workroomID: UUID? = nil, repository: String? = nil,
     cloneURL: String? = nil, path: String? = nil, container: ContainerHostRecord? = nil,
     bases: [HostDescriptor]? = nil, credentials: String? = nil, org: String? = nil,
     account: String? = nil
@@ -123,7 +119,6 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     self.driver = driver
     self.provisioner = provisioner
     self.id = id
-    self.grantID = grantID
     self.workroomID = workroomID
     self.repository = repository
     self.cloneURL = cloneURL
@@ -141,7 +136,6 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     driver = try? fields?.decodeIfPresent(String.self, forKey: .driver)
     provisioner = try? fields?.decodeIfPresent(String.self, forKey: .provisioner)
     id = try? fields?.decodeIfPresent(UUID.self, forKey: .id)
-    grantID = try? fields?.decodeIfPresent(String.self, forKey: .grantID)
     workroomID = try? fields?.decodeIfPresent(UUID.self, forKey: .workroomID)
     repository = try? fields?.decodeIfPresent(String.self, forKey: .repository)
     cloneURL = try? fields?.decodeIfPresent(String.self, forKey: .cloneURL)

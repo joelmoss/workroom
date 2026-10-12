@@ -404,9 +404,9 @@ final class PortForward: @unchecked Sendable {
 }
 
 /// A listener on the AGENT's box, each connection to it carried back over the multiplex to
-/// `127.0.0.1:<target>` on this Mac (`forward.rs`, "Listening"). A Debug build's remote agent
-/// reaches the Mac's own development Codaset through one (`BrokerReverseForwards`); every other
-/// forward runs the other way, from the Mac outward (`PortForward`).
+/// `127.0.0.1:<target>` on this Mac (`forward.rs`, "Listening"). A local container workroom's git
+/// asks the Mac for GitHub credentials through one (`CredentialRelay`, #309); every other forward
+/// runs the other way, from the Mac outward (`PortForward`).
 ///
 /// **It only carries while this connection lives**, like every forward: the agent drops the
 /// listener with the connection, so whoever needs it open opens a new one on each new connection.

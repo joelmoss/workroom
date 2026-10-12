@@ -58,7 +58,8 @@ cleanup() {
 trap cleanup EXIT
 
 cp "$AGENT" "$STAGE/wr-agent"
-cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" "$STAGE/"
+cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" \
+  "$HERE/git-credential-fixture" "$STAGE/"
 # By image ID, not a tag: a tag is shared, and another run building it between here and `run` below
 # would swap in a different agent. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.
@@ -125,13 +126,13 @@ done
 # take it as their bundled agent. CONTAINER,
 # RUNTIME and SCREENS: for the test that reboots the box (#232). IMAGE, RUNTIME_PATH, PUBLIC_KEY
 # and LABEL: for the app's tests that provision containers of their own from the image (#252),
-# and CLONE_TOKEN and BROKER_URL for the image's GitHub and broker (fake-github.py).
+# and CLONE_TOKEN for the image's GitHub (fake-github.py).
 CLONE_TOKEN="$("$RUNTIME" exec "$NAME" cat /etc/workroom-fixture/clone-token)"
 for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
   "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "AGENT=$STAGE/wr-agent" \
   "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS" "IMAGE=$IMAGE" \
   "RUNTIME_PATH=$(command -v "$RUNTIME")" "PUBLIC_KEY=$(cat "$STAGE/id_ed25519.pub")" \
-  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN" "BROKER_URL=http://127.0.0.1:8081"; do
+  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 

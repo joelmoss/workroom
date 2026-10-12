@@ -1,9 +1,8 @@
 import Foundation
 import os
 
-/// The Mac's end of the git credential relay for a local container workroom that never enrolled
-/// with the Codaset broker (#309): the user is signed in to `gh`, not to Codaset, or the repository's
-/// owner hasn't installed the Codaset App.
+/// The Mac's end of the git credential relay for a local container workroom (#309), which has no
+/// provider to give it GitHub access: it takes the user's own `gh` sign-in on this Mac.
 ///
 /// Its agent's `wr-agent credential` dials a port on its own box's loopback (`port(for:)`), which
 /// `ReverseForwardRegistry` carries over the app's connection to a listener here, on this Mac's
@@ -15,7 +14,8 @@ import os
 /// **Accepted exposure (D9, #309).** Anything in the workroom can read the secret and ask, so such
 /// a workroom has the GitHub access the user's own `gh` has, as a workroom on the Mac itself does.
 /// It can ask only while the app is connected, but a token it was answered with works until the
-/// user revokes it. A remote workroom never uses this: it always enrols.
+/// user revokes it. A remote provider's workroom never uses this: its git credentials are the
+/// provider's, so it keeps working with this Mac closed.
 final class CredentialRelay: @unchecked Sendable {
   static let shared = CredentialRelay()
 
@@ -43,7 +43,7 @@ final class CredentialRelay: @unchecked Sendable {
 
   /// The agent's port for workroom host `id`: the same on every connection and every launch, so
   /// the `relay.json` it was given stays right. 30000-31999, below Linux's ephemeral ports (32768
-  /// up) and apart from the Debug broker route's (`BrokerReverseForwards`).
+  /// up).
   static func port(for id: UUID) -> UInt16 {
     let bytes = id.uuid
     return 30_000 + (UInt16(bytes.2) << 8 | UInt16(bytes.3)) % 2_000
@@ -75,7 +75,7 @@ final class CredentialRelay: @unchecked Sendable {
   /// reading ones (`maxReading`).
   static let maxConcurrent = 8
   /// The most one request may take to arrive, whatever pace its bytes come at. The agent writes it
-  /// whole, at once (`relay` in `broker.rs`), so a second is plenty.
+  /// whole, at once (`relay` in `credential.rs`), so a second is plenty.
   static let requestDeadline: TimeInterval = 2
   private let reading = DispatchSemaphore(value: maxReading)
   private let serving = DispatchSemaphore(value: maxConcurrent)

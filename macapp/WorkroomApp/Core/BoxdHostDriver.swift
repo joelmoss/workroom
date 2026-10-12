@@ -21,7 +21,7 @@ import os
 ///   recorded host by its ID alone.
 ///
 /// Everything the agent keeps is on the machine's home disk (`agentSocket`), so a machine that is
-/// stopped and started keeps its enrolment and its screens.
+/// stopped and started keeps its binary and its screens.
 final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   struct Configuration: Sendable {
     /// The `boxd` CLI, signed in.
@@ -40,8 +40,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// account the org check alone passes, and a machine of the first account reads as "not
     /// found", which `destroy` would take for gone. Whoever records a host records this beside it.
     var account: String?
-    /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent keeps
-    /// its broker enrolment beside it (`broker.rs`), and a stopped machine would lose it.
+    /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent's
+    /// binary is installed beside it, and a stopped machine would lose it.
     var agentSocket = "\(BoxdHostDriver.stateDirectory)/agent/agent.sock"
 
     /// Where the supervisor has the agent keep each session's last screen (#232).
