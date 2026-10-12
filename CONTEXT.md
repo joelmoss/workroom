@@ -80,7 +80,7 @@ A command the user sets to run in a workroom, such as `npm start`, started in a 
 
 ## Remote hosts
 
-Owns hosts, their drivers, provisioning, the credential broker and port forwarding. A remote workroom is a workroom whose files, shells and agent live on a host.
+Owns hosts, their drivers, provisioning, the credential relay and port forwarding. A remote workroom is a workroom whose files, shells and agent live on a host.
 
 **Host**:
 The compute that holds a remote workroom: a VM or container made by a host driver, on a provider or in a container runtime on this Mac. Every remote workroom gets a fresh one.
@@ -90,13 +90,13 @@ _Avoid_: Machine, box, VM, base
 The adapter for one provider that creates, reaches and destroys hosts: a local container runtime, boxd or exe.dev.
 
 **Provisioning**:
-Making a host for one remote workroom: the driver creates it, its agent is enrolled, and the repository is cloned and checked out.
+Making a host for one remote workroom: the driver creates it, and the repository is cloned and checked out.
 
-**Broker**:
-The credential service, run by Codaset, through which a host gets a one-hour GitHub token for one repository, so it never holds a long-lived GitHub credential.
+**Provider credentials**:
+The GitHub access a remote provider gives its own hosts (boxd's git integration, exe.dev's GitHub integration), which a host on that provider fetches and pushes with. Workroom gives such a host none.
 
-**Grant**:
-A broker permission for one workroom's host, cancelled when the workroom is destroyed.
+**Credential relay**:
+How a local container workroom's git asks this Mac's own `gh` for GitHub credentials, over the app's connection.
 
 **Port forward**:
 A loopback port on a host made reachable on this Mac for as long as the app is attached.

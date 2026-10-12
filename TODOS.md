@@ -18,8 +18,8 @@ None open. The crossing-`keep` flake entry went with the test, `keep` and the pr
 first, so PR and CI status no longer read a base).
 
 - **Codaset (claim 4.0):** remove the `base_clone_token` route
-  (`app/controllers/broker/grants_controller.rb`). Only Nightly and Dev builds from 0b54830e
-  (2026-10-01) to 6a33b67a (#395, 2026-10-10) call it; no stable release does (v2.1.0 has no remote
+  (`app/controllers/broker/grants_controller.rb`), with the rest of the broker, which ADR 0049
+  retired. Only Nightly and Dev builds call any of it; no stable release does (v2.1.0 has no remote
   workrooms), so it can go now.
 - **The legacy field:** `HostDescriptor.bases` and `BaseRetirement` itself, once no build that made
   bases is in use; with them, the Go side's base handling (`internal/config/claim.go`'s bases,
@@ -93,19 +93,6 @@ deferred (2026-10-05). Neither loses data from a single window.
 **Depends on:** #255.
 
 **Priority:** P2 (deferred in the #255 `/review`, D3, 2026-10-05)
-
-### Credential broker clients: check the Keychain item's access (macapp) — #251 review follow-up
-
-**What:** The real Keychain calls in `BrokerCredentials.SecretStore.keychain` are untested (tests use
-the stand-in), and `kSecAttrAccessibleAfterFirstUnlock` on a login-keychain item was never measured.
-
-**How to start:** Sign in on a Dev build and on a Developer ID Nightly once codaset.dev serves the
-broker, and check the item's access list in Keychain Access. The question is whether each app
-signature reads the item after login without an authorization prompt.
-
-**Depends on / blocked by:** codaset#43 deployed.
-
-**Priority:** P2, effort S.
 
 ### Retire the attach-only `workroom-session` shim (macapp) — issue #154 follow-up
 
@@ -270,9 +257,9 @@ not *how* they run. The split:
 | fetch, push, pull | **CLI** — permanently, not a stopgap | Two independent blockers, both verified from checked-out sources: SwiftGitX passes NULL options (`git_remote_fetch(remotePointer, nil, nil, nil)`, and `pull` is a `// TODO`), so it has no credential callback at all; **libgit2 implements no `credential.helper` protocol** — nothing in its `src` reads that config key, so native auth means reimplementing helper invocation ourselves. |
 
 **Non-goal: Workroom does not store credentials for local workrooms.** No OAuth client, no keychain
-writes, no auth prompt, no account concept for git in a local workroom. (Remote workrooms are the
-exception: they get short-lived repository tokens from the credential broker, and the Mac signs in to
-it with a Secure Enclave key; see `docs/designs/remote-workrooms.md` OQ20.) The user's own helpers (`osxkeychain`, GCM, `!gh auth git-credential`,
+writes, no auth prompt, no account concept for git in a local workroom. (Remote workrooms are no
+exception: a provider's host uses the provider's own GitHub credentials, ADR 0049, and a local
+container's git asks the Mac's own `gh` through a relay, ADR 0039.) The user's own helpers (`osxkeychain`, GCM, `!gh auth git-credential`,
 anything corporate) are the correct answer, and shelling out gets every host — including ones we've
 never heard of — for free, with the same credentials their terminal uses. GitHub Desktop is the
 instructive counterexample: it also shells out (via `dugite`, which bundles its own git), but blanks
