@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// A watch on one directory tree that prefers the host agent and falls back to local FSEvents.
 /// The drop-in for `WorkroomFileWatcher` at all three watch sites (the Files tree, the selected
