@@ -1,5 +1,8 @@
 # OQ20: how a remote workroom pushes when the user is not a repo admin
 
+**Reversed 2026-10-12 (ADR 0049):** option C, each provider's own credentials, replaced the broker
+(D) after a spike proved boxd and exe.dev clone and push in the user's name with their defaults.
+
 **Answer: the products surveyed solve this with an app they own and a server they run.** Mostly that app is
 a GitHub App; Ona, boxd's personal connection and Claude's `/web-setup` use OAuth App tokens, and that
 difference decides the non-admin case (see "GitHub primitives"). Each product that keeps pushing with no

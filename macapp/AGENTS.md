@@ -194,31 +194,15 @@ The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-gho
 (cached per `(engine sha, target)` outside the repo). That pin must stay in step with the
 GhosttyKit the app links — see the comment in `project.yml`.
 
-## Credential broker client (#251)
+## Git credentials on a host
 
-Remote workrooms push to GitHub through Workroom's credential broker, which runs in Codaset
-(`codaset.dev`; design doc OQ20, runbook in Codaset's `docs/workroom-broker-runbook.md`). The Mac's
-side is `Core/Broker/`:
-
-- `BrokerDeviceKey.swift`: this Mac's P-256 signing key, in the Secure Enclave when there is one,
-  and `BrokerCredentials`, which keeps it (either kind) in one Keychain item and the account in
-  `Application Support/Workroom/<bundle id>/broker`. Tests use the `SecretStore` stand-in: CI's
-  login keychain is locked, so the real Keychain calls are only exercised by hand.
-- `BrokerClient.swift`: every request carries a DPoP-shaped ES256 proof (`BrokerProof`), is retried
-  once on `stale_proof`, and never follows a redirect. Refusal codes are a contract with Codaset.
-- `BrokerSignIn.swift`: loopback + PKCE on 127.0.0.1 (`LoopbackSocket`); the signed "complete"
-  goes before the browser is redirected to the result page.
-- `AgentEnrolment.swift`: creates a grant and runs `wr-agent enrol` over `HostDriver.exec`, code on
-  stdin. The agent side is `wr-agent enrol` / `wr-agent credential` (`vcs/crates/wr-agent/src/
-  broker.rs`), git's credential helper on the remote host.
-- `BrokerSession.swift` backs the Settings ▸ General ▸ Remote workrooms row.
-  `BrokerEndpoint` decides which Codaset a build talks to. Release and Nightly use codaset.dev,
-  or a `brokerURL` override that is https or `http://127.0.0.1`, as the agent accepts. **A Debug
-  build (the Dev app and every test host) never reaches another machine**: it defaults to the
-  local `bin/dev` Codaset at `https://codaset.localhost`, ignores any override that isn't
-  `localhost`, `*.localhost` or 127.0.0.1, and `BrokerClient` and `BrokerSignIn` refuse any other
-  URL before a request or the browser goes out. Tests need no Codaset at all: they send through
-  the in-process `BrokerStub`.
+Workroom gives a remote provider's host no git credential (ADR 0049): a boxd machine uses the
+user's boxd `git` integration, and an exe.dev VM an exe.dev GitHub integration per repository, which
+answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
+`Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
+that fails says the provider's fix (`RemoteWorkrooms.Place.credentialHint`). A local container's git
+asks the Mac's own `gh` through `CredentialRelay` (#309), whose agent side is `wr-agent credential`
+(`vcs/crates/wr-agent/src/credential.rs`).
 
 ## boxd driver (#256)
 
@@ -238,7 +222,7 @@ CLI (`--json`) and reached over the container driver's ssh transport (its `exec`
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
 `Resources/host-setup/systemd.sh` (an identity unit and the agent's supervisor, both systemd; shared
 with every provider driver whose machines run systemd, #259). Every remote workroom is a fresh
-machine of its own: `RemoteProvisioning.provision` has the driver `create()` it, enrols its agent,
+machine of its own: `RemoteProvisioning.provision` has the driver `create()` it, then
 clones and checks out the branch, and no driver derives a host from another. The identity unit
 stays: every fresh boxd machine boots with the image's machine-id and ssh host key (measured,
 2026-10-10). The CLI acts in boxd's active org, so the driver
