@@ -312,7 +312,7 @@ struct TerminalTabStrip: View {
             // `WorkroomTabBar.splitWell`). Kept OUT of the a11y tree in a normal run: it is pure
             // decoration, and VoiceOver users get the grouping from each chip's own label.
             .accessibilityElement()
-            .accessibilityHidden(!UITestFixture.isActive)
+            .accessibilityHidden(!AppEnvironment.current.isFixture)
             .accessibilityIdentifier("terminal.tab.splitBracket.\(index)")
         }
       }

@@ -361,13 +361,13 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
   // MARK: The launch probe
 
   func testLaunchProbeRunsOnlyOutsideUnitRunsAndUILaunches() {
-    XCTAssertTrue(UITestFixture.runsLaunchShellProbe(environment: [:], isUILaunch: false))
-    XCTAssertFalse(UITestFixture.runsLaunchShellProbe(environment: [:], isUILaunch: true))
+    XCTAssertTrue(AppEnvironment.runsLaunchShellProbe(environment: [:], isUILaunch: false))
+    XCTAssertFalse(AppEnvironment.runsLaunchShellProbe(environment: [:], isUILaunch: true))
     XCTAssertFalse(
-      UITestFixture.runsLaunchShellProbe(
+      AppEnvironment.runsLaunchShellProbe(
         environment: ["XCTestConfigurationFilePath": "/x.xctestconfiguration"], isUILaunch: false))
     XCTAssertFalse(
-      UITestFixture.runsLaunchShellProbe(
+      AppEnvironment.runsLaunchShellProbe(
         environment: ["XCTestConfigurationFilePath": "/x.xctestconfiguration"], isUILaunch: true))
   }
 }

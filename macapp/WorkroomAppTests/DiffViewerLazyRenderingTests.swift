@@ -19,7 +19,7 @@ import XCTest
 ///
 /// Harness: the offscreen-`NSWindow` hosting pattern from `PaneRenderingTests`/`HistoryRowInvalidationTests`.
 /// The huge diff itself comes from `UITestFixture.hugeDiff()` via the `huge.css` magic path — reached
-/// by forcing `UITestFixture.isActive` on for the duration of this suite (a plain unit-test process
+/// by forcing `AppEnvironment.current.isFixture` on for the duration of this suite (a plain unit-test process
 /// doesn't set the `-WorkroomUITestFixture` launch argument the way `WorkroomAppUITests` does, so
 /// `setUp` puts the flag in this process's own argument domain and `tearDown` takes it back out —
 /// see `setUp` for why it must NOT be a plain `UserDefaults.set`).
@@ -33,7 +33,7 @@ final class DiffViewerLazyRenderingTests: XCTestCase {
   /// Force fixture mode on for this suite through the **volatile argument domain**, not
   /// `set(_:forKey:)`. A plain write lands in the app's PERSISTED domain, which every
   /// `-parallel-testing` worker shares on disk — so this suite silently flipped
-  /// `UITestFixture.isActive` inside the other workers too, for as long as its tests ran. That is
+  /// `AppEnvironment.current.isFixture` inside the other workers too, for as long as its tests ran. That is
   /// how `AppStoreCreateWorkroomTests.testCreationTargetAppearsAsTab` failed on CI (nightly run
   /// 33955949260) while this class ran in a sibling worker: `AppStore.load` saw fixture mode, served
   /// `loadFixture()` instead of the injected CLI's project list, and the created workroom never

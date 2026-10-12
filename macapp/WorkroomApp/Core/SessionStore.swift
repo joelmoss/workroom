@@ -43,7 +43,8 @@ final class SessionStore {
   static func forCurrentEnvironment() -> SessionStore {
     forEnvironment(
       underXCTest: ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
-      fixtureActive: UITestFixture.isActive, sessionFilePath: UITestFixture.sessionFilePath)
+      fixtureActive: AppEnvironment.current.isFixture,
+      sessionFilePath: UITestFixture.sessionFilePath)
   }
 
   /// `forCurrentEnvironment`'s decision, with its inputs passed in so a unit test can pin every

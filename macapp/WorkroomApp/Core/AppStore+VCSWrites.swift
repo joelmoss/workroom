@@ -30,7 +30,7 @@ extension AppStore {
   /// identity), and run the command. On success re-probe for
   /// GitHub's authoritative state; on failure revert the optimistic flip and surface `stderr`.
   ///
-  /// `UITestFixture.isActive` must be checked AFTER `applyOptimistic` but BEFORE `prActionInFlight`
+  /// `AppEnvironment.current.isFixture` must be checked AFTER `applyOptimistic` but BEFORE `prActionInFlight`
   /// flips — fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
   private func performPRWrite(
     arguments: [String], on item: StatusWorkItem,
@@ -44,7 +44,7 @@ extension AppStore {
       return
     }
     let github: RepositoryGitHub?
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       github = nil
     } else {
       do {
@@ -65,7 +65,7 @@ extension AppStore {
     // optimistic update *is* the result — no `gh` to confirm it).
     let priorPR = workroomStatuses[sid]?.pr
     applyOptimistic(sid)
-    if UITestFixture.isActive { return }
+    if AppEnvironment.current.isFixture { return }
     prActionInFlight = true
     Task { [weak self] in
       guard let github else { return }
@@ -115,7 +115,7 @@ extension AppStore {
       let root: RepositoryLocation
       let writer: VCSWriting?
       do {
-        if UITestFixture.isActive {
+        if AppEnvironment.current.isFixture {
           root = try await RepositoryLocation.local(item.projectRoot)
           writer = nil
         } else {
@@ -142,7 +142,7 @@ extension AppStore {
       // project, in every window, until the app restarts.
       let projectStore = self.projectStore
       let result: VCSCommitResult
-      if UITestFixture.isActive {
+      if AppEnvironment.current.isFixture {
         result = await FixtureVCSWriter().commit(
           path: item.path, projectRoot: root.path, request: request)
       } else {
@@ -189,7 +189,7 @@ extension AppStore {
   func stagedContentAtRisk(
     on sid: SidebarID, files: [ChangedFile], completion: @escaping (Result<[String], Error>) -> Void
   ) {
-    if UITestFixture.isActive { return completion(.success([])) }
+    if AppEnvironment.current.isFixture { return completion(.success([])) }
     guard let item = selectedStatusWorkItem(for: sid) else {
       return completion(.failure(RepositoryRoutingError.registrationRequired))
     }

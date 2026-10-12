@@ -15,7 +15,7 @@ extension UserDefaults {
   /// store) each closed one hole of the same shape without closing this one.
   ///
   /// Isolation covers **both** test paths: a hosted unit run (`XCTestConfigurationFilePath`, set in
-  /// this process) and the app launched under XCUITest (`UITestFixture.isActive`, where
+  /// this process) and the app launched under XCUITest (`AppEnvironment.current.isFixture`, where
   /// `applyFixtureDefaults` would otherwise pin values into the real domain for every fixture
   /// launch). `UITestFixture` itself keeps reading `.standard`, because that is where the *launch
   /// arguments* live — arguments are a separate domain from preferences, and isolating one must not
@@ -41,7 +41,7 @@ extension UserDefaults {
       // `XCTestConfigurationFilePath`, and used to land straight in the developer's real domain —
       // and three files answering that separately is how the generated ghostty config came to miss
       // the same signal this guard had already been taught.
-      guard UITestFixture.isTestProcess else { return .standard }
+      guard AppEnvironment.current.isTestProcess else { return .standard }
       // Still local, and still only the env var: it distinguishes a HOSTED UNIT run from an XCUITest
       // launch below, which is a narrower question than "is this a test process" and must not widen.
       let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil

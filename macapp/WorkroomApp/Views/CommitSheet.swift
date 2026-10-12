@@ -407,7 +407,7 @@ struct CommitSheet: View {
     // The fixture's paths are not repos, so every read below would fail and the dialog would show
     // nothing — which is the state these seeds exist to keep testable. Same rationale as
     // `FixtureVCSWriter`.
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       _ = preflightState.finish(succeeded: true)
       amendTarget = UITestFixture.amendTargetLabel
       return

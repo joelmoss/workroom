@@ -20,7 +20,7 @@ enum TerminalPersistentSessionPolicy {
     isAvailable: Bool,
     isRunCommand: Bool,
     hasExistingSession: Bool,
-    isFixture: Bool = UITestFixture.isActive
+    isFixture: Bool = AppEnvironment.current.isFixture
   ) -> Bool {
     (isAvailable || hasExistingSession) && !isRunCommand && !isFixture
   }

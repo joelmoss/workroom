@@ -150,7 +150,7 @@ struct ChangesetDetailView: View {
     let root = URL(fileURLWithPath: directory, isDirectory: true)
     do {
       let changeset: VCSChangeset
-      if UITestFixture.isActive {
+      if AppEnvironment.current.isFixture {
         changeset = try await UITestFixture.vcsProvider.changeset(root: root, commitID: commitID)
       } else {
         // The provider self-offloads its blocking read to GCD (`runBlocking`), so a plain await here

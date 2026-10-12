@@ -297,7 +297,7 @@ struct WorkroomTabBar: View {
             // VoiceOver users get the grouping from each chip's own label. Same fixture-gated handle
             // idea as `PaneTreeView`'s single-pane `.isSelected`.
             .accessibilityElement()
-            .accessibilityHidden(!UITestFixture.isActive)
+            .accessibilityHidden(!AppEnvironment.current.isFixture)
             .accessibilityIdentifier("workroom.tab.splitBracket.\(index)")
         }
       }

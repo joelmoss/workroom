@@ -21,7 +21,7 @@ enum UITestFixture {
   static let defaultsKey = "WorkroomUITestFixture"
 
   /// **DEBUG-only, by construction.** Fixture flags read through `flag`/`number`/`text` (or require
-  /// `isActive` first), and outside Debug they return the inert default without reading defaults.
+  /// `fixtureFlag` first), and outside Debug they return the inert default without reading defaults.
   ///
   /// The flags are read from `UserDefaults.standard`, which is the app's *persisted* domain and not
   /// just the launch-argument domain the tests use. So without this gate a single
@@ -30,7 +30,7 @@ enum UITestFixture {
   /// `applyFixtureDefaults` overwriting their inspector and diff-mode preferences on every launch,
   /// and `.terminateNow` on quit skipping the graceful run-command teardown — with no in-app way
   /// back out. Several flags (`agentStub`, `forceWhatsNew`, `updateAvailableVersion`) are read
-  /// WITHOUT consulting `isActive`, so gating `isActive` alone would not have been enough; the gate
+  /// WITHOUT consulting `fixtureFlag`, so gating `fixtureFlag` alone would not have been enough; the gate
   /// belongs on the reads.
   ///
   /// Nothing in the test suite loses anything: both `WorkroomAppTests` and `WorkroomAppUITests` build
@@ -58,8 +58,10 @@ enum UITestFixture {
     enabled ? UserDefaults.standard.string(forKey: key) : nil
   }
 
-  /// Whether the app was launched in UI-test fixture mode. Always `false` in a release build.
-  static var isActive: Bool {
+  /// The raw fixture launch flag (`-WorkroomUITestFixture 1`), one of the three signals
+  /// `AppEnvironment.current` reads; everything else asks `AppEnvironment.current.isFixture`. Always
+  /// `false` in a release build.
+  static var fixtureFlag: Bool {
     flag(defaultsKey)
   }
 
@@ -71,7 +73,7 @@ enum UITestFixture {
   /// over the DEVELOPER's own `Workroom Dev` session — and the fixture's temp-directory workrooms
   /// would then be restored into a real launch.
   static var sessionFilePath: String? {
-    guard isActive else { return nil }
+    guard fixtureFlag else { return nil }
     return text("WorkroomUITestSessionFile")
   }
 
@@ -83,7 +85,7 @@ enum UITestFixture {
   /// keeps its config in a per-process temp file (see
   /// `GhosttyApp.themeConfigURLForCurrentEnvironment`).
   static var ghosttyConfigFilePath: String? {
-    guard isActive else { return nil }
+    guard fixtureFlag else { return nil }
     return text("WorkroomUITestGhosttyConfigFile")
   }
 
@@ -92,7 +94,7 @@ enum UITestFixture {
   /// Fixture sizing bypasses saved sessions and `window.mainFrame`; absent or invalid input keeps
   /// the usual deterministic size. Only active Debug fixtures may override it.
   static var windowFrame: NSRect? {
-    guard isActive else { return nil }
+    guard fixtureFlag else { return nil }
     // UserDefaults tries to parse a leading `{` as a property-list dictionary and drops
     // NSStringFromRect strings. Read this argument verbatim before the defaults fallback.
     let arguments = ProcessInfo.processInfo.arguments
@@ -478,7 +480,7 @@ enum UITestFixture {
 
   /// Override for whether the onboarding wizard (issue #151) should open
   /// (`-WorkroomUITestOnboarding show|hide`), for deterministic UI tests. Read independent of
-  /// `isActive` — like `forceWhatsNew` — because `WorkroomWorkflowUITests.testAppLaunchesWithChrome`
+  /// `fixtureFlag` — like `forceWhatsNew` — because `WorkroomWorkflowUITests.testAppLaunchesWithChrome`
   /// runs with `fixture: false` against the real `~/.config/workroom` and the real Dev `Defaults`
   /// domain: on a machine with no config and `hasCompletedOnboarding` never set, the real gate would
   /// otherwise fire during that unrelated chrome smoke test. A plain string read via `text(_:)`, not a
@@ -650,7 +652,7 @@ enum UITestFixture {
   /// Whether this launch must keep its preferences out of the real domain
   /// (`-WorkroomUITestIsolatePreferences 1`), INDEPENDENT of whether fake projects are seeded.
   ///
-  /// `isActive` is the wrong signal on its own: a UI test may deliberately launch with
+  /// `fixtureFlag` is the wrong signal on its own: a UI test may deliberately launch with
   /// `fixture: false` to exercise the real bootstrap path (`WorkroomWorkflowUITests`
   /// `testAppLaunchesWithChrome` does exactly that), and such a launch still has no
   /// `XCTestConfigurationFilePath` — so `UserDefaults.app` fell through to `.standard` and the test
@@ -663,58 +665,6 @@ enum UITestFixture {
   /// would silently move a REAL user's preferences into a throwaway suite, i.e. factory-reset the
   /// app and lose every setting they changed afterwards.
   static var isolatesPreferences: Bool { flag("WorkroomUITestIsolatePreferences") }
-
-  /// Whether this process is running tests **at all**, by any of the three signals that tell them
-  /// apart — the one question `UserDefaults.app`, `GhosttyApp.themeConfigURLForCurrentEnvironment`
-  /// and `WorkroomApp`'s prompt-watch guard each have to answer the same way.
-  ///
-  /// It is one property rather than three copies of the expression because the copies have already
-  /// drifted once: `isolatesPreferences` was added to `UserDefaults.app` and to the prompt watch
-  /// when the real-bootstrap smoke test was found writing the developer's own preferences, and the
-  /// generated ghostty config had to be fixed separately, later, for the same launch shape. A
-  /// fourth site would have to remember all three signals; this one cannot forget any of them.
-  ///
-  /// The three, and why none is sufficient alone:
-  /// - `XCTestConfigurationFilePath` — set in a **hosted unit** process, never in an app launched
-  ///   by XCUITest (the runner is the test process there, not the app).
-  /// - `isActive` — a fixture launch, which has no such variable.
-  /// - `isolatesPreferences` — a UI test that deliberately launches with `fixture: false` to
-  ///   exercise the real bootstrap (`WorkroomWorkflowUITests`), which has neither of the above.
-  ///
-  /// `enabled`-gated like every other read in this file, so a shipped build always answers false:
-  /// the env-var probe alone would otherwise hand a factory-reset app to a user whose shell still
-  /// exports `XCTestConfigurationFilePath` (a wrapper script, `launchctl setenv`, a terminal left
-  /// over from a test run) — the release trap `UserDefaults.app` documents at length.
-  static var isTestProcess: Bool {
-    enabled && (isHostedUnitRun() || isUILaunch)
-  }
-
-  /// The `XCTestConfigurationFilePath` signal: set in a hosted unit process, never in an app
-  /// launched by XCUITest. Not `enabled`-gated, unlike `isTestProcess`.
-  static func isHostedUnitRun(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-  ) -> Bool {
-    environment["XCTestConfigurationFilePath"] != nil
-  }
-
-  /// Whether this is an app launched **by a UI test** (a fixture launch, or a `fixture: false`
-  /// launch that still isolates preferences). The latter loads the developer's REAL projects (the
-  /// real-bootstrap smoke test) and is deliberately hermetic too: its run tabs no longer see rc-only
-  /// `PATH` entries. Narrower than `isTestProcess`, which also answers
-  /// true for a hosted unit run — `WorkroomApp` skips the shell probe there for its own reason, and
-  /// `ShellEnvironmentTests` needs the process environment left alone.
-  static var isUILaunch: Bool { isActive || isolatesPreferences }
-
-  /// Whether `WorkroomApp.init` starts the background `$SHELL -ilc` probe. Not in a hosted unit run
-  /// (`ShellEnvironmentTests` needs the cache to hold only what it put there) and not in a UI-test
-  /// launch (which has no use for the enrichment, and would otherwise execute the shell's startup
-  /// files). Pure, so the decision is testable without launching the app.
-  static func runsLaunchShellProbe(
-    environment: [String: String] = ProcessInfo.processInfo.environment,
-    isUILaunch: Bool = isUILaunch
-  ) -> Bool {
-    !isHostedUnitRun(environment: environment) && !isUILaunch
-  }
 
   // MARK: Hermetic shell
 
@@ -848,7 +798,7 @@ enum UITestFixture {
   /// reading the environment from other threads (see the comment there).
   @discardableResult
   static func applyHermeticShell(
-    active: Bool = isUILaunch,
+    active: Bool = AppEnvironment.isUILaunch,
     bundleID: String? = Bundle.main.bundleIdentifier,
     root: URL = FileManager.default.temporaryDirectory,
     set: (String, String) -> Void = { setenv($0, $1, 1) }
@@ -905,13 +855,13 @@ enum UITestFixture {
   ///
   /// `active` is a parameter, defaulting to the real flag, purely so its unit tests never have to
   /// WRITE `WorkroomUITestFixture`. Around 47 production sites branch on that key, including
-  /// `AppStore.handleRootBranchChange`'s `guard !UITestFixture.isActive`, and `-parallel-testing`
+  /// `AppStore.handleRootBranchChange`'s `guard !AppEnvironment.current.isFixture`, and `-parallel-testing`
   /// workers are separate processes sharing one on-disk defaults domain — so a class holding the key
   /// true for the length of a test body silently early-returns another class's history refresh, in a
   /// worker whose diff has nothing to do with any of this. That is the same cross-worker hazard
   /// `AppStore.confirmOnCloseOverrideForTesting` exists for; passing the state in avoids it at the
   /// source instead of racing and cleaning up.
-  static func applyFixtureDefaults(active: Bool = isActive) {
+  static func applyFixtureDefaults(active: Bool = fixtureFlag) {
     guard active else { return }
     Defaults[.showInspector] = true
     Defaults[.activeInspectorSection] = inspectorSection

@@ -855,14 +855,14 @@ struct PaneLeafView: View {
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("terminal.pane")
     .accessibilityLabel(Text(accessibilityLabel))
-    // `multiPane || UITestFixture.isActive`: with one pane there's normally no need to mark it
+    // `multiPane || AppEnvironment.current.isFixture`: with one pane there's normally no need to mark it
     // selected, but that left single-pane keyboard focus with NO queryable signal, so a UI test
     // asserting "the terminal has focus" could only ever be vacuous — and focus races here are a
     // recurring bug class (the ⌘F find-bar hatch in TerminalContainerView, DiffPaneFocusUITests, and
     // the dialog-vs-terminal race this trait now covers). Fixture-gated rather than unconditional:
     // a lone pane announcing itself "selected" to VoiceOver would be wrong for real users.
     .accessibilityAddTraits(
-      focused && (multiPane || UITestFixture.isActive) ? .isSelected : [])
+      focused && (multiPane || AppEnvironment.current.isFixture) ? .isSelected : [])
   }
 
   /// The pane's centre: a hosted terminal surface, or a diff viewer for a content tab. Clipped to the

@@ -56,7 +56,7 @@ final class ClaudeUsageBridge: ObservableObject {
     fileManager: FileManager = .default,
     writer: ((Data, URL, Int) throws -> Void)? = nil
   ) {
-    if UITestFixture.isActive {
+    if AppEnvironment.current.isFixture {
       let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
         "workroom-agent-usage-ui-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
       self.settingsURL = settingsURL ?? fixtureRoot.appendingPathComponent(".claude/settings.json")

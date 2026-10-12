@@ -16,7 +16,7 @@ import XCTest
 ///
 /// Every repo is a throwaway under `NSTemporaryDirectory()`, removed in `tearDown`, and git is isolated
 /// from the developer's own config — these never touch a real repository. The UI tier can't stand in:
-/// it short-circuits the write under `UITestFixture.isActive` by design.
+/// it short-circuits the write under `AppEnvironment.current.isFixture` by design.
 final class VCSCommitIntegrationTests: XCTestCase {
   private var dirs: [String] = []
 
