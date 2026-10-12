@@ -227,9 +227,11 @@ struct MarkdownWebView: NSViewRepresentable {
 
     /// Gate navigations. The initial template load (and in-page `#anchor` scrolls) stay in the frame;
     /// a clicked link opens externally only for allowlisted schemes; everything else is dropped.
+    /// The handler's type must match WebKit's exactly: a near miss is not a witness, so WebKit never
+    /// calls this and every navigation goes through ungated.
     func webView(
       _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
       switch Self.navigationDecision(
         url: navigationAction.request.url,
