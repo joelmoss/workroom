@@ -1,4 +1,5 @@
 import WorkroomDomain
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom
