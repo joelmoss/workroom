@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomVCS
 
 /// The changeset (commit detail) content tab (issue #59): a whole commit's metadata, its changed-file
 /// list, and the selected file's diff. Read through `VCSProviding.changeset`; the per-file diff reuses

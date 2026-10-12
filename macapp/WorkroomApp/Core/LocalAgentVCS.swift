@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// One local service connection across windows. Acquisition may establish a new generation;
 /// operations themselves are never retried. An older running agent is negotiated with, never

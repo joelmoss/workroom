@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Services retain both the router's metadata and the connection generation that produced them.
 /// Reacquiring a service after reconnect is an explicit caller decision, never an operation retry.

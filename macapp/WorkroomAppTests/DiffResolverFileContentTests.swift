@@ -1,4 +1,5 @@
 import SyntaxHighlighting
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom

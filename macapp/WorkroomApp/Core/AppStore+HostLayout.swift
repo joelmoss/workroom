@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 import WorkroomWire
 
 /// A window's state for the remote workrooms whose layouts their hosts keep (#255,

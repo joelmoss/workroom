@@ -1,4 +1,5 @@
 import CryptoKit
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom

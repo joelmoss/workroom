@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Local engine interface. RepositoryRouter wraps these engines in a context-bound VCSProviding;
 /// application callers never supply an engine with a remote path. Synchronous native operations

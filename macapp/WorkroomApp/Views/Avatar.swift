@@ -2,6 +2,7 @@ import CryptoKit
 import Defaults
 import DesignSystem
 import SwiftUI
+import WorkroomVCS
 
 extension VCSCommit {
   /// Every author's display name (falling back to email when a name is blank), comma-joined for a

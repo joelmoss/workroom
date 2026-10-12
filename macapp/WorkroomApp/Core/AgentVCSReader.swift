@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 struct AgentVCSReader: VCSProviding {
   let context: RepositoryContext

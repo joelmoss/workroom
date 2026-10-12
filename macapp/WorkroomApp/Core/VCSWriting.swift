@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 
 /// A VCS action the toolbar can perform.
 enum VCSRemoteAction: String, Equatable, Sendable, CaseIterable {
