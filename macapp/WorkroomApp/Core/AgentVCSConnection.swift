@@ -471,7 +471,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// when the returned value is dropped.
   func reserveForwardSlot() -> ForwardSlot? {
     let reserved = lock.withLock { () -> Bool in
-      guard forwardsHeld < PortForward.maxConnections else { return false }
+      guard forwardsHeld < ForwardSlot.maxPerConnection else { return false }
       forwardsHeld += 1
       return true
     }

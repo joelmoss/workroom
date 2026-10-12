@@ -1,3 +1,4 @@
+import AgentConnection
 import Darwin
 import WorkroomVCS
 import XCTest
@@ -155,7 +156,7 @@ final class AgentPortForwardingTests: XCTestCase {
     let second = try listen(connection, to: 3000, failures: failures)
     var clients: [TCPClient] = []
     defer { for client in clients { client.close() } }
-    for index in 0..<PortForward.maxConnections {
+    for index in 0..<ForwardSlot.maxPerConnection {
       let client = try connect(to: index.isMultiple(of: 2) ? first : second)
       try client.write(Data("x".utf8))
       XCTAssertEqual(try client.read(1), Data("x".utf8), "connection \(index) did not open")
@@ -166,7 +167,7 @@ final class AgentPortForwardingTests: XCTestCase {
     eventually("the 65th connection was not refused locally") {
       failures.all.contains { $0.contains("Too many connections") }
     }
-    XCTAssertEqual(agent.forwards(opcode: 0x01).count, PortForward.maxConnections)
+    XCTAssertEqual(agent.forwards(opcode: 0x01).count, ForwardSlot.maxPerConnection)
   }
 
   /// The local client half-closing sends EOF, and only EOF: the CLOSE is the agent's, once it has
@@ -841,11 +842,11 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertNotNil(PortForwardingModel.Transport.reconnecting(.remote(UUID()), manager: manager))
   }
 
-  // Value: protects=a forward waiting on a reconnect holds at most maxConnections clients, and stop
+  // Value: protects=a forward waiting on a reconnect holds at most ForwardSlot.maxPerConnection clients, and stop
   // closes them; fails_when=the waiting cap or stop's close of waiting clients is removed; why_new=no
   // test holds a reconnect open while clients arrive; seam=none
   /// A burst against a forward whose host is reconnecting slowly (a waking box, a hung ssh) holds at
-  /// most `maxConnections` clients: the next is refused at once and the row says why. Removing the
+  /// most `ForwardSlot.maxPerConnection` clients: the next is refused at once and the row says why. Removing the
   /// forward closes every client still waiting (#381 review).
   func testClientsWaitingOnAReconnectAreCappedAndClosedOnRemove() async throws {
     let first = lease()
@@ -863,7 +864,9 @@ final class PortForwardingModelTests: XCTestCase {
     await settle("the watch did not see the disconnect") { !model.connected }
 
     var waiting: [TCPClient] = []
-    for _ in 0..<PortForward.maxConnections { waiting.append(try TCPClient(port: entry.localPort)) }
+    for _ in 0..<ForwardSlot.maxPerConnection {
+      waiting.append(try TCPClient(port: entry.localPort))
+    }
     defer { for client in waiting { client.close() } }
     let refused = try TCPClient(port: entry.localPort)
     defer { refused.close() }

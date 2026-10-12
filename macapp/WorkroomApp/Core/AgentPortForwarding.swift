@@ -1,33 +1,25 @@
+import AgentConnection
 import Darwin
 import Foundation
 import WorkroomVCS
 
-/// `Service::Forward` (`0x05`) on a wr-agent connection: a loopback TCP port on the agent's box,
-/// reachable at `127.0.0.1:<local port>` on this Mac (issue #208). Everything here is the wire
-/// contract of `vcs/crates/wr-agent/src/forward.rs`.
-///
-/// **A forward only carries while the app is attached.** Every forwarded socket is owned by the
-/// multiplex connection that opened it and the agent closes it with that connection, so nothing here
-/// is persisted across launches: a forward restored at launch would promise a socket the design
-/// cannot keep.
-///
-/// **The local port is ephemeral.** Forwarding port N binds whatever loopback port the kernel hands
-/// out, never N — so forwarding the local box's own port 5173 cannot collide with the dev server
-/// already sitting on it. The bound port is what the UI shows and what the user connects to.
-///
-/// **The listener is reachable by every process and every user account on this Mac.** `127.0.0.1`
-/// is not uid-scoped, so a forward grants all of them unauthenticated access to the target — the
-/// same property `ssh -L` ships with. Zero amplification while the agent is this same box; at Phase
-/// 3 it becomes a real boundary, recorded in `docs/designs/remote-workrooms.md`.
-enum ForwardOpcode {
-  static let open: UInt8 = 0x01
-  static let reply: UInt8 = 0x02
-  static let data: UInt8 = 0x03
-  static let eof: UInt8 = 0x04
-  static let close: UInt8 = 0x05
-  /// On a listener's stream only (`ReverseForward`): one connection is waiting to be claimed.
-  static let accepted: UInt8 = 0x06
-}
+// `Service::Forward` (`0x05`) on a wr-agent connection: a loopback TCP port on the agent's box,
+// reachable at `127.0.0.1:<local port>` on this Mac (issue #208). Everything here is the wire
+// contract of `vcs/crates/wr-agent/src/forward.rs`.
+//
+// **A forward only carries while the app is attached.** Every forwarded socket is owned by the
+// multiplex connection that opened it and the agent closes it with that connection, so nothing here
+// is persisted across launches: a forward restored at launch would promise a socket the design
+// cannot keep.
+//
+// **The local port is ephemeral.** Forwarding port N binds whatever loopback port the kernel hands
+// out, never N — so forwarding the local box's own port 5173 cannot collide with the dev server
+// already sitting on it. The bound port is what the UI shows and what the user connects to.
+//
+// **The listener is reachable by every process and every user account on this Mac.** `127.0.0.1`
+// is not uid-scoped, so a forward grants all of them unauthenticated access to the target — the
+// same property `ssh -L` ships with. Zero amplification while the agent is this same box; at Phase
+// 3 it becomes a real boundary, recorded in `docs/designs/remote-workrooms.md`.
 
 /// The port-forwarding service on one host's connection. Concrete rather than behind a protocol:
 /// only a wr-agent has one, and a second implementer would be a second agent.
@@ -187,11 +179,6 @@ final class PortForward: @unchecked Sendable {
     let send: TimeInterval
     let drain: TimeInterval
   }
-  /// The agent's `MAX_FORWARDS`: what it holds per multiplex connection before refusing. Mirrored
-  /// on the connection (`AgentVCSConnection.reserveForwardSlot`), across every listener on it, so a
-  /// burst of local connects never sends OPENs the agent will certainly refuse — each refusal is
-  /// two more envelopes through the writer VCS and File share.
-  static let maxConnections = 64
   /// Out of descriptors: how long the accept queue pauses before the backlog is tried again.
   private static let acceptBackoff: TimeInterval = 0.1
 
@@ -210,7 +197,7 @@ final class PortForward: @unchecked Sendable {
   private let lock = NSLock()
   /// Each with the connection-wide slot it holds, released when the entry leaves this table.
   private var live: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)] = [:]
-  /// Accepted clients waiting for `reconnect`, at most `maxConnections`. Each is closed by whichever
+  /// Accepted clients waiting for `reconnect`, at most `ForwardSlot.maxPerConnection`. Each is closed by whichever
   /// of its reconnect or `stop()` takes it out of here first, so a descriptor is never closed twice.
   private var waiting: Set<Int32> = []
   private var stopped = false
@@ -322,10 +309,10 @@ final class PortForward: @unchecked Sendable {
     // The host's connection has ended (the network dropped, or the box slept): this client is the
     // user at the forward again, so the host is reconnected, waking its box, and the client waits
     // for that rather than being refused. Off the accept queue, which keeps accepting meanwhile.
-    // At most `maxConnections` wait, as at most that many are carried: a burst against a slow wake
+    // At most `ForwardSlot.maxPerConnection` wait, as at most that many are carried: a burst against a slow wake
     // must not hold descriptors without bound.
     let admitted = lock.withLock { () -> Bool in
-      guard !stopped, waiting.count < Self.maxConnections else { return false }
+      guard !stopped, waiting.count < ForwardSlot.maxPerConnection else { return false }
       waiting.insert(client)
       return true
     }
@@ -611,13 +598,6 @@ final class ReverseForward: @unchecked Sendable {
 
   /// The removed entry, and so its slot, is dropped after the lock.
   private func forget(_ id: UUID) { _ = lock.withLock { live.removeValue(forKey: id) } }
-}
-
-/// A held `MAX_FORWARDS` slot on one agent connection; dropping it gives the slot back.
-final class ForwardSlot: @unchecked Sendable {
-  private let release: @Sendable () -> Void
-  init(release: @escaping @Sendable () -> Void) { self.release = release }
-  deinit { release() }
 }
 
 /// One accepted TCP connection, pumped over one multiplex stream.

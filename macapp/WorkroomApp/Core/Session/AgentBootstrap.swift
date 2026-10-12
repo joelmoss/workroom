@@ -1,3 +1,4 @@
+import AgentConnection
 import CryptoKit
 import Foundation
 import WorkroomSystem

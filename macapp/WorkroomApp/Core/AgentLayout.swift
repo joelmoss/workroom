@@ -1,3 +1,4 @@
+import AgentConnection
 import Foundation
 
 /// `Service::Layout` (`0x06`) on a wr-agent connection: each remote workroom's pane layout, kept on

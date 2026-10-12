@@ -1,3 +1,4 @@
+import AgentConnection
 import WorkroomVCS
 import XCTest
 
