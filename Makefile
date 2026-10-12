@@ -13,7 +13,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
         app-run app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
-        remote-host-image remote-host-image-test actions-lint vcs-lint
+        app-check remote-host-image remote-host-image-test actions-lint vcs-lint vcs-test
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -64,6 +64,20 @@ vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and
 	cargo clippy --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --all-targets -- -D warnings && \
 	RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps && \
 	RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --no-deps
+
+# Extra `cargo test` arguments for vcs-test, given to both runs: a package, a test target or a name
+# filter, e.g. `make vcs-test VCS_TEST_FLAGS="-p wr-agent --test attach_survives_detach"`.
+VCS_TEST_FLAGS ?=
+
+# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), then wr-agent
+# with terminal-state (`agent-terminal-state`). WR_AGENT_HAS_TERMINAL_STATE makes the repaint and
+# scrollback tests run instead of skipping. The second run needs Zig, which build-ghostty-vt.sh
+# gets from mise.
+vcs-test: ## Test the Rust workspace, then wr-agent with terminal-state, as CI does (VCS_TEST_FLAGS=)
+	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
+	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
+	cargo test --manifest-path vcs/Cargo.toml $(VCS_TEST_FLAGS) && \
+	WR_AGENT_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state $(VCS_TEST_FLAGS)
 
 # --- macOS app (macapp/) ---
 
@@ -142,13 +156,20 @@ app-run: app-build ## Build (Debug) and launch this checkout's dev app, replacin
 app-build: ## Build the app (Debug)
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS) $(APP_ID_FLAGS)
 
+# $(call test_summary,<scheme>) runs after a test step and prints that run's counts and failures from
+# its .xcresult (Scripts/test-summary.sh), keeping the test step's exit status. The stamp, touched
+# just before the step, keeps a previous run's bundle from being reported as this one's.
+test_summary = status=$$?; sh Scripts/test-summary.sh DerivedData/Logs/Test $(1) DerivedData/.$(1).test-stamp; exit $$status
+
 # Built, then run in two steps, so only the run holds the GUI session: a build never waits on
 # another workroom's tests, and never makes another workroom's tests wait on it.
 app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	cd macapp && xcodegen generate && \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
+	  touch DerivedData/.WorkroomApp.test-stamp && { \
 	  $(call gui_lock,shared,app-test) \
-	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test-without-building
+	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test-without-building; \
+	  $(call test_summary,WorkroomApp); }
 
 # Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock.
 # CI, nightly and release run it beside `make app-test`. Each package resolves first, up to three
@@ -168,8 +189,10 @@ app-package-test: ## Run the local Swift packages' tests (swift test, no app hos
 app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queues behind other runs)
 	cd macapp && xcodegen generate && \
 	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
+	  touch DerivedData/.WorkroomAppUITests.test-stamp && { \
 	  $(call gui_lock,exclusive,app-uitest) \
-	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' $(APP_UITEST_FLAGS) test-without-building
+	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' $(APP_UITEST_FLAGS) test-without-building; \
+	  $(call test_summary,WorkroomAppUITests); }
 
 app-identity: ## Print the bundle id this checkout's Debug build gets (one per workroom)
 	@echo "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)"
@@ -183,7 +206,7 @@ remote-host-image-test: ## Build the `workroom-host` image, without its tag, and
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol, exe.dev git setup)
+app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol, exe.dev git setup, test summary)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-agent_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
@@ -193,6 +216,7 @@ app-test-scripts: ## Run the script tests (build-helper/build-agent archs, chann
 	sh macapp/Scripts/exedev-github_test.sh
 	sh macapp/Scripts/dev-identity_test.sh
 	sh macapp/Scripts/stop-dev-app_test.sh
+	sh macapp/Scripts/test-summary_test.sh
 	python3 macapp/Scripts/gui-lock_test.py
 
 app-scripts-lint: ## Lint macapp/Scripts/*.sh with shellcheck (needs shellcheck on PATH)
@@ -211,6 +235,11 @@ app-format: ## Format Swift sources in place (swift-format)
 
 app-lint: ## Lint Swift with swift-format (--strict)
 	cd macapp && xcrun swift-format lint --strict --parallel --recursive $(APP_SWIFT_PATHS)
+
+# A recipe, not prerequisites, so `make -j` can't lint while the format is still rewriting files.
+app-check: ## Format Swift in place, then lint it strictly (app-format + app-lint)
+	$(MAKE) app-format
+	$(MAKE) app-lint
 
 # `app-test-scripts` gates the release because it is the cheap half that catches an ARTIFACT bug
 # (the universal-arch cases) and needs no toolchain, no keychain and no Xcode.
