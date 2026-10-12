@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Store-owned state for the History pane (issue #59): a paged, newest-first commit log for the
 /// selected workroom, read through `LocalVCSProviding`. Re-pointed on selection (like `FileTreeModel`);

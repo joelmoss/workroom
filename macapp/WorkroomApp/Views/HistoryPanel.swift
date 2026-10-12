@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomVCS
 
 /// The inspector's **History** section body (issue #59): a newest-first commit log for the selected
 /// workroom, read via `VCSProviding` through the store-owned `HistoryModel`. Lives inside the

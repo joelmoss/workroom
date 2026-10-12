@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// What the VCS toolbar's middle segment is currently doing.
 enum VCSSyncActivity: Equatable, Sendable {

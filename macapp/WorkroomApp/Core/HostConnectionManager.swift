@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 import WorkroomWire
 
 /// A negotiated service connection, separate from the terminal attach relays. Factories must

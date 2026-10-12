@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// What a CI probe decided. `keepPrior` means "don't overwrite the last good value" (a
 /// transient rate-limit / network blip), so a flaky `gh` doesn't flicker the badge to nothing.

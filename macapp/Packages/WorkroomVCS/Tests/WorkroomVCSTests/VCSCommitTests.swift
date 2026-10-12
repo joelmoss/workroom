@@ -1,6 +1,6 @@
+import Foundation
+import WorkroomVCS
 import XCTest
-
-@testable import Workroom
 
 /// `VCSCommit`'s push-state badge rule.
 final class VCSCommitTests: XCTestCase {

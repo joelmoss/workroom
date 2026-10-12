@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import SwiftUI
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom

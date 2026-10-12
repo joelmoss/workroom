@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Forwards `StatusCommandRunning` calls to wr-agent's exec service instead of spawning `git`
 /// locally. This is the whole seam `AgentVCSConnection.writer` needs: `CLIVCSWriter`'s arg

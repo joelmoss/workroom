@@ -1,6 +1,7 @@
 import Foundation
 import SwiftGitX
 import SyntaxHighlighting
+import WorkroomVCS
 
 /// git-backed `LocalVCSProviding`, over SwiftGitX (libgit2). Maps `SwiftGitX.*` types into the app-native
 /// models. Pure Swift — no Rust involved for git.

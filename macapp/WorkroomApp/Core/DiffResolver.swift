@@ -1,5 +1,6 @@
 import Foundation
 import SyntaxHighlighting
+import WorkroomVCS
 
 /// The outcome of a `DiffResolver.resolve` call.
 enum DiffResult: Equatable, Sendable {

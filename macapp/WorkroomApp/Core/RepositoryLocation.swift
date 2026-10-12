@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 
 /// A host instance, independent of its current network address.
 enum HostID: Hashable, Sendable {

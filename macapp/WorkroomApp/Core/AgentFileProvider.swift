@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// `Service::File` (`0x03`) on a wr-agent connection. Everything here is the wire contract of
 /// `vcs/crates/wr-agent/src/file.rs` and `watch.rs`; the two are kept in step by

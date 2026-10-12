@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 import libgit2
 
 /// A commit's diff **with rename detection**, straight on libgit2's C API (via `LibGit2`).

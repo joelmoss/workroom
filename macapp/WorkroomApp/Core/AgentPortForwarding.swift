@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import WorkroomVCS
 
 /// `Service::Forward` (`0x05`) on a wr-agent connection: a loopback TCP port on the agent's box,
 /// reachable at `127.0.0.1:<local port>` on this Mac (issue #208). Everything here is the wire
