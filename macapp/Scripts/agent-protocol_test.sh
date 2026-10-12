@@ -5,7 +5,8 @@
 # a Release app often talks to an agent a Nightly installed. The agent's only refusal of an app is
 # `negotiate` (vcs/crates/wr-protocol/src/envelope.rs): min(app, agent) below
 # `MIN_SUPPORTED_VERSION`. So that constant must never rise above the `protocolVersion` the latest
-# stable app sends (`AgentControlClient.protocolVersion`, read at that release's tag). Per-service
+# stable app sends (`AgentHandshake.protocolVersion`, `AgentControlClient.protocolVersion` before
+# phase 5b moved it, read at that release's tag). Per-service
 # minimums are the app's to check against the agent's version, and a newer agent always passes
 # them, so they are not pinned here. Run: sh macapp/Scripts/agent-protocol_test.sh
 #
@@ -17,7 +18,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 # Overridable so the test can be pointed at modified copies, to confirm it goes red.
 ENVELOPE="${AGENT_PROTOCOL_ENVELOPE:-$ROOT/vcs/crates/wr-protocol/src/envelope.rs}"
-CLIENT_PATH="macapp/WorkroomApp/Core/Session/AgentControlClient.swift"
+CLIENT_PATH="macapp/Packages/AgentConnection/Sources/AgentConnection/AgentHandshake.swift"
+# Where the constant lived before phase 5b moved it into the AgentConnection package: a stable tag
+# older than that move has it here, and only here.
+LEGACY_CLIENT_PATH="macapp/WorkroomApp/Core/Session/AgentControlClient.swift"
 
 # shellcheck source=channel-helper.sh
 . "$DIR/channel-helper.sh"
@@ -39,9 +43,13 @@ if [ -z "$latest" ]; then
   latest="v$(printf '%s\n' "$stable" | sed '/^$/d' | sort -V | tail -n 1)"
 fi
 
-released="$(git -C "$ROOT" show "$latest:$CLIENT_PATH" 2>/dev/null |
-  sed -n 's/.*static let protocolVersion: UInt16 = \([0-9][0-9]*\).*/\1/p')"
-[ -n "$released" ] || fail "no protocolVersion in $CLIENT_PATH at $latest"
+released_from() {
+  git -C "$ROOT" show "$latest:$1" 2>/dev/null |
+    sed -n 's/.*static let protocolVersion: UInt16 = \([0-9][0-9]*\).*/\1/p'
+}
+released="$(released_from "$CLIENT_PATH")"
+[ -n "$released" ] || released="$(released_from "$LEGACY_CLIENT_PATH")"
+[ -n "$released" ] || fail "no protocolVersion in $CLIENT_PATH or $LEGACY_CLIENT_PATH at $latest"
 
 minimum="$(sed -n 's/^pub const MIN_SUPPORTED_VERSION: u16 = \([0-9][0-9]*\);.*/\1/p' "$ENVELOPE")"
 [ -n "$minimum" ] || fail "no MIN_SUPPORTED_VERSION in $ENVELOPE"

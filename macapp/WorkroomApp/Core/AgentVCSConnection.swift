@@ -1,3 +1,4 @@
+import AgentConnection
 import Darwin
 import Foundation
 import WorkroomSystem
@@ -38,7 +39,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
   private var nextSubscription: UInt64 = 1
   /// The peer's raw greeting version. Kept (not just compared once in `connect()`) because the File
-  /// service is gated on it separately from VCS: see `AgentControlClient.minFileVersion`.
+  /// service is gated on it separately from VCS: see `AgentHandshake.minFileVersion`.
   private let helloVersion: UInt16
   /// How the File service negotiation ended. Never a failed CONNECTION: VCS works regardless, and
   /// the agent is kept alive because it may own terminals. The three outcomes are different facts
@@ -156,7 +157,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         handshakeTimeout: stream.handshakeTimeout)
     } catch HostConnectionError.connectionLost {
       throw HostConnectionError.serviceUnavailable(await stream.failure())
-    } catch AgentControlClient.AgentProtocolError.notAnAgent {
+    } catch AgentHandshake.AgentProtocolError.notAnAgent {
       // Commonly a shell startup file on the host that prints to stdout ahead of the relay. Not
       // `failure()`: the carrier answered, and saying it did not would contradict this.
       throw HostConnectionError.serviceUnavailable(
@@ -184,12 +185,12 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         var timeout = timeval(tv_sec: max(1, Int(handshakeTimeout.rounded(.up))), tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        try send(fd, Data(AgentControlClient.encodeHello(build: "Workroom VCS")))
+        try send(fd, Data(AgentHandshake.encodeHello(build: "Workroom VCS")))
         var hello: [UInt8] = []
         var helloVersion: UInt16 = 0
         let deadline = Date().addingTimeInterval(handshakeTimeout)
         while true {
-          if let greeting = try AgentControlClient.decodeHello(hello) {
+          if let greeting = try AgentHandshake.decodeHello(hello) {
             helloVersion = greeting.version
             // Checked against the peer's raw greeting, not the negotiated Terminal/Control
             // minimum: a still-running pre-upgrade agent (kept alive because it may own
@@ -197,7 +198,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
             // VCS handling at all — it would silently drop the capabilities request that follows,
             // stalling this connect for the full capabilities timeout instead of failing now.
             // Matches `MIN_VCS_VERSION` in the agent's `wr_protocol::envelope`.
-            guard greeting.version >= AgentControlClient.minVCSVersion else {
+            guard greeting.version >= AgentHandshake.minVCSVersion else {
               throw VCSError.backendVersion("Agent predates VCS support.")
             }
             break
@@ -345,7 +346,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private func negotiateFiles(timeout: TimeInterval) async {
     // Against the peer's RAW greeting, before any File envelope: a protocol-2 agent silently drops
     // them, so the probe would otherwise wait out its whole timeout.
-    guard helloVersion >= AgentControlClient.minFileVersion else { return }
+    guard helloVersion >= AgentHandshake.minFileVersion else { return }
     let outcome: FileNegotiation
     do {
       let reply = try await request(
@@ -418,7 +419,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func layouts() throws -> AgentLayoutService {
     try lock.withLock {
       guard !closed else { throw HostConnectionError.connectionLost }
-      guard helloVersion >= AgentControlClient.minLayoutVersion else {
+      guard helloVersion >= AgentHandshake.minLayoutVersion else {
         throw VCSError.backendVersion("Agent does not support the layout service.")
       }
     }
@@ -455,7 +456,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func forwarding() throws -> AgentForwardService {
     try lock.withLock {
       guard !closed else { throw HostConnectionError.connectionLost }
-      guard helloVersion >= AgentControlClient.minForwardVersion else {
+      guard helloVersion >= AgentHandshake.minForwardVersion else {
         throw VCSError.backendVersion("Agent does not support port forwarding.")
       }
     }

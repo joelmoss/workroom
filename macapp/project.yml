@@ -32,6 +32,8 @@ packages:
     path: Packages/WorkroomVCS
   WorkroomSystem:
     path: Packages/WorkroomSystem
+  AgentConnection:
+    path: Packages/AgentConnection
   DesignSystem:
     path: Packages/DesignSystem
   WorkroomWire:
@@ -161,6 +163,7 @@ targets:
       - package: WorkroomDomain
       - package: WorkroomVCS
       - package: WorkroomSystem
+      - package: AgentConnection
       - package: WorkroomWire
       - target: workroom-session
         embed: false
@@ -377,6 +380,7 @@ targets:
       - package: WorkroomDomain
       - package: WorkroomVCS
       - package: WorkroomSystem
+      - package: AgentConnection
       - package: WorkroomWire
     settings:
       base:

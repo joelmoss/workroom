@@ -11,46 +11,6 @@ import XCTest
 /// drifted together away from what the agent actually speaks.
 final class AgentControlClientTests: XCTestCase {
 
-  // MARK: - Greeting
-
-  func testHelloStartsWithTheMagicAndVersion() {
-    let bytes = AgentControlClient.encodeHello(build: "Workroom")
-    XCTAssertEqual(Array(bytes.prefix(4)), Array("WRA1".utf8))
-    XCTAssertEqual(bytes[4], 0, "protocol version is a big-endian u16")
-    XCTAssertEqual(bytes[5], 7, "PROTOCOL_VERSION in the agent, bumped for Service::Layout")
-    XCTAssertEqual(Int(bytes[6]), "Workroom".utf8.count)
-  }
-
-  func testHelloRoundTrips() throws {
-    let bytes = AgentControlClient.encodeHello(build: "Workroom 2.0")
-    let decoded = try XCTUnwrap(try AgentControlClient.decodeHello(bytes))
-    XCTAssertEqual(decoded.version, AgentControlClient.protocolVersion)
-    XCTAssertEqual(decoded.consumed, bytes.count)
-  }
-
-  /// Every prefix must report "need more", never a spurious value — the greeting arrives over a
-  /// socket and can be split anywhere.
-  func testHelloNeedsMoreBytesRatherThanGuessing() throws {
-    let bytes = AgentControlClient.encodeHello(build: "Workroom")
-    for cut in 0..<bytes.count {
-      XCTAssertNil(
-        try AgentControlClient.decodeHello(Array(bytes.prefix(cut))),
-        "a \(cut)-byte prefix should not decode")
-    }
-  }
-
-  /// An ssh banner or MOTD must fail at once, not wait out the read timeout.
-  func testHelloRejectsAPeerThatIsNotAnAgent() {
-    XCTAssertThrowsError(try AgentControlClient.decodeHello(Array("Welcome to Ubuntu".utf8)))
-    XCTAssertThrowsError(try AgentControlClient.decodeHello(Array("X".utf8)))
-  }
-
-  /// But a genuine prefix of the magic is not yet a failure — the rest may still arrive.
-  func testHelloTreatsAMagicPrefixAsIncomplete() throws {
-    XCTAssertNil(try AgentControlClient.decodeHello(Array("W".utf8)))
-    XCTAssertNil(try AgentControlClient.decodeHello(Array("WRA".utf8)))
-  }
-
   // MARK: - Envelope
 
   func testEnvelopeHeaderIsServiceThenStreamThenLength() {
