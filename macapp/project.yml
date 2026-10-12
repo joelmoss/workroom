@@ -151,8 +151,8 @@ targets:
       - package: Sentry
         product: Sentry
       - package: Defaults
-      # Syntax highlighting: tree-sitter and its grammars, pinned in the package's Package.swift.
       - package: DesignSystem
+      # Syntax highlighting: tree-sitter and its grammars, pinned in the package's Package.swift.
       - package: SyntaxHighlighting
       - package: WorkroomDomain
       - package: WorkroomWire

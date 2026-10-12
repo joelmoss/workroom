@@ -105,9 +105,7 @@ final class GhosttyApp {
       }
     }
     rt.close_surface_cb = { userdata, needsConfirm in
-      MainActor.assumeIsolated {
-        GhosttyRuntimeAdapter.shared.closeSurface(userdata: userdata, needsConfirm: needsConfirm)
-      }
+      GhosttyRuntimeAdapter.closeSurface(userdata: userdata, needsConfirm: needsConfirm)
     }
 
     guard let createdApp = ghostty_app_new(&rt, cfg) else {
@@ -384,7 +382,7 @@ final class GhosttyApp {
     // `minimum-contrast` enforces a render-time WCAG contrast floor on terminal CONTENT (not just
     // chrome-matching padding): many bundled light themes, vendored as-is from iTerm2-Color-Schemes,
     // ship an ANSI bright-white (palette 15) at or near their own background — invisible bold/bright
-    // text. `3.0` matches `ThemeTokens.legible`'s app-chrome floor (`ThemeTokens.swift:308`) by
+    // text. `3.0` matches `ThemeTokens.legible`'s app-chrome floor (in the DesignSystem package) by
     // convention/comment only, not a shared constant — terminal content and app chrome are different
     // subsystems that may need different floors later.
     //

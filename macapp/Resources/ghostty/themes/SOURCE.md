@@ -10,7 +10,8 @@ an upstream colour tweak stays palette-complete and still clears every contrast 
 
 ## Which themes are here
 
-`ThemeService.families` in `WorkroomApp/Core/ThemeService.swift` is the **single source of truth** —
+`ThemeCatalog.families` in `Packages/DesignSystem/Sources/DesignSystem/ThemeCatalog.swift` is the
+**single source of truth** —
 it declares every curated family and the dark/light file each variant maps to, in the picker's
 display order.
 

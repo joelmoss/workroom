@@ -437,7 +437,8 @@ final class GhosttyRuntimeAdapter {
 
   // MARK: Close
 
-  func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool) {
+  // `nonisolated static`: it touches nothing, so it needs no main-actor entry (and no trap).
+  nonisolated static func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool) {
     // Workroom owns its tab lifecycle (plan A5): a surface/shell exiting leaves the tab in place (as
     // SwiftTerm did) until the user closes it, so libghostty's close request is intentionally ignored.
   }

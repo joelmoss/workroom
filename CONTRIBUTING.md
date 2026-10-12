@@ -97,7 +97,7 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 
 | Component | Technology |
 | --- | --- |
-| **App language** | Swift 5 + SwiftUI (macOS 15 Sequoia+, Apple Silicon) |
+| **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+, Apple Silicon) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm`, Metal-rendered) |
 | **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); agent-routed reads and writes via the Rust `wr-agent` |
 | **Syntax highlighting** | [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + tree-sitter grammars |
