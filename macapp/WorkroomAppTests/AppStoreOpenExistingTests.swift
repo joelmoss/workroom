@@ -10,13 +10,6 @@ import XCTest
 @MainActor
 final class AppStoreOpenExistingTests: XCTestCase {
 
-  private func makeStore(_ projects: [Project]) -> AppStore {
-    let store = AppStore()
-    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    store.projects = projects
-    return store
-  }
-
   private func project(_ path: String, workrooms: [String]) -> Project {
     Project(
       path: path, vcs: "git",
