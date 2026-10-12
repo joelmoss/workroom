@@ -66,6 +66,15 @@ final class MarkdownFirstRenderTests: XCTestCase {
     return false
   }
 
+  /// WebKit finds delegate methods by ObjC selector. A Swift signature that drifts from the
+  /// protocol's (Swift 6 made `decisionHandler` `@MainActor @Sendable`) is no longer a witness, so it
+  /// is never exported, WebKit never calls it, and every navigation passes the gate unchecked.
+  func testCoordinatorExposesTheNavigationGateToWebKit() {
+    XCTAssertTrue(
+      coordinator.responds(
+        to: NSSelectorFromString("webView:decidePolicyForNavigationAction:decisionHandler:")))
+  }
+
   func testFirstRenderFiresOncePagePaints() async throws {
     let fired = loadAndCountRenders()
     coordinator.pendingMarkdown = "# Hello\n\nBody text.\n"
