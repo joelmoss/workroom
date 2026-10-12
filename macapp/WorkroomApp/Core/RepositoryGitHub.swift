@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// GitHub status for one repository. `gh` stays on this Mac for every host: what varies is how the
 /// repository is NAMED. A local host finds its identity from its own git remote (`gh repo view`); a

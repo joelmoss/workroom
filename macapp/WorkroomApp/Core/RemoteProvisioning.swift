@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Making remote workrooms the portable way (#252; design doc Phase 4, "Remote creation is one
 /// sequence"). Every workroom is a host of its own, made fresh, with its own clone:

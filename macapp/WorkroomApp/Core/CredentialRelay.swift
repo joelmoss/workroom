@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 import os
 
 /// The Mac's end of the git credential relay for a local container workroom (#309), which has no

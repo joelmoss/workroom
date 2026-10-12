@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 import WorkroomWire
 import os
 

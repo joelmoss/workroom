@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import WorkroomVCS
 import os
 
 /// Puts the Linux agent this app bundles on a remote host, and replaces the one running there

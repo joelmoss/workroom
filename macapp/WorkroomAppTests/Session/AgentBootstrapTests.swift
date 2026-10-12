@@ -1,4 +1,5 @@
 import Defaults
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom

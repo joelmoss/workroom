@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 import os
 
 /// Listeners on remote hosts that carry each connection back to a port on this Mac, one per

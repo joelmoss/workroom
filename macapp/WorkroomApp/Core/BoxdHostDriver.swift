@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 import os
 
 /// The first real provider driver (#256): boxd.sh machines, driven through the `boxd` CLI and
