@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 
 /// Shared, app-wide project data: the project list plus everything derived from it that is
 /// identical across windows — root branch labels, the VCS/CI status cache, GitHub-CLI

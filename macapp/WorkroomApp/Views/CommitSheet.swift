@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomVCS
 
 /// Record a commit: what will be included, the message, and the failure when there is one.
 ///

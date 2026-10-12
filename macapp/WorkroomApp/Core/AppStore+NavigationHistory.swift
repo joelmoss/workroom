@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 
 /// Back/forward navigation history (issue #26): recording the on-screen location, stepping through
 /// it, and applying a location. Moved out of `AppStore.swift` as is. Coupling points left on

@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomVCS
 
 /// Where a changed-file row's diff comes from — picks the VCS revision the `DiffResolver` diffs
 /// against (issue #66); each row carries its source, so a click always opens the *right* diff:

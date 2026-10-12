@@ -5,6 +5,7 @@ import Foundation
 import OSLog
 import SwiftUI
 import WorkroomDomain
+import WorkroomVCS
 
 /// One window's state and actions. Production builds one store per window (issue #70); the
 /// project data every window shares lives in `ProjectStore.shared`. All CLI work is awaited (it

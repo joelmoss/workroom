@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 
 /// The commit sheet's target, carried the way `PendingVCSAction` carries a confirmation's.
 ///

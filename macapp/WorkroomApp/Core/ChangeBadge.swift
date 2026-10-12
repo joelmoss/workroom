@@ -1,5 +1,6 @@
 import DesignSystem
 import SwiftUI
+import WorkroomVCS
 
 /// The change-kind badge the Changes panel puts in front of every changed file: a monospaced letter
 /// plus a themed colour, and the spelled-out word used by the accessibility label and tooltip.
