@@ -1,3 +1,4 @@
+import AgentConnection
 import Foundation
 import WorkroomVCS
 
@@ -68,47 +69,6 @@ struct AgentVCSReader: VCSProviding {
       insertions: files.reduce(0) { $0 + ($1.lineStats?.insertions ?? 0) },
       deletions: files.reduce(0) { $0 + ($1.lineStats?.deletions ?? 0) },
       branchForCI: status.branchForCi)
-  }
-}
-
-/// Deliberately separate from UI Codable: the versioned wire representation is its own contract.
-struct AgentVCSReply<T: Decodable>: Decodable {
-  let result: T
-  enum CodingKeys: CodingKey { case version, result, error }
-  init(from decoder: Decoder) throws {
-    let values = try decoder.container(keyedBy: CodingKeys.self)
-    guard try values.decode(Int.self, forKey: .version) == 1 else {
-      throw HostConnectionError.serviceUnavailable("Unsupported VCS response version.")
-    }
-    if values.contains(.error) {
-      if let name = try? values.decode(String.self, forKey: .error) {
-        switch name {
-        case "LockContention": throw VCSError.lockContention
-        case "StaleSnapshot": throw VCSError.staleSnapshot
-        default: throw HostConnectionError.serviceUnavailable("Unknown agent failure: \(name)")
-        }
-      }
-      let failure = try values.decode([String: String].self, forKey: .error)
-      guard failure.count == 1, let (kind, message) = failure.first else {
-        throw HostConnectionError.serviceUnavailable("Malformed agent failure.")
-      }
-      switch kind {
-      case "UnsupportedRepo": throw VCSError.unsupportedRepo(message)
-      case "NotFound": throw VCSError.notFound(message)
-      case "PartialData": throw VCSError.partialData(message)
-      case "BackendVersion": throw VCSError.backendVersion(message)
-      case "Io": throw VCSError.io(message)
-      default: throw HostConnectionError.serviceUnavailable("Unknown agent failure: \(kind)")
-      }
-    }
-    result = try values.decode(T.self, forKey: .result)
-  }
-  static func decode(_ data: Data) throws -> T {
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
-    do { return try decoder.decode(Self.self, from: data).result } catch let error as VCSError {
-      throw error
-    } catch { throw HostConnectionError.serviceUnavailable("Invalid VCS response: \(error)") }
   }
 }
 

@@ -1,3 +1,4 @@
+import AgentConnection
 import Foundation
 import WorkroomVCS
 
@@ -60,26 +61,6 @@ struct AgentFileProvider: FileProviding {
   { try await connection.watch(root: root, onEvent: onEvent) }
 }
 
-struct AgentFileRequest: Encodable, Sendable {
-  var version = 1
-  let method: String
-  // ponytail: `backend` (always "git") and `shared_root` are jj-era wire fields (#266), still sent
-  // for agents built before it. Prune once no supported agent predates #266.
-  var backend: String?
-  var root: String?
-  var sharedRoot: String?
-  var path: String?
-  var symlinks: String?
-  var maxBytes: Int?
-  var subscription: UInt64?
-}
-
-struct AgentFileCapabilities: Decodable {
-  let version: Int
-  let maxReadBytes: Int
-  let maxSubscriptions: Int
-}
-
 private struct AgentFileListing: Decodable {
   let stdout: String
   let stderr: String
@@ -95,69 +76,4 @@ private struct AgentFileResolved: Decodable {
 private struct AgentFileContent: Decodable {
   let size: Int
   let content: String
-}
-
-struct AgentFileSubscription: Decodable {
-  let subscription: UInt64
-}
-
-/// An unsolicited frame from the agent: File service, stream 0.
-struct AgentFileEvent: Decodable {
-  let event: String
-  let subscription: UInt64
-  var paths: [String]?
-  var overflow: Bool?
-  var reason: String?
-
-  /// Unknown event kinds are dropped rather than treated as errors, so a newer agent can add one
-  /// without failing the connection of an older client.
-  var model: FileWatchEvent? {
-    switch event {
-    case "changed": return .changed(paths: paths ?? [], overflow: overflow ?? false)
-    case "ended": return .ended(reason: reason ?? "")
-    default: return nil
-    }
-  }
-}
-
-/// The reply envelope, decoded like `AgentVCSReply` but with `FileError`'s own tags. Every failure is
-/// `{"Tag": "message"}`.
-struct AgentFileReply<T: Decodable>: Decodable {
-  let result: T
-  enum CodingKeys: CodingKey { case version, result, error }
-  init(from decoder: Decoder) throws {
-    let values = try decoder.container(keyedBy: CodingKeys.self)
-    guard try values.decode(Int.self, forKey: .version) == 1 else {
-      throw HostConnectionError.serviceUnavailable("Unsupported file response version.")
-    }
-    if values.contains(.error) {
-      let failure = try values.decode([String: String].self, forKey: .error)
-      guard failure.count == 1, let (kind, message) = failure.first else {
-        throw HostConnectionError.serviceUnavailable("Malformed agent failure.")
-      }
-      switch kind {
-      case "Refused": throw FileServiceError.refused(message)
-      case "TooLarge": throw FileServiceError.tooLarge
-      case "NotFound": throw FileServiceError.notFound(message)
-      case "ListingTruncated": throw FileServiceError.listingTruncated
-      case "LockContention": throw VCSError.lockContention
-      case "Unsupported", "Io", "Busy": throw FileServiceError.failed(message)
-      default: throw HostConnectionError.serviceUnavailable("Unknown agent failure: \(kind)")
-      }
-    }
-    result = try values.decode(T.self, forKey: .result)
-  }
-
-  static func decode(_ data: Data) throws -> T {
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
-    // Only a genuinely undecodable reply is wrapped. The typed failures `init(from:)` throws
-    // (`FileServiceError`, `VCSError`, `RepositoryRoutingError`, `HostConnectionError`) propagate
-    // unchanged, so a new one needs no edit here.
-    do {
-      return try decoder.decode(Self.self, from: data).result
-    } catch let error as DecodingError {
-      throw HostConnectionError.serviceUnavailable("Invalid file response: \(error)")
-    }
-  }
 }
