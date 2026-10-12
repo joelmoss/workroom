@@ -1,5 +1,6 @@
 import SwiftUI
 import SyntaxHighlighting
+import WorkroomVCS
 
 /// Read-only viewer for a working-tree file, shown in a content tab when a file is picked in the
 /// inspector's Files section. Reads the file off-main, renders it with line numbers, and applies the
