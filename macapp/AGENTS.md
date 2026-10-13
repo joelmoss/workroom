@@ -451,6 +451,10 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   what stops the menu eating a Tab the monitor deliberately passed through. Their action resolves the
   store from the **key window** (`QuickSwitcher.stepFromKeyWindow`), not from the `Commands` body's
   focused store, which outlives an aux window becoming key.
+- **An Escape sent by computer-use automation doesn't reach the app.** Don't file an Escape bug
+  from it. #451 reported that Escape left Project Settings and the exe.dev setup sheet open; Escape
+  on a real keyboard closed both, and so did XCUITest's `typeKey(.escape, …)`. Check Escape with a
+  real keyboard or a UI test.
 
 ## Layout
 
