@@ -32,6 +32,8 @@ struct SwitcherCard: Identifiable, Equatable {
   var well: Well
   let badge: Int
   let isRunning: Bool
+  /// A pane whose program reported OSC 9;4 ERROR. Workroom cards follow the run command instead.
+  let isFailed: Bool
   /// The mark's tile colour, resolved once when the cards are built. Resolving it in `body` instead ran
   /// `SwitcherMark.tileColor`'s saturation-ladder × brightness-step search — NSColor allocations and a
   /// contrast ratio per candidate — on every re-render of every card.
@@ -101,6 +103,7 @@ extension SwitcherCard {
       liveSubtitle = slot.store.flatMap { Self.vcsTail(for: slot.sid, in: $0) }
       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
       isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
+      isFailed = false
     case .pane(let tab):
       id = "pane:\(tab.id)"
       title = tab.title
@@ -110,6 +113,7 @@ extension SwitcherCard {
       liveSubtitle = nil
       badge = 0
       isRunning = tab.isRunning
+      isFailed = tab.isProgressFailed
     }
   }
 
@@ -362,12 +366,13 @@ private struct SwitcherCardView: View {
           .help("\(card.badge) unread")
       } else if card.isRunning {
         Circle()
-          .fill(palette.dot)
+          // `diffRemove` is the rail's contrast-corrected ANSI red, the slot `failure` reads.
+          .fill(card.isFailed ? palette.diffRemove : palette.dot)
           .frame(width: 7, height: 7)
           .overlay(Circle().strokeBorder(theme.tokens.panel, lineWidth: 1.5))
           .offset(x: 3, y: -3)
-          .help("Running")
-          .accessibilityLabel("running")
+          .help(card.isFailed ? "Reported an error" : "Running")
+          .accessibilityLabel(card.isFailed ? "reported an error" : "running")
       }
     }
   }
@@ -401,7 +406,7 @@ private struct SwitcherCardView: View {
   private var accessibilityLabel: String {
     var parts = [card.title, card.subtitle]
     if card.badge > 0 { parts.append("\(card.badge) unread") }
-    if card.isRunning { parts.append("running") }
+    if card.isRunning { parts.append(card.isFailed ? "reported an error" : "running") }
     return parts.joined(separator: ", ")
   }
 }

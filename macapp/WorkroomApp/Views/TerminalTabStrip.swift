@@ -471,6 +471,7 @@ private struct TerminalTabChip: View {
 
   private var runOrBusyAccessibilityValue: String {
     if let runState { return runIconSpec(runState).label }
+    if tab.isProgressFailed { return "Error" }
     return tab.isRunning ? "Busy" : "Idle"
   }
 
@@ -617,7 +618,7 @@ private struct TerminalTabChip: View {
     // An overlay so it never changes the chip's measured width (the drag gap math reads that).
     .overlay(alignment: .bottom) {
       if tab.isRunning {
-        RunningUnderline()
+        RunningUnderline(failed: tab.isProgressFailed)
           .padding(.horizontal, 6)
           .padding(.bottom, 1)
       }
@@ -675,22 +676,25 @@ private struct TabWidthKey: PreferenceKey {
 /// Under Reduce Motion the sweep is dropped for a static, fuller-opacity track.
 /// Reused by `WorkroomTabBar`'s chips so a busy workroom tab shows the same flowing underline.
 struct RunningUnderline: View {
+  /// The program reported OSC 9;4 ERROR: same sweep, in the failure colour.
+  var failed = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var sweeping = false
   private let theme = ThemeService.shared
+  private var color: Color { failed ? theme.tokens.failure : theme.tokens.accent }
 
   var body: some View {
     GeometryReader { geo in
       let width = geo.size.width
       let highlight = max(20, width * 0.4)
       Capsule()
-        .fill(theme.tokens.accent.opacity(reduceMotion ? 0.7 : 0.25))
+        .fill(color.opacity(reduceMotion ? 0.7 : 0.25))
         .overlay(alignment: .leading) {
           if !reduceMotion {
             Capsule()
               .fill(
                 LinearGradient(
-                  colors: [.clear, theme.tokens.accent, .clear],
+                  colors: [.clear, color, .clear],
                   startPoint: .leading, endPoint: .trailing)
               )
               .frame(width: highlight)
