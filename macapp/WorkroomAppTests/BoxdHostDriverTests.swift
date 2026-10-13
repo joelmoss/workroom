@@ -537,18 +537,16 @@ final class BoxdHostDriverTests: XCTestCase {
   // why_new=ClickedCommand (sign-in, GitHub, installer) had no test; seam=none (a real /bin/sh);
   // no_claim=boxd's or the installer's real output
   func testAClickedCommandRunsInTheSignInHomeWithoutAnInheritedToken() async throws {
-    let previous = ProcessInfo.processInfo.environment["BOXD_TOKEN"]
-    setenv("BOXD_TOKEN", "tok_inherited", 1)
-    addTeardownBlock {
-      if let previous { setenv("BOXD_TOKEN", previous, 1) } else { unsetenv("BOXD_TOKEN") }
-    }
+    // Not `setenv`: mutating this process's environment crashes a later libghostty surface here.
+    var inherited = ProcessInfo.processInfo.environment
+    inherited["BOXD_TOKEN"] = "tok_inherited"
     let home = signedInHome()
     // An out-of-date boxd's update notice comes first and names the installer, which isn't the page.
     let script =
       "echo 'curl -fsSL \(BoxdHostDriver.installer) | sh'; echo \"token=[$BOXD_TOKEN] home=$HOME\"; "
       + "echo open https://app.boxd.sh/?s=1; echo x; exit 3"
     let command = try BoxdHostDriver.ClickedCommand(
-      URL(fileURLWithPath: "/bin/sh"), ["-c", script], home: home)
+      URL(fileURLWithPath: "/bin/sh"), ["-c", script], home: home, inherited: inherited)
     let code = await command.wait()
     XCTAssertEqual(code, 3)
     // Output arrives on a reader thread, a moment after the exit.

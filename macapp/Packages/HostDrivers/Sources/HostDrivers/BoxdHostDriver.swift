@@ -529,8 +529,13 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     private let lock = NSLock()
     private var heard = Data()
 
-    public init(_ executable: URL, _ arguments: [String], home: URL) throws {
-      var environment = ProcessInfo.processInfo.environment
+    /// `inherited` is for tests: setting a variable in the test host's own environment crashes a
+    /// later libghostty surface there (see `StatusCommandRunner.childEnvironment`).
+    public init(
+      _ executable: URL, _ arguments: [String], home: URL,
+      inherited: [String: String] = ProcessInfo.processInfo.environment
+    ) throws {
+      var environment = inherited
       environment["HOME"] = home.path
       environment["PATH"] = ShellEnvironment.path()
       environment.removeValue(forKey: "BOXD_TOKEN")
