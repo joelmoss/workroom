@@ -743,6 +743,15 @@ through `make app-run-boxd-fresh`. Where the build differs from the plan above:
   couldn't be asked, so it stands for the account (a mutation of the account clause was masked).
 - **Harness hook.** `WR_BOXD_HOME` (Debug only) sets `RemoteHosts.boxdHome`, which feeds the
   CLI's `HOME`, its ssh files, the installer and `boxdCandidates`.
+- **boxd runs on its saved sign-in, never `BOXD_TOKEN`** (reverses section 1's token delivery and
+  R1). The first boxd create from the fresh-user harness failed with "boxd has written no ssh
+  details". Measured with boxd 0.2.25 on a throwaway machine: with `BOXD_TOKEN` set, `machine new`
+  and `machine list` write no ssh stanza (boxd takes the variable for an API key); on the saved
+  sign-in, `machine new` writes the stanza and host key at once. Open Question 2 is now answered
+  for a token boxd refuses: on the saved sign-in it exits 1 with "your saved login token is invalid
+  or expired" and opens no browser, so `account()`'s expired match still holds. A token past its
+  `exp` (saved tokens last 30 days) was not tried; it is expected to take the same path. The
+  credential guard stays, and the runner now strips an inherited `BOXD_TOKEN` from every child.
 
 ## Implementation Tasks
 Synthesized from this review's findings. Each task derives from a specific

@@ -247,8 +247,9 @@ holds any driver by `DriverKey` (a container runtime or a boxd org and account),
 of a boxd host asks boxd first and leaves an asleep box asleep, and nothing lets go of an idle
 connection: a box an open app holds awake is the user's to free, by deleting its workroom (#380).
 Signed out, every boxd command that needs an account opens boxd's browser sign-in and waits
-there, so the driver runs boxd only with a sign-in it can read, passing the token as `BOXD_TOKEN`
-(`BoxdHostDriver.cli`). A new user's first boxd create walks them through `BoxdSetupSheet`
+there, so the driver runs boxd only with a sign-in it can read (`BoxdHostDriver.cli`). Never hand
+boxd that token as `BOXD_TOKEN`: it takes it for an API key and then writes no ssh stanza for the
+machines it makes, so every create fails. A new user's first boxd create walks them through `BoxdSetupSheet`
 (install, sign in, GitHub), on the same shell as exe.dev's (`RemoteSetupSheet`); try it as a user
 boxd has never seen with `make app-run-boxd-fresh`. See `docs/designs/boxd-first-time-setup.md`.
 See "As built (#256)", "As built (#356)" and "As built (#380)" in

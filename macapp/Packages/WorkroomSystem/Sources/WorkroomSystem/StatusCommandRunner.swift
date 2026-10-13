@@ -110,8 +110,7 @@ public protocol StatusCommandRunning: Sendable {
 
   /// Like `run`, with `environment` set in the child over everything `childEnvironment` gives it.
   ///
-  /// Exists for the boxd CLI, which takes its sign-in token as `BOXD_TOKEN`: in the environment
-  /// rather than as `--token` on argv, where any process listing could read it.
+  /// Exists for the boxd CLI, which runs with the home that holds its sign-in as `HOME`.
   func run(
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
     environment: [String: String]
@@ -290,6 +289,10 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
     // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
     // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.
     env.removeValue(forKey: "GIT_EXTERNAL_DIFF")
+    // boxd takes an inherited `BOXD_TOKEN` for an API key over its saved sign-in, and with one it
+    // writes no ssh stanza for a machine it makes, so a create can never reach it (measured, boxd
+    // 0.2.25). Every boxd command the app runs is meant to use its saved sign-in.
+    env.removeValue(forKey: "BOXD_TOKEN")
     // Repository isolation: these OUTRANK the process's working directory, so an inherited
     // `GIT_DIR`/`GIT_WORK_TREE` silently redirects a command aimed at one repository into another —
     // a commit requested in workroom A landing in repo B, reported as success. Every caller here
