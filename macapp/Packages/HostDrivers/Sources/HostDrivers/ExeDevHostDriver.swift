@@ -348,7 +348,9 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     try Task.checkCancellation()
     guard result.ok else {
       throw CLIFailure(
-        command: "integrations", said: Self.errorLine(result) ?? "exited \(result.exitCode)")
+        command: "integrations",
+        said: Self.errorLine(result)
+          ?? (result.timedOut ? "timed out after 60s" : "exited \(result.exitCode)"))
     }
     return result.stdout.contains("✓")
   }
