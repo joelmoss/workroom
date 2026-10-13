@@ -114,6 +114,18 @@ final class BoxdHostDriverTests: XCTestCase {
     /// Every call's full arguments, org checks included.
     var arguments: [[String]] { lock.withLock { calls } }
 
+    /// The environment each call was given, in order.
+    var environments: [[String: String]] { lock.withLock { given } }
+    private var given: [[String: String]] = []
+
+    func run(
+      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+      environment: [String: String]
+    ) async -> CommandResult {
+      lock.withLock { given.append(environment) }
+      return await run(executable, args, in: directory, timeout: timeout)
+    }
+
     /// Every command but the org checks.
     var commands: [String] {
       lock.withLock { calls.map { $0.prefix(2).joined(separator: " ") } }
@@ -154,14 +166,30 @@ final class BoxdHostDriverTests: XCTestCase {
     CommandResult(stdout: "", stderr: "\n  A new version…\n\(said)\n", exitCode: 1, timedOut: false)
   }
 
-  private func driver(_ cli: StubCLI) -> BoxdHostDriver {
+  private func driver(_ cli: StubCLI, home: URL? = nil) -> BoxdHostDriver {
     let empty = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-boxd-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: empty) }
     return BoxdHostDriver(
       configuration: .init(
-        cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: empty, knownHosts: empty),
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: empty, knownHosts: empty,
+        home: home ?? signedInHome()),
       directory: empty, runner: cli)
+  }
+
+  /// A home whose boxd sign-in file holds `credentials` (nil: no file), so no test reads the
+  /// developer's own.
+  private func signedInHome(
+    _ credentials: String? = #"{"token":"tok_test","api_url":"https://boxd.sh"}"#
+  ) -> URL {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-boxd-home-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+    let file = BoxdHostDriver.credentialsFile(home: home)
+    try? FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    if let credentials { try? Data(credentials.utf8).write(to: file) }
+    return home
   }
 
   func testACreateWhoseMachineCannotBeReachedRemovesIt() async throws {
@@ -298,7 +326,8 @@ final class BoxdHostDriverTests: XCTestCase {
 
     // The same org, named: it goes ahead.
     let named = BoxdHostDriver(
-      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), org: "acme"),
+      configuration: .init(
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), org: "acme", home: signedInHome()),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     try await named.destroy(.remote(UUID()))
     XCTAssertEqual(cli.commands, ["machine remove", "snapshots remove"])
@@ -328,7 +357,8 @@ final class BoxdHostDriverTests: XCTestCase {
       "machine remove": Self.failed("error: VM 'x' not found"),
     ])
     let mine = BoxdHostDriver(
-      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_mine"),
+      configuration: .init(
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_mine", home: signedInHome()),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     do {
       try await mine.destroy(.remote(UUID()))
@@ -339,7 +369,9 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertEqual(cli.commands, [], "a command ran on another account")
 
     let other = BoxdHostDriver(
-      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_other"),
+      configuration: .init(
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_other",
+        home: signedInHome()),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     try await other.destroy(.remote(UUID()))
     XCTAssertEqual(cli.commands, ["machine remove", "snapshots remove"])
@@ -378,16 +410,105 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertNil(timedOut, "a CLI that never answered was taken for an answer")
   }
 
-  /// Signed out of boxd, a create stops at its first CLI call and tells the user how to sign in.
-  func testSignedOutSaysToSignInAndRunsNothingElse() async throws {
-    let cli = StubCLI(["auth --json": Self.failed("error: not logged in")])
-    do {
-      _ = try await driver(cli).create()
-      XCTFail("a create went ahead signed out")
-    } catch HostDriverError.provisioning(let detail) {
-      XCTAssertTrue(detail.contains("boxd auth login"), detail)
+  // Value: protects=no boxd command runs without a sign-in, and the token never goes on argv;
+  // fails_when=the credential guard in cli(...) is removed or the token moves to argv;
+  // why_new=the old test stubbed a CLI that fails signed out, but boxd starts its browser sign-in;
+  // seam=none; no_claim=real boxd behaviour (stubbed CLI; measured by hand in the design doc)
+  /// Signed out of boxd, every boxd command would start boxd's browser sign-in and wait there, so
+  /// without a readable sign-in none runs: a create says how to sign in instead. With one, each
+  /// call carries its token as `BOXD_TOKEN` over any the app inherited, and never on argv.
+  func testBoxdRunsOnlyWithASignInAndItsTokenStaysOffArgv() async throws {
+    for (credentials, label) in [(nil, "no sign-in"), (#"{"tok"#, "truncated"), ("{}", "no token")]
+    {
+      let cli = StubCLI([:])
+      do {
+        _ = try await driver(cli, home: signedInHome(credentials)).create()
+        XCTFail("\(label): a create went ahead signed out")
+      } catch HostDriverError.provisioning(let detail) {
+        XCTAssertTrue(detail.contains("boxd auth login"), "\(label): \(detail)")
+      }
+      XCTAssertEqual(cli.arguments, [], "\(label): boxd ran signed out")
     }
-    XCTAssertEqual(cli.commands, [], "a command ran signed out")
+
+    let cli = StubCLI(["machine get": Self.ok(#"{"status":"running"}"#)])
+    let home = signedInHome()
+    let presence = await driver(cli, home: home).presence(.remote(UUID()))
+    XCTAssertEqual(presence, .awake)
+    XCTAssertEqual(
+      cli.environments, [["BOXD_TOKEN": "tok_test", "HOME": home.path]],
+      "the token goes in the environment, with the home boxd signs in under")
+    XCTAssertFalse(
+      cli.arguments.joined().contains { $0.contains("tok_test") }, "the token went on argv")
+  }
+
+  // Value: protects=each boxd answer to the setup's account check maps to the state the sheet shows;
+  // fails_when=the expired wording match, the timeout mapping or the unreadable-file case regresses;
+  // why_new=account() is new; seam=none; no_claim=boxd's real wording (stubbed, measured in the design)
+  /// The setup sheet's account check: signed in names the account and its active org; a token boxd
+  /// refuses is a sign-in to redo; anything else boxd says, or a timeout, is unknown, which doesn't
+  /// hold a create back.
+  func testTheAccountCheckSaysWhoIsSignedInOrWhy() async {
+    let signedIn = Self.ok(
+      #"{"active_org":null,"display_name":"Ada","user_id":"usr_1","orgs":[{"active":true,"#
+        + #""id":"org-1","is_admin":true,"name":"Ada's default org"}]}"#)
+    let rows: [(CommandResult?, String?, (BoxdHostDriver.AccountState) -> Bool, String)] = [
+      (
+        signedIn, nil,
+        {
+          guard case .signedIn(let account) = $0 else { return false }
+          return account.displayName == "Ada" && account.activeOrgName == "Ada's default org"
+        }, "signed in"
+      ),
+      (
+        Self.failed(
+          "error: authentication failed: the token from --token / BOXD_TOKEN is invalid or expired"),
+        nil, { $0 == .signedOut("Your boxd sign-in has expired.") }, "expired"
+      ),
+      (
+        Self.failed("error: cannot connect to https://boxd.sh:9443"), nil,
+        { if case .unknown = $0 { true } else { false } }, "unreachable"
+      ),
+      (
+        CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true), nil,
+        { if case .unknown = $0 { true } else { false } }, "timed out"
+      ),
+      (
+        nil, "garbage", { $0 == .signedOut("Workroom couldn't read boxd's sign-in.") }, "unreadable"
+      ),
+    ]
+    for (answer, credentials, expected, label) in rows {
+      let cli = StubCLI(answer.map { ["auth --json": $0] } ?? [:])
+      let home = credentials.map { signedInHome($0) } ?? signedInHome()
+      let state = await driver(cli, home: home).account()
+      XCTAssertTrue(expected(state), "\(label): \(state)")
+    }
+    let nobody = await driver(StubCLI([:]), home: signedInHome(nil)).account()
+    XCTAssertEqual(nobody, .signedOut(nil))
+  }
+
+  // Value: protects=only the user's own connected git integration ticks the GitHub step;
+  // fails_when=the shared org connection or a missing entry reads as connected, or bad JSON as not;
+  // why_new=gitHub() is new; seam=none; no_claim=a fresh account's real list (probe pending)
+  /// The GitHub step: the user's own git integration (`class: private`), connected. The org's shared
+  /// one serves only shared machines, and a list without the user's own needs connecting.
+  func testGitHubIsTheUsersOwnGitIntegration() async {
+    let list = { (entries: String) in
+      Self.ok(#"{"agents":[],"integrations":["# + entries + #"],"toolkit_connections":[]}"#)
+    }
+    let mine = #"{"class":"private","connected":true,"id":"git"}"#
+    let shared = #"{"class":"shared","connected":true,"id":"git"}"#
+    let rows: [(CommandResult, BoxdHostDriver.GitHubState, String)] = [
+      (list(mine + "," + shared), .connected, "connected"),
+      (list(#"{"class":"private","connected":false,"id":"git"}"#), .notConnected, "not connected"),
+      (list(shared), .notConnected, "only the org's"),
+      (list(""), .notConnected, "none"),
+    ]
+    for (answer, expected, label) in rows {
+      let state = await driver(StubCLI(["manage integrations": answer])).gitHub()
+      XCTAssertEqual(state, expected, label)
+    }
+    let unreadable = await driver(StubCLI(["manage integrations": Self.ok("[]")])).gitHub()
+    guard case .unknown = unreadable else { return XCTFail("\(unreadable)") }
   }
 
   /// The org can change between the check and the removal: "not found" then means nothing.
