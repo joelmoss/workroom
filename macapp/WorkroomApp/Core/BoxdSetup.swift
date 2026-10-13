@@ -103,8 +103,6 @@ final class BoxdSetup: RemoteSetup {
   private var running: (any RunningCommand)?
   /// The sheet is gone: a check or a command that ends late must change nothing.
   private var isCancelled = false
-  /// The last account check found a sign-in Workroom can't read.
-  private var signInUnreadable = false
 
   init(actions: Actions = .live, open: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
     self.actions = actions
@@ -132,7 +130,6 @@ final class BoxdSetup: RemoteSetup {
     account = .checking
     let state = await actions.account()
     guard !isCancelled else { return }
-    signInUnreadable = state == .unreadable
     switch state {
     case .signedIn(let signedIn):
       account = .signedIn(name: signedIn.displayName, org: signedIn.activeOrgName)
@@ -183,10 +180,11 @@ final class BoxdSetup: RemoteSetup {
       return
     }
     await refresh()
-    if status.code == 0, signInUnreadable {
-      account = .needsUpdate
-    } else if case .signedOut = account, status.code != 0 {
-      account = .signedOut(status.said ?? "boxd's sign-in didn't finish.")
+    // Signed in, by boxd's account, yet still signed out by Workroom's: boxd has changed how it
+    // keeps its sign-in.
+    if case .signedOut = account {
+      account =
+        status.code == 0 ? .needsUpdate : .signedOut(status.said ?? "boxd's sign-in didn't finish.")
     }
   }
 
