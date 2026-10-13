@@ -11,6 +11,8 @@ root, not `macapp/`):
 
 ```bash
 make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
+make app-run-exedev-fresh # app-run as a user exe.dev has never seen (Scripts/exedev-fresh-user.sh);
+                    # rm -rf ~/.workroom-exedev-fresh to start over
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize.
                     # Ends with the run's counts + failing tests from its .xcresult (Scripts/test-summary.sh)
