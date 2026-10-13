@@ -35,6 +35,10 @@ in `b81d5c6d`, the SwiftTerm → libghostty commit). This section records what w
 deliberately does not duplicate it. The comparison baseline was a stock Ghostty.app install of that
 same version. Re-measure after a pin bump; these findings expire with it.
 
+**Checked 2026-10-13 for the 2.2.2026100901 → 2.2.2026101301 pin bump** (engine `35a81a98` →
+`1e9e14af`). Nothing to regenerate: only `src/shell-integration/README.md` changed between the refs,
+it is not bundled, and `src/terminfo` is byte-identical, so `CHECKSUMS` is unchanged.
+
 **Checked 2026-10-09 for the 1.6.20260928 → 2.2.2026100901 pin bump** (engine `3c47ca15` →
 `35a81a98`). Nothing to regenerate: `src/shell-integration` and `src/terminfo` are byte-identical
 between the refs, so `CHECKSUMS` is unchanged.
