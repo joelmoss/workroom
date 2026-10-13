@@ -369,6 +369,8 @@ struct RootView: View {
     let cancel = { store.pendingRemoteSetup = nil }
     if let setup = pending.setup as? ExeDevSetup {
       ExeDevSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
+    } else if let setup = pending.setup as? BoxdSetup {
+      BoxdSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     }
   }
 
