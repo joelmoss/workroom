@@ -60,16 +60,13 @@ final class BoxdSetup: RemoteSetup {
     static var live: Actions {
       let driver: @MainActor @Sendable () -> BoxdHostDriver = {
         BoxdHostDriver(
-          configuration: .init(
-            cli: URL(
-              fileURLWithPath: RemoteHosts.boxdExecutable() ?? RemoteHosts.boxdCandidates[0])),
+          configuration: RemoteHosts.boxdConfiguration(
+            cli: RemoteHosts.boxdExecutable() ?? RemoteHosts.boxdCandidates[0]),
           directory: RemoteHosts.directory)
       }
       return Actions(
         isInstalled: { RemoteHosts.boxdExecutable() != nil },
-        install: {
-          try BoxdHostDriver.install(home: FileManager.default.homeDirectoryForCurrentUser)
-        },
+        install: { try BoxdHostDriver.install(home: RemoteHosts.boxdHome) },
         account: { await driver().account() },
         gitHub: { await driver().gitHub() },
         signIn: { try driver().signIn() },

@@ -686,8 +686,8 @@ final class RemoteHosts: @unchecked Sendable {
       } else if case .boxd(let org, let account) = key {
         let cli = Self.boxdExecutable()
         driver = BoxdHostDriver(
-          configuration: BoxdHostDriver.Configuration(
-            cli: URL(fileURLWithPath: cli ?? Self.boxdCandidates[0]), org: org, account: account),
+          configuration: Self.boxdConfiguration(
+            cli: cli ?? Self.boxdCandidates[0], org: org, account: account),
           directory: hosts)
         // Not kept while the CLI is missing, so installing it later takes without a relaunch.
         guard cli != nil else { return driver }
@@ -897,7 +897,7 @@ final class RemoteHosts: @unchecked Sendable {
       // `boxd auth login`, when nobody is signed in.
       guard let cli = Self.boxdExecutable() else { throw RemoteWorkrooms.Failure.boxdNotInstalled }
       let account = try await BoxdHostDriver(
-        configuration: .init(cli: URL(fileURLWithPath: cli)), directory: Self.directory
+        configuration: Self.boxdConfiguration(cli: cli), directory: Self.directory
       ).signedIn()
       return .boxd(org: account.activeOrg, account: try account.requiredUserID())
     case .exeDev:
@@ -1234,13 +1234,35 @@ final class RemoteHosts: @unchecked Sendable {
   /// Where Apple's `container` is: its installer's, or Homebrew's.
   static let appleCandidates = ["/usr/local/bin/container", "/opt/homebrew/bin/container"]
 
-  /// Where the boxd CLI is (#356): its installer's (`~/.local/bin`), or Homebrew's.
+  /// Where the boxd CLI is (#356): its installer's (`~/.local/bin`), or Homebrew's. Under a
+  /// stand-in home (`boxdHome`), only that home's, so a boxd the developer has installed doesn't
+  /// skip the setup's Install step and the one it installs is the one found.
   static var boxdCandidates: [String] {
-    [
-      FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/boxd")
-        .path,
-      "/opt/homebrew/bin/boxd", "/usr/local/bin/boxd",
-    ]
+    let installed = boxdHome.appendingPathComponent(".local/bin/boxd").path
+    guard boxdHome == FileManager.default.homeDirectoryForCurrentUser else { return [installed] }
+    return [installed, "/opt/homebrew/bin/boxd", "/usr/local/bin/boxd"]
+  }
+
+  /// The home the boxd CLI runs with, which holds its sign-in and the ssh files it writes: the
+  /// user's own. Debug builds only: `$WR_BOXD_HOME` instead, a stand-in home, so a developer can be a
+  /// user boxd has never seen without signing their own boxd out (`Scripts/boxd-fresh-user.sh`).
+  static let boxdHome: URL = {
+    #if DEBUG
+      if let path = ProcessInfo.processInfo.environment["WR_BOXD_HOME"], !path.isEmpty {
+        return URL(fileURLWithPath: path, isDirectory: true)
+      }
+    #endif
+    return FileManager.default.homeDirectoryForCurrentUser
+  }()
+
+  /// A boxd driver's configuration for this app: the CLI and its home (`boxdHome`).
+  static func boxdConfiguration(
+    cli: String, org: String? = nil, account: String? = nil
+  ) -> BoxdHostDriver.Configuration {
+    BoxdHostDriver.Configuration(
+      cli: URL(fileURLWithPath: cli), org: org, account: account,
+      sshConfig: boxdHome.appendingPathComponent(".ssh/config"),
+      knownHosts: boxdHome.appendingPathComponent(".ssh/known_hosts"), home: boxdHome)
   }
 
   /// The boxd CLI on this Mac, or nil when it isn't installed.
