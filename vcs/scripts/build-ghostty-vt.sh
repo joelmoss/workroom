@@ -55,9 +55,10 @@ CACHE_ROOT="${WR_GHOSTTY_VT_CACHE:-${HOME}/.cache/workroom/ghostty-vt}"
 # values yields a non-reproducible second binary — a trap exe-scroll's own build script documents.
 # And by the Zig version, since both pins above decide what gets built: keyed by sha alone, a
 # Zig-only bump found the old archive here and kept linking it.
-# And by the parity patches: a changed patch is a different engine at the same sha.
+# And by the parity patches: a changed patch is a different engine at the same sha. Only the
+# authored files count: a `__pycache__` left by an older build would change the hash on its own.
 PATCH_DIR="$(cd "$(dirname "$0")" && pwd)/ghostty-patches"
-PATCH_HASH="$(cd "$PATCH_DIR" && find . -type f ! -name README.md | LC_ALL=C sort | xargs cat | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
+PATCH_HASH="$(cd "$PATCH_DIR" && find . -type f \( -name '*.sh' -o -name '*.py' \) | LC_ALL=C sort | xargs cat | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
 PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}-p${PATCH_HASH}-zig${ZIG_VERSION}/${target}"
 
 if $print_prefix; then
@@ -159,7 +160,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Patch a scratch worktree, never $SRC: it may be a checkout somebody else is working in.
+# Patch a scratch worktree, never $SRC: it may be a checkout somebody else is working in. No
+# bytecode, so the patch helper writes nothing into the repo's patch directory.
+export PYTHONDONTWRITEBYTECODE=1
 git -C "$SRC" worktree add --quiet --detach "$PATCHED_SRC" "$GHOSTTY_SHA" >&2
 for patch in "$PATCH_DIR"/*.sh; do
   [ -e "$patch" ] || continue
@@ -186,6 +189,5 @@ fi
 rm -rf "$PREFIX"
 mkdir -p "$(dirname "$PREFIX")"
 mv "$BUILD_TMP" "$PREFIX"
-trap - EXIT
 
 echo "$PREFIX"
