@@ -15,8 +15,9 @@ struct ExeDevSetupSheet: View {
   var body: some View {
     RemoteSetupSheet(
       title: "Set up exe.dev",
-      intro: "exe.dev runs each workroom on a VM of its own in the cloud. Three steps, once, and "
-        + "Workroom checks each one for you.",
+      intro: "[exe.dev](https://exe.dev) is a cloud service that runs each workroom on a VM of its "
+        + "own. After signing up, payment is required. Three steps, once, and Workroom checks each "
+        + "one for you.",
       setup: setup, identifier: "exeDevSetup", onCreate: onCreate, onCancel: onCancel
     ) {
       SetupStep(title: "Account", state: accountState) { accountContent }

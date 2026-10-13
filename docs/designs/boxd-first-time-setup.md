@@ -752,6 +752,9 @@ through `make app-run-boxd-fresh`. Where the build differs from the plan above:
   or expired" and opens no browser, so `account()`'s expired match still holds. A token past its
   `exp` (saved tokens last 30 days) was not tried; it is expected to take the same path. The
   credential guard stays, and the runner now strips an inherited `BOXD_TOKEN` from every child.
+- **A new boxd account needs payment** (Open Question 1, from the owner's fresh sign-up). For now
+  both setup sheets' intros link to the provider's site and say payment is required after signing
+  up; boxd has no Billing step that checks it.
 
 ## Implementation Tasks
 Synthesized from this review's findings. Each task derives from a specific
