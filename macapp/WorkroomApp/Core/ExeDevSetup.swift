@@ -14,7 +14,7 @@ import HostDrivers
 /// - **GitHub.** exe.dev's GitHub connection, for the repository integration a create adds.
 ///
 /// The website steps open a one-time link signed in to this account (`magicLink`), and every step
-/// that waits on the user is checked every 3 s until it's done.
+/// that waits on the user is checked until it's done, backing off from 3 s to 30 s (`poll`).
 @MainActor
 @Observable
 final class ExeDevSetup {
@@ -48,13 +48,20 @@ final class ExeDevSetup {
   /// A website step that couldn't be checked or opened, said under it.
   private(set) var planError: String?
   private(set) var gitHubError: String?
+  /// A website step whose check couldn't answer (exe.dev errored, or said something unreadable)
+  /// doesn't hold the create back: exe.dev's own error decides, as before this sheet, so a change
+  /// in what exe.dev prints can't lock every user out.
+  private var planUnchecked = false
+  private var gitHubUnchecked = false
 
   var isSignedIn: Bool {
     if case .done = account { return true }
     return false
   }
 
-  var isReady: Bool { isSignedIn && plan == .done && gitHub == .done }
+  var isReady: Bool {
+    isSignedIn && (plan == .done || planUnchecked) && (gitHub == .done || gitHubUnchecked)
+  }
 
   /// Set once an account is seen ready, so later creates this launch skip the three checks. A
   /// step undone since (a plan cancelled, GitHub disconnected) fails the create with exe.dev's own
@@ -115,13 +122,19 @@ final class ExeDevSetup {
   private func refreshWebsiteSteps() async {
     planError = nil
     gitHubError = nil
+    planUnchecked = false
+    gitHubUnchecked = false
     do { plan = try await driver.planAllowsVMs() ? .done : .needed } catch {
       plan = .needed
-      planError = "Workroom couldn't check your plan: \(error.localizedDescription)"
+      planUnchecked = true
+      planError =
+        "Workroom couldn't check your plan: \(error.localizedDescription) Create Workroom will still try."
     }
     do { gitHub = try await driver.gitHubConnected() ? .done : .needed } catch {
       gitHub = .needed
-      gitHubError = "Workroom couldn't check GitHub: \(error.localizedDescription)"
+      gitHubUnchecked = true
+      gitHubError =
+        "Workroom couldn't check GitHub: \(error.localizedDescription) Create Workroom will still try."
     }
   }
 

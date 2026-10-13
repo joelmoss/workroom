@@ -1319,6 +1319,55 @@ final class RemoteHostsTests: XCTestCase {
       recorded.all.allSatisfy { $0.driver == RemoteWorkrooms.boxdDriver && $0.account == "usr_1" })
   }
 
+  // Value: protects=a repository the provider won't grant fails the create before a name is
+  // reserved or a machine made, and a granted one is the repository created; fails_when=the grant
+  // moves after `reserve` or the machine's create, or is passed another repository; why_new=only
+  // the closure's presence was pinned; seam=none
+  /// The provider is given the repository before anything is made or recorded: a refusal ends the
+  /// create there, and a grant is for the repository being created.
+  func testTheRepositoryIsGrantedBeforeAnythingIsMade() async throws {
+    struct Refused: Error {}
+    final class Grants: @unchecked Sendable {
+      private let lock = NSLock()
+      private var asked: [GitHubRepository] = []
+      var all: [GitHubRepository] { lock.withLock { asked } }
+      func add(_ repository: GitHubRepository) { lock.withLock { asked.append(repository) } }
+    }
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    for refuses in [true, false] {
+      let pending = try hostsDirectory()
+      let recorded = Recorded()
+      let grants = Grants()
+      let driver = MachineDriver(made: UUID())
+      let environment = RemoteProvisioning.Environment(
+        driver: driver, agentSocket: "/agent.sock",
+        grantRepository: { asked in
+          XCTAssertTrue(recorded.all.isEmpty, "granted after the create reserved its name")
+          grants.add(asked)
+          if refuses { throw Refused() }
+        },
+        connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
+      let recorder = RemoteWorkrooms.Recorder(
+        reserve: { _, descriptor in
+          recorded.add(descriptor)
+          return "x"
+        }, record: { _, descriptor in recorded.add(descriptor) }, forget: { _ in })
+      do {
+        _ = try await RemoteWorkrooms.create(
+          repository: repository, cloneURL: "https://github.com/o/r.git",
+          key: .exeDev(account: "me@x.dev"), driver: driver, environment: environment,
+          recorder: recorder, pendingIn: pending)
+        XCTFail("the create was meant to fail")
+      } catch is Refused {
+        XCTAssertTrue(refuses, "a granted create stopped at the grant")
+      } catch {
+        XCTAssertFalse(refuses, "a refused grant went on to \(error)")
+      }
+      XCTAssertEqual(grants.all, [repository], "refuses: \(refuses)")
+      XCTAssertEqual(recorded.all.isEmpty, refuses, "refuses: \(refuses)")
+    }
+  }
+
   // Value: protects=a workroom that fell back to the Mac's token is recorded as relayed, with its
   // repository and clone URL, so a later launch gives it the credential relay and its GitHub
   // identity; fails_when=create records credentials from anything but the instance, or drops the

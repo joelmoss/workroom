@@ -46,7 +46,7 @@ final class ExeDevHostDriverTests: XCTestCase {
   private final class StubExeDev: StatusCommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [(command: String, ssh: [String], arguments: [String])] = []
-    let answers: [String: CommandResult]
+    private var answers: [String: CommandResult]
     let signsIn: Bool
     let email: String
 
@@ -57,6 +57,10 @@ final class ExeDevHostDriverTests: XCTestCase {
     }
 
     /// Every command but the account checks, in order.
+    /// Changes what `command` answers from now on, as when the user finishes a step on the website.
+    func answer(_ command: String, _ result: CommandResult) {
+      lock.withLock { answers[command] = result }
+    }
     var commands: [String] {
       lock.withLock { calls.map(\.command) }.filter { $0 != "whoami" }
     }
@@ -80,6 +84,7 @@ final class ExeDevHostDriverTests: XCTestCase {
     ) async -> CommandResult {
       let lobby = args.firstIndex(of: ExeDevHostDriver.lobby) ?? args.endIndex - 1
       let command = args[lobby + 1]
+      let answers = lock.withLock { self.answers }
       lock.withLock {
         calls.append((command, Array(args[...lobby]), Array(args[(lobby + 2)...])))
       }
@@ -385,6 +390,8 @@ final class ExeDevHostDriverTests: XCTestCase {
     await setup.refresh()
     XCTAssertEqual(setup.plan, .needed)
     XCTAssertTrue(setup.planError?.contains("billing is down") == true, "\(setup.planError ?? "")")
+    // A check that couldn't answer doesn't hold the create back: exe.dev's own error decides.
+    XCTAssertTrue(setup.isReady)
 
     // Check Again keeps a step the user is still finishing waiting, rather than "needed" again.
     let unpaid = ExeDevSetup(
@@ -405,6 +412,30 @@ final class ExeDevHostDriverTests: XCTestCase {
     await setup.choosePlan()
     XCTAssertEqual(opened, [])
     XCTAssertNotEqual(setup.plan, .waiting)
+  }
+
+  // Value: protects=Check Again turns a website step the user finished to done, enabling Create
+  // Workroom; fails_when=checkAgain keeps any step that was waiting waiting; why_new=only the
+  // still-undone case was tested; seam=none; no_claim=the polling that does the same unasked
+  /// Check Again after the user picked a plan finishes that step, and the sheet is ready.
+  @MainActor
+  func testCheckAgainFinishesAStepTheUserDid() async throws {
+    ExeDevSetup.confirmedThisLaunch = false
+    defer { ExeDevSetup.confirmedThisLaunch = false }
+    let exe = StubExeDev([
+      "billing plan": Self.ok(#"{"max_vms":0}"#), "integrations setup": Self.ok("  me ✓"),
+      "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
+    ])
+    let setup = ExeDevSetup(driver: driver(exe), open: { _ in })
+    await setup.refresh()
+    await setup.choosePlan()
+    XCTAssertEqual(setup.plan, .waiting)
+    XCTAssertFalse(setup.isReady)
+    exe.answer("billing plan", Self.ok(#"{"max_vms":5}"#))
+    await setup.checkAgain()
+    XCTAssertEqual(setup.plan, .done)
+    XCTAssertTrue(setup.isReady)
+    setup.cancel()
   }
 
   /// A key exe.dev doesn't know yet is answered in plain text on stdout, exit 1 (spike): that, like
@@ -481,6 +512,91 @@ final class ExeDevHostDriverTests: XCTestCase {
         in: "user exedev\nuserknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts2\n"),
       NSHomeDirectory() + "/.ssh/known_hosts")
     XCTAssertNil(ExeDevHostDriver.knownHostsFile(in: "user exedev\n"))
+  }
+
+  /// exe.dev's gateway key as `ssh-keyscan -t rsa exe.dev` printed it (2026-10-13): the one whose
+  /// fingerprint is `gatewayFingerprint`.
+  private static let gatewayKey =
+    "exe.dev ssh-rsa "
+    + "AAAAB3NzaC1yc2EAAAADAQABAAABAQDEKtEcRW8OBtro5B/MG+EaisD+ZVwwHFa5m7M8wFwBlMmPJJss"
+    + "Y+1aGBRW3b9InAeCnTU2Kt7gazqbg/9od1KnK6x5piQNVQZ4C/lrjsC2ScBrOydnw9ry9G2+voFCAk+d"
+    + "QGabIrIT6gqqDJNOqxgFiG/lA3Xx6KwpfwI2BH5f3ab2fHCR2BGAC5jlB2RJXPgly80hMxYEHqexhJxY"
+    + "RwC+deeLrQSG795we9rSzPmdz58t9+9jLTKkyyqWKe/hmBvty1AYrEmRsefu6/TUrIGi/UWJfa+RBIQt"
+    + "FgWqN6xT1F6rRwELeVOfwwr5tZbsmgWY5frZU3EOtVWcF7Ve3gfL"
+
+  /// Answers `ssh-keyscan` with `scan` and `ssh -G` with a known_hosts file of its own.
+  private final class GatewayScan: StatusCommandRunning, @unchecked Sendable {
+    let scan: CommandResult
+    let knownHosts: URL
+    init(_ scan: CommandResult, knownHosts: URL) {
+      self.scan = scan
+      self.knownHosts = knownHosts
+    }
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    {
+      XCTAssertEqual(args.suffix(2), ["-G", "exe.dev"])
+      return ExeDevHostDriverTests.ok("user exedev\nuserknownhostsfile \(knownHosts.path)")
+    }
+    func runNetwork(
+      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval
+    ) async -> CommandResult {
+      XCTAssertEqual(executable, "/usr/bin/ssh-keyscan")
+      return scan
+    }
+  }
+
+  // Value: protects=only exe.dev's published key is written to the user's known_hosts, once, and
+  // a failed scan says so without writing; fails_when=trustGatewayKey writes the scanned line
+  // unverified, or swaps the unreachable and mismatch errors; why_new=only the helpers were
+  // pinned, never their composition; seam=none; no_claim=real ssh-keyscan output (stubbed)
+  /// The gateway key is written to the known_hosts file ssh reads only when it is exe.dev's
+  /// published one; a scan that got nothing, or another key, writes nothing and says which.
+  func testTrustingTheGatewayWritesOnlyItsPublishedKey() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    let knownHosts = root.appendingPathComponent("ssh/known_hosts")
+    func trust(_ scan: String, stderr: String = "") async -> String? {
+      let runner = GatewayScan(
+        CommandResult(stdout: scan, stderr: stderr, exitCode: 0, timedOut: false),
+        knownHosts: knownHosts)
+      do {
+        try await ExeDevHostDriver(configuration: .init(), directory: root, runner: runner)
+          .trustGatewayKey()
+        return nil
+      } catch {
+        return error.localizedDescription
+      }
+    }
+
+    let unreachable = await trust("", stderr: "getaddrinfo exe.dev: nodename nor servname")
+    XCTAssertTrue(unreachable?.contains("couldn't reach exe.dev") == true, unreachable ?? "")
+    let forged = await trust(
+      "exe.dev ssh-rsa \(Data("not exe.dev's key".utf8).base64EncodedString())\n")
+    XCTAssertTrue(forged?.contains("doesn't match") == true, forged ?? "")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: knownHosts.path), "wrote a bad key")
+
+    let trusted = await trust("# exe.dev:22 SSH-2.0\n\(Self.gatewayKey)\n")
+    XCTAssertNil(trusted)
+    XCTAssertEqual(try String(contentsOf: knownHosts, encoding: .utf8), Self.gatewayKey + "\n")
+  }
+
+  // Value: protects=an integration list exe.dev can't give, or Workroom can't read, fails the
+  // create instead of adding another integration; fails_when=the list's failure is taken for "none
+  // yet"; why_new=only readable lists were tested; seam=none; no_claim=exact wording
+  /// A GitHub grant that can't read the account's integrations fails, adding none.
+  func testAnUnreadableIntegrationListAddsNothing() async throws {
+    for list in [
+      CommandResult(stdout: #"{"error":"x"}"#, stderr: "", exitCode: 1, timedOut: false),
+      Self.ok("not json"),
+    ] {
+      let exe = StubExeDev(["integrations list": list, "integrations add": Self.ok("")])
+      do {
+        try await driver(exe).grantGitHub(host: "github.com", owner: "o", name: "r")
+        XCTFail("granted from an unreadable list: \(list.stdout)")
+      } catch HostDriverError.provisioning {}
+      XCTAssertEqual(exe.commands, ["integrations"], "added after an unreadable list")
+    }
   }
 
   /// A sign-in link lands on its page with the fragment intact (spike: `/integrations#github`).
