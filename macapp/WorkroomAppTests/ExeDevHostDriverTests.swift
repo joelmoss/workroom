@@ -311,6 +311,11 @@ final class ExeDevHostDriverTests: XCTestCase {
     let defaults = ExeDevHostDriver.defaultKeyNames.map { "identityfile \(dir.path)/\($0)" }
       .joined(separator: "\n")
     XCTAssertTrue(ExeDevHostDriver.mayCreateDefaultKey(resolved: defaults, in: dir))
+    // Older OpenSSH (macOS 15's) also lists `id_dsa`, and a build with XMSS `id_xmss`.
+    XCTAssertTrue(
+      ExeDevHostDriver.mayCreateDefaultKey(
+        resolved: ["id_rsa", "id_dsa", "id_xmss"].map { "identityfile \(dir.path)/\($0)" }
+          .joined(separator: "\n"), in: dir), "an older ssh's defaults")
     XCTAssertFalse(
       ExeDevHostDriver.mayCreateDefaultKey(
         resolved: "identityfile ~/.ssh/work_key\n" + defaults, in: dir), "the user's own key")
@@ -454,12 +459,22 @@ final class ExeDevHostDriverTests: XCTestCase {
     }
   }
 
-  /// GitHub is connected when `--verify` ticks an account, and not otherwise.
+  /// GitHub is connected when `--verify` ticks an account, and not when it says none is; a
+  /// `--verify` that fails is a check that couldn't answer, not "not connected".
   func testGitHubIsConnectedWhenVerifyTicksAnAccount() async throws {
+    let failing = StubExeDev([
+      "integrations setup": CommandResult(
+        stdout: "", stderr: "error", exitCode: 1, timedOut: false)
+    ])
+    do {
+      _ = try await driver(failing).gitHubConnected()
+      XCTFail("a failed --verify read as an answer")
+    } catch {
+      XCTAssertTrue(error.localizedDescription.contains("error"), error.localizedDescription)
+    }
     for (answer, connected) in [
       (Self.ok("  joelmoss ✓"), true),
       (Self.ok("No GitHub accounts connected."), false),
-      (CommandResult(stdout: "", stderr: "error", exitCode: 1, timedOut: false), false),
     ] {
       let exe = StubExeDev(["integrations setup": answer])
       let result = try await driver(exe).gitHubConnected()
