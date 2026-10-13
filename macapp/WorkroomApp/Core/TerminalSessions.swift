@@ -1886,7 +1886,9 @@ final class TerminalSessions: ObservableObject {
     guard agentManager.isEnabled,
       let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content
     else { return }
-    guard let exitCode else {
+    // Success and interrupts classify as `.skip` whatever was captured, so don't read the screen
+    // for them: it is the whole scrollback, on the main thread, on every command (WORKROOM-3S).
+    guard let exitCode, !FailureClassifier.boringExitCodes.contains(exitCode) else {
       agentManager.commandFinished(tab: tabID, target: target, failure: nil)
       return
     }
