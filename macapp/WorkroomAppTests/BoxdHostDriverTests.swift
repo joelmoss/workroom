@@ -510,6 +510,46 @@ final class BoxdHostDriverTests: XCTestCase {
     }
     let unreadable = await driver(StubCLI(["manage integrations": Self.ok("[]")])).gitHub()
     guard case .unknown = unreadable else { return XCTFail("\(unreadable)") }
+
+    // With no saved sign-in the check runs nothing: boxd would start its browser sign-in.
+    let cli = StubCLI(["manage integrations": list("")])
+    let signedOut = await driver(cli, home: signedInHome(nil)).gitHub()
+    guard case .unknown(let why) = signedOut else { return XCTFail("\(signedOut)") }
+    XCTAssertTrue(why.contains("not signed in to boxd"), why)
+    XCTAssertEqual(cli.arguments, [], "boxd ran with no sign-in")
+  }
+
+  // Value: protects=a step the user clicks runs boxd with the sign-in home and no inherited
+  // BOXD_TOKEN, reports its link, last line and exit status, and dies when cancelled;
+  // fails_when=the BOXD_TOKEN strip or the HOME override is dropped, or cancel leaves it running;
+  // why_new=ClickedCommand (sign-in, GitHub, installer) had no test; seam=none (a real /bin/sh);
+  // no_claim=boxd's or the installer's real output
+  func testAClickedCommandRunsInTheSignInHomeWithoutAnInheritedToken() async throws {
+    let previous = ProcessInfo.processInfo.environment["BOXD_TOKEN"]
+    setenv("BOXD_TOKEN", "tok_inherited", 1)
+    addTeardownBlock {
+      if let previous { setenv("BOXD_TOKEN", previous, 1) } else { unsetenv("BOXD_TOKEN") }
+    }
+    let home = signedInHome()
+    let script =
+      "echo \"token=[$BOXD_TOKEN] home=$HOME\"; echo open https://app.boxd.sh/?s=1; echo x; exit 3"
+    let command = try BoxdHostDriver.ClickedCommand(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", script], home: home)
+    let code = await command.wait()
+    XCTAssertEqual(code, 3)
+    // Output arrives on a reader thread, a moment after the exit.
+    for _ in 0..<100 where command.lastLine != "x" { try await Task.sleep(for: .milliseconds(20)) }
+    XCTAssertTrue(command.output.contains("token=[] home=\(home.path)"), command.output)
+    XCTAssertEqual(command.link, URL(string: "https://app.boxd.sh/?s=1"))
+    XCTAssertEqual(command.lastLine, "x")
+
+    let waiting = try BoxdHostDriver.ClickedCommand(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "sleep 30"], home: home)
+    let start = ContinuousClock.now
+    waiting.cancel()
+    let cancelled = await waiting.wait()
+    XCTAssertNotEqual(cancelled, 0)
+    XCTAssertLessThan(ContinuousClock.now - start, .seconds(10), "cancel left the command running")
   }
 
   /// The org can change between the check and the removal: "not found" then means nothing.
