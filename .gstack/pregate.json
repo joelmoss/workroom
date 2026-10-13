@@ -26,6 +26,9 @@
     "macapp/WorkroomApp.xcodeproj/**": [
       "macapp/Tests/pregate/app_gate_test.py"
     ],
+    "macapp/Scripts/**": [
+      "macapp/Tests/pregate/scripts_gate_test.py"
+    ],
     "macapp/Packages/**": [
       "macapp/Tests/pregate/app_gate_test.py",
       "macapp/Tests/pregate/package_gate_test.py"
