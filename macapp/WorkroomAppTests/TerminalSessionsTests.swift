@@ -310,6 +310,34 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 
+  /// OSC 9;4 ERROR is still working (Ghostty's bar only turns red), so it keeps `isRunning` and adds
+  /// `isProgressFailed`. A later SET, a REMOVE, or the prompt coming back each clear the failure.
+  func testProgressErrorIsRunningAndFailed() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.addTab(for: target)
+    let view = s.tabs(for: target)[1].surface!
+
+    view.handleProgressReport(true, failed: true)
+    XCTAssertTrue(s.isRunning(forTargetID: target.id))
+    XCTAssertTrue(s.isProgressFailed(forTargetID: target.id))
+    XCTAssertTrue(s.tabs(for: target)[1].isProgressFailed)
+    XCTAssertFalse(s.tabs(for: target)[0].isProgressFailed)
+
+    view.handleProgressReport(true)
+    XCTAssertTrue(s.isRunning(forTargetID: target.id))
+    XCTAssertFalse(s.isProgressFailed(forTargetID: target.id), "a SET after ERROR is working again")
+
+    view.handleProgressReport(true, failed: true)
+    view.handleProgressReport(false)
+    XCTAssertFalse(s.isProgressFailed(forTargetID: target.id), "REMOVE clears the failure")
+
+    view.handleProgressReport(true, failed: true)
+    view.handleCommandFinished(rawExitCode: 1)
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+    XCTAssertFalse(s.isProgressFailed(forTargetID: target.id), "the prompt clears the failure")
+  }
+
   /// The shipped zsh integration abbreviates a deep cwd to "…/dir/dir/dir" (`%(4~|…/%3~|%~)`). That
   /// truncated prompt title must still be recognised as a directory so it names the tab "Terminal N"
   /// rather than replacing it (issue #2 / the deep-cwd fix) — and it must never mark the tab busy.

@@ -84,6 +84,13 @@ struct TerminalTab: Identifiable {
     return false
   }
 
+  /// Whether the program working in this terminal reported OSC 9;4 ERROR (state 2). Still running:
+  /// the busy indicators turn the failure colour rather than stopping.
+  var isProgressFailed: Bool {
+    if case .terminal(let s) = content { return s.progressActive == true && s.progressFailed }
+    return false
+  }
+
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
   /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
   /// Always nil for content tabs.
@@ -363,6 +370,8 @@ struct TerminalState {
   /// `false`/`nil` when it's idle, done, or never reported any. Reset at `command_finished`; the
   /// surface also clears it via a 15s safety timer (issue #28 follow-up).
   var progressActive: Bool?
+  /// The last progress report was ERROR. Only meaningful while `progressActive` is true.
+  var progressFailed = false
 }
 
 /// Owns the live terminals for each target (a workroom or a project root) for the app session, so
@@ -734,6 +743,11 @@ final class TerminalSessions: ObservableObject {
   /// the sidebar's running spinner.
   func isRunning(forTargetID id: TerminalTarget.ID) -> Bool {
     (tabsByTarget[id] ?? [:]).values.contains { $0.isRunning }
+  }
+
+  /// Whether any terminal in this target is working with a reported error (OSC 9;4 ERROR).
+  func isProgressFailed(forTargetID id: TerminalTarget.ID) -> Bool {
+    (tabsByTarget[id] ?? [:]).values.contains { $0.isProgressFailed }
   }
 
   /// The **visible** group: the one containing the focused tab, or nil when the focused tab is solo.
@@ -1836,6 +1850,7 @@ final class TerminalSessions: ObservableObject {
       $0.activeAgentBackend = nil
       $0.activeTool = nil
       $0.progressActive = nil
+      $0.progressFailed = false
     }
     refreshHostCwd(forTab: tabID, target: target)
   }
@@ -1907,13 +1922,17 @@ final class TerminalSessions: ObservableObject {
   /// Apply an OSC 9;4 progress report (issue #28 follow-up). `active` is false only for the REMOVE state
   /// (the program declared itself idle/done) and true for any live progress (SET / INDETERMINATE / PAUSE
   /// / ERROR). This is the sole driver of `isRunning` — the spinner follows the program's own signal.
+  /// `failed` (ERROR) drives `isProgressFailed`.
   private func updateProgress(
-    _ active: Bool, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID
+    _ active: Bool, failed: Bool, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID
   ) {
     guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
-      s.progressActive != active
+      s.progressActive != active || s.progressFailed != failed
     else { return }
-    mutateTerminalState(tabID, target: target) { $0.progressActive = active }
+    mutateTerminalState(tabID, target: target) {
+      $0.progressActive = active
+      $0.progressFailed = failed
+    }
   }
 
   /// `NSHomeDirectory()` resolved once per process. It used to be `isDirectoryTitle`'s default
@@ -2173,8 +2192,8 @@ final class TerminalSessions: ObservableObject {
       // ignores it.
       self?.handleCommandFinished(forTab: tabID, target: targetID, exitCode: exitCode)
     }
-    view.onProgressReport = { [weak self] active in
-      self?.updateProgress(active, forTab: tabID, target: targetID)
+    view.onProgressReport = { [weak self] active, failed in
+      self?.updateProgress(active, failed: failed, forTab: tabID, target: targetID)
     }
     // A pane became first responder (click / programmatic focus): make it the selection (issue #3),
     // and route up to the workroom selection so a click into a co-displayed split pane targets that

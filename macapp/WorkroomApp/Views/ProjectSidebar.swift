@@ -380,7 +380,7 @@ struct ProjectSidebar: View {
       // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
       // the workroom rows' spinner/delete-then-run order.
       if terminals.isRunning(forTargetID: target.id) {
-        RunningSpinner()
+        RunningSpinner(failed: terminals.isProgressFailed(forTargetID: target.id))
       }
       // Run/stop the project's command straight from the root row (issue #7), trailing-most — the
       // root runs it in the project directory. Shows its state (green = running). Hidden for a missing
@@ -443,7 +443,7 @@ struct ProjectSidebar: View {
           // Setup script still running against the new worktree — a spinner, and (below) no delete.
           SetupSpinner()
         } else if terminals.isRunning(forTargetID: targetID), hovered != id {
-          RunningSpinner()
+          RunningSpinner(failed: terminals.isProgressFailed(forTargetID: targetID))
         }
         // Hidden while the workroom's setup is still running — it can't be deleted mid-setup (#116).
         DeleteRowButton(
@@ -584,7 +584,7 @@ struct ProjectSidebar: View {
       // is stable and the smaller spinner can't shift it.
       ZStack {
         if tab.isRunning, hoveredTerminal != tab.id {
-          RunningSpinner()
+          RunningSpinner(failed: tab.isProgressFailed)
         }
         CloseTerminalRowButton(title: tab.title, visible: hoveredTerminal == tab.id) {
           store.requestCloseTerminalTab(tab.id, for: target)
@@ -727,13 +727,24 @@ private struct RootLabelTint: ViewModifier {
 
 /// The small indeterminate spinner shown on a root/workroom row while one of its terminals is
 /// running a command (issue #28). Matches the project row's create/delete spinner so the sidebar
-/// has one progress idiom.
+/// has one progress idiom. A command that reported OSC 9;4 ERROR shows the failure mark instead, so
+/// the row reads as failed at a glance rather than as one more busy spinner.
 private struct RunningSpinner: View {
+  var failed = false
+  private let theme = ThemeService.shared
+
   var body: some View {
-    ProgressView()
-      .controlSize(.small)
-      .help("Running a command")
-      .accessibilityLabel("Running a command")
+    if failed {
+      Image(systemName: "exclamationmark.circle.fill")
+        .foregroundStyle(theme.tokens.failure)
+        .help("A command reported an error")
+        .accessibilityLabel("A command reported an error")
+    } else {
+      ProgressView()
+        .controlSize(.small)
+        .help("Running a command")
+        .accessibilityLabel("Running a command")
+    }
   }
 }
 

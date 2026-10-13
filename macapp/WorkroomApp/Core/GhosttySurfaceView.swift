@@ -124,9 +124,10 @@ final class GhosttySurfaceView: NSView {
   var onCommandFinished: ((Int32?) -> Void)?
   /// OSC 9;4 progress (`GHOSTTY_ACTION_PROGRESS_REPORT`): `true` while the running program reports it's
   /// working, `false` when idle/done (the REMOVE state). The host drives the sidebar/underline spinner
-  /// solely from this (issue #28 follow-up). The adapter calls `handleProgressReport(_:)`, which forwards
-  /// here and arms a safety timer; this closure just relays the value to the host.
-  var onProgressReport: ((Bool) -> Void)?
+  /// solely from this (issue #28 follow-up). `failed` is the ERROR state, which is still working. The
+  /// adapter calls `handleProgressReport(_:failed:)`, which forwards here and arms a safety timer; this
+  /// closure just relays the values to the host.
+  var onProgressReport: ((_ active: Bool, _ failed: Bool) -> Void)?
   /// The surface's child process exited (`GHOSTTY_ACTION_SHOW_CHILD_EXITED`). The run terminal uses
   /// this to flip run-state back to "Run" while the pane stays open (`wait_after_command`). Only run
   /// tabs wire this; ordinary tabs leave it nil so a shell `exit` is a no-op here (issue #7).
@@ -931,7 +932,7 @@ final class GhosttySurfaceView: NSView {
   /// it only elapses when a program that declared itself working goes fully silent — synthesising an
   /// idle state so it can't pin the spinner on (issue #28) without cutting off a long task that signals
   /// progress only once at the start (issue #38).
-  func handleProgressReport(_ active: Bool) {
+  func handleProgressReport(_ active: Bool, failed: Bool = false) {
     progressActive = active
     if active {
       armProgressTimeout()
@@ -939,7 +940,7 @@ final class GhosttySurfaceView: NSView {
       progressTimeoutTimer?.invalidate()
       progressTimeoutTimer = nil
     }
-    onProgressReport?(active)
+    onProgressReport?(active, active && failed)
   }
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SET_TITLE` (OSC 0/2). Forwards to the host
@@ -1022,7 +1023,7 @@ final class GhosttySurfaceView: NSView {
       MainActor.assumeIsolated {
         self?.progressTimeoutTimer = nil
         self?.progressActive = false
-        self?.onProgressReport?(false)
+        self?.onProgressReport?(false, false)
       }
     }
   }

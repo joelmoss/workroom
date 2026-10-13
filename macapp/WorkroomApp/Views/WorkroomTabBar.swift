@@ -632,7 +632,7 @@ private struct WorkroomTabChip: View {
       // An overlay so it never enters the width the drag gap math measures.
       .overlay(alignment: .bottom) {
         if terminals.isRunning(forTargetID: target.id) {
-          RunningUnderline()
+          RunningUnderline(failed: terminals.isProgressFailed(forTargetID: target.id))
             .padding(.horizontal, 6)
             .padding(.bottom, 1)
         }
