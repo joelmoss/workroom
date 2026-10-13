@@ -755,12 +755,18 @@ through `make app-run-boxd-fresh`. Where the build differs from the plan above:
 - **A new boxd account needs payment** (Open Question 1, from the owner's fresh sign-up). For now
   both setup sheets' intros link to the provider's site and say payment is required after signing
   up. No Billing step: the owner decided the sentence is enough (2026-10-13).
+- **T0 probes, from the owner's fresh-user run** (`make app-run-boxd-fresh`, a new boxd account,
+  2026-10-13): the app's Install step installed boxd from the GUI (no terminal, `install-choices`
+  written, binary in the harness home's `~/.local/bin`); Sign In and Connect GitHub worked from the
+  app, ending with the account's private `git` integration `connected: true`; and a boxd workroom
+  was created end to end. Not probed: the integrations list before connecting, and a saved token
+  past its `exp` (30 days after sign-in).
 
 ## Implementation Tasks
 Synthesized from this review's findings. Each task derives from a specific
 finding above. Run with Claude Code or Codex; checkbox as you ship.
 
-- [ ] **T0 (P1, human: ~2h / CC: ~30min)** — probe — run the pre-code probes (Next Steps 1): fresh account billing and integrations JSON, expired stored token
+- [x] **T0 (P1, human: ~2h / CC: ~30min)** — probe — run the pre-code probes (Next Steps 1): fresh account billing and integrations JSON, expired stored token
   - Surfaced by: premise table, 3 unverified premises
   - Files: none (record results in this doc)
   - Verify: results written under Open Questions 1 and 2
