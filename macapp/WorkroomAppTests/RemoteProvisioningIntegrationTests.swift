@@ -1,5 +1,6 @@
 import AgentConnection
 import Defaults
+import HostDrivers
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -601,7 +602,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           }
         }))
     try await relay.install(
-      on: instance.host, driver: driver, agentBinary: AgentBootstrap.binary(besideSocket: socket))
+      on: instance.host, driver: driver, agentBinary: AgentInstall.binary(besideSocket: socket))
 
     guard case .remote(let id) = instance.host else { return XCTFail("not a remote host") }
     let container = "workroom-\(id.uuidString.lowercased())"

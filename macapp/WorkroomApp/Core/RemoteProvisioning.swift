@@ -1,5 +1,6 @@
 import AgentConnection
 import Foundation
+import HostDrivers
 import WorkroomVCS
 
 /// Making remote workrooms the portable way (#252; design doc Phase 4, "Remote creation is one
@@ -16,20 +17,6 @@ import WorkroomVCS
 ///
 /// Repository work runs through the agent's exec service, and the Go CLI stays on the Mac.
 enum RemoteProvisioning {
-  /// A step of a remote create that takes long enough to say (#356): the boxd driver's machine work
-  /// and the sequence's own git.
-  enum Step: String, CaseIterable, Sendable {
-    case machine = "Creating the workroom's machine"
-    case setup = "Setting it up"
-    case clone = "Cloning the repository"
-    case checkout = "Checking out the workroom's branch"
-  }
-
-  /// Told each `Step` as it starts, for a create's progress on its project row. Set with
-  /// `$reportStep.withValue`: a task-local, so the driver's methods keep their shape, as
-  /// `ContainerHostDriver.$pullProgress` does for an image pull.
-  @TaskLocal static var reportStep: (@Sendable (Step) -> Void)?
-
   /// What the sequence reaches a provider through.
   struct Environment: Sendable {
     let driver: any HostDriver
@@ -60,7 +47,7 @@ enum RemoteProvisioning {
         }
     }
 
-    var agentBinary: String { AgentBootstrap.binary(besideSocket: agentSocket) }
+    var agentBinary: String { AgentInstall.binary(besideSocket: agentSocket) }
   }
 
   /// A workroom's host, serving requests over `connection`.
@@ -148,7 +135,7 @@ enum RemoteProvisioning {
       try await checkpoint(host)
       let connected = try await environment.connect(host)
       connection = connected
-      reportStep?(.clone)
+      ProvisioningProgress.reportStep?(.clone)
       do {
         _ = try await git(
           ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
@@ -157,7 +144,7 @@ enum RemoteProvisioning {
         throw Failure.git(
           command: command, detail: "\(detail)\n\n\(environment.credentialHint ?? "")")
       }
-      reportStep?(.checkout)
+      ProvisioningProgress.reportStep?(.checkout)
       // Fully qualified: a tag or branch named like the short form would make it ambiguous.
       _ = try await git(
         [

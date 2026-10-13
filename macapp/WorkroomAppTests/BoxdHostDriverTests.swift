@@ -1,3 +1,4 @@
+import HostDrivers
 import WorkroomSystem
 import XCTest
 
@@ -186,8 +187,8 @@ final class BoxdHostDriverTests: XCTestCase {
       "machine remove": Self.ok(#"{"status":"destroyed"}"#),
     ])
     let steps = Steps()
-    let report: @Sendable (RemoteProvisioning.Step) -> Void = { steps.add($0) }
-    await RemoteProvisioning.$reportStep.withValue(report) {
+    let report: @Sendable (ProvisioningProgress.Step) -> Void = { steps.add($0) }
+    await ProvisioningProgress.$reportStep.withValue(report) {
       _ = try? await driver(cli).create()
     }
     XCTAssertEqual(steps.all, [.machine, .setup])
@@ -195,9 +196,9 @@ final class BoxdHostDriverTests: XCTestCase {
 
   private final class Steps: @unchecked Sendable {
     private let lock = NSLock()
-    private var seen: [RemoteProvisioning.Step] = []
-    var all: [RemoteProvisioning.Step] { lock.withLock { seen } }
-    func add(_ step: RemoteProvisioning.Step) { lock.withLock { seen.append(step) } }
+    private var seen: [ProvisioningProgress.Step] = []
+    var all: [ProvisioningProgress.Step] { lock.withLock { seen } }
+    func add(_ step: ProvisioningProgress.Step) { lock.withLock { seen.append(step) } }
   }
 
   func testACreateWhoseMachineIsRefusedSaysTheCLIsReasonAndHasNothingToRemove() async throws {

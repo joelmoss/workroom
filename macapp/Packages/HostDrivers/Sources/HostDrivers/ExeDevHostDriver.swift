@@ -25,38 +25,53 @@ import os
 ///
 /// exe.dev has no stop, start or idle timer, and its VMs were never put to sleep while idle
 /// (spike), so nothing here reads presence or keeps a box awake.
-final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
-  struct Configuration: Sendable {
+public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
+  public struct Configuration: Sendable {
     /// What every VM this driver makes is named after.
-    var prefix = "workroom"
+    public var prefix: String
     /// The exe.dev account this driver's VMs belong to, `whoami`'s email, or nil to accept any.
     /// Checked before every create, destroy and rollback: another account's VM reads as
     /// "not found", which `destroy` would take for gone. Whoever records a host records this.
-    var account: String?
+    public var account: String?
     /// The agent's socket on every host, on the home disk: the agent's binary is installed beside
     /// it, and `/run` is a tmpfs (spike).
-    var agentSocket = "\(ExeDevHostDriver.stateDirectory)/agent/agent.sock"
+    public var agentSocket: String
     /// Where the supervisor has the agent keep each session's last screen (#232).
-    var screens = "\(ExeDevHostDriver.stateDirectory)/screens"
+    public var screens: String
     /// The user's ssh-agent socket, or nil for none. Their `IdentityAgent`, if set, wins.
-    var sshAgent: String? = ExeDevHostDriver.userSSHAgent()
+    public var sshAgent: String?
+
+    public init(
+      prefix: String = "workroom", account: String? = nil,
+      agentSocket: String = "\(ExeDevHostDriver.stateDirectory)/agent/agent.sock",
+      screens: String = "\(ExeDevHostDriver.stateDirectory)/screens",
+      sshAgent: String? = ExeDevHostDriver.userSSHAgent()
+    ) {
+      self.prefix = prefix
+      self.account = account
+      self.agentSocket = agentSocket
+      self.screens = screens
+      self.sshAgent = sshAgent
+    }
   }
 
+  /// The host descriptor's `driver` for this provider's hosts.
+  public static let driverName = "exedev"
   /// The user every exe.dev VM logs in as (exeuntu's `exe.dev/login-user`).
-  static let user = "exedev"
-  static let stateDirectory = "/home/\(user)/.local/state/workroom"
-  static let lobby = "exe.dev"
+  public static let user = "exedev"
+  public static let stateDirectory = "/home/\(user)/.local/state/workroom"
+  public static let lobby = "exe.dev"
   /// The gateway's key's fingerprint as exe.dev publishes it (`ssh exe.dev doc faq/host-key`), for
   /// an error that asks the user to sign in once.
-  static let gatewayFingerprint = "SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo"
+  public static let gatewayFingerprint = "SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo"
 
-  let configuration: Configuration
-  var agentSocket: String { configuration.agentSocket }
+  public let configuration: Configuration
+  public var agentSocket: String { configuration.agentSocket }
   /// Where each host's attach logs are kept.
-  let directory: URL
+  public let directory: URL
   private let runner: any StatusCommandRunning
 
-  init(
+  public init(
     configuration: Configuration, directory: URL,
     runner: any StatusCommandRunning = StatusCommandRunner()
   ) {
@@ -68,7 +83,9 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "ExeDevHostDriver")
 
-  func name(of id: UUID) -> String { "\(configuration.prefix)-\(id.uuidString.lowercased())" }
+  public func name(of id: UUID) -> String {
+    "\(configuration.prefix)-\(id.uuidString.lowercased())"
+  }
 
   private func id(of host: HostID) throws -> UUID {
     guard case .remote(let id) = host else { throw HostDriverError.unknownHost(host) }
@@ -83,16 +100,16 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// A fresh VM, set up as a workroom's host: the identity unit has minted its identity and the
   /// supervisor is waiting for an agent. A VM that gets no further is removed.
-  func create() async throws -> HostID {
+  public func create() async throws -> HostID {
     try await checkAccount()
     let id = UUID()
     let name = name(of: id)
     try markPending(id)
     do {
-      RemoteProvisioning.reportStep?(.machine)
+      ProvisioningProgress.reportStep?(.machine)
       _ = try await cli(["new", "--name", name, "--no-email"])
       try await awaitBoot(of: id)
-      RemoteProvisioning.reportStep?(.setup)
+      ProvisioningProgress.reportStep?(.setup)
       let (status, output) = try await exec(
         "sudo sh -s -- "
           + [Self.user, configuration.agentSocket, configuration.screens]
@@ -117,7 +134,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Removes the VM. One already gone counts as removed, so a caller retrying after a later step
   /// of its own failed gets past the destroy it already did.
-  func destroy(_ host: HostID) async throws {
+  public func destroy(_ host: HostID) async throws {
     let id = try id(of: host)
     try await checkAccount()
     if let failure = await remove(name(of: id)) {
@@ -132,7 +149,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// host still leaves it for the sweep (#373).
   private func markPending(_ id: UUID) throws {
     try PendingMachines.add(
-      .init(id: id, driver: RemoteWorkrooms.exeDevDriver, account: configuration.account),
+      .init(id: id, driver: Self.driverName, account: configuration.account),
       in: directory)
   }
 
@@ -197,7 +214,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The account exe.dev knows the user's key as, `whoami`'s email. Throws, naming the fix, when
   /// the user's ssh can't sign in to exe.dev.
-  func signedIn() async throws -> String {
+  public func signedIn() async throws -> String {
     do {
       return try await decode(Whoami.self, cli(["whoami"]), "the signed-in account").email
     } catch let failure as CLIFailure {
@@ -215,11 +232,11 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     var errorDescription: String? { "exe.dev \(command): \(said)" }
   }
 
-  struct Whoami: Decodable { let email: String }
+  public struct Whoami: Decodable { let email: String }
 
-  struct Removal: Decodable {
-    let deleted: [String]
-    let failed: [String]
+  public struct Removal: Decodable {
+    public let deleted: [String]
+    public let failed: [String]
   }
 
   private func decode<T: Decodable>(_ type: T.Type, _ output: String, _ name: String) throws -> T {
@@ -259,7 +276,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// exe.dev's error from a command's output: `{"error": "..."}`, printed on stdout and stderr
   /// alike (spike), or ssh's own message when it never got in.
-  static func errorLine(_ result: CommandResult) -> String? {
+  public static func errorLine(_ result: CommandResult) -> String? {
     // 255 is ssh's own failure: it never got in, so the fix is the user's ssh, not exe.dev.
     if result.exitCode == 255, !result.stderr.contains("{") {
       let said = result.stderr.split(separator: "\n").last.map(String.init) ?? "ssh failed"
@@ -282,7 +299,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// Each line of `output` that is a JSON object, in order: `rm` prints two (spike).
-  static func jsonObjects(_ output: String) -> [Data] {
+  public static func jsonObjects(_ output: String) -> [Data] {
     output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
       .filter { $0.hasPrefix("{") }.map { Data($0.utf8) }
   }
@@ -290,7 +307,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// exe.dev's answer for a VM that doesn't exist: `VM "<name>" not found`, or `vm "<name>" not
   /// found` from `cp` (spike). Matched whole, so a transport failure that happens to say "not
   /// found" is never taken for a removal.
-  static func isNotFound(_ said: String) -> Bool {
+  public static func isNotFound(_ said: String) -> Bool {
     (said.hasPrefix("VM \"") || said.hasPrefix("vm \"")) && said.hasSuffix("\" not found")
       && !said.dropFirst(4).dropLast(11).contains("\"")
   }
@@ -302,7 +319,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// takes a VM's key to be the gateway's, forwards nothing to a VM an agent works on, and notices
   /// a dead link (#228); a pane's ssh reads no escapes from what is typed in it. A pane's `-t`
   /// outranks `RequestTTY`.
-  static let sshOptions = [
+  public static let sshOptions = [
     "BatchMode=yes", "HostKeyAlias=\(lobby)", "ForwardAgent=no", "ForwardX11=no",
     "ClearAllForwardings=yes", "ControlMaster=no", "ControlPath=none", "RemoteCommand=none",
     "EscapeChar=none", "RequestTTY=no", "ServerAliveInterval=15", "ServerAliveCountMax=3",
@@ -312,7 +329,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The user's ssh-agent socket: the app's own environment's, else the login shell's, where an
   /// agent such as 1Password's is set (`StatusCommandRunner.forwardedAuthKeys`).
-  static func userSSHAgent(
+  public static func userSSHAgent(
     inherited: [String: String] = ProcessInfo.processInfo.environment,
     probed: @autoclosure () -> [String: String] = ShellEnvironment.environment()
   ) -> String? {
@@ -326,7 +343,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// An ssh the app spawns gets no other environment (`HostStream.spawn`), so it also gets the
   /// login shell's PATH, where a `ProxyCommand`'s helper is found, as in Terminal; a pane's ssh
   /// has the pane's own.
-  func route(_ id: UUID, spawned: Bool) -> SSHTransport.Route {
+  public func route(_ id: UUID, spawned: Bool) -> SSHTransport.Route {
     var environment = configuration.sshAgent.map { ["SSH_AUTH_SOCK": $0] } ?? [:]
     if spawned { environment["PATH"] = ShellEnvironment.path() }
     return SSHTransport.Route(
@@ -334,20 +351,20 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       environment: environment)
   }
 
-  func openStream(to host: HostID) async throws -> HostStream {
+  public func openStream(to host: HostID) async throws -> HostStream {
     let id = try id(of: host)
     return try SSHTransport.exec(
       SSHTransport.relayCommand(
-        binary: AgentBootstrap.binary(besideSocket: agentSocket), socket: agentSocket),
+        binary: AgentInstall.binary(besideSocket: agentSocket), socket: agentSocket),
       via: route(id, spawned: true), purpose: .connection)
   }
 
-  func exec(_ command: String, on host: HostID) async throws -> HostStream {
+  public func exec(_ command: String, on host: HostID) async throws -> HostStream {
     try SSHTransport.exec(
       command, via: route(try id(of: host), spawned: true), purpose: .exchange)
   }
 
-  func attachCommand(
+  public func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
     metadata: [(key: String, value: String)]
   ) throws -> String {
@@ -360,12 +377,12 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }
 
-  func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
+  public func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
     return SSHTransport.refusedLastAttach(of: session, in: hostDirectory(id))
   }
 
-  func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
+  public func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
     return SSHTransport.lostLinkLastAttach(of: session, in: hostDirectory(id))
   }

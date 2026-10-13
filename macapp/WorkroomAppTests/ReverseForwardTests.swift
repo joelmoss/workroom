@@ -1,5 +1,6 @@
 import AgentConnection
 import Darwin
+import HostDrivers
 import WorkroomVCS
 import XCTest
 

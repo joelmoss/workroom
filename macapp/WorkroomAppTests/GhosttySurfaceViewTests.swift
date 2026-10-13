@@ -1,4 +1,5 @@
 import AppKit
+import HostDrivers
 import XCTest
 
 @testable import Workroom

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import HostDrivers
 
 /// Reading how far an image pull has got from what each runtime's CLI prints (#309).
 final class ImagePullProgressTests: XCTestCase {

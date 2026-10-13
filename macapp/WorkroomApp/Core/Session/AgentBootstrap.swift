@@ -1,6 +1,7 @@
 import AgentConnection
 import CryptoKit
 import Foundation
+import HostDrivers
 import WorkroomSystem
 import WorkroomVCS
 import os
@@ -14,7 +15,7 @@ import os
 ///
 /// The far side of this is two shell scripts (`Resources/agent-bootstrap`, run through
 /// `HostDriver.exec`), which also say where the binary goes: **beside the socket**
-/// (`binary(besideSocket:)`), in the socket's 0700 directory, which is the trust boundary already
+/// (`AgentInstall.binary(besideSocket:)`), in the socket's 0700 directory, which is the trust boundary already
 /// (a client of the socket can type into every session). The supervisor starts the agent from
 /// there, and the relay and the attach run it from there. The scripts stage a pushed binary, run it
 /// once (`protocol`), offer it to the running agent (`hand-off`, which checks that the new program
@@ -106,17 +107,6 @@ enum AgentBootstrap {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
 
-  /// Where the agent lives on a host: beside its socket.
-  static func binary(besideSocket socket: String) -> String {
-    (socket as NSString).deletingLastPathComponent + "/wr-agent"
-  }
-
-  /// Where Ghostty's terminfo and shell integration live on a host: beside the agent, in the
-  /// socket's 0700 directory (#239).
-  static func resources(besideSocket socket: String) -> String {
-    (socket as NSString).deletingLastPathComponent + "/ghostty"
-  }
-
   /// The bootstrap, then the connection: the one way to a remote host's services.
   static func connect(
     host: HostID, driver: any HostDriver, socket: String,
@@ -144,7 +134,7 @@ enum AgentBootstrap {
     agent: (String) -> URL? = PersistentSessionPaths.linuxAgentURL(architecture:),
     handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
   ) async throws -> Outcome {
-    let binary = binary(besideSocket: socket)
+    let binary = AgentInstall.binary(besideSocket: socket)
     let urls = architectures.compactMap { architecture in
       agent(architecture).map { (architecture, $0) }
     }
@@ -159,7 +149,9 @@ enum AgentBootstrap {
     let probe = try await run(
       script: "probe", on: host, driver: driver, input: nil,
       arguments: [binary, socket, handOff ? "1" : "0"]
-        + architectures.map { bundled[$0]?.digest ?? "-" } + [Self.resources(besideSocket: socket)])
+        + architectures.map { bundled[$0]?.digest ?? "-" } + [
+          AgentInstall.resources(besideSocket: socket)
+        ])
     let report = try parseProbe(probe.output)
     // A probe cut off part way (its hand-off is the long step) would read as "not asked".
     guard probe.status == 0 else {
@@ -181,7 +173,8 @@ enum AgentBootstrap {
       hostIsNewer
       ? resources.map { _ in .notPushed("the host runs a newer build") }
       : await ensureResources(
-        resources, installed: report.resources, directory: Self.resources(besideSocket: socket),
+        resources, installed: report.resources,
+        directory: AgentInstall.resources(besideSocket: socket),
         on: host, driver: driver)
     guard
       let (url, digest, build) = bundled[architecture].map({ ($0.url, $0.digest, $0.build) })

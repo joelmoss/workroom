@@ -1,4 +1,5 @@
 import AgentConnection
+import HostDrivers
 import WorkroomVCS
 import XCTest
 
@@ -59,8 +60,8 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   private func provision(
     _ environment: RemoteProvisioning.Environment, steps: StepLog = StepLog()
   ) async throws {
-    let report: @Sendable (RemoteProvisioning.Step) -> Void = { steps.add($0) }
-    try await RemoteProvisioning.$reportStep.withValue(report) {
+    let report: @Sendable (ProvisioningProgress.Step) -> Void = { steps.add($0) }
+    try await ProvisioningProgress.$reportStep.withValue(report) {
       _ = try await RemoteProvisioning.provision(
         cloneURL: "u", path: "/p", branch: "b", in: environment)
     }
@@ -237,9 +238,9 @@ private final class CountingDriver: HostDriver, @unchecked Sendable {
 
 private final class StepLog: @unchecked Sendable {
   private let lock = NSLock()
-  private var seen: [RemoteProvisioning.Step] = []
-  func add(_ step: RemoteProvisioning.Step) { lock.withLock { seen.append(step) } }
-  func take() -> [RemoteProvisioning.Step] {
+  private var seen: [ProvisioningProgress.Step] = []
+  func add(_ step: ProvisioningProgress.Step) { lock.withLock { seen.append(step) } }
+  func take() -> [ProvisioningProgress.Step] {
     lock.withLock {
       defer { seen = [] }
       return seen

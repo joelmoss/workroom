@@ -8,32 +8,44 @@ import WorkroomWire
 /// attach and relay commands, and the per-host `ssh_config` and `known_hosts`. Moved out of
 /// `ContainerHostDriver` as is: none of it is container-shaped, and a driver for any ssh host
 /// needs it and nothing else of that driver's.
-enum SSHTransport {
-  struct Host: Sendable {
-    let address: String
-    let port: Int
-    let user: String
+public enum SSHTransport {
+  public struct Host: Sendable {
+    public let address: String
+    public let port: Int
+    public let user: String
     /// The private key ssh authenticates with. The only credential used: `IdentitiesOnly` and
     /// `IdentityAgent none` keep the Mac's ssh agent and default keys out of it.
-    let identityFile: String
+    public let identityFile: String
     /// The host's public key, `<type> <base64>`, delivered out of band. It is the only key ssh
     /// accepts, and a mismatch fails closed: `BatchMode` cannot prompt to accept a new one.
-    let hostKey: String
+    public let hostKey: String
     /// The supervised agent's socket on the host.
-    let agentSocket: String
+    public let agentSocket: String
 
     /// The agent's binary, beside its socket: what the app installs there (`AgentBootstrap`,
     /// #231), the supervisor starts, and the relay and the attach run. One directory per host,
     /// the socket's 0700 one, so the file has the socket's protection (design doc, the hand-off
     /// trust model: the socket is the boundary).
-    var agentBinary: String { AgentBootstrap.binary(besideSocket: agentSocket) }
+    public init(
+      address: String, port: Int, user: String, identityFile: String, hostKey: String,
+      agentSocket: String
+    ) {
+      self.address = address
+      self.port = port
+      self.user = user
+      self.identityFile = identityFile
+      self.hostKey = hostKey
+      self.agentSocket = agentSocket
+    }
+
+    public var agentBinary: String { AgentInstall.binary(besideSocket: agentSocket) }
     /// Ghostty's terminfo and shell integration, which the bootstrap puts beside the agent (#239).
-    var resources: String { AgentBootstrap.resources(besideSocket: agentSocket) }
+    public var resources: String { AgentInstall.resources(besideSocket: agentSocket) }
   }
 
   /// Runs `command` on `host` over ssh, with the host's `ssh_config` and `known_hosts` written to
   /// `hostDirectory` first.
-  static func exec(
+  public static func exec(
     _ command: String, on host: Host, in hostDirectory: URL, purpose: HostStream.Purpose
   ) throws -> HostStream {
     try exec(command, via: route(to: host, in: hostDirectory), purpose: purpose)
@@ -41,24 +53,24 @@ enum SSHTransport {
 
   /// How `/usr/bin/ssh` reaches a host: the options ahead of the destination, the destination,
   /// and the environment ssh runs with.
-  struct Route: Sendable {
-    let options: [String]
-    let destination: String
-    var environment: [String: String] = [:]
+  public struct Route: Sendable {
+    public let options: [String]
+    public let destination: String
+    public var environment: [String: String] = [:]
   }
 
   /// `host` through its own `ssh_config`, written to `hostDirectory`, and nothing from the app's
   /// environment: ssh needs none of it with this configuration, and `SSH_AUTH_SOCK` in particular
   /// is a Mac credential. `-F` also keeps `/etc/ssh/ssh_config` out, whose `SendEnv LANG LC_*`
   /// would send the Mac's locale across.
-  static func route(to host: Host, in hostDirectory: URL) throws -> Route {
+  public static func route(to host: Host, in hostDirectory: URL) throws -> Route {
     Route(
       options: ["-F", try writeConfiguration(for: host, in: hostDirectory).path],
       destination: alias)
   }
 
   /// Runs `command` over `route`.
-  static func exec(_ command: String, via route: Route, purpose: HostStream.Purpose) throws
+  public static func exec(_ command: String, via route: Route, purpose: HostStream.Purpose) throws
     -> HostStream
   {
     try HostStream.spawn(
@@ -71,7 +83,7 @@ enum SSHTransport {
 
   /// The command a pane runs to attach to `session` on `host` over ssh, with the host's
   /// configuration written to `hostDirectory`.
-  static func attachCommand(
+  public static func attachCommand(
     to host: Host, in hostDirectory: URL, session: UUID, workingDirectory: String, restored: Bool,
     metadata: [(key: String, value: String)] = []
   ) throws -> String {
@@ -83,7 +95,7 @@ enum SSHTransport {
 
   /// The command a pane runs to attach to `session` over `route`, keeping ssh's log in
   /// `hostDirectory`.
-  static func attachCommand(
+  public static func attachCommand(
     via route: Route, in hostDirectory: URL, agentSocket: String, session: UUID,
     workingDirectory: String, restored: Bool, metadata: [(key: String, value: String)] = []
   ) -> String {
@@ -98,8 +110,8 @@ enum SSHTransport {
         "-E", log, "-o", "PermitLocalCommand=yes", "-o", "LocalCommand=printf '\\0338\\033[J'",
         "-t", route.destination,
         remoteAttachCommand(
-          binary: AgentBootstrap.binary(besideSocket: agentSocket), session: session,
-          socket: agentSocket, resources: AgentBootstrap.resources(besideSocket: agentSocket),
+          binary: AgentInstall.binary(besideSocket: agentSocket), session: session,
+          socket: agentSocket, resources: AgentInstall.resources(besideSocket: agentSocket),
           workingDirectory: workingDirectory, restored: restored, metadata: metadata),
       ]
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
@@ -124,7 +136,7 @@ enum SSHTransport {
   /// carries it: on macOS libghostty starts every command under `/usr/bin/login`, which exits 0
   /// whatever ran under it (#392). The status is removed before ssh starts, so a wrapper killed
   /// before it writes one leaves none rather than the last attach's.
-  static let attachWrapper = """
+  public static let attachWrapper = """
     log=$1; shift; printf '\\0337%s' "workroom: waiting for this terminal's host..."; \
     : > "$log"; rm -f "${log%.log}.status"; \
     SHELL=/bin/sh "$@"; status=$?; echo "$status" > "${log%.log}.status"; \
@@ -138,29 +150,29 @@ enum SSHTransport {
     separator: " ")
 
   /// What a pane whose link dropped says while it keeps trying (#392).
-  static let retryNotice =
+  public static let retryNotice =
     "Can't reach this terminal's host right now. Workroom will keep trying, and your session "
     + "will be restored when it connects."
 
   /// Where a pane's ssh writes its messages (`-E`): one file per session, emptied by each attach.
-  static func attachLog(_ session: UUID, in hostDirectory: URL) -> URL {
+  public static func attachLog(_ session: UUID, in hostDirectory: URL) -> URL {
     hostDirectory.appendingPathComponent("attach-\(session.uuidString).log")
   }
 
   /// Where the attach wrapper writes ssh's exit status, beside `attachLog`.
-  static func attachStatus(_ session: UUID, in hostDirectory: URL) -> URL {
+  public static func attachStatus(_ session: UUID, in hostDirectory: URL) -> URL {
     hostDirectory.appendingPathComponent("attach-\(session.uuidString).status")
   }
 
   /// Whether the last attach of `session` ended with ssh's own failure, 255: the link dropped or
   /// never came up, as after laptop sleep, a network change or the host restarting.
-  static func lostLinkLastAttach(of session: UUID, in hostDirectory: URL) -> Bool {
+  public static func lostLinkLastAttach(of session: UUID, in hostDirectory: URL) -> Bool {
     (try? String(contentsOf: attachStatus(session, in: hostDirectory), encoding: .utf8))?
       .trimmingCharacters(in: .whitespacesAndNewlines) == "255"
   }
 
   /// Whether the last attach of `session`, whose log is in `hostDirectory`, was refused.
-  static func refusedLastAttach(of session: UUID, in hostDirectory: URL) -> Bool {
+  public static func refusedLastAttach(of session: UUID, in hostDirectory: URL) -> Bool {
     isRefusal(
       (try? String(contentsOf: attachLog(session, in: hostDirectory), encoding: .utf8)) ?? "")
   }
@@ -170,13 +182,13 @@ enum SSHTransport {
   /// socket-activated sshd, can fail in words no list has seen. An authentication denial is
   /// `Permission denied (<methods>)`; a bare `Permission denied` is a connect a firewall refused,
   /// which can heal.
-  static func isRefusal(_ log: String) -> Bool {
+  public static func isRefusal(_ log: String) -> Bool {
     let log = log.lowercased()
     return refusals.contains { log.contains($0) }
   }
 
   /// `isRefusal`'s messages, lowercase. The attach wrapper matches the same ones, ignoring case.
-  static let refusals = [
+  public static let refusals = [
     "host key verification failed", "remote host identification has changed",
     "permission denied (", "too many authentication failures", "unable to negotiate",
     "load key", "bad owner or permissions",
@@ -211,7 +223,7 @@ enum SSHTransport {
   /// (`SessionMetadataKey.environmentVariables`), which the host's agent keeps (#255). Nothing
   /// else does: the project is this Mac's path, which the host neither keeps nor needs, and an ssh
   /// command line is visible to everything on the host.
-  static func remoteAttachCommand(
+  public static func remoteAttachCommand(
     binary: String, session: UUID, socket: String, resources: String, workingDirectory: String,
     restored: Bool, metadata: [(key: String, value: String)] = []
   ) -> String {
@@ -240,11 +252,11 @@ enum SSHTransport {
       .map(shellQuoted).joined(separator: " ")
   }
 
-  static let alias = "workroom-host"
+  public static let alias = "workroom-host"
 
   /// The command ssh runs on the host, quoted for the remote shell. The installed binary by its
   /// path: a host has no `wr-agent` on its PATH, only what the bootstrap put beside the socket.
-  static func relayCommand(binary: String, socket: String) -> String {
+  public static func relayCommand(binary: String, socket: String) -> String {
     shellQuoted(binary) + " relay --socket " + shellQuoted(socket)
   }
 
@@ -264,7 +276,7 @@ enum SSHTransport {
   /// - **A dead link is noticed.** `ServerAliveInterval` ends ssh after about 45s of silence from a
   ///   host that stopped answering, which ends the stream and so the connection. It is what bounds
   ///   a link that dies with nothing to send (#228).
-  static func writeConfiguration(for host: Host, in directory: URL) throws -> URL {
+  public static func writeConfiguration(for host: Host, in directory: URL) throws -> URL {
     for (name, value) in [
       ("address", host.address), ("user", host.user), ("identity file", host.identityFile),
       ("host key", host.hostKey), ("agent socket", host.agentSocket),
@@ -320,5 +332,5 @@ enum SSHTransport {
   }
 
   /// One POSIX shell word, whatever `text` holds.
-  static func shellQuoted(_ text: String) -> String { PosixShell.quoted(text) }
+  public static func shellQuoted(_ text: String) -> String { PosixShell.quoted(text) }
 }

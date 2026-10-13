@@ -1,5 +1,6 @@
 import AgentConnection
 import Defaults
+import HostDrivers
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -751,7 +752,7 @@ final class AgentBootstrapTests: XCTestCase {
     let driver: LocalShellDriver
     let directory: URL
     var socket: String { directory.appendingPathComponent("agent.sock").path }
-    var binary: String { AgentBootstrap.binary(besideSocket: socket) }
+    var binary: String { AgentInstall.binary(besideSocket: socket) }
   }
 
   /// A host directory (the socket's) with nothing in it, and a shell whose PATH has

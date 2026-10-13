@@ -1,4 +1,5 @@
 import Foundation
+import HostDrivers
 import WorkroomDomain
 
 /// Workroom creation (issues #116, #163, #167): local and remote creates, their progress and
@@ -172,8 +173,8 @@ extension AppStore {
   }
 
   /// `step` of a remote provider's create, as the row shows it.
-  nonisolated static func createStep(_ step: RemoteProvisioning.Step) -> CreateStep {
-    let steps = RemoteProvisioning.Step.allCases
+  nonisolated static func createStep(_ step: ProvisioningProgress.Step) -> CreateStep {
+    let steps = ProvisioningProgress.Step.allCases
     let index = steps.firstIndex(of: step) ?? 0
     return CreateStep(
       fraction: Double(index) / Double(steps.count),
@@ -299,7 +300,7 @@ extension AppStore {
       let cloneURL = RemoteWorkrooms.cloneURL(
         for: repository, origin: await resolver.originURL(in: project.path))
       let path = project.path
-      let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { [weak self] step in
+      let stepped: @Sendable (ProvisioningProgress.Step) -> Void = { [weak self] step in
         Task { @MainActor in
           self?.showRemoteCreateStep(Self.createStep(step), in: path, row: row)
         }
@@ -320,7 +321,7 @@ extension AppStore {
         return name
       }
       // Only a remote provider's create reports steps: a container's are quick, bar its image pull.
-      let created = try await RemoteProvisioning.$reportStep.withValue(
+      let created = try await ProvisioningProgress.$reportStep.withValue(
         key.isRemoteProvider ? stepped : nil
       ) {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
