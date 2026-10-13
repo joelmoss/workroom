@@ -341,11 +341,16 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Whether exe.dev's GitHub connection works: `--verify` ticks each connected account
   /// (`  joelmoss ✓`) and says "No GitHub accounts connected." otherwise, exit 0 both ways. It
-  /// takes no `--json` (spike, 2026-10-12).
+  /// takes no `--json` (spike, 2026-10-12). Any other exit is a check that couldn't answer, which
+  /// throws rather than reading as "not connected".
   public func gitHubConnected() async throws -> Bool {
     let result = await run(["integrations", "setup", "github", "--verify"], timeout: 60)
     try Task.checkCancellation()
-    return result.ok && result.stdout.contains("✓")
+    guard result.ok else {
+      throw CLIFailure(
+        command: "integrations", said: Self.errorLine(result) ?? "exited \(result.exitCode)")
+    }
+    return result.stdout.contains("✓")
   }
 
   /// Whether the account's plan lets it make VMs: a new account's is Basic with `max_vms` 0, and
@@ -471,9 +476,10 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     return nil
   }
 
-  /// ssh's default identities, which it offers when no config names one.
+  /// ssh's default identities, which it offers when no config names one. OpenSSH 10 lists the
+  /// first five; older ones (macOS 15's) and builds with XMSS add `id_dsa` and `id_xmss`.
   public static let defaultKeyNames = [
-    "id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk",
+    "id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk", "id_dsa", "id_xmss",
   ]
 
   /// Whether `~/.ssh` holds one of ssh's default identities.
