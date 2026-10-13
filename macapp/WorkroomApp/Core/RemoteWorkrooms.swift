@@ -84,13 +84,9 @@ enum RemoteWorkrooms {
   static func unavailability(of place: Place) -> String? {
     switch place {
     case .container(let runtime): unavailability(of: runtime)
-    case .boxd:
-      // Only what is cheap to read: this runs in menus' and the picker's bodies. Whether boxd is
-      // signed in is a CLI call, so a create checks that (`RemoteHosts.key(for:)`).
-      RemoteHosts.boxdExecutable() == nil ? "not installed" : nil
-    case .exeDev:
-      // ssh is always there; whether exe.dev knows a key of the user's is an ssh call, which a
-      // create makes (`RemoteHosts.key(for:)`).
+    case .boxd, .exeDev:
+      // Never unavailable: a create first checks the user's account there and, when it isn't
+      // ready, shows the provider's setup (`BoxdSetup`, `ExeDevSetup`), installing boxd too.
       nil
     }
   }

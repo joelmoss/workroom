@@ -372,7 +372,9 @@ extension AppStore {
     case .exeDev:
       await ExeDevSetup.needed(
         driver: ExeDevHostDriver(configuration: .init(), directory: RemoteHosts.hosts))
-    case .boxd, .container:
+    case .boxd:
+      await BoxdSetup.needed()
+    case .container:
       nil
     }
   }
