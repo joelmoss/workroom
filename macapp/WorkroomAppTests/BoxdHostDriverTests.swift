@@ -474,7 +474,16 @@ final class BoxdHostDriverTests: XCTestCase {
         { if case .unknown = $0 { true } else { false } }, "timed out"
       ),
       (
-        nil, "garbage", { $0 == .signedOut("Workroom couldn't read boxd's sign-in.") }, "unreadable"
+        nil, "garbage", { $0 == .unreadable }, "unreadable"
+      ),
+      (
+        // Fields only the sheet shows, in a shape Workroom doesn't know, still sign the user in.
+        Self.ok(#"{"active_org":null,"display_name":7,"user_id":"usr_1","orgs":{"org-1":true}}"#),
+        nil,
+        {
+          guard case .signedIn(let account) = $0 else { return false }
+          return account.userID == "usr_1" && account.displayName == nil && account.orgs == nil
+        }, "unfamiliar display fields"
       ),
     ]
     for (answer, credentials, expected, label) in rows {
@@ -531,8 +540,10 @@ final class BoxdHostDriverTests: XCTestCase {
       if let previous { setenv("BOXD_TOKEN", previous, 1) } else { unsetenv("BOXD_TOKEN") }
     }
     let home = signedInHome()
+    // An out-of-date boxd's update notice comes first and names the installer, which isn't the page.
     let script =
-      "echo \"token=[$BOXD_TOKEN] home=$HOME\"; echo open https://app.boxd.sh/?s=1; echo x; exit 3"
+      "echo 'curl -fsSL \(BoxdHostDriver.installer) | sh'; echo \"token=[$BOXD_TOKEN] home=$HOME\"; "
+      + "echo open https://app.boxd.sh/?s=1; echo x; exit 3"
     let command = try BoxdHostDriver.ClickedCommand(
       URL(fileURLWithPath: "/bin/sh"), ["-c", script], home: home)
     let code = await command.wait()

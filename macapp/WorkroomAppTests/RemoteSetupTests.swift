@@ -263,6 +263,21 @@ final class RemoteSetupTests: XCTestCase {
     let broken = BoxdSetup(actions: actions, open: { _ in })
     await broken.signIn()
     XCTAssertEqual(broken.account, .failed("no such file"))
+
+    // A sign-in that finishes but leaves one Workroom can't read: boxd changed its format.
+    boxd.account = .unreadable
+    boxd.commands["signIn"] = nil
+    let unreadable = boxd.setup()
+    await unreadable.refresh()
+    XCTAssertEqual(unreadable.account, .signedOut("Workroom couldn't read boxd's sign-in."))
+    let finishing = Task { await unreadable.signIn() }
+    for _ in 0..<100 where unreadable.account != .signingIn {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    boxd.command("signIn").finish(0)
+    await finishing.value
+    XCTAssertEqual(unreadable.account, .needsUpdate)
+    XCTAssertFalse(unreadable.isReady)
   }
 
   // Value: protects=an installer that exits 0 but leaves no boxd isn't taken for installed, and a
