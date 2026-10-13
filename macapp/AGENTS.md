@@ -208,7 +208,7 @@ asks the Mac's own `gh` through `CredentialRelay` (#309), whose agent side is `w
 
 ## boxd driver (#256)
 
-`Core/ExeDevHostDriver.swift` is the second (#259): exe.dev VMs driven through exe.dev's ssh API
+`HostDrivers/ExeDevHostDriver.swift` is the second (#259): exe.dev VMs driven through exe.dev's ssh API
 (`ssh exe.dev <cmd> --json`) and reached over the user's own ssh: their `~/.ssh/config`, keys, agent
 and Keychain, as `ssh exe.dev` in Terminal, with only `ExeDevHostDriver.sshOptions` set over them
 (nothing registered on the account). An app opened from Finder gives every ssh it runs, account
@@ -218,7 +218,7 @@ shell's `PATH`, for a `ProxyCommand` helper. A VM's host key is checked as `exe.
 whatever happened, so a delete reads what it printed. Both drivers' shared live cases are in
 `WorkroomAppTests/ProviderParityTestCase.swift`.
 
-`Core/BoxdHostDriver.swift` is the first real provider: boxd machines driven through the `boxd`
+`HostDrivers/BoxdHostDriver.swift` is the first real provider: boxd machines driven through the `boxd`
 CLI (`--json`) and reached over the container driver's ssh transport (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
@@ -333,12 +333,12 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
 ## Gotchas
 
 - **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomVCS`, `WorkroomWire`,
-  `WorkroomSystem`, `AgentConnection`, `DesignSystem`, `SyntaxHighlighting`), each in Swift 6
-  language mode with its own tests, run by `make app-package-test` rather than `make app-test`. A
-  file that names a package's type imports that package itself; nothing re-exports one. A package
-  depends on Foundation (AppKit and SwiftUI too, for `DesignSystem`), its own pins and lower
-  packages, never on the app. `WorkroomWire` is the frozen session codec: see its `Package.swift`
-  before changing it.
+  `WorkroomSystem`, `AgentConnection`, `HostDrivers`, `DesignSystem`, `SyntaxHighlighting`), each in
+  Swift 6 language mode with its own tests, run by `make app-package-test` rather than
+  `make app-test`. A file that names a package's type imports that package itself; nothing
+  re-exports one. A package depends on Foundation (AppKit and SwiftUI too, for `DesignSystem`), its
+  own pins and lower packages, never on the app. `WorkroomWire` is the frozen session codec: see
+  its `Package.swift` before changing it.
 - **The Swift module is `Workroom`** (the target is `WorkroomApp`; `PRODUCT_MODULE_NAME` is pinned
   to `Workroom` in `project.yml`). Tests use `@testable import Workroom`. The pin matters because
   `PRODUCT_NAME` is **per-config**: `Workroom` for Release, `Workroom Dev` for Debug (see below) —
@@ -405,7 +405,7 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   one-line change (see the procedure under §N of `macapp/QA-libghostty.md`). The terminal surface
   (`Core/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
   bundled `Resources/ghostty` (terminfo + shell-integration) must ship for the engine to start.
-- **The child environment has two layers, and only one of them is reliable** (`Core/ShellEnvironment.swift`).
+- **The child environment has two layers, and only one of them is reliable** (`WorkroomSystem/ShellEnvironment.swift`).
   A Finder-launched `.app` gets a minimal PATH, so: the **floor** (`floorPath()`) reads `/etc/paths`
   + `/etc/paths.d/*` — `path_helper`'s own inputs — with no shell at all, and that alone resolves
   Postgres.app's `psql`; the **probe** (`refresh()`) then runs one `$SHELL -ilc` for what only an
