@@ -267,8 +267,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
   }
 
   /// Deterministic smoke: the *real* bootstrap path (no fixture) launches and the shell chrome is
-  /// present. The Add Project control lives in the sidebar's bottom bar regardless of config, so this
-  /// has no dependency on the developer's projects.
+  /// present. An Add Project control is always on screen: the sidebar's bottom bar when there are
+  /// projects, the detail empty state when there are none (the sidebar is hidden then). Either one
+  /// passes, so this has no dependency on the developer's projects; a fresh Dev build has none.
   func testAppLaunchesWithChrome() {
     // Runs against real config/Defaults (fixture: false) — without this, a machine with zero
     // registered projects and a never-set `hasCompletedOnboarding` would pop the onboarding wizard
@@ -276,9 +277,12 @@ final class WorkroomWorkflowUITests: XCTestCase {
     let app = launchedApp(fixture: false, extraArgs: ["-WorkroomUITestOnboarding", "hide"])
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "app did not reach foreground")
     XCTAssertGreaterThan(app.windows.count, 0, "expected a main window")
+    let addProject = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier IN %@", ["AddProject", "EmptyStateAddProject"]))
+      .firstMatch
     XCTAssertTrue(
-      app.descendants(matching: .any)["AddProject"].waitForExistence(timeout: 5),
-      "the Add Project control should always be present in the sidebar")
+      addProject.waitForExistence(timeout: 5),
+      "an Add Project control should always be present (sidebar or empty state)")
   }
 
   /// The workroom tab-bar chips (title bar), for tests exercising more than one workroom.
