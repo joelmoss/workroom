@@ -6,6 +6,7 @@ import SwiftUI
 /// is ready. Closing the sheet cancels the setup, so nothing it started outlives it.
 struct RemoteSetupSheet<Steps: View>: View {
   let title: String
+  /// Markdown, so it can link to the provider's site.
   let intro: String
   let setup: any RemoteSetup
   /// Prefixes the buttons' accessibility identifiers, such as `exeDevSetup`.
@@ -20,7 +21,7 @@ struct RemoteSetupSheet<Steps: View>: View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 6) {
         Text(title).font(.title2.bold())
-        Text(intro)
+        Text(LocalizedStringKey(intro))
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }

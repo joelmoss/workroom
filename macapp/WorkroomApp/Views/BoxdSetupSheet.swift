@@ -12,8 +12,9 @@ struct BoxdSetupSheet: View {
   var body: some View {
     RemoteSetupSheet(
       title: "Set up boxd",
-      intro: "boxd runs each workroom on a machine of its own in the cloud. Three steps, once, and "
-        + "Workroom checks each one for you.",
+      intro: "[boxd](https://boxd.sh) is a cloud service that runs each workroom on a machine of "
+        + "its own. After signing up, payment is required. Three steps, once, and Workroom checks "
+        + "each one for you.",
       setup: setup, identifier: "boxdSetup", onCreate: onCreate, onCancel: onCancel
     ) {
       SetupStep(title: "Install", state: installState) { installContent }
