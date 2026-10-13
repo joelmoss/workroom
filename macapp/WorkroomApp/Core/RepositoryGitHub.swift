@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// GitHub status for one repository. `gh` stays on this Mac for every host: what varies is how the

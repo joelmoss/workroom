@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import Observation
 import WorkroomDomain
+import WorkroomSystem
 import XCTest
 
 @testable import Workroom

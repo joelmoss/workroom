@@ -1,6 +1,4 @@
 import Foundation
-import Sentry
-import WorkroomSystem
 import os
 
 /// The environment the app hands to the processes it spawns.
@@ -24,13 +22,13 @@ import os
 /// Two views over one cache: `environment()` for user-initiated work (setup/teardown scripts get
 /// the user's real environment), `path()` for the automatic status sweep, which runs unattended
 /// and has no reason to be widened.
-enum ShellEnvironment {
+public enum ShellEnvironment {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "ShellEnvironment")
 
   // MARK: Shell
 
-  static func loginShell() -> String {
+  public static func loginShell() -> String {
     ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
   }
 
@@ -41,7 +39,7 @@ enum ShellEnvironment {
   private static let posixShells: Set<String> = ["zsh", "bash", "sh", "dash", "ksh"]
 
   /// The shell we'll actually exec: `$SHELL` when we recognise it, `/bin/sh` otherwise.
-  static func loginShellExecutable(shell: String = loginShell()) -> String {
+  public static func loginShellExecutable(shell: String = loginShell()) -> String {
     posixShells.contains((shell as NSString).lastPathComponent) ? shell : "/bin/sh"
   }
 
@@ -51,13 +49,13 @@ enum ShellEnvironment {
   /// executable and an argument list. `commandString` is for libghostty's `config.command`, which
   /// is a single shell string — `AppStore.runCommandLine` embeds the shell word mid-string and
   /// cannot use an argv. Both share one allowlist so the two paths can't drift.
-  static func loginShellInvocation(script: String, shell: String = loginShell())
+  public static func loginShellInvocation(script: String, shell: String = loginShell())
     -> (argv: (executable: String, args: [String]), commandString: String)
   {
     let isPOSIX = posixShells.contains((shell as NSString).lastPathComponent)
     let executable = loginShellExecutable(shell: shell)
     let flag = isPOSIX ? "-lic" : "-lc"
-    let q = CommandLineInstaller.shellQuoted
+    let q = PosixShell.quoted
     return (
       argv: (executable: executable, args: [flag, script]),
       commandString: "\(q(executable)) \(flag) \(q(script))"
@@ -82,7 +80,7 @@ enum ShellEnvironment {
   ///
   /// Deterministic and synchronous — no shell, no subprocess. This is the answer before the probe
   /// has run and after any probe failure, and it is on its own sufficient to resolve `psql`.
-  static func floorPath(
+  public static func floorPath(
     etcPaths: String = "/etc/paths", etcPathsD: String = "/etc/paths.d",
     inherited: String? = ProcessInfo.processInfo.environment["PATH"]
   ) -> String {
@@ -125,7 +123,7 @@ enum ShellEnvironment {
   /// Why a probe didn't produce an environment. Carried so the fallback is diagnosable — a silent
   /// degradation is indistinguishable from the bug this file fixes, which is the single most
   /// expensive failure shape available here.
-  enum ProbeFailure: String, Error {
+  public enum ProbeFailure: String, Error {
     case spawnFailed
     case timedOut
     case nonZeroExit
@@ -174,13 +172,13 @@ enum ShellEnvironment {
   /// `DispatchWorkItem` **inside** this function rather than a `withTimeout` wrapper, because
   /// `withTimeout` cannot cancel a blocking call mid-flight (see `Timeout.swift`) — the caller
   /// would resume while the wedged shell kept running, leaking a process and a thread per call.
-  static func probe(shell: String = loginShell(), timeout: TimeInterval = 3)
+  public static func probe(shell: String = loginShell(), timeout: TimeInterval = 3)
     -> Result<[String: String], ProbeFailure>
   {
     let uuid = UUID().uuidString
     let script =
-      "printf '%s' \(CommandLineInstaller.shellQuoted(uuid)); env -0; "
-      + "printf '%s' \(CommandLineInstaller.shellQuoted(uuid))"
+      "printf '%s' \(PosixShell.quoted(uuid)); env -0; "
+      + "printf '%s' \(PosixShell.quoted(uuid))"
     let invocation = loginShellInvocation(script: script, shell: shell).argv
 
     let proc = Process()
@@ -237,7 +235,7 @@ enum ShellEnvironment {
   /// Anchored on the **first** marker and the **next** one after it, not on the last pair: rc noise
   /// arrives on both sides (powerlevel10k's instant prompt before, `~/.zlogout`'s `clear` after),
   /// and last-pair matching would take the closing marker plus trailing junk as the payload.
-  static func parseProbeOutput(_ data: Data, uuid: String) -> [String: String]? {
+  public static func parseProbeOutput(_ data: Data, uuid: String) -> [String: String]? {
     guard let marker = uuid.data(using: .utf8),
       let open = data.range(of: marker),
       let close = data.range(of: marker, in: open.upperBound..<data.endIndex)
@@ -262,7 +260,9 @@ enum ShellEnvironment {
   /// probed values form the base, our own bookkeeping comes out, and the app's overrides go on
   /// **last** so no dotfile can revoke them. PATH is unioned with the floor rather than replaced,
   /// so a probe that somehow returns less than the floor can't make things worse.
-  static func merge(probed: [String: String], floor: String = floorPath()) -> [String: String] {
+  public static func merge(probed: [String: String], floor: String = floorPath()) -> [String:
+    String]
+  {
     var merged = probed
     for key in denylist { merged.removeValue(forKey: key) }
     for (key, value) in appOverrides { merged[key] = value }
@@ -283,14 +283,14 @@ enum ShellEnvironment {
   private static let state = ProbeState()
 
   /// PATH for callers that need nothing else — the automatic status sweep, VCS reads, `list`.
-  static func path() -> String {
+  public static func path() -> String {
     state.cached()?["PATH"] ?? floorPath()
   }
 
   /// The full environment, for user-initiated work whose children are the user's own code:
   /// setup and teardown scripts. Before the first successful probe this is the app's own
   /// environment with the floor's PATH.
-  static func environment() -> [String: String] {
+  public static func environment() -> [String: String] {
     if let cached = state.cached() { return cached }
     var env = ProcessInfo.processInfo.environment
     env["PATH"] = floorPath()
@@ -305,9 +305,9 @@ enum ShellEnvironment {
   /// probe that finishes after a newer one cannot overwrite the newer result.
   ///
   /// Never throws and never clears a good cache — on failure the previous value (or the floor)
-  /// stands, and the reason is logged plus breadcrumbed.
+  /// stands, and the reason is logged.
   @discardableResult
-  static func refresh(shell: String = loginShell()) async -> [String: String] {
+  public static func refresh(shell: String = loginShell()) async -> [String: String] {
     // Look-up and registration happen under ONE lock. Checking for an in-flight task and then
     // registering our own as two steps is a race the warm/await pair hits routinely: the dialog's
     // warm and Create's await both look before either has registered, and two login shells start.
@@ -341,13 +341,10 @@ enum ShellEnvironment {
   private static func report(_ reason: ProbeFailure) {
     logger.warning(
       "shell environment probe failed (\(reason.rawValue, privacy: .public)); using the PATH floor")
-    let crumb = Breadcrumb(level: .warning, category: "shell-env")
-    crumb.message = "probe failed: \(reason.rawValue)"
-    SentrySDK.addBreadcrumb(crumb)
   }
 
   /// Test seam: drop the cache and any in-flight probe.
-  static func resetForTesting() { state.reset() }
+  public static func resetForTesting() { state.reset() }
 }
 
 /// The cache behind `ShellEnvironment`, plus the single-flight bookkeeping.

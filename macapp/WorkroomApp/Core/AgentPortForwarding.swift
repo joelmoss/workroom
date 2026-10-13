@@ -1,6 +1,7 @@
 import AgentConnection
 import Darwin
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 // `Service::Forward` (`0x05`) on a wr-agent connection: a loopback TCP port on the agent's box,

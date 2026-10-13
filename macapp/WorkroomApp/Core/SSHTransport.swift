@@ -1,5 +1,6 @@
 import AgentConnection
 import Foundation
+import WorkroomSystem
 import WorkroomWire
 
 /// The ssh transport any ssh-reachable host driver shares (`ContainerHostDriver`'s containers,

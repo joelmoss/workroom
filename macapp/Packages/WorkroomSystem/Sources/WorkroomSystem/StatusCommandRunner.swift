@@ -1,16 +1,15 @@
 import Foundation
-import WorkroomSystem
 
 /// The full result of a short status command: stdout, stderr, exit code, and whether the
 /// timeout fired. Unlike `CommandRunning` (which collapses everything to `String?`), this
 /// keeps the exit code and timeout flag so `WorkroomStatusResolver` can tell "not a repo"
 /// (git exit 128) from "gh not installed" (exit 127) from "timed out" from "clean" — the
 /// distinctions the status UI's unknown/stale/absent matrix depends on.
-struct CommandResult: Sendable, Equatable {
-  let stdout: String
-  let stderr: String
-  let exitCode: Int32
-  let timedOut: Bool
+public struct CommandResult: Sendable, Equatable {
+  public let stdout: String
+  public let stderr: String
+  public let exitCode: Int32
+  public let timedOut: Bool
   /// The child was killed by a signal (`terminationReason == .uncaughtSignal`) rather than exiting
   /// normally — our own cancellation SIGKILL, our timeout's SIGTERM, an OS kill under memory
   /// pressure, a crash, or a signal delivered around sleep/wake. `exitCode` is then the **signal
@@ -24,19 +23,19 @@ struct CommandResult: Sendable, Equatable {
   /// **`timedOut` implies `signaled`.** The timeout path marks `timedOut` and then calls
   /// `terminate()` (SIGTERM), so a timed-out child sets BOTH. Every consumer must therefore test
   /// `timedOut` first, or a timeout gets misreported as a bare interruption.
-  let signaled: Bool
+  public let signaled: Bool
 
   /// `stdout` was cut at the runner's capture cap: the child wrote more than was kept, so the text can
   /// end mid-line — mid-FILENAME, for a listing. A consumer that parses it as a whole must check this
   /// first. Set by `StatusCommandRunner` and by the agent's listing reply; every other producer leaves
   /// it false, which is what a fake runner's short canned output is.
-  let stdoutTruncated: Bool
+  public let stdoutTruncated: Bool
 
   /// `/usr/bin/env` exits 127 when the command (git/gh) isn't on PATH. A REAL exit from a REAL
   /// process — env ran, tried to exec the tool, and failed to find it.
-  static let commandNotFound: Int32 = 127
+  public static let commandNotFound: Int32 = 127
   /// git exits 128 for "not a git repository" and similar fatal usage errors.
-  static let gitFatal: Int32 = 128
+  public static let gitFatal: Int32 = 128
   /// The process never ran at all — `Process.run()` itself threw, which on this runner's setup
   /// (`proc.currentDirectoryURL` set unconditionally) is dominated by one cause: the working
   /// directory vanished between when the caller decided to probe it and when this runner tried to
@@ -44,7 +43,7 @@ struct CommandResult: Sendable, Equatable {
   /// PATH, which is a completely different fact from "nothing ran." Every consumer that read 127 as
   /// "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/gh.
   /// Negative and outside 0-255, so it can never collide with a real exit code or a signal number.
-  static let launchFailed: Int32 = -1
+  public static let launchFailed: Int32 = -1
   /// The command's outcome is **unknown**: it was dispatched and we stopped listening before an
   /// answer came back. Only reachable on the agent-routed path (`AgentCommandRunner.outcomeUnknown`),
   /// where a connection loss, a client-side deadline or a cancellation ends the round trip while the
@@ -58,7 +57,7 @@ struct CommandResult: Sendable, Equatable {
   ///
   /// Negative and outside 0-255 for `launchFailed`'s reason, and distinct from it because "nothing
   /// happened" and "something may have happened" need opposite recoveries.
-  static let outcomeUnknown: Int32 = -2
+  public static let outcomeUnknown: Int32 = -2
   /// Known NOT to have happened, and nothing is wrong with the workroom: the agent (or this side of
   /// the connection) refused the request before running it — a full request pool, agent lock
   /// contention — or a commit whose staging step lost contact was never sent. Retrying is safe.
@@ -67,13 +66,13 @@ struct CommandResult: Sendable, Equatable {
   /// is no longer there", no Retry). Not any real exit code either: readers give exit 1 meaning
   /// (`rev-parse --verify -q`'s "no commit yet", `show-ref --quiet`'s "no such ref"), and a refused
   /// probe read that way would be mistaken for an answer.
-  static let refused: Int32 = -3
+  public static let refused: Int32 = -3
 
   /// Written out rather than synthesized: a `let` with an initial value is EXCLUDED from the
   /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction
   /// sites and then fail only where the runner tries to set it. Defaulted last so those sites —
   /// almost all tests, none of which care about signals — keep compiling untouched.
-  init(
+  public init(
     stdout: String, stderr: String, exitCode: Int32, timedOut: Bool, signaled: Bool = false,
     stdoutTruncated: Bool = false
   ) {
@@ -85,12 +84,12 @@ struct CommandResult: Sendable, Equatable {
     self.stdoutTruncated = stdoutTruncated
   }
 
-  var ok: Bool { exitCode == 0 && !timedOut }
+  public var ok: Bool { exitCode == 0 && !timedOut }
 }
 
 /// A seam (mirrors `CommandRunning`) so `WorkroomStatusResolver` is unit-testable without
 /// spawning real git/gh — but typed (`CommandResult`, not `String?`).
-protocol StatusCommandRunning: Sendable {
+public protocol StatusCommandRunning: Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
 
@@ -128,7 +127,7 @@ protocol StatusCommandRunning: Sendable {
 extension StatusCommandRunning {
   /// Test doubles never reach a real network, so the distinction is meaningless for them — forward
   /// and let them stay two-line stubs. Only `StatusCommandRunner` overrides this.
-  func runNetwork(
+  public func runNetwork(
     _ executable: String, _ args: [String], in directory: String,
     timeout: TimeInterval
   ) async -> CommandResult {
@@ -138,7 +137,7 @@ extension StatusCommandRunning {
   /// Same reasoning as `runNetwork`: a double that records argv doesn't care about the payload, so
   /// it stays a two-line stub. A double that DOES need to assert on stdin (the commit tests) can
   /// override this one method. Only `StatusCommandRunner` writes a real pipe.
-  func run(
+  public func run(
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
     stdin: Data?
   ) async -> CommandResult {
@@ -156,8 +155,12 @@ extension StatusCommandRunning {
 /// would let the OS pipe buffer fill, block the child on write, and deadlock until the timeout.
 /// Retained output is capped (`maxBytes`) so a pathological repo can't blow memory — the reader
 /// keeps draining past the cap (so the child never blocks) but discards the overflow.
-struct StatusCommandRunner: StatusCommandRunning, Sendable {
-  var maxBytes: Int = 4 * 1024 * 1024
+public struct StatusCommandRunner: StatusCommandRunning, Sendable {
+  public var maxBytes: Int
+
+  public init(maxBytes: Int = 4 * 1024 * 1024) {
+    self.maxBytes = maxBytes
+  }
 
   /// Auth-relevant variables forwarded from the user's shell for network commands only.
   ///
@@ -172,12 +175,12 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// hands to setup/teardown scripts): network ops now run automatically on inspector focus, and a
   /// wholesale transplant would put every variable in the user's shell — secrets included — into a
   /// child on an automatic path.
-  static let forwardedAuthKeys = [
+  public static let forwardedAuthKeys = [
     "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME",
   ]
 
   /// Variables removed for network commands so `ssh` cannot find a graphical prompt helper.
-  static let networkClearedKeys = ["SSH_ASKPASS", "DISPLAY"]
+  public static let networkClearedKeys = ["SSH_ASKPASS", "DISPLAY"]
 
   /// The environment for a network command: `base` plus forwarded auth vars, with ssh pinned to
   /// fail fast instead of asking a human.
@@ -192,7 +195,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// carries `-i <key>` or a proxy command that must survive.
   ///
   /// Pure and static so the whole policy is unit-testable without spawning anything.
-  static func networkEnvironment(base: [String: String], probed: [String: String])
+  public static func networkEnvironment(base: [String: String], probed: [String: String])
     -> [String: String]
   {
     var env = base
@@ -211,7 +214,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// The whole environment a REMOTE exec request carries: the pins that are policy, not identity.
   /// The remote agent builds everything else from the host's own environment. See
   /// `AgentCommandRunner.request` for why nothing else crosses.
-  static let remoteEnvironment = [
+  public static let remoteEnvironment = [
     "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C",
   ]
 
@@ -235,7 +238,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   ///
   /// `directory` is the working directory the child runs in, which must be a repository ROOT — see
   /// `GIT_CEILING_DIRECTORIES` below.
-  static func childEnvironment(
+  public static func childEnvironment(
     network: Bool, in directory: String,
     inherited: [String: String] = ProcessInfo.processInfo.environment
   ) -> [String: String] {
@@ -301,7 +304,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// like one. Protection for those paths rests on `isGitRepo`'s strict check instead, which
   /// `RepositoryRouter` applies before it registers or routes a folder. wr-agent applies the same
   /// rules (`ceiling_directories`).
-  static func discoveryCeiling(for directory: String) -> String? {
+  public static func discoveryCeiling(for directory: String) -> String? {
     let dir = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
     let parent = (dir as NSString).deletingLastPathComponent
     guard !parent.isEmpty, parent != dir, parent.hasPrefix("/"), !parent.contains(":") else {
@@ -310,20 +313,22 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     return parent
   }
 
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+  public func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval
+  )
     async -> CommandResult
   {
     await run(executable, args, in: directory, timeout: timeout, network: false, stdin: nil)
   }
 
-  func run(
+  public func run(
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
     stdin: Data?
   ) async -> CommandResult {
     await run(executable, args, in: directory, timeout: timeout, network: false, stdin: stdin)
   }
 
-  func runNetwork(
+  public func runNetwork(
     _ executable: String, _ args: [String], in directory: String,
     timeout: TimeInterval
   ) async -> CommandResult {

@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 
 /// The run command (issue #7): starting, restarting and respawning a workroom's run command under
 /// its supervisor, applying the supervisor's status, the run toast list and native banner (issue

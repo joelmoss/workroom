@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 
 /// Errors surfaced from running the bundled `workroom` binary.
 enum WorkroomCLIError: LocalizedError {

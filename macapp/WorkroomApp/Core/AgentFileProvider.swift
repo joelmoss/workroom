@@ -1,5 +1,6 @@
 import AgentConnection
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// `Service::File` (`0x03`) on a wr-agent connection. Everything here is the wire contract of

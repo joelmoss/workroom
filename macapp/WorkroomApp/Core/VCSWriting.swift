@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 import WorkroomVCS
 
 /// A VCS remote action queued behind a confirmation. Only a pull over a dirty working tree needs one:

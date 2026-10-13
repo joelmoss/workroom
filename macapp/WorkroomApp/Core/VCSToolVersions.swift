@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 
 /// Whether the `git` binary on PATH is new enough for the VCS remote actions (fetch/push/pull) to
 /// work at all.

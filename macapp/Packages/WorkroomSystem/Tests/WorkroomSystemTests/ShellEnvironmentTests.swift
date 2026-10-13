@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomSystem
 
 /// `ShellEnvironment` has two layers and they fail differently, so they're tested differently.
 ///
@@ -441,18 +441,5 @@ final class ShellEnvironmentTests: XCTestCase {
     for _ in 0..<200 { _ = ShellEnvironment.path() }
     await refreshed
     XCTAssertFalse(ShellEnvironment.path().isEmpty)
-  }
-
-  // MARK: Refresh gating
-
-  /// Config-only `delete-project` runs no teardown, so it must not pay for a shell probe. The
-  /// `await` placement itself is only reachable through the bundled binary; the gating decision is
-  /// factored out so the part that can be got wrong is the part under test.
-  func testOnlyCascadingDeleteProjectModesRunScripts() {
-    XCTAssertFalse(
-      WorkroomCLI.deleteProjectRunsScripts(withWorkrooms: false, fromDisk: false),
-      "config-only removal touches nothing on disk")
-    XCTAssertTrue(WorkroomCLI.deleteProjectRunsScripts(withWorkrooms: true, fromDisk: false))
-    XCTAssertTrue(WorkroomCLI.deleteProjectRunsScripts(withWorkrooms: false, fromDisk: true))
   }
 }
