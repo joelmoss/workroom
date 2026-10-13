@@ -278,6 +278,19 @@ final class RemoteSetupTests: XCTestCase {
     await finishing.value
     XCTAssertEqual(unreadable.account, .needsUpdate)
     XCTAssertFalse(unreadable.isReady)
+
+    // Or leaves none where Workroom looks.
+    boxd.account = .signedOut(nil)
+    boxd.commands["signIn"] = nil
+    let missing = boxd.setup()
+    await missing.refresh()
+    let signing = Task { await missing.signIn() }
+    for _ in 0..<100 where missing.account != .signingIn {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    boxd.command("signIn").finish(0)
+    await signing.value
+    XCTAssertEqual(missing.account, .needsUpdate)
   }
 
   // Value: protects=an installer that exits 0 but leaves no boxd isn't taken for installed, and a

@@ -249,8 +249,8 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     do {
       return try decode(Account.self, await cli(["auth"]), "the signed-in account")
     } catch let failure as CLIFailure {
-      throw HostDriverError.provisioning(
-        "\(failure.localizedDescription). Sign in with `boxd auth login`.")
+      let advice = failure.said == Self.unreadableSignIn ? "" : " Sign in with `boxd auth login`."
+      throw HostDriverError.provisioning("\(failure.localizedDescription).\(advice)")
     }
   }
 
@@ -373,9 +373,11 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// machines it makes (measured), so the runner strips an inherited one too.
   private func cli(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
     let command = arguments.prefix(2).joined(separator: " ")
-    guard case .token = Self.credential(home: configuration.home) else {
-      throw CLIFailure(
-        command: command, said: "not signed in to boxd", answered: true)
+    switch Self.credential(home: configuration.home) {
+    case .token: break
+    case .none: throw CLIFailure(command: command, said: "not signed in to boxd", answered: true)
+    case .unreadable:
+      throw CLIFailure(command: command, said: Self.unreadableSignIn, answered: true)
     }
     let result = await runner.run(
       configuration.cli.path, arguments + ["--json"], in: configuration.home.path,
@@ -403,6 +405,12 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     case unreadable
     case token(String)
   }
+
+  /// Why boxd wasn't run with a sign-in Workroom can't read. A truncated file is fixed by signing in
+  /// again; a format boxd has changed to needs a Workroom that reads it.
+  static let unreadableSignIn =
+    "Workroom can't read boxd's sign-in. If signing in again with `boxd auth login` doesn't fix "
+    + "it, boxd has changed how it keeps it and Workroom needs an update"
 
   /// Where boxd keeps its sign-in, under the home it runs with.
   public static func credentialsFile(home: URL) -> URL {

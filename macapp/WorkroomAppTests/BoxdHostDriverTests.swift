@@ -427,6 +427,9 @@ final class BoxdHostDriverTests: XCTestCase {
         XCTFail("\(label): a create went ahead signed out")
       } catch HostDriverError.provisioning(let detail) {
         XCTAssertTrue(detail.contains("boxd auth login"), "\(label): \(detail)")
+        // A sign-in Workroom can't read may be a format boxd has changed: signing in won't fix it.
+        XCTAssertEqual(
+          detail.contains("needs an update"), credentials != nil, "\(label): \(detail)")
       }
       XCTAssertEqual(cli.arguments, [], "\(label): boxd ran signed out")
     }
