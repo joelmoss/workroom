@@ -1,5 +1,6 @@
 import AgentConnection
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 import os
 

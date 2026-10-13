@@ -1,5 +1,6 @@
 import AgentConnection
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 
 /// Forwards `StatusCommandRunning` calls to wr-agent's exec service instead of spawning `git`

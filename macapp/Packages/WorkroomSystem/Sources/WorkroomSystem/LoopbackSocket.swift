@@ -4,7 +4,7 @@ import Foundation
 /// An ephemeral TCP listener on 127.0.0.1, close-on-exec: nothing off this Mac can reach it, and no
 /// process this app spawns inherits it. Shared by the port forwards, the credential relay and the
 /// container port probe.
-enum LoopbackSocket {
+public enum LoopbackSocket {
   /// The listening descriptor and the port it was given, or nil with `errno` set (nothing left
   /// open).
   ///
@@ -17,7 +17,7 @@ enum LoopbackSocket {
   /// process and no owner's slot: each owner still caps what it takes. A burst past the cap is still
   /// reset. A deep queue is also a long line: an owner must not serve it one slow client at a time
   /// (`LoopbackListener.callback` reads them all at once).
-  static func listen() -> (descriptor: Int32, port: UInt16)? {
+  public static func listen() -> (descriptor: Int32, port: UInt16)? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
@@ -51,7 +51,7 @@ enum LoopbackSocket {
   /// `SO_NOSIGPIPE` from the start: a write to a peer that has reset would otherwise raise SIGPIPE
   /// and end the process. Set before `connect`, so it holds even for a peer that resets at once,
   /// when setting it afterwards fails (`PortForward.prepare`).
-  static func connect(port: UInt16, timeout: TimeInterval) -> Int32? {
+  public static func connect(port: UInt16, timeout: TimeInterval) -> Int32? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)

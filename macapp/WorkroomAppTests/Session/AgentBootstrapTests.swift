@@ -1,5 +1,6 @@
 import AgentConnection
 import Defaults
+import WorkroomSystem
 import WorkroomVCS
 import XCTest
 

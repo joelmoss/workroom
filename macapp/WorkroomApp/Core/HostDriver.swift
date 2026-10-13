@@ -93,13 +93,6 @@ enum HostSetup {
   }
 }
 
-enum PosixShell {
-  /// One POSIX shell word, whatever `text` holds.
-  static func quoted(_ text: String) -> String {
-    "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
-  }
-}
-
 /// A driver whose hosts a terminal pane can attach to.
 ///
 /// Not a fifth `HostDriver` method, and not `openStream`: a pane is a process libghostty spawns and

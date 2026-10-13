@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 
 /// Which agent CLI backs a diagnosis (issue #49). Capabilities differ per decision X1:
 /// - `.claude` can run a **true no-tools** inline diagnosis (`--allowed-tools none --permission-mode

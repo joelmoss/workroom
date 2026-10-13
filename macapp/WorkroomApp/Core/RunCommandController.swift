@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 
 /// A window's run commands (issue #7): each target's run state and outcome, the run toast's
 /// dismissal bookkeeping, the supervisor's pid, status and session files, and the graceful

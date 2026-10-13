@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import WorkroomDomain
+import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire
 

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomSystem
 
 /// Direct tests of the real `StatusCommandRunner` against real shell tools (no git repo): the
 /// concurrent drain, the byte cap, the timeout→terminate path, and the launch-failure path — the
