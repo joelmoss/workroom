@@ -200,11 +200,14 @@ GhosttyKit the app links — see the comment in `project.yml`.
 
 Workroom gives a remote provider's host no git credential (ADR 0049): a boxd machine uses the
 user's boxd `git` integration, and an exe.dev VM an exe.dev GitHub integration per repository, which
+`ExeDevHostDriver.grantGitHub` adds before the VM when none names the repository. The integration
 answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
 `Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
 that fails says the provider's fix (`RemoteWorkrooms.Place.credentialHint`). A local container's git
 asks the Mac's own `gh` through `CredentialRelay` (#309), whose agent side is `wr-agent credential`
-(`vcs/crates/wr-agent/src/credential.rs`).
+(`vcs/crates/wr-agent/src/credential.rs`). A new user's first exe.dev create walks them through
+exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
+`make app-run-exedev-fresh`.
 
 ## boxd driver (#256)
 

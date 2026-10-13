@@ -259,8 +259,6 @@ extension AppStore {
     let row = RemoteCreateRow()
     defer { endRemoteCreate(in: project.path, row: row) }
     do {
-      let key = try await RemoteHosts.shared.key(for: place)
-      let (driver, environment) = try RemoteHosts.shared.environment(key)
       // gh first, as it knows which remote is GitHub's; without it (not installed, or signed out,
       // which a remote provider's workroom doesn't need) origin says (#260).
       let resolver = WorkroomStatusResolver()
@@ -297,6 +295,18 @@ extension AppStore {
           startBranch = branch
         }
       }
+      // After the project's own checks, so nobody signs up or picks a plan for a project exe.dev
+      // can't take. The row's plain spinner covers it: its step circle is the machine's own work.
+      if place == .exeDev,
+        let setup = await ExeDevSetup.needed(
+          driver: ExeDevHostDriver(configuration: .init(), directory: RemoteHosts.hosts))
+      {
+        pendingExeDevSetup = PendingExeDevSetup(
+          project: project, splitAnchor: splitAnchor, setup: setup)
+        return
+      }
+      let key = try await RemoteHosts.shared.key(for: place)
+      let (driver, environment) = try RemoteHosts.shared.environment(key)
       let cloneURL = RemoteWorkrooms.cloneURL(
         for: repository, origin: await resolver.originURL(in: project.path))
       let path = project.path

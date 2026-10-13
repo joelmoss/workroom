@@ -71,8 +71,9 @@ enum RemoteWorkrooms {
           + "integration. Connect it with `boxd manage integrations connect git`."
       case .exeDev:
         "If GitHub refused the clone: an exe.dev VM reaches a GitHub repository through an exe.dev "
-          + "integration for it. Add one with `ssh exe.dev integrations add github --name <name> "
-          + "--repository <owner/repo> --act-as-user --attach auto:all`."
+          + "integration for it, which Workroom adds. Check that GitHub is still connected at "
+          + "https://exe.dev/integrations#github, and that `ssh exe.dev integrations list` shows the "
+          + "repository attached to auto:all."
       }
     }
   }
@@ -318,6 +319,8 @@ enum RemoteWorkrooms {
     environment: RemoteProvisioning.Environment, recorder: Recorder,
     pendingIn: URL? = RemoteHosts.pendingIn
   ) async throws -> Created {
+    // Before anything is made or recorded: a repository the provider can't reach fails at once.
+    try await environment.grantRepository?(repository)
     let recorder = recorder.forgettingPending(in: pendingIn)
     let origin = "\(repository.owner)/\(repository.name)"
     let path = clonePath(for: repository, on: key)
@@ -928,7 +931,13 @@ final class RemoteHosts: @unchecked Sendable {
     let environment = RemoteProvisioning.Environment(
       driver: driver, agentSocket: driver.agentSocket,
       gitHubToken: key.isRemoteProvider ? nil : CredentialRelay.gitHubToken,
-      credentialHint: key.place.credentialHint)
+      credentialHint: key.place.credentialHint,
+      grantRepository: (driver as? ExeDevHostDriver).map { exeDev in
+        { @Sendable (repository: GitHubRepository) async throws in
+          try await exeDev.grantGitHub(
+            host: repository.host, owner: repository.owner, name: repository.name)
+        }
+      })
     return (driver, environment)
   }
 

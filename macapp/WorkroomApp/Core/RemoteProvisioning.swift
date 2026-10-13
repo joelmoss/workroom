@@ -28,6 +28,9 @@ enum RemoteProvisioning {
     /// What to tell the user when the clone fails, where the provider gives the host its GitHub
     /// access (`RemoteWorkrooms.Place.credentialHint`).
     var credentialHint: String?
+    /// Gives the provider's hosts a repository before the first is made, where Workroom can
+    /// (exe.dev's GitHub integration), or nil where it can't or needn't.
+    var grantRepository: (@Sendable (GitHubRepository) async throws -> Void)?
     /// A connection to the agent on a host, bootstrapping one there first.
     var connect: @Sendable (HostID) async throws -> AgentVCSConnection
 
@@ -35,12 +38,14 @@ enum RemoteProvisioning {
       driver: any HostDriver, agentSocket: String,
       gitHubToken: (@Sendable () async throws -> String)? = nil,
       credentialHint: String? = nil,
+      grantRepository: (@Sendable (GitHubRepository) async throws -> Void)? = nil,
       connect: (@Sendable (HostID) async throws -> AgentVCSConnection)? = nil
     ) {
       self.driver = driver
       self.agentSocket = agentSocket
       self.gitHubToken = gitHubToken
       self.credentialHint = credentialHint
+      self.grantRepository = grantRepository
       self.connect =
         connect ?? { host in
           try await AgentBootstrap.connect(host: host, driver: driver, socket: agentSocket)

@@ -1,4 +1,5 @@
 import AgentConnection
+import CryptoKit
 import HostDrivers
 import WorkroomSystem
 import WorkroomVCS
@@ -87,7 +88,9 @@ final class ExeDevHostDriverTests: XCTestCase {
           stdout: "", stderr: "exe.dev: Permission denied (publickey,keyboard-interactive).\n",
           exitCode: 255, timedOut: false)
       }
-      if command == "whoami" { return ExeDevHostDriverTests.ok(#"{"email":"\#(email)"}"#) }
+      if command == "whoami" {
+        return answers[command] ?? ExeDevHostDriverTests.ok(#"{"email":"\#(email)"}"#)
+      }
       // A rollback removes a VM the stub never made: not found, as exe.dev says it.
       if command == "rm", answers[command] == nil {
         let name = args[lobby + 2]
@@ -95,7 +98,9 @@ final class ExeDevHostDriverTests: XCTestCase {
           #"{"error":"VM \"\#(name)\" not found"}"# + "\n"
             + #"{"deleted":[],"failed":["\#(name)"]}"#)
       }
-      return answers[command]
+      // A command with subcommands is answered by both words first: `integrations list`.
+      let subcommand = args.indices.contains(lobby + 2) ? "\(command) \(args[lobby + 2])" : command
+      return answers[subcommand] ?? answers[command]
         ?? CommandResult(
           stdout: #"{"error":"unexpected"}"#, stderr: "", exitCode: 1, timedOut: false)
     }
@@ -160,10 +165,10 @@ final class ExeDevHostDriverTests: XCTestCase {
     do {
       _ = try await driver(exe).create()
       XCTFail("created without signing in")
-    } catch HostDriverError.provisioning(let detail) {
-      XCTAssertTrue(detail.contains("Permission denied"), detail)
-      XCTAssertTrue(detail.contains("Run `ssh exe.dev`"), detail)
-      XCTAssertTrue(detail.contains(ExeDevHostDriver.gatewayFingerprint), detail)
+    } catch let required as ExeDevHostDriver.SignInRequired {
+      XCTAssertTrue(required.said.contains("Permission denied"), required.said)
+      XCTAssertTrue(required.said.contains("Run `ssh exe.dev`"), required.said)
+      XCTAssertTrue(required.said.contains(ExeDevHostDriver.gatewayFingerprint), required.said)
     }
     XCTAssertEqual(exe.commands, [], "a command ran without signing in")
   }
@@ -188,6 +193,386 @@ final class ExeDevHostDriverTests: XCTestCase {
       }
     }
     XCTAssertEqual(exe.commands, [], "a change ran in another account")
+  }
+
+  /// A repository's first exe.dev create adds its GitHub integration, acting as the user and
+  /// attached to every VM; one an integration already names, in any case, adds nothing; and one
+  /// on another host than github.com is left to the clone.
+  func testACreateAddsTheRepositorysGitHubIntegrationOnce() async throws {
+    let none = StubExeDev([
+      "integrations list": Self.ok(#"[{"type":"llm","config":{"providers":{}},"name":"llm"}]"#),
+      "integrations add": Self.ok(""),
+    ])
+    try await driver(none).grantGitHub(host: "github.com", owner: "Joel", name: "my.app")
+    XCTAssertEqual(
+      none.arguments(of: "integrations"),
+      [
+        "add", "github", "--name", ExeDevHostDriver.integrationName(owner: "Joel", name: "my.app"),
+        "--repository", "Joel/my.app", "--act-as-user", "--attach", "auto:all", "--json",
+      ])
+
+    let named = StubExeDev([
+      "integrations list": Self.ok(
+        #"[{"type":"github","attachments":["auto:all"],"config":{"repositories":["joel/MY.app"],"act_as_user":true},"name":"mine"}]"#
+      )
+    ])
+    try await driver(named).grantGitHub(host: "github.com", owner: "Joel", name: "my.app")
+    XCTAssertEqual(named.commands, ["integrations"], "added one already there")
+
+    // One a new VM can't use (attached to one VM, or pushing as exe.dev's App) gets one beside it.
+    for unusable in [
+      #"[{"type":"github","attachments":["vm:old"],"config":{"repositories":["Joel/my.app"],"act_as_user":true}}]"#,
+      #"[{"type":"github","attachments":["auto:all"],"config":{"repositories":["Joel/my.app"]}}]"#,
+    ] {
+      let exe = StubExeDev([
+        "integrations list": Self.ok(unusable), "integrations add": Self.ok(""),
+      ])
+      try await driver(exe).grantGitHub(host: "github.com", owner: "Joel", name: "my.app")
+      XCTAssertEqual(exe.arguments(of: "integrations")?.first, "add", unusable)
+    }
+
+    let elsewhere = StubExeDev([:])
+    try await driver(elsewhere).grantGitHub(host: "ghe.acme.com", owner: "o", name: "r")
+    XCTAssertEqual(elsewhere.commands, [])
+  }
+
+  /// A repository exe.dev won't add an integration for (its owner hasn't installed exe.dev's
+  /// GitHub App, as for a public upstream) is left to the clone: exe.dev serves public ones anyway.
+  func testARepositoryExeDevWontGrantIsLeftToTheClone() async throws {
+    let exe = StubExeDev([
+      "integrations list": Self.ok("[]"),
+      "integrations add": CommandResult(
+        stdout: #"{"error":"no GitHub App installed on \"rails\"; connected: joelmoss."}"#,
+        stderr: "", exitCode: 1, timedOut: false),
+    ])
+    try await driver(exe).grantGitHub(host: "github.com", owner: "rails", name: "rails")
+    XCTAssertEqual(exe.commands, ["integrations", "integrations"], "listed, then tried to add")
+  }
+
+  /// An integration name is exe.dev's form (lowercase letters, digits and hyphens, 63 at most),
+  /// and repositories the rest maps alike still get names of their own.
+  func testAnIntegrationNameIsOneExeDevTakesAndNoOtherRepositorysName() throws {
+    func name(_ owner: String, _ repo: String) -> String {
+      ExeDevHostDriver.integrationName(owner: owner, name: repo)
+    }
+    let long = name("o", String(repeating: "a", count: 90) + "_b")
+    XCTAssertLessThanOrEqual(long.count, 63)
+    for made in [long, name("Joel", "my.app"), name("joel", ".github")] {
+      XCTAssertNil(made.range(of: "[^a-z0-9-]", options: .regularExpression), made)
+      XCTAssertFalse(made.contains("--"), made)
+      XCTAssertNotNil(
+        made.range(of: "^workroom-.+-[0-9a-f]{8}$", options: .regularExpression), made)
+    }
+    XCTAssertNotEqual(name("acme", "my.app"), name("acme", "my-app"))
+    XCTAssertNotEqual(name("a-b", "c"), name("a", "b-c"))
+    XCTAssertNotEqual(
+      name("o", String(repeating: "a", count: 90) + "1"),
+      name("o", String(repeating: "a", count: 90) + "2"))
+    XCTAssertEqual(name("Joel", "My.App"), name("joel", "my.app"), "GitHub ignores case")
+  }
+
+  /// exe.dev's gateway key is appended on a line of its own, whatever the file ends with, and a
+  /// missing file and directory are made.
+  func testTheGatewayKeyGoesOnALineOfItsOwn() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    let fresh = root.appendingPathComponent("ssh/known_hosts")
+    try ExeDevHostDriver.appendKnownHost("exe.dev ssh-rsa KEY", to: fresh)
+    XCTAssertEqual(try String(contentsOf: fresh, encoding: .utf8), "exe.dev ssh-rsa KEY\n")
+    for existing in ["other ssh-rsa A", "other ssh-rsa A\n"] {
+      let file = root.appendingPathComponent(UUID().uuidString)
+      try Data(existing.utf8).write(to: file)
+      try ExeDevHostDriver.appendKnownHost("exe.dev ssh-rsa KEY", to: file)
+      XCTAssertEqual(
+        try String(contentsOf: file, encoding: .utf8), "other ssh-rsa A\nexe.dev ssh-rsa KEY\n",
+        existing)
+    }
+  }
+
+  /// A scan that reached no key is told apart from one whose key doesn't match, so a user behind a
+  /// proxy isn't told exe.dev's key may be forged.
+  func testAnUnreachableScanIsNotAMismatch() {
+    XCTAssertFalse(ExeDevHostDriver.hasScannedKey(""))
+    XCTAssertFalse(ExeDevHostDriver.hasScannedKey("# exe.dev:22 SSH-2.0\n"))
+    XCTAssertTrue(ExeDevHostDriver.hasScannedKey("exe.dev ssh-rsa AAAA\n"))
+  }
+
+  /// A new key is offered only when ssh would use it: no identity or agent of the user's own in
+  /// their config, and none of ssh's default keys there yet. One already there is never replaced.
+  func testANewKeyIsOfferedOnlyWhenSshWouldUseIt() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let defaults = ExeDevHostDriver.defaultKeyNames.map { "identityfile \(dir.path)/\($0)" }
+      .joined(separator: "\n")
+    XCTAssertTrue(ExeDevHostDriver.mayCreateDefaultKey(resolved: defaults, in: dir))
+    XCTAssertFalse(
+      ExeDevHostDriver.mayCreateDefaultKey(
+        resolved: "identityfile ~/.ssh/work_key\n" + defaults, in: dir), "the user's own key")
+    XCTAssertFalse(
+      ExeDevHostDriver.mayCreateDefaultKey(
+        resolved: defaults + "\nidentityagent ~/1password/agent.sock", in: dir), "an agent")
+
+    let key = dir.appendingPathComponent("id_ed25519")
+    try Data("PRIVATE".utf8).write(to: key)
+    XCTAssertFalse(ExeDevHostDriver.mayCreateDefaultKey(resolved: defaults, in: dir))
+    // StubExeDev fails any command run outside ssh's own runner, so ssh-keygen never runs here.
+    try await driver(StubExeDev([:])).createDefaultKey(in: dir)
+    XCTAssertEqual(try Data(contentsOf: key), Data("PRIVATE".utf8))
+  }
+
+  /// A sign-up says when exe.dev sent its link, ends when its connection does, and says ssh's own
+  /// words when it never got as far as exe.dev.
+  func testASignUpSaysWhatExeDevOrSshSaid() async throws {
+    func session(_ script: String) throws -> ExeDevHostDriver.SignUp {
+      ExeDevHostDriver.SignUp(
+        stream: try HostStream.spawn(
+          URL(fileURLWithPath: "/bin/sh"), ["-c", script], environment: [:],
+          handshakeTimeout: 5, purpose: .connection))
+    }
+    let exeDev = try session(
+      #"printf 'Please enter your email address: '; read e; printf 'Verification email sent to: %s\nWaiting for verification...\n' "$e"; sleep 0.2"#
+    )
+    let sent = await exeDev.submit("me@x.dev")
+    XCTAssertEqual(sent, .sent)
+    await exeDev.waitForEnd()
+
+    let refused = try session(
+      "echo 'ssh: connect to host exe.dev port 22: Connection refused' >&2; exit 255")
+    let said = await refused.submit("me@x.dev")
+    XCTAssertEqual(said, .said("ssh: connect to host exe.dev port 22: Connection refused"))
+  }
+
+  /// An account already ready goes straight to its create, checked once a launch; one that isn't
+  /// gets the setup, already read from the account.
+  @MainActor
+  func testOnlyAnAccountNotYetReadyHoldsTheCreate() async throws {
+    ExeDevSetup.confirmedThisLaunch = false
+    defer { ExeDevSetup.confirmedThisLaunch = false }
+    let ready = StubExeDev([
+      "billing plan": Self.ok(#"{"max_vms":5}"#), "integrations setup": Self.ok("  me ✓"),
+    ])
+    let none = await ExeDevSetup.needed(driver: driver(ready))
+    XCTAssertNil(none)
+    XCTAssertTrue(ExeDevSetup.confirmedThisLaunch)
+    let unchecked = StubExeDev([:])
+    let again = await ExeDevSetup.needed(driver: driver(unchecked))
+    XCTAssertNil(again)
+    XCTAssertEqual(unchecked.commands, [], "checked again in the same launch")
+
+    ExeDevSetup.confirmedThisLaunch = false
+    let unpaid = StubExeDev([
+      "billing plan": Self.ok(#"{"max_vms":0}"#), "integrations setup": Self.ok("  me ✓"),
+    ])
+    let setup = await ExeDevSetup.needed(driver: driver(unpaid))
+    XCTAssertEqual(setup?.plan, .needed)
+    XCTAssertFalse(ExeDevSetup.confirmedThisLaunch)
+  }
+
+  /// A check that fails says so under its step, rather than reading as a step not done; and a
+  /// link that answers after the sheet is gone opens nothing.
+  @MainActor
+  func testAFailedCheckSaysSoAndACancelledSheetOpensNothing() async throws {
+    var opened: [URL] = []
+    let exe = StubExeDev(
+      [
+        "billing plan": CommandResult(
+          stdout: #"{"error":"billing is down"}"#, stderr: "", exitCode: 1, timedOut: false),
+        "integrations setup": Self.ok("  me ✓"),
+        "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
+      ])
+    let setup = ExeDevSetup(driver: driver(exe), open: { opened.append($0) })
+    await setup.refresh()
+    XCTAssertEqual(setup.plan, .needed)
+    XCTAssertTrue(setup.planError?.contains("billing is down") == true, "\(setup.planError ?? "")")
+
+    // Check Again keeps a step the user is still finishing waiting, rather than "needed" again.
+    let unpaid = ExeDevSetup(
+      driver: driver(
+        StubExeDev([
+          "billing plan": Self.ok(#"{"max_vms":0}"#), "integrations setup": Self.ok("  me ✓"),
+          "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
+        ])),
+      open: { _ in })
+    await unpaid.refresh()
+    await unpaid.choosePlan()
+    XCTAssertEqual(unpaid.plan, .waiting)
+    await unpaid.checkAgain()
+    XCTAssertEqual(unpaid.plan, .waiting)
+    XCTAssertEqual(unpaid.account, .done("me@x.dev"))
+    unpaid.cancel()
+    setup.cancel()
+    await setup.choosePlan()
+    XCTAssertEqual(opened, [])
+    XCTAssertNotEqual(setup.plan, .waiting)
+  }
+
+  /// A key exe.dev doesn't know yet is answered in plain text on stdout, exit 1 (spike): that, like
+  /// ssh's own refusal, is a sign-in the user finishes at a terminal, not a failure to report.
+  func testAnUnregisteredKeyIsASignInToFinish() async throws {
+    let exe = StubExeDev([
+      "whoami": CommandResult(
+        stdout: "Please complete registration by running: ssh exe.dev\r\n", stderr: "",
+        exitCode: 1, timedOut: false)
+    ])
+    do {
+      _ = try await driver(exe).signedIn()
+      XCTFail("signed in with a key exe.dev doesn't know")
+    } catch let required as ExeDevHostDriver.SignInRequired {
+      XCTAssertEqual(required.said, "Please complete registration by running: ssh exe.dev")
+    }
+  }
+
+  /// GitHub is connected when `--verify` ticks an account, and not otherwise.
+  func testGitHubIsConnectedWhenVerifyTicksAnAccount() async throws {
+    for (answer, connected) in [
+      (Self.ok("  joelmoss ✓"), true),
+      (Self.ok("No GitHub accounts connected."), false),
+      (CommandResult(stdout: "", stderr: "error", exitCode: 1, timedOut: false), false),
+    ] {
+      let exe = StubExeDev(["integrations setup": answer])
+      let result = try await driver(exe).gitHubConnected()
+      XCTAssertEqual(result, connected, answer.stdout)
+      XCTAssertEqual(exe.arguments(of: "integrations"), ["setup", "github", "--verify"])
+    }
+  }
+
+  /// `whoami` tells a signed-in account from each thing a new user's ssh still lacks, as exe.dev
+  /// and ssh answer them (spike, 2026-10-12).
+  func testWhoamiSaysWhatANewUserStillLacks() {
+    func result(_ stdout: String, _ stderr: String = "", exit: Int32) -> CommandResult {
+      CommandResult(stdout: stdout, stderr: stderr, exitCode: exit, timedOut: false)
+    }
+    typealias Account = ExeDevHostDriver.Account
+    let cases: [(CommandResult, Account)] = [
+      (result(#"{"email":"me@x.dev"}"#, exit: 0), .signedIn("me@x.dev")),
+      (result("Please complete registration by running: ssh exe.dev\r\n", exit: 1), .needsSignUp),
+      (result("", "Host key verification failed.\n", exit: 255), .unknownHostKey),
+      (
+        result("", "exedev@exe.dev: Permission denied (publickey).\n", exit: 255),
+        .noUsableKey("exedev@exe.dev: Permission denied (publickey).")
+      ),
+      (result(#"{"error":"down"}"#, exit: 1), .failed("down")),
+    ]
+    for (answer, expected) in cases {
+      XCTAssertEqual(
+        ExeDevHostDriver.account(from: answer), expected, answer.stdout + answer.stderr)
+    }
+  }
+
+  /// exe.dev's gateway key is trusted only when its fingerprint is the published one, and the line
+  /// added names `exe.dev`, as the driver's `HostKeyAlias` and a plain `ssh exe.dev` look it up.
+  func testOnlyTheGatewayKeyWithThePublishedFingerprintIsTrusted() throws {
+    let blob = Data("not exe.dev's key".utf8).base64EncodedString()
+    let scan = "# exe.dev:22 SSH-2.0\nexe.dev ssh-rsa \(blob)\n"
+    XCTAssertNil(
+      ExeDevHostDriver.verifiedGatewayKey(in: scan), "trusted a key that isn't exe.dev's")
+    let digest = Data(SHA256.hash(data: try XCTUnwrap(Data(base64Encoded: blob))))
+      .base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "="))
+    XCTAssertEqual(
+      ExeDevHostDriver.verifiedGatewayKey(in: scan, fingerprint: "SHA256:\(digest)"),
+      "exe.dev ssh-rsa \(blob)")
+  }
+
+  /// The key goes in the first known_hosts file the user's ssh reads, `~` expanded.
+  func testTheKnownHostsFileIsTheFirstSshReads() {
+    XCTAssertEqual(
+      ExeDevHostDriver.knownHostsFile(
+        in: "user exedev\nuserknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts2\n"),
+      NSHomeDirectory() + "/.ssh/known_hosts")
+    XCTAssertNil(ExeDevHostDriver.knownHostsFile(in: "user exedev\n"))
+  }
+
+  /// A sign-in link lands on its page with the fragment intact (spike: `/integrations#github`).
+  func testASignInLinkRedirectsToItsPage() {
+    XCTAssertEqual(
+      ExeDevHostDriver.url(
+        "https://exe.dev/auth/verify?token=T", redirectingTo: "/integrations#github")?
+        .absoluteString,
+      "https://exe.dev/auth/verify?token=T&redirect=%2Fintegrations%23github")
+  }
+
+  /// What exe.dev said to an email, without its colours or the prompt it asks again with.
+  func testASignUpRefusalIsExeDevsLastWords() {
+    XCTAssertEqual(
+      ExeDevHostDriver.SignUp.lastWords(
+        "x@y\r\n\u{1B}[1mInvalid email address\u{1B}[0m\r\nPlease enter your email address: "),
+      "Invalid email address")
+  }
+
+  /// A plan allows VMs when its `max_vms` does: a new account's Basic plan is active with none.
+  func testAPlanAllowsVMsWhenItsMaxVMsDoes() async throws {
+    for (maxVMs, allows) in [(0, false), (5, true)] {
+      let exe = StubExeDev([
+        "billing plan": Self.ok(
+          #"{"plan":"Basic","status":"active","paid":false,"max_vms":\#(maxVMs)}"#)
+      ])
+      let result = try await driver(exe).planAllowsVMs()
+      XCTAssertEqual(result, allows)
+    }
+  }
+
+  /// A ready account goes straight to its create; a new one is asked for its email, with the
+  /// website steps after it; and a website step opens a link signed in to the account, then waits.
+  @MainActor
+  func testSetupAsksOnlyForWhatTheAccountLacks() async throws {
+    defer { ExeDevSetup.confirmedThisLaunch = false }
+    let ready = ExeDevSetup(
+      driver: driver(
+        StubExeDev([
+          "billing plan": Self.ok(#"{"max_vms":5}"#),
+          "integrations setup": Self.ok("  me ✓"),
+        ])))
+    await ready.refresh()
+    XCTAssertTrue(ready.isReady)
+
+    let new = ExeDevSetup(
+      driver: driver(
+        StubExeDev([
+          "whoami": CommandResult(
+            stdout: "Please complete registration by running: ssh exe.dev\r\n", stderr: "",
+            exitCode: 1, timedOut: false)
+        ])))
+    await new.refresh()
+    XCTAssertEqual(new.account, .needsEmail(error: nil))
+    XCTAssertFalse(new.isReady)
+
+    var opened: [URL] = []
+    let unpaid = ExeDevSetup(
+      driver: driver(
+        StubExeDev([
+          "billing plan": Self.ok(#"{"max_vms":0}"#),
+          "integrations setup": Self.ok("No GitHub accounts connected."),
+          "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
+        ])),
+      open: { opened.append($0) })
+    await unpaid.refresh()
+    XCTAssertEqual(unpaid.account, .done("me@x.dev"))
+    XCTAssertEqual([unpaid.plan, unpaid.gitHub], [.needed, .needed])
+    await unpaid.connectGitHub()
+    XCTAssertEqual(
+      opened.map(\.absoluteString),
+      ["https://exe.dev/auth/verify?token=T&redirect=%2Fintegrations%23github"])
+    XCTAssertEqual(unpaid.gitHub, .waiting)
+    unpaid.cancel()
+  }
+
+  /// A sign-up finished by hand runs the user's own `ssh exe.dev` in the sheet, with the agent the
+  /// driver's ssh uses, and the step waits on the account.
+  @MainActor
+  func testASignUpByHandRunsTheUsersOwnSSH() async {
+    let exe = StubExeDev([
+      "whoami": CommandResult(
+        stdout: "Please complete registration by running: ssh exe.dev\r\n", stderr: "",
+        exitCode: 1, timedOut: false)
+    ])
+    let setup = ExeDevSetup(driver: driver(exe))
+    await setup.refresh()
+    setup.useTerminal()
+    XCTAssertEqual(setup.account, .inTerminal)
+    XCTAssertEqual(
+      setup.signInCommand, "'/usr/bin/env' 'SSH_AUTH_SOCK=/agent.sock' '/usr/bin/ssh' 'exe.dev'")
+    setup.cancel()
   }
 
   /// A VM is made with no tag: a tag marked a base, which nothing makes any more.
