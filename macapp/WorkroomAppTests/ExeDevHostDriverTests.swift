@@ -472,6 +472,14 @@ final class ExeDevHostDriverTests: XCTestCase {
     } catch {
       XCTAssertTrue(error.localizedDescription.contains("error"), error.localizedDescription)
     }
+    // An answer in words Workroom doesn't know is no answer either, not "not connected".
+    do {
+      _ = try await driver(StubExeDev(["integrations setup": Self.ok("GitHub: linked")]))
+        .gitHubConnected()
+      XCTFail("an unknown --verify answer read as not connected")
+    } catch {
+      XCTAssertTrue(error.localizedDescription.contains("linked"), error.localizedDescription)
+    }
     for (answer, connected) in [
       (Self.ok("  joelmoss ✓"), true),
       (Self.ok("No GitHub accounts connected."), false),
