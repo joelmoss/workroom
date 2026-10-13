@@ -349,6 +349,19 @@ struct RootView: View {
         CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
           .environmentObject(store)
       }
+      // A first exe.dev create, held until the user's exe.dev account is ready.
+      .sheet(item: $store.pendingExeDevSetup) { pending in
+        ExeDevSetupSheet(
+          setup: pending.setup,
+          onCreate: {
+            store.pendingExeDevSetup = nil
+            Task {
+              await store.createRemoteWorkroom(
+                in: pending.project, place: .exeDev, splitAnchor: pending.splitAnchor)
+            }
+          },
+          onCancel: { store.pendingExeDevSetup = nil })
+      }
   }
 
   /// The edge-reveal sidebars and the foreground toast overlay — the layers drawn over the split.

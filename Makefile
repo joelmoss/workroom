@@ -12,7 +12,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
+        app-run app-run-exedev-fresh app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
         app-check remote-host-image remote-host-image-test actions-lint vcs-lint vcs-test
 
 help: ## List available targets
@@ -152,6 +152,10 @@ app-run: app-build ## Build (Debug) and launch this checkout's dev app, replacin
 	cd macapp && $(call gui_lock,shared,app-run) \
 	  sh -c 'sh Scripts/stop-dev-app.sh "$$1" && echo "Launching $$1" && open "$$1"' app-run \
 	  "$(APP_BUNDLE)"
+
+app-run-exedev-fresh: app-build ## Launch the dev app as a user exe.dev has never seen (rm -rf ~/.workroom-exedev-fresh to start over)
+	cd macapp && $(call gui_lock,shared,app-run) \
+	  sh Scripts/exedev-fresh-user.sh "$(APP_BUNDLE)"
 
 app-build: ## Build the app (Debug)
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS) $(APP_ID_FLAGS)

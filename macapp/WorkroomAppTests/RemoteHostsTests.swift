@@ -1161,6 +1161,9 @@ final class RemoteHostsTests: XCTestCase {
       let (_, creating) = try remote.environment(row.key)
       XCTAssertNotNil(creating.credentialHint, "\(row.key)")
       XCTAssertEqual(creating.credentialHint, row.key.place.credentialHint, "\(row.key)")
+      // Only exe.dev's create adds the repository's integration before the VM.
+      XCTAssertEqual(
+        creating.grantRepository != nil, row.key.place == .exeDev, "\(row.key)")
     }
   }
 
@@ -1198,7 +1201,7 @@ final class RemoteHostsTests: XCTestCase {
       RemoteWorkrooms.Place.boxd.credentialHint?.contains("boxd manage integrations connect git")
         == true)
     XCTAssertTrue(
-      RemoteWorkrooms.Place.exeDev.credentialHint?.contains("integrations add github") == true)
+      RemoteWorkrooms.Place.exeDev.credentialHint?.contains("exe.dev/integrations") == true)
   }
 
   /// After a relaunch a boxd workroom is reached without Docker: its driver is made by name, with
