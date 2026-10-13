@@ -1,4 +1,5 @@
 import AppKit
+import HostDrivers
 import Observation
 import WorkroomDomain
 import XCTest
@@ -125,6 +126,17 @@ final class ModalShortcutRoutingTests: XCTestCase {
         { $0.pendingWorkroomLabel = .init(workroom: workroom, project: project) }
       ),
       ("pendingProjectSettings", { $0.pendingProjectSettings = .init(project: project) }),
+      (
+        "pendingExeDevSetup",
+        {
+          $0.pendingExeDevSetup = PendingExeDevSetup(
+            project: project, splitAnchor: nil,
+            setup: ExeDevSetup(
+              driver: ExeDevHostDriver(
+                configuration: .init(),
+                directory: FileManager.default.temporaryDirectory)))
+        }
+      ),
       ("errorMessage", { $0.errorMessage = "boom" }),
     ]
 
