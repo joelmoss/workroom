@@ -671,6 +671,10 @@ private struct WorkroomTabChip: View {
     if !vcs.isEmpty { parts.append(vcs) }
     if let reason = target.terminalUnavailability { parts.append(reason.title.lowercased()) }
     if running { parts.append("running") }
+    // The red underline's spoken twin: a terminal here reported OSC 9;4 ERROR.
+    if terminals.isProgressFailed(forTargetID: target.id) {
+      parts.append("a command reported an error")
+    }
     if hasActivity { parts.append("unread activity") }
     return parts.joined(separator: ", ")
   }
