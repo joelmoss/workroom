@@ -225,4 +225,106 @@ final class RemoteSetupTests: XCTestCase {
     XCTAssertEqual(setup.install, .failed("x hash mismatch"))
     XCTAssertFalse(setup.isReady)
   }
+
+  // Value: protects=a sign-in or GitHub step that fails says why and stays retryable, and a step that
+  // can't start says so; fails_when=a non-zero exit with the step undone reads as a wait or as done,
+  // or a start error is swallowed; why_new=the existing boxd tests cover only success and a failed
+  // install; seam=Actions; no_claim=boxd's real wording
+  func testAStepThatFailsSaysWhyAndAStepThatCannotStartSaysSo() async throws {
+    let boxd = FakeBoxd()
+    boxd.account = .signedOut(nil)
+    boxd.commands["signIn"] = FakeCommand(lastLine: "error: sign-in timed out")
+    let setup = boxd.setup()
+    await setup.refresh()
+    let signingIn = Task { await setup.signIn() }
+    for _ in 0..<100 where setup.account != .signingIn {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    boxd.command("signIn").finish(1)
+    await signingIn.value
+    XCTAssertEqual(setup.account, .signedOut("error: sign-in timed out"))
+
+    boxd.account = .signedIn(FakeBoxd.ada)
+    boxd.gitHub = .notConnected
+    boxd.commands["connectGitHub"] = FakeCommand(lastLine: "error: denied")
+    await setup.refresh()
+    let connecting = Task { await setup.connectGitHub() }
+    for _ in 0..<100 where setup.gitHub != .connecting {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    boxd.command("connectGitHub").finish(1)
+    await connecting.value
+    XCTAssertEqual(setup.gitHub, .failed("error: denied"))
+    XCTAssertFalse(setup.isReady)
+
+    struct CannotStart: LocalizedError { var errorDescription: String? { "no such file" } }
+    var actions = boxd.actions
+    actions.signIn = { throw CannotStart() }
+    let broken = BoxdSetup(actions: actions, open: { _ in })
+    await broken.signIn()
+    XCTAssertEqual(broken.account, .failed("no such file"))
+  }
+
+  // Value: protects=an installer that exits 0 but leaves no boxd isn't taken for installed, and a
+  // launch's checks are skipped once boxd was seen ready; fails_when=install trusts the exit code
+  // alone, or needed() asks boxd again after confirmedThisLaunch; why_new=only a failed exit and
+  // the first ready check are covered; seam=Actions; no_claim=the real installer
+  func testAnInstallerThatLeavesNoBoxdFailsAndAReadyLaunchIsNotCheckedAgain() async throws {
+    BoxdSetup.confirmedThisLaunch = false
+    defer { BoxdSetup.confirmedThisLaunch = false }
+    let boxd = FakeBoxd()
+    boxd.installed = false
+    let setup = boxd.setup()
+    await setup.refresh()
+    let installing = Task { await setup.installBoxd() }
+    for _ in 0..<100 where setup.install != .installing {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    boxd.command("install").finish(0)
+    await installing.value
+    guard case .failed = setup.install else { return XCTFail("\(setup.install)") }
+
+    boxd.installed = true
+    boxd.gitHub = .notConnected
+    let pending = await BoxdSetup.needed(actions: boxd.actions)
+    XCTAssertNotNil(pending, "a user with GitHub undone skipped the setup")
+    XCTAssertFalse(BoxdSetup.confirmedThisLaunch)
+
+    BoxdSetup.confirmedThisLaunch = true
+    let asked = Box(0)
+    var actions = boxd.actions
+    actions.isInstalled = {
+      asked.value += 1
+      return false
+    }
+    let skipped = await BoxdSetup.needed(actions: actions)
+    XCTAssertNil(skipped)
+    XCTAssertEqual(asked.value, 0, "boxd was checked again after it was seen ready")
+  }
+
+  // Value: protects=starting the poll again replaces the running one, so a sheet whose user acts
+  // twice doesn't check twice as often; fails_when=start no longer cancels the poll it replaces;
+  // why_new=the poller test covers one poll, its backoff and cancel only; seam=the first and cap
+  // delays; no_claim=the 3 s / 30 s values
+  func testStartingThePollAgainReplacesTheRunningPoll() async throws {
+    let poller = SetupPoller(first: .milliseconds(10), cap: .milliseconds(10))
+    let old = Box(0)
+    let new = Box(0)
+    poller.start(while: { true }, check: { old.value += 1 })
+    poller.start(while: { true }, check: { new.value += 1 })
+    try await Task.sleep(for: .milliseconds(100))
+    poller.cancel()
+    let seen = old.value
+    XCTAssertEqual(seen, 0, "the replaced poll kept checking")
+    XCTAssertGreaterThan(new.value, 0)
+  }
+
+  // Value: protects=New Workroom offers boxd and exe.dev whatever is installed, since a create's
+  // setup installs boxd; fails_when=unavailability(of:) goes back to "not installed" for boxd;
+  // why_new=the runtime entries are tested, the provider ones were not; seam=none;
+  // no_claim=the menu rendering
+  func testBoxdAndExeDevAreNeverUnavailableBecauseTheirSetupInstallsThem() {
+    XCTAssertNil(RemoteWorkrooms.unavailability(of: .boxd))
+    XCTAssertNil(RemoteWorkrooms.unavailability(of: .exeDev))
+  }
 }
