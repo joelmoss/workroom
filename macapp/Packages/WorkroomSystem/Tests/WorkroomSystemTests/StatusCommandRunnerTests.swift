@@ -245,6 +245,15 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertEqual(r.stdout, "got=[]")
   }
 
+  /// A caller's variables reach the child, over what the runner sets itself, and PATH stays the
+  /// runner's own.
+  func testACallersEnvironmentReachesTheChildAndPathStaysPinned() async {
+    let r = await runner.run(
+      "sh", ["-c", "printf '%s|%s|%s' \"$WR_TEST_VAR\" \"$LC_ALL\" \"$PATH\""], in: tmp,
+      timeout: 5, environment: ["WR_TEST_VAR": "set", "LC_ALL": "en_GB.UTF-8"])
+    XCTAssertEqual(r.stdout, "set|en_GB.UTF-8|\(ShellEnvironment.path())")
+  }
+
   // MARK: network environment (pure)
 
   func testNetworkEnvironmentForwardsAuthVarsFromTheProbe() {
