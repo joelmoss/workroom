@@ -204,7 +204,11 @@ final class BoxdSetup: RemoteSetup {
   /// Stops the step running now, for a user who closed boxd's page instead of finishing there. Its
   /// step then reads from boxd again.
   func stop() {
-    running?.cancel()
+    let command = running
+    running = nil
+    link = nil
+    command?.cancel()
+    Task { await refresh() }
   }
 
   /// Stops the command a click started: the sheet is gone.

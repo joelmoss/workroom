@@ -185,6 +185,18 @@ final class RemoteSetupTests: XCTestCase {
     XCTAssertEqual(setup.account, .signedIn(name: "Ada", org: "Ada's default org"))
     XCTAssertEqual(setup.gitHub, .needed)
 
+    // Stop: the user closed boxd's page. The step reads from boxd again and says nothing went wrong.
+    let stopped = Task { await setup.connectGitHub() }
+    for _ in 0..<100 where setup.gitHub != .connecting {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    setup.stop()
+    await stopped.value
+    for _ in 0..<100 where setup.gitHub != .needed { try await Task.sleep(for: .milliseconds(20)) }
+    XCTAssertEqual(setup.gitHub, .needed, "a stopped step didn't read from boxd again")
+    XCTAssertTrue(boxd.command("connectGitHub").cancelled)
+    boxd.commands["connectGitHub"] = nil
+
     let connecting = Task { await setup.connectGitHub() }
     for _ in 0..<100 where setup.gitHub != .connecting {
       try await Task.sleep(for: .milliseconds(20))
