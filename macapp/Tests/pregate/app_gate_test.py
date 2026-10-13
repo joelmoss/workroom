@@ -3,9 +3,11 @@
 
 gstack-pregate only recognises JS/TS, Python, Go and Ruby files as tests, so it cannot map a Swift
 change to `make app-lint` and `make app-test` directly. Its `dependencies` map the app's Swift
-sources, tests, packages and project.yml to this file instead, and this file runs the two make
-targets: the pre-landing gate in macapp/AGENTS.md. macapp/Scripts and the run-supervisor test have
-gates of their own and are not mapped here. Not a test of its own; nothing else runs it.
+sources, tests, packages, resources and build settings to this file instead, and this file runs the
+two make targets: the pre-landing gate in macapp/AGENTS.md. A WorkroomAppUITests change gets lint
+only here, as in CI: XCUITest runs only under `make app-uitest`. macapp/Scripts and the
+run-supervisor test have gates of their own and are not mapped here. Not a test of its own;
+nothing else runs it.
 
     python3 macapp/Tests/pregate/app_gate_test.py
 
