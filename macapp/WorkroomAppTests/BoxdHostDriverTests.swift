@@ -410,14 +410,15 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertNil(timedOut, "a CLI that never answered was taken for an answer")
   }
 
-  // Value: protects=no boxd command runs without a sign-in, and the token never goes on argv;
-  // fails_when=the credential guard in cli(...) is removed or the token moves to argv;
+  // Value: protects=no boxd command runs without a sign-in, and one with a sign-in runs on it;
+  // fails_when=the credential guard in cli(...) is removed, or the token is passed to boxd;
   // why_new=the old test stubbed a CLI that fails signed out, but boxd starts its browser sign-in;
   // seam=none; no_claim=real boxd behaviour (stubbed CLI; measured by hand in the design doc)
   /// Signed out of boxd, every boxd command would start boxd's browser sign-in and wait there, so
   /// without a readable sign-in none runs: a create says how to sign in instead. With one, each
-  /// call carries its token as `BOXD_TOKEN` over any the app inherited, and never on argv.
-  func testBoxdRunsOnlyWithASignInAndItsTokenStaysOffArgv() async throws {
+  /// call runs on it, under the home that holds it, and is never handed the token: as `BOXD_TOKEN`
+  /// boxd writes no ssh stanza for a machine it makes.
+  func testBoxdRunsOnlyWithASignInAndRunsOnIt() async throws {
     for (credentials, label) in [(nil, "no sign-in"), (#"{"tok"#, "truncated"), ("{}", "no token")]
     {
       let cli = StubCLI([:])
@@ -435,8 +436,8 @@ final class BoxdHostDriverTests: XCTestCase {
     let presence = await driver(cli, home: home).presence(.remote(UUID()))
     XCTAssertEqual(presence, .awake)
     XCTAssertEqual(
-      cli.environments, [["BOXD_TOKEN": "tok_test", "HOME": home.path]],
-      "the token goes in the environment, with the home boxd signs in under")
+      cli.environments, [["HOME": home.path]],
+      "boxd runs under the home of its sign-in, and only that")
     XCTAssertFalse(
       cli.arguments.joined().contains { $0.contains("tok_test") }, "the token went on argv")
   }

@@ -359,18 +359,20 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   ///
   /// Never runs boxd without a sign-in: signed out, every boxd command that needs an account
   /// starts the browser sign-in and waits there, with or without a terminal (measured, boxd 0.2.23).
-  /// The token goes in as `BOXD_TOKEN`, which fails cleanly once it has expired, and over any
-  /// `BOXD_TOKEN` the app inherited.
+  /// With one, boxd runs on that saved sign-in, which a token boxd refuses fails cleanly ("your
+  /// saved login token is invalid or expired", no browser; measured, boxd 0.2.25). Never with the
+  /// token as `BOXD_TOKEN`: boxd takes that for an API key and then writes no ssh stanza for the
+  /// machines it makes (measured), so the runner strips an inherited one too.
   private func cli(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
     let command = arguments.prefix(2).joined(separator: " ")
-    guard case .token(let token) = Self.credential(home: configuration.home) else {
+    guard case .token = Self.credential(home: configuration.home) else {
       throw CLIFailure(
         command: command, said: "not signed in to boxd", answered: true, signedOut: true)
     }
     let result = await runner.run(
       configuration.cli.path, arguments + ["--json"], in: configuration.home.path,
       timeout: timeout,
-      environment: ["BOXD_TOKEN": token, "HOME": configuration.home.path])
+      environment: ["HOME": configuration.home.path])
     // The runner kills the CLI when the task is cancelled, and that reads as a failure.
     try Task.checkCancellation()
     guard result.ok else {

@@ -201,6 +201,17 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertTrue(commit.ok, commit.stderr)
   }
 
+  /// boxd takes an inherited `BOXD_TOKEN` over its saved sign-in, and then writes no ssh stanza for
+  /// a machine it makes, so no child inherits one.
+  func testAnInheritedBoxdTokenNeverReachesAChild() {
+    for network in [false, true] {
+      let env = StatusCommandRunner.childEnvironment(
+        network: network, in: "/a/b", inherited: ["BOXD_TOKEN": "tok", "HOME": "/h"])
+      XCTAssertNil(env["BOXD_TOKEN"], "network: \(network)")
+      XCTAssertEqual(env["HOME"], "/h")
+    }
+  }
+
   func testCeilingIsTheWorkingDirectorysParent() {
     let env = StatusCommandRunner.childEnvironment(network: false, in: "/a/b")
     XCTAssertEqual(env["GIT_CEILING_DIRECTORIES"], "/a")
