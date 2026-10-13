@@ -868,9 +868,11 @@ browser login, such as `boxd auth --json --non-interactive`. Once it exists, dro
 boxd's private `credentials.json`.
 
 **Why:** boxd 0.2.23 starts its browser login from any account command when signed out, even with
-no terminal (measured 2026-10-13). The boxd setup design avoids that by reading the private
-credentials file and passing its token as `BOXD_TOKEN`. If boxd renames the file's `token` key,
-boxd creates are blocked with "Workroom needs an update" until Workroom follows.
+no terminal (measured 2026-10-13). Workroom avoids that by running boxd only when the private
+credentials file holds a token (never passing it as `BOXD_TOKEN`, which stops boxd writing ssh
+details). If boxd renames the file's `token` key, boxd creates are blocked with "Workroom needs an
+update" until Workroom follows. If boxd moves the file, deletes fail with "not signed in to boxd"
+too, and signing in again doesn't help.
 
 **Pros:** Removes the design's only deliberate lock-out case and its dependency on a private file.
 
