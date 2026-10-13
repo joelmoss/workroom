@@ -13,6 +13,8 @@ root, not `macapp/`):
 make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
 make app-run-exedev-fresh # app-run as a user exe.dev has never seen (Scripts/exedev-fresh-user.sh);
                     # rm -rf ~/.workroom-exedev-fresh to start over
+make app-run-boxd-fresh # app-run as a user boxd has never seen (Scripts/boxd-fresh-user.sh);
+                    # rm -rf ~/.workroom-boxd-fresh to start over
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize.
                     # Ends with the run's counts + failing tests from its .xcresult (Scripts/test-summary.sh)
@@ -244,6 +246,11 @@ and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#
 holds any driver by `DriverKey` (a container runtime or a boxd org and account), a background read
 of a boxd host asks boxd first and leaves an asleep box asleep, and nothing lets go of an idle
 connection: a box an open app holds awake is the user's to free, by deleting its workroom (#380).
+Signed out, every boxd command that needs an account opens boxd's browser sign-in and waits
+there, so the driver runs boxd only with a sign-in it can read, passing the token as `BOXD_TOKEN`
+(`BoxdHostDriver.cli`). A new user's first boxd create walks them through `BoxdSetupSheet`
+(install, sign in, GitHub), on the same shell as exe.dev's (`RemoteSetupSheet`); try it as a user
+boxd has never seen with `make app-run-boxd-fresh`. See `docs/designs/boxd-first-time-setup.md`.
 See "As built (#256)", "As built (#356)" and "As built (#380)" in
 `docs/designs/remote-workrooms.md`.
 
