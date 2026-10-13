@@ -441,6 +441,7 @@ executor and a temp config — no real repo required.
 | `make` | List all targets |
 | `app-run` | Build (Debug) and relaunch the dev app |
 | `app-run-exedev-fresh` | Build (Debug) and launch the dev app as a user exe.dev has never seen, to try the exe.dev setup (`rm -rf ~/.workroom-exedev-fresh` to start over) |
+| `app-run-boxd-fresh` | Build (Debug) and launch the dev app as a user boxd has never seen, to try the boxd setup (install, sign in, GitHub) without signing your own boxd out (`rm -rf ~/.workroom-boxd-fresh` to start over) |
 | `app-build` | Build the app (Debug) |
 | `app-test` | Run `WorkroomAppTests` (unit) |
 | `app-package-test` | Run each `macapp/Packages` package's tests with `swift test` (no app host) |
