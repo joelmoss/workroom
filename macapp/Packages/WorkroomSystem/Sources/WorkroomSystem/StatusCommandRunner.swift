@@ -103,12 +103,18 @@ public protocol StatusCommandRunning: Sendable {
   ///   in `proc.arguments` would hit at spawn, before git can emit anything classifiable.
   /// - `git commit --file=-` takes the message on stdin, so no length or encoding question arises.
   ///
-  /// A per-call **environment** override is deliberately NOT added yet: its only planned consumer is
-  /// `GIT_INDEX_FILE` for temp-index commits, which is deferred, and an unused parameter is surface
-  /// nobody can test.
   func run(
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
     stdin: Data?
+  ) async -> CommandResult
+
+  /// Like `run`, with `environment` set in the child over everything `childEnvironment` gives it.
+  ///
+  /// Exists for the boxd CLI, which takes its sign-in token as `BOXD_TOKEN`: in the environment
+  /// rather than as `--token` on argv, where any process listing could read it.
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    environment: [String: String]
   ) async -> CommandResult
 
   /// Like `run`, but for a command that will touch the **network** and therefore may want to
@@ -140,6 +146,15 @@ extension StatusCommandRunning {
   public func run(
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
     stdin: Data?
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout)
+  }
+
+  /// Same reasoning again: a double that needs to see the environment (the boxd driver's tests)
+  /// overrides this one method.
+  public func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    environment: [String: String]
   ) async -> CommandResult {
     await run(executable, args, in: directory, timeout: timeout)
   }
@@ -285,7 +300,7 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
     // Removed for the NATIVE path too, not just the agent's. wr-agent already stripped them; the
     // app did not, so the two paths disagreed and the app was the unsafe one. `GIT_INDEX_FILE` is
     // on the list deliberately: its one planned consumer is temp-index commits, which will pass it
-    // per-call rather than inherit it (see `StatusCommandRunning.run(stdin:)`'s doc).
+    // per-call rather than inherit it (`StatusCommandRunning.run(environment:)`).
     for key in [
       "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
       "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -328,6 +343,15 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
     await run(executable, args, in: directory, timeout: timeout, network: false, stdin: stdin)
   }
 
+  public func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    environment: [String: String]
+  ) async -> CommandResult {
+    await run(
+      executable, args, in: directory, timeout: timeout, network: false, stdin: nil,
+      environment: environment)
+  }
+
   public func runNetwork(
     _ executable: String, _ args: [String], in directory: String,
     timeout: TimeInterval
@@ -337,7 +361,7 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
 
   private func run(
     _ executable: String, _ args: [String], in directory: String,
-    timeout: TimeInterval, network: Bool, stdin: Data?
+    timeout: TimeInterval, network: Bool, stdin: Data?, environment: [String: String] = [:]
   ) async -> CommandResult {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -345,6 +369,7 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
     proc.currentDirectoryURL = URL(fileURLWithPath: directory)
 
     proc.environment = Self.childEnvironment(network: network, in: directory)
+      .merging(environment) { $1 }
 
     let outPipe = Pipe()
     let errPipe = Pipe()
