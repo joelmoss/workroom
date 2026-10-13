@@ -295,14 +295,12 @@ extension AppStore {
           startBranch = branch
         }
       }
-      // After the project's own checks, so nobody signs up or picks a plan for a project exe.dev
-      // can't take. The row's plain spinner covers it: its step circle is the machine's own work.
-      if place == .exeDev,
-        let setup = await ExeDevSetup.needed(
-          driver: ExeDevHostDriver(configuration: .init(), directory: RemoteHosts.hosts))
-      {
-        pendingExeDevSetup = PendingExeDevSetup(
-          project: project, splitAnchor: splitAnchor, setup: setup)
+      // After the project's own checks, so nobody signs up or picks a plan for a project the
+      // provider can't take. The row's plain spinner covers it: its step circle is the machine's
+      // own work.
+      if let setup = await remoteSetupNeeded(at: place) {
+        pendingRemoteSetup = PendingRemoteSetup(
+          project: project, splitAnchor: splitAnchor, place: place, setup: setup)
         return
       }
       let key = try await RemoteHosts.shared.key(for: place)
@@ -364,6 +362,18 @@ extension AppStore {
     } catch {
       await reload()
       present(error)
+    }
+  }
+
+  /// The setup a create at `place` waits on, or nil when the user's account there is ready. Checked
+  /// once a launch per provider, so later creates go straight ahead.
+  private func remoteSetupNeeded(at place: RemoteWorkrooms.Place) async -> (any RemoteSetup)? {
+    switch place {
+    case .exeDev:
+      await ExeDevSetup.needed(
+        driver: ExeDevHostDriver(configuration: .init(), directory: RemoteHosts.hosts))
+    case .boxd, .container:
+      nil
     }
   }
 

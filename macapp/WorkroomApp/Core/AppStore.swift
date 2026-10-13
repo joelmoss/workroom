@@ -653,9 +653,9 @@ final class AppStore: ObservableObject {
     get { modals.pendingProjectSettings }
     set { modals.pendingProjectSettings = newValue }
   }
-  var pendingExeDevSetup: PendingExeDevSetup? {
-    get { modals.pendingExeDevSetup }
-    set { modals.pendingExeDevSetup = newValue }
+  var pendingRemoteSetup: PendingRemoteSetup? {
+    get { modals.pendingRemoteSetup }
+    set { modals.pendingRemoteSetup = newValue }
   }
   var pendingRemoteConfirm: PendingVCSAction? {
     get { modals.pendingRemoteConfirm }

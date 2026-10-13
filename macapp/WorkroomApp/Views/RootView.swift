@@ -349,19 +349,27 @@ struct RootView: View {
         CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
           .environmentObject(store)
       }
-      // A first exe.dev create, held until the user's exe.dev account is ready.
-      .sheet(item: $store.pendingExeDevSetup) { pending in
-        ExeDevSetupSheet(
-          setup: pending.setup,
-          onCreate: {
-            store.pendingExeDevSetup = nil
-            Task {
-              await store.createRemoteWorkroom(
-                in: pending.project, place: .exeDev, splitAnchor: pending.splitAnchor)
-            }
-          },
-          onCancel: { store.pendingExeDevSetup = nil })
+      // A first create at a remote provider, held until the user's account there is ready.
+      .sheet(item: $store.pendingRemoteSetup) { pending in
+        remoteSetupSheet(pending)
       }
+  }
+
+  /// The provider's own setup sheet for `pending`. Create Workroom carries on with the create it
+  /// held, at the same place and split.
+  @ViewBuilder
+  private func remoteSetupSheet(_ pending: PendingRemoteSetup) -> some View {
+    let create = {
+      store.pendingRemoteSetup = nil
+      Task {
+        await store.createRemoteWorkroom(
+          in: pending.project, place: pending.place, splitAnchor: pending.splitAnchor)
+      }
+    }
+    let cancel = { store.pendingRemoteSetup = nil }
+    if let setup = pending.setup as? ExeDevSetup {
+      ExeDevSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
+    }
   }
 
   /// The edge-reveal sidebars and the foreground toast overlay — the layers drawn over the split.
