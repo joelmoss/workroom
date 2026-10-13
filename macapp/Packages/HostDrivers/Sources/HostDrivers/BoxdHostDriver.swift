@@ -52,6 +52,9 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// The files the CLI writes each machine's ssh stanza and host key into.
     public var sshConfig: URL
     public var knownHosts: URL
+    /// The home the CLI runs with, which holds its sign-in (`credentialsFile`). The user's own,
+    /// except in the fresh-user harness (`make app-run-boxd-fresh`).
+    public var home: URL
 
     public init(
       cli: URL, prefix: String = "workroom", org: String? = nil, account: String? = nil,
@@ -60,7 +63,8 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       sshConfig: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
         ".ssh/config"),
       knownHosts: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-        ".ssh/known_hosts")
+        ".ssh/known_hosts"),
+      home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
       self.cli = cli
       self.prefix = prefix
@@ -70,6 +74,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       self.screens = screens
       self.sshConfig = sshConfig
       self.knownHosts = knownHosts
+      self.home = home
     }
   }
 
@@ -259,18 +264,35 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// The CLI ran and answered with its own `error:` line, as opposed to timing out or failing to
     /// run at all.
     var answered = false
+    /// Never ran: nobody is signed in to boxd, which would have started its browser sign-in.
+    var signedOut = false
     var notFound: Bool { BoxdHostDriver.isNotFound(said) }
+    /// boxd refused the token: it expired or was revoked (measured: "… is invalid or expired …"
+    /// from `auth`, "invalid or expired session" from `manage integrations list`).
+    var expired: Bool { said.contains("invalid or expired") }
     var errorDescription: String? { "boxd \(command): \(said)" }
   }
 
   /// `auth --json`, as far as the driver reads it.
-  public struct Account: Decodable, Equatable {
+  public struct Account: Decodable, Equatable, Sendable {
     public let activeOrg: String?
     public let userID: String?
+    public var displayName: String? = nil
+    public var orgs: [Org]? = nil
     public enum CodingKeys: String, CodingKey {
       case activeOrg = "active_org"
       case userID = "user_id"
+      case displayName = "display_name"
+      case orgs
     }
+
+    public struct Org: Decodable, Equatable, Sendable {
+      public let name: String?
+      public let active: Bool?
+    }
+
+    /// The active org's name (`orgs[].active`), as the setup sheet shows the signed-in account.
+    public var activeOrgName: String? { orgs?.first { $0.active == true }?.name }
 
     /// The account's id, which a new host records (#356): without it, deleting the host would skip
     /// the check that the same account is signed in, and another account's "not found" would read
@@ -334,19 +356,213 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// One CLI command with `--json`, and its stdout. A failure says the CLI's own `error:` line,
   /// without the update notice it prints to stderr besides.
+  ///
+  /// Never runs boxd without a sign-in: signed out, every boxd command that needs an account
+  /// starts the browser sign-in and waits there, with or without a terminal (measured, boxd 0.2.23).
+  /// The token goes in as `BOXD_TOKEN`, which fails cleanly once it has expired, and over any
+  /// `BOXD_TOKEN` the app inherited.
   private func cli(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
+    let command = arguments.prefix(2).joined(separator: " ")
+    guard case .token(let token) = Self.credential(home: configuration.home) else {
+      throw CLIFailure(
+        command: command, said: "not signed in to boxd", answered: true, signedOut: true)
+    }
     let result = await runner.run(
-      configuration.cli.path, arguments + ["--json"], in: NSHomeDirectory(), timeout: timeout)
+      configuration.cli.path, arguments + ["--json"], in: configuration.home.path,
+      timeout: timeout,
+      environment: ["BOXD_TOKEN": token, "HOME": configuration.home.path])
     // The runner kills the CLI when the task is cancelled, and that reads as a failure.
     try Task.checkCancellation()
     guard result.ok else {
       let line = Self.errorLine(result.stderr)
       let said =
         line ?? (result.timedOut ? "timed out after \(Int(timeout))s" : "exited \(result.exitCode)")
-      throw CLIFailure(
-        command: arguments.prefix(2).joined(separator: " "), said: said, answered: line != nil)
+      throw CLIFailure(command: command, said: said, answered: line != nil)
     }
     return result.stdout
+  }
+
+  // MARK: Sign-in
+
+  /// What boxd is signed in with: the token in `credentialsFile`, read leniently (any JSON object
+  /// with a string `token`), since the file is boxd's own and undocumented.
+  public enum Credential: Equatable, Sendable {
+    case none
+    /// There, but not one Workroom can read. boxd starts its sign-in for a truncated or unfamiliar
+    /// file too (measured), so this counts as signed out.
+    case unreadable
+    case token(String)
+  }
+
+  /// Where boxd keeps its sign-in, under the home it runs with.
+  public static func credentialsFile(home: URL) -> URL {
+    home.appendingPathComponent("Library/Application Support/boxd/credentials.json")
+  }
+
+  public static func credential(home: URL) -> Credential {
+    let file = credentialsFile(home: home)
+    guard let data = try? Data(contentsOf: file) else {
+      return FileManager.default.fileExists(atPath: file.path) ? .unreadable : .none
+    }
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let token = object["token"] as? String, !token.isEmpty
+    else { return .unreadable }
+    return .token(token)
+  }
+
+  /// Who boxd is signed in as, for the setup sheet, without ever starting boxd's own sign-in.
+  public enum AccountState: Equatable, Sendable {
+    /// Nobody, with why when there is more to say than that.
+    case signedOut(String?)
+    case signedIn(Account)
+    /// boxd couldn't be asked, or its answer couldn't be read: the create goes ahead and boxd's
+    /// own error, if any, says what's wrong.
+    case unknown(String)
+  }
+
+  /// How long a setup check waits for the CLI, as exe.dev's do. A timeout counts as unknown.
+  public static let checkTimeout: TimeInterval = 60
+
+  public func account() async -> AccountState {
+    switch Self.credential(home: configuration.home) {
+    case .none: return .signedOut(nil)
+    case .unreadable: return .signedOut("Workroom couldn't read boxd's sign-in.")
+    case .token: break
+    }
+    let output: String
+    do {
+      output = try await cli(["auth"], timeout: Self.checkTimeout)
+    } catch let failure as CLIFailure {
+      if failure.expired { return .signedOut("Your boxd sign-in has expired.") }
+      return .unknown(failure.localizedDescription)
+    } catch {
+      return .unknown(error.localizedDescription)
+    }
+    guard let account = try? JSONDecoder().decode(Account.self, from: Data(output.utf8)) else {
+      return .unknown("boxd said something unreadable about the signed-in account")
+    }
+    return .signedIn(account)
+  }
+
+  /// Whether boxd's git integration, the user's own GitHub sign-in that `git` and `gh` use on their
+  /// machines, is connected.
+  public enum GitHubState: Equatable, Sendable {
+    case connected
+    case notConnected
+    case unknown(String)
+  }
+
+  public func gitHub() async -> GitHubState {
+    struct List: Decodable {
+      struct Integration: Decodable {
+        let id: String?
+        let `class`: String?
+        let connected: Bool?
+      }
+      let integrations: [Integration]
+    }
+    do {
+      let output = try await cli(["manage", "integrations", "list"], timeout: Self.checkTimeout)
+      guard let list = try? JSONDecoder().decode(List.self, from: Data(output.utf8)) else {
+        return .unknown("boxd said something unreadable about its integrations")
+      }
+      // The org's shared connection (`class: shared`) serves only shared machines.
+      let connected = list.integrations.contains {
+        $0.id == "git" && $0.class == "private" && $0.connected == true
+      }
+      return connected ? .connected : .notConnected
+    } catch {
+      return .unknown(error.localizedDescription)
+    }
+  }
+
+  /// Starts boxd's sign-in, which opens the browser and waits for the user there.
+  public func signIn() throws -> ClickedCommand {
+    try ClickedCommand(configuration.cli, ["auth", "login"], home: configuration.home)
+  }
+
+  /// Starts connecting boxd's git integration, which opens GitHub in the browser and waits.
+  public func connectGitHub() throws -> ClickedCommand {
+    try ClickedCommand(
+      configuration.cli, ["manage", "integrations", "connect", "git"], home: configuration.home)
+  }
+
+  /// Runs boxd's own installer, which puts `boxd` in `~/.local/bin` under `home`. Without a
+  /// terminal it installs only the binary: the PATH line, completions and agent skills it offers
+  /// are asked about on `/dev/tty`, and with none it installs none. Never with `-y`, which would
+  /// install them all. It checks the download's sha256 and moves it into place whole, so a
+  /// cancelled install leaves no `boxd` behind.
+  public static func install(home: URL) throws -> ClickedCommand {
+    try ClickedCommand(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "curl -fsSL \(installer) | sh"], home: home)
+  }
+
+  public static let installer = "https://boxd.sh/downloads/install.sh"
+
+  /// A command the user started with a click: boxd's sign-in, its GitHub connection, or its
+  /// installer. It may wait in the browser, so it runs until it exits or is cancelled. Its
+  /// environment is the app's, with `home` as `HOME` and no inherited `BOXD_TOKEN`, so boxd signs
+  /// in and reads its sign-in where `credential(home:)` looks.
+  public final class ClickedCommand: @unchecked Sendable {
+    private let process = Process()
+    private let lock = NSLock()
+    private var heard = Data()
+
+    public init(_ executable: URL, _ arguments: [String], home: URL) throws {
+      var environment = ProcessInfo.processInfo.environment
+      environment["HOME"] = home.path
+      environment["PATH"] = ShellEnvironment.path()
+      environment.removeValue(forKey: "BOXD_TOKEN")
+      process.executableURL = executable
+      process.arguments = arguments
+      process.environment = environment
+      process.currentDirectoryURL = home
+      // No terminal: boxd and its installer then ask nothing (see `install`).
+      process.standardInput = FileHandle.nullDevice
+      let pipe = Pipe()
+      process.standardOutput = pipe
+      process.standardError = pipe
+      try process.run()
+      let reading = pipe.fileHandleForReading
+      DispatchQueue.global().async { [weak self] in
+        while let chunk = try? reading.read(upToCount: 4096), !chunk.isEmpty {
+          guard let self else { return }
+          self.lock.withLock { self.heard.append(chunk) }
+        }
+      }
+    }
+
+    deinit { cancel() }
+
+    /// Everything it has printed so far.
+    public var output: String { lock.withLock { String(decoding: heard, as: UTF8.self) } }
+
+    /// The first web address it printed, such as boxd's sign-in page, for the sheet to offer again.
+    public var link: URL? {
+      output.split(whereSeparator: \.isWhitespace).lazy
+        .first { $0.hasPrefix("https://") }.flatMap { URL(string: String($0)) }
+    }
+
+    /// Its exit status, once it ends.
+    public func wait() async -> Int32 {
+      let process = self.process
+      return await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+          process.waitUntilExit()
+          continuation.resume(returning: process.terminationStatus)
+        }
+      }
+    }
+
+    /// Its last line of output, for a failure to say.
+    public var lastLine: String? {
+      output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        .last { !$0.isEmpty }
+    }
+
+    public func cancel() {
+      if process.isRunning { ProcessTree.killTree(process.processIdentifier) }
+    }
   }
 
   public static func errorLine(_ stderr: String) -> String? {
