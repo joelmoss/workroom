@@ -63,9 +63,9 @@ final class ExeDevSetup {
     isSignedIn && (plan == .done || planUnchecked) && (gitHub == .done || gitHubUnchecked)
   }
 
-  /// Set once an account is seen ready, so later creates this launch skip the three checks. A
-  /// step undone since (a plan cancelled, GitHub disconnected) fails the create with exe.dev's own
-  /// error, as before.
+  /// Set once an account is seen ready (a step whose check couldn't answer counts), so later creates
+  /// this launch skip the three checks. A step undone since (a plan cancelled, GitHub disconnected)
+  /// fails the create with exe.dev's own error, as before.
   static var confirmedThisLaunch = false
 
   private let driver: ExeDevHostDriver
@@ -127,15 +127,19 @@ final class ExeDevSetup {
     do { plan = try await driver.planAllowsVMs() ? .done : .needed } catch {
       plan = .needed
       planUnchecked = true
-      planError =
-        "Workroom couldn't check your plan: \(error.localizedDescription) Create Workroom will still try."
+      planError = Self.stillTries("Workroom couldn't check your plan", error)
     }
     do { gitHub = try await driver.gitHubConnected() ? .done : .needed } catch {
       gitHub = .needed
       gitHubUnchecked = true
-      gitHubError =
-        "Workroom couldn't check GitHub: \(error.localizedDescription) Create Workroom will still try."
+      gitHubError = Self.stillTries("Workroom couldn't check GitHub", error)
     }
+  }
+
+  /// "<what>: <error>. Create Workroom will still try."
+  private static func stillTries(_ what: String, _ error: Error) -> String {
+    let said = error.localizedDescription
+    return "\(what): \(said)\(said.hasSuffix(".") ? "" : ".") Create Workroom will still try."
   }
 
   /// Check Again: the steps read from the account once more, keeping a step the user is still

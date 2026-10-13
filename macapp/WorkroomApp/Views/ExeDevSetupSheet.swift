@@ -3,7 +3,7 @@ import SwiftUI
 /// Walks a user exe.dev has never seen through its three steps before their first exe.dev
 /// workroom (`ExeDevSetup`): what each step is for, one action, and live status, so nothing waits
 /// on the user without saying what it waits for. Create Workroom carries on with the create the
-/// sheet interrupted once every step is ticked.
+/// sheet interrupted once every step is ticked, or its check couldn't answer (exe.dev then decides).
 struct ExeDevSetupSheet: View {
   let setup: ExeDevSetup
   let onCreate: () -> Void
