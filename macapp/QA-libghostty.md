@@ -158,6 +158,9 @@ bump is worthless.
 - Regenerate `Resources/ghostty/` (terminfo via `infocmp`/`tic`, `shell-integration/`) from the
   pinned commit; see `Resources/ghostty/SOURCE.md`. Update `GhosttyPinIntegrityTests.expectedRevision`
   in the same commit.
+- Bump `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` to the same engine sha `project.yml` records, so
+  the agent's shadow terminal parses what the app does. `make app-test-scripts` fails
+  (`Scripts/test-invariants_test.sh`) if the two disagree.
 - Re-check the GhosttyKit modulemap-collision workaround (`macapp/AGENTS.md`). `release.sh` refuses a
   bundle with a thin Mach-O, and `nightly.yml` builds universal daily, so no separate universal build
   is needed.
