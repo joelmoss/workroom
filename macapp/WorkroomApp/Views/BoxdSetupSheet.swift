@@ -38,7 +38,7 @@ struct BoxdSetupSheet: View {
     case .locked: .locked
     case .checking, .signingIn: .waiting
     case .signedIn: .done
-    case .signedOut, .unknown, .failed: .current
+    case .signedOut, .unknown, .failed, .needsUpdate: .current
     }
   }
 
@@ -101,6 +101,10 @@ struct BoxdSetupSheet: View {
     case .failed(let said):
       SetupProblem(said)
       Button("Try Again") { Task { await setup.signIn() } }
+    case .needsUpdate:
+      SetupProblem(
+        "You're signed in to boxd, but Workroom can't read boxd's sign-in: boxd has changed how it "
+          + "keeps it. Update Workroom to carry on.")
     }
   }
 

@@ -34,6 +34,9 @@ final class BoxdSetup: RemoteSetup {
     /// boxd couldn't be asked: the create goes ahead and boxd's own error decides.
     case unknown(String)
     case failed(String)
+    /// boxd's sign-in finished but Workroom still can't read it: boxd has changed how it keeps it.
+    /// The create stays blocked, since boxd asked without a readable sign-in starts its own.
+    case needsUpdate
   }
 
   enum GitHubStep: Equatable {
@@ -100,6 +103,8 @@ final class BoxdSetup: RemoteSetup {
   private var running: (any RunningCommand)?
   /// The sheet is gone: a check or a command that ends late must change nothing.
   private var isCancelled = false
+  /// The last account check found a sign-in Workroom can't read.
+  private var signInUnreadable = false
 
   init(actions: Actions = .live, open: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
     self.actions = actions
@@ -127,11 +132,14 @@ final class BoxdSetup: RemoteSetup {
     account = .checking
     let state = await actions.account()
     guard !isCancelled else { return }
+    signInUnreadable = state == .unreadable
     switch state {
     case .signedIn(let signedIn):
       account = .signedIn(name: signedIn.displayName, org: signedIn.activeOrgName)
     case .signedOut(let why):
       account = .signedOut(why)
+    case .unreadable:
+      account = .signedOut("Workroom couldn't read boxd's sign-in.")
     case .unknown(let why):
       account = .unknown(why)
     }
@@ -175,7 +183,9 @@ final class BoxdSetup: RemoteSetup {
       return
     }
     await refresh()
-    if case .signedOut = account, status.code != 0 {
+    if status.code == 0, signInUnreadable {
+      account = .needsUpdate
+    } else if case .signedOut = account, status.code != 0 {
       account = .signedOut(status.said ?? "boxd's sign-in didn't finish.")
     }
   }

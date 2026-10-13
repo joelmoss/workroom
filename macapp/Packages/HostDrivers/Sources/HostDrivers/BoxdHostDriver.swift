@@ -264,8 +264,6 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// The CLI ran and answered with its own `error:` line, as opposed to timing out or failing to
     /// run at all.
     var answered = false
-    /// Never ran: nobody is signed in to boxd, which would have started its browser sign-in.
-    var signedOut = false
     var notFound: Bool { BoxdHostDriver.isNotFound(said) }
     /// boxd refused the token: it expired or was revoked (measured: "… is invalid or expired …"
     /// from `auth`, "invalid or expired session" from `manage integrations list`).
@@ -284,6 +282,16 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       case userID = "user_id"
       case displayName = "display_name"
       case orgs
+    }
+
+    public init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      activeOrg = try container.decodeIfPresent(String.self, forKey: .activeOrg)
+      userID = try container.decodeIfPresent(String.self, forKey: .userID)
+      // Only the setup sheet shows these: a shape boxd changes them to must not fail every create
+      // and delete, which decode this too (`signedIn()`).
+      displayName = try? container.decodeIfPresent(String.self, forKey: .displayName)
+      orgs = try? container.decodeIfPresent([Org].self, forKey: .orgs)
     }
 
     public struct Org: Decodable, Equatable, Sendable {
@@ -367,7 +375,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     let command = arguments.prefix(2).joined(separator: " ")
     guard case .token = Self.credential(home: configuration.home) else {
       throw CLIFailure(
-        command: command, said: "not signed in to boxd", answered: true, signedOut: true)
+        command: command, said: "not signed in to boxd", answered: true)
     }
     let result = await runner.run(
       configuration.cli.path, arguments + ["--json"], in: configuration.home.path,
@@ -417,6 +425,9 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// Nobody, with why when there is more to say than that.
     case signedOut(String?)
     case signedIn(Account)
+    /// boxd's sign-in is there but Workroom can't read it, so boxd isn't asked: it would start its
+    /// own sign-in.
+    case unreadable
     /// boxd couldn't be asked, or its answer couldn't be read: the create goes ahead and boxd's
     /// own error, if any, says what's wrong.
     case unknown(String)
@@ -428,7 +439,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   public func account() async -> AccountState {
     switch Self.credential(home: configuration.home) {
     case .none: return .signedOut(nil)
-    case .unreadable: return .signedOut("Workroom couldn't read boxd's sign-in.")
+    case .unreadable: return .unreadable
     case .token: break
     }
     let output: String
@@ -540,9 +551,12 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     public var output: String { lock.withLock { String(decoding: heard, as: UTF8.self) } }
 
     /// The first web address it printed, such as boxd's sign-in page, for the sheet to offer again.
+    /// Not the installer's: an out-of-date boxd prints its update notice, which names it, first
+    /// (measured, boxd 0.2.23).
     public var link: URL? {
       output.split(whereSeparator: \.isWhitespace).lazy
-        .first { $0.hasPrefix("https://") }.flatMap { URL(string: String($0)) }
+        .first { $0.hasPrefix("https://") && $0 != BoxdHostDriver.installer }
+        .flatMap { URL(string: String($0)) }
     }
 
     /// Its exit status, once it ends.
