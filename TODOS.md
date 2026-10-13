@@ -859,6 +859,29 @@ than shipped on nightly.
 
 **Priority:** P3 — until the next hang report, symbols alone may be enough.
 
+## P3 — Remote workrooms
+
+### Ask boxd for a non-interactive account check (macapp) — boxd first-time setup follow-up
+
+**What:** Ask boxd for a documented way to ask "who is signed in" that fails instead of starting the
+browser login, such as `boxd auth --json --non-interactive`. Once it exists, drop Workroom's read of
+boxd's private `credentials.json`.
+
+**Why:** boxd 0.2.23 starts its browser login from any account command when signed out, even with
+no terminal (measured 2026-10-13). The boxd setup design avoids that by reading the private
+credentials file and passing its token as `BOXD_TOKEN`. If boxd renames the file's `token` key,
+boxd creates are blocked with "Workroom needs an update" until Workroom follows.
+
+**Pros:** Removes the design's only deliberate lock-out case and its dependency on a private file.
+
+**Cons:** Depends on boxd shipping it; nothing to do in this repo until then.
+
+**Context / how to start:** `docs/designs/boxd-first-time-setup.md`, section 1 (the guard in
+`BoxdHostDriver.cli(...)`) and Open Question 3. Ask boxd; when the flag ships, make `account()` call
+it and delete the credentials-file read.
+
+**Depends on / blocked by:** boxd shipping the flag; the boxd first-time setup work landing first.
+
 ## Recently done
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
