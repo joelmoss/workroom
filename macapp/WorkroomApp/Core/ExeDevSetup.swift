@@ -206,12 +206,18 @@ final class ExeDevSetup {
       let state = await self.driver.account()
       guard self.signUp === session, self.account == .awaitingVerification(email) else { return }
       self.signUp = nil
-      if case .signedIn(let address) = state {
+      switch state {
+      case .signedIn(let address):
         self.account = .done(address)
         await self.refreshWebsiteSteps()
-      } else {
+      case .needsSignUp:
         self.account = .needsEmail(
           error: "The connection to exe.dev ended before the link was clicked. Send it again.")
+      default:
+        // Most often the network that dropped the connection: the link may have been clicked, so
+        // only a check that answers can say whether to sign up again.
+        self.account = .failed(
+          "The connection to exe.dev ended, and Workroom couldn't check your account. Try again.")
       }
     }
   }
