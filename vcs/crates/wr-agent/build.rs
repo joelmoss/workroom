@@ -61,6 +61,11 @@ fn link_ghostty_vt() {
             // builds into is where the library is linked from. Without these, bumping the pin
             // kept linking the old library until a `cargo clean`.
             println!("cargo:rerun-if-changed={}", script.display());
+            // The parity patches are part of the engine too: the script hashes them into its key.
+            println!(
+                "cargo:rerun-if-changed={}",
+                script.with_file_name("ghostty-patches").display()
+            );
             println!("cargo:rerun-if-env-changed=WR_GHOSTTY_VT_CACHE");
             // Map the cargo target to a zig triple. Unknown combinations are a hard error: a
             // silent fallback to the host would link the wrong architecture and fail at the far
