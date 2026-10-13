@@ -721,6 +721,7 @@ struct RootView: View {
         if store.projects.isEmpty {
           Button("Add Project…") { store.requestAddProject = true }
             .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("EmptyStateAddProject")
         }
       }
     }
