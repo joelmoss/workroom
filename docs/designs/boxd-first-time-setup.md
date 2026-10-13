@@ -754,7 +754,7 @@ through `make app-run-boxd-fresh`. Where the build differs from the plan above:
   credential guard stays, and the runner now strips an inherited `BOXD_TOKEN` from every child.
 - **A new boxd account needs payment** (Open Question 1, from the owner's fresh sign-up). For now
   both setup sheets' intros link to the provider's site and say payment is required after signing
-  up; boxd has no Billing step that checks it.
+  up. No Billing step: the owner decided the sentence is enough (2026-10-13).
 
 ## Implementation Tasks
 Synthesized from this review's findings. Each task derives from a specific
