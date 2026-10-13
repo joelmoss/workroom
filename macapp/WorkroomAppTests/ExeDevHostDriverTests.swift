@@ -1,4 +1,5 @@
 import AgentConnection
+import HostDrivers
 import WorkroomSystem
 import WorkroomVCS
 import XCTest

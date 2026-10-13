@@ -12,7 +12,7 @@ import WorkroomVCS
 /// service runs `git` with arbitrary arguments, which is arbitrary code execution, so a stream
 /// that reaches an agent is a shell whatever it is called. ssh meets that bar; an SDK exec or a
 /// WebSocket driver must show it does before it counts as a driver.
-protocol HostDriver: Sendable {
+public protocol HostDriver: Sendable {
   /// The supervised agent's socket on this driver's hosts: what the bootstrap installs the agent
   /// beside, and the relay and the attach connect to. A remote provider's is on the host's home
   /// disk, so its binary and screens survive a stop (#259).
@@ -40,7 +40,7 @@ extension HostDriver {
   /// for a wait on a machine coming up (its name, its identity, its agent). A machine mid-reboot
   /// refuses or holds the connection; neither is the answer, but the last one is what the failure
   /// says. A cancel ends the wait at once (#259: shared by every provider driver).
-  func poll(
+  public func poll(
     _ host: HostID, _ check: String, tries: Int, failure: (String) -> String
   ) async throws {
     var last = ""
@@ -60,7 +60,7 @@ extension HostDriver {
   /// Until the identity unit has run on host `id`, a machine named `name`: its marker and its
   /// hostname both name it. A provider's own readiness signal is not one (boxd's Phase 0, item 6),
   /// so the wait asks the machine itself.
-  func awaitIdentity(of id: UUID, named name: String) async throws {
+  public func awaitIdentity(of id: UUID, named name: String) async throws {
     let quoted = PosixShell.quoted(name)
     try await poll(
       .remote(id),
@@ -72,20 +72,20 @@ extension HostDriver {
 
   /// The container image's socket (`vcs/scripts/ssh-fixture/entrypoint.sh`), for a driver that
   /// doesn't say otherwise.
-  var agentSocket: String { RemoteWorkrooms.agentSocket }
+  public var agentSocket: String { AgentInstall.defaultSocket }
 }
 
 /// What a provider driver runs on a new host to set it up.
-enum HostSetup {
+public enum HostSetup {
   /// `Resources/host-setup/systemd.sh`: the identity unit and the agent's supervisor, for a machine
   /// that runs systemd (boxd, exe.dev).
-  static func systemdScript() throws -> String { try script("systemd") }
+  public static func systemdScript() throws -> String { try script("systemd") }
 
   /// `Resources/host-setup/exedev-github.sh`: points an exe.dev VM's git and gh at exe.dev's
   /// GitHub integration.
-  static func exeDevGitHubScript() throws -> String { try script("exedev-github") }
+  public static func exeDevGitHubScript() throws -> String { try script("exedev-github") }
 
-  static func script(_ name: String) throws -> String {
+  public static func script(_ name: String) throws -> String {
     guard
       let url = Bundle.main.url(forResource: name, withExtension: "sh", subdirectory: "host-setup")
     else { throw HostDriverError.invalidConfiguration("this build has no host-setup/\(name).sh") }
@@ -100,7 +100,7 @@ enum HostSetup {
 /// hands over a command instead. For ssh that is `ssh -t <host> wr-agent attach …`, the far side's
 /// attach client running in the pty ssh allocates there. An SDK-exec driver has no such command,
 /// and would need a local bridge process: a Phase 4 question (design doc, Phase 3).
-protocol HostTerminalDriver: HostDriver {
+public protocol HostTerminalDriver: HostDriver {
   /// The command a pane runs to attach to `session` on `host`, starting in `workingDirectory` if
   /// the session is new. `restored` for a pane reattaching after a relaunch or a lost link: the
   /// session must already exist there, and if it has ended the pane gets a shell that says so
@@ -123,7 +123,9 @@ protocol HostTerminalDriver: HostDriver {
 
 extension HostTerminalDriver {
   /// An attach that says nothing about its session.
-  func attachCommand(to host: HostID, session: UUID, workingDirectory: String, restored: Bool)
+  public func attachCommand(
+    to host: HostID, session: UUID, workingDirectory: String, restored: Bool
+  )
     throws -> String
   {
     try attachCommand(
@@ -132,7 +134,7 @@ extension HostTerminalDriver {
   }
 }
 
-enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
+public enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   case unknownHost(HostID)
   /// From a driver that cannot provision, such as a `ContainerHostDriver` given no
   /// `Provisioning`, for `create` and `destroy`; and from `destroy` for a host the driver was
@@ -148,7 +150,7 @@ enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   /// the host it made, so the caller can record it for a later delete to take down (#356).
   case leftBehind(cause: String, leftover: [String], host: HostID? = nil)
 
-  var errorDescription: String? {
+  public var errorDescription: String? {
     switch self {
     case .unknownHost: return "This driver has no such host."
     case .notImplemented(let what): return "\(what) is not implemented yet."

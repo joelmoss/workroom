@@ -6,7 +6,7 @@ import Foundation
 /// and no byte counts, so its progress is the layers done of those seen. Apple's `container` (1.5.0)
 /// prints `[<step>/<steps>] <what> <percent>% …`, so its progress is its step's share plus its
 /// percent of that.
-struct ImagePullProgress: Sendable {
+public struct ImagePullProgress: Sendable {
   private var layers: Set<String> = []
   private var done: Set<String> = []
   private var stepped: Double?
@@ -15,14 +15,14 @@ struct ImagePullProgress: Sendable {
   private var pending: [Bool: String] = [:]
 
   /// The fraction done, 0 to 1, or nil before anything says how far.
-  var fraction: Double? {
+  public var fraction: Double? {
     if let stepped { return stepped }
     guard !layers.isEmpty else { return nil }
     return Double(done.count) / Double(layers.count)
   }
 
   /// Takes a piece of output from one stream, which may end mid-line.
-  mutating func read(_ text: String, stderr: Bool = false) {
+  public mutating func read(_ text: String, stderr: Bool = false) {
     let joined = pending[stderr, default: ""] + text
     // `\r` too: a progress bar redraws its line that way.
     var lines = joined.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r" }

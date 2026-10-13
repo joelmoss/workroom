@@ -13,39 +13,57 @@ import WorkroomWire
 /// Its hosts are the ones the caller hands in, plus, given `Provisioning`, the containers it makes
 /// itself (#252): `create` runs a workroom's host from the fixture's image, and `destroy` removes
 /// it. Nothing here persists.
-final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
+public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// How the driver makes containers of its own: a container runtime's CLI (`docker`), the
   /// fixture's image, and the client key every container authorises. Containers are reached on a
   /// loopback port the runtime publishes, as `vcs/scripts/ssh-fixture/run.sh` reaches its own.
-  struct Provisioning: Sendable {
-    let runtime: URL
-    let image: String
-    let user: String
-    let identityFile: String
+  public struct Provisioning: Sendable {
+    public let runtime: URL
+    public let image: String
+    public let user: String
+    public let identityFile: String
     /// The public half of `identityFile`, which the entrypoint writes to `authorized_keys`.
-    let publicKey: String
-    let agentSocket: String
+    public let publicKey: String
+    public let agentSocket: String
     /// `key=value` labels on every container and image made, so whoever started the fixture can
     /// sweep up what a crashed test left (run.sh does).
-    let labels: [String]
+    public let labels: [String]
     /// The Docker context every command names (`--context`, #309), or nil for whichever daemon
     /// the environment and the CLI's current context pick. Docker Desktop, OrbStack and Colima
     /// are each a context behind the one `docker`, so without it a host made on one is looked for
     /// on whichever the user switched to since.
-    var context: String? = nil
+    public var context: String?
     /// Which runtime's CLI `runtime` is: Docker's, or Apple's `container` (#309).
-    var dialect: Dialect = .docker
+    public var dialect: Dialect
     /// CPUs and memory (`4G`) each container gets, or nil for the runtime's own default. Apple's is
     /// 1 GB per container VM, too little for a compiler or an agent; Docker's containers share its
     /// VM's.
-    var cpus: Int? = nil
-    var memory: String? = nil
+    public var cpus: Int?
+    public var memory: String?
+
+    public init(
+      runtime: URL, image: String, user: String, identityFile: String, publicKey: String,
+      agentSocket: String, labels: [String], context: String? = nil, dialect: Dialect = .docker,
+      cpus: Int? = nil, memory: String? = nil
+    ) {
+      self.runtime = runtime
+      self.image = image
+      self.user = user
+      self.identityFile = identityFile
+      self.publicKey = publicKey
+      self.agentSocket = agentSocket
+      self.labels = labels
+      self.context = context
+      self.dialect = dialect
+      self.cpus = cpus
+      self.memory = memory
+    }
   }
 
   /// The two container CLIs a driver can speak (#309). Apple's `container` (1.5.0) runs each
   /// container in a VM of its own and has no `--restart`, no `--filter` and no Go templates
   /// (`AppleContainerCLI`).
-  enum Dialect: Sendable {
+  public enum Dialect: Sendable {
     case docker
     case apple
   }
@@ -59,11 +77,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The label every container and image this driver makes carries, with when it was made in
   /// seconds since 1970, so `sweep` can leave one that may still be part of a create.
-  static let createdLabel = "workroom.created"
+  public static let createdLabel = "workroom.created"
 
   /// Where each host's `ssh_config` and `known_hosts` are written.
-  let directory: URL
-  let provisioning: Provisioning?
+  public let directory: URL
+  public let provisioning: Provisioning?
   private let lock = NSLock()
   private var hosts: [UUID: SSHTransport.Host]
   private var provisioned: [UUID: Provisioned] = [:]
@@ -71,7 +89,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// later step of its own failed (forgetting its record) gets past the destroy it already did.
   private var destroyed: Set<UUID> = []
 
-  init(hosts: [UUID: SSHTransport.Host], directory: URL, provisioning: Provisioning? = nil) {
+  public init(hosts: [UUID: SSHTransport.Host], directory: URL, provisioning: Provisioning? = nil) {
     self.hosts = hosts
     self.directory = directory
     self.provisioning = provisioning
@@ -84,7 +102,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     return (id, target)
   }
 
-  func create() async throws -> HostID {
+  public func create() async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
     try await ensureImage(provisioning.image)
     return try await run(provisioning.image)
@@ -93,7 +111,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Pulls the host image unless this runtime has it. A create calls it before it names its
   /// workroom, so a download's progress (`pullProgress`) shows on the project's row, which is the
   /// one that shows it; `create` then finds the image there.
-  func ensureHostImage() async throws {
+  public func ensureHostImage() async throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
     try await ensureImage(provisioning.image)
   }
@@ -101,7 +119,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Told how far a host image's pull has got, 0 to 1, then nil once it is done, for a create run
   /// inside `$pullProgress.withValue` (#309): a task-local, so `HostDriver.create` keeps its shape
   /// and two creates at once each hear only their own.
-  @TaskLocal static var pullProgress: (@Sendable (Double?) -> Void)?
+  @TaskLocal public static var pullProgress: (@Sendable (Double?) -> Void)?
 
   /// Pulls `image` unless the runtime already has it (#309). `run` itself never pulls
   /// (`--pull=never`): left to it, a missing `workroom-host` was looked for on Docker Hub as
@@ -151,7 +169,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The error for a runtime that didn't answer at all, by what it printed, or nil when it did
   /// (#309): every create's first command would otherwise blame the image or the network.
-  static func runtimeDown(_ said: String, apple: Bool) -> Error? {
+  public static func runtimeDown(_ said: String, apple: Bool) -> Error? {
     if apple {
       guard said.contains("container system start") || said.contains("XPC connection") else {
         return nil
@@ -192,11 +210,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Where an older build's Apple derive staged a base's exported disk, and the derived image's
   /// name: what a crash left with it is still swept.
-  static let deriveDirectoryPrefix = "workroom-derive-"
+  public static let deriveDirectoryPrefix = "workroom-derive-"
 
   /// Removes the container and the image it alone was run from. A host handed in rather than
   /// made here is not this driver's to remove.
-  func destroy(_ host: HostID) async throws {
+  public func destroy(_ host: HostID) async throws {
     if case .remote(let id) = host, lock.withLock({ destroyed.contains(id) }) { return }
     guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
       if case .remote(let id) = host, lock.withLock({ hosts[id] }) != nil {
@@ -223,7 +241,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// container someone stopped stays stopped, and a runtime with no restart policy (Apple's) leaves
   /// every one stopped after a reboot. Only for a workroom the user opens (`RemoteHosts.activate`),
   /// never for a background probe, which would start every container the app knows.
-  func startIfStopped(_ host: HostID) async throws {
+  public func startIfStopped(_ host: HostID) async throws {
     guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
       throw HostDriverError.unknownHost(host)
     }
@@ -243,7 +261,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// What a later launch's driver needs to `adopt` `host`, or nil for a host this driver did not
   /// make.
-  func record(of host: HostID) -> ContainerHostRecord? {
+  public func record(of host: HostID) -> ContainerHostRecord? {
     guard case .remote(let id) = host else { return nil }
     return lock.withLock {
       guard let target = hosts[id], let made = provisioned[id] else { return nil }
@@ -256,7 +274,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Takes a host an earlier launch made back on (#253), as its `record` describes it, so it can
   /// be reached and destroyed as if this driver had made it. Whether its container is still there
   /// is found out by using it.
-  func adopt(_ id: UUID, _ record: ContainerHostRecord) throws {
+  public func adopt(_ id: UUID, _ record: ContainerHostRecord) throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Adopting a host") }
     // `destroy` removes it by this, with `--force`: a config edited by hand must not name an image
     // that is not an older derive's commit.
@@ -298,7 +316,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// (`pendingContainers`), and no images: for when config records nothing, which is also what a
   /// lost config or a launch with a throwaway `HOME` reads, where every live container would
   /// otherwise look unknown.
-  func sweep(
+  public func sweep(
     keeping known: Set<UUID>, images: Set<String> = [], grace: TimeInterval = 20 * 60,
     cap: Int = 3, onlyPending: Bool = false
   ) async -> [String] {
@@ -501,7 +519,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// ponytail: a container removed by hand stays listed, costing its runtime one listing a launch;
   /// a name is not dropped for being missing, since a context with none named lists whichever
   /// daemon is current, and the leftover may be on another.
-  var pendingContainers: Set<String> {
+  public var pendingContainers: Set<String> {
     pendingLock.withLock { Set(readPending()) }
   }
   private var pendingFile: URL {
@@ -533,7 +551,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// Takes `names` off the pending list: config records their hosts now, or they are gone.
-  func forgetPending(_ names: [String]) {
+  public func forgetPending(_ names: [String]) {
     guard !names.isEmpty else { return }
     let drop = Set(names)
     try? updatePending { $0.removeAll(where: drop.contains) }
@@ -547,7 +565,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The runtimes and Docker contexts whose drivers, with hosts in `directory`, have containers
   /// pending (`pendingContainers`).
-  static func pending(in directory: URL) -> [(dialect: Dialect, context: String?)] {
+  public static func pending(in directory: URL) -> [(dialect: Dialect, context: String?)] {
     ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).compactMap {
       guard $0.hasPrefix(pendingPrefix), $0.hasSuffix(".json") else { return nil }
       let parts = $0.dropFirst(pendingPrefix.count).dropLast(".json".count)
@@ -563,16 +581,18 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// How a sweep's failure starts when it could not list the containers, so swept nothing: the
   /// runtime was down, say. `RemoteHosts.adopt` sweeps that runtime again on a later reload.
-  static let listingFailed = "listing containers: "
+  public static let listingFailed = "listing containers: "
 
-  static func containerName(_ id: UUID) -> String { "workroom-\(id.uuidString.lowercased())" }
+  public static func containerName(_ id: UUID) -> String {
+    "workroom-\(id.uuidString.lowercased())"
+  }
 
   private static func created() -> String {
     "\(createdLabel)=\(Int(Date().timeIntervalSince1970))"
   }
 
   /// `sha256:<64 hex>`, as `commit` prints it.
-  static func isImageID(_ text: String) -> Bool {
+  public static func isImageID(_ text: String) -> Bool {
     let hex = text.dropFirst("sha256:".count)
     return text.hasPrefix("sha256:") && hex.count == 64
       && hex.allSatisfy { $0.isHexDigit && !$0.isUppercase }
@@ -707,7 +727,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// `arguments` for the runtime, naming `context` when there is one. `--context` is global, so it
   /// goes before the command (after it, Docker refuses it), and it outranks both `DOCKER_HOST` and
   /// `DOCKER_CONTEXT` (Docker 29, measured).
-  static func runtimeArguments(_ arguments: [String], context: String?) -> [String] {
+  public static func runtimeArguments(_ arguments: [String], context: String?) -> [String] {
     guard let context else { return arguments }
     return ["--context", context] + arguments
   }
@@ -715,26 +735,26 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// The Docker context the CLI would use now, to pin a new host to (#309), or nil for `default`:
   /// that one is whatever `DOCKER_HOST` says, so naming it pins nothing. Asks a driver whose own
   /// context is nil, so the answer is the environment's and the CLI's.
-  func currentContext() async throws -> String? {
+  public func currentContext() async throws -> String? {
     let name = try await runtime(["context", "show"])
     return name.isEmpty || name == "default" ? nil : name
   }
 
-  func openStream(to host: HostID) async throws -> HostStream {
+  public func openStream(to host: HostID) async throws -> HostStream {
     let (id, target) = try target(host)
     return try SSHTransport.exec(
       SSHTransport.relayCommand(binary: target.agentBinary, socket: target.agentSocket), on: target,
       in: directory.appendingPathComponent(id.uuidString), purpose: .connection)
   }
 
-  func exec(_ command: String, on host: HostID) async throws -> HostStream {
+  public func exec(_ command: String, on host: HostID) async throws -> HostStream {
     let (id, target) = try target(host)
     return try SSHTransport.exec(
       command, on: target, in: directory.appendingPathComponent(id.uuidString),
       purpose: .exchange)
   }
 
-  func attachCommand(
+  public func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
     metadata: [(key: String, value: String)]
   ) throws -> String {
@@ -748,13 +768,13 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// changed host key, a key it will not take, nothing to agree a cipher on (#241). Everything
   /// else is worth trying again: a host that is booting refuses, times out, or accepts and closes
   /// before its banner, and some of those leave ssh nothing to say at `LogLevel ERROR`.
-  func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
+  public func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
     return SSHTransport.refusedLastAttach(
       of: session, in: directory.appendingPathComponent(id.uuidString))
   }
 
-  func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
+  public func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
     return SSHTransport.lostLinkLastAttach(
       of: session, in: directory.appendingPathComponent(id.uuidString))

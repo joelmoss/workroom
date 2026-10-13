@@ -34,6 +34,8 @@ packages:
     path: Packages/WorkroomSystem
   AgentConnection:
     path: Packages/AgentConnection
+  HostDrivers:
+    path: Packages/HostDrivers
   DesignSystem:
     path: Packages/DesignSystem
   WorkroomWire:
@@ -164,6 +166,7 @@ targets:
       - package: WorkroomVCS
       - package: WorkroomSystem
       - package: AgentConnection
+      - package: HostDrivers
       - package: WorkroomWire
       - target: workroom-session
         embed: false
@@ -381,6 +384,7 @@ targets:
       - package: WorkroomVCS
       - package: WorkroomSystem
       - package: AgentConnection
+      - package: HostDrivers
       - package: WorkroomWire
     settings:
       base:

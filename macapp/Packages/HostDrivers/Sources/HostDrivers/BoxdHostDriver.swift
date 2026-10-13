@@ -25,49 +25,68 @@ import os
 ///
 /// Everything the agent keeps is on the machine's home disk (`agentSocket`), so a machine that is
 /// stopped and started keeps its binary and its screens.
-final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
-  struct Configuration: Sendable {
+public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
+  public struct Configuration: Sendable {
     /// The `boxd` CLI, signed in.
-    var cli: URL
+    public var cli: URL
     /// What every machine this driver makes is named after.
-    var prefix = "workroom"
+    public var prefix: String
     /// The boxd org this driver's machines belong to, as `boxd auth --json` reports the active
     /// one: nil for the account's own. The CLI acts in whichever org is active, and its own org
     /// cannot be named with `--org` (measured: "you are not a member of org …"), so the driver
     /// checks the active org instead of choosing it, and refuses to act in another: there, its
     /// machines read as "not found", which `destroy` would take for gone and leave running.
     /// Whoever records a host records this beside it.
-    var org: String?
+    public var org: String?
     /// The boxd account this driver's machines belong to, `boxd auth --json`'s `user_id`, or nil
     /// to accept any (#356). Every personal account's org is nil, so after a switch to another
     /// account the org check alone passes, and a machine of the first account reads as "not
     /// found", which `destroy` would take for gone. Whoever records a host records this beside it.
-    var account: String?
+    public var account: String?
     /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent's
     /// binary is installed beside it, and a stopped machine would lose it.
-    var agentSocket = "\(BoxdHostDriver.stateDirectory)/agent/agent.sock"
+    public var agentSocket: String
 
     /// Where the supervisor has the agent keep each session's last screen (#232).
-    var screens = "\(BoxdHostDriver.stateDirectory)/screens"
+    public var screens: String
     /// The files the CLI writes each machine's ssh stanza and host key into.
-    var sshConfig = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".ssh/config")
-    var knownHosts = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".ssh/known_hosts")
+    public var sshConfig: URL
+    public var knownHosts: URL
+
+    public init(
+      cli: URL, prefix: String = "workroom", org: String? = nil, account: String? = nil,
+      agentSocket: String = "\(BoxdHostDriver.stateDirectory)/agent/agent.sock",
+      screens: String = "\(BoxdHostDriver.stateDirectory)/screens",
+      sshConfig: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+        ".ssh/config"),
+      knownHosts: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+        ".ssh/known_hosts")
+    ) {
+      self.cli = cli
+      self.prefix = prefix
+      self.org = org
+      self.account = account
+      self.agentSocket = agentSocket
+      self.screens = screens
+      self.sshConfig = sshConfig
+      self.knownHosts = knownHosts
+    }
   }
 
+  /// The host descriptor's `driver` for this provider's hosts.
+  public static let driverName = "boxd"
   /// The user every boxd machine logs in as, whose home holds the agent's state and the clone.
-  static let user = "boxd"
+  public static let user = "boxd"
   /// Where Workroom keeps its state on a boxd machine: the agent's socket and the sessions' screens.
-  static let stateDirectory = "/home/\(user)/.local/state/workroom"
+  public static let stateDirectory = "/home/\(user)/.local/state/workroom"
 
-  let configuration: Configuration
-  var agentSocket: String { configuration.agentSocket }
+  public let configuration: Configuration
+  public var agentSocket: String { configuration.agentSocket }
   /// Where each host's `ssh_config` and `known_hosts` are written.
-  let directory: URL
+  public let directory: URL
   private let runner: any StatusCommandRunning
 
-  init(
+  public init(
     configuration: Configuration, directory: URL,
     runner: any StatusCommandRunning = StatusCommandRunner()
   ) {
@@ -79,7 +98,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "BoxdHostDriver")
 
-  func name(of id: UUID) -> String { "\(configuration.prefix)-\(id.uuidString.lowercased())" }
+  public func name(of id: UUID) -> String {
+    "\(configuration.prefix)-\(id.uuidString.lowercased())"
+  }
 
   private func id(of host: HostID) throws -> UUID {
     guard case .remote(let id) = host else { throw HostDriverError.unknownHost(host) }
@@ -94,15 +115,15 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// A fresh machine, set up as a workroom's host: the identity unit has minted its identity and
   /// the supervisor is waiting for an agent. A machine that gets no further is removed.
-  func create() async throws -> HostID {
+  public func create() async throws -> HostID {
     try await checkOrg()
     let id = UUID()
     let name = name(of: id)
     try markPending(id)
     do {
-      RemoteProvisioning.reportStep?(.machine)
+      ProvisioningProgress.reportStep?(.machine)
       _ = try await cli(["machine", "new", name])
-      RemoteProvisioning.reportStep?(.setup)
+      ProvisioningProgress.reportStep?(.setup)
       let script = try HostSetup.systemdScript()
       let user = try ssh(id).user
       let (status, output) = try await exec(
@@ -123,7 +144,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Removes the machine. One already gone counts as removed, so a caller retrying after a later
   /// step of its own failed gets past the destroy it already did.
-  func destroy(_ host: HostID) async throws {
+  public func destroy(_ host: HostID) async throws {
     let id = try id(of: host)
     try await checkOrg()
     if let failure = await remove(machine: name(of: id)) {
@@ -155,7 +176,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   private func markPending(_ id: UUID) throws {
     try PendingMachines.add(
       .init(
-        id: id, driver: RemoteWorkrooms.boxdDriver, org: configuration.org,
+        id: id, driver: Self.driverName, org: configuration.org,
         account: configuration.account), in: directory)
   }
 
@@ -219,7 +240,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The signed-in account, as `boxd auth --json` reports it. Throws, naming `boxd auth login`,
   /// when nobody is signed in.
-  func signedIn() async throws -> Account {
+  public func signedIn() async throws -> Account {
     do {
       return try decode(Account.self, await cli(["auth"]), "the signed-in account")
     } catch let failure as CLIFailure {
@@ -243,10 +264,10 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// `auth --json`, as far as the driver reads it.
-  struct Account: Decodable, Equatable {
-    let activeOrg: String?
-    let userID: String?
-    enum CodingKeys: String, CodingKey {
+  public struct Account: Decodable, Equatable {
+    public let activeOrg: String?
+    public let userID: String?
+    public enum CodingKeys: String, CodingKey {
       case activeOrg = "active_org"
       case userID = "user_id"
     }
@@ -254,7 +275,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// The account's id, which a new host records (#356): without it, deleting the host would skip
     /// the check that the same account is signed in, and another account's "not found" would read
     /// as gone.
-    func requiredUserID() throws -> String {
+    public func requiredUserID() throws -> String {
       guard let userID else {
         throw HostDriverError.provisioning(
           "boxd didn't say which account is signed in. Sign in again with `boxd auth login`.")
@@ -264,10 +285,10 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// `machine get --json`, as far as the driver reads it.
-  struct Machine: Decodable {
+  public struct Machine: Decodable {
     /// `running`, `standby` (suspended; `get` normalises the raw `suspended`), `hibernated`,
     /// `stopped`, and others in passing (boxd CLI docs).
-    var status: String? = nil
+    public var status: String? = nil
   }
 
   /// Whether `host` is asleep, from boxd's own record, without reaching the machine: an ssh login
@@ -278,7 +299,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
   /// as asleep: the read can't tell, and connecting would wake a box the user may be paying for,
   /// so a background read leaves it alone; opening the workroom still connects.
-  func presence(_ host: HostID) async -> Presence? {
+  public func presence(_ host: HostID) async -> Presence? {
     guard case .remote(let id) = host else { return nil }
     do {
       let output = try await cli(
@@ -294,14 +315,14 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// What boxd says of a machine, for a background read (#356).
-  enum Presence: Equatable, Sendable { case awake, asleep, gone }
+  public enum Presence: Equatable, Sendable { case awake, asleep, gone }
 
   /// How long a status read (`presence`) waits for the CLI: a status sweep and a
   /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
-  static let statusTimeout: TimeInterval = 10
+  public static let statusTimeout: TimeInterval = 10
 
   /// The statuses a connection would wake from: suspended and hibernated.
-  static let asleepStatuses: Set<String> = ["standby", "hibernated"]
+  public static let asleepStatuses: Set<String> = ["standby", "hibernated"]
 
   private func decode<T: Decodable>(_ type: T.Type, _ output: String, _ name: String) throws -> T {
     do {
@@ -328,7 +349,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     return result.stdout
   }
 
-  static func errorLine(_ stderr: String) -> String? {
+  public static func errorLine(_ stderr: String) -> String? {
     stderr.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
       .first { $0.hasPrefix("error:") }
   }
@@ -336,7 +357,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// The CLI's answers for a machine or snapshot that does not exist: `error: VM '<name>' not
   /// found` and `error: snapshot not found` (measured). Matched whole, so a transport failure
   /// that happens to say "not found" is never taken for a removal.
-  static func isNotFound(_ said: String) -> Bool {
+  public static func isNotFound(_ said: String) -> Bool {
     said == "error: snapshot not found"
       || (said.hasPrefix("error: VM '") && said.hasSuffix("' not found"))
   }
@@ -358,7 +379,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       agentSocket: configuration.agentSocket)
   }
 
-  func openStream(to host: HostID) async throws -> HostStream {
+  public func openStream(to host: HostID) async throws -> HostStream {
     let id = try id(of: host)
     let target = try ssh(id)
     return try SSHTransport.exec(
@@ -366,13 +387,13 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       on: target, in: hostDirectory(id), purpose: .connection)
   }
 
-  func exec(_ command: String, on host: HostID) async throws -> HostStream {
+  public func exec(_ command: String, on host: HostID) async throws -> HostStream {
     let id = try id(of: host)
     return try SSHTransport.exec(
       command, on: try ssh(id), in: hostDirectory(id), purpose: .exchange)
   }
 
-  func attachCommand(
+  public func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
     metadata: [(key: String, value: String)]
   ) throws -> String {
@@ -382,12 +403,12 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }
 
-  func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
+  public func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
     return SSHTransport.refusedLastAttach(of: session, in: hostDirectory(id))
   }
 
-  func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
+  public func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
     return SSHTransport.lostLinkLastAttach(of: session, in: hostDirectory(id))
   }
@@ -397,15 +418,15 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 /// (`# BEGIN boxd` … `# END boxd` in `~/.ssh/config`, `# BEGIN boxd-hosts` … in
 /// `~/.ssh/known_hosts`), and from nowhere else in them: a `Host *` of the user's own adds an
 /// `IdentityFile` ahead of boxd's, and `ssh -G` would hand back both.
-struct SSHDetails: Equatable {
-  let hostName: String
-  let port: Int
-  let user: String
-  let identityFile: String
+public struct SSHDetails: Equatable {
+  public let hostName: String
+  public let port: Int
+  public let user: String
+  public let identityFile: String
   /// `<type> <base64>`.
-  let hostKey: String
+  public let hostKey: String
 
-  init?(machine: String, sshConfig: String, knownHosts: String) {
+  public init?(machine: String, sshConfig: String, knownHosts: String) {
     var values: [String: String] = [:]
     var inStanza = false
     for line in Self.block("boxd", in: sshConfig) {
