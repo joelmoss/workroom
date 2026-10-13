@@ -127,10 +127,10 @@ final class ModalShortcutRoutingTests: XCTestCase {
       ),
       ("pendingProjectSettings", { $0.pendingProjectSettings = .init(project: project) }),
       (
-        "pendingExeDevSetup",
+        "pendingRemoteSetup",
         {
-          $0.pendingExeDevSetup = PendingExeDevSetup(
-            project: project, splitAnchor: nil,
+          $0.pendingRemoteSetup = PendingRemoteSetup(
+            project: project, splitAnchor: nil, place: .exeDev,
             setup: ExeDevSetup(
               driver: ExeDevHostDriver(
                 configuration: .init(),

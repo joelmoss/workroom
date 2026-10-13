@@ -17,7 +17,7 @@ import HostDrivers
 /// that waits on the user is checked until it's done, backing off from 3 s to 30 s (`poll`).
 @MainActor
 @Observable
-final class ExeDevSetup {
+final class ExeDevSetup: RemoteSetup {
   enum AccountStep: Equatable {
     case checking
     /// No ssh key at all: offer to make one.
@@ -70,9 +70,7 @@ final class ExeDevSetup {
 
   private let driver: ExeDevHostDriver
   private var signUp: ExeDevHostDriver.SignUp?
-  private var polling: Task<Void, Never>?
-  /// Which poll is current, so one replaced mid-check doesn't clear its successor.
-  private var pollID = UUID()
+  private let poller = SetupPoller()
   /// The sheet is gone: a check or a link that answers late must change nothing.
   private var isCancelled = false
   /// How the website steps are opened, for a test to catch.
@@ -271,8 +269,7 @@ final class ExeDevSetup {
   /// Stops every check and the sign-up session: the sheet is gone.
   func cancel() {
     isCancelled = true
-    polling?.cancel()
-    polling = nil
+    poller.cancel()
     endSignUp()
   }
 
@@ -287,23 +284,13 @@ final class ExeDevSetup {
     return plan == .waiting || gitHub == .waiting
   }
 
-  /// Checks each waiting step, 3 s after the user acts and backing off to every 30 s, until none
-  /// is: a sheet left open while the user is away mustn't keep opening ssh connections to exe.dev.
+  /// Checks each waiting step until none is (`SetupPoller`): a sheet left open while the user is
+  /// away mustn't keep opening ssh connections to exe.dev.
   private func poll() {
     guard !isCancelled else { return }
-    polling?.cancel()
-    let id = UUID()
-    pollID = id
-    polling = Task { [weak self] in
-      var delay = Duration.seconds(3)
-      while let self, self.isWaiting, !Task.isCancelled {
-        try? await Task.sleep(for: delay)
-        guard !Task.isCancelled else { break }
-        await self.checkWaitingSteps()
-        delay = min(delay * 2, .seconds(30))
-      }
-      if self?.pollID == id { self?.polling = nil }
-    }
+    poller.start(
+      while: { [weak self] in self?.isWaiting ?? false },
+      check: { [weak self] in await self?.checkWaitingSteps() })
   }
 
   private var isSigningUp: Bool {

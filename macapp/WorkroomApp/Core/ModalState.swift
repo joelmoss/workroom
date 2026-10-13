@@ -58,15 +58,6 @@ struct PendingProjectSettings: Identifiable {
   var id: String { project.id }
 }
 
-/// A remote create waiting on exe.dev's setup (`ExeDevSetupSheet`): the create it carries on once
-/// the account is ready, and the setup it shows. `id` is the project path.
-struct PendingExeDevSetup: Identifiable {
-  let project: Project
-  let splitAnchor: SidebarID?
-  let setup: ExeDevSetup
-  var id: String { project.path }
-}
-
 /// One window's modal presentations: the error sheet, the command-palette dialogs, the confirmations
 /// and the store-level sheets, and `hasModalPresentation` over all of them. Owned by `AppStore` as
 /// `modals`; the store forwards each member, so views and tests still read them through the store.
@@ -139,8 +130,8 @@ final class ModalState {
   /// windows on the same workroom fight over one `Defaults` dictionary with last-writer-wins.
   var pendingCommit: PendingCommit?
 
-  /// An exe.dev create waiting on the user's exe.dev setup (drives `ExeDevSetupSheet`).
-  var pendingExeDevSetup: PendingExeDevSetup?
+  /// A remote create waiting on the user's setup at its provider (drives `RemoteSetupSheet`).
+  var pendingRemoteSetup: PendingRemoteSetup?
 
   /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
   /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
@@ -171,6 +162,6 @@ final class ModalState {
       // Same for the commit sheet: without this, ⌥⇧⌘P could fire a push behind an open commit
       // dialog, and the terminal-scoped shortcuts would still reach a surface the user can't see.
       || pendingCommit != nil
-      || pendingExeDevSetup != nil
+      || pendingRemoteSetup != nil
   }
 }
