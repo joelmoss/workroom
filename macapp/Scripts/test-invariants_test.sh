@@ -181,6 +181,31 @@ if ! grep -q '^[[:space:]]*CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlem
   fails=$((fails + 1))
 fi
 
+# --- The app and the agent's shadow terminal run the same Ghostty engine ---------------------
+# wr-agent's shadow repaints every reattaching pane, so it must parse exactly what the app's
+# GhosttyKit parses (vcs/scripts/build-ghostty-vt.sh: "THE PIN IS THE POINT"). The two pins are
+# bumped by hand in two files, and GhosttyPinIntegrityTests only covers Package.resolved, so a
+# half-done bump builds and tests green. Both are abbreviations of one sha, so one must prefix the
+# other.
+GHOSTTY_VT_SH="${TEST_INVARIANTS_GHOSTTY_VT_SH:-$ROOT/vcs/scripts/build-ghostty-vt.sh}"
+app_engine="$(sed -n 's/^[[:space:]]*#[[:space:]]*ghostty engine[[:space:]]*:.*sha \([0-9a-f]\{7,\}\).*/\1/p' "$PROJECT_YML")"
+shadow_engine="$(sed -n 's/^GHOSTTY_SHA="\([0-9a-f]\{7,\}\)"$/\1/p' "$GHOSTTY_VT_SH")"
+if [ -z "$app_engine" ] || [ -z "$shadow_engine" ]; then
+  echo "FAIL: could not read the engine sha from project.yml ('ghostty engine : ... sha <sha>')"
+  echo "      or build-ghostty-vt.sh (GHOSTTY_SHA=\"<sha>\"): got '$app_engine' and '$shadow_engine'."
+  fails=$((fails + 1))
+else
+  case "$app_engine:$shadow_engine" in
+    "$shadow_engine"*:* | *:"$app_engine"*) ;;
+    *)
+      echo "FAIL: project.yml ships Ghostty $app_engine but build-ghostty-vt.sh builds the shadow"
+      echo "      from $shadow_engine. Bump both together, or reattached panes repaint from a"
+      echo "      different engine."
+      fails=$((fails + 1))
+      ;;
+  esac
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1
