@@ -17,6 +17,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-build`: build Rust dependencies, generate the Xcode project, and build Debug.
 - `make app-run`: rebuild and relaunch this checkout's Workroom Dev; stops its persisted session helpers.
 - `make app-run-exedev-fresh`: build and launch the dev app as a user exe.dev has never seen, to try the exe.dev setup sheet without touching your own ssh; `rm -rf ~/.workroom-exedev-fresh` starts over.
+- `make app-run-boxd-fresh`: the same for boxd: the dev app's boxd commands run with `~/.workroom-boxd-fresh` as their home, so you can try the boxd setup sheet (install, sign in, GitHub) without signing your own boxd out; `rm -rf ~/.workroom-boxd-fresh` starts over.
 - `make app-test`: run app unit/integration tests; safe alongside other workrooms' runs. It ends with the run's pass/fail/skip counts and each failing test, read from its `.xcresult`; don't query the bundle by hand.
 - `make app-package-test`: run the tests of the local Swift packages in `macapp/Packages/` with `swift test`; `make app-test` does not run them.
 - `make app-uitest`: run XCUITest in a logged-in GUI session; it takes that session exclusively, so runs from several workrooms queue.
