@@ -1,0 +1,30 @@
+{
+  "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
+  "runner": "for f in {files}; do case \"$f\" in *.py) python3 \"$f\" || exit 1 ;; *) echo \"pregate: no runner for $f\" >&2; exit 1 ;; esac; done",
+  "dependencies": {
+    "macapp/WorkroomApp/**": [
+      "macapp/Tests/pregate/app_gate_test.py"
+    ],
+    "macapp/WorkroomAppTests/**": [
+      "macapp/Tests/pregate/app_gate_test.py"
+    ],
+    "macapp/WorkroomAppUITests/**": [
+      "macapp/Tests/pregate/app_gate_test.py"
+    ],
+    "macapp/WorkroomSession/**": [
+      "macapp/Tests/pregate/app_gate_test.py"
+    ],
+    "macapp/project.yml": [
+      "macapp/Tests/pregate/app_gate_test.py"
+    ],
+    "macapp/Packages/**": [
+      "macapp/Tests/pregate/app_gate_test.py",
+      "macapp/Tests/pregate/package_gate_test.py"
+    ]
+  },
+  "selection": {
+    "ci.yml/cli": "git ls-files '*_test.go'",
+    "ci.yml/rust": "git ls-files 'vcs/*.rs'",
+    "ci.yml/agent-terminal-state": "git ls-files 'vcs/*.rs'"
+  }
+}
