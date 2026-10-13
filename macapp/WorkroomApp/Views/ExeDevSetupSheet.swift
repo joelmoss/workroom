@@ -181,6 +181,9 @@ struct ExeDevSetupSheet: View {
     case .failed(let said):
       problem(said)
       Button("Try Again") { Task { await setup.refresh() } }
+      // exe.dev's own sign-up, for when it answered in words Workroom doesn't know.
+      Button("Sign Up in a Terminal Instead") { setup.useTerminal() }
+        .buttonStyle(.link)
     }
   }
 
@@ -279,8 +282,10 @@ private struct SignUpTerminal: View {
   @State private var surface: GhosttySurfaceView
 
   init(command: String) {
-    _surface = State(
-      initialValue: GhosttySurfaceView(workingDirectory: NSHomeDirectory(), command: command))
+    let surface = GhosttySurfaceView(workingDirectory: NSHomeDirectory(), command: command)
+    // Its pane commands would act on the workroom pane behind the sheet.
+    surface.offersPaneCommands = false
+    _surface = State(initialValue: surface)
   }
 
   var body: some View {

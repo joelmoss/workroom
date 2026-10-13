@@ -341,8 +341,8 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Whether exe.dev's GitHub connection works: `--verify` ticks each connected account
   /// (`  joelmoss ✓`) and says "No GitHub accounts connected." otherwise, exit 0 both ways. It
-  /// takes no `--json` (spike, 2026-10-12). Any other exit is a check that couldn't answer, which
-  /// throws rather than reading as "not connected".
+  /// takes no `--json` (spike, 2026-10-12). Any other exit or answer is a check that couldn't
+  /// answer, which throws rather than reading as "not connected".
   public func gitHubConnected() async throws -> Bool {
     let result = await run(["integrations", "setup", "github", "--verify"], timeout: 60)
     try Task.checkCancellation()
@@ -352,7 +352,13 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
         said: Self.errorLine(result)
           ?? (result.timedOut ? "timed out after 60s" : "exited \(result.exitCode)"))
     }
-    return result.stdout.contains("✓")
+    if result.stdout.contains("✓") { return true }
+    if result.stdout.contains("No GitHub accounts connected") { return false }
+    throw CLIFailure(
+      command: "integrations",
+      said:
+        "an answer Workroom doesn't know: \(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))"
+    )
   }
 
   /// Whether the account's plan lets it make VMs: a new account's is Basic with `max_vms` 0, and

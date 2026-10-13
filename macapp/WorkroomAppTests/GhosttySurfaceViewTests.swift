@@ -434,3 +434,19 @@ final class RemotePaneReconnectTests: XCTestCase {
     XCTAssertNil(local.pendingReconnect)
   }
 }
+
+// Value: protects=a terminal that is no workroom's (the exe.dev setup sheet's) offers no command
+// that acts on the store's focused pane; fails_when=offersPaneCommands stops gating the menu, so
+// Close Terminal there closes the workroom pane behind the sheet; why_new=the menu had no test;
+// seam=contextMenu (non-test caller: presentContextMenu)
+/// The context menu offers the pane commands only on a terminal that is a workroom's.
+@MainActor
+final class TerminalContextMenuTests: XCTestCase {
+  func testOnlyAWorkroomsTerminalOffersThePaneCommands() {
+    let surface = GhosttySurfaceView(workingDirectory: "/tmp", spawnsSurface: false)
+    let titles = { surface.contextMenu().items.map(\.title).filter { !$0.isEmpty } }
+    XCTAssertTrue(titles().contains("Close Terminal"))
+    surface.offersPaneCommands = false
+    XCTAssertEqual(titles(), ["Paste"])
+  }
+}

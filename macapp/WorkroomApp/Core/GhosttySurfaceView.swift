@@ -108,6 +108,9 @@ final class GhosttySurfaceView: NSView {
   var onOpenURL: ((URL) -> Bool)?
   var onCmdClickFile: ((String) -> Void)?
   var resolveCmdHoverFile: ((String) -> Bool)?
+  /// Whether the context menu offers New Terminal, the splits and Close Terminal, which act on the
+  /// store's focused pane: off for a terminal that is no workroom's, as in the exe.dev setup sheet.
+  var offersPaneCommands = true
   /// The surface's latest title (OSC 0/2, via shell integration): the running command while busy,
   /// the working directory when idle. Forwarded to the tab strip (issue #2).
   var onTitleChange: ((String) -> Void)?
@@ -1757,12 +1760,17 @@ final class GhosttySurfaceView: NSView {
   private func presentContextMenu(with event: NSEvent) {
     // Right-click focuses this pane so the split/close commands below act on the one clicked.
     window?.makeFirstResponder(self)
+    NSMenu.popUpContextMenu(contextMenu(), with: event, for: self)
+  }
 
+  /// Paste, then, where `offersPaneCommands`, the pane commands.
+  func contextMenu() -> NSMenu {
     let menu = NSMenu(title: "Terminal")
     let paste = NSMenuItem(title: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
     paste.target = self
     paste.isEnabled = NSPasteboard.general.string(forType: .string).map { !$0.isEmpty } ?? false
     menu.addItem(paste)
+    guard offersPaneCommands else { return menu }
     menu.addItem(.separator())
     menu.addItem(contextItem("New Terminal", #selector(contextNewTerminal), "t", .command))
     menu.addItem(contextItem("Split Right", #selector(contextSplitRight), "d", .command))
@@ -1771,7 +1779,7 @@ final class GhosttySurfaceView: NSView {
     menu.addItem(contextItem("Split Up", #selector(contextSplitUp)))
     menu.addItem(.separator())
     menu.addItem(contextItem("Close Terminal", #selector(contextCloseTerminal), "w", .command))
-    NSMenu.popUpContextMenu(menu, with: event, for: self)
+    return menu
   }
 
   /// Build a context-menu item targeting this view; the optional key/modifiers are shown as a hint.
