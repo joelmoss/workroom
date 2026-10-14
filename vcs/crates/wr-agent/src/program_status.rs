@@ -178,8 +178,12 @@ impl Store {
 
     /// One read's events, in order, except that a probe counts only after the reports read with
     /// it. A prober has to read the agent's answer before it can report, so a probe and a report
-    /// in one read are bytes replayed by something else (a `cat` of a recorded session), which
-    /// must not alert. A prompt or reset after the probe ends that run, and the probe with it.
+    /// in one read were printed by something that never read it, which must not alert. A prompt
+    /// or reset after the probe ends that run, and the probe with it.
+    ///
+    /// shortcut: a replay whose probe and report land in different reads still alerts (a `cat` of
+    /// a recorded Claude session: a macOS pty read is at most 1 KiB, and a screen paint separates
+    /// them); telling those apart needs a clock or the pty's input queue, if replays ever matter.
     pub fn apply_read(&mut self, events: Vec<Event>, owner: Group) {
         let mut probed = false;
         for event in events {

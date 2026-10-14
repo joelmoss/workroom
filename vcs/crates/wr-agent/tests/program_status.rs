@@ -220,7 +220,7 @@ mod live {
     const PROBE: &str = r"printf '\033]7501;?\033\\'";
     /// A prober as Claude Code is one: it reads the answer before it reports, so its report is
     /// trusted to alert. (A probe and a report printed together are not.)
-    const ASK: &str = r"stty -echo -icanon min 0 time 10; printf '\033]7501;?\033\\'; dd bs=256 count=1 >/dev/null 2>&1";
+    const ASK: &str = r"stty -echo -icanon min 0 time 50; printf '\033]7501;?\033\\'; dd bs=256 count=1 >/dev/null 2>&1";
 
     /// The session's status as a new subscriber's snapshot would carry it.
     fn status_of(store: &SessionStore, session: SessionId) -> Value {
