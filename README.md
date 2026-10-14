@@ -161,7 +161,8 @@ its tab and project light up, and — if Workroom isn't the frontmost app — yo
 The bell at the right of the app footer opens notifications; click an entry (or the banner) to jump
 straight to the terminal that raised it. A program that reports its status, such as Claude Code,
 also shows when it is waiting on you (a permission, a question) or has finished its turn, and
-⇧⌘M goes to the terminal that has waited longest: see [program status](docs/program-status.md).
+alerts you once when it starts waiting (**Settings ▸ Notify when a terminal needs me** turns that
+off). ⇧⌘M goes to the terminal that has waited longest. See [program status](docs/program-status.md).
 
 The [persistent app footer](docs/screenshots/window-footer.png) also shows usage for each running
 agent provider on the left, including agents in background tabs and other windows. Click its usage

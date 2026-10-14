@@ -159,6 +159,25 @@ sends only OSC 9;4.
 - The **unread dot** and the **Dock badge** count notifications, plus requests waiting on you.
 - A finished turn never alerts.
 
+## Known limits
+
+- **Run commands and other non-daemon panes** never show program status: only a terminal whose
+  shell runs under `wr-agent` has an agent to keep it (see `TODOS.md`).
+- **A replayed recording can alert.** `cat`ing a raw recording of a session that probed can raise
+  one "needs you" alert, because the agent sees its probe and its report in separate reads.
+- **Alerts route to one tab.** With the same session open in two windows, pointing the tab its alert
+  went to at another session (Detached sessions › Active tab) leaves the alert opening that tab.
+  ⇧⌘M still reaches the window that shows the session.
+- **A remote host coming back can lag.** After a long disconnect, such as a host that was asleep,
+  marks can stay "may be out of date" for up to 30 seconds after it is reachable again: Workroom
+  retries on its own schedule, not when you open the workroom.
+- **A request that started before a host's first connection** shows its mark and count but never
+  alerts, even when that first connection comes long after launch: Workroom treats it as already
+  waiting before the app started.
+- **Focus while a host is unreachable** does not clear a finished or failed mark. Focus the terminal
+  again once the host is back.
+- **More than 64 records** from one program push out the oldest, even one that is waiting on you.
+
 ## Troubleshooting
 
 `wr-agent program-status` prints what the agent holds for every session: whether its program is
