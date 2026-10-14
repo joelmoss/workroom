@@ -3145,14 +3145,15 @@ final class AppStore: ObservableObject {
 
   // MARK: Program status alerts (#358)
 
-  /// Raise the alert for a request a program in `tabID` waits on: "<terminal> needs you", the kind
-  /// sentence, then the program's own words, quoted. `stillWanted` is asked again right before a
+  /// Raise the alert for a request a program in `tabID` waits on: "Terminal 2 in fix-auth needs
+  /// you" (the terminal's own name, never the title its program set, and its workroom, or project
+  /// for a root), the kind sentence, then the program's own words, quoted. `stillWanted` is asked again right before a
   /// banner posts, since asking for permission can take as long as the user takes to answer.
   func raiseNeedsYou(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, episode: String,
     record: ProgramStatusRecord, stillWanted: @escaping () -> Bool
   ) {
-    let name = terminals.title(ofTab: tabID, inTarget: targetID) ?? "A terminal"
+    let name = terminalPlace(targetID: targetID, tabID: tabID)
     var body = ProgramStatusPresentation.sentence(record.kind)
     if let message = ProgramStatusPresentation.oneLine(record.message) {
       body += ": \u{201C}\(message)\u{201D}"
@@ -3161,6 +3162,16 @@ final class AppStore: ObservableObject {
       targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
       title: "\(name) needs you", body: body, episode: episode)
     surface(note, stillWanted: stillWanted)
+  }
+
+  /// "Terminal 2 in fix-auth": a terminal's own name and where it is, as alerts and the menu bar's
+  /// waiting list name it. Just the terminal's name when its target is not a known project's.
+  func terminalPlace(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> String {
+    let name = terminals.defaultTitle(ofTab: tabID, inTarget: targetID) ?? "A terminal"
+    guard let sid = Self.sidebarID(forTargetID: targetID, in: projects) else { return name }
+    let label = label(for: sid)
+    let place = label.workroom ?? label.project
+    return place.isEmpty ? name : "\(name) in \(place)"
   }
 
   /// The program's own text for a request already raised (see `ProgramStatusAlerts.absorbsOSC`).
