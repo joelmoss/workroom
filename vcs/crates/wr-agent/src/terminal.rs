@@ -903,7 +903,8 @@ impl ShadowTerminal {
     ///
     /// The largest fitting count found is kept. The screen alone (0 rows) is always returned, even
     /// when it does not fit a budget smaller than itself: a caller is sent the screen, never
-    /// nothing. Past `until`, no more guesses are made: the best fit so far, or the screen alone.
+    /// nothing. Past `until`, no more guesses are made: the best fit so far, or the screen alone,
+    /// and a call that starts past it formats the screen alone.
     ///
     /// shortcut: the guesses assume older rows are about as dense as the newest, so a sparse tail
     /// over much denser history can overshoot once, by up to the whole history's paint; cap how
@@ -926,6 +927,12 @@ impl ShadowTerminal {
             u32::try_from(scaled).unwrap_or(u32::MAX).min(history)
         };
 
+        if late() {
+            return Tail {
+                bytes: format(0),
+                history_rows: 0,
+            };
+        }
         let mut best: Option<(u32, Vec<u8>)> = None;
         let mut rows = history.min(TAIL_SAMPLE_ROWS);
         let sample = format(rows);
@@ -1081,7 +1088,10 @@ impl ShadowTerminal {
         let late = until.is_some_and(|until| Instant::now() >= until);
 
         let mut out = if self.mode(modes::ALT_SCREEN) == Some(true) {
-            let alternate = self.paint(budget.saturating_sub(fixed + padding), None);
+            let alternate = self.paint(
+                budget.saturating_sub(fixed + padding + ALTERNATE.len()),
+                None,
+            );
             let left = budget.saturating_sub(fixed + alternate.len() + ALTERNATE.len());
             // The primary screen first, then re-entering the alt screen, then the alt screen's own
             // paint below — the order a real session produced them in.
@@ -1090,13 +1100,11 @@ impl ShadowTerminal {
             } else {
                 self.primary_screen(budget, left.saturating_sub(padding + CURSOR + KITTY), until)
             };
-            let mut out = match primary {
-                Some(mut primary) => {
-                    primary.extend_from_slice(ALTERNATE);
-                    primary
-                }
-                None => Vec::new(),
-            };
+            // The switch whether or not the primary was painted. The formatter's mode extras set
+            // it again within the paint (measured), but the screen switch is what separates the
+            // two paints, so it is written here rather than left to them.
+            let mut out = primary.unwrap_or_default();
+            out.extend_from_slice(ALTERNATE);
             out.extend_from_slice(&alternate);
             out
         } else {
@@ -1587,6 +1595,45 @@ mod tests {
             client.visible_text().contains("line 299"),
             "the screen was not sent"
         );
+    }
+
+    /// A record made past its deadline (a hand-off out of time) is the screen alone, and under a
+    /// full-screen program still switches to the alternate screen, so the program's exit brings
+    /// the client back to its primary rather than leaving the program's screen there.
+    ///
+    /// Value: protects=a late record carries no history and keeps the screen switch;
+    /// fails_when=the switch is written only with the primary's paint, or a late call still
+    /// formats history; why_new=a record never skipped the primary before; seam=none
+    #[test]
+    fn a_record_past_its_deadline_is_the_screen_alone() {
+        for alternate in [false, true] {
+            let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+            for n in 0..200 {
+                producer.write(format!("line {n}\r\n").as_bytes());
+            }
+            if alternate {
+                producer.write(b"\x1b[?1049h\x1b[Hprogram");
+            }
+            let mut client = ShadowTerminal::new(80, 24).expect("client");
+            client.write(&producer.record_within(REPAINT_MAX_BYTES, Some(Instant::now())));
+            assert_eq!(
+                history_rows(&client),
+                0,
+                "alternate {alternate}: history sent past the deadline"
+            );
+            assert_eq!(
+                client.mode(modes::ALT_SCREEN),
+                Some(alternate),
+                "alternate {alternate}: the screen switch was lost"
+            );
+            if alternate {
+                client.write(b"\x1b[?1049l");
+                assert!(
+                    !client.visible_text().contains("program"),
+                    "the program's screen stayed after it left"
+                );
+            }
+        }
     }
 
     /// The cut fixtures: modes set before the history, so they are older than any cut, then

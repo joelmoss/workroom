@@ -2451,6 +2451,10 @@ mod tests {
                     has(screen, b"VIM") && !has(screen, b"line 2999 "),
                     "the full-screen session painted its primary past the deadline"
                 );
+                assert!(
+                    has(screen, b"\x1b[?1049h"),
+                    "the full-screen session lost its switch to the alternate screen"
+                );
             } else {
                 assert!(
                     has(screen, b"line 2999 "),
