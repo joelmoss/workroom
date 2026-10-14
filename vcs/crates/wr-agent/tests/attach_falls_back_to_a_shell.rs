@@ -344,6 +344,49 @@ fn the_interactive_fallback_is_a_real_login_shell() {
     );
 }
 
+/// Apple's `/bin/bash` was started with `--posix` for an integration it never loads, so it stayed
+/// in POSIX mode: `<(…)` was a syntax error. Asserted on the real shell, because the unit test of
+/// `shell::invocation` once pinned `--posix` as correct. Stdin is a pipe, so this bash is not
+/// interactive; the interactive startup is the live PTY probe's job.
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_bash_is_not_left_in_posix_mode() {
+    let dir = scratch("applebash");
+    let (output, _) = attach_with_stdin(
+        &[
+            // A socket and a cwd but no session id: app-invoked, and the fallback shell runs.
+            (
+                "WORKROOM_SESSION_SOCKET",
+                dir.join("a.sock").to_str().unwrap(),
+            ),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/bash"),
+            ("WORKROOM_SESSION_COMMAND", ""),
+            ("WORKROOM_SESSION_RESOURCES", "/res"),
+            // No developer dotfiles.
+            ("HOME", dir.to_str().unwrap()),
+        ],
+        // Separate lines: a syntax error in the second must not stop the first from printing.
+        "shopt -o posix\ncat <(echo procsub-ok)\n",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        output.contains("will not survive quitting"),
+        "the fallback did not fire, so this test is asserting nothing. got: {output:?}"
+    );
+    assert!(
+        output
+            .lines()
+            .any(|line| line.split_whitespace().eq(["posix", "off"])),
+        "Apple bash was left in POSIX mode. got: {output:?}"
+    );
+    assert!(
+        output.contains("procsub-ok"),
+        "process substitution failed, which POSIX mode does. got: {output:?}"
+    );
+}
+
 /// A session variable must not survive into the fallback shell, and the marker must.
 #[test]
 fn the_fallback_shell_reports_no_session_but_does_report_the_fallback() {

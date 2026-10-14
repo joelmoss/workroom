@@ -487,6 +487,24 @@ views, so it wants a deliberate visual pass rather than a drive-by change.
 
 ## P3 — Terminal, panes, and focus
 
+### Shell integration for macOS's built-in `/bin/bash` (wr-agent, macapp)
+
+**What:** give Apple's `/bin/bash` (3.2) Ghostty's shell integration: OSC 133 command marks and
+OSC 7 cwd, so the inline agent, the command-end title reset and cwd tracking work there.
+
+**Why:** today it gets none, in persistent panes and in libghostty's own. Apple's bash ignores the
+`ENV` startup path the integration uses, so `wr-agent` now starts it as a plain login shell, as
+Ghostty does (`detectShell` in `src/termio/shell_integration.zig`). Homebrew bash 4.4+ is
+unaffected.
+
+**Context:** `--rcfile` does not apply to a login shell, so a fix needs another way in, such as a
+`PROMPT_COMMAND` hook set from the environment. Probed 2026-10-14: `ghostty.bash` sourced from an
+rcfile under bash 3.2 does report correct `133;D` exit codes, so the script itself works there.
+Start at `vcs/crates/wr-agent/src/shell.rs` (`bash_integration`). Upstream declines it, so the
+libghostty path would stay without it.
+
+**Priority:** P3, effort M.
+
 ### Agent bootstrap (#231): two review findings the /ship pass deferred (macapp, wr-agent)
 
 **What:** Two items the #231 review raised and the branch did not take.

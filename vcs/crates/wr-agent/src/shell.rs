@@ -60,13 +60,18 @@ pub fn invocation(
     };
     let name = shell_name(resolved_shell);
     let mut env = Environment::new(environment);
+    // Apple's bash 3.2 ignores `ENV`, so ghostty.bash never runs to undo `--posix` and the shell
+    // stays in POSIX mode. Ghostty skips `/bin/bash` on Darwin for the same reason
+    // (`src/termio/shell_integration.zig`); match its exact path, so a symlink to it still misses.
+    let bash_integration =
+        name == "bash" && !(cfg!(target_os = "macos") && resolved_shell == "/bin/bash");
 
     if !resources_directory.is_empty() {
         env.set("GHOSTTY_RESOURCES_DIR", resources_directory);
         let root = format!("{resources_directory}/shell-integration");
         match name {
             "zsh" => apply_zsh(&root, &mut env),
-            "bash" => apply_bash(&root, &mut env),
+            "bash" if bash_integration => apply_bash(&root, &mut env),
             "fish" | "elvish" | "nu" => apply_xdg(&root, &mut env),
             _ => {}
         }
@@ -88,7 +93,7 @@ pub fn invocation(
     let mut arguments = vec![OsString::from(format!("-{name}"))];
     // bash needs --posix alongside the ENV-based integration, but only for an interactive shell;
     // a run command took the branch above.
-    if name == "bash" && !resources_directory.is_empty() {
+    if bash_integration && !resources_directory.is_empty() {
         arguments.push(OsString::from("--posix"));
     }
 
@@ -253,7 +258,12 @@ mod tests {
 
     #[test]
     fn bash_gets_env_injection_and_posix_mode() {
-        let result = invocation("", "/bin/bash", "/res", &env(&[("HOME", "/home/u")]));
+        let result = invocation(
+            "",
+            "/opt/homebrew/bin/bash",
+            "/res",
+            &env(&[("HOME", "/home/u")]),
+        );
         assert_eq!(result.arguments[0], OsString::from("-bash"));
         assert!(result.arguments.contains(&OsString::from("--posix")));
         assert_eq!(
@@ -269,10 +279,57 @@ mod tests {
 
     #[test]
     fn an_existing_bash_env_is_preserved() {
-        let result = invocation("", "/bin/bash", "/res", &env(&[("ENV", "/home/u/.env")]));
+        let result = invocation(
+            "",
+            "/opt/homebrew/bin/bash",
+            "/res",
+            &env(&[("ENV", "/home/u/.env")]),
+        );
         assert_eq!(
             lookup(&result, "GHOSTTY_BASH_ENV").as_deref(),
             Some("/home/u/.env")
+        );
+    }
+
+    /// Apple's bash never reads `ENV`, so the integration that would undo `--posix` never runs:
+    /// the shell stayed in POSIX mode (no `<(…)`, no dashed function names). It gets a plain login
+    /// shell instead, as Ghostty gives it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_bash_gets_a_plain_login_shell() {
+        let result = invocation("", "/bin/bash", "/res", &env(&[("HOME", "/home/u")]));
+        assert_eq!(result.program, OsString::from("/bin/bash"));
+        assert_eq!(result.arguments, vec![OsString::from("-bash")]);
+        assert_eq!(
+            lookup(&result, "GHOSTTY_RESOURCES_DIR").as_deref(),
+            Some("/res")
+        );
+        for key in [
+            "ENV",
+            "GHOSTTY_BASH_INJECT",
+            "GHOSTTY_BASH_ENV",
+            "HISTFILE",
+            "GHOSTTY_BASH_UNEXPORT_HISTFILE",
+        ] {
+            assert!(lookup(&result, key).is_none(), "{key} was injected");
+        }
+    }
+
+    /// Runs only off macOS: a remote host's `/bin/bash` is a modern bash that loads the
+    /// integration, so the Apple-bash skip must not reach it.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn linux_bin_bash_keeps_the_integration() {
+        let result = invocation("", "/bin/bash", "/res", &env(&[("HOME", "/home/u")]));
+        assert!(result.arguments.contains(&OsString::from("--posix")));
+        assert_eq!(
+            lookup(&result, "ENV").as_deref(),
+            Some("/res/shell-integration/bash/ghostty.bash")
+        );
+        assert_eq!(lookup(&result, "GHOSTTY_BASH_INJECT").as_deref(), Some("1"));
+        assert_eq!(
+            lookup(&result, "HISTFILE").as_deref(),
+            Some("/home/u/.bash_history")
         );
     }
 

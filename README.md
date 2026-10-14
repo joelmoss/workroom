@@ -607,6 +607,20 @@ the `workroom/<name>` branch; remove it with `git branch -D workroom/<name>` if 
 **`list` shows "directory not found" / "workspace not found"** — the workroom's directory or its VCS
 workspace was removed out from under Workroom. Run `workroom delete <name>` to reconcile the config.
 
+**macOS's built-in bash: no command-finished features** — if your login shell is `/bin/bash`
+(Apple's bash 3.2), terminals get no shell integration, so the inline agent, the tab title reset
+when a command ends, and working-directory tracking don't work there. Apple's bash ignores the
+startup hook the integration uses. Homebrew bash (4.4 or newer) gets all of them:
+
+```bash
+brew install bash
+echo "$(brew --prefix)/bin/bash" | sudo tee -a /etc/shells
+chsh -s "$(brew --prefix)/bin/bash"
+```
+
+Then log out and back in, so apps you open from the Dock see the new shell, and open a new terminal
+in Workroom. `echo $BASH_VERSION` should print 5.x.
+
 **App's PR/CI inspector is empty** — it shells out to the GitHub CLI. You need `gh` ≥ 2.57.0 on
 `PATH`, authenticated (`gh auth status --active`).
 

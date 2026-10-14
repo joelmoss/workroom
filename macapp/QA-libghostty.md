@@ -165,6 +165,9 @@ bump is worthless.
   must keep `.program_status` a no-op. The agent answers a program's probe for every daemon-backed
   pane (#358), so if the app's terminal starts answering too, the program reads two replies. If it
   does, stop the agent answering for panes the app shows, or the app answering for daemon panes.
+- Check upstream still skips Apple's bash: `detectShell` in `src/termio/shell_integration.zig` at
+  the new sha must still return no integration for `/bin/bash` on Darwin. `wr-agent`'s
+  `shell::invocation` mirrors that skip by hand, so if upstream changes it, change both.
 - Re-check the GhosttyKit modulemap-collision workaround (`macapp/AGENTS.md`). `release.sh` refuses a
   bundle with a thin Mach-O, and `nightly.yml` builds universal daily, so no separate universal build
   is needed.
