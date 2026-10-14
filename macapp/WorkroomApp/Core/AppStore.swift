@@ -1,3 +1,4 @@
+import AgentConnection
 import AppKit
 import Combine
 import Defaults
@@ -1041,11 +1042,16 @@ final class AppStore: ObservableObject {
       // After the fallback re-point (or not): if the selected target now has no tabs, the inspector
       // empties (issue: History/Changes/PR stayed on the last workroom after closing all its tabs).
       self.refreshSelectionHasTabs()
+      // A closed pane's waiting requests stop counting.
+      WindowRegistry.shared.recomputeBadge()
     // A click into a co-displayed split pane's terminal focuses that workroom (issue #23 follow-up),
     // so commands target it. History-suppressed (the routing method) — glancing between panes isn't
     // navigation.
     case .surfaceFocused(let targetID):
       focusWorkroomMemberFromSurface(targetID)
+    // Effective focus is the one authority for reading a terminal's notifications (#358).
+    case .terminalSeen(_, let tabID):
+      notifications.dismiss(tab: tabID)
     // Pop-out panes (issue #172). `detachPane`/`dockPane` own the model half and fire these for the
     // window half, so membership and window are always written together — see `DetachedPaneWindows`
     // for the state machine and for why these windows are NOT in `WindowRegistry`.
@@ -3121,12 +3127,61 @@ final class AppStore: ObservableObject {
       isSelectedMember: isSelectedMember, isCursorTab: isCursorTab,
       detachedWindowKey: detachedPanes.window(for: tabID)?.isKeyWindow)
     if outcome.pulse { terminals.pulsePaneActivity(tabID) }
+    // The program's own alert about a request Workroom already raised, or the same alert from
+    // another pane of the session a moment ago, is folded in rather than shown twice (#358).
+    if case .osc(let title, let body) = activity,
+      let session = terminals.sessionID(forTab: tabID, inTarget: targetID),
+      ProgramStatusAlerts.shared.absorbsOSC(session: session, title: title, body: body)
+    {
+      return
+    }
     guard outcome.record,
       let note = notifications.record(
         targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
         activity: activity, focused: false)
     else { return }
     surface(note)
+  }
+
+  // MARK: Program status alerts (#358)
+
+  /// Raise the alert for a request a program in `tabID` waits on: "<terminal> needs you", the kind
+  /// sentence, then the program's own words, quoted. `stillWanted` is asked again right before a
+  /// banner posts, since asking for permission can take as long as the user takes to answer.
+  func raiseNeedsYou(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, episode: String,
+    record: ProgramStatusRecord, stillWanted: @escaping () -> Bool
+  ) {
+    let name = terminals.title(ofTab: tabID, inTarget: targetID) ?? "A terminal"
+    var body = ProgramStatusPresentation.sentence(record.kind)
+    if let message = ProgramStatusPresentation.oneLine(record.message) {
+      body += ": \u{201C}\(message)\u{201D}"
+    }
+    let note = notifications.recordNeedsYou(
+      targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
+      title: "\(name) needs you", body: body, episode: episode)
+    surface(note, stillWanted: stillWanted)
+  }
+
+  /// The program's own text for a request already raised (see `ProgramStatusAlerts.absorbsOSC`).
+  func mergeIntoNeedsYou(episode: String, body: String?) {
+    notifications.merge(episode: episode, body: body)
+  }
+
+  /// The request was answered, or its program ended: its alert and banner go.
+  func withdrawNeedsYou(episode: String) {
+    toasts.removeAll { $0.episode == episode }
+    if !notifications.dismiss(episode: episode).isEmpty {
+      systemNotifier.withdraw(identifiers: [episode])
+    }
+  }
+
+  /// The program-status session of the terminal focused in this window, for ⇧⌘M.
+  var focusedTerminalSession: UUID? {
+    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target) else {
+      return nil
+    }
+    return terminals.sessionID(forTab: tab.id, inTarget: target.id)
   }
 
   /// Tell the user a new workroom doesn't start where they'd expect: its create couldn't fetch, the
@@ -3140,7 +3195,7 @@ final class AppStore: ObservableObject {
 
   /// Present a recorded notification: an in-app toast and the arrival sound while the app is
   /// frontmost, a native banner otherwise.
-  private func surface(_ note: WorkroomNotification) {
+  private func surface(_ note: WorkroomNotification, stillWanted: @escaping () -> Bool = { true }) {
     if NotificationGate.shouldPresentInApp(recorded: true, appActive: NSApp.isActive) {
       // App is focused: sound on every arrival, then pop a toast. Notifications now live in the
       // always-visible left-sidebar strip + the title-bar bell badge (issue #118), so the transient
@@ -3152,7 +3207,9 @@ final class AppStore: ObservableObject {
       enqueueToast(note)
     } else if NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) {
       Task { @MainActor in
-        if await systemNotifier.ensureAuthorized() {
+        if await systemNotifier.ensureAuthorized(), stillWanted(),
+          notifications.items.contains(where: { $0.id == note.id })
+        {
           systemNotifier.post(note)
         }
       }
@@ -3231,8 +3288,14 @@ final class AppStore: ObservableObject {
 
   /// On app refocus, dismiss the notifications for the now-visible terminal (the selected target's
   /// active tab) — you're looking at it. Called from `RootView`'s `didBecomeActive` hook.
+  ///
+  /// Only the key window's, and only while its terminal holds focus (#358): every window hears the
+  /// activation, and a window behind the key one, or focus in an inspector field, is not the user
+  /// looking at that terminal.
   func dismissFocusedTerminalNotifications() {
-    guard let target = selectedTarget, let active = terminals.activeTab(for: target) else { return }
+    guard hostWindow?.isKeyWindow == true, let target = selectedTarget,
+      let active = terminals.activeTab(for: target), active.surface?.holdsFirstResponder == true
+    else { return }
     notifications.dismiss(tab: active.id)
   }
 

@@ -50,6 +50,12 @@ final class MenuBarController {
       .receive(on: RunLoop.main)
       .sink { [weak self] total in self?.applyCount(total) }
       .store(in: &cancellables)
+    // A waiting request whose count is unchanged (one answered, another arrived, or its host went
+    // stale) still changes what the label says (#358).
+    ProgramStatusAlerts.shared.$waiting
+      .receive(on: RunLoop.main)
+      .sink { [weak self] _ in self.map { $0.applyCount($0.registry.aggregateUnread) } }
+      .store(in: &cancellables)
     applyCount(registry.aggregateUnread)
 
     // Show/hide the item live with the `showMenuBarItem` setting (issue #33) — same key as the
@@ -68,17 +74,30 @@ final class MenuBarController {
   /// one (matching the in-app `UnreadCount.label` cap), nothing otherwise.
   private func applyCount(_ total: Int) {
     guard let button = statusItem.button else { return }
-    if total > 0 {
-      button.title = UnreadCount.label(total)
-      button.setAccessibilityLabel("Workroom, \(total) notifications")
-    } else {
-      button.title = ""
-      button.setAccessibilityLabel("Workroom notifications")
+    let breakdown = Self.breakdown(
+      waiting: ProgramStatusAlerts.shared.waiting,
+      unread: registry.allStores.reduce(0) { $0 + $1.notifications.unreadExcludingRequests })
+    button.title = total > 0 ? UnreadCount.label(total) : ""
+    button.toolTip = breakdown
+    button.setAccessibilityLabel(breakdown.map { "Workroom, \($0)" } ?? "Workroom notifications")
+  }
+
+  /// "2 requests waiting, 1 unread notification (1 may be out of date)", or nil with neither.
+  static func breakdown(waiting: [WaitingRequest], unread: Int) -> String? {
+    var parts: [String] = []
+    if !waiting.isEmpty {
+      parts.append(waiting.count == 1 ? "1 request waiting" : "\(waiting.count) requests waiting")
     }
+    if unread > 0 {
+      parts.append(unread == 1 ? "1 unread notification" : "\(unread) unread notifications")
+    }
+    guard !parts.isEmpty else { return nil }
+    let stale = waiting.count { $0.stale }
+    return parts.joined(separator: ", ") + (stale > 0 ? " (\(stale) may be out of date)" : "")
   }
 
   @objc private func handleClick() {
-    if registry.aggregateUnread > 0 {
+    if registry.aggregateUnread > 0 || !ProgramStatusAlerts.shared.waiting.isEmpty {
       togglePopover()
     } else {
       // No notifications → nothing to list; just bring the app forward.

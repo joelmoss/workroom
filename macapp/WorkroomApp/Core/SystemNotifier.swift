@@ -13,6 +13,12 @@ protocol SystemNotifying: Sendable {
   func ensureAuthorized() async -> Bool
   func post(_ notification: WorkroomNotification)
   func withdraw(tabIDs: [TerminalTab.ID])
+  /// Withdraw delivered banners by request identifier (a "needs you" alert's is its episode).
+  func withdraw(identifiers: [String])
+}
+
+extension SystemNotifying {
+  func withdraw(identifiers: [String]) {}
 }
 
 struct SystemNotifier: SystemNotifying {
@@ -34,7 +40,8 @@ struct SystemNotifier: SystemNotifying {
       body = n.body
     }
     return Payload(
-      identifier: n.tabID.uuidString,
+      // A "needs you" alert is one banner per request (#358), so resolving one withdraws only it.
+      identifier: n.episode ?? n.tabID.uuidString,
       title: n.title,
       subtitle: n.source.isEmpty ? nil : n.source,
       body: body,
@@ -67,7 +74,10 @@ struct SystemNotifier: SystemNotifying {
   }
 
   func withdraw(tabIDs: [TerminalTab.ID]) {
-    let ids = tabIDs.map(\.uuidString)
+    withdraw(identifiers: tabIDs.map(\.uuidString))
+  }
+
+  func withdraw(identifiers ids: [String]) {
     let center = UNUserNotificationCenter.current()
     center.removeDeliveredNotifications(withIdentifiers: ids)
     center.removePendingNotificationRequests(withIdentifiers: ids)

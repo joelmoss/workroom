@@ -550,6 +550,9 @@ final class TerminalSessions: ObservableObject {
     /// A closed remote pane's session could not be ended on its host, so it
     /// is still running there (#283). Given the target's id and title.
     case remoteCloseFailed(TerminalTarget.ID, title: String)
+    /// The user is now looking at this terminal: its surface became first responder in the key
+    /// window, by any route (#358). Its notifications are read.
+    case terminalSeen(TerminalTarget.ID, TerminalTab.ID)
   }
 
   /// Set once by `AppStore`. A closure, not a store reference, so sessions stay ignorant of
@@ -2347,6 +2350,7 @@ final class TerminalSessions: ObservableObject {
   private func programStatusFocusChanged(
     _ focused: Bool, tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID
   ) {
+    if focused { onEvent?(.terminalSeen(targetID, tabID)) }
     guard let tab = tabsByTarget[targetID]?[tabID], case .terminal(let state) = tab.content,
       let sessionID = state.sessionID
     else { return }
@@ -2357,6 +2361,31 @@ final class TerminalSessions: ObservableObject {
       }
     } else if watchedDone.remove(tabID) != nil {
       programStatus.seen(sessionID, states: ["done"])
+    }
+  }
+
+  /// `tabID`'s title, as its chip shows it.
+  func title(ofTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID) -> String? {
+    tabsByTarget[targetID]?[tabID]?.title
+  }
+
+  /// The program-status session `tabID` attaches to, if it is a daemon-backed terminal.
+  func sessionID(forTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID) -> UUID? {
+    guard case .terminal(let state)? = tabsByTarget[targetID]?[tabID]?.content else { return nil }
+    return state.sessionID
+  }
+
+  /// Every tab attached to `session`, and whether the user is looking at it now.
+  func attachments(of session: UUID) -> [(
+    target: TerminalTarget.ID, tab: TerminalTab.ID, focused: Bool
+  )] {
+    tabsByTarget.flatMap { targetID, tabs in
+      tabs.compactMap { tabID, tab in
+        guard case .terminal(let state) = tab.content, state.sessionID == session else {
+          return nil
+        }
+        return (targetID, tabID, state.view.isEffectivelyFocused)
+      }
     }
   }
 

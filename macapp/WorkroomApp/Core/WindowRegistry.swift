@@ -271,9 +271,16 @@ final class WindowRegistry: ObservableObject {
   /// Mirror the *combined* unread count across all windows onto the menu-bar label + Dock badge
   /// (issue #70). Replaces the per-store `DockBadge.apply` so a second window can't clobber the
   /// first's count. Called from each store's `notifications.onTotalChange` and on register/unregister.
+  ///
+  /// It counts requests a program waits on the user for (#358) while they wait, read or not, plus
+  /// every other unread notification; a "needs you" alert is never counted twice.
   func recomputeBadge() {
-    aggregateUnread = allStores.reduce(0) { $0 + $1.notifications.total }
-    DockBadge.apply(aggregateUnread)
+    let alerts = ProgramStatusAlerts.shared
+    alerts.recomputeWaiting()
+    let unread = allStores.reduce(0) { $0 + $1.notifications.unreadExcludingRequests }
+    let total = unread + alerts.countedWaiting
+    if total != aggregateUnread { aggregateUnread = total }
+    DockBadge.apply(total)
   }
 
   // MARK: Run-command ownership

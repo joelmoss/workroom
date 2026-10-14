@@ -164,6 +164,7 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Forward", keys: "⌘]"),
         ShortcutItem(label: "Open in Editor", keys: "⇧⌘O"),
         ShortcutItem(label: "Next Notification", keys: "⇧⌘N"),
+        ShortcutItem(label: "Go to Terminal That Needs You", keys: "⇧⌘M"),
       ]),
     ShortcutGroup(
       title: "App",

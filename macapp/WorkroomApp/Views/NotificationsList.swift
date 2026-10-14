@@ -33,6 +33,9 @@ struct NotificationsList: View {
   /// leaves this false to list the full backlog. Computed live from `notifications.items` so both stay
   /// current as rows are opened or deleted while the popover is open.
   var dropFirst: Bool = false
+  /// Leave out "needs you" alerts (#358): the menu bar lists their requests under "Waiting for you",
+  /// so each request shows once.
+  var hidesRequests: Bool = false
   /// Called after a row opens its terminal — lets a popover dismiss. A host that stays open passes nil.
   var onActivate: (() -> Void)?
   /// The row currently hovered — used to hide the hairlines directly above and below it so the hovered
@@ -40,7 +43,8 @@ struct NotificationsList: View {
   @State private var hoveredID: WorkroomNotification.ID?
 
   var body: some View {
-    let source = dropFirst ? Array(notifications.items.dropFirst()) : notifications.items
+    let all = hidesRequests ? notifications.items.filter { $0.episode == nil } : notifications.items
+    let source = dropFirst ? Array(all.dropFirst()) : all
     if source.isEmpty {
       // Compact, left-aligned, icon-first empty state (issue #24 feedback) — not the large
       // centered ContentUnavailableView.

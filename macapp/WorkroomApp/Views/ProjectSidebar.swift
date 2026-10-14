@@ -721,7 +721,7 @@ struct ProjectSidebar: View {
   }
 
   /// Focuses the terminal that has waited longest among `targetIDs` (a workroom row's, or a whole
-  /// collapsed project's). Only ⌘⇧J looks further.
+  /// collapsed project's). Only ⇧⌘M looks further.
   private func showWaiting(in targetIDs: [TerminalTarget.ID]) {
     let oldest = targetIDs.flatMap { targetID in
       terminals.blockedTabs(forTargetID: targetID).map { (targetID, $0.tab, $0.since) }
