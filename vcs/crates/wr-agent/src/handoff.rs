@@ -58,6 +58,8 @@ pub enum HandOffError {
     TableVersion(u16),
     #[error("hand-off table metadata is not UTF-8")]
     MetadataNotUtf8,
+    #[error("hand-off table program status cannot be read")]
+    ProgramStatus,
     #[error("hand-off table has trailing bytes")]
     TrailingBytes,
     #[error("hand-off table is truncated")]
@@ -132,9 +134,10 @@ pub enum HandOffError {
 const MAGIC: [u8; 4] = *b"WRHO";
 /// The table's format. The new program must read the old one's table, so a change here needs the
 /// reader to keep accepting every version a shipped agent writes: version 1 had no metadata, and its
-/// sessions are adopted with none (#255). An older program refuses a newer table in its check, so a
-/// hand-off never goes to a program that would drop what this one carries.
-const TABLE_VERSION: u16 = 2;
+/// sessions are adopted with none (#255); versions 1 and 2 had no program status, and theirs are
+/// adopted with empty records under a new boot (#358). An older program refuses a newer table in
+/// its check, so a hand-off never goes to a program that would drop what this one carries.
+const TABLE_VERSION: u16 = 3;
 /// The oldest table this program still reads.
 const OLDEST_TABLE_VERSION: u16 = 1;
 /// How long the new binary gets to check the table. Every session's output is stopped meanwhile
@@ -201,18 +204,22 @@ impl Drop for Paused {
 pub struct Table {
     pub listener: RawFd,
     pub lock: RawFd,
+    /// The session store's program status boot (#358); `None` from a table before version 3.
+    pub boot: Option<SessionId>,
     pub sessions: Vec<FrozenSession>,
 }
 
 impl Table {
-    /// Big-endian, like the rest of the wire: magic, version, listener, lock, count, then per
-    /// session id, pid, master, columns, rows, screen length and screen, and (from version 2) its
-    /// metadata as a count of length-prefixed key and value pairs.
+    /// Big-endian, like the rest of the wire: magic, version, listener, lock, (from version 3) the
+    /// boot, count, then per session id, pid, master, columns, rows, screen length and screen,
+    /// (from version 2) its metadata as a count of length-prefixed key and value pairs, and (from
+    /// version 3) its program status as length-prefixed JSON.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
         out.extend_from_slice(&TABLE_VERSION.to_be_bytes());
         out.extend_from_slice(&self.listener.to_be_bytes());
         out.extend_from_slice(&self.lock.to_be_bytes());
+        out.extend_from_slice(&self.boot.unwrap_or(SessionId([0; 16])).0);
         out.extend_from_slice(&(self.sessions.len() as u32).to_be_bytes());
         for session in &self.sessions {
             out.extend_from_slice(&session.id.0);
@@ -229,6 +236,10 @@ impl Table {
                     out.extend_from_slice(text.as_bytes());
                 }
             }
+            let status =
+                serde_json::to_vec(&session.program_status).expect("program status serializes");
+            out.extend_from_slice(&(status.len() as u32).to_be_bytes());
+            out.extend_from_slice(&status);
         }
         out
     }
@@ -244,6 +255,11 @@ impl Table {
         }
         let listener = i32::from_be_bytes(reader.array()?);
         let lock = i32::from_be_bytes(reader.array()?);
+        let boot = if version >= 3 {
+            Some(SessionId(reader.array()?))
+        } else {
+            None
+        };
         let count = u32::from_be_bytes(reader.array()?);
         let mut sessions = Vec::new();
         for _ in 0..count {
@@ -268,6 +284,12 @@ impl Table {
                     metadata.push((key, value));
                 }
             }
+            let mut program_status = crate::program_status::Store::default();
+            if version >= 3 {
+                let length = u32::from_be_bytes(reader.array()?) as usize;
+                program_status = serde_json::from_slice(reader.take(length)?)
+                    .map_err(|_| HandOffError::ProgramStatus)?;
+            }
             sessions.push(FrozenSession {
                 id,
                 pid,
@@ -276,6 +298,7 @@ impl Table {
                 rows,
                 screen,
                 metadata,
+                program_status,
             });
         }
         if !reader.0.is_empty() {
@@ -284,6 +307,7 @@ impl Table {
         Ok(Table {
             listener,
             lock,
+            boot,
             sessions,
         })
     }
@@ -429,7 +453,13 @@ pub fn hand_off(
                 if sessions.is_killing() {
                     return Err(HandOffError::SessionEnding);
                 }
-                replace(context, binary, frozen, before_exec)
+                replace(
+                    context,
+                    binary,
+                    sessions.program_status().boot(),
+                    frozen,
+                    before_exec,
+                )
             },
         )
         .unwrap_or(Err(HandOffError::SessionsBusy))
@@ -491,6 +521,7 @@ impl Drop for Carried {
 fn replace(
     context: &Context,
     binary: &Path,
+    boot: SessionId,
     frozen: &[FrozenSession],
     before_exec: impl FnOnce() -> bool,
 ) -> Result<(), HandOffError> {
@@ -505,6 +536,7 @@ fn replace(
     let table = Table {
         listener: carried.dup(context.listener)?,
         lock: carried.dup(context.lock)?,
+        boot: Some(boot),
         sessions,
     };
     let path = table_path(&context.socket);
@@ -771,11 +803,33 @@ pub fn take_table(path: &Path) -> Result<Table, HandOffError> {
 mod tests {
     use super::*;
 
+    /// A program blocked on the user, as a hand-off finds it: probed, so its record may alert.
+    fn blocked_status() -> crate::program_status::Store {
+        use crate::program_status::{Event, Kind, Report, State, Store};
+        let mut status = Store::default();
+        status.apply(Event::Probed, 4242);
+        status.report(
+            Report {
+                id: String::new(),
+                state: State::Blocked,
+                kind: Kind::Permission,
+                progress: -1,
+                app: "claude-code".into(),
+                title: String::new(),
+                message: "Apply?".into(),
+            },
+            4242,
+        );
+        status.commit();
+        status
+    }
+
     #[test]
     fn a_table_survives_encoding() {
         let table = Table {
             listener: 3,
             lock: 4,
+            boot: Some(SessionId([9; 16])),
             sessions: vec![
                 FrozenSession {
                     id: SessionId([7; 16]),
@@ -788,6 +842,7 @@ mod tests {
                         ("workroom".into(), "wr|/p|cyan".into()),
                         ("created".into(), "1791130740000".into()),
                     ],
+                    program_status: blocked_status(),
                 },
                 FrozenSession {
                     id: SessionId([8; 16]),
@@ -797,6 +852,7 @@ mod tests {
                     rows: 24,
                     screen: Vec::new(),
                     metadata: Vec::new(),
+                    program_status: Default::default(),
                 },
             ],
         };
@@ -806,6 +862,55 @@ mod tests {
         );
     }
 
+    /// The records come through a hand-off with their revision, episode and notify, and the boot
+    /// with them, so the app sees one store carry on (#358).
+    #[test]
+    fn program_status_survives_a_table() {
+        let table = Table {
+            listener: 3,
+            lock: 4,
+            boot: Some(SessionId([9; 16])),
+            sessions: vec![FrozenSession {
+                id: SessionId([7; 16]),
+                pid: 4242,
+                master: 9,
+                columns: 80,
+                rows: 24,
+                screen: Vec::new(),
+                metadata: Vec::new(),
+                program_status: blocked_status(),
+            }],
+        };
+        let back = Table::decode(&table.encode()).unwrap();
+        assert_eq!(back.boot, Some(SessionId([9; 16])));
+        let event = |status: &crate::program_status::Store| -> serde_json::Value {
+            serde_json::from_slice(&status.event(SessionId([9; 16]), SessionId([7; 16]))).unwrap()
+        };
+        let status = event(&back.sessions[0].program_status);
+        assert_eq!(status, event(&blocked_status()));
+        assert_eq!(status["revision"], 1);
+        assert_eq!(status["records"][0]["episode"], 1);
+        assert_eq!(status["records"][0]["notify"], true);
+        // Its revision and episode counter carry on, not restart.
+        let mut carried = back.sessions[0].program_status.clone();
+        carried.report(
+            crate::program_status::Report {
+                id: "next".into(),
+                state: crate::program_status::State::Blocked,
+                kind: crate::program_status::Kind::None,
+                progress: -1,
+                app: String::new(),
+                title: String::new(),
+                message: String::new(),
+            },
+            4242,
+        );
+        carried.commit();
+        let status = event(&carried);
+        assert_eq!(status["revision"], 2);
+        assert_eq!(status["records"][1]["episode"], 2);
+    }
+
     /// A build without the shadow terminal refuses a table with screens, which it could only drop.
     #[test]
     fn screens_are_refused_by_a_build_that_cannot_paint_them() {
@@ -813,6 +918,7 @@ mod tests {
         let table = Table {
             listener: 3,
             lock: 4,
+            boot: None,
             sessions: vec![FrozenSession {
                 id: SessionId([7; 16]),
                 pid: 1,
@@ -821,6 +927,7 @@ mod tests {
                 rows: 24,
                 screen: b"on screen".to_vec(),
                 metadata: Vec::new(),
+                program_status: Default::default(),
             }],
         };
         std::fs::write(&path, table.encode()).expect("table");
@@ -964,6 +1071,7 @@ mod tests {
         let table = Table {
             listener: 3,
             lock: 4,
+            boot: None,
             sessions: vec![FrozenSession {
                 id: SessionId([7; 16]),
                 pid: 1,
@@ -972,6 +1080,7 @@ mod tests {
                 rows: 24,
                 screen: b"screen".to_vec(),
                 metadata: Vec::new(),
+                program_status: Default::default(),
             }],
         };
         let bytes = table.encode();
@@ -980,14 +1089,15 @@ mod tests {
         longer.push(0);
         assert!(Table::decode(&longer).is_err());
         let mut newer = bytes;
-        newer[5] = 3;
+        newer[5] = 4;
         assert!(Table::decode(&newer).is_err());
     }
 
     /// A table written by an agent from before #255 (version 1, no metadata) is still adopted, so
-    /// upgrading a host keeps every shell; its sessions come over with no metadata (D6).
+    /// upgrading a host keeps every shell; its sessions come over with no metadata (D6), no
+    /// program status and no boot, so the new program keeps its own (#358).
     ///
-    /// The bytes are written out by hand, not by `encode`, which now writes version 2: a fixture an
+    /// The bytes are written out by hand, not by `encode`, which now writes version 3: a fixture an
     /// encoder produces would move with the encoder and stop proving anything about old tables.
     #[test]
     fn a_version_1_table_from_an_older_agent_is_adopted_without_metadata() {
@@ -1008,6 +1118,7 @@ mod tests {
             Table {
                 listener: 3,
                 lock: 4,
+                boot: None,
                 sessions: vec![FrozenSession {
                     id: SessionId([7; 16]),
                     pid: 4242,
@@ -1016,6 +1127,7 @@ mod tests {
                     rows: 40,
                     screen: b"hello".to_vec(),
                     metadata: Vec::new(),
+                    program_status: Default::default(),
                 }],
             }
         );
@@ -1038,6 +1150,10 @@ mod tests {
             (
                 HandOffError::MetadataNotUtf8,
                 "hand-off table metadata is not UTF-8".into(),
+            ),
+            (
+                HandOffError::ProgramStatus,
+                "hand-off table program status cannot be read".into(),
             ),
             (
                 HandOffError::TrailingBytes,

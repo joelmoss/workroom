@@ -223,6 +223,8 @@ struct ConnectionServices {
     layout_partial: crate::rpc::PartialRequests,
     subscriptions: crate::watch::Subscriptions,
     forwards: crate::forward::Forwards,
+    /// Its program status subscription, ended with it like `subscriptions`.
+    program_status: crate::program_status::Connection,
 }
 
 /// Greets, negotiates, then serves envelopes until the peer goes away.
@@ -285,8 +287,13 @@ pub fn handle_connection<T: Transport>(
         peer,
         partial: crate::rpc::PartialRequests::default(),
         layout_partial: crate::rpc::PartialRequests::default(),
-        subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), closer),
+        subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), Arc::clone(&closer)),
         forwards: crate::forward::Forwards::new(),
+        program_status: crate::program_status::Connection::new(
+            Arc::clone(sessions.program_status()),
+            Arc::clone(&writer),
+            closer,
+        ),
     };
     // Identifies THIS attachment, so ending this connection cannot detach a client that has since
     // taken the session over.
@@ -375,6 +382,10 @@ fn dispatch(
     }
     if envelope.service == Service::Forward {
         crate::forward::dispatch(envelope, writer, &services.forwards);
+        return None;
+    }
+    if envelope.service == Service::ProgramStatus {
+        crate::program_status::dispatch(envelope, sessions, &mut services.program_status);
         return None;
     }
     if envelope.service != Service::Terminal && envelope.service != Service::Control {

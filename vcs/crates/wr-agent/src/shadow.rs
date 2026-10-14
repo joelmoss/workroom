@@ -7,12 +7,20 @@
 //! feature they do nothing and `replay()` returns no bytes, which is precisely the behaviour
 //! before the shadow existed.
 
+use crate::program_status::Store;
+
+/// What a write from the pty asks of the session: bytes to answer the program with (a program
+/// status probe's reply), and `Some(blocked)` when its program status changed (#358).
+pub type Written = (Vec<u8>, Option<bool>);
+
 #[cfg(feature = "terminal-state")]
 pub struct Shadow {
     terminal: Option<crate::terminal::ShadowTerminal>,
     /// The pty's foreground process group when the current progress report arrived: the program
     /// that sent it. Once another group owns the pty, that program is gone (#359).
     progress_owner: Option<libc::pid_t>,
+    /// The session's program status records (#358).
+    status: Store,
 }
 
 #[cfg(not(feature = "terminal-state"))]
@@ -24,20 +32,23 @@ impl Shadow {
         Shadow {
             terminal: crate::terminal::ShadowTerminal::new(columns, rows),
             progress_owner: None,
+            status: Store::default(),
         }
     }
 
     /// Every byte the client receives also goes here. Cheap enough to do inline on the output
-    /// path: it is the same parse the client's own terminal is doing anyway.
+    /// path: it is the same parse the client's own terminal is doing anyway. Bytes that are not
+    /// the live pty's (a screen being checked or restored) answer nothing and report nothing.
     pub fn write(&mut self, bytes: &[u8]) {
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.write(bytes);
+            terminal.take_program_status();
         }
     }
 
     /// `write` for bytes from the live pty, whose `foreground` process group is then the sender
-    /// of any progress report in them. Asked only when a report arrived, so the output path pays
-    /// for it once per report, not per read.
+    /// of any progress or program status report in them, and the prober of any probe. Asked only
+    /// when one arrived, so the output path pays for it once per report, not per read.
     ///
     /// ponytail: sampled after the read, so a reporter that exits within the same read chunk is
     /// recorded as the shell, and its report stays until a REMOVE. A per-report pgid needs the
@@ -46,14 +57,31 @@ impl Shadow {
         &mut self,
         bytes: &[u8],
         foreground: impl FnOnce() -> Option<libc::pid_t>,
-    ) {
+    ) -> Written {
         let Some(terminal) = self.terminal.as_mut() else {
-            return;
+            return (Vec::new(), None);
         };
         terminal.write(bytes);
-        if terminal.take_fresh_report() {
-            self.progress_owner = terminal.progress().and_then(|_| foreground());
+        let (events, replies) = terminal.take_program_status();
+        let fresh = terminal.take_fresh_report();
+        let sender = (fresh || !events.is_empty()).then(foreground).flatten();
+        if fresh {
+            self.progress_owner = terminal.progress().and(sender);
         }
+        for event in events {
+            self.status.apply(event, sender.unwrap_or(0));
+        }
+        // At most once per read, and only while a running program's record could outlive it.
+        if self.status.has_live() {
+            self.status
+                .drop_dead_owners(crate::program_status::group_alive);
+        }
+        (replies, self.status.commit())
+    }
+
+    /// The session's program status records; `None` in a build that keeps none.
+    pub fn status(&mut self) -> Option<&mut Store> {
+        Some(&mut self.status)
     }
 
     pub fn resize(&mut self, columns: u16, rows: u16) {
@@ -110,11 +138,17 @@ impl Shadow {
         Shadow
     }
     pub fn write(&mut self, _bytes: &[u8]) {}
+    /// No terminal to answer a probe or parse a report: a program sees the protocol as
+    /// unsupported, as it did before.
     pub fn write_from_pty(
         &mut self,
         _bytes: &[u8],
         _foreground: impl FnOnce() -> Option<libc::pid_t>,
-    ) {
+    ) -> Written {
+        (Vec::new(), None)
+    }
+    pub fn status(&mut self) -> Option<&mut Store> {
+        None
     }
     pub fn resize(&mut self, _columns: u16, _rows: u16) {}
     /// No shadow, so nothing to repaint: a reattaching client resumes the live stream, which is
@@ -195,5 +229,80 @@ mod tests {
             !has(&shadow.replay_for(Some(10)), BUSY),
             "the old sender no longer counts"
         );
+    }
+
+    /// What libghostty answers `OSC 7501 ; ?` with, before the probe's own terminator.
+    const ANSWER: &[u8] =
+        b"\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth";
+
+    /// Every probe is answered, each with its own terminator: Claude Code probes with BEL, and
+    /// again on every full redraw (Step 0).
+    #[test]
+    fn a_probe_is_answered_with_its_own_terminator() {
+        let mut shadow = Shadow::new(80, 24);
+        for terminator in [b"\x07".as_slice(), b"\x1b\\"] {
+            let probe = [b"\x1b]7501;?".as_slice(), terminator].concat();
+            let (replies, _) = shadow.write_from_pty(&probe, || Some(1));
+            assert_eq!(replies, [ANSWER, terminator].concat());
+        }
+    }
+
+    /// Value: protects=only the 7501 answer reaches the pty, never a DA1, DSR or colour answer the attached client also gives; fails_when=the WRITE_PTY filter is dropped or loosened; why_new=two answers to one query corrupt the program's input; seam=none
+    #[test]
+    fn only_the_program_status_answer_is_queued() {
+        let mut shadow = Shadow::new(80, 24);
+        let (replies, _) = shadow
+            .write_from_pty(b"\x1b]7501;?\x07\x1b[c\x1b[6n\x1b[5n\x1b]11;?\x07", || {
+                Some(1)
+            });
+        assert_eq!(replies, [ANSWER, b"\x07"].concat());
+    }
+
+    /// A probe cut across reads is answered once, when it completes.
+    #[test]
+    fn a_split_probe_is_answered_once() {
+        let mut shadow = Shadow::new(80, 24);
+        let probe = b"\x1b]7501;?\x1b\\";
+        let mut replies = Vec::new();
+        for byte in probe {
+            replies.extend(shadow.write_from_pty(&[*byte], || Some(1)).0);
+        }
+        assert_eq!(replies, [ANSWER, b"\x1b\\"].concat());
+    }
+
+    /// `write` is for screens that are not the live pty's: it answers nothing, and leaves nothing
+    /// behind for the next live write to answer.
+    #[test]
+    fn write_answers_nothing() {
+        let mut shadow = Shadow::new(80, 24);
+        shadow.write(b"\x1b]7501;?\x07\x1b]7501;state=blocked\x07");
+        let (replies, changed) = shadow.write_from_pty(b"x", || Some(1));
+        assert!(replies.is_empty());
+        assert_eq!(changed, None);
+    }
+
+    /// A report reaches the store with the foreground group as its sender, and a prompt ends it.
+    #[test]
+    fn reports_reach_the_store_and_a_prompt_ends_them() {
+        let mut shadow = Shadow::new(80, 24);
+        shadow.write_from_pty(b"\x1b]7501;?\x07", || Some(0));
+        let (_, changed) = shadow.write_from_pty(
+            b"\x1b]7501;state=blocked:kind=permission:app=claude-code:msg=QXBwbHk/\x07",
+            || Some(0),
+        );
+        assert_eq!(changed, Some(true), "a record entered blocked");
+        let event = |shadow: &mut Shadow| -> serde_json::Value {
+            let id = crate::session::SessionId([0; 16]);
+            serde_json::from_slice(&shadow.status().unwrap().event(id, id)).unwrap()
+        };
+        let status = event(&mut shadow);
+        assert_eq!(status["reporting"], true);
+        assert_eq!(status["records"][0]["message"], "Apply?");
+        assert_eq!(status["records"][0]["notify"], true, "the prober reported");
+        let (_, changed) = shadow.write_from_pty(b"\x1b]133;A\x07$ ", || Some(0));
+        assert_eq!(changed, Some(false));
+        let status = event(&mut shadow);
+        assert_eq!(status["records"], serde_json::json!([]));
+        assert_eq!(status["reporting"], false);
     }
 }

@@ -5,6 +5,7 @@ pub mod attach;
 pub mod credential;
 pub mod hand_off;
 pub mod list;
+pub mod program_status;
 pub mod relay;
 pub mod serve;
 
@@ -15,7 +16,8 @@ use crate::handoff;
 use crate::serve::BUILD;
 use wr_protocol::envelope::{
     Hello, MIN_FILE_VERSION, MIN_FORWARD_VERSION, MIN_HANDOFF_VERSION, MIN_LAYOUT_VERSION,
-    MIN_SUPPORTED_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION, negotiate,
+    MIN_PROGRAM_STATUS_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION,
+    negotiate,
 };
 
 pub fn flag(args: &[String], name: &str) -> Option<String> {
@@ -137,7 +139,8 @@ pub fn protocol() -> ExitCode {
         "protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION}) \
          min-vcs {MIN_VCS_VERSION} min-file {MIN_FILE_VERSION} \
          min-forward {MIN_FORWARD_VERSION} \
-         min-handoff {MIN_HANDOFF_VERSION} min-layout {MIN_LAYOUT_VERSION}"
+         min-handoff {MIN_HANDOFF_VERSION} min-layout {MIN_LAYOUT_VERSION} \
+         min-program-status {MIN_PROGRAM_STATUS_VERSION}"
     );
     println!("build {BUILD}");
     // The order between builds (#255): the app's probe reads it to decide whether to push.
