@@ -59,10 +59,14 @@ struct ProgramStatusSession: Equatable {
       || records.map(Self.visible) != other.records.map(Self.visible)
   }
 
+  /// What is shown of a record: a working or idle one's text is not (Claude Code sends a new
+  /// activity line every few seconds), so only its state counts.
   private static func visible(_ record: ProgramStatusRecord) -> ProgramStatusRecord {
-    ProgramStatusRecord(
-      id: record.id, state: record.state, kind: record.kind, app: record.app, title: record.title,
-      message: record.message, episode: record.episode, notify: record.notify)
+    let shown = record.state != .working && record.state != .idle
+    return ProgramStatusRecord(
+      id: record.id, state: record.state, kind: record.kind, app: record.app,
+      title: shown ? record.title : "", message: shown ? record.message : "",
+      episode: record.episode, notify: record.notify)
   }
 
   static func blockedKey(_ record: ProgramStatusRecord) -> String {

@@ -129,6 +129,9 @@ final class ProgramStatusMonitorTests: XCTestCase {
     let published = count
     connection.push(
       status([ProgramStatusRecord(id: "", state: .working, progress: 60)], revision: 3))
+    // Claude's activity line on a working record is not shown either.
+    connection.push(
+      status([ProgramStatusRecord(id: "", state: .working, message: "Reading…")], revision: 3))
     connection.push(status([blocked()], revision: 4))
     await until(monitor.rollup(for: session)?.blocked.count == 1)
     XCTAssertEqual(count, published + 1, "only the state change published")
@@ -302,6 +305,23 @@ final class ProgramStatusPaneTests: XCTestCase {
     XCTAssertEqual(indicator(), .running(failed: false), "running beats done")
   }
 
+  /// A pane swapped out for a diff or file tab leaves its window without resigning first
+  /// responder; it must stop counting as the one the user is looking at.
+  func testAPaneLeavingItsWindowLosesEffectiveFocus() {
+    let view = GhosttySurfaceView(workingDirectory: NSTemporaryDirectory())
+    let window = AlwaysKeyWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
+      backing: .buffered, defer: false)
+    window.contentView?.addSubview(view)
+    window.makeFirstResponder(view)
+    XCTAssertTrue(view.isEffectivelyFocused)
+    var changes: [Bool] = []
+    view.onEffectiveFocusChange = { changes.append($0) }
+    view.removeFromSuperview()
+    XCTAssertFalse(view.isEffectivelyFocused)
+    XCTAssertEqual(changes, [false])
+  }
+
   /// Focus moving into a pane marks its finished records seen; a finish that arrives while the pane
   /// already has focus is marked seen only when focus leaves, and only as finished.
   func testFocusMarksFinishedRecordsSeen() async {
@@ -330,4 +350,9 @@ final class ProgramStatusPaneTests: XCTestCase {
     }
     XCTAssertEqual(connection.requests, ["seen 5 []"])
   }
+}
+
+/// A window that is key whatever the test host's activation state.
+private final class AlwaysKeyWindow: NSWindow {
+  override var isKeyWindow: Bool { true }
 }
