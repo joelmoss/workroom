@@ -3171,9 +3171,9 @@ final class AppStore: ObservableObject {
   /// The request was answered, or its program ended: its alert and banner go.
   func withdrawNeedsYou(episode: String) {
     toasts.removeAll { $0.episode == episode }
-    if !notifications.dismiss(episode: episode).isEmpty {
-      systemNotifier.withdraw(identifiers: [episode])
-    }
+    notifications.dismiss(episode: episode)
+    // Even with the entry already read: its banner may still be in Notification Center.
+    systemNotifier.withdraw(identifiers: [episode])
   }
 
   /// The program-status session of the terminal focused in this window, for ⇧⌘M.

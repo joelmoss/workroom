@@ -587,6 +587,13 @@ final class GhosttySurfaceView: NSView {
       isWindowVisible = false
       applyOcclusionState()
       stopAccessibilityPolling()
+      // Leaving the window never calls `resignFirstResponder` (the window takes first responder
+      // silently), so a pane swapped out for a diff or file tab would otherwise still read as the
+      // one the user is looking at, and its program's alerts would be held back (#358).
+      if isEffectivelyFocused {
+        isEffectivelyFocused = false
+        onEffectiveFocusChange?(false)
+      }
       return
     }
     if surface == nil { createSurface() }
