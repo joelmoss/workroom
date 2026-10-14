@@ -10,9 +10,10 @@ use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 
 /// What a restored pane (`--no-create`) shows when its session has ended and the agent kept no
-/// record of it (`crate::screens`).
+/// record of it (`crate::screens`), if it cannot be given a new session instead.
 ///
-/// On this Mac, a new shell in its place, as the app has always shown. On a remote host
+/// On this Mac, a new shell in its place. Reached only when the session exits between the agent's
+/// check and its attach; a plain refusal gets a new session (`run_attach`). On a remote host
 /// (`--no-spawn`), never a shell (#255, D7): one started here would be this process's child, not an
 /// agent session, so no other Mac could see it and it would die with the ssh link. The pane is told
 /// the terminal ended, then holds with input going nowhere until its user closes it, as a pane
@@ -285,15 +286,21 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             fall_back_to_shell(&request, reason)
         }
     };
-    let attach = Frame::new(FrameKind::Attach, request.encode());
-    let attach = Envelope::new(Service::Terminal, 1, attach.encode()).encode();
+    let encode = |request: &serve::AttachRequest| {
+        let attach = Frame::new(FrameKind::Attach, request.encode());
+        Envelope::new(Service::Terminal, 1, attach.encode()).encode()
+    };
+    let mut attach = encode(&request);
+    // Said once the new session's repaint is shown, which starts by erasing the screen.
+    let mut notice = None;
 
     let mut buffer = [0u8; 8192];
 
     // The attach is answered before raw mode and the relay threads. A restored pane's
-    // (`--no-create`) session that ended becomes the notice-and-shell the app shows locally, and
-    // that has to start from a cooked terminal with nothing else running. When the agent kept a
-    // record of the session (`crate::screens`), it answers `Attached` and the record instead.
+    // (`--no-create`) session that ended is attached again to create it locally, or becomes the
+    // notice a remote pane holds on, which has to start from a cooked terminal with nothing else
+    // running. When the agent kept a record of the session (`crate::screens`), it answers
+    // `Attached` and the record instead.
     //
     // An agent that closes before answering at all is most likely handing off to a new program
     // (`crate::handoff`). Its listener stays open across the exec, so the attach is sent again,
@@ -314,6 +321,19 @@ pub fn run_attach(args: &[String]) -> ExitCode {
         };
         match answer {
             Answer::Attached => break (stream, decoder),
+            // A restored pane on this Mac whose session has ended gets a new session under the
+            // same id, said out loud. A shell that was no session would leave the pane saving the
+            // dead id, so it would say "ended" again on every launch and never survive a quit
+            // (#459). The notice is what keeps the new session from passing as the old one.
+            Answer::Refused(_) if request.existing_only && !no_spawn && notice.is_none() => {
+                notice = Some(
+                    "wr-agent: the terminal that was running here has ended, so this is a new shell",
+                );
+                attach = encode(&serve::AttachRequest {
+                    existing_only: false,
+                    ..request.clone()
+                });
+            }
             Answer::Refused(_) if request.existing_only => {
                 return ended(&request, no_spawn);
             }
@@ -362,8 +382,26 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                     while let Ok(Some(frame)) = frames.next_frame() {
                         match frame.kind {
                             FrameKind::Output => {
+                                // After the repaint, which erases the screen first
+                                // (`ShadowTerminal::record`); with none, before the first output.
+                                // shortcut: assumes a fresh session's repaint fits one Output frame
+                                // (`READ_CHUNK`; ~5.7 KiB at 80 columns, mostly the palette). Split,
+                                // its final cursor move would put the prompt over the notice; if it
+                                // ever grows, hold the notice until the repaint's last chunk.
+                                let (before, after) = match notice.take() {
+                                    Some(text) if frame.payload.starts_with(b"\x1b[2J") => {
+                                        (None, Some(text))
+                                    }
+                                    text => (text, None),
+                                };
+                                if let Some(text) = before {
+                                    let _ = write!(stdout, "{text}\r\n");
+                                }
                                 if stdout.write_all(&frame.payload).is_err() {
                                     return ExitCode::SUCCESS;
+                                }
+                                if let Some(text) = after {
+                                    let _ = write!(stdout, "\r\n{text}\r\n");
                                 }
                                 let _ = stdout.flush();
                             }
@@ -409,8 +447,9 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                             // the user can still reach it from the detached-sessions list.
                             // The one exception: a `--no-create` attach whose session exited
                             // between the agent's check and its attach. That is "ended", not a
-                            // failure on a live session, so it gets the same shell as a check that
-                            // came back negative.
+                            // failure on a live session, so it gets a shell that says so. Not a new
+                            // session, as a refusal gets: the relay is already running, and this
+                            // race is rare enough to leave that pane not surviving a quit.
                             FrameKind::Failure
                                 if request.existing_only
                                     && frame.payload.starts_with(b"no session ") =>

@@ -828,11 +828,12 @@ fn a_restored_remote_pane_whose_peer_cannot_negotiate_gets_a_shell() {
     assert_ne!(status, Some(255), "a broken peer was retried: {output:?}");
 }
 
-/// `--no-create` (a restored pane): a session the agent does not hold is refused, not created,
-/// and the pane becomes a shell that says so. Created instead, it would be a fresh shell passed off
-/// as the one that was running there.
+/// `--no-create` (a restored pane): a session the agent does not hold is refused, and on this Mac
+/// the pane gets a new session under the same id, with a notice saying so. Without the notice it
+/// would be a fresh shell passed off as the one that was running there. The notice follows the
+/// session's repaint, which erases the screen.
 #[test]
-fn no_create_turns_an_ended_session_into_a_shell_with_a_notice() {
+fn no_create_turns_an_ended_session_into_a_new_one_with_a_notice() {
     let dir = scratch("no-create-ended");
     let socket = dir.join("a.sock");
     let _agent = start_agent(&socket);
@@ -848,26 +849,78 @@ fn no_create_turns_an_ended_session_into_a_shell_with_a_notice() {
             ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
             (
                 "WORKROOM_SESSION_COMMAND",
-                "echo NEW-SHELL fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+                "sh -c 'sleep 1; echo NEW-SESSION fb=[${WORKROOM_SESSION_FALLBACK:-unset}]'",
             ),
         ],
         None,
     );
-    let listed = Command::new(agent_binary())
-        .args(["list", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("list");
+    let _ = std::fs::remove_dir_all(&dir);
+    let notice = output
+        .find("has ended")
+        .unwrap_or_else(|| panic!("no notice: {output:?}"));
+    // A repaint only in a `terminal-state` build; the notice follows it either way.
+    assert!(
+        output.rfind("\x1b[2J").is_none_or(|erase| erase < notice),
+        "the notice must follow the repaint that erases the screen. got: {output:?}"
+    );
+    assert!(
+        output
+            .find("NEW-SESSION")
+            .is_some_and(|first| notice < first),
+        "the notice must precede the new session's output. got: {output:?}"
+    );
+    assert!(
+        output.contains("NEW-SESSION fb=[unset]"),
+        "expected a new session, not a fallback shell. got: {output:?}"
+    );
+}
+
+/// #459: once a restored pane's ended session is replaced, its id is live, so the next restore
+/// attaches it instead of saying "ended" again.
+#[test]
+fn a_replaced_ended_session_is_reattached_on_the_next_restore() {
+    let dir = scratch("no-create-replaced");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let env = [
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC7A",
+        ),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+        (
+            "WORKROOM_SESSION_COMMAND",
+            "sh -c 'sleep 2; echo STILL-THE-SAME fb=[${WORKROOM_SESSION_FALLBACK:-unset}]'",
+        ),
+    ];
+    // The first restore finds no session and makes one; killed at once, as a quit leaves it.
+    let mut first = Command::new(agent_binary());
+    first
+        .args(["attach", "--no-create"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin");
+    for (key, value) in env {
+        first.env(key, value);
+    }
+    let mut first = first
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn first attach");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = first.kill();
+    let _ = first.wait();
+
+    let (output, _) = attach_with_args(&["--no-create"], &env, None);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
-        output.contains("has ended") && output.contains("NEW-SHELL fb=[1]"),
-        "expected the ended-session notice and a fallback shell. got: {output:?}"
+        output.contains("STILL-THE-SAME fb=[unset]"),
+        "expected the session the first restore made. got: {output:?}"
     );
-    assert!(
-        !String::from_utf8_lossy(&listed.stdout).contains("6b9b968d"),
-        "the agent created the session anyway: {:?}",
-        String::from_utf8_lossy(&listed.stdout)
-    );
+    assert!(!output.contains("has ended"), "got: {output:?}");
 }
 
 /// On a remote host (`--no-spawn`) a restored pane whose session has ended gets no shell (#255,
