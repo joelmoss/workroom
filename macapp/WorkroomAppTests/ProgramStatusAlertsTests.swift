@@ -72,6 +72,21 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertTrue(requests.isEmpty, "and is not alerted twice")
   }
 
+  /// An agent that started again (a crash, a host reboot) numbers its requests from 1 again: the
+  /// boot in the episode keeps a new request from passing for one already alerted.
+  func testANewAgentBootAlertsAgainForTheSameEpisodeNumber() {
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [blocked()], boot: "first")
+    XCTAssertEqual(requests.count, 1, "fixture: one alert")
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)], boot: "first")
+    XCTAssertTrue(requests.isEmpty, "fixture: answered")
+
+    monitor.seed(id, records: [blocked()], boot: "second")
+    XCTAssertEqual(requests.count, 1)
+    XCTAssertEqual(requests.first?.episode?.hasPrefix("second/"), true)
+  }
+
   /// One alert per request; reading it leaves the request counted; answering it drops both.
   func testARequestAlertsOnceAndCountsUntilAnswered() {
     alerts.start()

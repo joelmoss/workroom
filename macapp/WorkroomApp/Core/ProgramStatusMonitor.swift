@@ -126,6 +126,30 @@ final class ProgramStatusMonitor: ObservableObject {
     return try await HostConnectionManager.shared.programStatus(host: host)
   }
   var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+  /// Returns once `host`'s link comes up as a new connection (its workroom opened, or a boxd host
+  /// woken), so a retry need not wait out its backoff; never for this Mac's agent. A link that is
+  /// already up does not count, or a host whose agent has no program status would be retried
+  /// without pause. A background host that was unreachable is not reconnected early: `RemoteHosts`
+  /// holds its retry window, which this monitor's own failed connects keep open.
+  var reconnected: @Sendable (HostID) async -> Void = { host in
+    guard host != .local else {
+      while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
+      return
+    }
+    var baseline: HostConnectionManager.Snapshot?
+    for await snapshot in await HostConnectionManager.shared.updates(for: host) {
+      guard let before = baseline else {
+        baseline = snapshot
+        continue
+      }
+      if snapshot.status == .connected,
+        before.status != .connected || snapshot.lease != before.lease
+      {
+        return
+      }
+      baseline = snapshot
+    }
+  }
   var now: () -> Date = Date.init
 
   /// Each session's latest revision, for `seen`. Apart from `sessions` so a progress-only event,
@@ -133,6 +157,7 @@ final class ProgramStatusMonitor: ObservableObject {
   private var revisions: [UUID: UInt64] = [:]
   private var tasks: [HostID: Task<Void, Never>] = [:]
   private var connections: [HostID: any HostServiceConnection] = [:]
+  private var pendingSeen: [UUID: (host: HostID, revision: UInt64, states: [String]?)] = [:]
   private var snapshotted: Set<HostID> = []
   private var listeners: [UUID: (Change) -> Void] = [:]
   private static let logger = Logger(
@@ -164,6 +189,7 @@ final class ProgramStatusMonitor: ObservableObject {
   func forget(_ host: HostID) {
     tasks.removeValue(forKey: host)?.cancel()
     connections.removeValue(forKey: host)
+    pendingSeen = pendingSeen.filter { $0.value.host != host }
     snapshotted.remove(host)
     hosts.removeValue(forKey: host)
     let gone = Set(sessions.filter { $0.value.host == host }.keys)
@@ -174,12 +200,12 @@ final class ProgramStatusMonitor: ObservableObject {
   /// Puts `session`'s records in with no agent: the UI-test fixture's seam (`UITestFixture`).
   func seed(
     _ session: UUID, host: HostID = .local, reporting: Bool = true,
-    records: [ProgramStatusRecord], stale: Bool = false
+    records: [ProgramStatusRecord], stale: Bool = false, boot: String = "fixture"
   ) {
     hosts[host] = stale ? .stale : .live
     _ = store(
       ProgramStatusSession(
-        host: host, boot: "fixture", revision: 1, reporting: reporting, records: records),
+        host: host, boot: boot, revision: 1, reporting: reporting, records: records),
       for: session)
     notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
   }
@@ -189,10 +215,15 @@ final class ProgramStatusMonitor: ObservableObject {
     return record.rollup(stale: hosts[record.host] == .stale)
   }
 
-  /// The user has looked at `session`: its finished and failed records up to now go.
+  /// The user has looked at `session`: its finished and failed records up to now go. With the link
+  /// down it is sent once the host is back, after its snapshot; the revision keeps anything newer.
   func seen(_ session: UUID, states: [String]? = nil) {
-    guard let record = sessions[session], let connection = connections[record.host] else { return }
+    guard let record = sessions[session] else { return }
     let revision = revisions[session] ?? record.revision
+    guard let connection = connections[record.host] else {
+      pendingSeen[session] = (record.host, revision, states)
+      return
+    }
     Task {
       try? await connection.programStatusSeen(session: session, revision: revision, states: states)
     }
@@ -265,7 +296,14 @@ final class ProgramStatusMonitor: ObservableObject {
       } catch {
         if hosts[host] == .live { markStaleAfterGrace(host, since: lost) }
       }
-      do { try await sleep(backoff) } catch { return }
+      let (sleep, reconnected, wait) = (self.sleep, self.reconnected, backoff)
+      await withTaskGroup(of: Void.self) { group in
+        group.addTask { try? await sleep(wait) }
+        group.addTask { await reconnected(host) }
+        await group.next()
+        group.cancelAll()
+      }
+      guard !Task.isCancelled else { return }
       backoff = min(backoff * 2, ProgramStatusLimits.backoffCeiling)
     }
   }
@@ -298,6 +336,14 @@ final class ProgramStatusMonitor: ObservableObject {
       changed.formUnion(sessions.filter { $0.value.host == host }.keys)
     }
     notify(Change(host: host, sessions: changed, isLaunchSnapshot: launch))
+    for (session, seen) in pendingSeen where seen.host == host {
+      pendingSeen.removeValue(forKey: session)
+      guard sessions[session] != nil, let connection = connections[host] else { continue }
+      Task {
+        try? await connection.programStatusSeen(
+          session: session, revision: seen.revision, states: seen.states)
+      }
+    }
   }
 
   private func apply(_ event: ProgramStatusEvent, host: HostID) {
