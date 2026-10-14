@@ -33,6 +33,10 @@ fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The title of the notification (OSC 777) that tells the app a restored pane's ended session was
+/// replaced by a new one. `GhosttyRuntimeAdapter.sessionReplacedTitle` must match it.
+const SESSION_REPLACED: &str = "workroom.session-replaced";
+
 /// What a remote pane says when its session has ended and no record of it was kept.
 const ENDED_NOTICE: &str = "This terminal has ended. Close it to start again.";
 
@@ -291,8 +295,8 @@ pub fn run_attach(args: &[String]) -> ExitCode {
         Envelope::new(Service::Terminal, 1, attach.encode()).encode()
     };
     let mut attach = encode(&request);
-    // Said once the new session's repaint is shown, which starts by erasing the screen.
-    let mut notice = None;
+    // Whether a restored pane's ended session was replaced by a new one (#459).
+    let mut replaced = false;
 
     let mut buffer = [0u8; 8192];
 
@@ -320,15 +324,27 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             Err(_) => Answer::Closed,
         };
         match answer {
-            Answer::Attached => break (stream, decoder),
+            Answer::Attached => {
+                // Told to the app as a notification, which it shows as a toast over the pane. Not
+                // a line in the pane: the repaint, or a `clear` in the shell's startup, erases
+                // that, and an OSC is acted on as soon as it is parsed.
+                if replaced {
+                    let mut stdout = std::io::stdout();
+                    let _ = write!(
+                        stdout,
+                        "\x1b]777;notify;{SESSION_REPLACED};The terminal that was running here \
+                         had ended, so this is a new one.\x1b\\"
+                    );
+                    let _ = stdout.flush();
+                }
+                break (stream, decoder);
+            }
             // A restored pane on this Mac whose session has ended gets a new session under the
             // same id, said out loud. A shell that was no session would leave the pane saving the
             // dead id, so it would say "ended" again on every launch and never survive a quit
             // (#459). The notice is what keeps the new session from passing as the old one.
-            Answer::Refused(_) if request.existing_only && !no_spawn && notice.is_none() => {
-                notice = Some(
-                    "wr-agent: the terminal that was running here has ended, so this is a new shell",
-                );
+            Answer::Refused(_) if request.existing_only && !no_spawn && !replaced => {
+                replaced = true;
                 attach = encode(&serve::AttachRequest {
                     existing_only: false,
                     ..request.clone()
@@ -382,26 +398,8 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                     while let Ok(Some(frame)) = frames.next_frame() {
                         match frame.kind {
                             FrameKind::Output => {
-                                // After the repaint, which erases the screen first
-                                // (`ShadowTerminal::record`); with none, before the first output.
-                                // shortcut: assumes a fresh session's repaint fits one Output frame
-                                // (`READ_CHUNK`; ~5.7 KiB at 80 columns, mostly the palette). Split,
-                                // its final cursor move would put the prompt over the notice; if it
-                                // ever grows, hold the notice until the repaint's last chunk.
-                                let (before, after) = match notice.take() {
-                                    Some(text) if frame.payload.starts_with(b"\x1b[2J") => {
-                                        (None, Some(text))
-                                    }
-                                    text => (text, None),
-                                };
-                                if let Some(text) = before {
-                                    let _ = write!(stdout, "{text}\r\n");
-                                }
                                 if stdout.write_all(&frame.payload).is_err() {
                                     return ExitCode::SUCCESS;
-                                }
-                                if let Some(text) = after {
-                                    let _ = write!(stdout, "\r\n{text}\r\n");
                                 }
                                 let _ = stdout.flush();
                             }
