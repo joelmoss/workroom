@@ -198,7 +198,12 @@ final class ProgramStatusAlertsTests: XCTestCase {
       contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
       backing: .buffered, defer: false)
     window.contentView?.addSubview(tab.surface!)
+    // ⇧⌘M's "current" terminal is the selected one only once it has keyboard focus.
+    XCTAssertNil(store.focusedTerminalSession, "selected, without keyboard focus")
     window.makeFirstResponder(tab.surface)
+    XCTAssertEqual(
+      store.focusedTerminalSession,
+      store.terminals.sessionID(forTab: tab.id, inTarget: target.id))
     store.hostWindow = window
     // After focus lands, so it is the activation that reads it, not the pane gaining focus.
     store.notifications.record(

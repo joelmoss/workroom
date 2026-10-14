@@ -26,7 +26,8 @@ what the program said; the last line says it came from the program in that termi
 - A program that left a request behind (it crashed mid-question, say) can be cleared by hand:
   right-click the tab or the sidebar row, then **Clear status**.
 - When the link to a host drops, its marks stay with a small clock beside them, and the tooltip says
-  they may be out of date, until Workroom reconnects.
+  they may be out of date, until Workroom reconnects. Clear status waits for the link too: the host
+  keeps the request, and reconnecting would bring the mark straight back.
 
 A terminal with no mark is **not reporting**, which is not the same as "not waiting". Programs other
 than Claude Code mostly don't report yet. The tooltip's last line says so: "Program status: not
@@ -50,8 +51,9 @@ arrive as before.
 
 Only a program that asked whether the terminal supports the protocol (the probe, below) can alert
 you. A report printed by anything else (`cat`ing a file, say) shows its mark but never alerts, and
-neither does a probe and a report printed together, as a recorded session replays them: a prober
-has to read the reply before it reports.
+neither does a probe and a report printed back to back: a prober has to read the reply before it
+reports. A replayed recording of a session that probed can still alert, because a screen of output
+separates its probe from its report and the agent reads them apart.
 
 ## Which terminals support it
 
@@ -171,4 +173,5 @@ category (`log stream --predicate 'category == "program-status"'`).
 
 A mark that never clears on a **remote** host usually means the host has no shell integration
 (OSC 133): Workroom pushes it on connect, and without it a request clears only on the next report,
-on exit or when its program's process group ends. Clear status always works.
+on exit or when its program's process group ends. Clear status always works while the host is
+reachable.
