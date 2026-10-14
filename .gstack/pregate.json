@@ -33,6 +33,9 @@
       "macapp/Tests/pregate/app_gate_test.py",
       "macapp/Tests/pregate/package_gate_test.py"
     ],
+    ".github/**": [
+      "macapp/Tests/pregate/actions_gate_test.py"
+    ],
     "vcs/**": [
       "macapp/Tests/pregate/rust_gate_test.py"
     ],
