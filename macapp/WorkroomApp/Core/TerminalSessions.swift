@@ -76,20 +76,26 @@ struct TerminalTab: Identifiable {
     }
   }
 
+  /// The one mark this tab's slot shows (#358). Always `.none` for content tabs.
+  var indicator: PaneIndicator {
+    if case .terminal(let s) = content { return s.indicator }
+    return .none
+  }
+
   /// Whether a command is actively *working* in this terminal (issue #28) — drives the chip underline
-  /// and the sidebar spinner. Driven solely by OSC 9;4 progress, like Ghostty/Muxy. Always false for
-  /// content tabs (no surface, no progress).
+  /// and the sidebar spinner: OSC 9;4 progress, like Ghostty/Muxy, or a reporting program's own
+  /// `working` (#358). Always false for content tabs.
   var isRunning: Bool {
-    if case .terminal(let s) = content { return s.progressActive == true }
+    if case .running = indicator { return true }
     return false
   }
 
-  /// Whether the program working in this terminal reported OSC 9;4 ERROR (state 2). Still running:
-  /// the busy indicators turn the failure colour rather than stopping.
-  var isProgressFailed: Bool {
-    if case .terminal(let s) = content { return s.progressActive == true && s.progressFailed }
-    return false
-  }
+  /// Whether the program working in this terminal reported an error while still running (OSC 9;4
+  /// ERROR): the busy indicators turn the failure colour rather than stopping.
+  var isProgressFailed: Bool { indicator == .running(failed: true) }
+
+  /// A program in this terminal is waiting on the user (#358).
+  var needsAttention: Bool { indicator == .blocked }
 
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
   /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
@@ -372,6 +378,37 @@ struct TerminalState {
   var progressActive: Bool?
   /// The last progress report was ERROR. Only meaningful while `progressActive` is true.
   var progressFailed = false
+  /// What the program in this terminal reports over OSC 7501 (#358), from the host's agent. Nil
+  /// when it reports nothing: no record left and no reporting run.
+  var programStatus: ProgramStatusRollup?
+
+  /// Precedence, one mark per slot: blocked > error > running > done > idle. A reporting program
+  /// decides; otherwise OSC 9;4 does, and a `done` or `error` left from an earlier run only adds
+  /// its mark, so it never hides the next command's progress.
+  var indicator: PaneIndicator {
+    guard let status = programStatus, status.reporting else {
+      let survivingError = programStatus?.error != nil
+      if progressActive == true { return .running(failed: progressFailed || survivingError) }
+      if survivingError { return .error }
+      return programStatus?.done != nil ? .done : .none
+    }
+    if !status.blocked.isEmpty { return .blocked }
+    if status.error != nil { return .error }
+    if status.working { return .running(failed: false) }
+    if progressActive == true { return .running(failed: progressFailed) }
+    return status.done != nil ? .done : .none
+  }
+}
+
+/// The mark a terminal's indicator slots show (#358).
+enum PaneIndicator: Equatable {
+  case none
+  case running(failed: Bool)
+  case done
+  /// Failed and stopped: a program's own `error` report.
+  case error
+  /// Waiting on the user.
+  case blocked
 }
 
 /// Owns the live terminals for each target (a workroom or a project root) for the app session, so
@@ -748,6 +785,34 @@ final class TerminalSessions: ObservableObject {
   /// Whether any terminal in this target is working with a reported error (OSC 9;4 ERROR).
   func isProgressFailed(forTargetID id: TerminalTarget.ID) -> Bool {
     (tabsByTarget[id] ?? [:]).values.contains { $0.isProgressFailed }
+  }
+
+  /// Whether a program in any terminal of this target waits on the user (#358).
+  func needsAttention(forTargetID id: TerminalTarget.ID) -> Bool {
+    blockedTerminalCount(forTargetID: id) > 0
+  }
+
+  /// How many terminals of this target wait on the user.
+  func blockedTerminalCount(forTargetID id: TerminalTarget.ID) -> Int {
+    (tabsByTarget[id] ?? [:]).values.count { $0.needsAttention }
+  }
+
+  /// Whether any terminal of this target reported an error that stopped it (#358).
+  func hasProgramError(forTargetID id: TerminalTarget.ID) -> Bool {
+    (tabsByTarget[id] ?? [:]).values.contains { $0.indicator == .error }
+  }
+
+  /// This target's waiting terminals, the one waiting longest first (ties keep strip order).
+  func blockedTabs(forTargetID id: TerminalTarget.ID) -> [(tab: TerminalTab.ID, since: Date)] {
+    let tabs = tabsByTarget[id] ?? [:]
+    let ordered = orderByTarget[id] ?? Array(tabs.keys)
+    return ordered.compactMap { tabID -> (TerminalTab.ID, Date)? in
+      guard let tab = tabs[tabID], tab.needsAttention,
+        case .terminal(let state) = tab.content
+      else { return nil }
+      return (tabID, state.programStatus?.blockedSince ?? .distantFuture)
+    }
+    .enumerated().sorted { ($0.element.1, $0.offset) < ($1.element.1, $1.offset) }.map(\.element)
   }
 
   /// The **visible** group: the one containing the focused tab, or nil when the focused tab is solo.
@@ -2169,6 +2234,10 @@ final class TerminalSessions: ObservableObject {
     var tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
     if case .terminal(var state) = tab.content {
       state.sessionID = assignedSessionID
+      if let assignedSessionID {
+        followProgramStatus(on: target.remoteHost.map(HostID.remote) ?? .local)
+        state.programStatus = programStatus.rollup(for: assignedSessionID)
+      }
       tab.content = .terminal(state)
     }
 
@@ -2203,6 +2272,9 @@ final class TerminalSessions: ObservableObject {
       self.focus(tabID, for: target)
       self.onEvent?(.surfaceFocused(targetID))
     }
+    view.onEffectiveFocusChange = { [weak self] focused in
+      self?.programStatusFocusChanged(focused, tab: tabID, target: targetID)
+    }
 
     if target.remoteHost != nil {
       wireRemoteLinks(view, tab: tabID, target: target)
@@ -2219,6 +2291,68 @@ final class TerminalSessions: ObservableObject {
       TerminalLinkOpener.handleOpenURL(url, cwd: view?.lastKnownCwd ?? projectPath)
     }
     return tab
+  }
+
+  // MARK: Program status (#358)
+
+  /// Where pane indicators read program status from. Tests swap in their own.
+  var programStatus: ProgramStatusMonitor = .shared
+  private var programStatusListener: UUID?
+  /// Tabs where a `done` arrived while they had focus: it is marked seen when focus leaves, so a
+  /// finish the user watched happen leaves no checkmark behind.
+  private var watchedDone: Set<TerminalTab.ID> = []
+
+  private func followProgramStatus(on host: HostID) {
+    if programStatusListener == nil {
+      programStatusListener = programStatus.addListener { [weak self] change in
+        self?.applyProgramStatus(change.sessions)
+      }
+    }
+    programStatus.watch(host)
+  }
+
+  /// Puts the monitor's rollup on every tab attached to `sessions`.
+  func applyProgramStatus(_ sessions: Set<UUID>) {
+    for (targetID, tabs) in tabsByTarget {
+      for (tabID, tab) in tabs {
+        guard case .terminal(let state) = tab.content, let sessionID = state.sessionID,
+          sessions.contains(sessionID)
+        else { continue }
+        let rollup = programStatus.rollup(for: sessionID)
+        guard rollup != state.programStatus else { continue }
+        if state.view.isEffectivelyFocused, rollup?.done != nil, state.programStatus?.done == nil {
+          watchedDone.insert(tabID)
+        }
+        mutateTerminalState(tabID, target: targetID) { $0.programStatus = rollup }
+      }
+    }
+  }
+
+  /// Focus moving into a pane marks its finished and failed records seen; a finish watched while
+  /// focused is marked seen when focus leaves. A status arriving in an already focused pane is not.
+  private func programStatusFocusChanged(
+    _ focused: Bool, tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID
+  ) {
+    guard let tab = tabsByTarget[targetID]?[tabID], case .terminal(let state) = tab.content,
+      let sessionID = state.sessionID
+    else { return }
+    if focused {
+      watchedDone.remove(tabID)
+      if let status = state.programStatus, status.done != nil || status.error != nil {
+        programStatus.seen(sessionID)
+      }
+    } else if watchedDone.remove(tabID) != nil {
+      programStatus.seen(sessionID, states: ["done"])
+    }
+  }
+
+  /// Clear status (the tab's and the sidebar row's context menu): the escape hatch for a program
+  /// that left a stale request behind.
+  func clearProgramStatus(tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID) {
+    guard case .terminal(let state)? = tabsByTarget[targetID]?[tabID]?.content,
+      let sessionID = state.sessionID
+    else { return }
+    programStatus.clear(sessionID)
   }
 
   // MARK: Remote pane links (#254, C7)

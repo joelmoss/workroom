@@ -29,6 +29,12 @@ protocol HostServiceConnection: Sendable {
   /// Each remote workroom's pane layout, kept on its host (#255). Throws `VCSError.backendVersion`
   /// when the peer predates the service.
   func layouts() throws -> AgentLayoutService
+  /// Program status (#358): subscribe to every session's records on this host.
+  func subscribeProgramStatus(
+    onEvent: @escaping @Sendable (ProgramStatusEvent) -> Void
+  ) async throws -> ProgramStatusAvailability
+  func programStatusSeen(session: UUID, revision: UInt64, states: [String]?) async throws
+  func programStatusClear(session: UUID) async throws
   func close() async
 }
 
@@ -57,6 +63,18 @@ extension HostServiceConnection {
 
   func layouts() throws -> AgentLayoutService {
     throw VCSError.backendVersion("Host has no layout service.")
+  }
+
+  func subscribeProgramStatus(
+    onEvent: @escaping @Sendable (ProgramStatusEvent) -> Void
+  ) async throws -> ProgramStatusAvailability { .unsupported }
+
+  func programStatusSeen(session: UUID, revision: UInt64, states: [String]?) async throws {
+    throw VCSError.backendVersion("Host has no program status service.")
+  }
+
+  func programStatusClear(session: UUID) async throws {
+    throw VCSError.backendVersion("Host has no program status service.")
   }
 }
 
@@ -260,6 +278,12 @@ actor HostConnectionManager {
   /// later connection cannot apply a stale one. Never connects.
   func layouts(host: HostID) throws -> AgentLayoutService {
     try connected(host).1.layouts()
+  }
+
+  /// The connection program status subscribes on (#358). Never connects: `ProgramStatusMonitor`
+  /// acquires through `LocalAgentVCS` or `RemoteWorkrooms` first.
+  func programStatus(host: HostID) throws -> any HostServiceConnection {
+    try connected(host).1
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

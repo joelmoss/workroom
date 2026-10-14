@@ -410,6 +410,7 @@ final class GhosttySurfaceView: NSView {
     onCmdClickFile = nil
     resolveCmdHoverFile = nil
     onFocused = nil
+    onEffectiveFocusChange = nil
     onChildExited = nil
     onCloseRequested = nil
     progressActive = false
@@ -704,7 +705,17 @@ final class GhosttySurfaceView: NSView {
   /// always re-synced rather than skipped by a stale match.
   private var lastSetFocus: Bool?
 
+  /// Fired when this pane gains or loses effective focus: first responder in the key window,
+  /// whatever moved it there (#358). Program status reads the user as having seen a pane only then.
+  var onEffectiveFocusChange: ((Bool) -> Void)?
+  private(set) var isEffectivelyFocused = false
+
   private func setSurfaceFocused(_ focused: Bool) {
+    let effective = focused && (window?.isKeyWindow ?? false)
+    if effective != isEffectivelyFocused {
+      isEffectivelyFocused = effective
+      onEffectiveFocusChange?(effective)
+    }
     guard let surface else { return }
     guard focused != lastSetFocus else { return }
     lastSetFocus = focused

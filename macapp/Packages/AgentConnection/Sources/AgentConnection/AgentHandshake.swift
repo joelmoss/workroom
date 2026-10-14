@@ -8,7 +8,7 @@ public enum AgentHandshake {
   /// Matches `PROTOCOL_VERSION` in the agent's `wr_protocol::envelope`. Bumped together. `negotiate`
   /// on the agent side takes the lower of the two sides' versions for Terminal/Control, so
   /// advertising a newer version here never breaks talking to an older agent left running.
-  public static let protocolVersion: UInt16 = 7
+  public static let protocolVersion: UInt16 = 8
   /// `MIN_VCS_VERSION` and `MIN_FILE_VERSION` in the agent's `wr_protocol::envelope`: the first peer
   /// versions that understand `Service::Vcs` and `Service::File`. Each is checked against a peer's RAW
   /// greeting version before that service's first envelope — never folded into the negotiated minimum,
@@ -21,6 +21,9 @@ public enum AgentHandshake {
   /// `MIN_LAYOUT_VERSION`: the first peer version that answers `Service::Layout` (#255). A
   /// protocol-6 agent drops a Layout envelope without answering, so it is never sent one.
   public static let minLayoutVersion: UInt16 = 7
+  /// `MIN_PROGRAM_STATUS_VERSION`: the first peer version that answers `Service::ProgramStatus`
+  /// (#358). Older agents drop its envelopes unanswered, so they are never sent one.
+  public static let minProgramStatusVersion: UInt16 = 8
   public static let magic: [UInt8] = Array("WRA1".utf8)
 
   public static func encodeHello(build: String) -> [UInt8] {

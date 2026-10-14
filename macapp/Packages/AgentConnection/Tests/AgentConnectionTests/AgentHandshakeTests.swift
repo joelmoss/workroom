@@ -10,7 +10,7 @@ final class AgentHandshakeTests: XCTestCase {
     let bytes = AgentHandshake.encodeHello(build: "Workroom")
     XCTAssertEqual(Array(bytes.prefix(4)), Array("WRA1".utf8))
     XCTAssertEqual(bytes[4], 0, "protocol version is a big-endian u16")
-    XCTAssertEqual(bytes[5], 7, "PROTOCOL_VERSION in the agent, bumped for Service::Layout")
+    XCTAssertEqual(bytes[5], 8, "PROTOCOL_VERSION in the agent, bumped for Service::ProgramStatus")
     XCTAssertEqual(Int(bytes[6]), "Workroom".utf8.count)
   }
 

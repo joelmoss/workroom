@@ -463,7 +463,10 @@ enum RemoteWorkrooms {
     // a workroom with nothing live to take down keeps nothing made this launch.
     func forget() async throws {
       if let id = host.id {
-        await MainActor.run { PortForwardingModel.forgetHost(.remote(id)) }
+        await MainActor.run {
+          PortForwardingModel.forgetHost(.remote(id))
+          ProgramStatusMonitor.shared.forget(.remote(id))
+        }
       }
       try await recorder.forget(name)
     }

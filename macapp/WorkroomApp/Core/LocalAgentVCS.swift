@@ -79,6 +79,13 @@ actor LocalAgentVCS {
     return try await manager.forwarding(host: .local)
   }
 
+  /// The local agent's connection for program status (#358), connecting (and starting the agent)
+  /// as a VCS read does: a daemon-backed pane means the agent is running anyway.
+  func programStatus() async throws -> any HostServiceConnection {
+    try await ensureConnected(host: .local)
+    return try await manager.programStatus(host: .local)
+  }
+
   private func isBackendVersion(_ error: Error) -> Bool {
     if case VCSError.backendVersion = error { return true }
     return false
