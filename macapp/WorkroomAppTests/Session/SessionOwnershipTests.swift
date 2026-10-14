@@ -569,7 +569,7 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
   /// The bug. The owner is resolved and cached while the daemon holds the session; the shell then
   /// exits; a later reattach must NOT proceed on the cached answer.
   @MainActor
-  func testASessionTheDaemonHasLostIsNotAttachedTo() {
+  func testASessionTheDaemonHasLostIsNotAttachedThroughIt() {
     let answers = OwnershipScript([.owned, .notOwned])
     let service = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") },
@@ -623,8 +623,7 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
   }
 
   /// **A freshly minted id is never challenged.** It has never existed anywhere, so create-on-attach
-  /// is the wanted behaviour — asking would refuse every new pane. This is the guard that makes the
-  /// check safe to apply to BOTH backends rather than only the retired one.
+  /// is the wanted behaviour — asking would refuse every new pane.
   @MainActor
   func testAFreshSessionIsNeverChallenged() {
     let probes = Counter()
@@ -641,25 +640,51 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     XCTAssertEqual(probes.value, 0, "a fresh id is not worth a round trip to anyone")
   }
 
-  /// The agent is re-checked too, now. It creates on first attach exactly as the daemon does
-  /// (`serve.rs`: guarded only by `sessions.contains(id)`), so checking only the retired backend
-  /// closed the hole on the one being drained and left it open on the one that owns every new
-  /// session — and once the drain completes, on the only one left.
+  /// The agent is not re-checked: it is asked in the attach itself. A restored id it no longer
+  /// holds is refused by `wr-agent attach --no-create`, which then opens the pane as a shell that
+  /// says the session ended, with Ghostty's shell integration. The app's own notice shell had none,
+  /// so its titles latched and an OSC 9;4 mark waited out the 30s timeout.
   @MainActor
-  func testAnAgentOwnedSessionIsAlsoChallenged() {
-    let answers = OwnershipScript([.notOwned, .notOwned])
+  func testAnAgentOwnedSessionIsRefusedInTheAttachItself() {
+    let probes = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in
+        probes.increment()
+        return .notOwned
+      })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .rustAgent)
+    let afterResolve = probes.value
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
+    XCTAssertEqual(probes.value, afterResolve, "the attach answers this; a separate ask is stale")
+    XCTAssertEqual(
+      service.attachCommand(forSession: sessionID, restored: true)?.hasSuffix(
+        " attach --no-create"),
+      true,
+      "a restored id the agent lost would be CREATED as a new session on attach")
+    XCTAssertEqual(
+      service.attachCommand(forSession: sessionID)?.hasSuffix(" attach"), true,
+      "a new pane's id has never existed, so its attach must create it")
+  }
+
+  /// A session the retired daemon lost re-resolves to the agent, so its pane gets the agent's
+  /// `--no-create` attach rather than the daemon's client, which would create a new session.
+  @MainActor
+  func testASessionTheDaemonLostIsAttachedThroughTheAgent() {
+    let answers = OwnershipScript([.owned, .notOwned])
     let service = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") },
       ownership: { _ in answers.next() })
     let sessionID = UUID()
-    XCTAssertEqual(service.backend(forSession: sessionID), .rustAgent)
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
 
-    XCTAssertEqual(
-      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone,
-      """
-      an agent that disclaims a restored id would CREATE a new session on attach, exactly as the \
-      daemon does
-      """)
+    let command = service.attachCommand(forSession: sessionID, restored: true)
+    XCTAssertEqual(command?.contains("wr-agent"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(command?.hasSuffix(" attach --no-create"), true, "got \(command ?? "nil")")
   }
 
   /// REGRESSION, and the shape of the hole this replaced.
@@ -689,78 +714,6 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     XCTAssertEqual(
       probes.value, afterResolve + 1,
       "confirming must cost exactly one ask — it runs on the main actor during pane creation")
-  }
-}
-
-/// The notice a pane shows when its session is gone.
-final class LostSessionCommandTests: XCTestCase {
-  /// It has to actually run. A malformed command string is a pane that opens to nothing, which is
-  /// worse than the silent fresh prompt this replaces.
-  func testTheNoticeCommandRunsAndPrintsThenBecomesTheShell() throws {
-    let command = GhosttySurfaceView.lostSessionCommand(shell: "/bin/sh")
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/sh")
-    process.arguments = ["-c", command]
-    let pipe = Pipe()
-    let input = Pipe()
-    process.standardOutput = pipe
-    process.standardError = pipe
-    process.standardInput = input
-    try process.run()
-
-    // Typed AT the pane, not redirected from `/dev/null`. The earlier version ended the shell with
-    // EOF and could only see the notice — which `printf` alone would satisfy, leaving a pane that
-    // explains itself and then dies. Feeding it a script proves there is a live shell on the other
-    // side to read it, which is the half of the name this test was not testing.
-    input.fileHandleForWriting.write(Data("echo ARGV0=$0\nexit 3\n".utf8))
-    try input.fileHandleForWriting.close()
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-
-    let output = String(decoding: data, as: UTF8.self)
-    XCTAssertTrue(
-      output.contains("has ended, so this is a new shell"),
-      "the pane would come back with no explanation. got: \(output)")
-    XCTAssertTrue(
-      output.contains("ARGV0=/bin/sh"),
-      """
-      nothing read what was typed, so the notice printed into a pane with no shell behind it — \
-      `wait_after_command` is false, so that pane is dead, not idle. got: \(output)
-      """)
-    XCTAssertEqual(
-      process.terminationStatus, 3,
-      """
-      the exit status came from somewhere other than the shell we typed `exit 3` at. `exec` is what \
-      makes this one process rather than a wrapper holding a child, and a wrapper would report its \
-      own status here. got: \(output)
-      """)
-  }
-
-  /// A shell path carrying shell metacharacters must be taken literally. `SHELL` is
-  /// environment-supplied, so it is not ours to trust, and this string is handed to `/bin/sh -c`.
-  ///
-  /// Asserted by RUNNING it and checking the side effect did not happen. The first version of this
-  /// test looked for the injected text as a substring of the command and failed — correctly quoted
-  /// output still contains it, inside quotes, which is the whole point. A substring check cannot
-  /// tell "quoted" from "escaped"; only execution can.
-  func testAnAwkwardShellPathIsQuotedNotInterpreted() throws {
-    let marker = URL(fileURLWithPath: "/tmp/wr-quoting-\(UUID().uuidString.prefix(8))")
-    let hostile = "/nonexistent/sh'; touch \(marker.path); '"
-    let command = GhosttySurfaceView.lostSessionCommand(shell: hostile)
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/sh")
-    process.arguments = ["-c", "\(command) < /dev/null"]
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    try process.run()
-    process.waitUntilExit()
-
-    let escaped = FileManager.default.fileExists(atPath: marker.path)
-    try? FileManager.default.removeItem(at: marker)
-    XCTAssertFalse(
-      escaped,
-      "a shell path from the environment broke out of its quoting and ran: \(command)")
   }
 }
 

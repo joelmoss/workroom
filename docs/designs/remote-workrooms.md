@@ -1127,8 +1127,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     supervisor starts one there.
   - *`--no-create` (a restored pane):* the agent refuses a session it does not hold (`CREATE=0` in
     the attach request, which older agents ignore). The pane becomes a shell that says the session
-    ended. Locally the app asks first (`confirmBeforeAttach`); remotely one request answers and
-    attaches, so the answer cannot go stale in between.
+    ended. One request answers and attaches, so the answer cannot go stale in between. A local
+    restored pane does the same; the app asks first (`confirmBeforeAttach`) only about a session the
+    retired daemon held, whose client has no such flag.
   - *A dropped link reconnects.* ssh's own failure (exit 255, as after sleep or a network change)
     reattaches the pane as a restored one, backing off to 30s and trying for as long as it takes,
     so a VM that is minutes into a reboot comes back to its last screen (#232) without the user
