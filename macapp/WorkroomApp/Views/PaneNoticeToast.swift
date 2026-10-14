@@ -9,7 +9,8 @@ import SwiftUI
 /// in a key window, paused while hovered, so one behind another window is still there to be read.
 struct PaneNoticeToast: View {
   /// What a restored pane says when its terminal had ended and it got a new one (#459).
-  static let sessionReplaced = "The terminal that was running here had ended, so this is a new one."
+  static let sessionReplaced =
+    "This terminal was previously ended, so we created a new one for you."
 
   /// Transparent room around the card for its shadow. `PaneNoticeHost` passes clicks in it through
   /// to the terminal.
