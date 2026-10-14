@@ -545,8 +545,8 @@ final class PersistentSessionService {
       socketPath(for: owner) != nil
     else { return nil }
     let command = path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
-    // A restored id the agent no longer holds is refused rather than created, and the agent opens
-    // the pane as a shell that says the session ended (`attach.rs`'s `ended`).
+    // A restored id the agent no longer holds is refused rather than silently created; the relay
+    // then says the session ended and creates a new one under the same id (`attach.rs`, #459).
     return restored && owner == .rustAgent ? command + " --no-create" : command
   }
 
