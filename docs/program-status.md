@@ -163,20 +163,18 @@ sends only OSC 9;4.
 
 - **Run commands and other non-daemon panes** never show program status: only a terminal whose
   shell runs under `wr-agent` has an agent to keep it (see `TODOS.md`).
-- **A replayed recording can alert.** `cat`ing a raw recording of a session that probed can raise
-  one "needs you" alert, because the agent sees its probe and its report in separate reads.
+- **A replayed recording can alert.** `cat`ing a raw recording of a session that probed, in a
+  terminal you are not looking at, can flash one "needs you" alert: the agent sees its probe and its
+  report in separate reads. The recording's next state takes it back at once.
 - **Alerts route to one tab.** With the same session open in two windows, pointing the tab its alert
   went to at another session (Detached sessions › Active tab) leaves the alert opening that tab.
   ⇧⌘M still reaches the window that shows the session.
-- **A remote host coming back can lag.** After a long disconnect, such as a host that was asleep,
-  marks can stay "may be out of date" for up to 30 seconds after it is reachable again: Workroom
-  retries on its own schedule, not when you open the workroom.
-- **A request that started before a host's first connection** shows its mark and count but never
-  alerts, even when that first connection comes long after launch: Workroom treats it as already
-  waiting before the app started.
-- **Focus while a host is unreachable** does not clear a finished or failed mark. Focus the terminal
-  again once the host is back.
-- **More than 64 records** from one program push out the oldest, even one that is waiting on you.
+- **A host in the background can lag.** After a remote host was unreachable, the marks of a workroom
+  you have not opened can stay "may be out of date" for up to 30 seconds after it is back. Opening
+  the workroom, or a boxd host waking, reconnects at once.
+- **A host unreachable since launch:** a request that starts there before Workroom first reaches it
+  shows its mark and count, but no alert, since Workroom cannot tell it from one that was waiting
+  before the app started.
 
 ## Troubleshooting
 

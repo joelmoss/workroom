@@ -210,6 +210,64 @@ final class ProgramStatusMonitorTests: XCTestCase {
     XCTAssertEqual(changes.last?.sessions, [session])
   }
 
+  /// A host whose link comes back (a pane reattached after it woke) is retried at once, not after
+  /// its backoff, which can have reached 30 s.
+  func testAHostWhoseLinkComesBackIsRetriedWithoutWaitingOutTheBackoff() async {
+    let monitor = ProgramStatusMonitor()
+    monitor.watchesHosts = true
+    monitor.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
+    let back = SleepGate()
+    monitor.reconnected = { _ in await back.wait() }
+    let attempts = Attempts()
+    let connection = FakeProgramStatusConnection()
+    monitor.connect = { _ in
+      if attempts.next() == 1 { throw VCSError.io("the host is asleep") }
+      return connection
+    }
+    monitor.watch(.local)
+    await until(back.isWaiting)
+    XCTAssertEqual(attempts.count, 1, "fixture: one failed attempt, now backing off")
+
+    back.release()
+    await until(attempts.count == 2)
+    await until(
+      {
+        connection.push(.snapshotComplete(boot: "b", sessions: []))
+        return monitor.hosts[.local] == .live
+      }())
+  }
+
+  /// Looking at a finished terminal while its host's link is down is not lost: the `seen` goes to
+  /// the host once it is back, after its snapshot.
+  func testASeenWhileTheLinkIsDownIsSentOnceTheHostIsBack() async {
+    let (monitor, gate) = makeMonitor()
+    let done = ProgramStatusRecord(id: "", state: .done)
+    let first = FakeProgramStatusConnection()
+    gate.yield(first)
+    monitor.watch(.local)
+    await until(
+      {
+        first.push(status([done]))
+        first.push(.snapshotComplete(boot: "b", sessions: [session]))
+        return monitor.rollup(for: session)?.done != nil
+      }())
+
+    first.push(.lost)
+    await until(monitor.hosts[.local] != .live)
+    monitor.seen(session)
+    XCTAssertEqual(first.requests, [], "nothing to send it on")
+
+    let second = FakeProgramStatusConnection()
+    gate.yield(second)
+    await until(
+      {
+        second.push(status([done]))
+        second.push(.snapshotComplete(boot: "b", sessions: [session]))
+        return !second.requests.isEmpty
+      }())
+    XCTAssertEqual(second.requests, ["seen 1 []"])
+  }
+
   /// A link that drops and comes back within the stale grace, as every app update's hand-off
   /// does, never shows its host stale.
   func testADisconnectShorterThanTheGraceNeverGoesStale() async {
@@ -251,6 +309,19 @@ final class ProgramStatusMonitorTests: XCTestCase {
 }
 
 /// Holds every sleep handed to `wait` until the test releases them.
+/// How many times a monitor tried to connect, from its `connect` closure.
+private final class Attempts: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+  var count: Int { lock.withLock { value } }
+  func next() -> Int {
+    lock.withLock {
+      value += 1
+      return value
+    }
+  }
+}
+
 private final class SleepGate: @unchecked Sendable {
   private let lock = NSLock()
   private var waiters: [CheckedContinuation<Void, Never>] = []
