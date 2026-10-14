@@ -22,6 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::InputClassifier;
+use crate::program_status::{Hub, Store};
 use crate::pty::{Pty, PtyError};
 use crate::rpc::SharedWriter;
 use crate::screens::Screens;
@@ -194,6 +195,9 @@ pub struct FrozenSession {
     pub screen: Vec<u8>,
     /// The session's metadata (`Session::metadata`), so its workroom survives the hand-off.
     pub metadata: Vec<(String, String)>,
+    /// Its program status records (#358): the screen's VT carries none, and a record still
+    /// waiting on the user must not vanish because the agent was replaced.
+    pub program_status: Store,
 }
 
 /// What a client needs to know about a session it is not attached to, for the session list.
@@ -402,6 +406,8 @@ pub struct SessionStore {
     /// Where `refused` is kept for the next program to serve this socket, when this one serves
     /// one (`keep_refusals`).
     refusals: Arc<OnceLock<PathBuf>>,
+    /// Publishes each session's program status to subscribed connections (#358).
+    program_status: Arc<Hub>,
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
@@ -631,6 +637,7 @@ impl SessionStore {
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
         let store = Arc::clone(&self.sessions);
+        let hub = Arc::clone(&self.program_status);
         sessions.insert(spec.id, session);
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
@@ -660,7 +667,7 @@ impl SessionStore {
             // An `Err` is the sender dropped without a send, which only a panicking `register` can
             // do; draining anyway is what that case needs too.
             let _ = start.recv();
-            read_session(spec.id, number, pty, shadow, attached, store)
+            read_session(spec.id, number, pty, shadow, attached, store, hub)
         });
         if spawned.is_err() {
             self.kill(spec.id);
@@ -1032,6 +1039,11 @@ impl SessionStore {
                     // sender (^Z) loses its report here and shows idle until its next one.
                     screen: live_replay(pty, shadow),
                     metadata: metadata.clone(),
+                    program_status: shadow
+                        .lock()
+                        .ok()
+                        .and_then(|mut shadow| shadow.status().cloned())
+                        .unwrap_or_default(),
                 }
             })
             .collect();
@@ -1042,22 +1054,33 @@ impl SessionStore {
     }
 
     /// Takes over a session an earlier program in this process was running (`crate::handoff`):
-    /// its pty, and a fresh shadow painted with the screen that program captured.
+    /// its pty (made from `frozen`'s descriptor), and a fresh shadow painted with the screen that
+    /// program captured.
     ///
     /// No client comes with it, so nobody owns the size: the first client to attach with one takes
     /// it, as on a new session.
-    pub fn adopt(
-        &self,
-        id: SessionId,
-        pty: Pty,
-        columns: u16,
-        rows: u16,
-        screen: &[u8],
-        metadata: Vec<(String, String)>,
-    ) -> Result<(), SessionError> {
+    ///
+    /// Its program status records come with it, revision and episodes included, so the app sees
+    /// one store continue. Nothing is published: a program that just started has no subscriber,
+    /// and the first one's snapshot carries them.
+    pub fn adopt(&self, pty: Pty, frozen: FrozenSession) -> Result<(), SessionError> {
+        let FrozenSession {
+            id,
+            columns,
+            rows,
+            screen,
+            metadata,
+            program_status,
+            ..
+        } = frozen;
         let mut shadow = Shadow::new(columns, rows);
         // A hand-off keeps the processes, so whoever owns the pty now sent any report in `screen`.
-        shadow.write_from_pty(screen, || pty.foreground_pgid());
+        // The screen is the old program's paint, not the program's output: it asks nothing.
+        let _ = shadow.write_from_pty(&screen, || pty.foreground_pgid());
+        // After the screen, whose prompt marks would otherwise end the run they describe.
+        if let Some(status) = shadow.status() {
+            *status = program_status;
+        }
         let session = Session {
             id,
             pty: Arc::new(pty),
@@ -1071,6 +1094,7 @@ impl SessionStore {
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
         let store = Arc::clone(&self.sessions);
+        let hub = Arc::clone(&self.program_status);
         {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
             if sessions.contains_key(&id) {
@@ -1080,7 +1104,7 @@ impl SessionStore {
         }
         let pid = pty.child_pid();
         let spawned = std::thread::Builder::new()
-            .spawn(move || read_session(id, number, pty, shadow, attached, store));
+            .spawn(move || read_session(id, number, pty, shadow, attached, store, hub));
         if spawned.is_err() {
             self.kill(id);
             return Err(SessionError::ReaderFailed(id.to_hyphenated()));
@@ -1273,6 +1297,47 @@ impl SessionStore {
             .copied()
             .collect()
     }
+
+    /// The publisher of this store's program status (#358), whose boot names the store.
+    pub fn program_status(&self) -> &Arc<Hub> {
+        &self.program_status
+    }
+
+    /// Every live session's `status` event, in id order, for a new subscriber's snapshot. Each is
+    /// read under its own shadow lock, never the store's.
+    pub fn program_status_events(&self) -> Vec<(SessionId, Vec<u8>)> {
+        let shadows: Vec<(SessionId, Arc<Mutex<Shadow>>)> = {
+            let sessions = self.sessions.lock().expect("session store poisoned");
+            sessions
+                .values()
+                .map(|session| (session.id, Arc::clone(&session.shadow)))
+                .collect()
+        };
+        let boot = self.program_status.boot();
+        let mut events: Vec<(SessionId, Vec<u8>)> = shadows
+            .into_iter()
+            .map(|(id, shadow)| {
+                let mut shadow = shadow.lock().unwrap_or_else(|e| e.into_inner());
+                let event = shadow.status().map_or_else(
+                    || Store::default().event(boot, id),
+                    |status| status.event(boot, id),
+                );
+                (id, event)
+            })
+            .collect();
+        events.sort_by_key(|(id, _)| *id);
+        events
+    }
+
+    /// Applies `change` to `id`'s program status and publishes what it changed. False when there
+    /// is no session `id`.
+    pub fn update_program_status(&self, id: SessionId, change: impl FnOnce(&mut Store)) -> bool {
+        let Some((_, shadow, _)) = self.parts(id) else {
+            return false;
+        };
+        change_program_status(id, &shadow, &self.program_status, change);
+        true
+    }
 }
 
 /// Whether the pty's child has actually exited, reaping it if so.
@@ -1461,6 +1526,49 @@ fn remove_if_held(store: &mut HashMap<SessionId, Session>, id: SessionId, number
     held
 }
 
+/// Applies `change` to the session's program status under its shadow lock, and publishes the
+/// result, with the lock released, if it changed anything.
+fn change_program_status(
+    id: SessionId,
+    shadow: &Mutex<Shadow>,
+    hub: &Hub,
+    change: impl FnOnce(&mut Store),
+) {
+    let published = {
+        let mut shadow = shadow.lock().unwrap_or_else(|e| e.into_inner());
+        shadow.status().and_then(|status| {
+            change(status);
+            let blocked = status.commit()?;
+            Some((status.event(hub.boot(), id), blocked))
+        })
+    };
+    if let Some((event, blocked)) = published {
+        hub.publish(id, event, blocked);
+    }
+}
+
+/// The session's program has exited: its running records go, and every subscriber is told so,
+/// then that the session has ended.
+fn end_program_status(id: SessionId, shadow: &Mutex<Shadow>, hub: &Hub) {
+    change_program_status(id, shadow, hub, Store::drop_on_exit);
+    hub.ended(id);
+}
+
+/// Writes a probe's answer to the pty whole, or drops it. Non-blocking: a program that is not
+/// reading its input (a paste it has not taken yet) must not stall every client's output.
+///
+/// Accepted limit: an answer can land between two writes of a large paste, inside it.
+fn answer_program(pty: &Pty, answer: &[u8], id: SessionId, hub: &Hub) {
+    let written = pty.write(answer);
+    if !matches!(written, Ok(n) if n == answer.len()) {
+        hub.reply_dropped();
+        crate::note!(
+            "session {}: a program status answer was dropped ({written:?})",
+            id.to_hyphenated()
+        );
+    }
+}
+
 fn read_session(
     id: SessionId,
     number: u64,
@@ -1468,6 +1576,7 @@ fn read_session(
     shadow: Arc<Mutex<Shadow>>,
     attached: Arc<Mutex<Attached>>,
     store: Arc<Mutex<HashMap<SessionId, Session>>>,
+    hub: Arc<Hub>,
 ) {
     let mut buffer = [0u8; READ_CHUNK];
     loop {
@@ -1488,21 +1597,40 @@ fn read_session(
         // that attaches after the capture is painted from the shadow, which already holds these
         // bytes; it cannot receive them twice, and the superseded client's writer is the one this
         // write goes to.
-        let (read, clients) = {
+        //
+        // The program status answer and event are taken under the same locks, as one step with
+        // the bytes that produced them, and sent once they are released.
+        let (read, clients, answer, published) = {
             let mut held = attached.lock().expect("attachment lock poisoned");
             let read = pty.read(&mut buffer);
+            let mut answer = Vec::new();
+            let mut published = None;
             let clients = match read {
                 Ok(n) if n > 0 => {
                     if let Ok(mut shadow) = shadow.lock() {
-                        shadow.write_from_pty(&buffer[..n], || pty.foreground_pgid());
+                        let (replies, changed) =
+                            shadow.write_from_pty(&buffer[..n], || pty.foreground_pgid());
+                        answer = replies;
+                        published = changed.and_then(|blocked| {
+                            let status = shadow.status()?;
+                            Some((status.event(hub.boot(), id), blocked))
+                        });
                     }
                     held.changed = true;
                     held.clients.iter().map(Client::target).collect::<Vec<_>>()
                 }
                 _ => Vec::new(),
             };
-            (read, clients)
+            (read, clients, answer, published)
         };
+        // Before the output goes to any client: a program sends its probe followed by a `CSI c`
+        // the client answers, and reads the two answers in that order (#358, Step 0).
+        if !answer.is_empty() {
+            answer_program(&pty, &answer, id, &hub);
+        }
+        if let Some((event, blocked)) = published {
+            hub.publish(id, event, blocked);
+        }
 
         // "The child is gone" looks different on each platform: reading a pty master whose child
         // has exited yields EOF on Darwin and **EIO** on Linux. Deciding it once, here, is what
@@ -1534,9 +1662,13 @@ fn read_session(
                 continue;
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
-            let held = store
-                .lock()
-                .is_ok_and(|mut store| remove_if_held(&mut store, id, number));
+            // `replaced`: a later session already holds the id, and its subscribers' records.
+            let (held, replaced) = store.lock().map_or((false, false), |mut store| {
+                (
+                    remove_if_held(&mut store, id, number),
+                    store.contains_key(&id),
+                )
+            });
             // Under `TERMINATING`, so a hand-off cannot replace this program between the removal and
             // the line, which would carry neither the session nor any record of its end. Outside
             // the store lock, so a stderr that has stopped draining (a supervisor's pipe) stalls
@@ -1555,6 +1687,9 @@ fn read_session(
                 );
             }
             drop(terminating);
+            if !replaced {
+                end_program_status(id, &shadow, &hub);
+            }
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
@@ -1618,8 +1753,12 @@ fn read_session(
                 }
                 let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
                 terminate(&[&pty]);
-                if let Ok(mut store) = store.lock() {
-                    let _ = remove_if_held(&mut store, id, number);
+                let replaced = store.lock().is_ok_and(|mut store| {
+                    remove_if_held(&mut store, id, number);
+                    store.contains_key(&id)
+                });
+                if !replaced {
+                    end_program_status(id, &shadow, &hub);
                 }
                 return;
             }
@@ -1804,6 +1943,20 @@ mod tests {
             columns: 80,
             rows: 24,
             metadata: &[],
+        }
+    }
+
+    /// A hand-off's session with only what `adopt` reads from it: an 80x24 `screen`.
+    fn frozen_with(session: SessionId, screen: &[u8]) -> FrozenSession {
+        FrozenSession {
+            id: session,
+            pid: 0,
+            master: -1,
+            columns: 80,
+            rows: 24,
+            screen: screen.to_vec(),
+            metadata: Vec::new(),
+            program_status: Store::default(),
         }
     }
 
@@ -2073,7 +2226,7 @@ mod tests {
         let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
         let pid = pty.child_pid();
         assert!(matches!(
-            store.adopt(id(9), pty, 80, 24, b"", Vec::new()),
+            store.adopt(pty, frozen_with(id(9), b"")),
             Err(SessionError::AlreadyExists(_))
         ));
         // The refused pty was dropped, which hangs its shell up; reap it so no zombie is left.
@@ -2112,7 +2265,7 @@ mod tests {
         let sleep = [OsString::from("-c"), OsString::from("sleep 5")];
         let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &sleep, &e, None, 80, 24).expect("pty");
         after
-            .adopt(id(81), pty, 80, 24, &screen, Vec::new())
+            .adopt(pty, frozen_with(id(81), &screen))
             .expect("adopt");
 
         let replay = after.replay_bytes(id(81));
@@ -2257,14 +2410,7 @@ mod tests {
         );
         let store = SessionStore::new();
         store
-            .adopt(
-                id(83),
-                pty,
-                80,
-                24,
-                b"working\r\n\x1b]9;4;3\x1b\\",
-                Vec::new(),
-            )
+            .adopt(pty, frozen_with(id(83), b"working\r\n\x1b]9;4;3\x1b\\"))
             .expect("adopt");
         let busy = b"\x1b]9;4;3";
         assert!(

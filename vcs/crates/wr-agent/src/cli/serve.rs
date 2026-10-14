@@ -156,19 +156,18 @@ fn adopt(
     // SAFETY: as above; the listening socket is one of those descriptors.
     let listener = unsafe { UnixListener::from_raw_fd(table.listener) };
     crate::pty::set_cloexec(table.listener, true);
+    // The same store of program status, so the app keeps what it knows (#358). A table from
+    // before version 3 has none, and the fresh boot tells the app it starts over.
+    if let Some(boot) = table.boot {
+        agent.sessions.program_status().set_boot(boot);
+    }
     for session in table.sessions {
         let pty = crate::pty::Pty::adopt(session.master, session.pid);
-        if let Err(e) = agent.sessions.adopt(
-            session.id,
-            pty,
-            session.columns,
-            session.rows,
-            &session.screen,
-            session.metadata,
-        ) {
+        let id = session.id;
+        if let Err(e) = agent.sessions.adopt(pty, session) {
             crate::note!(
                 "error: session {} could not be adopted, so its shell is hung up: {e}",
-                session.id.to_hyphenated()
+                id.to_hyphenated()
             );
         }
     }

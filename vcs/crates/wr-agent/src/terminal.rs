@@ -39,10 +39,16 @@
 //! double-counts. The one measurable difference is a single row: the emission ends without a
 //! trailing newline, so the last line does not scroll, and the client reports 36 history rows
 //! where the producer has 37.
+//!
+//! **It answers one query: the program status probe** (`OSC 7501 ; ?`, #358). Every other answer
+//! stays the attached client's; this one no client gives, and a program that gets none reports
+//! nothing. The reports themselves go to `crate::program_status`, which keeps them.
 
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
 use std::ptr;
+
+use crate::program_status::{Event, Kind, Report, State};
 
 mod sys {
     #![allow(
@@ -82,13 +88,50 @@ struct ProgressSlot {
     fresh: bool,
 }
 
+/// Where the callbacks write: the progress slot, and what a write produced for program status
+/// (#358) until `take_program_status` collects it. The records themselves are kept by
+/// `crate::program_status::Store`, outside the terminal.
+#[derive(Default)]
+struct Effects {
+    progress: ProgressSlot,
+    program: Vec<Event>,
+    /// Bytes for the pty: only the answer to a program status probe.
+    replies: Vec<u8>,
+}
+
+/// What `OSC 7501 ; ?` is answered with, up to the states and kinds that follow it.
+const PROBE_REPLY: &[u8] = b"\x1b]7501;";
+
 /// A terminal shadowing one session.
 pub struct ShadowTerminal {
     inner: GhosttyTerminal,
-    /// The callback's userdata. A raw allocation rather than a `Box` field: moving a `Box`
+    /// The callbacks' userdata. A raw allocation rather than a `Box` field: moving a `Box`
     /// asserts unique access to its contents, which the pointer the terminal holds would then
     /// alias. Freed in `Drop`, after the terminal that writes to it.
-    progress: *mut ProgressSlot,
+    effects: *mut Effects,
+}
+
+/// The callbacks' userdata.
+///
+/// # Safety
+/// `userdata` must be the one `register_effects` set, and the call must come from inside
+/// `ghostty_terminal_vt_write`, which `write(&mut self)` makes, so nothing else holds a reference
+/// to it meanwhile.
+unsafe fn effects<'a>(userdata: *mut std::ffi::c_void) -> Option<&'a mut Effects> {
+    // SAFETY: per this function's contract, a live `Effects` reached by no other reference.
+    unsafe { (userdata as *mut Effects).as_mut() }
+}
+
+/// A copy of a string libghostty lent for the current callback.
+///
+/// # Safety
+/// `text` must be a string the current callback was passed, so `len` bytes at `ptr` are live.
+unsafe fn copied(text: &GhosttyString) -> String {
+    if text.ptr.is_null() || text.len == 0 {
+        return String::new();
+    }
+    // SAFETY: per this function's contract, `len` live bytes at a non-null `ptr`.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(text.ptr, text.len) }).into_owned()
 }
 
 /// `GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT`: keep the last report; REMOVE clears it.
@@ -97,16 +140,15 @@ unsafe extern "C" fn on_progress_report(
     userdata: *mut std::ffi::c_void,
     report: *const GhosttyTerminalProgressReport,
 ) {
-    let (Some(slot), Some(report)) = (
-        // SAFETY: the only userdata ever set is `ShadowTerminal::progress`, which outlives the
-        // terminal. The callback runs synchronously inside `write(&mut self)`, so nothing else
-        // holds a reference to the slot meanwhile.
-        unsafe { (userdata as *mut ProgressSlot).as_mut() },
+    let (Some(effects), Some(report)) = (
+        // SAFETY: libghostty passes the userdata `register_effects` set, from inside a write.
+        unsafe { effects(userdata) },
         // SAFETY: libghostty passes a report that is valid for the duration of the call.
         unsafe { report.as_ref() },
     ) else {
         return;
     };
+    let slot = &mut effects.progress;
     // A sized struct: only read `progress` if this library's struct has it.
     let has_percent = report.size
         >= std::mem::offset_of!(GhosttyTerminalProgressReport, progress)
@@ -118,10 +160,118 @@ unsafe extern "C" fn on_progress_report(
     slot.fresh = true;
 }
 
-// SAFETY: the handle and the progress slot are owned exclusively, so moving them to another thread
-// moves the only way to reach them. libghostty-vt requires the caller to serialise access, and it
-// is: `ShadowTerminal` is not `Sync`, so only the thread holding it can call in, and `&mut self`
-// orders the writes that run the callback.
+/// `GHOSTTY_TERMINAL_OPT_WRITE_PTY`: keep only the program status probe's answer. A device
+/// attributes, cursor or colour query is the attached client's to answer, as it always was; the
+/// shadow answering too would put two replies on the pty.
+unsafe extern "C" fn on_write_pty(
+    _terminal: GhosttyTerminal,
+    userdata: *mut std::ffi::c_void,
+    data: *const u8,
+    len: usize,
+) {
+    // SAFETY: libghostty passes the userdata `register_effects` set, from inside a write.
+    let Some(effects) = (unsafe { effects(userdata) }) else {
+        return;
+    };
+    if data.is_null() {
+        return;
+    }
+    // SAFETY: libghostty passes `len` bytes at `data`, valid for the duration of the call.
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    if bytes.starts_with(PROBE_REPLY) {
+        effects.replies.extend_from_slice(bytes);
+        effects.program.push(Event::Probed);
+    }
+}
+
+/// `GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS`: a report or a CLEAR, queued for the store.
+unsafe extern "C" fn on_program_status(
+    _terminal: GhosttyTerminal,
+    userdata: *mut std::ffi::c_void,
+    report: *const GhosttyTerminalProgramStatus,
+) {
+    let (Some(effects), Some(report)) = (
+        // SAFETY: libghostty passes the userdata `register_effects` set, from inside a write.
+        unsafe { effects(userdata) },
+        // SAFETY: libghostty passes a report that is valid for the duration of the call.
+        unsafe { report.as_ref() },
+    ) else {
+        return;
+    };
+    // A sized struct whose every field has been there since it was introduced, so one too short
+    // for `message` is not this struct at all.
+    if report.size
+        < std::mem::offset_of!(GhosttyTerminalProgramStatus, message)
+            + std::mem::size_of::<GhosttyString>()
+    {
+        return;
+    }
+    // SAFETY: each string is one this callback was passed.
+    let text = |s: &GhosttyString| unsafe { copied(s) };
+    let state = match report.state {
+        GhosttyProgramStatusState_GHOSTTY_PROGRAM_STATUS_STATE_IDLE => State::Idle,
+        GhosttyProgramStatusState_GHOSTTY_PROGRAM_STATUS_STATE_WORKING => State::Working,
+        GhosttyProgramStatusState_GHOSTTY_PROGRAM_STATUS_STATE_DONE => State::Done,
+        GhosttyProgramStatusState_GHOSTTY_PROGRAM_STATUS_STATE_BLOCKED => State::Blocked,
+        GhosttyProgramStatusState_GHOSTTY_PROGRAM_STATUS_STATE_ERROR => State::Error,
+        GhosttyProgramStatusState_GHOSTTY_PROGRAM_STATUS_STATE_CLEAR => {
+            effects.program.push(Event::Clear(text(&report.id)));
+            return;
+        }
+        // A state a later library added, which no consumer here could show.
+        _ => return,
+    };
+    let kind = match report.kind {
+        GhosttyProgramStatusKind_GHOSTTY_PROGRAM_STATUS_KIND_PERMISSION => Kind::Permission,
+        GhosttyProgramStatusKind_GHOSTTY_PROGRAM_STATUS_KIND_QUESTION => Kind::Question,
+        GhosttyProgramStatusKind_GHOSTTY_PROGRAM_STATUS_KIND_AUTH => Kind::Auth,
+        _ => Kind::None,
+    };
+    effects.program.push(Event::Report(Report {
+        id: text(&report.id),
+        state,
+        kind,
+        progress: report.progress,
+        app: text(&report.app),
+        title: text(&report.title),
+        message: text(&report.message),
+    }));
+}
+
+/// `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`: a new prompt ends the program run that reported.
+unsafe extern "C" fn on_semantic_prompt(
+    _terminal: GhosttyTerminal,
+    userdata: *mut std::ffi::c_void,
+    event: *const GhosttyTerminalSemanticPrompt,
+) {
+    let (Some(effects), Some(event)) = (
+        // SAFETY: libghostty passes the userdata `register_effects` set, from inside a write.
+        unsafe { effects(userdata) },
+        // SAFETY: libghostty passes an event that is valid for the duration of the call.
+        unsafe { event.as_ref() },
+    ) else {
+        return;
+    };
+    let has_kind = event.size
+        >= std::mem::offset_of!(GhosttyTerminalSemanticPrompt, kind)
+            + std::mem::size_of::<GhosttySemanticPromptKind>();
+    if has_kind && event.kind == GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_START {
+        effects.program.push(Event::Prompt);
+    }
+}
+
+/// `GHOSTTY_TERMINAL_OPT_RESET`: RIS, after the CLEAR libghostty sends for it.
+unsafe extern "C" fn on_reset(_terminal: GhosttyTerminal, userdata: *mut std::ffi::c_void) {
+    // SAFETY: libghostty passes the userdata `register_effects` set, from inside a write.
+    if let Some(effects) = unsafe { effects(userdata) } {
+        effects.program.push(Event::Reset);
+    }
+}
+
+// SAFETY: the handle and the callbacks' userdata are owned exclusively, so moving them to another
+// thread moves the only way to reach them. libghostty-vt requires the caller to serialise access,
+// and it is: `ShadowTerminal` is not `Sync`, so only the thread holding it can call in, and
+// `&mut self` orders the writes that run the callbacks.
 unsafe impl Send for ShadowTerminal {}
 
 impl ShadowTerminal {
@@ -136,44 +286,75 @@ impl ShadowTerminal {
         }
         let terminal = ShadowTerminal {
             inner,
-            progress: Box::into_raw(Box::default()),
+            effects: Box::into_raw(Box::default()),
         };
         terminal.enable_continuation_tracking();
-        terminal.track_progress_reports();
+        terminal.register_effects();
         Some(terminal)
     }
 
     /// A program reports busy with OSC 9;4 once, at the start of its work, so a client that
-    /// attaches later can only learn it from here (#359). Pointer-typed options are passed
-    /// directly, not by address (`ghostty_terminal_set`'s doc).
-    fn track_progress_reports(&self) {
-        // SAFETY: `inner` is a live terminal. The userdata is the progress slot, which `Drop`
-        // frees only after the terminal, and the callback matches the option's signature.
+    /// attaches later can only learn it from here (#359). It says what it is doing with OSC 7501
+    /// only once something answers its probe, and the attached client never does (#358).
+    /// Pointer-typed options are passed directly, not by address (`ghostty_terminal_set`'s doc).
+    fn register_effects(&self) {
+        let callbacks: [(GhosttyTerminalOption, *const std::ffi::c_void); 5] = [
+            (
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
+                on_progress_report as *const std::ffi::c_void,
+            ),
+            (
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+                on_write_pty as *const std::ffi::c_void,
+            ),
+            (
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS,
+                on_program_status as *const std::ffi::c_void,
+            ),
+            (
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT,
+                on_semantic_prompt as *const std::ffi::c_void,
+            ),
+            (
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_RESET,
+                on_reset as *const std::ffi::c_void,
+            ),
+        ];
+        // SAFETY: `inner` is a live terminal. The userdata is `effects`, which `Drop` frees only
+        // after the terminal, and each callback matches its option's signature.
         unsafe {
             ghostty_terminal_set(
                 self.inner,
                 GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_USERDATA,
-                self.progress as *const std::ffi::c_void,
+                self.effects as *const std::ffi::c_void,
             );
-            ghostty_terminal_set(
-                self.inner,
-                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
-                on_progress_report as *const std::ffi::c_void,
-            );
+            for (option, callback) in callbacks {
+                ghostty_terminal_set(self.inner, option, callback);
+            }
         }
     }
 
     /// The last progress report the program sent, or `None` once it cleared it.
     pub fn progress(&self) -> Progress {
-        // SAFETY: `progress` is a live allocation until `Drop`, and the callback that writes it
-        // only runs inside `write(&mut self)`, never during this `&self` read.
-        unsafe { (*self.progress).report }
+        // SAFETY: `effects` is a live allocation until `Drop`, and the callbacks that write it
+        // only run inside `write(&mut self)`, never during this `&self` read.
+        unsafe { (*self.effects).progress.report }
     }
 
     /// Whether a report (a REMOVE included) has arrived since this was last asked.
     pub fn take_fresh_report(&mut self) -> bool {
-        // SAFETY: as in `progress`; `&mut self` also rules out the callback running meanwhile.
-        unsafe { std::mem::take(&mut (*self.progress).fresh) }
+        // SAFETY: as in `progress`; `&mut self` also rules out the callbacks running meanwhile.
+        unsafe { std::mem::take(&mut (*self.effects).progress.fresh) }
+    }
+
+    /// The program status events and the probe replies the writes since the last call produced.
+    pub fn take_program_status(&mut self) -> (Vec<Event>, Vec<u8>) {
+        // SAFETY: as in `take_fresh_report`.
+        let effects = unsafe { &mut *self.effects };
+        (
+            std::mem::take(&mut effects.program),
+            std::mem::take(&mut effects.replies),
+        )
     }
 
     /// The last progress report, re-emitted, or an explicit REMOVE when there is none or
@@ -360,7 +541,7 @@ impl ShadowTerminal {
     /// see `primary_screen`. The snapshot carries BOTH screens, which is exactly why it is the way
     /// in: the formatter only ever sees the active one.
     ///
-    /// The copy tracks no progress reports: it is a scratch read, never replayed.
+    /// The copy registers no callbacks: it is a scratch read, never replayed.
     fn clone_via_snapshot(&self) -> Option<ShadowTerminal> {
         let mut bytes: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
@@ -401,7 +582,7 @@ impl ShadowTerminal {
         }
         Some(ShadowTerminal {
             inner,
-            progress: Box::into_raw(Box::default()),
+            effects: Box::into_raw(Box::default()),
         })
     }
 
@@ -586,9 +767,9 @@ impl Drop for ShadowTerminal {
             unsafe { ghostty_terminal_free(self.inner) };
         }
         // After the terminal: it is what writes here.
-        // SAFETY: `progress` came from `Box::into_raw` and is freed exactly once, here, after the
+        // SAFETY: `effects` came from `Box::into_raw` and is freed exactly once, here, after the
         // terminal that held a copy of it is gone.
-        drop(unsafe { Box::from_raw(self.progress) });
+        drop(unsafe { Box::from_raw(self.effects) });
     }
 }
 

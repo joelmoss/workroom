@@ -218,9 +218,17 @@ pub fn has_terminal_state() -> bool {
 /// `handle_connection` on a thread of its own, with a session store of its own. The stream has no
 /// read timeout yet; each caller picks its own once the greeting is done.
 pub fn connect_in_process(name: &str) -> (UnixStream, std::thread::JoinHandle<()>) {
+    connect_in_process_to(name, SessionStore::new())
+}
+
+/// `connect_in_process` to a session store the test holds too, so it can make sessions directly.
+pub fn connect_in_process_to(
+    name: &str,
+    sessions: SessionStore,
+) -> (UnixStream, std::thread::JoinHandle<()>) {
     let (mut stream, server) = UnixStream::pair().unwrap();
     let server = std::thread::spawn(move || {
-        let _ = handle_connection(server, SessionStore::new());
+        let _ = handle_connection(server, sessions);
     });
     stream.write_all(&Hello::current(name).encode()).unwrap();
     let mut greeting = Vec::new();

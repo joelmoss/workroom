@@ -17,6 +17,7 @@ mod input;
 mod layout;
 mod log;
 mod process;
+pub mod program_status;
 pub mod pty;
 mod rpc;
 pub mod screens;

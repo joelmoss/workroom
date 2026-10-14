@@ -28,6 +28,8 @@ fn usage() -> &'static str {
         what a driver runs on the far side (`ssh host wr-agent relay --socket <path>`)
   wr-agent list --socket <path>
         print the agent's live sessions
+  wr-agent program-status --socket <path> [--json]
+        print what each session's program says it is doing (OSC 7501), as the app is told it
   wr-agent hand-off --socket <path> --binary <path> [--force]
         replace the running agent's program with <binary>, keeping every session and its pid.
         Prints `current` when the agent is running that binary already, `handed off` when it was
@@ -71,6 +73,7 @@ fn main() -> ExitCode {
         Some("attach") => cli::attach::run_attach(&args),
         Some("relay") => cli::relay::run_relay(&args),
         Some("list") => cli::list::run_list(&args),
+        Some("program-status") => cli::program_status::run_program_status(&args),
         Some("hand-off") => cli::hand_off::run_hand_off(&args),
         Some("credential") => cli::credential::run_credential(&args),
         Some("handoff-check") => cli::hand_off::run_handoff_check(&args),

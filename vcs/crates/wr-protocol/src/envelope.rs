@@ -26,14 +26,14 @@ use std::collections::VecDeque;
 /// added that an older agent would silently drop rather than answer (`Service::Vcs`, added at 2 —
 /// an older agent has no `vcs::dispatch` at all, so an unversioned capability probe would just
 /// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
-/// at 5, all for the same reason, as is the Control frame `HandOff` at 6 and `Service::Layout` at
-/// 7 — `serve.rs`'s
+/// at 5, all for the same reason, as is the Control frame `HandOff` at 6, `Service::Layout` at 7
+/// and `Service::ProgramStatus` at 8 — `serve.rs`'s
 /// dispatch returns silently for a service byte it does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
 /// takes the lower of the two sides' versions for the services both already understand (Terminal,
 /// Control), so a newer app still drives an older agent left running rather than replacing it —
 /// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
 /// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
 /// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
@@ -57,6 +57,10 @@ pub const MIN_HANDOFF_VERSION: u16 = 6;
 /// protocol-6 agent drops a Layout envelope without answering it, so a client checks the peer's raw
 /// `Hello.protocol_version` against this first and treats an older agent as keeping no layouts.
 pub const MIN_LAYOUT_VERSION: u16 = 7;
+/// The minimum peer version that understands `Service::ProgramStatus` (#358). Same rule again: a
+/// protocol-7 agent drops the envelope without answering it, and an app below this never sends
+/// one, so it never subscribes and is never sent an event.
+pub const MIN_PROGRAM_STATUS_VERSION: u16 = 8;
 
 /// Sent first by both sides. The magic is here so a peer that is not an agent at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly
@@ -86,6 +90,8 @@ pub enum Service {
     Forward = 0x05,
     /// Each remote workroom's pane layout (protocol 7) — see `layout.rs`.
     Layout = 0x06,
+    /// Each session's program status, OSC 7501 (protocol 8) — see `program_status.rs`.
+    ProgramStatus = 0x07,
 }
 
 impl Service {
@@ -98,6 +104,7 @@ impl Service {
             0x04 => Self::Status,
             0x05 => Self::Forward,
             0x06 => Self::Layout,
+            0x07 => Self::ProgramStatus,
             _ => return None,
         })
     }
@@ -334,10 +341,21 @@ mod tests {
         assert_eq!(Hello::decode(b"WRA").unwrap(), None);
     }
 
+    /// The bytes and versions the app pins too (`AgentHandshake`): a mismatch makes one side send
+    /// a service the other drops.
+    #[test]
+    fn program_status_is_service_7_from_protocol_8() {
+        assert_eq!(Service::ProgramStatus as u8, 0x07);
+        assert_eq!(Service::from_u8(0x07), Some(Service::ProgramStatus));
+        assert_eq!(Service::from_u8(0x08), None);
+        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(MIN_PROGRAM_STATUS_VERSION, 8);
+    }
+
     #[test]
     fn negotiation_takes_the_lower_version() {
         let newer = Hello {
-            protocol_version: 7,
+            protocol_version: 8,
             build: "app".into(),
         };
         let older = Hello {
