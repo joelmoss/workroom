@@ -2320,9 +2320,9 @@ mod tests {
         bytes
     }
 
-    /// A program killed or crashed mid-turn never sends its REMOVE. The app clears its spinner on
-    /// the shell's next prompt; the shadow cannot see that, so the replay says idle once the
-    /// program that sent the report no longer owns the pty (#359).
+    /// A program killed or crashed mid-turn never sends its REMOVE. The app clears its spinner at
+    /// the shell's next command end (OSC 133 D); `/bin/sh` sends none, so the replay says idle
+    /// once the program that sent the report no longer owns the pty (#359).
     /// Value: protects=a reattach after the reporting program died is not told busy; fails_when=replay_for ignores the foreground or the owner is never noted; why_new=every other progress test has the reporter still alive or a clean REMOVE; seam=none
     #[cfg(feature = "terminal-state")]
     #[test]
