@@ -2654,8 +2654,15 @@ mod tests {
             OsString::from("echo ready; sleep 5; echo done"),
         ];
         let e = env();
-        store.create(spec(id(3), &args, &e)).expect("create");
-        let (first, token) = attach_capture(&store, id(3));
+        // Attached before the reader starts, as the agent attaches a pane's first client: attached
+        // after `create`, the shell's `echo ready` could be read, with nobody to send it to, first.
+        let first = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(first.clone())));
+        let (_, token) = store
+            .create_then(spec(id(3), &args, &e), |_| {
+                store.attach(id(3), writer, 1, 80, 24)
+            })
+            .expect("create and attach");
         let before = wait_for(&first, "ready", Duration::from_secs(5));
         assert!(before.contains("ready"), "got {before:?}");
 
