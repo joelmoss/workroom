@@ -646,8 +646,8 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
   }
 
   /// The agent is not re-checked: it is asked in the attach itself. A restored id it no longer
-  /// holds is refused by `wr-agent attach --no-create`, which then opens the pane as a shell that
-  /// says the session ended, with Ghostty's shell integration. The app's own notice shell had none,
+  /// holds is refused by `wr-agent attach --no-create`, which then says the session ended and
+  /// starts a new agent session, with Ghostty's shell integration. The app's own notice shell had none,
   /// so its titles latched and an OSC 9;4 mark waited out the 30s timeout.
   @MainActor
   func testAnAgentOwnedSessionIsRefusedInTheAttachItself() {
