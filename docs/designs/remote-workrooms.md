@@ -1128,8 +1128,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - *`--no-create` (a restored pane):* the agent refuses a session it does not hold (`CREATE=0` in
     the attach request, which older agents ignore). The pane becomes a shell that says the session
     ended. One request answers and attaches, so the answer cannot go stale in between. A local
-    restored pane does the same; the app asks first (`confirmBeforeAttach`) only about a session the
-    retired daemon held, whose client has no such flag.
+    restored pane does the same; the app asks first (`confirmBeforeAttach`) only about a session
+    the retired daemon held, whose client has no such flag.
   - *A dropped link reconnects.* ssh's own failure (exit 255, as after sleep or a network change)
     reattaches the pane as a restored one, backing off to 30s and trying for as long as it takes,
     so a VM that is minutes into a reboot comes back to its last screen (#232) without the user
@@ -2785,8 +2785,9 @@ disagreement passes every test on either side alone while presenting as an empty
    from success. `confirmBeforeAttach` asks once more immediately before attaching; when the
    daemon disclaims it, the cached owner is dropped and the attach goes to the agent with
    `--no-create`, which shows the session ended. That **prevents** the substitution rather than
-   detecting it: the daemon never receives the request that would make it create. `.unreachable` still attaches, deliberately
-   — it means we could not ask, and a daemon too wedged to answer is also too wedged to fork.
+   detecting it: the daemon never receives the request that would make it create. `.unreachable`
+   still attaches, deliberately — it means we could not ask, and a daemon too wedged to answer is
+   also too wedged to fork.
 
    Residual, and not closable from this side of the socket: the daemon can answer `.owned` and lose
    the session before the attach lands.
