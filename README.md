@@ -159,7 +159,9 @@ working directory.
 you can tell what's busy without switching to it. When a backgrounded terminal posts a notification,
 its tab and project light up, and — if Workroom isn't the frontmost app — you get a desktop banner.
 The bell at the right of the app footer opens notifications; click an entry (or the banner) to jump
-straight to the terminal that raised it.
+straight to the terminal that raised it. A program that reports its status, such as Claude Code,
+also shows when it is waiting on you (a permission, a question) or has finished its turn, and
+⇧⌘M goes to the terminal that has waited longest: see [program status](docs/program-status.md).
 
 The [persistent app footer](docs/screenshots/window-footer.png) also shows usage for each running
 agent provider on the left, including agents in background tabs and other windows. Click its usage
