@@ -45,6 +45,33 @@ final class ProgramStatusAlertsTests: XCTestCase {
     store.notifications.items.filter { $0.episode != nil }
   }
 
+  /// A tab pointed at another session (Detached sessions › Active tab) takes its old session's
+  /// alert with it, since the alert would open a tab showing something else; the request still
+  /// waits, and lists again once a pane shows it.
+  func testRepointingTheOnlyPaneWithdrawsItsOldSessionsAlert() {
+    alerts.start()
+    let tab = store.terminals.addTab(for: target)
+    let id = session(tab)
+    monitor.seed(id, records: [blocked()])
+    XCTAssertEqual(requests.count, 1, "fixture: one alert")
+
+    guard case .terminal(var state) = store.terminals.tabs(for: target)[0].content else {
+      return XCTFail("not a terminal")
+    }
+    state.sessionID = UUID()
+    var moved = store.terminals.tabs(for: target)[0]
+    moved.content = .terminal(state)
+    store.terminals.replace(moved, for: target)
+    alerts.paneLeft(session: id)
+    XCTAssertTrue(requests.isEmpty)
+    XCTAssertTrue(alerts.waiting.isEmpty)
+
+    _ = store.terminals.addTab(for: target, sessionID: id)
+    alerts.recomputeWaiting()
+    XCTAssertEqual(alerts.waiting.map(\.session), [id], "it still waits")
+    XCTAssertTrue(requests.isEmpty, "and is not alerted twice")
+  }
+
   /// One alert per request; reading it leaves the request counted; answering it drops both.
   func testARequestAlertsOnceAndCountsUntilAnswered() {
     alerts.start()
