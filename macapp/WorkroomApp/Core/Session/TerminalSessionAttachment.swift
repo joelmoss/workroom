@@ -17,6 +17,7 @@ enum TerminalSessionAttachment {
     if let owner = sessions.owner(of: sessionID, in: target), owner != tab.id {
       return false
     }
+    let previous = state.sessionID
     state.sessionID = sessionID
     state.view.persistentSessionID = sessionID
     // Always restored: this path exists to point a pane at a session that already exists, chosen
@@ -26,6 +27,9 @@ enum TerminalSessionAttachment {
     tab.content = .terminal(state)
     sessions.replace(tab, for: target)
     sessions.refreshProgramStatus(tab: tab.id, target: target.id)
+    if let previous, previous != sessionID {
+      ProgramStatusAlerts.shared.paneLeft(session: previous)
+    }
     // The waiting list counts only sessions an open pane shows.
     WindowRegistry.shared.recomputeBadge()
     return true

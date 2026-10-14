@@ -300,9 +300,13 @@ impl Store {
         }
     }
 
-    /// Whether `drop_dead_owners` has anything to look at.
+    /// Whether `drop_dead_owners` has anything to look at. A run that cleared its records on exit
+    /// (Claude Code does) still holds `reporting` until a prompt, which a shell without OSC 133
+    /// never sends.
     pub fn has_live(&self) -> bool {
-        self.records.iter().any(|r| r.state.is_live())
+        self.reporting.is_some()
+            || self.probed.is_some()
+            || self.records.iter().any(|r| r.state.is_live())
     }
 
     /// The app showed the session as of `revision`: its `done`/`error` records (those in `states`)
@@ -1243,6 +1247,23 @@ mod tests {
         assert_eq!(store.probed, None);
         assert_eq!(store.reporting, Some(6));
         assert!(store.commit().is_some());
+    }
+
+    /// A run that cleared its records on exit (Claude Code sends CLEAR) still reports until its
+    /// group is gone, so the liveness check keeps running for it: without OSC 133 no prompt ends
+    /// it, and while it reports, the pane ignores the next command's OSC 9;4.
+    #[test]
+    fn a_cleared_run_is_still_checked_until_its_group_is_gone() {
+        let mut store = Store::default();
+        store.report(report("", State::Working), 5);
+        store.clear("");
+        assert!(
+            store.has_live(),
+            "the reporting run still needs its liveness check"
+        );
+        store.drop_dead_owners(|_| false);
+        assert_eq!(store.reporting, None);
+        assert!(!store.has_live());
     }
 
     /// The liveness probe against real processes: a stopped group (^Z) and a zombie both still

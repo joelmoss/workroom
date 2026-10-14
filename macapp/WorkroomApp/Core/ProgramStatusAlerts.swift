@@ -88,6 +88,18 @@ final class ProgramStatusAlerts: ObservableObject {
     recomputeWaiting()
   }
 
+  /// A pane stopped showing `session` (Detached sessions › Active tab) while it still runs: once
+  /// no pane shows it, its alerts go, since they would open a pane showing another session. The
+  /// requests stay open, so a pane attaching to it again lists them as waiting.
+  func paneLeft(session: UUID) {
+    guard attachments(of: session).isEmpty else { return }
+    for (key, entry) in open where entry.session == session {
+      deferred.removeValue(forKey: key)?.cancel()
+      for store in stores() { store.withdrawNeedsYou(episode: key) }
+    }
+    recomputeWaiting()
+  }
+
   /// A request left `blocked`: answered here or elsewhere, or its program ended.
   private func resolve(_ key: String) {
     open.removeValue(forKey: key)
