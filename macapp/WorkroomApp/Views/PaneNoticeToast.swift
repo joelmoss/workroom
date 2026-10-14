@@ -5,19 +5,25 @@ import SwiftUI
 /// `GhosttySurfaceView` (`PaneNoticeHost`), top-trailing, so it never covers the go-to-bottom button.
 ///
 /// Styled as `ToastStack`'s `ToastView`, minus the source line: the pane it describes is the one
-/// beneath it, so there is nothing to navigate to and a click dismisses it. Auto-dismisses after 8s,
-/// paused while hovered.
+/// beneath it, so there is nothing to navigate to and a click dismisses it. Auto-dismisses after 8s
+/// in a key window, paused while hovered, so one behind another window is still there to be read.
 struct PaneNoticeToast: View {
+  /// What a restored pane says when its terminal had ended and it got a new one (#459).
+  static let sessionReplaced = "The terminal that was running here had ended, so this is a new one."
+
   /// Transparent room around the card for its shadow. `PaneNoticeHost` passes clicks in it through
   /// to the terminal.
   static let shadowRoom: CGFloat = 32
 
   let message: String
+  /// The house 300, or less in a split pane too narrow for it.
+  var width: CGFloat
   let onDismiss: () -> Void
 
   @State private var hovering = false
   @State private var dismissTask: Task<Void, Never>?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.controlActiveState) private var controlActiveState
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -29,7 +35,7 @@ struct PaneNoticeToast: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
-    .frame(width: 300, alignment: .leading)
+    .frame(width: width, alignment: .leading)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     .overlay(RoundedRectangle(cornerRadius: 12).fill(theme.tokens.hover.opacity(hovering ? 1 : 0)))
     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
@@ -42,13 +48,8 @@ struct PaneNoticeToast: View {
     .onTapGesture { onDismiss() }
     .onHover { hovering = $0 }
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
-    .onChange(of: hovering) { _, isHovering in
-      if isHovering {
-        dismissTask?.cancel()
-      } else {
-        armDismiss()
-      }
-    }
+    .onChange(of: hovering) { _, _ in armDismiss() }
+    .onChange(of: controlActiveState) { _, _ in armDismiss() }
     .onAppear { armDismiss() }
     .onDisappear { dismissTask?.cancel() }
     .accessibilityElement(children: .ignore)
@@ -79,8 +80,10 @@ struct PaneNoticeToast: View {
     .accessibilityHidden(true)
   }
 
+  /// (Re)starts the 8s countdown, or stops it while hovered or while the window is not key.
   private func armDismiss() {
     dismissTask?.cancel()
+    guard !hovering, controlActiveState == .key else { return }
     dismissTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 8 * 1_000_000_000)
       if Task.isCancelled || hovering { return }

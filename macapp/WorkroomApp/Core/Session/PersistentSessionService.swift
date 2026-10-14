@@ -444,6 +444,27 @@ final class PersistentSessionService {
     }
   }
 
+  /// Whether a restored local pane's session has ended, so its `--no-create` attach will be refused
+  /// and the relay will start a new session under the same id (#459), which the pane says so of.
+  ///
+  /// Asked before attaching, so it can go stale: a session that ends between this and the attach
+  /// misses its notice, and one this could not ask about may get a notice it did not need. Either
+  /// costs one toast, never a session; the attach itself still decides. Not a terminal
+  /// notification from the relay: libghostty drops all but one desktop notification a second,
+  /// app-wide, so after a reboot every restored pane but the first would have said nothing.
+  func willReplaceRestoredSession(_ sessionID: UUID, wasRestored: Bool) -> Bool {
+    guard wasRestored, !isRemote(sessionID), backend(forSession: sessionID) == .rustAgent else {
+      return false
+    }
+    switch ownership(of: sessionID, in: .rustAgent) {
+    case .owned: return false
+    // No agent socket answers `.notOwned`: after a reboot nothing it held survived. A socket that
+    // does not answer is most likely an agent that died and left it; mid-hand-off is the rare
+    // case where that guess costs a needless notice.
+    case .notOwned, .unreachable: return true
+    }
+  }
+
   /// The command libghostty forks for this session, from the helper that owns it.
   ///
   /// Requires the same three things `launchEnvironment` does — owner, binary AND socket — because

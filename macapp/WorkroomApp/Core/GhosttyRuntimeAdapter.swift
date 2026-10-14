@@ -79,11 +79,7 @@ final class GhosttyRuntimeAdapter {
       let note = action.action.desktop_notification
       let title = note.title.map { String(cString: $0) } ?? ""
       let body = note.body.map { String(cString: $0) }
-      if let message = Self.paneNotice(title: title) {
-        view.showPaneNotice(message)
-      } else {
-        view.onActivity?(Self.terminalActivity(title: title, body: body))
-      }
+      view.onActivity?(Self.terminalActivity(title: title, body: body))
       return true
 
     case GHOSTTY_ACTION_OPEN_URL:
@@ -551,20 +547,6 @@ final class GhosttyRuntimeAdapter {
   }
 
   // MARK: Notification mapping (T2 — pure, unit-tested)
-
-  /// The title of the notification `wr-agent attach` sends when a restored pane's ended session was
-  /// replaced by a new one (#459). Must match `SESSION_REPLACED` in `vcs/crates/wr-agent/src/cli/attach.rs`.
-  nonisolated static let sessionReplacedTitle = "workroom.session-replaced"
-
-  /// The message for a toast over the pane, when a notification is about the pane itself rather
-  /// than its workroom; nil for every other notification, which goes to `terminalActivity`.
-  ///
-  /// The app's own words, never the notification's body: any program in a pane can send this
-  /// title, and the toast reads as Workroom's, so it must not say whatever that program likes.
-  nonisolated static func paneNotice(title: String) -> String? {
-    title == sessionReplacedTitle
-      ? "The terminal that was running here had ended, so this is a new one." : nil
-  }
 
   /// Map a libghostty desktop-notification (title, optional body) to Workroom's `TerminalActivity`.
   /// Pure + side-effect-free so it's testable without a live terminal (replaces the deleted

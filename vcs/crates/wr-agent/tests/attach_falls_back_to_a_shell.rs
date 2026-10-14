@@ -829,10 +829,10 @@ fn a_restored_remote_pane_whose_peer_cannot_negotiate_gets_a_shell() {
 }
 
 /// `--no-create` (a restored pane): a session the agent does not hold is refused, and on this Mac
-/// the pane gets a new session under the same id, with a notification the app shows as a toast over
-/// the pane. Without it the pane would be a fresh shell passed off as the one that was running there.
+/// the pane gets a new session under the same id, not a fallback shell. (The app says so in a toast,
+/// decided before it attaches.)
 #[test]
-fn no_create_turns_an_ended_session_into_a_new_one_with_a_notice() {
+fn no_create_turns_an_ended_session_into_a_new_one() {
     let dir = scratch("no-create-ended");
     let socket = dir.join("a.sock");
     let _agent = start_agent(&socket);
@@ -854,15 +854,7 @@ fn no_create_turns_an_ended_session_into_a_new_one_with_a_notice() {
         None,
     );
     let _ = std::fs::remove_dir_all(&dir);
-    let notice = output
-        .find("\x1b]777;notify;workroom.session-replaced;")
-        .unwrap_or_else(|| panic!("no notification: {output:?}"));
-    assert!(
-        output
-            .find("NEW-SESSION")
-            .is_some_and(|first| notice < first),
-        "the notice must precede the new session's output. got: {output:?}"
-    );
+    assert!(!output.contains("has ended"), "got: {output:?}");
     assert!(
         output.contains("NEW-SESSION fb=[unset]"),
         "expected a new session, not a fallback shell. got: {output:?}"
