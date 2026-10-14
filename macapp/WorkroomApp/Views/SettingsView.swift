@@ -183,6 +183,7 @@ private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.globalHotkey) private var globalHotkey
   @Default(.showMenuBarItem) private var showMenuBarItem
+  @Default(.notifyWhenTerminalNeedsMe) private var notifyWhenTerminalNeedsMe
 
   var body: some View {
     Form {
@@ -197,6 +198,18 @@ private struct GeneralSettingsPane: View {
 
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
+
+      Toggle(isOn: $notifyWhenTerminalNeedsMe) {
+        Text("Notify when a terminal needs me")
+        Text(
+          "Off: no Workroom alerts or Dock badge for terminals waiting on you. Programs' own "
+            + "notifications still arrive as before.")
+      }
+      .help(
+        "Alert you, and count it in the Dock badge, when a program in a terminal waits on you."
+      )
+      .accessibilityIdentifier("settings.control.notifyWhenTerminalNeedsMe")
+      .onChange(of: notifyWhenTerminalNeedsMe) { WindowRegistry.shared.recomputeBadge() }
 
       NewWorkroomsSection()
     }

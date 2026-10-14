@@ -6,6 +6,7 @@ import WorkroomDomain
 struct RootView: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  @ObservedObject private var programStatusAlerts = ProgramStatusAlerts.shared
   // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
   // workroom gains its first terminal and disappears when it loses its last) — issue #23.
   @EnvironmentObject var terminals: TerminalSessions
@@ -486,6 +487,8 @@ struct RootView: View {
           // the event in the key monitor cannot.
           workroomSelected: terminalInteractionAvailable && !store.hasModalPresentation,
           hasNotifications: !notifications.items.isEmpty && !store.hasModalPresentation,
+          hasWaitingTerminals: !programStatusAlerts.waiting.isEmpty
+            && !store.hasModalPresentation,
           // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81). Deliberately NOT gated
           // on `hasModalPresentation` — ⌘N/⌘O must still work while a picker is open, because raising
           // one picker replaces the other and that's the documented behaviour (issue #94).
@@ -801,6 +804,7 @@ struct RootView: View {
 private struct MenuStateValues: ViewModifier {
   let workroomSelected: Bool
   let hasNotifications: Bool
+  let hasWaitingTerminals: Bool
   let hasProjects: Bool
   let hasWorkroomAnchor: Bool
   let canNavigateBack: Bool
@@ -824,6 +828,7 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.modalPresented, modalPresented)
       .focusedSceneValue(\.workroomSelected, workroomSelected)
       .focusedSceneValue(\.hasNotifications, hasNotifications)
+      .focusedSceneValue(\.hasWaitingTerminals, hasWaitingTerminals)
       .focusedSceneValue(\.hasProjects, hasProjects)
       .focusedSceneValue(\.hasWorkroomAnchor, hasWorkroomAnchor)
       .focusedSceneValue(\.canNavigateBack, canNavigateBack)

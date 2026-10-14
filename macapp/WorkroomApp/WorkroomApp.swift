@@ -337,6 +337,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // Install the menu-bar item (issue #33). Creating it here also forces `WindowRegistry.shared`
     // into existence early, so its key-window observer is live before the first window appears.
     menuBarController = MenuBarController(registry: .shared)
+    // Alerts for terminals that need the user (#358), app-wide; their count joins the badge.
+    ProgramStatusAlerts.shared.onWaitingChange = { WindowRegistry.shared.recomputeBadge() }
+    ProgramStatusAlerts.shared.start()
 
     // Not under test (`AppEnvironment.current.isTestProcess`): it would replace the developer's real agent.
     if !AppEnvironment.current.isTestProcess {
@@ -831,6 +834,12 @@ struct HasNotificationsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether a program in any terminal, in any window, waits on the user (#358), so "Go to Terminal
+/// That Needs You" disables with none.
+struct HasWaitingTerminalsKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether the app has at least one project — published by RootView, so "New Workroom" (⌘N, issue
 /// #81) disables when there's nothing to pick (a fresh install): ⌘N is then a silent no-op rather
 /// than opening an empty dialog.
@@ -953,6 +962,10 @@ extension FocusedValues {
     get { self[HasNotificationsKey.self] }
     set { self[HasNotificationsKey.self] = newValue }
   }
+  var hasWaitingTerminals: Bool? {
+    get { self[HasWaitingTerminalsKey.self] }
+    set { self[HasWaitingTerminalsKey.self] = newValue }
+  }
   var hasProjects: Bool? {
     get { self[HasProjectsKey.self] }
     set { self[HasProjectsKey.self] = newValue }
@@ -1046,6 +1059,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
+  @FocusedValue(\.hasWaitingTerminals) private var hasWaitingTerminals
   @FocusedValue(\.hasProjects) private var hasProjects
   @FocusedValue(\.hasWorkroomAnchor) private var hasWorkroomAnchor
   @FocusedValue(\.canNavigateBack) private var canNavigateBack
@@ -1601,6 +1615,19 @@ struct WorkroomCommands: Commands {
       }
       .keyboardShortcut("n", modifiers: [.command, .shift])
       .disabled(!workroomCommandEnabled(hasNotifications))
+
+      // ⇧⌘M: the terminal that has waited longest for the user, across every window (#358);
+      // repeating it steps through the rest. Next Notification goes through unread notifications.
+      Button("Go to Terminal That Needs You") {
+        if !ProgramStatusAlerts.shared.goToNextWaiting(from: WindowRegistry.shared.keyStore) {
+          NSSound.beep()
+        }
+      }
+      .keyboardShortcut("m", modifiers: [.command, .shift])
+      .disabled(!workroomCommandEnabled(hasWaitingTerminals))
+      .help(
+        "Go to the terminal waiting longest for you (Next Notification goes through unread "
+          + "notifications)")
     }
   }
 }

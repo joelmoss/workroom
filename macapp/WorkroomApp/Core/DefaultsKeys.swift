@@ -157,6 +157,11 @@ extension Defaults.Keys {
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true, suite: .app)
 
+  /// Alert, and count in the Dock badge, when a program in a terminal waits on the user (#358).
+  /// Off leaves the marks and the menu bar's list; programs' own notifications are unchanged.
+  static let notifyWhenTerminalNeedsMe = Key<Bool>(
+    "notifyWhenTerminalNeedsMe", default: true, suite: .app)
+
   /// Load remote author/reviewer avatars — Gravatar (by commit-author email) and
   /// `github.com/<login>.png`. On by default. Off ⇒ only the coloured initials chip renders and NO
   /// avatar image request is made, so opening an untrusted repo's History never beacons the viewer's

@@ -26,6 +26,10 @@ struct WorkroomNotification: Identifiable, Equatable {
   /// Number of coalesced events this entry represents (OSC entries stay distinct, so it's always
   /// 1 today; retained for the panel's ×N display).
   var count: Int
+  /// For a "needs you" alert (#358), the attention episode it raised (`ProgramStatusAlerts`). The
+  /// request it names is counted in the badge while it waits, read or not, so the entry itself is
+  /// left out of `unreadExcludingRequests`.
+  var episode: String? = nil
 }
 
 /// The notification spine: an in-memory, session-only history that drives every surface
@@ -102,6 +106,36 @@ final class NotificationCenterStore: ObservableObject {
         title: title, body: body, date: now(), count: 1))
   }
 
+  /// Record a "needs you" alert for a request a program in `tabID` waits on (#358). Never dropped
+  /// for focus here: `ProgramStatusAlerts` raises one only when no attachment of the session has it.
+  @discardableResult
+  func recordNeedsYou(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, source: String, title: String,
+    body: String?, episode: String
+  ) -> WorkroomNotification {
+    append(
+      WorkroomNotification(
+        id: UUID(), targetID: targetID, tabID: tabID, source: source,
+        title: title, body: body, date: now(), count: 1, episode: episode))
+  }
+
+  /// The program's own notification about a request already raised: folded into its entry, with
+  /// the program's text only where the entry had none. Returns whether an entry was here.
+  @discardableResult
+  func merge(episode: String, body: String?) -> Bool {
+    guard let index = items.firstIndex(where: { $0.episode == episode }) else { return false }
+    if items[index].body?.isEmpty ?? true, let body, !body.isEmpty { items[index].body = body }
+    return true
+  }
+
+  /// The request was answered or its program ended: its alert goes. Returns the tabs it was on.
+  @discardableResult
+  func dismiss(episode: String) -> [TerminalTab.ID] {
+    let tabs = items.filter { $0.episode == episode }.map(\.tabID)
+    if !tabs.isEmpty { items.removeAll { $0.episode == episode } }
+    return tabs
+  }
+
   @discardableResult
   private func append(_ n: WorkroomNotification) -> WorkroomNotification {
     items.append(n)
@@ -123,6 +157,12 @@ final class NotificationCenterStore: ObservableObject {
 
   var total: Int {
     items.reduce(0) { $0 + $1.count }
+  }
+
+  /// Unread notifications other than "needs you" alerts, whose requests are counted by
+  /// `ProgramStatusAlerts` while they wait, however the alert itself was read (#358).
+  var unreadExcludingRequests: Int {
+    items.lazy.filter { $0.episode == nil }.reduce(0) { $0 + $1.count }
   }
 
   // MARK: Mutations
