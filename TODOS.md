@@ -763,6 +763,22 @@ sweep stage.
 
 ## P3 — Notifications and run commands
 
+### Program status for non-daemon panes (macapp, upstream Ghostty) — #358 deferral
+
+**What:** An upstream GhosttyKit apprt program-status action. The app's own terminal ignores
+`.program_status`, so non-daemon panes (run commands, fixture panes) never get OSC 7501. An upstream
+apprt action would cover them; daemon-backed panes still need wr-agent for reattach and remote.
+
+**Why:** #358 shows "needs you" only for daemon-backed panes.
+
+**How to start:** Check whether Ghostty's `src/termio/stream_handler.zig` still ignores
+`.program_status` at the pinned engine; if so, propose an apprt action upstream and feed it into
+`ProgramStatusMonitor`'s rollup for non-daemon panes.
+
+**Depends on:** #358 landing.
+
+**Priority:** P3 (deferred in /autoplan, 2026-10-14).
+
 ### Auto-emit OSC notifications on command completion (macapp)
 
 **What:** An opt-in shell hook (zsh `precmd`/`preexec`, or OSC 133 prompt markers) that emits
