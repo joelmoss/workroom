@@ -1554,8 +1554,10 @@ fn end_program_status(id: SessionId, shadow: &Mutex<Shadow>, hub: &Hub) {
     hub.ended(id);
 }
 
-/// Writes a probe's answer to the pty whole, or drops it. Non-blocking: a program that is not
-/// reading its input (a paste it has not taken yet) must not stall every client's output.
+/// Writes a probe's answer to the pty, non-blocking: a program that is not reading its input (a
+/// paste it has not taken yet) must not stall every client's output. What does not fit is dropped,
+/// never retried out of order, so with the input queue nearly full a prefix of the answer can land
+/// (logged); the queue is only that full when the program is not reading.
 ///
 /// Accepted limit: an answer can land between two writes of a large paste, inside it.
 fn answer_program(pty: &Pty, answer: &[u8], id: SessionId, hub: &Hub) {

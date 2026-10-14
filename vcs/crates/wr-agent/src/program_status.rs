@@ -289,10 +289,13 @@ impl Store {
         });
     }
 
-    /// The app's "Clear status": every record, and the run that sent them.
+    /// The app's "Clear status": every record, and `reporting`. Not `probed`: that names the
+    /// program, which is still running and asked once, so its later requests still notify.
     pub fn clear_all(&mut self) {
         self.retain(|_| false);
-        self.end_run();
+        if self.reporting.take().is_some() {
+            self.dirty = true;
+        }
     }
 
     /// Takes the changes since the last commit as one revision. `Some(blocked)` when there is one
@@ -743,8 +746,10 @@ impl Connection {
     }
 
     /// Registers before reading the snapshot, under the new subscriber's own lock: a change that
-    /// lands meanwhile waits for the lock, then queues behind `snapshot-complete`, and an `ended`
-    /// cannot overtake the reply.
+    /// lands meanwhile waits for the lock, then queues behind `snapshot-complete`. The reply is
+    /// written after the lock is released, since a reader publishing a change waits on it and a
+    /// peer slow to drain must never stall a pty; only the sink writes events, and it starts after
+    /// the reply, so nothing overtakes it.
     fn subscribe(&mut self, sessions: &SessionStore, reply: impl FnOnce(Value)) {
         self.unsubscribe();
         let subscriber = Arc::new(Subscriber::default());
@@ -754,11 +759,6 @@ impl Connection {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(Arc::clone(&subscriber));
-        // `droppedReplies` is for `wr-agent program-status`; the app ignores it.
-        reply(json!({
-            "available": true,
-            "droppedReplies": self.hub.dropped_replies.load(Ordering::Relaxed),
-        }));
         let boot = self.hub.boot();
         let snapshot = sessions.program_status_events();
         let ids: Vec<SessionId> = snapshot.iter().map(|(id, _)| *id).collect();
@@ -769,6 +769,11 @@ impl Connection {
             .ordered
             .push_back(Item::Complete(snapshot_complete(boot, &ids)));
         drop(queue);
+        // `droppedReplies` is for `wr-agent program-status`; the app ignores it.
+        reply(json!({
+            "available": true,
+            "droppedReplies": self.hub.dropped_replies.load(Ordering::Relaxed),
+        }));
         let sink = Sink {
             writer: Arc::clone(&self.writer),
             closer: Arc::clone(&self.closer),
@@ -1079,13 +1084,16 @@ mod tests {
     }
 
     #[test]
-    fn clear_all_forgets_the_run_too() {
+    fn clear_all_ends_reporting_but_keeps_the_probe() {
         let mut store = Store::default();
         store.apply(Event::Probed, 3);
         store.report(report("", State::Error), 3);
         store.clear_all();
         assert!(store.records.is_empty());
-        assert_eq!((store.reporting, store.probed), (None, None));
+        assert_eq!((store.reporting, store.probed), (None, Some(3)));
+        // The same run's next request still notifies: it asked once, and is still running.
+        store.report(report("", State::Blocked), 3);
+        assert!(store.records[0].notify);
     }
 
     #[test]
