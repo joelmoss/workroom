@@ -969,6 +969,8 @@ extension View {
         } label: {
           Label("Clear Status", systemImage: "hand.raised.slash")
         }
+        // Unreachable, the agent never hears the clear and the reconnect puts the mark back.
+        .disabled(tab.programStatus?.stale == true)
         Divider()
       }
       if case .diff(let descriptor) = tab.content {

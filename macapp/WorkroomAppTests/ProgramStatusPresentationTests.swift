@@ -71,6 +71,10 @@ final class ProgramStatusPresentationTests: XCTestCase {
     XCTAssertEqual(
       lines(.blocked, rollup(blocked: [blocked(.permission)], since: tenMinutes)).last,
       "Stuck? Right-click, then Clear status.")
+    // Clear status can't reach an unreachable host, so the hint waits for the link.
+    XCTAssertFalse(
+      lines(.blocked, rollup(blocked: [blocked(.permission)], stale: true, since: tenMinutes))
+        .contains(ProgramStatusPresentation.stuckLine))
   }
 
   func testAFinishedTurnSaysSoWithItsMessage() {

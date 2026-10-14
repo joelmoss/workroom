@@ -3190,9 +3190,12 @@ final class AppStore: ObservableObject {
     systemNotifier.withdraw(identifiers: [episode])
   }
 
-  /// The program-status session of the terminal focused in this window, for ⇧⌘M.
+  /// The program-status session of the terminal focused in this window, for ⇧⌘M. Only with keyboard
+  /// focus in it: from an inspector field, ⇧⌘M goes to the selected terminal if it is the one waiting.
   var focusedTerminalSession: UUID? {
-    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target) else {
+    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target),
+      tab.surface?.isEffectivelyFocused == true
+    else {
       return nil
     }
     return terminals.sessionID(forTab: tab.id, inTarget: target.id)

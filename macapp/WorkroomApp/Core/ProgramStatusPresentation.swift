@@ -85,7 +85,8 @@ enum ProgramStatusPresentation {
     }
     lines.append(reportedBy)
     if rollup.stale { lines.append(staleLine) }
-    if indicator == .blocked, let since = rollup.blockedSince,
+    // A stale mark can't be cleared until its host is back, so the hint waits for it.
+    if indicator == .blocked, !rollup.stale, let since = rollup.blockedSince,
       now.timeIntervalSince(since) >= Double(ProgramStatusLimits.stuckHint.components.seconds)
     {
       lines.append(stuckLine)
