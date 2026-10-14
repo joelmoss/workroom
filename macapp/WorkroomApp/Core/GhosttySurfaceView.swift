@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import GhosttyKit
+import SwiftUI
 import WorkroomWire
 import os
 
@@ -210,6 +211,10 @@ final class GhosttySurfaceView: NSView {
   private let goToBottomInset: CGFloat = 12
   private let goToBottomButton = GoToBottomButton()
 
+  // A toast over this pane (`PaneNoticeToast`), for news about the pane itself (#459).
+  private var paneNotice: NSView?
+  private let paneNoticeInset: CGFloat = 6
+
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
   // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. It's a
   // "declared busy but went silent" backstop, not a fixed time-since-last-report cutoff: while the
@@ -354,6 +359,7 @@ final class GhosttySurfaceView: NSView {
     addSubview(scrollbarThumb, positioned: .above, relativeTo: nil)
     addSubview(goToBottomButton, positioned: .above, relativeTo: nil)
     layoutGoToBottomButton()
+    if let paneNotice { addSubview(paneNotice, positioned: .above, relativeTo: nil) }
     // The surface may have been created AFTER this view already became first responder: a zero-bounds
     // attach defers `createSurface` to `setFrameSize`/`layout`, so `becomeFirstResponder` ran while
     // `surface == nil` and its `setSurfaceFocused(true)` no-oped (see `setSurfaceFocused`). Without
@@ -624,6 +630,7 @@ final class GhosttySurfaceView: NSView {
     updateMetalLayerSize()
     layoutScrollbar()
     layoutGoToBottomButton()
+    layoutPaneNotice()
   }
 
   override func viewDidChangeBackingProperties() {
@@ -778,6 +785,32 @@ final class GhosttySurfaceView: NSView {
       x: bounds.width - goToBottomSize - goToBottomInset,
       y: goToBottomInset,
       width: goToBottomSize, height: goToBottomSize)
+  }
+
+  // MARK: Pane notice (#459)
+
+  /// Called by `GhosttyRuntimeAdapter` for a notification about this pane rather than its workroom
+  /// (`paneNotice(title:body:)`). A newer one replaces the one showing.
+  func showPaneNotice(_ message: String) {
+    paneNotice?.removeFromSuperview()
+    let host = NSHostingView(rootView: PaneNoticeToast(message: message, onDismiss: {}))
+    host.rootView = PaneNoticeToast(message: message) { [weak self, weak host] in
+      host?.removeFromSuperview()
+      if let self, self.paneNotice === host { self.paneNotice = nil }
+    }
+    addSubview(host, positioned: .above, relativeTo: nil)
+    paneNotice = host
+    layoutPaneNotice()
+  }
+
+  private func layoutPaneNotice() {
+    guard let paneNotice else { return }
+    // Top-right; the go-to-bottom button has the bottom-right (non-flipped: y is from the bottom).
+    let size = paneNotice.fittingSize
+    paneNotice.frame = CGRect(
+      x: bounds.width - size.width - paneNoticeInset,
+      y: bounds.height - size.height - paneNoticeInset,
+      width: size.width, height: size.height)
   }
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SCROLLBAR`. All values are in rows;

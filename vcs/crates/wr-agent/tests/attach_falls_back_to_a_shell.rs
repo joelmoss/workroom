@@ -829,9 +829,8 @@ fn a_restored_remote_pane_whose_peer_cannot_negotiate_gets_a_shell() {
 }
 
 /// `--no-create` (a restored pane): a session the agent does not hold is refused, and on this Mac
-/// the pane gets a new session under the same id, with a notice saying so. Without the notice it
-/// would be a fresh shell passed off as the one that was running there. The notice follows the
-/// session's repaint, which erases the screen.
+/// the pane gets a new session under the same id, with a notification the app shows as a toast over
+/// the pane. Without it the pane would be a fresh shell passed off as the one that was running there.
 #[test]
 fn no_create_turns_an_ended_session_into_a_new_one_with_a_notice() {
     let dir = scratch("no-create-ended");
@@ -856,13 +855,8 @@ fn no_create_turns_an_ended_session_into_a_new_one_with_a_notice() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     let notice = output
-        .find("has ended")
-        .unwrap_or_else(|| panic!("no notice: {output:?}"));
-    // A repaint only in a `terminal-state` build; the notice follows it either way.
-    assert!(
-        output.rfind("\x1b[2J").is_none_or(|erase| erase < notice),
-        "the notice must follow the repaint that erases the screen. got: {output:?}"
-    );
+        .find("\x1b]777;notify;workroom.session-replaced;")
+        .unwrap_or_else(|| panic!("no notification: {output:?}"));
     assert!(
         output
             .find("NEW-SESSION")
