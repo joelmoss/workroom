@@ -104,7 +104,6 @@ pub fn run_serve(
         match crate::screens::Screens::open(&dir) {
             Ok(screens) => {
                 agent.sessions.keep_screens(screens);
-                crate::screens::spawn(agent.sessions.clone());
                 // Each workroom's layout (#255), on the same disk as the screens.
                 let layouts = crate::layout::dir_beside(&dir);
                 match crate::layout::Layouts::open(&layouts) {
@@ -121,6 +120,9 @@ pub fn run_serve(
             ),
         }
     }
+    // Every agent, with screens or without: the same thread compresses every shadow's history
+    // (#463). After `keep_screens`, so an agent with screens writes them from its first tick.
+    crate::screens::spawn(agent.sessions.clone());
     // In both cases: the program handed off, or one that idled out or crashed, left its refusals
     // here, and an attach still on its way to it must not start a session it was told to end.
     agent

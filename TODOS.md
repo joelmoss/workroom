@@ -487,6 +487,21 @@ views, so it wants a deliberate visual pass rather than a drive-by change.
 
 ## P3 — Terminal, panes, and focus
 
+### Hand-off by snapshot when both agents share an engine sha (wr-agent) — #462/#463 follow-up
+
+**What:** Carry each session through a hand-off as a libghostty snapshot instead of VT when the new
+binary reports the same engine sha, falling back to VT otherwise.
+
+**Why:** Since #462/#463 the hand-off sends each session only the newest history that fits its
+share of 16 MiB, so coloured history is trimmed at every agent upgrade. A snapshot keeps all of it,
+compressed.
+
+**How to start:** `handoff.rs` (a table version carrying the snapshot and the sender's engine sha)
+and `session.rs` `frozen`. ADR 0031 forbids snapshots across revisions; the same-sha check keeps
+that rule.
+
+**Priority:** P3, effort M. **Depends on:** #462/#463 landing (ADR 0051).
+
 ### Shell integration for macOS's built-in `/bin/bash` (wr-agent, macapp)
 
 **What:** give Apple's `/bin/bash` (3.2) Ghostty's shell integration: OSC 133 command marks and

@@ -29,7 +29,7 @@ final class AgentHandOffTests: XCTestCase {
   /// `AgentHandOff.run` shares its process runner (`SessionBackendProbe.run`) with the protocol
   /// probe, refactored in this change from a fixed `["protocol"]` invocation to a general one. A
   /// binary that never answers is killed and reported as a timeout rather than left to hang the
-  /// 6s `AgentHandOff.timeout` forever — `exec sleep` so the timed-out process IS the sleep (no
+  /// 7s `AgentHandOff.timeout` forever — `exec sleep` so the timed-out process IS the sleep (no
   /// child of its own left holding the pipe once killed, the way a plain `sleep` inside `sh`
   /// would).
   func testARunnerThatNeverAnswersIsKilledAndReportedAsATimeout() throws {

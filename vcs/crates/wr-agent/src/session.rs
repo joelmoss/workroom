@@ -723,8 +723,8 @@ impl SessionStore {
             let replay = live_replay(&pty, &shadow);
             if !replay.is_empty() {
                 if let Ok(mut writer) = writer.lock() {
-                    // CHUNKED, because `replay()` has no size bound and `Frame::encode` PANICS
-                    // above the 1 MiB cap rather than truncating.
+                    // CHUNKED, because `replay()` can be up to ~4 MiB (`REPAINT_MAX_BYTES`) and
+                    // `Frame::encode` PANICS above the 1 MiB cap rather than truncating.
                     //
                     // A repaint is two full screens — `primary_screen()` plus the active one, each
                     // with per-cell SGR runs, palette, modes and tabstops — so a large window
@@ -983,7 +983,28 @@ impl SessionStore {
     /// `TERMINATING` through its SIGHUP grace, and an attach holds its attachment lock for as long
     /// as a slow client takes its repaint, while every other session waits behind the store lock
     /// held here. So the wait is bounded, and a busy moment refuses the hand-off.
+    ///
+    /// Each screen is the newest history that fits its share of `HANDOFF_TOTAL_BYTES`, captured
+    /// within `HANDOFF_FORMAT_DEADLINE` (`frozen_formatting`).
     pub fn frozen<T>(&self, within: Duration, f: impl FnOnce(&[FrozenSession]) -> T) -> Option<T> {
+        self.frozen_formatting(within, HANDOFF_FORMAT_DEADLINE, f)
+    }
+
+    /// `frozen`, capturing the screens within `format_within` of taking the locks.
+    ///
+    /// Every session's screen is formatted while every session is stopped, so that time is
+    /// bounded too. Each session gets `HANDOFF_TOTAL_BYTES / sessions` (at most a repaint's
+    /// `REPAINT_MAX_BYTES`), so the work follows the total, not the count. Past the deadline, the
+    /// sessions not yet captured are captured with their screen alone, and one on the alternate
+    /// screen without the primary's paint, which costs a copy of its terminal: a hand-off that
+    /// runs out of time still happens, and those sessions lose their history once. Refusing it
+    /// instead would refuse it again at every launch while the same sessions stayed open.
+    pub fn frozen_formatting<T>(
+        &self,
+        within: Duration,
+        format_within: Duration,
+        f: impl FnOnce(&[FrozenSession]) -> T,
+    ) -> Option<T> {
         use std::sync::TryLockError;
         let deadline = Instant::now() + within;
         let _no_terminations = until(deadline, || match TERMINATING.try_write() {
@@ -1020,6 +1041,10 @@ impl SessionStore {
                 Err(TryLockError::WouldBlock) => None,
             })?);
         }
+        let share = crate::shadow::record_budget(HANDOFF_TOTAL_BYTES / parts.len().max(1));
+        let started = Instant::now();
+        let format_until = started + format_within;
+        let mut late = 0;
         let sessions: Vec<FrozenSession> = parts
             .iter()
             .map(|(id, (pty, shadow, _), metadata)| {
@@ -1027,6 +1052,9 @@ impl SessionStore {
                 let (columns, rows) = pty
                     .size()
                     .unwrap_or((crate::pty::DEFAULT_COLUMNS, crate::pty::DEFAULT_ROWS));
+                if Instant::now() >= format_until {
+                    late += 1;
+                }
                 FrozenSession {
                     id: *id,
                     pid: pty.child_pid(),
@@ -1037,7 +1065,12 @@ impl SessionStore {
                     // gives any report in it to whoever owns the pty then; a dead sender's report
                     // frozen whole would become the shell's, busy at its prompt (#359). A stopped
                     // sender (^Z) loses its report here and shows idle until its next one.
-                    screen: live_replay(pty, shadow),
+                    screen: shadow
+                        .lock()
+                        .map(|s| {
+                            s.replay_for_within(pty.foreground_pgid(), share, Some(format_until))
+                        })
+                        .unwrap_or_default(),
                     metadata: metadata.clone(),
                     program_status: shadow
                         .lock()
@@ -1047,6 +1080,14 @@ impl SessionStore {
                 }
             })
             .collect();
+        if late > 0 {
+            eprintln!(
+                "wr-agent: hand-off: capturing screens took longer than {} ms; {late} of {} \
+                 sessions carried their screen without history",
+                format_within.as_millis(),
+                sessions.len()
+            );
+        }
         let result = f(&sessions);
         drop(held);
         drop(store);
@@ -1260,7 +1301,16 @@ impl SessionStore {
                 let (columns, rows) = pty
                     .size()
                     .unwrap_or((crate::pty::DEFAULT_COLUMNS, crate::pty::DEFAULT_ROWS));
-                let record = shadow.lock().map(|s| s.record()).unwrap_or_default();
+                // Compressed in the same hold, so the pages the record re-inflated are not kept
+                // through the disk writes and syncs of every record this pass takes.
+                let record = shadow
+                    .lock()
+                    .map(|mut shadow| {
+                        let record = shadow.record();
+                        shadow.compress();
+                        record
+                    })
+                    .unwrap_or_default();
                 Some(TakenScreen {
                     id,
                     session: number,
@@ -1296,6 +1346,27 @@ impl SessionStore {
             .keys()
             .copied()
             .collect()
+    }
+
+    /// Compresses every shadow's history (#463): what output wrote, and what an attach or a
+    /// hand-off's read re-inflated, since the last pass. `screens::tick` runs it every
+    /// `screens::INTERVAL`, after the records.
+    ///
+    /// The store lock is released first, then each shadow's is taken on its own, never a
+    /// session's attachment lock: the reader, an attach or a hand-off waits at most one shadow's
+    /// pass, on a lock it takes anyway. An already compressed shadow costs about 0.001 ms. A
+    /// poisoned shadow is still compressed, as `program_status_events` still reads one.
+    pub fn compress_shadows(&self) {
+        let shadows: Vec<Arc<Mutex<Shadow>>> = {
+            let sessions = self.sessions.lock().expect("session store poisoned");
+            sessions
+                .values()
+                .map(|session| Arc::clone(&session.shadow))
+                .collect()
+        };
+        for shadow in shadows {
+            shadow.lock().unwrap_or_else(|e| e.into_inner()).compress();
+        }
     }
 
     /// The publisher of this store's program status (#358), whose boot names the store.
@@ -1494,6 +1565,16 @@ const RECORD_WAIT: Duration = Duration::from_millis(100);
 /// The least wait any one session gets in a pass, once `RECORD_WAIT` is spent: a few of `until`'s
 /// attempts, which is plenty to get past a reader's single read.
 const RECORD_GRACE: Duration = Duration::from_millis(10);
+
+/// What a hand-off's screens share between them (`frozen_formatting`). Formatting runs at about
+/// 6.7 ms a MiB, so the whole is about 0.2 s at two formats a session; four sessions or fewer each
+/// get a full repaint's `REPAINT_MAX_BYTES`, sixteen get 1 MiB.
+const HANDOFF_TOTAL_BYTES: usize = 16 << 20;
+
+/// How long a hand-off spends capturing screens, with every session stopped, before the rest are
+/// captured with their screen alone (`frozen_formatting`). Counted in the hand-off's timeout sum
+/// (`handoff.rs`).
+pub(crate) const HANDOFF_FORMAT_DEADLINE: Duration = Duration::from_millis(250);
 
 /// The slowest a peer may take its repaint before the agent gives up on it, in bytes per second.
 ///
@@ -2281,6 +2362,161 @@ mod tests {
         );
         before.kill_all();
         after.kill_all();
+    }
+
+    /// `line {n}`, then cells alternating between two truecolour styles to 80 columns: about
+    /// 1.3 KB a row once formatted, so 3,000 rows are more than a sixth of `HANDOFF_TOTAL_BYTES`.
+    #[cfg(feature = "terminal-state")]
+    fn dense_line(n: usize) -> String {
+        let cells: String = (13..80)
+            .map(|c| {
+                if c % 2 == 0 {
+                    "\x1b[38;2;255;128;0mx"
+                } else {
+                    "\x1b[38;2;0;128;255mx"
+                }
+            })
+            .collect();
+        format!("\x1b[mline {n:<6} {cells}\x1b[m\r\n")
+    }
+
+    /// A hand-off shares `HANDOFF_TOTAL_BYTES` between its sessions, each carrying the newest
+    /// history that fits its share, and one that runs out of time still happens: the sessions it
+    /// reaches late carry their screen alone, and one under a full-screen program its alternate
+    /// screen alone, without the primary's paint and the copy of the terminal it costs.
+    ///
+    /// Value: protects=hand-off screens within their share with their newest history, and a late
+    /// hand-off that still happens; fails_when=the share is not applied, the deadline is not
+    /// checked, or a late hand-off drops a session or is refused; why_new=hand-off screens were
+    /// never bounded; seam=frozen_formatting's deadline
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_hand_off_shares_its_budget_and_still_happens_out_of_time() {
+        const SESSIONS: u8 = 6;
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 10")];
+        let e = env();
+        for n in 0..SESSIONS {
+            store.create(spec(id(100 + n), &args, &e)).expect("create");
+            let shadow = store.shadow(id(100 + n)).expect("shadow");
+            let mut shadow = shadow.lock().expect("shadow");
+            for line in 0..3_000 {
+                shadow.write(dense_line(line).as_bytes());
+            }
+            if n == 0 {
+                shadow.write(b"\x1b[?1049h\x1b[HVIM");
+            }
+        }
+        let screens = |all: &[FrozenSession]| -> Vec<(SessionId, Vec<u8>)> {
+            all.iter().map(|s| (s.id, s.screen.clone())).collect()
+        };
+
+        let share = HANDOFF_TOTAL_BYTES / usize::from(SESSIONS);
+        let frozen = store
+            .frozen(Duration::from_secs(2), screens)
+            .expect("frozen");
+        assert_eq!(frozen.len(), usize::from(SESSIONS));
+        for (session, screen) in &frozen {
+            assert!(
+                screen.len() <= share,
+                "{session:?}: {} bytes, share {share}",
+                screen.len()
+            );
+            assert!(
+                has(screen, b"line 2999 ") && has(screen, b"line 2900 "),
+                "{session:?}: the newest history is missing"
+            );
+            assert!(
+                !has(screen, b"line 0 "),
+                "{session:?}: fixture: the whole history fit its share"
+            );
+        }
+        let full_screen = frozen.iter().find(|(session, _)| *session == id(100));
+        assert!(
+            full_screen.is_some_and(|(_, screen)| has(screen, b"VIM")),
+            "the full-screen session lost its alternate screen"
+        );
+
+        let late = store
+            .frozen_formatting(Duration::from_secs(2), Duration::ZERO, screens)
+            .expect("a hand-off out of time still happens");
+        assert_eq!(late.len(), usize::from(SESSIONS));
+        for (session, screen) in &late {
+            assert!(
+                !has(screen, b"line 2900 "),
+                "{session:?}: history carried past the deadline"
+            );
+            if *session == id(100) {
+                assert!(
+                    has(screen, b"VIM") && !has(screen, b"line 2999 "),
+                    "the full-screen session painted its primary past the deadline"
+                );
+            } else {
+                assert!(
+                    has(screen, b"line 2999 "),
+                    "{session:?}: the screen is missing"
+                );
+            }
+        }
+        store.kill_all();
+    }
+
+    /// Not a test: prints how long a hand-off of ten full-history sessions under full-screen
+    /// programs takes to capture its screens, and to encode and write its table: the case
+    /// `HANDOFF_FORMAT_DEADLINE` and `TABLE_WRITE_ALLOWANCE` bound. Run it in release:
+    /// `WR_AGENT_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p wr-agent
+    /// --features terminal-state --release --lib measure_hand_off -- --ignored --nocapture`
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    #[ignore = "a measurement, run by hand in release"]
+    fn measure_hand_off() {
+        const SESSIONS: u8 = 10;
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 60")];
+        let e = env();
+        for n in 0..SESSIONS {
+            store.create(spec(id(150 + n), &args, &e)).expect("create");
+            let shadow = store.shadow(id(150 + n)).expect("shadow");
+            let mut shadow = shadow.lock().expect("shadow");
+            shadow.resize(200, 50);
+            for line in 0..150_000 {
+                let pad = "x".repeat(line % 120);
+                shadow.write(format!("\x1b[3{}mline {line}\x1b[0m {pad}\r\n", line % 8).as_bytes());
+            }
+            shadow.write(b"\x1b[?1049h\x1b[H");
+            for line in 0..49 {
+                shadow.write(dense_line(line).as_bytes());
+            }
+            shadow.compress();
+        }
+        let started = Instant::now();
+        let (captured, frozen) = store
+            .frozen(Duration::from_secs(2), |all| {
+                (started.elapsed(), all.to_vec())
+            })
+            .expect("frozen");
+        let painted = frozen
+            .iter()
+            .filter(|session| has(&session.screen, b"line 149999"))
+            .count();
+        let bytes: usize = frozen.iter().map(|session| session.screen.len()).sum();
+        println!(
+            "captured {SESSIONS} sessions in {captured:?}: {painted} with their primary's \
+             history, {:.2} MiB in all",
+            bytes as f64 / f64::from(1 << 20)
+        );
+        let table = crate::handoff::Table {
+            listener: -1,
+            lock: -1,
+            boot: None,
+            sessions: frozen,
+        };
+        let path = std::env::temp_dir().join(format!("wr-measure-table-{}", std::process::id()));
+        let started = Instant::now();
+        std::fs::write(&path, table.encode()).expect("write");
+        println!("encoded and wrote the table in {:?}", started.elapsed());
+        let _ = std::fs::remove_file(&path);
+        store.kill_all();
     }
 
     /// `/bin/sh -c` for a session whose job-controlled child (reporting busy first when `report`)
@@ -3190,7 +3426,7 @@ mod tests {
 
     /// An oversized repaint must not take the session down.
     ///
-    /// `replay()` has no size bound and `Frame::encode` PANICS above the 1 MiB cap. `attach`
+    /// `replay()` can be up to ~4 MiB and `Frame::encode` PANICS above the 1 MiB cap. `attach`
     /// builds that frame while holding the attachment mutex, so before chunking, one big window
     /// showing a styled TUI poisoned the mutex on unwind — and `read_session`'s own `.expect` on
     /// the same lock then killed the reader thread, leaving the pty undrained and the shell

@@ -24,11 +24,11 @@ enum AgentHandOff {
   /// How long the app waits before killing the request. Safe to give up: the agent tells its
   /// requester just before it replaces itself, and calls the hand-off off when the requester is
   /// gone. Longer than the agent's own worst case before that point (`QUIET_TIMEOUT`,
-  /// `FREEZE_TIMEOUT`, `CHECK_TIMEOUT` and `REPORT_GRACE` in `handoff.rs`, 5.7 s, checked there
-  /// against this value), so a busy launch is
+  /// `FREEZE_TIMEOUT`, `HANDOFF_FORMAT_DEADLINE`, `TABLE_WRITE_ALLOWANCE`, `CHECK_TIMEOUT` and
+  /// `REPORT_GRACE` in `handoff.rs`, 6.2 s, checked there against this value), so a busy launch is
   /// not given up on only for being busy. Giving up after the exec, while the command checks that
   /// the new program answers, costs only the log line.
-  static let timeout: TimeInterval = 6
+  static let timeout: TimeInterval = 7
 
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")

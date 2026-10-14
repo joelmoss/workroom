@@ -18,9 +18,13 @@
 //! **Write policy.** One thread, every `INTERVAL`, writes the record of each session whose screen
 //! changed since its last one. A write goes to a temporary file, is synced, and is renamed into
 //! place, so a reboot mid-write leaves the previous record or none, never a torn one. A record has
-//! the shadow's scrollback, which `terminal::SCROLLBACK_MAX_BYTES` keeps under `MAX_RECORD`, and
-//! one larger than `MAX_RECORD` is not kept at all. A record goes when its session ends while the
-//! agent runs, and when a client kills it (`SessionStore::kill`).
+//! the newest scrollback that fits `terminal::RECORD_MAX_BYTES`, so only a screen larger than
+//! `MAX_RECORD` on its own is not kept at all. A record goes when its session ends while the agent
+//! runs, and when a client kills it (`SessionStore::kill`).
+//!
+//! **The same thread compresses every shadow (#463)**, on every agent, with records or without:
+//! each shadow straight after its record is taken (`SessionStore::changed_screens`), then every
+//! shadow after the writes, for what output and attaches inflated since the last tick.
 //!
 //! **Opt-in, and never beside the socket.** `serve --screens <dir>` turns this on. The directory
 //! must survive a reboot, and a real host's socket directory is on tmpfs. The local Mac does not
@@ -46,7 +50,7 @@ const HEADER: usize = 8 + 1 + 2 + 2 + 4;
 // ponytail: a fixed tick; flush on SIGTERM too if providers turn out to stop boxes gracefully.
 const INTERVAL: Duration = Duration::from_secs(2);
 
-/// The largest record kept. One over it is removed rather than left stale.
+/// The largest record kept, and read. One over it is removed rather than left stale.
 pub(crate) const MAX_RECORD: usize = 4 << 20;
 
 /// How many records `open` keeps, newest first. A pane closed while its host was down cannot end
@@ -238,27 +242,48 @@ fn decode(bytes: &[u8]) -> Option<(u16, u16, &[u8])> {
         .then_some((columns, rows, screen))
 }
 
-/// Keeps every session's record current for the life of the agent. Does nothing unless the store
-/// has records (`SessionStore::keep_screens`).
+/// Keeps every session's record current, when the store has records
+/// (`SessionStore::keep_screens`), and every shadow's history compressed, for the life of the
+/// agent. Called once by every agent, after `keep_screens` if it keeps any.
 ///
 /// Writes at once, then every `INTERVAL`: the sessions a hand-off carried in get their records
 /// straight away, not a tick after `open` may have pruned them.
 pub fn spawn(sessions: SessionStore) {
+    if !Shadow::new(1, 1).compression_supported() {
+        eprintln!(
+            "wr-agent: history compression is not supported on this target; each session's \
+             history stays uncompressed, up to 50 MB"
+        );
+    }
     let spawned = std::thread::Builder::new()
         .name("screens".into())
         .spawn(move || {
             // The sessions a hand-off carried in, whose records the program before wrote: one
-            // that ends before this program's first write for it still loses its record.
+            // that ends before this program's first write for it still loses its record. Read
+            // only when there are records.
             let mut written: HashSet<SessionId> = sessions.ids().into_iter().collect();
             let mut failing = HashSet::new();
             loop {
-                flush(&sessions, &mut written, &mut failing);
+                tick(&sessions, &mut written, &mut failing);
                 std::thread::sleep(INTERVAL);
             }
         });
     if let Err(e) = spawned {
-        eprintln!("wr-agent: not keeping screens: no thread to write them: {e}");
+        eprintln!(
+            "wr-agent: neither keeping screens nor compressing history: no thread for them: {e}"
+        );
     }
+}
+
+/// One tick: the records, then the compression, which then also undoes what the records' reads
+/// re-inflated.
+fn tick(
+    sessions: &SessionStore,
+    written: &mut HashSet<SessionId>,
+    failing: &mut HashSet<SessionId>,
+) {
+    flush(sessions, written, failing);
+    sessions.compress_shadows();
 }
 
 /// One tick: writes the screens that changed, and removes the records of sessions that ended.
@@ -706,5 +731,55 @@ mod tests {
 
         sessions.kill_all();
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Every agent's tick compresses every shadow's history (#463), whether or not it keeps
+    /// records: the local Mac's agent keeps none and holds the most panes.
+    ///
+    /// Value: protects=tick compresses every shadow, with records and without; fails_when=tick
+    /// stops calling compress_shadows, or compression runs only beside records; why_new=no shadow
+    /// was ever compressed; seam=none
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_tick_compresses_every_shadow_with_records_or_without() {
+        for keep in [false, true] {
+            let dir = scratch(&format!("compress-{keep}"));
+            let sessions = SessionStore::new();
+            if keep {
+                sessions.keep_screens(Screens::open(&dir).expect("open"));
+            }
+            let args = [OsString::from("-c"), OsString::from("sleep 10")];
+            sessions
+                .create(crate::session::SessionSpec {
+                    id: ID,
+                    program: OsStr::new("/bin/sh"),
+                    argv0: None,
+                    args: &args,
+                    env: &[],
+                    cwd: None,
+                    columns: 80,
+                    rows: 24,
+                    metadata: &[],
+                })
+                .expect("create");
+            let shadow = sessions.shadow(ID).expect("shadow");
+            {
+                let mut shadow = shadow.lock().expect("shadow");
+                for n in 0..20_000 {
+                    shadow.write(format!("line {n} {}\r\n", "z".repeat(60)).as_bytes());
+                }
+            }
+            let memory = || shadow.lock().expect("shadow").memory().expect("memory");
+            let full = memory().primary_resident_bytes;
+            tick(&sessions, &mut HashSet::new(), &mut HashSet::new());
+            let after = memory();
+            sessions.kill_all();
+            let _ = fs::remove_dir_all(&dir);
+            assert!(
+                after.primary_compressed_pages > 0 && after.primary_resident_bytes * 2 < full,
+                "records {keep}: {} bytes resident after a tick, {full} before",
+                after.primary_resident_bytes
+            );
+        }
     }
 }
