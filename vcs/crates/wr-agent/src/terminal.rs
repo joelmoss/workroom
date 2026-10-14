@@ -82,9 +82,15 @@ const OK: GhosttyResult = GhosttyResult_GHOSTTY_SUCCESS;
 const CONTINUATION_MAX_BYTES: usize = 4096;
 
 /// libghostty's default is a 10 KB byte cap and no line cap, about one page: 229 rows of a styled
-/// 200-column build log (#462). Lines, not the app's 50 MB: at that size a record is 2.1 MB,
-/// rewritten every `screens::INTERVAL` for a busy session and over the 4 MiB `MAX_RECORD` that
-/// drops it. 10,000 lines measured a 738 KB record written in 9 ms.
+/// 200-column build log (#462). The replay's size follows how densely the history is styled, not
+/// how many lines it has: 10,000 lines measured 1.9 MiB plain, 6 MiB with ordinary colour and
+/// 75 MiB in truecolor at 200 columns, and a record over `screens::MAX_RECORD` is deleted. A
+/// byte cap is what bounds it: at 4 MiB the worst measured record was 3.35 MiB (truecolor, 400
+/// columns), memory about 5 MB a session, and plain history keeps 5,450 rows at 80 columns,
+/// 2,193 at 200 and 1,122 at 400.
+const SCROLLBACK_MAX_BYTES: usize = 4 << 20;
+
+/// Only reached before the byte cap in a pane narrower than about 40 columns.
 const SCROLLBACK_MAX_LINES: usize = 10_000;
 
 /// `ghostty_mode_new` is a `static inline` in modes.h, so bindgen does not emit it.
@@ -417,12 +423,12 @@ impl ShadowTerminal {
         }
     }
 
-    /// The first limit reached wins, so the line cap only takes effect once the default byte cap
-    /// is removed (a NULL value).
+    /// The first limit reached wins.
     fn limit_scrollback(&self) {
         let lines: usize = SCROLLBACK_MAX_LINES;
-        // SAFETY: `inner` is a live terminal. Both options take a `size_t*`: `lines` is a live
-        // `usize` the call reads before returning, and NULL is the documented "no limit".
+        let bytes: usize = SCROLLBACK_MAX_BYTES;
+        // SAFETY: `inner` is a live terminal. Both options take a `size_t*`, and each is a live
+        // `usize` the call reads before returning.
         unsafe {
             ghostty_terminal_set(
                 self.inner,
@@ -432,7 +438,7 @@ impl ShadowTerminal {
             ghostty_terminal_set(
                 self.inner,
                 GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-                ptr::null(),
+                &bytes as *const usize as *const std::ffi::c_void,
             );
         }
     }
@@ -1084,12 +1090,12 @@ mod tests {
     }
 
     /// libghostty's default 10 KB byte cap kept about one page of history (#462). The lower bound
-    /// fails while that cap is in force; the upper one fails if the line cap is not, since nothing
-    /// else would stop the history growing to all 30,000 lines. libghostty prunes whole pages, so
-    /// the count lands within a page of the cap, either side (9,883 measured).
+    /// fails while that cap is in force; the upper one fails if the line cap is not, since at 20
+    /// columns the byte cap alone keeps about 21,000 lines. libghostty prunes whole pages, so the
+    /// count lands within a page of the cap, either side.
     #[test]
     fn scrollback_keeps_its_line_cap() {
-        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        let mut terminal = ShadowTerminal::new(20, 24).expect("terminal");
         for n in 0..3 * SCROLLBACK_MAX_LINES {
             terminal.write(format!("line {n}\r\n").as_bytes());
         }
@@ -1100,6 +1106,40 @@ mod tests {
             (SCROLLBACK_MAX_LINES / 2..2 * SCROLLBACK_MAX_LINES).contains(&rows),
             "{rows} scrollback rows, want about {SCROLLBACK_MAX_LINES}"
         );
+    }
+
+    /// A record's size follows how densely its history is styled, and one over `MAX_RECORD` is
+    /// deleted, so a pane would come back from a host restart with nothing. Truecolor on every
+    /// cell of a wide pane is the densest history measured: 2,000 such lines made a 30 MiB record
+    /// before the byte cap.
+    #[test]
+    fn a_densely_styled_history_still_fits_a_record() {
+        let columns = 400;
+        let mut terminal = ShadowTerminal::new(columns, 24).expect("terminal");
+        for n in 0..2_000 {
+            let line: String = (0..columns)
+                .map(|c| {
+                    format!(
+                        "\x1b[38;2;{};{};0;48;2;0;{};{}mx",
+                        c % 256,
+                        n % 256,
+                        c % 251,
+                        n % 241
+                    )
+                })
+                .collect();
+            terminal.write(format!("{line}\x1b[0m\r\n").as_bytes());
+        }
+        let rows = terminal
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+            .unwrap_or(0);
+        let record = terminal.record();
+        assert!(
+            record.len() < crate::screens::MAX_RECORD,
+            "a {} byte record of {rows} history rows would be deleted",
+            record.len()
+        );
+        assert!(rows > 100, "the history was not kept: {rows} rows");
     }
 
     /// A record is the replay without its continuation: the screen, both screens when a program
