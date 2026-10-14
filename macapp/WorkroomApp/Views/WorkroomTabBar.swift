@@ -549,6 +549,15 @@ private struct WorkroomTabChip: View {
       // size for all the chip text (`.subheadline`). On the focused tab the workroom name is full
       // strength (matches the project name) rather than the dimmer secondary it uses when unfocused.
       // Unread activity is marked by the accent colour on the project name alone (no dot here).
+      // A terminal waiting on the user (#358) leads the title.
+      if terminals.needsAttention(forTargetID: target.id) {
+        ProgramStatusGlyph(
+          mark: .blocked, stale: terminals.isWaitingStale(forTargetID: target.id), size: 9
+        )
+        .help(
+          ProgramStatusPresentation.waitingTooltip(
+            count: terminals.blockedTerminalCount(forTargetID: target.id)))
+      }
       HStack(alignment: .firstTextBaseline, spacing: 4) {
         Text(primaryLabel)
           .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
@@ -630,12 +639,19 @@ private struct WorkroomTabChip: View {
       // A flowing accent underline along the chip's base while any of this workroom's terminals is
       // working (OSC 9;4) — the same indeterminate-progress animation as the terminal tabs (issue #28).
       // An overlay so it never enters the width the drag gap math measures.
+      // A waiting terminal (#358) or one stopped on an error holds a static line instead.
       .overlay(alignment: .bottom) {
-        if terminals.isRunning(forTargetID: target.id) {
-          RunningUnderline(failed: terminals.isProgressFailed(forTargetID: target.id))
-            .padding(.horizontal, 6)
-            .padding(.bottom, 1)
+        Group {
+          if terminals.needsAttention(forTargetID: target.id) {
+            StatusUnderline(color: ProgramStatusPalette.current.attention)
+          } else if terminals.hasProgramError(forTargetID: target.id) {
+            StatusUnderline(color: theme.tokens.failure)
+          } else if terminals.isRunning(forTargetID: target.id) {
+            RunningUnderline(failed: terminals.isProgressFailed(forTargetID: target.id))
+          }
         }
+        .padding(.horizontal, 6)
+        .padding(.bottom, 1)
       }
       // The pill (fill + border) is the interactive shape; the margin added below stays dead gap space.
       .contentShape(Rectangle())
@@ -671,8 +687,16 @@ private struct WorkroomTabChip: View {
     if !vcs.isEmpty { parts.append(vcs) }
     if let reason = target.terminalUnavailability { parts.append(reason.title.lowercased()) }
     if running { parts.append("running") }
-    // The red underline's spoken twin: a terminal here reported OSC 9;4 ERROR.
-    if terminals.isProgressFailed(forTargetID: target.id) {
+    let waiting = terminals.blockedTerminalCount(forTargetID: target.id)
+    if waiting > 0 {
+      parts.append(
+        ProgramStatusPresentation.waitingLabel(
+          count: waiting, stale: terminals.isWaitingStale(forTargetID: target.id)))
+    }
+    // The red underline's spoken twin: a terminal here reported an error.
+    if terminals.isProgressFailed(forTargetID: target.id)
+      || terminals.hasProgramError(forTargetID: target.id)
+    {
       parts.append("a command reported an error")
     }
     if hasActivity { parts.append("unread activity") }

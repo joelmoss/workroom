@@ -36,6 +36,10 @@ struct TerminalTabStrip: View {
 
   @State private var hoveredTab: TerminalTab.ID?
   @State private var addHovering = false
+  /// The chips at least half on screen (#358).
+  @State private var visibleTabs: Set<TerminalTab.ID> = []
+  /// Each host's program-status link, for the chips' "Program status: …" tooltip line (#358).
+  @ObservedObject private var programStatus = ProgramStatusMonitor.shared
   /// The last chip click (id + time), so a quick second click on the same chip promotes a preview
   /// content tab to persisted without delaying the eager first-click select (#66).
   @State private var lastChipClick: ChipClick?
@@ -92,7 +96,18 @@ struct TerminalTabStrip: View {
           tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
           groupOf: groupOf, overflowing: overflowing)
       } controls: {
-        addTerminalButton
+        // A waiting terminal scrolled off the trailing end shows here, beside the pinned "+".
+        HStack(spacing: tabSpacing) {
+          if let tab = hiddenWaitingTab(trailing: true) {
+            waitingEdgeButton(tab, edge: "trailing")
+          }
+          addTerminalButton
+        }
+      }
+      .overlay(alignment: .leading) {
+        if let tab = hiddenWaitingTab(trailing: false) {
+          waitingEdgeButton(tab, edge: "leading")
+        }
       }
     }
     // No top padding: the strip sits flush at the top of the detail pane so the terminal tabs align
@@ -144,9 +159,15 @@ struct TerminalTabStrip: View {
           isDragging: isDragging, hasActivity: hasActivity, runState: runState,
           showLeadingSeparator: showsLeadingSeparator(at: index, groupOf: groupOf),
           isGrouped: groupOf[tab.id] != nil,
-          agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id }
+          agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id },
+          statusLines: ProgramStatusPresentation.tooltipLines(
+            for: tab, of: target, hosts: programStatus.hosts)
         ) {
           store.requestCloseTerminalTab(tab.id, for: target)
+        }
+        // Which chips the strip shows, for the edge button that reveals a waiting one (#358).
+        .onScrollVisibilityChange { visible in
+          if visible { visibleTabs.insert(tab.id) } else { visibleTabs.remove(tab.id) }
         }
         .popover(
           isPresented: Binding(
@@ -284,6 +305,37 @@ struct TerminalTabStrip: View {
     .help("New terminal (⌘T)")
     .accessibilityLabel("New terminal")
     .accessibilityIdentifier("NewTerminal")
+  }
+
+  /// The terminal that has waited longest (#358) among those scrolled off the strip's trailing (or
+  /// leading) end. Nil until the strip has said which chips it shows.
+  private func hiddenWaitingTab(trailing: Bool) -> TerminalTab? {
+    let ids = tabs.map(\.id)
+    guard let firstVisible = ids.firstIndex(where: visibleTabs.contains) else { return nil }
+    let hidden = sessions.blockedTabs(forTargetID: target.id).map(\.tab).first { id in
+      guard !visibleTabs.contains(id), let index = ids.firstIndex(of: id) else { return false }
+      return (index > firstVisible) == trailing
+    }
+    return hidden.flatMap { id in tabs.first { $0.id == id } }
+  }
+
+  /// Reveals and focuses a waiting terminal that is scrolled out of the strip (#358): selecting it
+  /// is what scrolls its chip into view.
+  private func waitingEdgeButton(_ tab: TerminalTab, edge: String) -> some View {
+    let sentence = ProgramStatusPresentation.sentence(
+      tab.programStatus?.blocked.first?.kind ?? .none)
+    return Button {
+      sessions.select(tab.id, for: target)
+    } label: {
+      ProgramStatusGlyph(mark: .blocked, stale: tab.programStatus?.stale == true, size: 10)
+        .frame(width: 24, height: 24)
+        .background(Circle().fill(ThemeService.shared.tokens.panel))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help("\(tab.title): \(sentence)")
+    .accessibilityLabel("Show \(tab.title), \(sentence.lowercased())")
+    .accessibilityIdentifier("terminal.tab.waitingEdge.\(edge)")
   }
 
   /// A rounded *outline* bracketing EACH split group's contiguous chip run, so it's easy to see which
@@ -431,6 +483,9 @@ private struct TerminalTabChip: View {
   /// A ✦ badge marking an available inline-agent diagnosis (issue #49); tapping opens its popover.
   var agentBadge: Bool = false
   var onAgentTap: () -> Void = {}
+  /// What the program in this terminal reports, or why nothing does (#358): the tooltip's lines
+  /// below the title.
+  var statusLines: [String] = []
   let onClose: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
@@ -468,13 +523,32 @@ private struct TerminalTabChip: View {
     if agentBadge { parts.append("Diagnosis available") }
     // A run tab's value stays its run state (asserted exactly), so its OSC 9;4 ERROR goes here.
     if runState != nil, tab.isProgressFailed { parts.append("a command reported an error") }
+    // The value says the waiting kind; the label adds only that the link is down (#358).
+    if [.blocked, .done, .error].contains(tab.indicator), tab.programStatus?.stale == true {
+      parts.append(ProgramStatusPresentation.mayBeOutOfDate)
+    }
     return parts.joined(separator: ", ")
   }
 
   private var runOrBusyAccessibilityValue: String {
     if let runState { return runIconSpec(runState).label }
-    if tab.isProgressFailed { return "Error" }
-    return tab.isRunning ? "Busy" : "Idle"
+    return ProgramStatusPresentation.accessibilityValue(
+      indicator: tab.indicator, rollup: tab.programStatus)
+  }
+
+  private var tooltip: String {
+    ([tab.filePath ?? tab.title] + statusLines).joined(separator: "\n")
+  }
+
+  /// The chip's base line, one at a time: waiting and a stopped error are static, a running
+  /// command sweeps.
+  @ViewBuilder private var underline: some View {
+    switch tab.indicator {
+    case .blocked: StatusUnderline(color: ProgramStatusPalette.current.attention)
+    case .error: StatusUnderline(color: theme.tokens.failure)
+    case .running(let failed): RunningUnderline(failed: failed)
+    case .done, .none: EmptyView()
+    }
   }
 
   var body: some View {
@@ -540,6 +614,14 @@ private struct TerminalTabChip: View {
           .fill(theme.tokens.accent)
           .frame(width: 6, height: 6)
           .accessibilityHidden(true)
+      }
+      // A waiting or finished program (#358) leads the title; the chip's value says which.
+      if tab.indicator == .blocked || tab.indicator == .done {
+        ProgramStatusGlyph(
+          mark: tab.indicator == .blocked ? .blocked : .done,
+          stale: tab.programStatus?.stale == true, size: 9
+        )
+        .accessibilityHidden(true)
       }
       Text(tab.title)
         .font(.callout)
@@ -619,19 +701,19 @@ private struct TerminalTabChip: View {
     // A flowing underline along the chip's base while a command runs in this tab (issue #28).
     // An overlay so it never changes the chip's measured width (the drag gap math reads that).
     .overlay(alignment: .bottom) {
-      if tab.isRunning {
-        RunningUnderline(failed: tab.isProgressFailed)
-          .padding(.horizontal, 6)
-          .padding(.bottom, 1)
-      }
+      underline
+        .padding(.horizontal, 6)
+        .padding(.bottom, 1)
     }
     .contentShape(Rectangle())
     // The full, untruncated name as a tooltip — so a tail-truncated chip still reveals it on hover.
     // For a content tab the full name is its PATH (issue #136): the chip shows only the basename, so
     // two `user.rb` tabs from different directories are otherwise indistinguishable without opening
-    // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕.
-    .help(tab.filePath ?? tab.title)
+    // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕. Program
+    // status lines follow (#358).
+    .help(tooltip)
     .accessibilityIdentifier("terminal.tab.\(tab.title)")
+    .accessibilityAddTraits(isActive ? .isSelected : [])
     // The recognized tool's favicon (issue #141) is otherwise conveyed ONLY by a plain `Image` — a
     // leaf `.accessibilityIdentifier` on the icon itself is silently unreachable (measured: an
     // XCUITest querying it never found the element, even though the model-layer detection and the
@@ -880,6 +962,15 @@ extension View {
     tab: TerminalTab, target: TerminalTarget, store: AppStore, sessions: TerminalSessions
   ) -> some View {
     self.contextMenu {
+      // The escape hatch for a program that left a request behind (#358).
+      if tab.programStatus?.hasReport == true {
+        Button {
+          sessions.clearProgramStatus(tab: tab.id, target: target.id)
+        } label: {
+          Label("Clear Status", systemImage: "hand.raised.slash")
+        }
+        Divider()
+      }
       if case .diff(let descriptor) = tab.content {
         // Unified / side-by-side, mirroring the pane title bar's switch (issue #150). The switch was
         // the only per-pane control with no menu or keyboard route at all, which is what forced it to

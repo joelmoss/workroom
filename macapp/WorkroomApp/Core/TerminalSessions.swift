@@ -1,3 +1,4 @@
+import AgentConnection
 import AppKit
 import Defaults
 import HostDrivers
@@ -80,6 +81,12 @@ struct TerminalTab: Identifiable {
   var indicator: PaneIndicator {
     if case .terminal(let s) = content { return s.indicator }
     return .none
+  }
+
+  /// What the program in this terminal last reported (#358), for tooltips and VoiceOver.
+  var programStatus: ProgramStatusRollup? {
+    if case .terminal(let s) = content { return s.programStatus }
+    return nil
   }
 
   /// Whether a command is actively *working* in this terminal (issue #28) — drives the chip underline
@@ -795,6 +802,13 @@ final class TerminalSessions: ObservableObject {
   /// How many terminals of this target wait on the user.
   func blockedTerminalCount(forTargetID id: TerminalTarget.ID) -> Int {
     (tabsByTarget[id] ?? [:]).values.count { $0.needsAttention }
+  }
+
+  /// Whether a waiting terminal of this target is on a host whose link is down (#358).
+  func isWaitingStale(forTargetID id: TerminalTarget.ID) -> Bool {
+    (tabsByTarget[id] ?? [:]).values.contains {
+      $0.needsAttention && $0.programStatus?.stale == true
+    }
   }
 
   /// Whether any terminal of this target reported an error that stopped it (#358).
@@ -2353,6 +2367,19 @@ final class TerminalSessions: ObservableObject {
       let sessionID = state.sessionID
     else { return }
     programStatus.clear(sessionID)
+  }
+
+  /// The UI-test fixture's seam (`UITestFixture.seedProgramStatus`): a fixture pane has no session
+  /// (`TerminalPersistentSessionPolicy`), so give it one and seed its records straight into the
+  /// monitor, which then reaches the tab as a real status event would.
+  func seedProgramStatusForFixture(
+    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, host: HostID = .local,
+    records: [ProgramStatusRecord], stale: Bool = false
+  ) {
+    let session = UUID()
+    mutateTerminalState(tabID, target: targetID) { $0.sessionID = session }
+    followProgramStatus(on: host)
+    programStatus.seed(session, host: host, records: records, stale: stale)
   }
 
   // MARK: Remote pane links (#254, C7)
