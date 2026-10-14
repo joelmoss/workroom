@@ -191,7 +191,9 @@ SwiftUI app. The core loop:
    target persists for the session.
 3. **Terminal I/O** surfaces libghostty/OSC callbacks app-wide — title (OSC 0/2), command-finished
    (OSC 133), busy/progress (OSC 9;4), and notifications (OSC) drive tab/sidebar animation, badges,
-   the inspector, and desktop banners.
+   the inspector, and desktop banners. Program status (OSC 7501) is the exception: `wr-agent` keeps
+   it and the app subscribes to it per host ([docs/program-status.md](docs/program-status.md),
+   [ADR 0050](docs/adr/0050-program-status-service.md)).
 4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch)
    goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and `wr-agent` for
    agent-routed projects — both mapped to app-native models, no CLI text parsing.
