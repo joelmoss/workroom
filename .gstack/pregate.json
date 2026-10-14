@@ -32,7 +32,25 @@
     "macapp/Packages/**": [
       "macapp/Tests/pregate/app_gate_test.py",
       "macapp/Tests/pregate/package_gate_test.py"
-    ]
+    ],
+    "vcs/**": [
+      "macapp/Tests/pregate/rust_gate_test.py"
+    ],
+    "testdata/program-status/**": [
+      "macapp/Tests/pregate/rust_gate_test.py",
+      "macapp/Tests/pregate/package_gate_test.py"
+    ],
+    "testdata/contracts/**": [
+      "macapp/Tests/pregate/rust_gate_test.py",
+      "macapp/Tests/pregate/package_gate_test.py",
+      "macapp/Tests/pregate/app_gate_test.py",
+      "cmd/contract_test.go"
+    ],
+    "testdata/fixtures/**": [
+      "internal/script/script_test.go"
+    ],
+    "**/*.md": [],
+    "docs/**": []
   },
   "selection": {
     "ci.yml/cli": "git ls-files '*_test.go'",
