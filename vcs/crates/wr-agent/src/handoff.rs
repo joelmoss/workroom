@@ -137,6 +137,9 @@ const MAGIC: [u8; 4] = *b"WRHO";
 /// sessions are adopted with none (#255); versions 1 and 2 had no program status, and theirs are
 /// adopted with empty records under a new boot (#358). An older program refuses a newer table in
 /// its check, so a hand-off never goes to a program that would drop what this one carries.
+/// `a_version_3_table_from_the_shipped_agent_is_adopted_with_its_program_status` holds the shipped
+/// table: a field added to `program_status::Store` or `Record` needs a serde default, or a new
+/// version here with 3 still accepted.
 const TABLE_VERSION: u16 = 3;
 /// The oldest table this program still reads.
 const OLDEST_TABLE_VERSION: u16 = 1;
@@ -1131,6 +1134,53 @@ mod tests {
                 }],
             }
         );
+    }
+
+    /// This is the table the shipped agent writes (version 3), its program status exactly as that
+    /// build's `serde_json` encodes a blocked record. The new program's check decodes the old
+    /// one's table, so a field added to `Store` or `Record` must decode it: give the new field a
+    /// serde default, or bump `TABLE_VERSION` and keep accepting 3. Otherwise every upgrade from
+    /// that release fails its check and the old agent keeps running.
+    ///
+    /// Written out by hand for the reason the version 1 fixture above is.
+    #[test]
+    fn a_version_3_table_from_the_shipped_agent_is_adopted_with_its_program_status() {
+        let status = concat!(
+            r#"{"records":[{"id":"","state":"blocked","kind":"permission","progress":-1,"#,
+            r#""app":"claude-code","title":"","message":"Apply?","owner":4242,"updated":1,"#,
+            r#""episode":1,"notify":true}],"revision":1,"episode":1,"reporting":4242,"#,
+            r#""probed":4242}"#,
+        )
+        .as_bytes();
+        assert_eq!(status.len(), 232);
+        #[rustfmt::skip]
+        let mut version_3: Vec<u8> = vec![
+            b'W', b'R', b'H', b'O', 0, 3,      // magic, version 3
+            0, 0, 0, 3, 0, 0, 0, 4,            // listener 3, lock 4
+            9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, // boot
+            0, 0, 0, 1,                        // one session
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // id
+            0, 0, 0x10, 0x92,                  // pid 4242
+            0, 0, 0, 9,                        // master 9
+            0, 80, 0, 24,                      // 80 x 24
+            0, 0, 0, 0,                        // no screen
+            0, 0, 0, 0,                        // no metadata
+            0, 0, 0, 232,                      // program status length
+        ];
+        version_3.extend_from_slice(status);
+        let table = Table::decode(&version_3).expect("a version 3 table is read");
+        assert_eq!(table.boot, Some(SessionId([9; 16])));
+        let store = &table.sessions[0].program_status;
+        assert_eq!(store, &blocked_status());
+        let event: serde_json::Value =
+            serde_json::from_slice(&store.event(SessionId([9; 16]), SessionId([7; 16]))).unwrap();
+        assert_eq!(event["revision"], 1);
+        assert_eq!(event["records"][0]["state"], "blocked");
+        assert_eq!(event["records"][0]["kind"], "permission");
+        assert_eq!(event["records"][0]["app"], "claude-code");
+        assert_eq!(event["records"][0]["message"], "Apply?");
+        assert_eq!(event["records"][0]["episode"], 1);
+        assert_eq!(event["records"][0]["notify"], true);
     }
 
     /// Each refusal reads as it did when these were strings: the requester is shown this text, and
