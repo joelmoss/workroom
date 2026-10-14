@@ -2782,9 +2782,10 @@ disagreement passes every test on either side alone while presenting as an empty
    (b) **A lost session is no longer replaced by an invented one.** The shipped daemon's
    `handleAttach` creates for an id it does not hold, so a reattach to a session whose shell had
    exited silently forked a new one — a fresh prompt where a build was running, indistinguishable
-   from success. `confirmBeforeAttach` asks once more immediately before attaching and refuses when
-   the daemon disclaims it, which **prevents** the substitution rather than detecting it: the daemon
-   never receives the request that would make it create. `.unreachable` still attaches, deliberately
+   from success. `confirmBeforeAttach` asks once more immediately before attaching; when the
+   daemon disclaims it, the cached owner is dropped and the attach goes to the agent with
+   `--no-create`, which shows the session ended. That **prevents** the substitution rather than
+   detecting it: the daemon never receives the request that would make it create. `.unreachable` still attaches, deliberately
    — it means we could not ask, and a daemon too wedged to answer is also too wedged to fork.
 
    Residual, and not closable from this side of the socket: the daemon can answer `.owned` and lose

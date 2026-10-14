@@ -438,7 +438,7 @@ final class PersistentSessionService {
       logger.error(
         """
         session \(sessionID.uuidString, privacy: .public) is no longer held by the daemon; \
-        not attaching, because the shipped daemon would create a new shell instead
+        attaching through the agent instead, because the shipped daemon would create a new shell
         """)
       return .gone
     }

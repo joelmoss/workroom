@@ -448,8 +448,9 @@ final class GhosttySurfaceView: NSView {
   /// Configure libghostty to spawn a session helper for a background session.
   ///
   /// Returns whether it set `config.command` — not strictly "a session was attached". The two
-  /// differ in one case: a session the daemon has already lost, where this sets a command that
-  /// tells the user so and then becomes their shell. The caller only uses the result to decide
+  /// differ in one case: a restored session that has since ended, where the command is
+  /// `wr-agent attach --no-create`, which tells the user so and then becomes their shell. The
+  /// caller only uses the result to decide
   /// whether to install a run command, and a pane with a persistent session is never a run-command
   /// pane (`TerminalPersistentSessionPolicy` excludes them), so the distinction costs nothing.
   @discardableResult

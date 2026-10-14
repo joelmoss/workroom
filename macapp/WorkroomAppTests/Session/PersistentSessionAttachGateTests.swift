@@ -120,8 +120,8 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   /// v2.0.0 daemon has lost, which it answers by forking a new shell and passing it off as the
   /// user's. Same "cover the wiring, not just the writer" failure this file was written for.
   ///
-  /// Order is asserted too. A confirmation made AFTER the attach command is resolved is not a
-  /// confirmation — the routing it is supposed to veto has already happened.
+  /// Order is asserted too. A confirmation made AFTER the attach command is resolved is useless:
+  /// the stale daemon owner it is supposed to drop has already been routed to.
   func testTheAttachIsConfirmedWithTheDaemonBeforeItIsRouted() throws {
     let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
 

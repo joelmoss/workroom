@@ -563,8 +563,8 @@ fn a_healthy_agent_is_not_replaced_by_a_shell() {
 /// reattach to a session that already has scrollback, which is precisely the pane holding the
 /// user's work, and it explicitly invites a retry. Exec'ing a shell there is unrecoverable (exec is
 /// one-way, so the retry can never happen) and hands back a healthy-looking prompt for a session
-/// that is still running: the same "failure that looks like success" `confirmBeforeAttach` exists
-/// to prevent on the app side.
+/// that is still running: the same "failure that looks like success" `--no-create` exists to
+/// prevent.
 ///
 /// An earlier version of `run_attach` made this a fallback, so this is a REGRESSION pin, and it is
 /// the only test anywhere that reaches the `FrameKind::Failure` arm.
