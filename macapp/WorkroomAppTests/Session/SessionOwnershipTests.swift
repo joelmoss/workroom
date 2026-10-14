@@ -646,8 +646,8 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
   }
 
   /// The agent is not re-checked: it is asked in the attach itself. A restored id it no longer
-  /// holds is refused by `wr-agent attach --no-create`, which then opens the pane as a shell that
-  /// says the session ended, with Ghostty's shell integration. The app's own notice shell had none,
+  /// holds is refused by `wr-agent attach --no-create`, which then says the session ended and
+  /// starts a new agent session, with Ghostty's shell integration. The app's own notice shell had none,
   /// so its titles latched and an OSC 9;4 mark waited out the 30s timeout.
   @MainActor
   func testAnAgentOwnedSessionIsRefusedInTheAttachItself() {
@@ -673,6 +673,26 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     XCTAssertEqual(
       service.attachCommand(forSession: sessionID)?.hasSuffix(" attach"), true,
       "a new pane's id has never existed, so its attach must create it")
+  }
+
+  /// A restored local pane whose session the agent no longer holds will be given a new one by its
+  /// attach (#459), so the pane says so. One the agent holds, or a fresh pane, says nothing. An
+  /// agent that does not answer most likely died with its sessions, so that says it too.
+  @MainActor
+  func testARestoredSessionTheAgentLostIsToldItWasReplaced() {
+    // Each service's first answer resolves the owner (the daemon disclaims it); the second is the
+    // agent's.
+    func replaced(_ agent: SessionOwnership, restored: Bool = true) -> Bool {
+      let answers = OwnershipScript([.notOwned, agent])
+      let service = PersistentSessionService(
+        probe: { _ in .ready(version: "protocol 1") },
+        ownership: { _ in answers.next() })
+      return service.willReplaceRestoredSession(UUID(), wasRestored: restored)
+    }
+    XCTAssertFalse(replaced(.owned), "a live session is reattached, not replaced")
+    XCTAssertTrue(replaced(.notOwned), "after a reboot no agent holds it")
+    XCTAssertTrue(replaced(.unreachable), "an agent that cannot answer most likely died with it")
+    XCTAssertFalse(replaced(.notOwned, restored: false), "a new pane's id has never existed")
   }
 
   /// A session the retired daemon lost re-resolves to the agent, so its pane gets the agent's

@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import GhosttyKit
+import SwiftUI
 import WorkroomWire
 import os
 
@@ -210,6 +211,9 @@ final class GhosttySurfaceView: NSView {
   private let goToBottomInset: CGFloat = 12
   private let goToBottomButton = GoToBottomButton()
 
+  // A toast over this pane (`PaneNoticeToast`), for news about the pane itself (#459).
+  private var paneNotice: PaneNoticeHost?
+
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
   // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. It's a
   // "declared busy but went silent" backstop, not a fixed time-since-last-report cutoff: while the
@@ -354,6 +358,7 @@ final class GhosttySurfaceView: NSView {
     addSubview(scrollbarThumb, positioned: .above, relativeTo: nil)
     addSubview(goToBottomButton, positioned: .above, relativeTo: nil)
     layoutGoToBottomButton()
+    if let paneNotice { addSubview(paneNotice, positioned: .above, relativeTo: nil) }
     // The surface may have been created AFTER this view already became first responder: a zero-bounds
     // attach defers `createSurface` to `setFrameSize`/`layout`, so `becomeFirstResponder` ran while
     // `surface == nil` and its `setSurfaceFocused(true)` no-oped (see `setSurfaceFocused`). Without
@@ -448,9 +453,9 @@ final class GhosttySurfaceView: NSView {
 
   /// Configure libghostty to spawn a session helper for a background session.
   ///
-  /// Returns whether it set `config.command` — not strictly "a session was attached". The two
-  /// differ in one case: a restored session that has since ended, where the command is
-  /// `wr-agent attach --no-create`, which tells the user so and then becomes their shell. The
+  /// Returns whether it set `config.command` — not strictly "a session was attached". A restored
+  /// session that has since ended gets `wr-agent attach --no-create`, which tells the user so and
+  /// starts a new session in its place, or a plain shell if even that fails. The
   /// caller only uses the result to decide
   /// whether to install a run command, and a pane with a persistent session is never a run-command
   /// pane (`TerminalPersistentSessionPolicy` excludes them), so the distinction costs nothing.
@@ -466,10 +471,15 @@ final class GhosttySurfaceView: NSView {
     // this. It CREATES a session on attach for an id it does not hold, so a cached ownership answer
     // that has outlived its session would turn a reattach into a brand new shell with nothing to
     // mark it as one. A lost one drops its cached owner, so the attach below re-resolves to the
-    // agent, whose `--no-create` attach shows the session ended and opens a shell with Ghostty's
-    // integration. See `confirmBeforeAttach`.
+    // agent, whose `--no-create` attach shows the session ended and starts a new one in its place.
+    // See `confirmBeforeAttach`.
     PersistentSessionService.shared.confirmBeforeAttach(
       sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored)
+    if PersistentSessionService.shared.willReplaceRestoredSession(
+      persistentSessionID, wasRestored: persistentSessionIsRestored)
+    {
+      showPaneNotice(PaneNoticeToast.sessionReplaced)
+    }
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
     // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
     // for the backend a NEW session would go to, so it goes false whenever the agent is unhealthy
@@ -507,7 +517,7 @@ final class GhosttySurfaceView: NSView {
   /// A pane on a remote host whose ssh lost the link reattaches, rather than sitting on a dead
   /// process while its session runs on: 255 is ssh's own failure, as after laptop sleep, a network
   /// change or the host rebooting. It reattaches as a restored pane, so a session that ended
-  /// meanwhile becomes a shell that says so. See `RemoteReconnectBackoff` for when it gives up.
+  /// meanwhile shows as ended. See `RemoteReconnectBackoff` for when it gives up.
   ///
   /// ssh's status comes from what the attach wrapper recorded, never from the pane's exit status:
   /// libghostty runs every command under macOS `login`, which exits 0 whatever ran under it, so
@@ -632,6 +642,7 @@ final class GhosttySurfaceView: NSView {
     updateMetalLayerSize()
     layoutScrollbar()
     layoutGoToBottomButton()
+    layoutPaneNotice()
   }
 
   override func viewDidChangeBackingProperties() {
@@ -796,6 +807,43 @@ final class GhosttySurfaceView: NSView {
       x: bounds.width - goToBottomSize - goToBottomInset,
       y: goToBottomInset,
       width: goToBottomSize, height: goToBottomSize)
+  }
+
+  // MARK: Pane notice (#459)
+
+  /// Shows `message` as a toast over this pane, replacing any showing.
+  func showPaneNotice(_ message: String) {
+    paneNotice?.removeFromSuperview()
+    let host = PaneNoticeHost(
+      rootView: PaneNoticeToast(message: message, width: paneNoticeWidth) { [weak self] in
+        self?.paneNotice?.removeFromSuperview()
+        self?.paneNotice = nil
+      })
+    addSubview(host, positioned: .above, relativeTo: nil)
+    paneNotice = host
+    layoutPaneNotice()
+    // Told to VoiceOver too: a user typing in the terminal would otherwise never learn of it.
+    NSAccessibility.post(
+      element: host, notification: .announcementRequested,
+      userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+  }
+
+  /// The house toast width, narrowed to fit a narrow split pane.
+  private var paneNoticeWidth: CGFloat { min(300, bounds.width - 2 * goToBottomInset) }
+
+  private func layoutPaneNotice() {
+    guard let paneNotice else { return }
+    if paneNotice.rootView.width != paneNoticeWidth {
+      paneNotice.rootView.width = paneNoticeWidth
+    }
+    // The card sits as far in from the top-right as the go-to-bottom button does from the
+    // bottom-right; its shadow room may run past the pane's edge (non-flipped: y is from the bottom).
+    let size = paneNotice.fittingSize
+    let overhang = PaneNoticeToast.shadowRoom - goToBottomInset
+    paneNotice.frame = CGRect(
+      x: bounds.width - size.width + overhang,
+      y: bounds.height - size.height + overhang,
+      width: size.width, height: size.height)
   }
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SCROLLBAR`. All values are in rows;

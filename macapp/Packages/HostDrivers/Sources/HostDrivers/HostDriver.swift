@@ -103,8 +103,8 @@ public enum HostSetup {
 public protocol HostTerminalDriver: HostDriver {
   /// The command a pane runs to attach to `session` on `host`, starting in `workingDirectory` if
   /// the session is new. `restored` for a pane reattaching after a relaunch or a lost link: the
-  /// session must already exist there, and if it has ended the pane gets a shell that says so
-  /// rather than a fresh one that looks like it (`wr-agent attach --no-create`).
+  /// session must already exist there, and if it has ended the pane says so rather than showing a
+  /// fresh one that looks like it (`wr-agent attach --no-create`).
   ///
   /// `metadata` is what the app says about the session (`SessionMetadataKey`): its workroom and
   /// title travel to the host's agent with the attach, so any Mac can find the session (#255).

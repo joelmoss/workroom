@@ -10,9 +10,10 @@ use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 
 /// What a restored pane (`--no-create`) shows when its session has ended and the agent kept no
-/// record of it (`crate::screens`).
+/// record of it (`crate::screens`), if it cannot be given a new session instead.
 ///
-/// On this Mac, a new shell in its place, as the app has always shown. On a remote host
+/// On this Mac, a new shell in its place. Reached only when the session exits between the agent's
+/// check and its attach; a plain refusal gets a new session (`run_attach`). On a remote host
 /// (`--no-spawn`), never a shell (#255, D7): one started here would be this process's child, not an
 /// agent session, so no other Mac could see it and it would die with the ssh link. The pane is told
 /// the terminal ended, then holds with input going nowhere until its user closes it, as a pane
@@ -285,15 +286,21 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             fall_back_to_shell(&request, reason)
         }
     };
-    let attach = Frame::new(FrameKind::Attach, request.encode());
-    let attach = Envelope::new(Service::Terminal, 1, attach.encode()).encode();
+    let encode = |request: &serve::AttachRequest| {
+        let attach = Frame::new(FrameKind::Attach, request.encode());
+        Envelope::new(Service::Terminal, 1, attach.encode()).encode()
+    };
+    let mut attach = encode(&request);
+    // Whether a restored pane's ended session was replaced by a new one (#459).
+    let mut replaced = false;
 
     let mut buffer = [0u8; 8192];
 
     // The attach is answered before raw mode and the relay threads. A restored pane's
-    // (`--no-create`) session that ended becomes the notice-and-shell the app shows locally, and
-    // that has to start from a cooked terminal with nothing else running. When the agent kept a
-    // record of the session (`crate::screens`), it answers `Attached` and the record instead.
+    // (`--no-create`) session that ended is attached again to create it locally, or becomes the
+    // notice a remote pane holds on, which has to start from a cooked terminal with nothing else
+    // running. When the agent kept a record of the session (`crate::screens`), it answers
+    // `Attached` and the record instead.
     //
     // An agent that closes before answering at all is most likely handing off to a new program
     // (`crate::handoff`). Its listener stays open across the exec, so the attach is sent again,
@@ -314,7 +321,28 @@ pub fn run_attach(args: &[String]) -> ExitCode {
         };
         match answer {
             Answer::Attached => break (stream, decoder),
-            Answer::Refused(_) if request.existing_only => {
+            // A restored pane on this Mac whose session has ended gets a new session under the
+            // same id, said out loud. A shell that was no session would leave the pane saving the
+            // dead id, so it would say "ended" again on every launch and never survive a quit
+            // (#459). The app says so in a toast over the pane
+            // (`PersistentSessionService.willReplaceRestoredSession`), so the new session does not
+            // pass as the old one.
+            // Only for the app's own panes: an `attach --no-create` someone typed asked to be
+            // refused, and gets no toast to say a session was made.
+            Answer::Refused(_)
+                if request.existing_only && !no_spawn && !replaced && invoked_by_the_app =>
+            {
+                replaced = true;
+                attach = encode(&serve::AttachRequest {
+                    existing_only: false,
+                    ..request.clone()
+                });
+            }
+            Answer::Refused(reason) if request.existing_only => {
+                // After a refused create, why: the fallback's notice says only that it ended.
+                if replaced {
+                    eprintln!("wr-agent: {}\r", String::from_utf8_lossy(&reason));
+                }
                 return ended(&request, no_spawn);
             }
             // A session that could not be created or attached. See the main loop's `Failure` arm
@@ -409,8 +437,9 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                             // the user can still reach it from the detached-sessions list.
                             // The one exception: a `--no-create` attach whose session exited
                             // between the agent's check and its attach. That is "ended", not a
-                            // failure on a live session, so it gets the same shell as a check that
-                            // came back negative.
+                            // failure on a live session, so it gets a shell that says so. Not a new
+                            // session, as a refusal gets: the relay is already running, and this
+                            // race is rare enough to leave that pane not surviving a quit.
                             FrameKind::Failure
                                 if request.existing_only
                                     && frame.payload.starts_with(b"no session ") =>

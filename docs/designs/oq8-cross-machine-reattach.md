@@ -67,8 +67,9 @@ Agreed by the owner, with premise 3 revised after the Codex cold read.
    - **recorded:** the frozen screen kept by #232 (`serve.rs`, the `existing_only && !exists`
      branch of the attach handler; tested by
      `a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host`);
-   - **missing:** the pane stays in the layout as an ended pane until the user closes it, exactly
-     as a restored pane whose session is gone behaves today. Restore never removes a pane from
+   - **missing:** the pane stays in the layout as an ended pane until the user closes it, as a
+     restored remote pane whose session is gone behaves today (a local pane gets a new session under
+     the same id and a toast, #459). Restore never removes a pane from
      the layout.
 
    Sessions tagged with this workroom that the layout does not mention, live or recorded, are
@@ -867,7 +868,7 @@ Defer this proposal only; O2 stays unresolved and listed as unresolved.
 
 State: approved
 Actual answer: A) Apply: remote shows ended (D7, answered 2026-10-04)
-Accepted scope: For a remote pane, a refused existing-only attach shows an ended pane (the record's notice when one exists, else "This terminal has ended. Close it to start again.") and starts no shell. Local panes keep the fallback shell. Test: a remote existing-only attach to an unknown id shows the notice and exits with no child shell.
+Accepted scope: For a remote pane, a refused existing-only attach shows an ended pane (the record's notice when one exists, else "This terminal has ended. Close it to start again.") and starts no shell. Local panes keep the fallback shell (amended 2026-10-14, #459: a local pane now gets a new session under the same id, with a toast over the pane). Test: a remote existing-only attach to an unknown id shows the notice and exits with no child shell.
 History: none
 
 ### O3: a refused write cannot "re-apply the one change"

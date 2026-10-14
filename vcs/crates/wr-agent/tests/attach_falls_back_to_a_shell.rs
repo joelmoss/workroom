@@ -828,11 +828,11 @@ fn a_restored_remote_pane_whose_peer_cannot_negotiate_gets_a_shell() {
     assert_ne!(status, Some(255), "a broken peer was retried: {output:?}");
 }
 
-/// `--no-create` (a restored pane): a session the agent does not hold is refused, not created,
-/// and the pane becomes a shell that says so. Created instead, it would be a fresh shell passed off
-/// as the one that was running there.
+/// `--no-create` (a restored pane): a session the agent does not hold is refused, and on this Mac
+/// the pane gets a new session under the same id, not a fallback shell. (The app says so in a toast,
+/// decided before it attaches.)
 #[test]
-fn no_create_turns_an_ended_session_into_a_shell_with_a_notice() {
+fn no_create_turns_an_ended_session_into_a_new_one() {
     let dir = scratch("no-create-ended");
     let socket = dir.join("a.sock");
     let _agent = start_agent(&socket);
@@ -848,25 +848,173 @@ fn no_create_turns_an_ended_session_into_a_shell_with_a_notice() {
             ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
             (
                 "WORKROOM_SESSION_COMMAND",
-                "echo NEW-SHELL fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+                "sh -c 'sleep 1; echo NEW-SESSION fb=[${WORKROOM_SESSION_FALLBACK:-unset}]'",
             ),
         ],
         None,
     );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!output.contains("has ended"), "got: {output:?}");
+    assert!(
+        output.contains("NEW-SESSION fb=[unset]"),
+        "expected a new session, not a fallback shell. got: {output:?}"
+    );
+}
+
+/// #459: once a restored pane's ended session is replaced, its id is live, so the next restore
+/// attaches it instead of saying "ended" again.
+#[test]
+fn a_replaced_ended_session_is_reattached_on_the_next_restore() {
+    let dir = scratch("no-create-replaced");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let env = [
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC7A",
+        ),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+        (
+            "WORKROOM_SESSION_COMMAND",
+            "sh -c 'sleep 2; echo STILL-THE-SAME fb=[${WORKROOM_SESSION_FALLBACK:-unset}]'",
+        ),
+    ];
+    // The first restore finds no session and makes one; killed at once, as a quit leaves it.
+    let mut first = Command::new(agent_binary());
+    first
+        .args(["attach", "--no-create"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin");
+    for (key, value) in env {
+        first.env(key, value);
+    }
+    let mut first = first
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn first attach");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = first.kill();
+    let _ = first.wait();
+    // Listed under the pane's id, so the second restore below reattaches it rather than making
+    // another, which would print the same output.
     let listed = Command::new(agent_binary())
         .args(["list", "--socket"])
         .arg(&socket)
         .output()
         .expect("list");
+
+    let (output, _) = attach_with_args(&["--no-create"], &env, None);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
-        output.contains("has ended") && output.contains("NEW-SHELL fb=[1]"),
-        "expected the ended-session notice and a fallback shell. got: {output:?}"
+        String::from_utf8_lossy(&listed.stdout).contains("6b9b968d-0bd7-4172-850a-a373da73bc7a"),
+        "the first restore's new session is not held under the pane's id: {:?}",
+        String::from_utf8_lossy(&listed.stdout)
     );
     assert!(
-        !String::from_utf8_lossy(&listed.stdout).contains("6b9b968d"),
-        "the agent created the session anyway: {:?}",
-        String::from_utf8_lossy(&listed.stdout)
+        output.contains("STILL-THE-SAME fb=[unset]"),
+        "expected the session the first restore made. got: {output:?}"
+    );
+    assert!(!output.contains("has ended"), "got: {output:?}");
+}
+
+/// A hand-run `attach --no-create` (no app environment) for a session the agent does not hold is
+/// refused, not replaced: only the app's panes get a new session, and a toast saying so.
+#[test]
+fn a_hand_run_no_create_attach_does_not_create_the_session() {
+    let dir = scratch("no-create-hand-run");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let (output, _) = attach_with_args(
+        &[
+            "--no-create",
+            "--socket",
+            socket.to_str().unwrap(),
+            "--session",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC7C",
+        ],
+        // Not variables `run_attach` takes as the app's mark. The command exits either way; only
+        // the fallback shell sets WORKROOM_SESSION_FALLBACK, never a session the agent made.
+        &[
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo HAND-RUN fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.contains("HAND-RUN fb=[1]"),
+        "a hand-run --no-create attach was given a new session instead of being refused: {output:?}"
+    );
+}
+
+/// When the new session is refused too, the pane gets the fallback shell after exactly one retry,
+/// rather than asking again forever.
+// Value: protects=a refused create ends in a working shell after one retry; fails_when=the
+// one-retry guard goes, so a refusing agent is asked again and again; why_new=the real agent never
+// refuses a create; seam=none; no_claim=why a real create fails (fake agent)
+#[test]
+fn a_refused_new_session_falls_back_to_a_shell_after_one_retry() {
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wr_protocol::envelope::{Envelope, Hello, Service};
+    use wr_protocol::frame::{Frame, FrameKind};
+
+    let dir = scratch("no-create-refused-twice");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let attaches = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&attaches);
+    // Refuses the first two attaches. Any later one is closed unanswered, which the relay retries
+    // only until its 10s deadline, so a regression ends in a count above 2 instead of a hang.
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            if counted.fetch_add(1, Ordering::SeqCst) >= 2 {
+                continue;
+            }
+            let _ = stream.write_all(&Hello::current("fake-peer").encode());
+            let frame = Frame::new(FrameKind::Failure, b"session ended".to_vec());
+            let _ = stream.write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode());
+            let _ = stream.flush();
+            held.push(stream);
+        }
+    });
+
+    let (output, _) = attach_with_args(
+        &["--no-create"],
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC7B",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo FELL-BACK fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        attaches.load(Ordering::SeqCst),
+        2,
+        "expected the refusal and one retry. got: {output:?}"
+    );
+    assert!(
+        output.contains("has ended") && output.contains("FELL-BACK fb=[1]"),
+        "expected the ended notice and the fallback shell. got: {output:?}"
     );
 }
 
