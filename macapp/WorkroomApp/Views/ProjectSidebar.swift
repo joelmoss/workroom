@@ -402,6 +402,8 @@ struct ProjectSidebar: View {
         [
           target.isMissing ? "\(style.accessibility), folder not found" : style.accessibility,
           VCSStatusPresentation.accessibilityLabel(status),
+          // The red mark's spoken twin: this row ignores its children, so the mark's own label is lost.
+          terminals.isProgressFailed(forTargetID: target.id) ? "a command reported an error" : "",
         ].filter { !$0.isEmpty }.joined(separator: ", ")
       )
       .onHover { inside in
