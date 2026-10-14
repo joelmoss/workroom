@@ -63,4 +63,18 @@ final class ProgramStatusConnectionTests: XCTestCase {
     XCTAssertEqual(availability, .unavailable("no terminal-state"))
     await connection.close()
   }
+
+  /// The agent going away hands the subscriber `.lost`, so the monitor keeps the host's records,
+  /// marks them stale after the grace and reconnects.
+  func testADroppedLinkHandsTheSubscriberLost() async throws {
+    let fake = try FakeAgent(version: 8, programStatusResult: #"{"available":true}"#)
+    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    let lost = expectation(description: "lost")
+    _ = try await connection.subscribeProgramStatus { event in
+      if event == .lost { lost.fulfill() }
+    }
+    fake.stop()
+    await fulfillment(of: [lost], timeout: 5)
+    await connection.close()
+  }
 }

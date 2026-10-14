@@ -81,6 +81,8 @@ struct DetachedSessionsButton: View {
     guard let id = session.identifier.uuid else { return }
     store.whenHostLayoutRestored(target) { [terminals = store.terminals] target in
       _ = terminals.addTab(for: target, sessionID: id)
+      // The waiting list counts only sessions an open pane shows.
+      WindowRegistry.shared.recomputeBadge()
     }
     showing = false
     Task { await refresh() }

@@ -2345,6 +2345,17 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
+  /// A tab pointed at another session (Detached sessions > Active tab) shows that session's
+  /// status at once, not the old one's until the new session next changes.
+  func refreshProgramStatus(tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID) {
+    guard case .terminal(let state)? = tabsByTarget[targetID]?[tabID]?.content,
+      let sessionID = state.sessionID
+    else { return }
+    watchedDone.remove(tabID)
+    let rollup = programStatus.rollup(for: sessionID)
+    mutateTerminalState(tabID, target: targetID) { $0.programStatus = rollup }
+  }
+
   /// Focus moving into a pane marks its finished and failed records seen; a finish watched while
   /// focused is marked seen when focus leaves. A status arriving in an already focused pane is not.
   private func programStatusFocusChanged(
