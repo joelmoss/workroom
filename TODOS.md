@@ -766,7 +766,8 @@ sweep stage.
 ### Program status for non-daemon panes (macapp, upstream Ghostty) — #358 deferral
 
 **What:** An upstream GhosttyKit apprt program-status action. The app's own terminal ignores
-`.program_status`, so non-daemon panes (run commands, fixture panes) never get OSC 7501. An upstream
+`.program_status`, so non-daemon panes (run commands, fixture panes, and every pane while the agent
+is unavailable and panes fall back to a plain shell) never get OSC 7501. An upstream
 apprt action would cover them; daemon-backed panes still need wr-agent for reattach and remote.
 
 **Why:** #358 shows "needs you" only for daemon-backed panes.
