@@ -218,6 +218,9 @@ mod live {
     const BLOCKED: &str =
         r"printf '\033]7501;state=blocked:kind=permission:app=claude-code:msg=QXBwbHk/\033\\'";
     const PROBE: &str = r"printf '\033]7501;?\033\\'";
+    /// A prober as Claude Code is one: it reads the answer before it reports, so its report is
+    /// trusted to alert. (A probe and a report printed together are not.)
+    const ASK: &str = r"stty -echo -icanon min 0 time 10; printf '\033]7501;?\033\\'; dd bs=256 count=1 >/dev/null 2>&1";
 
     /// The session's status as a new subscriber's snapshot would carry it.
     fn status_of(store: &SessionStore, session: SessionId) -> Value {
@@ -347,7 +350,7 @@ sleep 5"#,
             &store,
             id(1),
             &format!(
-                r#"{PROBE}; {BLOCKED}; until [ -e "{gate}" ]; do sleep 0.02; done; printf '\033]7501;state=done:app=claude-code\033\\'; sleep 5"#,
+                r#"{ASK}; {BLOCKED}; until [ -e "{gate}" ]; do sleep 0.02; done; printf '\033]7501;state=done:app=claude-code\033\\'; sleep 5"#,
                 gate = scratch.path("gate")
             ),
         );
@@ -450,7 +453,7 @@ sleep 5"#,
     fn a_connection_that_never_subscribes_is_sent_nothing() {
         let store = SessionStore::new();
         let mut client = Client::connect(&store);
-        start(&store, id(1), &format!("{PROBE}; {BLOCKED}; sleep 5"));
+        start(&store, id(1), &format!("{ASK}; {BLOCKED}; sleep 5"));
         let blocked = wait_until(|| status_of(&store, id(1)), |s| states(s) == ["blocked"]);
         assert_eq!(states(&blocked), ["blocked"], "fixture: {blocked}");
         assert!(client.next(Duration::from_millis(500)).is_none());
@@ -496,7 +499,7 @@ sleep 5"#,
     #[test]
     fn a_hand_off_carries_program_status_and_boot() {
         let before = SessionStore::new();
-        start(&before, id(1), &format!("{PROBE}; {BLOCKED}; sleep 5"));
+        start(&before, id(1), &format!("{ASK}; {BLOCKED}; sleep 5"));
         let blocked = wait_until(|| status_of(&before, id(1)), |s| states(s) == ["blocked"]);
         assert_eq!(states(&blocked), ["blocked"], "fixture: {blocked}");
         let frozen = before

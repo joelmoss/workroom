@@ -49,7 +49,9 @@ marks stay, and the requests still show in the menu bar list. Programs' own noti
 arrive as before.
 
 Only a program that asked whether the terminal supports the protocol (the probe, below) can alert
-you. A report printed by anything else (`cat`ing a file, say) shows its mark but never alerts.
+you. A report printed by anything else (`cat`ing a file, say) shows its mark but never alerts, and
+neither does a probe and a report printed together, as a recorded session replays them: a prober
+has to read the reply before it reports.
 
 ## Which terminals support it
 

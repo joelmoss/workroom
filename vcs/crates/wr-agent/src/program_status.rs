@@ -176,6 +176,27 @@ impl Store {
         }
     }
 
+    /// One read's events, in order, except that a probe counts only after the reports read with
+    /// it. A prober has to read the agent's answer before it can report, so a probe and a report
+    /// in one read are bytes replayed by something else (a `cat` of a recorded session), which
+    /// must not alert. A prompt or reset after the probe ends that run, and the probe with it.
+    pub fn apply_read(&mut self, events: Vec<Event>, owner: Group) {
+        let mut probed = false;
+        for event in events {
+            match event {
+                Event::Probed => probed = true,
+                Event::Prompt | Event::Reset => {
+                    probed = false;
+                    self.apply(event, owner);
+                }
+                event => self.apply(event, owner),
+            }
+        }
+        if probed {
+            self.probed = Some(owner);
+        }
+    }
+
     /// Replaces the report's record completely (terminal.h: a value it leaves out is gone).
     pub fn report(&mut self, report: Report, owner: Group) {
         if !printable(&report.id) || !printable(&report.app) {
@@ -1018,6 +1039,27 @@ mod tests {
         assert!(store.records[1].notify);
         store.reset();
         assert_eq!((store.reporting, store.probed), (None, None));
+    }
+
+    /// A probe and a report in one read (a `cat` of a recorded session) never alert; the same
+    /// report in a later read does, and a prompt after the probe voids it.
+    #[test]
+    fn a_probe_counts_only_after_the_reports_read_with_it() {
+        let blocked = || Event::Report(report("", State::Blocked));
+        let mut store = Store::default();
+        store.apply_read(vec![Event::Probed, blocked()], 7);
+        assert!(!store.records[0].notify, "probe and report in one read");
+        store.apply_read(vec![blocked()], 7);
+        assert!(
+            store.records[0].notify,
+            "the probe counts from the next read"
+        );
+
+        let mut store = Store::default();
+        store.apply_read(vec![Event::Probed, Event::Prompt], 7);
+        assert_eq!(store.probed, None, "a prompt ends the run that probed");
+        store.apply_read(vec![Event::Prompt, Event::Probed], 7);
+        assert_eq!(store.probed, Some(7));
     }
 
     #[test]
