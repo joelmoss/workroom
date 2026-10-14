@@ -363,15 +363,16 @@ final class AgentVCSProtocolTests: XCTestCase {
   // MARK: File service (#211)
 
   /// The client's version constants are the agent's `PROTOCOL_VERSION`, `MIN_VCS_VERSION`,
-  /// `MIN_FILE_VERSION`, `MIN_FORWARD_VERSION` and `MIN_LAYOUT_VERSION` declared a second time, in a
-  /// second language. Checked against the shipped binary's own report so a bump on one side alone
-  /// fails here rather than as a dead File, Forward or Layout service.
+  /// `MIN_FILE_VERSION`, `MIN_FORWARD_VERSION`, `MIN_LAYOUT_VERSION` and `MIN_PROGRAM_STATUS_VERSION`
+  /// declared a second time, in a second language. Checked against the shipped binary's own report
+  /// so a bump on one side alone fails here rather than as a dead service.
   func testTheClientsProtocolConstantsMatchTheShippedAgent() throws {
-    XCTAssertEqual(AgentHandshake.protocolVersion, 7)
+    XCTAssertEqual(AgentHandshake.protocolVersion, 8)
     XCTAssertEqual(AgentHandshake.minVCSVersion, 2)
     XCTAssertEqual(AgentHandshake.minFileVersion, 3)
     XCTAssertEqual(AgentHandshake.minForwardVersion, 5)
     XCTAssertEqual(AgentHandshake.minLayoutVersion, 7)
+    XCTAssertEqual(AgentHandshake.minProgramStatusVersion, 8)
     let process = Process()
     process.executableURL = try AgentHarness.binaryURL()
     process.arguments = ["protocol"]
@@ -396,6 +397,8 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertEqual(reported("min-file"), AgentHandshake.minFileVersion, output)
     XCTAssertEqual(reported("min-forward"), AgentHandshake.minForwardVersion, output)
     XCTAssertEqual(reported("min-layout"), AgentHandshake.minLayoutVersion, output)
+    XCTAssertEqual(
+      reported("min-program-status"), AgentHandshake.minProgramStatusVersion, output)
   }
 
   /// Every failure the agent's `FileError` can produce keeps its meaning across the wire.

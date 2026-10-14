@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import OSLog
 import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire
@@ -36,6 +37,11 @@ public final class AgentVCSConnection: @unchecked Sendable {
   /// Live watch subscriptions, keyed by the client-chosen id the agent echoes in every event. Read by
   /// `receive()` for each event and cleared by `fail()`, so both hold `lock`.
   private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
+  /// The program-status subscriber; one per connection, since the agent keeps one subscription per
+  /// connection. Held under `lock` like `watchHandlers`.
+  private var programStatusHandler: (@Sendable (ProgramStatusEvent) -> Void)?
+  /// Set once the first undecodable program-status event or dropped record is logged.
+  private var loggedProgramStatusDecode = false
   private var nextSubscription: UInt64 = 1
   /// The peer's raw greeting version. Kept (not just compared once in `connect()`) because the File
   /// service is gated on it separately from VCS: see `AgentHandshake.minFileVersion`.
@@ -93,6 +99,8 @@ public final class AgentVCSConnection: @unchecked Sendable {
   /// `Service::Layout` (#255): JSON like the others, and chunked like VCS, since a layout can be
   /// larger than one envelope.
   public static let layoutService: UInt8 = 6
+  /// `Service::ProgramStatus` (#358): requests on their own streams, events on stream 0.
+  public static let programStatusService: UInt8 = 7
   /// `Service::Control`: the session list a terminal helper answers (#239). Its payloads are
   /// `SessionFrame`s, not a chunk flag and JSON.
   private static let controlService: UInt8 = 0
@@ -465,6 +473,90 @@ public final class AgentVCSConnection: @unchecked Sendable {
     _ = try? await fileRequest(AgentFileRequest(method: "unwatch", subscription: id), timeout: 5)
   }
 
+  /// Subscribe to the host's program status (#358). The handler is registered BEFORE the request,
+  /// as `watch` does: the snapshot follows the acknowledgement on the same socket. It stays
+  /// registered for the connection's life; a new connection subscribes again and gets a new snapshot.
+  public func subscribeProgramStatus(
+    onEvent: @escaping @Sendable (ProgramStatusEvent) -> Void
+  ) async throws -> ProgramStatusAvailability {
+    // Against the raw greeting: an older agent drops the envelope unanswered.
+    guard helloVersion >= AgentHandshake.minProgramStatusVersion else { return .unsupported }
+    try lock.withLock {
+      guard !closed else { throw HostConnectionError.connectionLost }
+      programStatusHandler = onEvent
+    }
+    do {
+      let result = try await programStatusRequest(AgentProgramStatusRequest(method: "subscribe"))
+      if result["available"] as? Bool == false {
+        lock.withLock { programStatusHandler = nil }
+        return .unavailable(result["reason"] as? String ?? "")
+      }
+      return .available
+    } catch {
+      lock.withLock { programStatusHandler = nil }
+      throw error
+    }
+  }
+
+  /// The user has seen `session`'s finished and failed records up to `revision`; `states` narrows
+  /// which (nil means both).
+  public func programStatusSeen(session: UUID, revision: UInt64, states: [String]? = nil)
+    async throws
+  {
+    _ = try await programStatusRequest(
+      AgentProgramStatusRequest(
+        method: "seen", session: session, revision: revision, states: states))
+  }
+
+  /// Clear status: removes every record of `session`.
+  public func programStatusClear(session: UUID) async throws {
+    _ = try await programStatusRequest(
+      AgentProgramStatusRequest(method: "clear", session: session))
+  }
+
+  /// One Program Status request; its `result` object, or the agent's `error` thrown.
+  private func programStatusRequest(_ request: AgentProgramStatusRequest) async throws
+    -> [String: Any]
+  {
+    guard helloVersion >= AgentHandshake.minProgramStatusVersion else {
+      throw VCSError.backendVersion("Agent does not support program status.")
+    }
+    let encoder = JSONEncoder()
+    let reply = try await self.request(
+      bytes: encoder.encode(request), timeout: 15, service: Self.programStatusService)
+    let object = try JSONSerialization.jsonObject(with: reply) as? [String: Any]
+    if let error = object?["error"] {
+      throw HostConnectionError.serviceUnavailable("Program status: \(error)")
+    }
+    guard let result = object?["result"] as? [String: Any] else {
+      throw HostConnectionError.serviceUnavailable("Program status: unreadable reply.")
+    }
+    return result
+  }
+
+  /// Hand one program-status event to the subscriber. An event this build cannot read is dropped,
+  /// never fatal to the connection, and the first such drop is logged.
+  private func deliver(programStatus payload: Data) {
+    let decoded = try? ProgramStatusEvent.decode(payload)
+    if decoded == nil || decoded?.droppedRecords ?? 0 > 0 {
+      let first = lock.withLock { () -> Bool in
+        defer { loggedProgramStatusDecode = true }
+        return !loggedProgramStatusDecode
+      }
+      if first {
+        let host = String(describing: host)
+        let what = decoded == nil ? "an undecodable event" : "unreadable records"
+        Self.logger.error(
+          "program status from \(host, privacy: .public): dropped \(what, privacy: .public)")
+      }
+    }
+    guard let event = decoded?.event else { return }
+    let handler = lock.withLock { programStatusHandler }
+    handler?(event)
+  }
+
+  private static let logger = Logger(subsystem: "com.developwithstyle.workroom", category: "agent")
+
   /// One envelope: the service byte, the stream, the payload length, then the payload.
   private static func envelope(service: UInt8 = vcsService, stream: UInt32, payload: Data) -> Data {
     var envelope = Data([service])
@@ -690,11 +782,13 @@ public final class AgentVCSConnection: @unchecked Sendable {
           let streamIsValid =
             stream > 0 || service == Self.fileService || service == Self.statusService
             || service == Self.forwardService || service == Self.controlService
+            || service == Self.programStatusService
           // Layout replies are JSON chunks like VCS's, never on stream 0 (#255).
           guard
             service == Self.vcsService || service == Self.fileService
               || service == Self.statusService || service == Self.forwardService
-              || service == Self.controlService || service == Self.layoutService, streamIsValid,
+              || service == Self.controlService || service == Self.layoutService
+              || service == Self.programStatusService, streamIsValid,
             length > 0, length <= 1 << 20
           else {
             throw HostConnectionError.serviceUnavailable("Invalid agent envelope.")
@@ -808,6 +902,10 @@ public final class AgentVCSConnection: @unchecked Sendable {
     // An agent from before #382 pushes verdicts only to a connection that asked, which this build
     // never does; one that arrives anyway is dropped.
     if service == Self.statusService { return }
+    if service == Self.programStatusService {
+      deliver(programStatus: payload)
+      return
+    }
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     guard let wire = try? decoder.decode(AgentFileEvent.self, from: payload),
@@ -834,7 +932,8 @@ public final class AgentVCSConnection: @unchecked Sendable {
     let failed:
       (
         pending: [Pending], watchers: [@Sendable (FileWatchEvent) -> Void],
-        forwards: [@Sendable (UInt8, Data) -> Void]
+        forwards: [@Sendable (UInt8, Data) -> Void],
+        programStatus: (@Sendable (ProgramStatusEvent) -> Void)?
       )? =
         lock.withLock {
           guard !closed else { return nil }
@@ -844,10 +943,12 @@ public final class AgentVCSConnection: @unchecked Sendable {
           let forwards = Array(forwardHandlers.values)
           pending.removeAll()
           abandoned.removeAll()
+          let programStatus = programStatusHandler
           watchHandlers.removeAll()
+          programStatusHandler = nil
           forwardHandlers.removeAll()
           shutdown(descriptor, SHUT_RDWR)
-          return (values, watchers, forwards)
+          return (values, watchers, forwards, programStatus)
         }
     guard let failed else { return }
     carrier?.end()
@@ -855,6 +956,7 @@ public final class AgentVCSConnection: @unchecked Sendable {
     // Outside the lock: a handler is caller code. Every subscription learns its watch is gone, so it
     // can resubscribe on the next generation and refresh whatever it was showing.
     for watcher in failed.watchers { watcher(.lost) }
+    failed.programStatus?(.lost)
     // Every live forward hears exactly what the agent would have said, because it is true: the agent
     // closes every socket a departing connection opened. Each one closes the socket it owns.
     for forward in failed.forwards { forward(ForwardOpcode.close, Data()) }

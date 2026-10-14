@@ -797,6 +797,11 @@ final class FakeAgent: @unchecked Sendable {
   /// unanswered.
   private let execResult: String?
   private var execs: [String] = []
+  /// The `result` of the reply to every `Service::ProgramStatus` request; nil leaves them unanswered.
+  private let programStatusResult: String?
+  private var programStatusRequests: [String] = []
+  /// Every program-status request received, as the JSON the client sent, in arrival order.
+  var receivedProgramStatusRequests: [String] { lock.withLock { programStatusRequests } }
   /// Every exec request received, as the JSON the client sent, in arrival order.
   var receivedExecs: [String] { lock.withLock { execs } }
   /// Stop reading the client's socket (without closing it) once `capabilities` is answered.
@@ -821,8 +826,10 @@ final class FakeAgent: @unchecked Sendable {
     forwardEpilogue: Int = 0, forwardReplies: Int = 1, forwardReplyBody: Data? = nil,
     forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false,
     capabilities: String = #"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#,
-    stallAfterCapabilities: Bool = false, execResult: String? = nil
+    stallAfterCapabilities: Bool = false, execResult: String? = nil,
+    programStatusResult: String? = nil
   ) throws {
+    self.programStatusResult = programStatusResult
     self.capabilities = Data(capabilities.utf8)
     self.execResult = execResult.map { #"{"version":1,"result":\#($0)}"# }
     self.stallAfterCapabilities = stallAfterCapabilities
@@ -897,6 +904,14 @@ final class FakeAgent: @unchecked Sendable {
           continue
         }
         let request = String(decoding: payload, as: UTF8.self)
+        if bytes[0] == 7 {
+          lock.withLock { programStatusRequests.append(request) }
+          guard let programStatusResult else { continue }
+          push(
+            service: 7, stream: stream,
+            payload: Data([1]) + Data(#"{"version":1,"result":\#(programStatusResult)}"#.utf8))
+          continue
+        }
         guard bytes[0] == 2 else { continue }
         let isCapabilities = request.contains("capabilities")
         if !isCapabilities { lock.withLock { execs.append(request) } }
