@@ -53,6 +53,10 @@ enum PersistentSessionPaths {
     fileManager: FileManager = .default,
     backend: SessionBackend
   ) throws -> String {
+    if let directory = UITestFixture.liveAgentDirectory {
+      try prepareDirectory(URL(fileURLWithPath: directory), fileManager: fileManager)
+      return directory + "/" + backend.socketFileName
+    }
     if let preferred = try? preferredSocketPath(fileManager: fileManager, backend: backend),
       preferred.utf8.count < sunPathLimit
     {

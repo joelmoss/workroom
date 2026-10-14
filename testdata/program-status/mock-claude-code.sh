@@ -11,8 +11,9 @@
 #   mock-claude-code.sh --auto        no input: each step after MOCK_STEP seconds (tests)
 #   mock-claude-code.sh --question    a question instead of a permission request
 #
-# MOCK_STEP (default 1) is the pause between automatic steps; MOCK_ALERT_DELAY (default 6, as
-# measured) is how long after blocking its own alert follows. Paste-able into any Workroom pane:
+# MOCK_STEP (default 1) is the pause between automatic steps, MOCK_HOLD (default MOCK_STEP)
+# how long --auto keeps the request waiting and the finished turn up, and MOCK_ALERT_DELAY (default 6, as measured) how long
+# after blocking its own alert follows. Paste-able into any Workroom pane:
 #   sh testdata/program-status/mock-claude-code.sh
 set -u
 
@@ -31,6 +32,7 @@ for arg in "$@"; do
   esac
 done
 step=${MOCK_STEP:-1}
+hold=${MOCK_HOLD:-$step}
 alert_delay=${MOCK_ALERT_DELAY:-6}
 
 b64() { printf %s "$1" | base64 | tr -d '\n'; }
@@ -68,9 +70,9 @@ report "state=blocked:app=claude-code:kind=$kind:msg=$(b64 "$message")"
 # Claude's own alert follows its report, in the background so an early answer still works.
 ( sleep "$alert_delay"; printf '\033]777;notify;Claude Code;%s\007' "$alert" ) &
 alerter=$!
-wait_for_user "mock: $message (Enter to answer) "
+if [ "$auto" = 1 ]; then sleep "$hold"; else wait_for_user "mock: $message (Enter to answer) "; fi
 kill "$alerter" 2>/dev/null
 report "state=working:app=claude-code"
 sleep "$step"
 report "state=done:app=claude-code"; progress '0;'
-wait_for_user "mock: turn finished (Enter to exit) "
+if [ "$auto" = 1 ]; then sleep "$hold"; else wait_for_user "mock: turn finished (Enter to exit) "; fi

@@ -61,6 +61,15 @@ enum UITestFixture {
     enabled ? UserDefaults.standard.string(forKey: key) : nil
   }
 
+  /// `-WorkroomUITestLiveAgent <dir>`: fixture panes attach through a REAL `wr-agent` whose socket
+  /// is in `<dir>`, and program status (#358) follows it, so a UI test drives the whole path —
+  /// agent, service, monitor, indicators, alerts — with no agent, session or config of the
+  /// developer's touched. Nil, as normal, keeps fixture panes plain shells and the monitor off.
+  static var liveAgentDirectory: String? {
+    guard let directory = text("WorkroomUITestLiveAgent"), !directory.isEmpty else { return nil }
+    return directory
+  }
+
   /// The raw fixture launch flag (`-WorkroomUITestFixture 1`), one of the three signals
   /// `AppEnvironment.current` reads; everything else asks `AppEnvironment.current.isFixture`. Always
   /// `false` in a release build.
