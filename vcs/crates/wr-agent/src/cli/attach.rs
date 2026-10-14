@@ -327,7 +327,11 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             // (#459). The app says so in a toast over the pane
             // (`PersistentSessionService.willReplaceRestoredSession`), so the new session does not
             // pass as the old one.
-            Answer::Refused(_) if request.existing_only && !no_spawn && !replaced => {
+            // Only for the app's own panes: an `attach --no-create` someone typed asked to be
+            // refused, and gets no toast to say a session was made.
+            Answer::Refused(_)
+                if request.existing_only && !no_spawn && !replaced && invoked_by_the_app =>
+            {
                 replaced = true;
                 attach = encode(&serve::AttachRequest {
                     existing_only: false,

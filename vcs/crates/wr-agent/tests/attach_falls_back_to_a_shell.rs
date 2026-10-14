@@ -909,6 +909,39 @@ fn a_replaced_ended_session_is_reattached_on_the_next_restore() {
     assert!(!output.contains("has ended"), "got: {output:?}");
 }
 
+/// A hand-run `attach --no-create` (no app environment) for a session the agent does not hold is
+/// refused, not replaced: only the app's panes get a new session, and a toast saying so.
+#[test]
+fn a_hand_run_no_create_attach_does_not_create_the_session() {
+    let dir = scratch("no-create-hand-run");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let (output, _) = attach_with_args(
+        &[
+            "--no-create",
+            "--socket",
+            socket.to_str().unwrap(),
+            "--session",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC7C",
+        ],
+        // Not variables `run_attach` takes as the app's mark. The command exits either way; only
+        // the fallback shell sets WORKROOM_SESSION_FALLBACK, never a session the agent made.
+        &[
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo HAND-RUN fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.contains("HAND-RUN fb=[1]"),
+        "a hand-run --no-create attach was given a new session instead of being refused: {output:?}"
+    );
+}
+
 /// When the new session is refused too, the pane gets the fallback shell after exactly one retry,
 /// rather than asking again forever.
 // Value: protects=a refused create ends in a working shell after one retry; fails_when=the
