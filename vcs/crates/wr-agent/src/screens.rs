@@ -18,7 +18,7 @@
 //! **Write policy.** One thread, every `INTERVAL`, writes the record of each session whose screen
 //! changed since its last one. A write goes to a temporary file, is synced, and is renamed into
 //! place, so a reboot mid-write leaves the previous record or none, never a torn one. A record has
-//! the shadow's scrollback, which libghostty bounds (10 KB by default), and one larger than
+//! the shadow's scrollback, which `terminal::SCROLLBACK_MAX_LINES` bounds, and one larger than
 //! `MAX_RECORD` is not kept at all. A record goes when its session ends while the agent runs, and
 //! when a client kills it (`SessionStore::kill`).
 //!
