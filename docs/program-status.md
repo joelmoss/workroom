@@ -125,7 +125,10 @@ To check the whole path without Claude Code (no account, no API turn), run
 `sh testdata/program-status/mock-claude-code.sh` in a workroom terminal. It replays the sequence
 below: it probes, waits for Enter as a prompt, then works, asks for permission (`--question` for a
 question), posts Claude's own alert 6 s later, and finishes when you press Enter again. `--auto`
-runs it unattended; the agent's tests use it that way.
+runs it unattended (`MOCK_STEP` paces it, `MOCK_HOLD` keeps the request and the finished turn up);
+the agent's tests use it that way, and so does `ProgramStatusLiveAgentUITests`, which runs it in a
+fixture pane attached through a scratch agent of its own (`-WorkroomUITestLiveAgent <dir>`) and
+checks the marks, the alert, the merge of Claude's own alert, ⇧⌘M and the focused-terminal case.
 
 ## What Claude Code sends
 

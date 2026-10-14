@@ -145,9 +145,11 @@ final class ProgramStatusMonitor: ObservableObject {
 
   func removeListener(_ id: UUID) { listeners.removeValue(forKey: id) }
 
-  /// False in a test process or a fixture launch, which must never reach a real agent: tests drive
-  /// their own monitor, and the fixture seeds records straight in (`seed`).
-  var watchesHosts = !AppEnvironment.current.isTestProcess
+  /// False in a test process or a fixture launch, which must never reach the developer's agent:
+  /// tests drive their own monitor, and the fixture seeds records straight in (`seed`). A fixture
+  /// launch with a scratch agent of its own (`UITestFixture.liveAgentDirectory`) does watch it.
+  var watchesHosts =
+    !AppEnvironment.current.isTestProcess || UITestFixture.liveAgentDirectory != nil
 
   /// Starts following `host`, once.
   func watch(_ host: HostID) {
