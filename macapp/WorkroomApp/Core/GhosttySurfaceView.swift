@@ -213,7 +213,6 @@ final class GhosttySurfaceView: NSView {
 
   // A toast over this pane (`PaneNoticeToast`), for news about the pane itself (#459).
   private var paneNotice: NSView?
-  private let paneNoticeInset: CGFloat = 6
 
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
   // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. It's a
@@ -512,7 +511,7 @@ final class GhosttySurfaceView: NSView {
   /// A pane on a remote host whose ssh lost the link reattaches, rather than sitting on a dead
   /// process while its session runs on: 255 is ssh's own failure, as after laptop sleep, a network
   /// change or the host rebooting. It reattaches as a restored pane, so a session that ended
-  /// meanwhile becomes a shell that says so. See `RemoteReconnectBackoff` for when it gives up.
+  /// meanwhile shows as ended. See `RemoteReconnectBackoff` for when it gives up.
   ///
   /// ssh's status comes from what the attach wrapper recorded, never from the pane's exit status:
   /// libghostty runs every command under macOS `login`, which exits 0 whatever ran under it, so
@@ -790,26 +789,32 @@ final class GhosttySurfaceView: NSView {
   // MARK: Pane notice (#459)
 
   /// Called by `GhosttyRuntimeAdapter` for a notification about this pane rather than its workroom
-  /// (`paneNotice(title:body:)`). A newer one replaces the one showing.
+  /// (`paneNotice(title:)`). A newer one replaces the one showing.
   func showPaneNotice(_ message: String) {
     paneNotice?.removeFromSuperview()
-    let host = NSHostingView(rootView: PaneNoticeToast(message: message, onDismiss: {}))
-    host.rootView = PaneNoticeToast(message: message) { [weak self, weak host] in
-      host?.removeFromSuperview()
-      if let self, self.paneNotice === host { self.paneNotice = nil }
-    }
+    let host = PaneNoticeHost(
+      rootView: PaneNoticeToast(message: message) { [weak self] in
+        self?.paneNotice?.removeFromSuperview()
+        self?.paneNotice = nil
+      })
     addSubview(host, positioned: .above, relativeTo: nil)
     paneNotice = host
     layoutPaneNotice()
+    // Told to VoiceOver too: a user typing in the terminal would otherwise never learn of it.
+    NSAccessibility.post(
+      element: host, notification: .announcementRequested,
+      userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
   }
 
   private func layoutPaneNotice() {
     guard let paneNotice else { return }
-    // Top-right; the go-to-bottom button has the bottom-right (non-flipped: y is from the bottom).
+    // The card sits as far in from the top-right as the go-to-bottom button does from the
+    // bottom-right; its shadow room may run past the pane's edge (non-flipped: y is from the bottom).
     let size = paneNotice.fittingSize
+    let overhang = PaneNoticeToast.shadowRoom - goToBottomInset
     paneNotice.frame = CGRect(
-      x: bounds.width - size.width - paneNoticeInset,
-      y: bounds.height - size.height - paneNoticeInset,
+      x: bounds.width - size.width + overhang,
+      y: bounds.height - size.height + overhang,
       width: size.width, height: size.height)
   }
 
