@@ -212,7 +212,7 @@ final class GhosttySurfaceView: NSView {
   private let goToBottomButton = GoToBottomButton()
 
   // A toast over this pane (`PaneNoticeToast`), for news about the pane itself (#459).
-  private var paneNotice: NSView?
+  private var paneNotice: PaneNoticeHost?
 
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
   // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. It's a
@@ -474,6 +474,11 @@ final class GhosttySurfaceView: NSView {
     // See `confirmBeforeAttach`.
     PersistentSessionService.shared.confirmBeforeAttach(
       sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored)
+    if PersistentSessionService.shared.willReplaceRestoredSession(
+      persistentSessionID, wasRestored: persistentSessionIsRestored)
+    {
+      showPaneNotice(PaneNoticeToast.sessionReplaced)
+    }
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
     // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
     // for the backend a NEW session would go to, so it goes false whenever the agent is unhealthy
@@ -788,12 +793,11 @@ final class GhosttySurfaceView: NSView {
 
   // MARK: Pane notice (#459)
 
-  /// Called by `GhosttyRuntimeAdapter` for a notification about this pane rather than its workroom
-  /// (`paneNotice(title:)`). A newer one replaces the one showing.
+  /// Shows `message` as a toast over this pane, replacing any showing.
   func showPaneNotice(_ message: String) {
     paneNotice?.removeFromSuperview()
     let host = PaneNoticeHost(
-      rootView: PaneNoticeToast(message: message) { [weak self] in
+      rootView: PaneNoticeToast(message: message, width: paneNoticeWidth) { [weak self] in
         self?.paneNotice?.removeFromSuperview()
         self?.paneNotice = nil
       })
@@ -806,8 +810,14 @@ final class GhosttySurfaceView: NSView {
       userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
   }
 
+  /// The house toast width, narrowed to fit a narrow split pane.
+  private var paneNoticeWidth: CGFloat { min(300, bounds.width - 2 * goToBottomInset) }
+
   private func layoutPaneNotice() {
     guard let paneNotice else { return }
+    if paneNotice.rootView.width != paneNoticeWidth {
+      paneNotice.rootView.width = paneNoticeWidth
+    }
     // The card sits as far in from the top-right as the go-to-bottom button does from the
     // bottom-right; its shadow room may run past the pane's edge (non-flipped: y is from the bottom).
     let size = paneNotice.fittingSize

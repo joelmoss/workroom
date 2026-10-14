@@ -675,6 +675,26 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
       "a new pane's id has never existed, so its attach must create it")
   }
 
+  /// A restored local pane whose session the agent no longer holds will be given a new one by its
+  /// attach (#459), so the pane says so. One the agent holds, or a fresh pane, says nothing. An
+  /// agent that does not answer most likely died with its sessions, so that says it too.
+  @MainActor
+  func testARestoredSessionTheAgentLostIsToldItWasReplaced() {
+    // Each service's first answer resolves the owner (the daemon disclaims it); the second is the
+    // agent's.
+    func replaced(_ agent: SessionOwnership, restored: Bool = true) -> Bool {
+      let answers = OwnershipScript([.notOwned, agent])
+      let service = PersistentSessionService(
+        probe: { _ in .ready(version: "protocol 1") },
+        ownership: { _ in answers.next() })
+      return service.willReplaceRestoredSession(UUID(), wasRestored: restored)
+    }
+    XCTAssertFalse(replaced(.owned), "a live session is reattached, not replaced")
+    XCTAssertTrue(replaced(.notOwned), "after a reboot no agent holds it")
+    XCTAssertTrue(replaced(.unreachable), "an agent that cannot answer most likely died with it")
+    XCTAssertFalse(replaced(.notOwned, restored: false), "a new pane's id has never existed")
+  }
+
   /// A session the retired daemon lost re-resolves to the agent, so its pane gets the agent's
   /// `--no-create` attach rather than the daemon's client, which would create a new session.
   @MainActor

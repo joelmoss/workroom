@@ -33,10 +33,6 @@ fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The title of the notification (OSC 777) that tells the app a restored pane's ended session was
-/// replaced by a new one. `GhosttyRuntimeAdapter.sessionReplacedTitle` must match it.
-const SESSION_REPLACED: &str = "workroom.session-replaced";
-
 /// What a remote pane says when its session has ended and no record of it was kept.
 const ENDED_NOTICE: &str = "This terminal has ended. Close it to start again.";
 
@@ -324,25 +320,13 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             Err(_) => Answer::Closed,
         };
         match answer {
-            Answer::Attached => {
-                // Told to the app as a notification, which it shows as a toast over the pane. Not
-                // a line in the pane: the repaint, or a `clear` in the shell's startup, erases
-                // that, and an OSC is acted on as soon as it is parsed.
-                if replaced {
-                    let mut stdout = std::io::stdout();
-                    let _ = write!(
-                        stdout,
-                        "\x1b]777;notify;{SESSION_REPLACED};The terminal that was running here \
-                         had ended, so this is a new one.\x1b\\"
-                    );
-                    let _ = stdout.flush();
-                }
-                break (stream, decoder);
-            }
+            Answer::Attached => break (stream, decoder),
             // A restored pane on this Mac whose session has ended gets a new session under the
             // same id, said out loud. A shell that was no session would leave the pane saving the
             // dead id, so it would say "ended" again on every launch and never survive a quit
-            // (#459). The notice is what keeps the new session from passing as the old one.
+            // (#459). The app says so in a toast over the pane
+            // (`PersistentSessionService.willReplaceRestoredSession`), so the new session does not
+            // pass as the old one.
             Answer::Refused(_) if request.existing_only && !no_spawn && !replaced => {
                 replaced = true;
                 attach = encode(&serve::AttachRequest {
@@ -350,7 +334,11 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                     ..request.clone()
                 });
             }
-            Answer::Refused(_) if request.existing_only => {
+            Answer::Refused(reason) if request.existing_only => {
+                // After a refused create, why: the fallback's notice says only that it ended.
+                if replaced {
+                    eprintln!("wr-agent: {}\r", String::from_utf8_lossy(&reason));
+                }
                 return ended(&request, no_spawn);
             }
             // A session that could not be created or attached. See the main loop's `Failure` arm
