@@ -81,6 +81,12 @@ const OK: GhosttyResult = GhosttyResult_GHOSTTY_SUCCESS;
 /// cannot grow it without bound.
 const CONTINUATION_MAX_BYTES: usize = 4096;
 
+/// libghostty's default is a 10 KB byte cap and no line cap, about one page: 229 rows of a styled
+/// 200-column build log (#462). Lines, not the app's 50 MB: at that size a record is 2.1 MB,
+/// rewritten every `screens::INTERVAL` for a busy session and over the 4 MiB `MAX_RECORD` that
+/// drops it. 10,000 lines measured a 738 KB record written in 9 ms.
+const SCROLLBACK_MAX_LINES: usize = 10_000;
+
 /// `ghostty_mode_new` is a `static inline` in modes.h, so bindgen does not emit it.
 /// modes.h: `(value & 0x7FFF) | ((uint16_t)ansi << 15)`.
 const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
@@ -311,6 +317,7 @@ impl ShadowTerminal {
             effects: Box::into_raw(Box::default()),
         };
         terminal.enable_continuation_tracking();
+        terminal.limit_scrollback();
         terminal.register_effects();
         Some(terminal)
     }
@@ -406,6 +413,26 @@ impl ShadowTerminal {
                 self.inner,
                 GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,
                 &limit as *const usize as *const std::ffi::c_void,
+            );
+        }
+    }
+
+    /// The first limit reached wins, so the line cap only takes effect once the default byte cap
+    /// is removed (a NULL value).
+    fn limit_scrollback(&self) {
+        let lines: usize = SCROLLBACK_MAX_LINES;
+        // SAFETY: `inner` is a live terminal. Both options take a `size_t*`: `lines` is a live
+        // `usize` the call reads before returning, and NULL is the documented "no limit".
+        unsafe {
+            ghostty_terminal_set(
+                self.inner,
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+                &lines as *const usize as *const std::ffi::c_void,
+            );
+            ghostty_terminal_set(
+                self.inner,
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+                ptr::null(),
             );
         }
     }
@@ -1053,6 +1080,25 @@ mod tests {
         assert!(
             client.visible_text().contains("line 0"),
             "the oldest line did not survive into the client's history"
+        );
+    }
+
+    /// libghostty's default 10 KB byte cap kept about one page of history (#462). The lower bound
+    /// fails while that cap is in force; the upper one fails if the line cap is not, since nothing
+    /// else would stop the history growing to all 30,000 lines. libghostty prunes whole pages, so
+    /// the count lands within a page of the cap, either side (9,883 measured).
+    #[test]
+    fn scrollback_keeps_its_line_cap() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        for n in 0..3 * SCROLLBACK_MAX_LINES {
+            terminal.write(format!("line {n}\r\n").as_bytes());
+        }
+        let rows = terminal
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+            .unwrap_or(0) as usize;
+        assert!(
+            (SCROLLBACK_MAX_LINES / 2..2 * SCROLLBACK_MAX_LINES).contains(&rows),
+            "{rows} scrollback rows, want about {SCROLLBACK_MAX_LINES}"
         );
     }
 
