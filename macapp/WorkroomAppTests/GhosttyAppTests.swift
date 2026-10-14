@@ -36,10 +36,8 @@ final class TerminalActivityMapperTests: XCTestCase {
 
   func testTheSessionReplacedNotificationIsAPaneNotice() {
     // The title `wr-agent attach` sends (#459): a toast over the pane, never a workroom notification.
-    XCTAssertEqual(
-      GhosttyRuntimeAdapter.paneNotice(title: "workroom.session-replaced", body: "a new one"),
-      "a new one")
-    XCTAssertNil(GhosttyRuntimeAdapter.paneNotice(title: "Build done", body: "3 targets"))
+    XCTAssertNotNil(GhosttyRuntimeAdapter.paneNotice(title: "workroom.session-replaced"))
+    XCTAssertNil(GhosttyRuntimeAdapter.paneNotice(title: "Build done"))
   }
 
   func testEmptyBodyNormalizesToNil() {

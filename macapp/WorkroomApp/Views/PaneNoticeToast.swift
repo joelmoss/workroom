@@ -2,11 +2,16 @@ import SwiftUI
 
 /// A toast over one terminal pane, for something that happened to that pane rather than to the
 /// workroom: a restored pane whose terminal had ended and was replaced by a new one (#459). Hosted by
-/// `GhosttySurfaceView`, top-trailing, so it never covers the go-to-bottom button.
+/// `GhosttySurfaceView` (`PaneNoticeHost`), top-trailing, so it never covers the go-to-bottom button.
 ///
-/// Styled as `ToastStack`'s cards. Auto-dismisses after 8s, paused while hovered; a click anywhere on
-/// it dismisses it at once. Nothing to navigate to: the pane it describes is the one beneath it.
+/// Styled as `ToastStack`'s `ToastView`, minus the source line: the pane it describes is the one
+/// beneath it, so there is nothing to navigate to and a click dismisses it. Auto-dismisses after 8s,
+/// paused while hovered.
 struct PaneNoticeToast: View {
+  /// Transparent room around the card for its shadow. `PaneNoticeHost` passes clicks in it through
+  /// to the terminal.
+  static let shadowRoom: CGFloat = 32
+
   let message: String
   let onDismiss: () -> Void
 
@@ -24,11 +29,15 @@ struct PaneNoticeToast: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
-    .frame(width: 280, alignment: .leading)
+    .frame(width: 300, alignment: .leading)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     .overlay(RoundedRectangle(cornerRadius: 12).fill(theme.tokens.hover.opacity(hovering ? 1 : 0)))
     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
-    .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
+    .overlay(alignment: .topTrailing) { closeButton }
+    .shadow(
+      color: .black.opacity(hovering ? 0.34 : 0.28), radius: hovering ? 22 : 18,
+      y: hovering ? 10 : 8
+    )
     .contentShape(RoundedRectangle(cornerRadius: 12))
     .onTapGesture { onDismiss() }
     .onHover { hovering = $0 }
@@ -42,12 +51,32 @@ struct PaneNoticeToast: View {
     }
     .onAppear { armDismiss() }
     .onDisappear { dismissTask?.cancel() }
-    // Room for the shadow inside the hosting view's bounds.
-    .padding(10)
-    .help("Dismiss")
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(message)
-    .accessibilityAction(named: "Dismiss") { onDismiss() }
+    .accessibilityAddTraits(.isButton)
+    .accessibilityHint("Dismisses this notice")
+    .accessibilityAction { onDismiss() }
+    .padding(Self.shadowRoom)
+  }
+
+  /// As `ToastView`'s: revealed on hover, hidden from VoiceOver (the default action dismisses).
+  private var closeButton: some View {
+    Button(action: onDismiss) {
+      Image(systemName: "xmark")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(.secondary)
+        .frame(width: 18, height: 18)
+        .background(.regularMaterial, in: Circle())
+        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .contentShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .padding(6)
+    .opacity(hovering ? 1 : 0)
+    .allowsHitTesting(hovering)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
+    .help("Dismiss")
+    .accessibilityHidden(true)
   }
 
   private func armDismiss() {
@@ -57,5 +86,16 @@ struct PaneNoticeToast: View {
       if Task.isCancelled || hovering { return }
       onDismiss()
     }
+  }
+}
+
+/// Hosts a `PaneNoticeToast` over a terminal, passing clicks in its transparent shadow room through
+/// to the terminal beneath.
+final class PaneNoticeHost: NSHostingView<PaneNoticeToast> {
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let local = convert(point, from: superview)
+    let room = PaneNoticeToast.shadowRoom
+    guard bounds.insetBy(dx: room, dy: room).contains(local) else { return nil }
+    return super.hitTest(point)
   }
 }

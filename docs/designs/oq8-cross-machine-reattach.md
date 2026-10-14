@@ -867,7 +867,7 @@ Defer this proposal only; O2 stays unresolved and listed as unresolved.
 
 State: approved
 Actual answer: A) Apply: remote shows ended (D7, answered 2026-10-04)
-Accepted scope: For a remote pane, a refused existing-only attach shows an ended pane (the record's notice when one exists, else "This terminal has ended. Close it to start again.") and starts no shell. Local panes keep the fallback shell. Test: a remote existing-only attach to an unknown id shows the notice and exits with no child shell.
+Accepted scope: For a remote pane, a refused existing-only attach shows an ended pane (the record's notice when one exists, else "This terminal has ended. Close it to start again.") and starts no shell. Local panes keep the fallback shell (amended 2026-10-14, #459: a local pane now gets a new session under the same id, with a toast over the pane). Test: a remote existing-only attach to an unknown id shows the notice and exits with no child shell.
 History: none
 
 ### O3: a refused write cannot "re-apply the one change"
