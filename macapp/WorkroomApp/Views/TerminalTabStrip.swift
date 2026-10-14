@@ -466,6 +466,8 @@ private struct TerminalTabChip: View {
     var parts = [tab.title]
     if let tool = tab.recognizedTool { parts.append(tool.displayName) }
     if agentBadge { parts.append("Diagnosis available") }
+    // A run tab's value stays its run state (asserted exactly), so its OSC 9;4 ERROR goes here.
+    if runState != nil, tab.isProgressFailed { parts.append("a command reported an error") }
     return parts.joined(separator: ", ")
   }
 
