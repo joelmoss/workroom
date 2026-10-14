@@ -132,6 +132,10 @@ APP_SIGN_FLAGS ?=
 # changes what gets built, such as `-enableCodeCoverage YES`, has to reach the build step too, and
 # APP_SIGN_FLAGS is what reaches it.
 APP_TEST_FLAGS ?= -parallel-testing-enabled YES
+# A unit test that hangs fails after 5 minutes, naming itself, rather than holding the run (and CI's
+# `app` job) until something kills it, with no clue which test it was. Apart from APP_TEST_FLAGS so a
+# serial `APP_TEST_FLAGS=` run keeps it.
+APP_TEST_TIMEOUTS ?= -test-timeouts-enabled YES -default-test-execution-time-allowance 300
 
 # Extra xcodebuild options for app-uitest. Skips the 3 most expensive/flaky cases by default (each
 # does a real quit+relaunch or a hard timing budget), since XCUITest never runs in CI and a routine
@@ -176,7 +180,8 @@ app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
 	  touch DerivedData/.WorkroomApp.test-stamp && { \
 	  $(call gui_lock,shared,app-test) \
-	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test-without-building; \
+	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) $(APP_TEST_TIMEOUTS) \
+	    test-without-building; \
 	  $(call test_summary,WorkroomApp); }
 
 # Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock.
