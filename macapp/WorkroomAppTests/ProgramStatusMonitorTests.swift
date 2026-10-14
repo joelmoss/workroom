@@ -243,6 +243,28 @@ final class ProgramStatusPaneTests: XCTestCase {
     XCTAssertFalse(s.needsAttention(forTargetID: target.id))
   }
 
+  /// A waiting terminal on a host whose link is down marks its workroom's glyph stale; Clear status
+  /// takes the glyph away at once and leaves nothing reported.
+  func testAStaleWaitingTerminalAndClearStatus() {
+    let monitor = ProgramStatusMonitor()
+    let s = makeSessions(monitor)
+    let live = s.addTab(for: target)
+    let stale = s.addTab(for: target)
+    let waiting = ProgramStatusRecord(id: "", state: .blocked, kind: .permission, episode: 1)
+    monitor.seed(session(of: live), records: [waiting])
+    XCTAssertFalse(s.isWaitingStale(forTargetID: target.id))
+
+    monitor.seed(
+      session(of: stale), host: .remote(UUID()), records: [waiting], stale: true)
+    XCTAssertTrue(s.isWaitingStale(forTargetID: target.id))
+    XCTAssertEqual(s.blockedTerminalCount(forTargetID: target.id), 2)
+
+    s.clearProgramStatus(tab: stale.id, target: target.id)
+    XCTAssertFalse(s.isWaitingStale(forTargetID: target.id))
+    XCTAssertEqual(s.blockedTerminalCount(forTargetID: target.id), 1)
+    XCTAssertEqual(s.tabs(for: target)[1].programStatus?.hasReport, false)
+  }
+
   /// A reporting program decides the pane, over OSC 9;4. Once it stops reporting, OSC 9;4 decides
   /// again, and a surviving error only adds its mark.
   func testPrecedenceBetweenProgramStatusAndOSC94() {

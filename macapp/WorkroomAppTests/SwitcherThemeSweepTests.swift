@@ -148,4 +148,30 @@ final class SwitcherThemeSweepTests: XCTestCase {
         "\(theme.name): the badge pill and the cursor ring are both 'the accent'")
     }
   }
+
+  /// Program status (#358): the waiting hand and the finished check each clear the WCAG non-text
+  /// floor on every surface they sit on — a sidebar row, the rail and an idle tab (`panel`), a
+  /// selected sidebar row, and the active tab (`bg`).
+  ///
+  /// The stale mark is a clock in `fg` on its own `panel` disk (`ProgramStatusGlyph`), so it is
+  /// measured against that disk. The plan's first choice, a hairline ring in `fgMuted`, failed this
+  /// floor on 25 bundled themes (TokyoNight Day 2.23:1, iTerm2 Solarized Light 2.09:1).
+  func testEveryBundledThemeKeepsTheProgramStatusGlyphsVisible() throws {
+    for theme in try bundledThemes() {
+      let tokens = ThemeTokens(preview: theme)
+      let palette = ProgramStatusPalette(tokens: tokens)
+      let surfaces = zip(
+        ["row/rail/tab", "selected row", "active tab"], ProgramStatusPalette.backgrounds(tokens))
+      for (surface, background) in surfaces {
+        for (role, color) in [("attention", palette.nsAttention), ("done", palette.nsDone)] {
+          XCTAssertGreaterThanOrEqual(
+            ThemeTokens.contrastRatio(color, background), ProgramStatusPalette.target - 0.01,
+            "\(theme.name): the \(role) disappears on the \(surface)")
+        }
+      }
+      XCTAssertGreaterThanOrEqual(
+        ThemeTokens.contrastRatio(tokens.nsFg, tokens.nsPanel), ProgramStatusPalette.target - 0.01,
+        "\(theme.name): the stale clock disappears on its disk")
+    }
+  }
 }

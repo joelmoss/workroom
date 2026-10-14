@@ -30,6 +30,9 @@ struct ProjectSidebar: View {
   /// `SidebarID` — terminal rows aren't selectable `List` rows, so they sit outside `hovered`.
   @State private var hoveredTerminal: TerminalTab.ID?
   @State private var addProjectHovering = false
+  /// Each host's program-status link (#358), for the "Program status: …" tooltip line: observed so
+  /// a host that connects repaints the line.
+  @ObservedObject private var programStatus = ProgramStatusMonitor.shared
 
   /// Width of the shared leading icon column on the root/workroom/terminal rows — it holds the
   /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
@@ -272,6 +275,24 @@ struct ProjectSidebar: View {
 
       // Aggregate dot so notifications are visible even when the project is collapsed.
       UnreadDot(count: unread)
+      // A collapsed project still says a terminal waits on you (#358), in a slot reserved while
+      // collapsed so the dots beside it never move when one starts or stops waiting.
+      if !isExpanded(project.path) {
+        let ids = targetIDs(of: project)
+        let waiting = ids.reduce(0) { $0 + terminals.blockedTerminalCount(forTargetID: $1) }
+        ZStack {
+          if waiting > 0 {
+            NeedsYouButton(
+              count: waiting, stale: ids.contains { terminals.isWaitingStale(forTargetID: $0) },
+              showsCount: false
+            ) {
+              showWaiting(in: ids)
+            }
+            .accessibilityIdentifier("sidebar.project.\(project.displayName).needsYou")
+          }
+        }
+        .frame(width: 24)
+      }
       // Aggregate VCS status (worst child) when collapsed — so collapsing a project doesn't
       // hide the command-center signal (issue #24). Only when collapsed: expanded projects show
       // each row's own dot. Visually distinct from the UnreadDot above (different concern).
@@ -321,6 +342,15 @@ struct ProjectSidebar: View {
     .frame(height: rowHeight)
     .contentShape(Rectangle())
     .accessibilityIdentifier("sidebar.project.\(project.displayName)")
+    .accessibilityActions {
+      if !isExpanded(project.path),
+        targetIDs(of: project).contains(where: { terminals.needsAttention(forTargetID: $0) })
+      {
+        Button(ProgramStatusPresentation.showWaitingAction) {
+          showWaiting(in: targetIDs(of: project))
+        }
+      }
+    }
     .onHover { inside in
       if inside { hovered = id } else if hovered == id { hovered = nil }
     }
@@ -358,6 +388,10 @@ struct ProjectSidebar: View {
     let target = project.rootTarget
     let style = RootPresentation.make(store.rootRefs[project.id] ?? .unresolved)
     let status = store.workroomStatuses[id] ?? .unresolved
+    let waiting = terminals.blockedTerminalCount(forTargetID: target.id)
+    let failed =
+      terminals.isProgressFailed(forTargetID: target.id)
+      || terminals.hasProgramError(forTargetID: target.id)
     HStack(spacing: 6) {
       leadingSlot(for: target, id: id, root: true)
       Text(style.label)
@@ -379,8 +413,11 @@ struct ProjectSidebar: View {
       }
       // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
       // the workroom rows' spinner/delete-then-run order.
-      if terminals.isRunning(forTargetID: target.id) {
-        RunningSpinner(failed: terminals.isProgressFailed(forTargetID: target.id))
+      // One mark (#358): waiting beats a stopped error beats running.
+      if waiting > 0 {
+        needsYouButton(for: target.id, identifier: "sidebar.root.\(project.displayName).needsYou")
+      } else if failed || terminals.isRunning(forTargetID: target.id) {
+        RunningSpinner(failed: failed)
       }
       // Run/stop the project's command straight from the root row (issue #7), trailing-most — the
       // root runs it in the project directory. Shows its state (green = running). Hidden for a missing
@@ -402,10 +439,18 @@ struct ProjectSidebar: View {
         [
           target.isMissing ? "\(style.accessibility), folder not found" : style.accessibility,
           VCSStatusPresentation.accessibilityLabel(status),
-          // The red mark's spoken twin: this row ignores its children, so the mark's own label is lost.
-          terminals.isProgressFailed(forTargetID: target.id) ? "a command reported an error" : "",
+          // The marks' spoken twins: this row ignores its children, so their own labels are lost.
+          waiting > 0
+            ? ProgramStatusPresentation.waitingLabel(
+              count: waiting, stale: terminals.isWaitingStale(forTargetID: target.id)) : "",
+          failed && waiting == 0 ? "a command reported an error" : "",
         ].filter { !$0.isEmpty }.joined(separator: ", ")
       )
+      .accessibilityActions {
+        if waiting > 0 {
+          Button(ProgramStatusPresentation.showWaitingAction) { showWaiting(in: [target.id]) }
+        }
+      }
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
@@ -419,6 +464,10 @@ struct ProjectSidebar: View {
     let unread = notifications.count(target: targetID)
     // A remote workroom still being made: shown with its create's progress, but nothing to open yet.
     let pending = workroom.host != nil && store.isCreatingWorkroom(workroom, in: project)
+    let waiting = terminals.blockedTerminalCount(forTargetID: targetID)
+    let failed =
+      terminals.isProgressFailed(forTargetID: targetID)
+      || terminals.hasProgramError(forTargetID: targetID)
     HStack(spacing: 6) {
       // Leading identity glyph (a cube for a workroom), swapped for the expand/collapse chevron on
       // hover when the row has ≥2 terminals — the same left edge as the root row, so roots and
@@ -444,8 +493,10 @@ struct ProjectSidebar: View {
         } else if store.isCreatingWorkroom(workroom, in: project) {
           // Setup script still running against the new worktree — a spinner, and (below) no delete.
           SetupSpinner()
-        } else if terminals.isRunning(forTargetID: targetID), hovered != id {
-          RunningSpinner(failed: terminals.isProgressFailed(forTargetID: targetID))
+        } else if waiting == 0, failed || terminals.isRunning(forTargetID: targetID),
+          hovered != id
+        {
+          RunningSpinner(failed: failed)
         }
         // Hidden while the workroom's setup is still running — it can't be deleted mid-setup (#116).
         DeleteRowButton(
@@ -455,6 +506,9 @@ struct ProjectSidebar: View {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         }
       }
+      // A waiting terminal (#358) takes the mark's place and stays on hover: the delete button
+      // appears in its own slot, on the glyph's leading side, so nothing moves.
+      needsYouButton(for: targetID, identifier: "sidebar.workroom.\(workroom.name).needsYou")
       // Run/stop the project's command for this workroom straight from the row (issue #7), trailing-
       // most. Shows its state (green = running) and toggles on click; distinct from the OSC-9;4
       // `RunningSpinner` above (any terminal's agent activity). Hidden for a missing worktree, where
@@ -472,6 +526,11 @@ struct ProjectSidebar: View {
       .simultaneousGesture(rowSplitDrag(id), including: pending ? .none : .all)
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
       .accessibilityAddTraits(pending ? [] : .isButton)
+      .accessibilityActions {
+        if waiting > 0 {
+          Button(ProgramStatusPresentation.showWaitingAction) { showWaiting(in: [targetID]) }
+        }
+      }
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
@@ -585,20 +644,35 @@ struct ProjectSidebar: View {
       // button on hover. The close button is always laid out (revealed via opacity) so the row size
       // is stable and the smaller spinner can't shift it.
       ZStack {
-        if tab.isRunning, hoveredTerminal != tab.id {
-          RunningSpinner(failed: tab.isProgressFailed)
+        if tab.isRunning || tab.indicator == .error, hoveredTerminal != tab.id {
+          RunningSpinner(failed: tab.isProgressFailed || tab.indicator == .error)
         }
         CloseTerminalRowButton(title: tab.title, visible: hoveredTerminal == tab.id) {
           store.requestCloseTerminalTab(tab.id, for: target)
         }
+      }
+      // A waiting or finished program (#358) takes the spinner's place and stays on hover, with the
+      // close button in its own slot on the glyph's leading side.
+      if tab.indicator == .blocked || tab.indicator == .done {
+        ProgramStatusGlyph(
+          mark: tab.indicator == .blocked ? .blocked : .done,
+          stale: tab.programStatus?.stale == true
+        )
+        .frame(width: 16)
+        .accessibilityHidden(true)
       }
     }
     // A small indent so the expanded terminal rows read as children of their root/workroom row.
     .padding(.leading, 8)
     .contentShape(Rectangle())
     .onTapGesture { store.revealTerminal(tab.id, at: parent) }
+    .help(terminalTooltip(tab, target: target))
     .accessibilityAddTraits(.isButton)
-    .accessibilityLabel(tab.title)
+    .accessibilityLabel(
+      ([tab.title]
+        + ProgramStatusPresentation.accessibilityParts(
+          indicator: tab.indicator, rollup: tab.programStatus)).joined(separator: ", ")
+    )
     .accessibilityAction { store.revealTerminal(tab.id, at: parent) }
     .accessibilityIdentifier("sidebar.terminal.\(tab.title)")
     .onHover { inside in
@@ -609,6 +683,15 @@ struct ProjectSidebar: View {
       }
     }
     .contextMenu {
+      // The escape hatch for a program that left a request behind (#358).
+      if tab.programStatus?.hasReport == true {
+        Button {
+          terminals.clearProgramStatus(tab: tab.id, target: target.id)
+        } label: {
+          Label("Clear Status", systemImage: "hand.raised.slash")
+        }
+        Divider()
+      }
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)
       } label: {
@@ -627,6 +710,44 @@ struct ProjectSidebar: View {
         target: TerminalTarget.workroomID(project: project.path, name: workroom.name))
     }
     return total
+  }
+
+  // MARK: Program status (#358)
+
+  /// A project's targets: its root, then every workroom.
+  private func targetIDs(of project: Project) -> [TerminalTarget.ID] {
+    [TerminalTarget.rootID(project: project.path)]
+      + project.workrooms.map { TerminalTarget.workroomID(project: project.path, name: $0.name) }
+  }
+
+  /// Focuses the terminal that has waited longest among `targetIDs` (a workroom row's, or a whole
+  /// collapsed project's). Only ⌘⇧J looks further.
+  private func showWaiting(in targetIDs: [TerminalTarget.ID]) {
+    let oldest = targetIDs.flatMap { targetID in
+      terminals.blockedTabs(forTargetID: targetID).map { (targetID, $0.tab, $0.since) }
+    }
+    .min { $0.2 < $1.2 }
+    guard let oldest else { return }
+    store.openTerminal(targetID: oldest.0, tabID: oldest.1)
+  }
+
+  /// The glyph slot of a root or workroom row: the waiting glyph and its count, as a button.
+  @ViewBuilder
+  private func needsYouButton(for targetID: TerminalTarget.ID, identifier: String) -> some View {
+    let count = terminals.blockedTerminalCount(forTargetID: targetID)
+    if count > 0 {
+      NeedsYouButton(count: count, stale: terminals.isWaitingStale(forTargetID: targetID)) {
+        showWaiting(in: [targetID])
+      }
+      .accessibilityIdentifier(identifier)
+    }
+  }
+
+  /// A terminal row's tooltip: its title, then what its program reports or why nothing does.
+  private func terminalTooltip(_ tab: TerminalTab, target: TerminalTarget) -> String {
+    let lines = ProgramStatusPresentation.tooltipLines(
+      for: tab, of: target, hosts: programStatus.hosts)
+    return ([tab.title] + lines).joined(separator: "\n")
   }
 
   /// Row highlight drawn at the row-background level so hover and selection share the

@@ -1855,6 +1855,10 @@ final class AppStore: ObservableObject {
         // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
         // first tab, so add the rest.
         for _ in 1..<UITestFixture.terminalTabs { _ = terminals.addTab(for: target) }
+        // Program status scenario (#358): waiting, stale and failed panes, seeded without an agent.
+        if UITestFixture.programStatus {
+          UITestFixture.seedProgramStatus(in: terminals, target: target)
+        }
         // Workroom-bar overflow scenario (issue #129): make every seeded workroom an *active target*
         // so the title-bar tab bar shows a chip for each. `ensureTab` only registers a tab; the shell
         // is created by the pane's view when it mounts, and only the selected workroom's does — so

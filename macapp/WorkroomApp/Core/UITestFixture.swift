@@ -1,3 +1,4 @@
+import AgentConnection
 import AppKit
 import Defaults
 import DesignSystem
@@ -297,6 +298,41 @@ enum UITestFixture {
   static var terminalTabs: Int {
     let n = number("WorkroomUITestTerminalTabs")
     return n <= 0 ? 1 : min(n, 16)
+  }
+
+  /// When set (`-WorkroomUITestProgramStatus 1`), the fixture workroom opens four terminals with
+  /// program status seeded (#358) and the first one focused: Terminal 1 working, Terminal 2 waiting
+  /// for permission ("Apply?"), Terminal 3 waiting for an answer on a host whose link is down, and
+  /// Terminal 4 stopped on an error. No agent is involved: the records go straight into the monitor.
+  static var programStatus: Bool {
+    flag("WorkroomUITestProgramStatus")
+  }
+
+  /// The stale pane's host: a remote id no real host has.
+  static let staleProgramStatusHost = HostID.remote(
+    UUID(uuidString: "00000000-0000-0000-0000-000000000358")!)
+
+  @MainActor
+  static func seedProgramStatus(in terminals: TerminalSessions, target: TerminalTarget) {
+    while terminals.tabs(for: target).count < 4 { _ = terminals.addTab(for: target) }
+    let tabs = terminals.tabs(for: target)
+    func seed(
+      _ index: Int, host: HostID = .local, stale: Bool = false, _ record: ProgramStatusRecord
+    ) {
+      terminals.seedProgramStatusForFixture(
+        tab: tabs[index].id, target: target.id, host: host, records: [record], stale: stale)
+    }
+    seed(0, ProgramStatusRecord(id: "", state: .working))
+    seed(
+      1,
+      ProgramStatusRecord(
+        id: "", state: .blocked, kind: .permission, message: "Apply?", episode: 1))
+    seed(
+      2, host: staleProgramStatusHost, stale: true,
+      ProgramStatusRecord(
+        id: "", state: .blocked, kind: .question, message: "Red or blue?", episode: 1))
+    seed(3, ProgramStatusRecord(id: "", state: .error, message: "Build failed"))
+    terminals.select(tabs[0].id, for: target)
   }
 
   /// When set (`-WorkroomUITestWorkroomCount <n>`), the fixture seeds `n` workrooms and makes each an

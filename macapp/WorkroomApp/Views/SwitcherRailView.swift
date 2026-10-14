@@ -34,6 +34,11 @@ struct SwitcherCard: Identifiable, Equatable {
   let isRunning: Bool
   /// A pane whose program reported OSC 9;4 ERROR. Workroom cards follow the run command instead.
   let isFailed: Bool
+  /// Terminals waiting on the user (#358): the workroom's, or 1 for a waiting pane.
+  var waiting = 0
+  var waitingStale = false
+  /// What VoiceOver and the tooltip say about them.
+  var waitingLabel: String?
   /// The mark's tile colour, resolved once when the cards are built. Resolving it in `body` instead ran
   /// `SwitcherMark.tileColor`'s saturation-ladder × brightness-step search — NSColor allocations and a
   /// contrast ratio per candidate — on every re-render of every card.
@@ -104,6 +109,13 @@ extension SwitcherCard {
       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
       isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
       isFailed = false
+      if let terminals = slot.store?.terminals {
+        waiting = terminals.blockedTerminalCount(forTargetID: slot.target.id)
+        waitingStale = terminals.isWaitingStale(forTargetID: slot.target.id)
+        if waiting > 0 {
+          waitingLabel = ProgramStatusPresentation.waitingLabel(count: waiting, stale: waitingStale)
+        }
+      }
     case .pane(let tab):
       id = "pane:\(tab.id)"
       title = tab.title
@@ -113,7 +125,14 @@ extension SwitcherCard {
       liveSubtitle = nil
       badge = 0
       isRunning = tab.isRunning
-      isFailed = tab.isProgressFailed
+      isFailed = tab.isProgressFailed || tab.indicator == .error
+      if tab.needsAttention {
+        waiting = 1
+        waitingStale = tab.programStatus?.stale == true
+        waitingLabel = ProgramStatusPresentation.accessibilityParts(
+          indicator: tab.indicator, rollup: tab.programStatus
+        ).joined(separator: ", ")
+      }
     }
   }
 
@@ -364,7 +383,7 @@ private struct SwitcherCardView: View {
         UnreadBadge(count: card.badge, fill: palette.badgeFill, ink: palette.badgeInk)
           .offset(x: 7, y: -6)
           .help("\(card.badge) unread")
-      } else if card.isRunning {
+      } else if card.isRunning || card.isFailed {
         Circle()
           // `diffRemove` is the rail's contrast-corrected ANSI red, the slot `failure` reads.
           .fill(card.isFailed ? palette.diffRemove : palette.dot)
@@ -373,6 +392,19 @@ private struct SwitcherCardView: View {
           .offset(x: 3, y: -3)
           .help(card.isFailed ? "Reported an error" : "Running")
           .accessibilityLabel(card.isFailed ? "reported an error" : "running")
+      }
+    }
+    // A waiting terminal (#358) on the icon's bottom-right, clear of the badge's top-right: the
+    // glyph on a panel disk the badge's height.
+    .overlay(alignment: .bottomTrailing) {
+      if card.waiting > 0 {
+        ProgramStatusGlyph(mark: .blocked, stale: card.waitingStale, size: 10)
+          // caption2's 13 pt line plus the badge's 1 pt padding each side.
+          .frame(width: 15, height: 15)
+          .background(Circle().fill(theme.tokens.panel))
+          .offset(x: 5, y: 4)
+          .help(card.waitingLabel ?? "")
+          .accessibilityHidden(true)
       }
     }
   }
@@ -397,8 +429,10 @@ private struct SwitcherCardView: View {
   }
 
   private var tooltip: String {
-    card.badge > 0
-      ? "\(card.title)\n\(card.subtitle)\n\(card.badge) unread" : "\(card.title)\n\(card.subtitle)"
+    var lines = [card.title, card.subtitle]
+    if card.badge > 0 { lines.append("\(card.badge) unread") }
+    if let waiting = card.waitingLabel { lines.append(waiting) }
+    return lines.joined(separator: "\n")
   }
 
   /// No state may live only in a tooltip here — a tooltip needs ~1s of hover and this whole gesture
@@ -406,7 +440,10 @@ private struct SwitcherCardView: View {
   private var accessibilityLabel: String {
     var parts = [card.title, card.subtitle]
     if card.badge > 0 { parts.append("\(card.badge) unread") }
-    if card.isRunning { parts.append(card.isFailed ? "reported an error" : "running") }
+    if let waiting = card.waitingLabel { parts.append(waiting) }
+    if card.isRunning || card.isFailed {
+      parts.append(card.isFailed ? "reported an error" : "running")
+    }
     return parts.joined(separator: ", ")
   }
 }
