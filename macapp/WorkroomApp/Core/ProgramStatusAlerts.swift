@@ -215,14 +215,10 @@ final class ProgramStatusAlerts: ObservableObject {
   /// How many waiting requests the badge counts.
   var countedWaiting: Int { waiting.count { $0.counted } }
 
-  /// Where `request` is shown: its terminal's name and its workroom, in the window it was last
-  /// focused in.
-  func place(of request: WaitingRequest) -> (terminal: String, workroom: String)? {
+  /// Where `request` is shown: "Terminal 2 in fix-auth", in the window it was last focused in.
+  func place(of request: WaitingRequest) -> String? {
     guard let destination = attachments(of: request.session).first else { return nil }
-    let name =
-      destination.store.terminals.title(ofTab: destination.tab, inTarget: destination.target)
-      ?? "Terminal"
-    return (name, destination.store.notificationSource(forTargetID: destination.target))
+    return destination.store.terminalPlace(targetID: destination.target, tabID: destination.tab)
   }
 
   /// Opens the terminal `request` waits in, raising its window.

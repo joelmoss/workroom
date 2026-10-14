@@ -75,14 +75,9 @@ final class ProgramStatusLiveAgentUITests: XCTestCase {
       .firstMatch
   }
 
-  /// A "needs you" alert, toast or row. It names the terminal by its chip's live title (here the
-  /// running command), so it is matched by its ending; the workroom row's count is left out.
-  private var needsYouAlert: XCUIElement {
-    app.descendants(matching: .any).matching(
-      NSPredicate(
-        format: "label CONTAINS %@ AND NOT (label BEGINSWITH %@)", " needs you", "1 terminal")
-    ).firstMatch
-  }
+  /// A "needs you" alert, toast or row: named by the terminal's own name and its workroom, never
+  /// the title its program set (the chip now shows the running command).
+  private var needsYouAlert: XCUIElement { labelled("Terminal 1 in uitest-room needs you") }
 
   private func poll(timeout: TimeInterval, until condition: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
@@ -118,7 +113,7 @@ final class ProgramStatusLiveAgentUITests: XCTestCase {
   }
 
   /// A program waiting in a terminal you are not looking at: its chip and workroom say so, one
-  /// in-app alert says "Terminal 1 needs you", Claude's own alert is folded into it rather than
+  /// in-app alert says "Terminal 1 in uitest-room needs you", Claude's own alert is folded into it rather than
   /// shown again, ⇧⌘M goes there (which reads the alert), and the finished turn shows while you
   /// watch it.
   func testAWaitingProgramElsewhereAlertsOnceAndShiftCommandMGoesThere() {

@@ -2364,9 +2364,11 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
-  /// `tabID`'s title, as its chip shows it.
-  func title(ofTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID) -> String? {
-    tabsByTarget[targetID]?[tabID]?.title
+  /// `tabID`'s own name ("Terminal 2"), never the title its program set: a program renames its
+  /// tab freely (Claude Code to its task), so this is the name that always reads as a terminal.
+  func defaultTitle(ofTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID) -> String? {
+    guard case .terminal(let state)? = tabsByTarget[targetID]?[tabID]?.content else { return nil }
+    return state.defaultTitle
   }
 
   /// The program-status session `tabID` attaches to, if it is a daemon-backed terminal.

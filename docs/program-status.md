@@ -35,7 +35,7 @@ reported", or "unavailable on this host" for an agent too old to keep status.
 ### Alerts and the Dock badge
 
 When a program starts waiting on you and you are not looking at its terminal, Workroom posts a
-notification ("Terminal 2 needs you") and counts the request in the Dock badge and the menu bar. The
+notification ("Terminal 2 in fix-auth needs you": the terminal's own name and its workroom, never the title its program gave the tab) and counts the request in the Dock badge and the menu bar. The
 count goes down when the request is answered, here or on another Mac, or the program ends; reading
 the notification does not lower it. The menu bar's list shows requests under **Waiting for you**
 and other notifications under **Unread notifications**.

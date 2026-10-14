@@ -65,12 +65,12 @@ private struct WaitingSectionHeader: View {
 /// One request a program waits on the user for: the terminal, its workroom, what it waits for.
 private struct WaitingRow: View {
   let request: WaitingRequest
-  let place: (terminal: String, workroom: String)?
+  let place: String?
   let onOpen: () -> Void
 
   var body: some View {
     let kind = ProgramStatusPresentation.sentence(request.record.kind)
-    let title = place.map { "\($0.terminal) · \($0.workroom)" } ?? "Terminal"
+    let title = place ?? "Terminal"
     Button(action: onOpen) {
       HStack(alignment: .top, spacing: 8) {
         Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
