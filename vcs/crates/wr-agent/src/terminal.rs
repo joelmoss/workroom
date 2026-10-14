@@ -25,7 +25,14 @@
 //!
 //! Then **the last OSC 9;4 progress report**, or an explicit REMOVE when there is none (#359). A
 //! program reports busy once, at the start of its work, so a client attaching mid-turn learns it
-//! only from here. Never in the on-disk record, which outlives the program.
+//! only from here. Never in the on-disk record, which outlives the program. Two things clear it:
+//! the program's own REMOVE, and the shell's next command end (OSC 133 D, #464), where the app
+//! clears its spinner too. So a false D (a TUI printing one, a nested shell) clears it in both, and
+//! a job resumed with `fg` reads idle until it reports again. Separately, and for every session,
+//! `Shadow::replay_for` leaves the report out of a replay while a known group other than its
+//! sender owns the pty, without clearing it. For a shell that sends no OSC 133 (a run command
+//! under `/bin/sh`, a shell without Ghostty's integration) that is all that hides a crashed
+//! program's spinner.
 //!
 //! And **the parser continuation last**, because a byte stream cut mid-sequence leaves the VT
 //! parser or UTF-8 decoder unfinished and nothing in the grid expresses that. Without it the tail
@@ -238,7 +245,8 @@ unsafe extern "C" fn on_program_status(
     }));
 }
 
-/// `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`: a new prompt ends the program run that reported.
+/// `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`: a new prompt ends the program run that reported, and a
+/// command end clears the progress report, as a REMOVE does.
 unsafe extern "C" fn on_semantic_prompt(
     _terminal: GhosttyTerminal,
     userdata: *mut std::ffi::c_void,
@@ -255,8 +263,19 @@ unsafe extern "C" fn on_semantic_prompt(
     let has_kind = event.size
         >= std::mem::offset_of!(GhosttyTerminalSemanticPrompt, kind)
             + std::mem::size_of::<GhosttySemanticPromptKind>();
-    if has_kind && event.kind == GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_START {
+    if !has_kind {
+        return;
+    }
+    if event.kind == GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_START {
         effects.program.push(Event::Prompt);
+    } else if event.kind == GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_COMMAND_END
+        // Only a held report: a fresh one makes the next read ask the pty for its foreground.
+        && effects.progress.report.is_some()
+    {
+        effects.progress = ProgressSlot {
+            report: None,
+            fresh: true,
+        };
     }
 }
 

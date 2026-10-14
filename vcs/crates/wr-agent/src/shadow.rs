@@ -51,8 +51,9 @@ impl Shadow {
     /// when one arrived, so the output path pays for it once per report, not per read.
     ///
     /// ponytail: sampled after the read, so a reporter that exits within the same read chunk is
-    /// recorded as the shell, and its report stays until a REMOVE. A per-report pgid needs the
-    /// pty to tag its bytes; add if stale busy is ever seen in practice.
+    /// recorded as the shell, and its report stays until a REMOVE, or the shell's OSC 133 D where
+    /// it sends one. A per-report pgid needs the pty to tag its bytes; add if stale busy is ever
+    /// seen in practice from a shell without OSC 133.
     pub fn write_from_pty(
         &mut self,
         bytes: &[u8],
@@ -99,10 +100,10 @@ impl Shadow {
 
     /// `replay()` for a live session whose pty `foreground` now owns. While the program that sent
     /// the progress report is not in the foreground, killed or crashed without clearing it, the
-    /// replay says idle: the app clears its own on the shell's next prompt (OSC 133 D), which the
-    /// shadow cannot see. The report is kept, so a program stopped and resumed (^Z, `fg`) is
-    /// busy again to clients that attach once it is back; a client that attached while it was
-    /// away stays idle until the program's next report.
+    /// replay says idle: the fallback for a shell that sends no OSC 133 D (`crate::terminal` says
+    /// what clears a report). The report is kept, so where no D cleared it, a program stopped and
+    /// resumed (^Z, `fg`) is busy again to clients that attach once it is back; a client that
+    /// attached while it was away stays idle until the program's next report.
     pub fn replay_for(&self, foreground: Option<libc::pid_t>) -> Vec<u8> {
         let Some(terminal) = self.terminal.as_ref() else {
             return Vec::new();
@@ -227,6 +228,72 @@ mod tests {
             !has(&shadow.replay_for(Some(10)), BUSY),
             "the old sender no longer counts"
         );
+    }
+
+    /// The shell's command end (OSC 133 D) clears the report it follows, as the app's spinner
+    /// clears, even while the sender still owns the pty; a report after it is the next command's
+    /// (#464). A prompt start alone clears nothing, as in the app.
+    /// Value: protects=a reattach after a command ended is told idle even when the reporter never sent REMOVE and still owns the pty, and a report after D is kept; fails_when=the D arm is removed, the clear runs after the whole read instead of at the D, or a prompt start clears too; why_new=no test fed OSC 133 D to the shadow; seam=none
+    #[test]
+    fn a_command_end_clears_only_the_report_before_it() {
+        const D: &[u8] = b"\x1b]133;D;0\x07";
+        let cases: [(&str, Vec<Vec<u8>>, bool); 6] = [
+            (
+                "D with an exit code clears",
+                vec![BUSY.into(), D.into()],
+                false,
+            ),
+            (
+                "a bare D clears",
+                vec![BUSY.into(), b"\x1b]133;D\x07".into()],
+                false,
+            ),
+            (
+                "D in the report's own read clears",
+                vec![[BUSY, D].concat()],
+                false,
+            ),
+            // Each after a held report, so the D has one to clear.
+            (
+                "a report after D in one read is kept",
+                vec![BUSY.into(), [D, BUSY].concat()],
+                true,
+            ),
+            (
+                "a report after D is kept",
+                vec![BUSY.into(), D.into(), BUSY.into()],
+                true,
+            ),
+            (
+                "a prompt start (A) keeps it",
+                vec![BUSY.into(), b"\x1b]133;A\x07".into()],
+                true,
+            ),
+        ];
+        for (case, reads, busy) in cases {
+            let mut shadow = Shadow::new(80, 24);
+            shadow.write_from_pty(b"working\r\n", || unreachable!("no report, so no question"));
+            for read in reads {
+                shadow.write_from_pty(&read, || Some(10));
+            }
+            // The sender still owns the pty, so the foreground fallback cannot be what clears.
+            let replay = shadow.replay_for(Some(10));
+            assert_eq!(
+                (has(&replay, BUSY), has(&replay, IDLE)),
+                (busy, !busy),
+                "{case}"
+            );
+        }
+    }
+
+    /// A command end with no report held asks the pty nothing, rather than once per prompt.
+    /// Value: protects=no foreground-group syscall per command when nothing reported; fails_when=a command end marks the slot fresh unconditionally; why_new=the guard is new; seam=none
+    #[test]
+    fn a_command_end_with_no_report_asks_nothing() {
+        let mut shadow = Shadow::new(80, 24);
+        shadow.write_from_pty(b"$ make\r\n\x1b]133;D;0\x07", || {
+            unreachable!("no report, so no question")
+        });
     }
 
     /// What libghostty answers `OSC 7501 ; ?` with, before the probe's own terminator.
