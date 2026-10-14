@@ -703,6 +703,9 @@ final class AppStore: ObservableObject {
   /// `UNUserNotificationCenter`.
   /// `var` so a test can stand in a fake and never raise the real permission prompt.
   var systemNotifier: SystemNotifying = SystemNotifier()
+  /// Whether the app is frontmost, which picks an in-app toast over a banner. A seam so a test can
+  /// take the banner path (`ProgramStatusAlertsTests`).
+  var isAppActive: () -> Bool = { NSApp.isActive }
 
   /// Branch names from the VCS toolbar's remote-state read, keyed by `SidebarID`.
   ///
@@ -3207,7 +3210,7 @@ final class AppStore: ObservableObject {
   /// Present a recorded notification: an in-app toast and the arrival sound while the app is
   /// frontmost, a native banner otherwise.
   private func surface(_ note: WorkroomNotification, stillWanted: @escaping () -> Bool = { true }) {
-    if NotificationGate.shouldPresentInApp(recorded: true, appActive: NSApp.isActive) {
+    if NotificationGate.shouldPresentInApp(recorded: true, appActive: isAppActive()) {
       // App is focused: sound on every arrival, then pop a toast. Notifications now live in the
       // always-visible left-sidebar strip + the title-bar bell badge (issue #118), so the transient
       // toast is the arrival signal regardless of what else is on screen. Previously this flashed the
@@ -3216,7 +3219,7 @@ final class AppStore: ObservableObject {
       // with the inspector open would have silently dropped.
       NotificationSound.play()
       enqueueToast(note)
-    } else if NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) {
+    } else if NotificationGate.shouldPostBanner(recorded: true, appActive: isAppActive()) {
       Task { @MainActor in
         if await systemNotifier.ensureAuthorized(), stillWanted(),
           notifications.items.contains(where: { $0.id == note.id })

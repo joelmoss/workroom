@@ -13,10 +13,13 @@ final class ProgramStatusUITests: XCTestCase {
     continueAfterFailure = false
   }
 
-  private func launchedApp() -> XCUIApplication {
+  private func launchedApp(terminalTabs: Int? = nil) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-WorkroomUITestProgramStatus", "1"]
+    if let terminalTabs {
+      app.launchArguments += ["-WorkroomUITestTerminalTabs", "\(terminalTabs)"]
+    }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
@@ -87,5 +90,26 @@ final class ProgramStatusUITests: XCTestCase {
 
     XCTAssertEqual(chip(app, "Terminal 4").value as? String, "Error")
     XCTAssertEqual(chip(app, "Terminal 1").value as? String, "Busy")
+  }
+
+  /// With the strip overflowing and the waiting terminals scrolled out past its leading edge, the
+  /// edge shows a button that brings the one waiting into view and focuses it.
+  func testAWaitingTabScrolledOutOfTheStripIsOneClickAway() {
+    let app = launchedApp(terminalTabs: 16)
+    XCTAssertTrue(chip(app, "Terminal 2").waitForExistence(timeout: 15))
+    // A new tab at the end scrolls the strip there, past the waiting ones at the start.
+    let add = app.descendants(matching: .any).matching(identifier: "NewTerminal").firstMatch
+    XCTAssertTrue(add.waitForExistence(timeout: 10))
+    add.click()
+
+    let edge = app.descendants(matching: .any)
+      .matching(identifier: "terminal.tab.waitingEdge.leading").firstMatch
+    XCTAssertTrue(
+      edge.waitForExistence(timeout: 10), "no edge button for the waiting tabs scrolled out")
+    edge.click()
+    let waiting = [chip(app, "Terminal 2"), chip(app, "Terminal 3")]
+    XCTAssertTrue(
+      poll(timeout: 5) { waiting.contains { $0.isSelected } },
+      "the edge button did not focus a waiting terminal")
   }
 }

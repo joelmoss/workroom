@@ -203,6 +203,100 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(MenuBarController.breakdown(waiting: [], unread: 2), "2 unread notifications")
     XCTAssertNil(MenuBarController.breakdown(waiting: [], unread: 0))
   }
+  // MARK: A banner waiting on notification permission
+
+  /// Asking for permission can take as long as the user takes to answer, so a banner is checked
+  /// again right before it posts: posted when nothing changed; not posted once the alert was read,
+  /// alerts were turned off, or the request was answered meanwhile.
+  func testABannerWaitingOnPermissionIsCheckedAgainBeforeItPosts() async {
+    let posted = await banner(after: { _, _ in })
+    XCTAssertEqual(posted, ["Terminal 1 needs you"], "control: nothing changed, so it posts")
+    let read = await banner(after: { _, tab in self.store.notifications.dismiss(tab: tab) })
+    XCTAssertEqual(read, [], "read while permission was pending")
+    let off = await banner(after: { _, _ in self.enabled = false })
+    XCTAssertEqual(off, [], "alerts turned off while permission was pending")
+    let answered = await banner(after: { id, _ in
+      self.monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    })
+    XCTAssertEqual(answered, [], "answered while permission was pending")
+  }
+
+  /// One request raised with the app in the background, `change` made while the permission prompt
+  /// is still up, then permission granted: the banners that posted.
+  private func banner(after change: (UUID, TerminalTab.ID) -> Void) async -> [String] {
+    try? await setUp()
+    enabled = true
+    let notifier = GatedNotifier()
+    store.systemNotifier = notifier
+    store.isAppActive = { false }
+    alerts.start()
+    let tab = store.terminals.addTab(for: target)
+    let id = session(tab)
+    monitor.seed(id, records: [blocked()])
+    for _ in 0..<200 where !notifier.isAsking { try? await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertTrue(notifier.isAsking, "fixture: the banner never asked for permission")
+    change(id, tab.id)
+    notifier.grant()
+    try? await Task.sleep(for: .milliseconds(200))
+    return notifier.posted
+  }
+
+  // MARK: Windows
+
+  /// A session attached in two windows is one waiting request and one alert; its row and count
+  /// go when the last window holding it closes.
+  func testASessionInTwoWindowsCountsOnceAndGoesWithItsLastWindow() {
+    alerts.start()
+    let other = AppStore()
+    other.systemNotifier = QuietNotifier()
+    other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    other.terminals.programStatus = monitor
+    var open = [store!, other]
+    alerts.stores = { open }
+    let id = session(store.terminals.addTab(for: target))
+    other.terminals.addTab(for: target, sessionID: id)
+
+    monitor.seed(id, records: [blocked()])
+    XCTAssertEqual(alerts.countedWaiting, 1)
+    let entries = open.flatMap { $0.notifications.items.filter { $0.episode != nil } }
+    XCTAssertEqual(entries.count, 1, "one alert, in one window")
+
+    open = [other]
+    alerts.recomputeWaiting()
+    XCTAssertEqual(alerts.countedWaiting, 1, "still attached in the other window")
+    open = []
+    alerts.recomputeWaiting()
+    XCTAssertEqual(alerts.countedWaiting, 0)
+    XCTAssertTrue(alerts.waiting.isEmpty, "no window holds it: no row")
+  }
+}
+
+/// A notifier whose permission prompt stays up until the test grants it.
+private final class GatedNotifier: SystemNotifying, @unchecked Sendable {
+  private let lock = NSLock()
+  private var gate: CheckedContinuation<Bool, Never>?
+  private var _posted: [String] = []
+
+  var isAsking: Bool { lock.withLock { gate != nil } }
+  var posted: [String] { lock.withLock { _posted } }
+
+  func ensureAuthorized() async -> Bool {
+    await withCheckedContinuation { continuation in lock.withLock { gate = continuation } }
+  }
+
+  func grant() {
+    let gate = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
+      defer { self.gate = nil }
+      return self.gate
+    }
+    gate?.resume(returning: true)
+  }
+
+  func post(_ notification: WorkroomNotification) {
+    lock.withLock { _posted.append(notification.title) }
+  }
+
+  func withdraw(tabIDs: [TerminalTab.ID]) {}
 }
 
 private struct QuietNotifier: SystemNotifying {

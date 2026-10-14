@@ -56,6 +56,25 @@ final class ProgramStatusWireTests: XCTestCase {
     XCTAssertNil(try ProgramStatusEvent.decode(Data(#"{"event":"later"}"#.utf8)).event)
   }
 
+  /// A hostile or broken agent's payload fails to decode (the connection drops that event) rather
+  /// than crashing the app: nested far past any real event, or a record list near the envelope cap.
+  func testOversizedAndDeeplyNestedPayloadsFailWithoutCrashing() throws {
+    let deep = String(repeating: "[", count: 100_000) + String(repeating: "]", count: 100_000)
+    let nested =
+      #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":1,"reporting":true,"records":\#(deep)}"#
+    XCTAssertThrowsError(try ProgramStatusEvent.decode(Data(nested.utf8)))
+
+    let record =
+      #"{"id":"","state":"working","kind":"none","progress":-1,"app":"a","title":"","message":"\#(String(repeating: "x", count: 900))","episode":0,"notify":false}"#
+    let many = Array(repeating: record, count: 1_000).joined(separator: ",")
+    let big =
+      #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":1,"reporting":true,"records":[\#(many)]}"#
+    XCTAssertGreaterThan(big.utf8.count, 1_000_000)
+    let decoded = try ProgramStatusEvent.decode(Data(big.utf8))
+    guard case .status(_, _, _, _, let records) = decoded.event else { return XCTFail() }
+    XCTAssertEqual(records.count, 1_000, "a large but valid event still decodes")
+  }
+
   func testRequestSendsLowercaseSessionAndOmitsAbsentFields() throws {
     let data = try JSONEncoder().encode(
       AgentProgramStatusRequest(method: "seen", session: session, revision: 3, states: ["done"]))
