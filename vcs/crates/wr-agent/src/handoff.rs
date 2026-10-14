@@ -153,22 +153,30 @@ const REPORT_GRACE: Duration = Duration::from_millis(200);
 /// How long a hand-off waits for running repository commands to finish before refusing. New ones
 /// are refused meanwhile, so it is short too.
 ///
-/// With `FREEZE_TIMEOUT`, `CHECK_TIMEOUT` and `REPORT_GRACE`, inside the app's own wait (`AgentHandOff.timeout`,
-/// 6 s): a requester that gives up first calls the hand-off off, so a longer agent-side wait would
+/// With the other waits below, inside the app's own wait (`AgentHandOff.timeout`, 7 s): a
+/// requester that gives up first calls the hand-off off, so a longer agent-side wait would
 /// only hold every repository request off for a hand-off that can no longer happen.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a hand-off waits to stop every session (`SessionStore::frozen`) before refusing. Every
 /// list and attach waits behind it meanwhile.
 const FREEZE_TIMEOUT: Duration = Duration::from_millis(500);
+/// What encoding and writing the table may take (`replace`), before `CHECK_TIMEOUT` starts. The
+/// table carries every session's screen, up to `HANDOFF_TOTAL_BYTES` (16 MiB) and more where a
+/// screen alone is over its share.
+const TABLE_WRITE_ALLOWANCE: Duration = Duration::from_millis(250);
 /// `AgentHandOff.timeout` in the app, which these waits must stay under. Checked at compile time,
 /// so raising one past it fails the build rather than quietly defeating every busy hand-off.
 ///
-/// The "handing off" write after them is one small frame to a requester that is reading its
-/// answer, or has gone and fails the write at once, so it is not counted.
-const APP_TIMEOUT: Duration = Duration::from_secs(6);
+/// The screens are captured within `HANDOFF_FORMAT_DEADLINE`, checked before each session and each
+/// format, so one format can overrun it; what is left under this timeout covers that. The "handing
+/// off" write after them is one small frame to a requester that is reading its answer, or has gone
+/// and fails the write at once, so it is not counted.
+const APP_TIMEOUT: Duration = Duration::from_secs(7);
 const _: () = assert!(
     QUIET_TIMEOUT.as_millis()
         + FREEZE_TIMEOUT.as_millis()
+        + crate::session::HANDOFF_FORMAT_DEADLINE.as_millis()
+        + TABLE_WRITE_ALLOWANCE.as_millis()
         + CHECK_TIMEOUT.as_millis()
         + REPORT_GRACE.as_millis()
         < APP_TIMEOUT.as_millis()

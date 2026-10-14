@@ -50,6 +50,11 @@
 //! trailing newline, so the last line does not scroll, and the client reports 36 history rows
 //! where the producer has 37.
 //!
+//! **Only the newest history that fits is sent.** The shadow keeps as much as the app's pane
+//! (50 MB), and a paint of all of it can run to tens of MiB, so every repaint, record and hand-off
+//! screen formats a selection of the screen and the newest rows that fit its budget
+//! (`format_tail`, ADR 0051).
+//!
 //! **It answers one query: the program status probe** (`OSC 7501 ; ?`, #358). Every other answer
 //! stays the attached client's; this one no client gives, and a program that gets none reports
 //! nothing. The reports themselves go to `crate::program_status`, which keeps them.
@@ -57,6 +62,7 @@
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
 use std::ptr;
+use std::time::Instant;
 
 use crate::program_status::{Event, Kind, Report, State};
 
@@ -81,17 +87,35 @@ const OK: GhosttyResult = GhosttyResult_GHOSTTY_SUCCESS;
 /// cannot grow it without bound.
 const CONTINUATION_MAX_BYTES: usize = 4096;
 
-/// libghostty's default is a 10 KB byte cap and no line cap, about one page: 229 rows of a styled
-/// 200-column build log (#462). The replay's size follows how densely the history is styled, not
-/// how many lines it has: 10,000 lines measured 1.9 MiB plain, 6 MiB with ordinary colour and
-/// 75 MiB in truecolor at 200 columns, and a record over `screens::MAX_RECORD` is deleted. A
-/// byte cap is what bounds it: at 4 MiB the worst measured record was 3.35 MiB (truecolor, 400
-/// columns), memory about 5 MB a session, and plain history keeps 5,450 rows at 80 columns,
-/// 2,193 at 200 and 1,122 at 400.
-const SCROLLBACK_MAX_BYTES: usize = 4 << 20;
+/// What the shadow keeps is what the app's own pane keeps (#462): both run the same Ghostty
+/// commit, whose `scrollback-limit-bytes` default is 50 MB with no line limit, so a reattached
+/// pane can show what it would have had without the agent. libghostty's own default is 10 KB,
+/// about one page. What is kept is not what is sent: every repaint, record and hand-off sends the
+/// newest history that fits its budget (`format_tail`), so the size of the history never decides
+/// whether a screen can be sent. The history is kept compressed while idle (`compress`, #463).
+const SCROLLBACK_MAX_BYTES: usize = 50_000_000;
 
-/// Only reached before the byte cap in a pane narrower than about 40 columns.
-const SCROLLBACK_MAX_LINES: usize = 10_000;
+/// The most a repaint (`replay`) is: `screens::MAX_RECORD` less room for what `replay` adds after
+/// the record and for slack in the fixed parts' estimate.
+pub(crate) const REPAINT_MAX_BYTES: usize = crate::screens::MAX_RECORD - (64 << 10);
+
+/// What a screen kept on disk is held to (`Shadow::record`, `crate::screens`). Smaller than a
+/// repaint: a busy session's record is rewritten and synced every 2 s, and only a pane coming back
+/// after its host restarted reads it. 1 MiB is about 1,700 rows of coloured history at 200 columns,
+/// and about 11,000 plain.
+pub(crate) const RECORD_MAX_BYTES: usize = 1 << 20;
+
+/// What `replay` adds after `record`: the progress report (under 32 bytes) and the parser
+/// continuation (`CONTINUATION_MAX_BYTES`). A hand-off budgets a session's whole replay, so it
+/// gives `record` its share less this.
+pub(crate) const REPLAY_OVERHEAD: usize = 32 + CONTINUATION_MAX_BYTES;
+
+/// How many of the newest rows `format_tail` formats first, to measure the history's density
+/// before guessing how many rows fit.
+const TAIL_SAMPLE_ROWS: u32 = 64;
+
+/// How many formats `format_tail` runs before it only halves: the sample and three guesses.
+const TAIL_GUESSES: u32 = 4;
 
 /// `ghostty_mode_new` is a `static inline` in modes.h, so bindgen does not emit it.
 /// modes.h: `(value & 0x7FFF) | ((uint16_t)ansi << 15)`.
@@ -101,6 +125,22 @@ const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
 
 /// The last OSC 9;4 a session reported, as (state, percent); percent is -1 when omitted.
 pub type Progress = Option<(GhosttyTerminalProgressState, i8)>;
+
+/// A terminal's memory as libghostty counts it (`ShadowTerminal::memory`).
+pub type MemoryUsage = GhosttyTerminalMemoryUsage;
+
+/// What `format_tail` sends: the paint, and how many history rows it carries.
+struct Tail {
+    bytes: Vec<u8>,
+    history_rows: u32,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The size of every format `format_tail` has run on this thread, for the tests that bound
+    /// its search.
+    static ATTEMPTS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// Where the progress callback and a command end write: the held report, and whether it changed
 /// since `take_fresh_report` last asked.
@@ -131,6 +171,12 @@ pub struct ShadowTerminal {
     /// asserts unique access to its contents, which the pointer the terminal holds would then
     /// alias. Freed in `Drop`, after the terminal that writes to it.
     effects: *mut Effects,
+    /// The primary screen's last paint and the budget it was made for, kept while the alternate
+    /// screen is active (`primary_screen`): reaching the primary takes a copy of the terminal, up
+    /// to ~100 ms on 50 MB of history that compresses poorly, and a full-screen program's every
+    /// redraw is recorded every 2 s. The primary does not change while the program runs, so the
+    /// paint is dropped when it leaves the alternate screen (`write`) and on a resize.
+    primary_paint: std::cell::RefCell<Option<(usize, Vec<u8>)>>,
 }
 
 /// The callbacks' userdata.
@@ -321,6 +367,7 @@ impl ShadowTerminal {
         let terminal = ShadowTerminal {
             inner,
             effects: Box::into_raw(Box::default()),
+            primary_paint: Default::default(),
         };
         terminal.enable_continuation_tracking();
         terminal.limit_scrollback();
@@ -423,17 +470,17 @@ impl ShadowTerminal {
         }
     }
 
-    /// The first limit reached wins.
+    /// A byte limit and no line limit, as the app's pane has.
     fn limit_scrollback(&self) {
-        let lines: usize = SCROLLBACK_MAX_LINES;
         let bytes: usize = SCROLLBACK_MAX_BYTES;
-        // SAFETY: `inner` is a live terminal. Both options take a `size_t*`, and each is a live
-        // `usize` the call reads before returning.
+        // SAFETY: `inner` is a live terminal. Both options take a `size_t*`: a NULL one removes
+        // the line limit (terminal.h), and `bytes` is a live `usize` the call reads before
+        // returning.
         unsafe {
             ghostty_terminal_set(
                 self.inner,
                 GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
-                &lines as *const usize as *const std::ffi::c_void,
+                ptr::null(),
             );
             ghostty_terminal_set(
                 self.inner,
@@ -444,18 +491,86 @@ impl ShadowTerminal {
     }
 
     /// Feed the emulator the same bytes the client is getting.
+    ///
+    /// shortcut: a program that leaves the alternate screen and a second that enters it within one
+    /// write keep the first's primary paint, missing whatever was printed between; track the
+    /// screen switches if that is ever seen.
     pub fn write(&mut self, bytes: &[u8]) {
         // SAFETY: `inner` is a live terminal, and the pointer and length come from one live slice.
         unsafe { ghostty_terminal_vt_write(self.inner, bytes.as_ptr(), bytes.len()) }
+        if self.primary_paint.get_mut().is_some() && self.mode(modes::ALT_SCREEN) != Some(true) {
+            *self.primary_paint.get_mut() = None;
+        }
     }
 
     /// Cell pixel dimensions are zero: they feed image protocols and size reports, and the shadow
     /// renders nothing — the real client owns the pixels and reports its own.
+    ///
+    /// A width change reflows, which decompresses the whole history (1.33 to 40 MB measured at 200
+    /// to 160 columns), so it is compressed again before this returns rather than at the next
+    /// tick. A height change touches no history.
     pub fn resize(&mut self, columns: u16, rows: u16) {
+        let width = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS);
         // SAFETY: `inner` is a live terminal, and both dimensions are at least 1, as required.
         unsafe {
             ghostty_terminal_resize(self.inner, columns.max(1), rows.max(1), 0, 0);
         }
+        *self.primary_paint.get_mut() = None;
+        if width != Some(u32::from(columns.max(1))) {
+            self.compress();
+        }
+    }
+
+    /// Compresses the history pages nothing has touched since they were last compressed (#463).
+    /// A read (`format`) re-inflates the pages it reads and output writes new ones, so this runs
+    /// after them, every screens tick (`SessionStore::compress_shadows`). An already compressed
+    /// terminal costs about 0.001 ms. A failure, or a target without support, leaves the history
+    /// as it is, which is all that not compressing costs; `compression_supported` is what is
+    /// reported, once, at startup.
+    pub fn compress(&mut self) {
+        loop {
+            let mut result: GhosttyTerminalCompressionResult = 0;
+            // SAFETY: `inner` is a live terminal, `&mut self` serialises this with every other
+            // call into it, and `result` is a live out-pointer.
+            let rc = unsafe {
+                ghostty_terminal_compress(
+                    self.inner,
+                    GhosttyTerminalCompressionMode_GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL,
+                    &mut result,
+                )
+            };
+            if rc != OK
+                || result
+                    != GhosttyTerminalCompressionResult_GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING
+            {
+                return;
+            }
+        }
+    }
+
+    /// The terminal's memory, as libghostty counts it.
+    pub fn memory(&self) -> Option<MemoryUsage> {
+        // SAFETY: a C struct of integers and a bool, for which all zeroes is a valid value.
+        let mut usage: GhosttyTerminalMemoryUsage = unsafe { std::mem::zeroed() };
+        // `GHOSTTY_INIT_SIZED` is a macro, which bindgen does not emit.
+        usage.size = std::mem::size_of::<GhosttyTerminalMemoryUsage>();
+        // SAFETY: DATA_MEMORY_USAGE's output type is `GhosttyTerminalMemoryUsage`, and `usage` is
+        // a live one with its `size` set, as the call requires.
+        let rc = unsafe {
+            ghostty_terminal_get(
+                self.inner,
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MEMORY_USAGE,
+                (&raw mut usage).cast(),
+            )
+        };
+        (rc == OK).then_some(usage)
+    }
+
+    /// Whether `compress` can free memory on this target. Where it cannot, each session's history
+    /// stays uncompressed, up to `SCROLLBACK_MAX_BYTES`.
+    pub fn compression_supported(&self) -> bool {
+        self.memory()
+            .is_some_and(|usage| usage.compression_supported)
     }
 
     /// How many bytes `ghostty_terminal_get` writes for each kind `get_u32` reads: the size of the
@@ -545,7 +660,54 @@ impl ShadowTerminal {
         bytes
     }
 
-    fn format(&self, extras: bool) -> Vec<u8> {
+    /// A selection from the `rows_back`th history row from the bottom to the active area's last
+    /// cell: the screen and the newest `rows_back` history rows. `rows_back` 0 is the screen alone.
+    /// None when a point cannot be resolved.
+    fn tail_selection(&self, rows_back: u32) -> Option<GhosttySelection> {
+        let history = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)?;
+        let columns = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)?;
+        let rows = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)?;
+        let point = |tag, x: u32, y: u32| -> Option<GhosttyGridRef> {
+            // SAFETY: plain C structs of integers and pointers, for which all zeroes is valid.
+            let mut point: GhosttyPoint = unsafe { std::mem::zeroed() };
+            point.tag = tag;
+            point.value.coordinate = GhosttyPointCoordinate {
+                x: u16::try_from(x).ok()?,
+                y,
+            };
+            // SAFETY: as above.
+            let mut grid: GhosttyGridRef = unsafe { std::mem::zeroed() };
+            grid.size = std::mem::size_of::<GhosttyGridRef>();
+            // SAFETY: `inner` is a live terminal and `grid` a live out-pointer with its size set.
+            let rc = unsafe { ghostty_terminal_grid_ref(self.inner, point, &mut grid) };
+            (rc == OK).then_some(grid)
+        };
+        Some(GhosttySelection {
+            size: std::mem::size_of::<GhosttySelection>(),
+            start: point(
+                GhosttyPointTag_GHOSTTY_POINT_TAG_SCREEN,
+                0,
+                history - rows_back.min(history),
+            )?,
+            end: point(
+                GhosttyPointTag_GHOSTTY_POINT_TAG_ACTIVE,
+                columns.saturating_sub(1),
+                rows.saturating_sub(1),
+            )?,
+            rectangle: false,
+        })
+    }
+
+    /// `format`, of the screen and the newest `rows_back` history rows when given, or of everything
+    /// when not. A selection the terminal cannot resolve gives no bytes, as a failed format does.
+    fn format_rows(&self, extras: bool, rows_back: Option<u32>) -> Vec<u8> {
+        let selection = match rows_back {
+            Some(rows_back) => match self.tail_selection(rows_back) {
+                Some(selection) => Some(selection),
+                None => return Vec::new(),
+            },
+            None => None,
+        };
         let mut formatter: GhosttyFormatter = ptr::null_mut();
         // SAFETY: the options are a C struct of integers, bools and sized sub-structs, for which
         // all zeroes is a valid value; the fields that matter are set below.
@@ -563,8 +725,12 @@ impl ShadowTerminal {
             options.extra.screen.size = std::mem::size_of::<GhosttyFormatterScreenExtra>();
             options.extra.screen.charsets = true;
         }
+        if let Some(selection) = selection.as_ref() {
+            options.selection = selection;
+        }
         // SAFETY: `inner` is a live terminal that outlives the formatter, which is freed before
-        // this method returns; `formatter` is a live out-pointer.
+        // this method returns; `formatter` is a live out-pointer. The selection, when set, lives
+        // until this method returns and was taken with no write since.
         let rc = unsafe {
             ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.inner, options)
         };
@@ -627,6 +793,19 @@ impl ShadowTerminal {
         if rc != OK || decoder.is_null() {
             return None;
         }
+        // The copy's history compressed as it is decoded: uncompressed it is the whole 50 MB the
+        // source keeps compressed (measured 49.97 MB against 1.33 MB).
+        let compress: bool = true;
+        // SAFETY: `decoder` is live and has not started decoding, and a non-pointer option is
+        // passed by address: `compress` is a live `bool` (the option's type) read before the call
+        // returns.
+        unsafe {
+            ghostty_snapshot_decoder_set(
+                decoder,
+                GhosttySnapshotDecoderOption_GHOSTTY_SNAPSHOT_DECODER_OPT_COMPRESS_HISTORY,
+                &compress as *const bool as *const std::ffi::c_void,
+            );
+        }
         let mut inner: GhosttyTerminal = ptr::null_mut();
         // SAFETY: `decoder` is live and has not started decoding; `inner` is a live out-pointer
         // that receives a terminal this function then owns.
@@ -639,6 +818,7 @@ impl ShadowTerminal {
         Some(ShadowTerminal {
             inner,
             effects: Box::into_raw(Box::default()),
+            primary_paint: Default::default(),
         })
     }
 
@@ -655,20 +835,142 @@ impl ShadowTerminal {
     /// alternate buffer and `DECSET 1049` clears it on re-entry, so the round trip would destroy
     /// the very screen being replayed. The snapshot carries both screens, so a decoded copy can be
     /// driven out of the alt screen freely and thrown away.
-    fn primary_screen(&self) -> Option<Vec<u8>> {
-        if self.mode(modes::ALT_SCREEN) != Some(true) {
-            return None;
+    ///
+    /// The copy is the only way in and costs a snapshot each time (about 27 ms on 50 MB of
+    /// compressed history), so a hand-off past its deadline skips it (`record`).
+    ///
+    /// The paint is kept (`primary_paint`) and reused by a record of a budget no larger than the
+    /// one it was made for, while it fits `budget`, what the alternate screen's paint leaves: a
+    /// paint made for more holds at least the history a fresh one for less would. One made
+    /// against a deadline, which may have cut it short, is not kept.
+    fn primary_screen(
+        &self,
+        record_budget: usize,
+        budget: usize,
+        until: Option<Instant>,
+    ) -> Option<Vec<u8>> {
+        if let Some((kept, paint)) = self.primary_paint.borrow().as_ref()
+            && *kept >= record_budget
+            && paint.len() <= budget
+        {
+            return Some(paint.clone());
         }
         let mut copy = self.clone_via_snapshot()?;
         copy.write(b"\x1b[?1049l");
-        let mut out = copy.format(true);
+        let mut out = copy.paint(budget, until);
+        // Each screen has its own kitty flags, so the primary's go before `DECSET 1049` too, or a
+        // client gets them back only from the alternate screen's, which are usually clear.
+        out.extend_from_slice(&copy.kitty_flags());
         // The primary's cursor, explicitly, for the same reason `replay` emits one: the formatter
         // homes the cursor and leaves it after the last painted cell. Here it matters twice over,
         // because `DECSET 1049` SAVES the cursor as it switches — so without this the position the
         // client restores when the program exits is wherever the paint ended, and the shell's next
         // line is written onto the end of the last history line instead of below it.
         out.extend_from_slice(&copy.cursor_position());
+        if until.is_none() {
+            *self.primary_paint.borrow_mut() = Some((record_budget, out.clone()));
+        }
         Some(out)
+    }
+
+    /// The active screen as `format_tail` sends it within `budget`, then the newlines that bring
+    /// a client to the row its cursor is on (`scroll_padding`).
+    fn paint(&self, budget: usize, until: Option<Instant>) -> Vec<u8> {
+        let Tail {
+            mut bytes,
+            history_rows,
+            ..
+        } = self.format_tail(budget, until);
+        // How far down the client's content the paint leaves it. The formatter emits one line per
+        // non-empty row and no trailing newline, so this is where its cursor ends up.
+        let painted_rows = bytes.iter().filter(|byte| **byte == b'\n').count() as u32;
+        bytes.extend_from_slice(&self.scroll_padding(painted_rows, history_rows));
+        bytes
+    }
+
+    /// The screen and the newest history rows whose paint fits `budget` bytes.
+    ///
+    /// **Why a search.** A row's bytes depend on how often its style changes from cell to cell,
+    /// not on its length: the same 10,000 lines at 200 columns measured 1.9 MiB plain and 75 MiB
+    /// in truecolour. So the only measure of what fits is the formatter's own output. The newest
+    /// `TAIL_SAMPLE_ROWS` rows go first, to measure the history's density; a first guess from the
+    /// budget alone (`budget / columns` rows) is ~20,000 rows at 200 columns, which on dense
+    /// history would format ~160 MB once before being rejected. Each later guess scales the last by
+    /// `budget / bytes` at 90%, and the search stops once a paint fits within 80% of the budget:
+    /// `TAIL_GUESSES` formats at most, then halvings, `TAIL_GUESSES + log2(history) + 1` in all.
+    /// A bisection would take about 12, at up to ~27 ms each for a full 4 MiB tail, with every
+    /// session frozen during a hand-off.
+    ///
+    /// The largest fitting count found is kept. The screen alone (0 rows) is always returned, even
+    /// when it does not fit a budget smaller than itself: a caller is sent the screen, never
+    /// nothing. Past `until`, no more guesses are made: the best fit so far, or the screen alone.
+    ///
+    /// shortcut: the guesses assume older rows are about as dense as the newest, so a sparse tail
+    /// over much denser history can overshoot once, by up to the whole history's paint; cap how
+    /// far one guess may grow if that is ever seen.
+    fn format_tail(&self, budget: usize, until: Option<Instant>) -> Tail {
+        let history = self
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+            .unwrap_or(0);
+        let late = || until.is_some_and(|until| Instant::now() >= until);
+        let format = |rows: u32| {
+            // The whole history is formatted with no selection.
+            let bytes = self.format_rows(true, (rows < history).then_some(rows));
+            #[cfg(test)]
+            ATTEMPTS.with(|attempts| attempts.borrow_mut().push(bytes.len()));
+            bytes
+        };
+        // The next count to try after `rows` rows came to `len` bytes.
+        let guess = |rows: u32, len: usize| -> u32 {
+            let scaled = u64::from(rows).saturating_mul(budget as u64) / len.max(1) as u64 / 10 * 9;
+            u32::try_from(scaled).unwrap_or(u32::MAX).min(history)
+        };
+
+        let mut best: Option<(u32, Vec<u8>)> = None;
+        let mut rows = history.min(TAIL_SAMPLE_ROWS);
+        let sample = format(rows);
+        let mut next = guess(rows, sample.len());
+        if sample.len() <= budget {
+            if rows == history {
+                return Tail {
+                    bytes: sample,
+                    history_rows: rows,
+                };
+            }
+            best = Some((rows, sample));
+        }
+        for _ in 1..TAIL_GUESSES {
+            if next == rows || late() {
+                break;
+            }
+            rows = next;
+            let bytes = format(rows);
+            let len = bytes.len();
+            next = guess(rows, len);
+            if len <= budget {
+                if best.as_ref().is_none_or(|(kept, _)| rows > *kept) {
+                    best = Some((rows, bytes));
+                }
+                if rows == history || len >= budget / 10 * 8 {
+                    break;
+                }
+            }
+        }
+        let (history_rows, bytes) = match best {
+            Some(best) => best,
+            // Only after every guess overshot, or the time ran out first.
+            None => loop {
+                rows = if late() { 0 } else { rows / 2 };
+                let bytes = format(rows);
+                if bytes.len() <= budget || rows == 0 {
+                    break (rows, bytes);
+                }
+            },
+        };
+        Tail {
+            bytes,
+            history_rows,
+        }
     }
 
     /// Newlines to make up rows the formatter did not emit.
@@ -681,16 +983,15 @@ impl ShadowTerminal {
     /// of below it. Measured as one dropped line of output per mid-stream attach, on every session
     /// that had scrolled at all.
     ///
-    /// The cursor's absolute row is `scrollback + cursor_y`, and the paint leaves the client at
-    /// `painted_rows`; the difference is what has to be scrolled through.
-    fn scroll_padding(&self, painted_rows: u32) -> Vec<u8> {
-        let (Some(history), Some(cursor_y)) = (
-            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS),
-            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y),
-        ) else {
+    /// The cursor's row in what was sent is `history_rows + cursor_y`, `history_rows` being the
+    /// history `format_tail` sent rather than all this terminal keeps, and the paint leaves the
+    /// client at `painted_rows`; the difference is what has to be scrolled through.
+    fn scroll_padding(&self, painted_rows: u32, history_rows: u32) -> Vec<u8> {
+        let Some(cursor_y) = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y)
+        else {
             return Vec::new();
         };
-        let wanted = history + cursor_y;
+        let wanted = history_rows + cursor_y;
         if wanted <= painted_rows {
             return Vec::new();
         }
@@ -698,6 +999,15 @@ impl ShadowTerminal {
         // without returning to column 0, and the CUP that follows would then be applied from the
         // wrong place on every intermediate row.
         b"\r\n".repeat((wanted - painted_rows) as usize)
+    }
+
+    /// The active screen's kitty keyboard flags, which the formatter does not emit (module doc), or
+    /// nothing when they are clear.
+    fn kitty_flags(&self) -> Vec<u8> {
+        match self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS) {
+            Some(flags) if flags != 0 => format!("\x1b[>{flags}u").into_bytes(),
+            _ => Vec::new(),
+        }
     }
 
     /// A CUP for wherever this terminal's cursor is, or nothing if it cannot be read.
@@ -714,16 +1024,13 @@ impl ShadowTerminal {
     /// The bytes to send a client that has just attached, so it sees what the session looks like
     /// instead of a blank screen. See the module doc for why this is several pieces and not one.
     pub fn replay(&self) -> Vec<u8> {
-        self.replay_reporting(true)
+        self.replay_within(true, REPAINT_MAX_BYTES, None)
     }
 
-    /// `replay()` saying idle whatever the last report was: for a program that is gone.
-    pub fn replay_idle(&self) -> Vec<u8> {
-        self.replay_reporting(false)
-    }
-
-    fn replay_reporting(&self, report: bool) -> Vec<u8> {
-        let mut out = self.record();
+    /// `replay()` with its record held to `budget` (`record_within`), saying idle unless `report`:
+    /// for a program that is gone. The whole replay is at most `budget + REPLAY_OVERHEAD`.
+    pub fn replay_within(&self, report: bool, budget: usize, until: Option<Instant>) -> Vec<u8> {
+        let mut out = self.record_within(budget, until);
         // Not in `record()`: a record outlives the program, and a stale "busy" would pin the
         // client's spinner on. Not with an empty record either, which callers read as "nothing
         // to show".
@@ -736,35 +1043,67 @@ impl ShadowTerminal {
         out
     }
 
-    /// `replay()` without the progress report or the parser continuation: the record kept on disk
-    /// (`crate::screens`). A record outlives the program, so a report in it would only pin the
-    /// client's spinner on; and nothing will ever complete a continuation in a record, while the
-    /// notice written after one would.
+    /// `record_within` a repaint's budget.
+    #[cfg(test)]
     pub fn record(&self) -> Vec<u8> {
-        // The primary screen first, then re-entering the alt screen, then the alt screen's own
-        // paint below — the order a real session produced them in.
-        let mut out = match self.primary_screen() {
-            Some(mut primary) => {
-                primary.extend_from_slice(b"\x1b[?1049h");
-                primary
-            }
-            None => Vec::new(),
+        self.record_within(REPAINT_MAX_BYTES, None)
+    }
+
+    /// `replay()` without the progress report or the parser continuation: the record kept on disk
+    /// (`crate::screens`), and the start of every replay. A record outlives the program, so a
+    /// report in it would only pin the client's spinner on; and nothing will ever complete a
+    /// continuation in a record, while the notice written after one would.
+    ///
+    /// It is at most `budget` bytes, unless the screens alone are larger: the history it carries
+    /// is the newest that fits (`format_tail`).
+    ///
+    /// The parts whose size the history does not change are sized first, and the history gets what
+    /// is left: the leading erase, the kitty flags, the cursor, the scroll padding (counted at its
+    /// most, `\r\n` for each screen row and one more) and, on the alternate screen, that screen's
+    /// paint, which has no history. The output keeps the order a real session produced it in:
+    /// primary, `DECSET 1049`, alternate.
+    ///
+    /// Past `until` (a hand-off out of time) a session sends its screen alone, and on the alternate
+    /// screen skips the primary's paint, which costs a copy of the terminal (`primary_screen`).
+    pub fn record_within(&self, budget: usize, until: Option<Instant>) -> Vec<u8> {
+        const ERASE: &[u8] = b"\x1b[2J\x1b[3J";
+        const ALTERNATE: &[u8] = b"\x1b[?1049h";
+        // The longest CUP `cursor_position` writes, and the longest `kitty_flags`.
+        const CURSOR: usize = b"\x1b[65535;65535H".len();
+        const KITTY: usize = b"\x1b[>255u".len();
+        let rows = self
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)
+            .unwrap_or(0) as usize;
+        let padding = 2 * (rows + 1);
+        let kitty = self.kitty_flags();
+        let cursor = self.cursor_position();
+        let fixed = ERASE.len() + kitty.len() + cursor.len();
+        let late = until.is_some_and(|until| Instant::now() >= until);
+
+        let mut out = if self.mode(modes::ALT_SCREEN) == Some(true) {
+            let alternate = self.paint(budget.saturating_sub(fixed + padding), None);
+            let left = budget.saturating_sub(fixed + alternate.len() + ALTERNATE.len());
+            // The primary screen first, then re-entering the alt screen, then the alt screen's own
+            // paint below — the order a real session produced them in.
+            let primary = if late {
+                None
+            } else {
+                self.primary_screen(budget, left.saturating_sub(padding + CURSOR + KITTY), until)
+            };
+            let mut out = match primary {
+                Some(mut primary) => {
+                    primary.extend_from_slice(ALTERNATE);
+                    primary
+                }
+                None => Vec::new(),
+            };
+            out.extend_from_slice(&alternate);
+            out
+        } else {
+            self.paint(budget.saturating_sub(fixed + padding), until)
         };
-        let painted = self.format(true);
-        // How far down the client's content the paint leaves it. The formatter emits one line per
-        // non-empty row and no trailing newline, so this is where its cursor ends up.
-        let painted_rows = painted.iter().filter(|byte| **byte == b'\n').count() as u32;
-        out.extend_from_slice(&painted);
-        out.extend_from_slice(&self.scroll_padding(painted_rows));
-
-        if let Some(flags) =
-            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS)
-            && flags != 0
-        {
-            out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes());
-        }
-
-        out.extend_from_slice(&self.cursor_position());
+        out.extend_from_slice(&kitty);
+        out.extend_from_slice(&cursor);
         if out.is_empty() {
             // Nothing could be read, which callers tell from an empty record.
             return out;
@@ -773,7 +1112,7 @@ impl ShadowTerminal {
         // client rarely starts blank — the app's panes run under macOS `login`, which prints its
         // `Last login` banner first. Erasing the screen before the scrollback matters: Ghostty's
         // ED 2 pushes the screen into the scrollback when its last rows are a shell prompt.
-        [b"\x1b[2J\x1b[3J".as_slice(), &out].concat()
+        [ERASE, &out].concat()
     }
 
     /// Plain-text screen contents. Used by tests and by the session list's preview; never sent to
@@ -1018,7 +1357,7 @@ mod tests {
         producer.write(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?1002h\x1b[?2004hbody");
 
         let mut naive = ShadowTerminal::new(80, 24).expect("naive");
-        naive.write(&producer.format(false));
+        naive.write(&producer.format_rows(false, None));
 
         assert_eq!(producer.mode(modes::ALT_SCREEN), Some(true));
         assert_eq!(
@@ -1089,57 +1428,424 @@ mod tests {
         );
     }
 
-    /// libghostty's default 10 KB byte cap kept about one page of history (#462). The lower bound
-    /// fails while that cap is in force; the upper one fails if the line cap is not, since at 20
-    /// columns the byte cap alone keeps about 21,000 lines. libghostty prunes whole pages, so the
-    /// count lands within a page of the cap, either side.
+    fn history_rows(terminal: &ShadowTerminal) -> u32 {
+        terminal
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+            .unwrap_or(0)
+    }
+
+    /// The sizes of the formats `format_tail` ran on this thread since the last call.
+    fn attempts() -> Vec<usize> {
+        ATTEMPTS.with(|attempts| std::mem::take(&mut *attempts.borrow_mut()))
+    }
+
+    /// `line {n}` and then plain cells to the pane's width.
+    fn plain_line(columns: u16, n: usize) -> String {
+        format!("line {n:<6} {}\r\n", "x".repeat(usize::from(columns) - 13))
+    }
+
+    /// `line {n}` and then cells alternating between two of the 16 colours.
+    fn sixteen_colour_line(columns: u16, n: usize) -> String {
+        let cells: String = (13..columns)
+            .map(|c| format!("\x1b[3{}mx", 1 + c % 2))
+            .collect();
+        format!("\x1b[mline {n:<6} {cells}\x1b[m\r\n")
+    }
+
+    /// `line {n}` and then cells alternating between two truecolour styles: the densest history,
+    /// 75 MiB for 10,000 lines at 200 columns.
+    fn truecolour_line(columns: u16, n: usize) -> String {
+        let cells: String = (13..columns)
+            .map(|c| {
+                if c % 2 == 0 {
+                    "\x1b[38;2;255;128;0mx"
+                } else {
+                    "\x1b[38;2;0;128;255mx"
+                }
+            })
+            .collect();
+        format!("\x1b[mline {n:<6} {cells}\x1b[m\r\n")
+    }
+
+    /// What the app's own pane keeps, the shadow keeps (#462): libghostty's 10 KB default kept
+    /// about one page, #469's 4 MiB cap 5,450 rows at 80 columns, and its line cap 10,000.
+    ///
+    /// Value: protects=the shadow keeps the app's 50 MB of history with no line cap; fails_when=the
+    /// byte cap shrinks or a line cap comes back; why_new=the 10 KB default was never tested;
+    /// seam=none
     #[test]
-    fn scrollback_keeps_its_line_cap() {
-        let mut terminal = ShadowTerminal::new(20, 24).expect("terminal");
-        for n in 0..3 * SCROLLBACK_MAX_LINES {
+    fn the_shadow_keeps_what_the_app_keeps() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        for n in 0..60_000 {
             terminal.write(format!("line {n}\r\n").as_bytes());
         }
-        let rows = terminal
-            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
-            .unwrap_or(0) as usize;
+        let rows = history_rows(&terminal);
+        assert!(rows > 20_000, "{rows} history rows kept of 60,000 lines");
+    }
+
+    /// A record's size follows how densely its history is styled, not how much of it there is, and
+    /// one over `MAX_RECORD` is deleted: a pane would come back from a host restart with nothing.
+    /// So a record carries the newest history that fits, on the primary screen and under a
+    /// full-screen program.
+    ///
+    /// Value: protects=record() and replay() stay within their budgets whatever the history;
+    /// fails_when=format_tail is bypassed or the fixed parts are not sized first; why_new=#469's
+    /// test passed at the 10 KB default; seam=none
+    #[test]
+    fn a_densely_styled_history_is_cut_to_fit() {
+        let columns = 200;
+        let mut producer = ShadowTerminal::new(columns, 24).expect("producer");
+        for n in 0..3_000 {
+            producer.write(truecolour_line(columns, n).as_bytes());
+        }
+        for alternate in [false, true] {
+            if alternate {
+                producer.write(b"\x1b[?1049h\x1b[H");
+                for n in 0..23 {
+                    producer.write(truecolour_line(columns, n).as_bytes());
+                }
+            }
+            let record = producer.record();
+            assert!(
+                record.len() <= REPAINT_MAX_BYTES,
+                "alternate {alternate}: a {} byte record, over {REPAINT_MAX_BYTES}",
+                record.len()
+            );
+            assert!(
+                producer.replay().len() < crate::screens::MAX_RECORD,
+                "alternate {alternate}: the replay is over MAX_RECORD"
+            );
+            let mut client = ShadowTerminal::new(columns, 24).expect("client");
+            client.write(&record);
+            if alternate {
+                client.write(b"\x1b[?1049l");
+            }
+            let rows = history_rows(&client);
+            assert!(
+                rows > 100,
+                "alternate {alternate}: {rows} history rows sent"
+            );
+            assert!(
+                client.visible_text().contains("line 2999"),
+                "alternate {alternate}: the newest line is missing"
+            );
+        }
+    }
+
+    /// Under a full-screen program the primary's paint is made once and kept, since reaching it
+    /// takes a copy of the terminal; it is made again once the program has left the alternate
+    /// screen, so a second program shows what the shell printed in between.
+    ///
+    /// Value: protects=the primary paint is reused while a program runs and never outlives it;
+    /// fails_when=the paint is never kept (a copy every record) or kept past the program;
+    /// why_new=the primary was always copied; seam=none
+    #[test]
+    fn the_primary_paint_is_kept_only_while_a_program_runs() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        for n in 0..100 {
+            terminal.write(format!("line {n}\r\n").as_bytes());
+        }
+        terminal.write(b"\x1b[?1049h\x1b[Hfirst program");
+        let first = terminal.record();
+        attempts();
+        terminal.write(b"\x1b[Hfirst program, redrawn");
+        let redrawn = terminal.record();
+        assert_eq!(
+            attempts().len(),
+            1,
+            "the primary was painted again while the program ran"
+        );
+        assert!(String::from_utf8_lossy(&redrawn).contains("redrawn"));
+        assert_ne!(first, redrawn);
+
+        terminal.write(b"\x1b[?1049lprinted between\r\n");
+        terminal.write(b"\x1b[?1049h\x1b[Hsecond program");
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&terminal.record());
+        client.write(b"\x1b[?1049l");
         assert!(
-            (SCROLLBACK_MAX_LINES / 2..2 * SCROLLBACK_MAX_LINES).contains(&rows),
-            "{rows} scrollback rows, want about {SCROLLBACK_MAX_LINES}"
+            client.visible_text().contains("printed between"),
+            "the second program was shown the first's primary"
         );
     }
 
-    /// A record's size follows how densely its history is styled, and one over `MAX_RECORD` is
-    /// deleted, so a pane would come back from a host restart with nothing. Truecolor on every
-    /// cell of a wide pane is the densest history measured: 2,000 such lines made a 30 MiB record
-    /// before the byte cap.
+    /// A screen larger than its budget is still sent, alone: a client gets the screen, never
+    /// nothing. Many sessions sharing a hand-off can each have a share smaller than a dense screen.
+    ///
+    /// Value: protects=format_tail always returns the screen; fails_when=an over-budget screen
+    /// yields no bytes or keeps history; why_new=no budget was smaller than a screen; seam=none
     #[test]
-    fn a_densely_styled_history_still_fits_a_record() {
-        let columns = 400;
-        let mut terminal = ShadowTerminal::new(columns, 24).expect("terminal");
-        for n in 0..2_000 {
-            let line: String = (0..columns)
-                .map(|c| {
-                    format!(
-                        "\x1b[38;2;{};{};0;48;2;0;{};{}mx",
-                        c % 256,
-                        n % 256,
-                        c % 251,
-                        n % 241
-                    )
-                })
-                .collect();
-            terminal.write(format!("{line}\x1b[0m\r\n").as_bytes());
+    fn a_screen_larger_than_its_budget_is_sent_alone() {
+        let mut producer = ShadowTerminal::new(200, 24).expect("producer");
+        for n in 0..300 {
+            producer.write(truecolour_line(200, n).as_bytes());
         }
-        let rows = terminal
-            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
-            .unwrap_or(0);
-        let record = terminal.record();
+        let mut client = ShadowTerminal::new(200, 24).expect("client");
+        client.write(&producer.record_within(1 << 10, None));
+        assert_eq!(history_rows(&client), 0, "history sent over the budget");
         assert!(
-            record.len() < crate::screens::MAX_RECORD,
-            "a {} byte record of {rows} history rows would be deleted",
-            record.len()
+            client.visible_text().contains("line 299"),
+            "the screen was not sent"
         );
-        assert!(rows > 100, "the history was not kept: {rows} rows");
+    }
+
+    /// The cut fixtures: modes set before the history, so they are older than any cut, then
+    /// `lines` of history, some wide and soft-wrapped, so a cut can land inside a wrapped line.
+    fn cut_fixture(lines: usize) -> ShadowTerminal {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"\x1b[?2004h\x1b[>5u");
+        for n in 0..lines {
+            if n % 7 == 0 {
+                producer.write(format!("wide {n} {}\r\n", "漢字".repeat(30)).as_bytes());
+            } else {
+                producer.write(format!("line {n}\r\n").as_bytes());
+            }
+        }
+        producer
+    }
+
+    /// A client fed a cut record holds the newest part of the producer's terminal, rows and modes,
+    /// and the next output lands where the producer's does: the padding follows the history sent,
+    /// not the history kept. A cut can start inside a soft-wrapped line, whose first row then
+    /// arrives as a line of its own, which is still the end of the producer's line.
+    fn assert_lands(producer: &mut ShadowTerminal, client: &mut ShadowTerminal, label: &str) {
+        let (want, got) = (producer.visible_text(), client.visible_text());
+        assert!(
+            want.ends_with(&got),
+            "{label}: the client is not the end of the producer: {:?}",
+            &got[..got.len().min(200)]
+        );
+        producer.write(b"after the cut\r\n");
+        client.write(b"after the cut\r\n");
+        assert!(
+            producer.visible_text().ends_with(&client.visible_text()),
+            "{label}: the next line landed elsewhere"
+        );
+        assert_eq!(
+            client.mode(modes::BRACKETED_PASTE),
+            Some(true),
+            "{label}: bracketed paste did not survive the cut"
+        );
+        assert_eq!(
+            client.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS),
+            Some(5),
+            "{label}: the kitty flags did not survive the cut"
+        );
+    }
+
+    /// Value: protects=a cut record's client holds the newest rows, its modes and the producer's
+    /// cursor row, at every cut point; fails_when=scroll_padding pads to the history kept rather
+    /// than sent, or modes are cut with the history; why_new=no record was ever cut; seam=none
+    #[test]
+    fn a_cut_history_lands_where_the_producer_has_it() {
+        // Budgets from tiny to the whole, so cuts land on plain rows, wide rows and wrapped rows.
+        for budget in [8 << 10, 20 << 10, 33 << 10, 64 << 10, 100 << 10] {
+            let mut producer = cut_fixture(5_000);
+            let mut client = ShadowTerminal::new(80, 24).expect("client");
+            client.write(&producer.record_within(budget, None));
+            let rows = history_rows(&client);
+            assert!(
+                rows > 0 && rows < history_rows(&producer),
+                "budget {budget}: the fixture was not cut ({rows} rows)"
+            );
+            assert_lands(&mut producer, &mut client, &format!("budget {budget}"));
+        }
+    }
+
+    /// The same under a full-screen program: the primary's paint is cut and padded on its own,
+    /// so quitting the program brings back the shell's newest history and its cursor row.
+    ///
+    /// Value: protects=the primary's cut paint under the alternate screen; fails_when=the primary
+    /// gets no scroll padding or the alternate screen's budget is not taken first; why_new=the
+    /// primary was always painted whole; seam=none
+    #[test]
+    fn quitting_a_program_after_a_cut_brings_back_the_shell() {
+        let mut producer = cut_fixture(5_000);
+        producer.write(b"\x1b[?1049h\x1b[H");
+        producer.write("~\r\n".repeat(23).as_bytes());
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&producer.record_within(32 << 10, None));
+        assert_eq!(client.mode(modes::ALT_SCREEN), Some(true));
+        producer.write(b"\x1b[?1049l");
+        client.write(b"\x1b[?1049l");
+        let rows = history_rows(&client);
+        assert!(
+            rows > 0 && rows < history_rows(&producer),
+            "the primary was not cut ({rows} rows)"
+        );
+        assert_lands(&mut producer, &mut client, "after the program");
+    }
+
+    /// The search's bounds, across widths and densities: within the budget unless it sent the
+    /// screen alone, never more history than there is, no more formats than its bound, and every
+    /// format after the sample near the budget, never a large overshoot.
+    ///
+    /// Value: protects=format_tail's bounds; fails_when=the seed goes back to budget / columns
+    /// (which formats ~10 MB here for a 256 KiB budget) or the halvings run away; why_new=no
+    /// search existed; seam=none
+    #[test]
+    fn the_tail_search_keeps_its_bounds() {
+        let budget = 256 << 10;
+        type Line = fn(u16, usize) -> String;
+        let densities: [(&str, Line); 3] = [
+            ("plain", plain_line),
+            ("16-colour", sixteen_colour_line),
+            ("truecolour", truecolour_line),
+        ];
+        for columns in [80u16, 200, 400] {
+            for (density, line) in densities {
+                let label = format!("{density} at {columns} columns");
+                let mut terminal = ShadowTerminal::new(columns, 24).expect("terminal");
+                for n in 0..2_000 {
+                    terminal.write(line(columns, n).as_bytes());
+                }
+                attempts();
+                let tail = terminal.format_tail(budget, None);
+                let sizes = attempts();
+                let history = history_rows(&terminal);
+                assert!(tail.history_rows <= history, "{label}");
+                assert!(
+                    tail.bytes.len() <= budget || tail.history_rows == 0,
+                    "{label}: {} bytes",
+                    tail.bytes.len()
+                );
+                let bound = TAIL_GUESSES + (u32::BITS - history.leading_zeros()) + 1;
+                assert!(
+                    sizes.len() as u32 <= bound,
+                    "{label}: {} formats, bound {bound}",
+                    sizes.len()
+                );
+                assert_eq!(
+                    sizes.first().copied(),
+                    Some(terminal.format_rows(true, Some(TAIL_SAMPLE_ROWS)).len()),
+                    "{label}: the first format is not the sample: {sizes:?}"
+                );
+                assert!(
+                    sizes.iter().skip(1).all(|size| *size <= 2 * budget),
+                    "{label}: a format overshot: {sizes:?}"
+                );
+            }
+        }
+    }
+
+    /// A paint that fits within 80% of the budget is scaled up once more. Fixed-length rows make
+    /// the landing deterministic: the sample (the newest rows, with the screen and the palette)
+    /// comes to more bytes a row than the history behind it, so the first guess comes in at about
+    /// three fifths of the budget.
+    ///
+    /// Value: protects=the 80% stop; fails_when=the search stops at a lower fill; why_new=no
+    /// search existed; seam=none
+    #[test]
+    fn the_tail_search_fills_its_budget() {
+        let mut terminal = ShadowTerminal::new(200, 24).expect("terminal");
+        for _ in 0..20_000 {
+            terminal.write(format!("{}\r\n", "y".repeat(199)).as_bytes());
+        }
+        for _ in 0..200 {
+            terminal.write(format!("{}\r\n", "x".repeat(139)).as_bytes());
+        }
+        let budget = 1 << 20;
+        attempts();
+        let tail = terminal.format_tail(budget, None);
+        let sizes = attempts();
+        assert!(
+            sizes
+                .iter()
+                .any(|size| (budget / 2..budget / 10 * 8).contains(size)),
+            "fixture: no format landed between 50% and 80% of the budget: {sizes:?}"
+        );
+        assert!(
+            (budget / 10 * 8..=budget).contains(&tail.bytes.len()),
+            "the search stopped at {} of {budget} bytes: {sizes:?}",
+            tail.bytes.len()
+        );
+    }
+
+    /// Several pages of history, with wide characters, a combining mark and OSC 8 links, so a page
+    /// compressed and read back has every kind of cell content.
+    fn compression_fixture() -> ShadowTerminal {
+        let mut terminal = ShadowTerminal::new(200, 50).expect("terminal");
+        for n in 0..20_000 {
+            terminal.write(
+                format!(
+                    "line {n} 漢字 e\u{301} \x1b]8;;https://example.com/{n}\x1b\\link\x1b]8;;\x1b\\ {}\r\n",
+                    "z".repeat(100)
+                )
+                .as_bytes(),
+            );
+        }
+        terminal
+    }
+
+    /// Compressing frees memory and changes nothing a client is shown: the same replay, with a
+    /// continuation left open, and the same record under a full-screen program. A read inflates
+    /// what it reads, and the next compress undoes it (#463).
+    ///
+    /// Value: protects=compress() frees history memory losslessly, and runs where the agent
+    /// ships; fails_when=compress is not called, loses cell content, or the target cannot
+    /// compress; why_new=nothing compressed before; seam=none
+    #[test]
+    fn compressing_changes_nothing_a_client_is_shown() {
+        let mut terminal = compression_fixture();
+        terminal.write(b"\x1b[31mpartly \x1b[3");
+        let full = terminal.memory().expect("memory");
+        assert!(
+            full.compression_supported,
+            "this target cannot compress: each session would keep its history uncompressed"
+        );
+        let before = terminal.replay();
+        terminal.compress();
+        let compressed = terminal.memory().expect("memory");
+        assert!(
+            compressed.primary_compressed_pages > 0,
+            "nothing compressed"
+        );
+        assert!(
+            compressed.primary_resident_bytes * 2 < full.primary_resident_bytes,
+            "{} bytes resident after compressing {}",
+            compressed.primary_resident_bytes,
+            full.primary_resident_bytes
+        );
+        assert_eq!(terminal.replay(), before, "compressing changed the replay");
+        let read = terminal.memory().expect("memory");
+        assert!(
+            read.primary_resident_bytes > compressed.primary_resident_bytes,
+            "a read inflated nothing"
+        );
+        terminal.compress();
+        assert!(
+            terminal.memory().expect("memory").primary_resident_bytes < read.primary_resident_bytes,
+            "the next compress did not undo the read"
+        );
+
+        terminal.write(b"m\x1b[?1049h\x1b[Hvim");
+        let before = terminal.record();
+        terminal.compress();
+        assert_eq!(
+            terminal.record(),
+            before,
+            "compressing changed the alternate screen's record"
+        );
+    }
+
+    /// A width change reflows, which inflates the whole history, so `resize` compresses it again
+    /// before it returns rather than leaving it to the next tick.
+    ///
+    /// Value: protects=a resize leaves the history compressed; fails_when=resize stops compressing
+    /// on a width change; why_new=resizing never touched memory before; seam=none
+    #[test]
+    fn a_width_change_leaves_the_history_compressed() {
+        let mut terminal = compression_fixture();
+        let full = terminal.memory().expect("memory").primary_resident_bytes;
+        terminal.compress();
+        terminal.resize(160, 50);
+        let after = terminal.memory().expect("memory");
+        assert!(after.primary_compressed_pages > 0, "nothing compressed");
+        assert!(
+            after.primary_resident_bytes * 2 < full,
+            "{} bytes resident after the resize, {full} uncompressed",
+            after.primary_resident_bytes
+        );
     }
 
     /// A record is the replay without its continuation: the screen, both screens when a program
@@ -1442,6 +2148,123 @@ mod tests {
                 .rposition(|byte| *byte != SENTINEL)
                 .map(|i| i + 1);
             assert_eq!(written, Some(width), "kind {kind}");
+        }
+    }
+
+    /// Not a test: prints the numbers ADR 0051 quotes, so they can be measured again after an
+    /// engine bump. Run it in release:
+    /// `WR_AGENT_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p wr-agent
+    /// --features terminal-state --release --lib measure_shadow_history -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a measurement, run by hand in release"]
+    fn measure_shadow_history() {
+        fn mib(bytes: u64) -> f64 {
+            bytes as f64 / f64::from(1 << 20)
+        }
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut random_line = move || -> String {
+            const ALPHABET: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            (0..199)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    char::from(ALPHABET[(seed % 64) as usize])
+                })
+                .collect::<String>()
+                + "\r\n"
+        };
+        // The fixtures: 200 by 50, history up to the 50 MB the shadow keeps.
+        let moderate = |n: usize| {
+            format!(
+                "\x1b[3{}mline {n}\x1b[0m {}\r\n",
+                n % 8,
+                "x".repeat(n % 120)
+            )
+        };
+        type Fixture<'a> = (&'a str, Box<dyn FnMut(usize) -> String + 'a>);
+        let fixtures: [Fixture; 3] = [
+            ("moderate (16 colours, short lines)", Box::new(moderate)),
+            (
+                "dense (truecolour alternating per cell)",
+                Box::new(|n| truecolour_line(200, n)),
+            ),
+            ("high-entropy (random base64)", Box::new(|_| random_line())),
+        ];
+        for (name, mut line) in fixtures {
+            let mut terminal = ShadowTerminal::new(200, 50).expect("terminal");
+            for n in 0..150_000 {
+                terminal.write(line(n).as_bytes());
+            }
+            let full = terminal.memory().expect("memory");
+            println!(
+                "\n{name}: {} history rows, {:.2} MiB resident",
+                history_rows(&terminal),
+                mib(full.primary_resident_bytes)
+            );
+
+            let started = Instant::now();
+            let fresh = terminal.clone_via_snapshot().expect("clone");
+            println!(
+                "  clone of the uncompressed history: {:?}, copy {:.2} MiB resident",
+                started.elapsed(),
+                mib(fresh.memory().expect("memory").primary_resident_bytes)
+            );
+            drop(fresh);
+
+            let started = Instant::now();
+            terminal.compress();
+            println!(
+                "  compress: {:?}, {:.2} MiB resident",
+                started.elapsed(),
+                mib(terminal.memory().expect("memory").primary_resident_bytes)
+            );
+
+            for (budget_name, budget) in [
+                ("repaint", REPAINT_MAX_BYTES),
+                ("record", RECORD_MAX_BYTES),
+                ("hand-off share of 16", (16 << 20) / 16),
+            ] {
+                attempts();
+                let started = Instant::now();
+                let record = terminal.record_within(budget, None);
+                let took = started.elapsed();
+                let sizes = attempts();
+                let mut client = ShadowTerminal::new(200, 50).expect("client");
+                client.write(&record);
+                println!(
+                    "  {budget_name} ({:.2} MiB): {:.2} MiB, {} rows, {took:?} (the shadow-lock \
+                     hold), formats {:?}, peak format {:.2} MiB, {:.2} MiB resident after",
+                    mib(budget as u64),
+                    mib(record.len() as u64),
+                    history_rows(&client),
+                    sizes,
+                    mib(sizes.iter().copied().max().unwrap_or(0) as u64),
+                    mib(terminal.memory().expect("memory").primary_resident_bytes)
+                );
+                terminal.compress();
+            }
+
+            terminal.write(b"\x1b[?1049h\x1b[H");
+            for n in 0..49 {
+                terminal.write(truecolour_line(200, n).as_bytes());
+            }
+            terminal.compress();
+            let started = Instant::now();
+            let copy = terminal.clone_via_snapshot().expect("clone");
+            println!(
+                "  alternate screen: clone {:?} (compressed source), copy {:.2} MiB resident",
+                started.elapsed(),
+                mib(copy.memory().expect("memory").primary_resident_bytes)
+            );
+            let started = Instant::now();
+            let record = terminal.record();
+            println!(
+                "  alternate screen: record {:.2} MiB in {:?}",
+                mib(record.len() as u64),
+                started.elapsed()
+            );
         }
     }
 

@@ -13,6 +13,20 @@ use crate::program_status::Store;
 /// status probe's reply), and `Some(blocked)` when its program status changed (#358).
 pub type Written = (Vec<u8>, Option<bool>);
 
+/// The budget `replay_for_within` takes for a replay of at most `bytes` in all, and never more
+/// than a repaint's.
+#[cfg(feature = "terminal-state")]
+pub fn record_budget(bytes: usize) -> usize {
+    use crate::terminal::{REPAINT_MAX_BYTES, REPLAY_OVERHEAD};
+    bytes.min(REPAINT_MAX_BYTES).saturating_sub(REPLAY_OVERHEAD)
+}
+
+/// No shadow, no replay.
+#[cfg(not(feature = "terminal-state"))]
+pub fn record_budget(_bytes: usize) -> usize {
+    0
+}
+
 #[cfg(feature = "terminal-state")]
 pub struct Shadow {
     terminal: Option<crate::terminal::ShadowTerminal>,
@@ -105,22 +119,54 @@ impl Shadow {
     /// resumed (^Z, `fg`) is busy again to clients that attach once it is back; a client that
     /// attached while it was away stays idle until the program's next report.
     pub fn replay_for(&self, foreground: Option<libc::pid_t>) -> Vec<u8> {
+        self.replay_for_within(foreground, crate::terminal::REPAINT_MAX_BYTES, None)
+    }
+
+    /// `replay_for` with its record held to `budget` bytes, and its screen alone past `until`
+    /// (`ShadowTerminal::record_within`): for a hand-off, which shares one total between sessions.
+    pub fn replay_for_within(
+        &self,
+        foreground: Option<libc::pid_t>,
+        budget: usize,
+        until: Option<std::time::Instant>,
+    ) -> Vec<u8> {
         let Some(terminal) = self.terminal.as_ref() else {
             return Vec::new();
         };
-        match (self.progress_owner, foreground) {
-            (Some(owner), Some(now)) if owner != now => terminal.replay_idle(),
-            _ => terminal.replay(),
-        }
+        let report = !matches!(
+            (self.progress_owner, foreground),
+            (Some(owner), Some(now)) if owner != now
+        );
+        terminal.replay_within(report, budget, until)
     }
 
     /// What to keep on disk for this screen (`crate::screens`): `replay()` without the progress
-    /// report or the parser continuation.
+    /// report or the parser continuation, held to `terminal::RECORD_MAX_BYTES`.
     pub fn record(&self) -> Vec<u8> {
         self.terminal
             .as_ref()
-            .map(|t| t.record())
+            .map(|t| t.record_within(crate::terminal::RECORD_MAX_BYTES, None))
             .unwrap_or_default()
+    }
+
+    /// Compresses the history nothing has touched since it was last compressed (#463).
+    pub fn compress(&mut self) {
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.compress();
+        }
+    }
+
+    /// Whether compressing history frees memory in this build, on this target. True when there is
+    /// no terminal, which keeps no history to compress.
+    pub fn compression_supported(&self) -> bool {
+        self.terminal
+            .as_ref()
+            .is_none_or(|t| t.compression_supported())
+    }
+
+    #[cfg(test)]
+    pub fn memory(&self) -> Option<crate::terminal::MemoryUsage> {
+        self.terminal.as_ref().and_then(|t| t.memory())
     }
 
     pub fn visible_text(&self) -> String {
@@ -158,8 +204,21 @@ impl Shadow {
     pub fn replay_for(&self, _foreground: Option<libc::pid_t>) -> Vec<u8> {
         Vec::new()
     }
+    pub fn replay_for_within(
+        &self,
+        _foreground: Option<libc::pid_t>,
+        _budget: usize,
+        _until: Option<std::time::Instant>,
+    ) -> Vec<u8> {
+        Vec::new()
+    }
     pub fn record(&self) -> Vec<u8> {
         Vec::new()
+    }
+    /// No history kept, so none to compress.
+    pub fn compress(&mut self) {}
+    pub fn compression_supported(&self) -> bool {
+        true
     }
     pub fn visible_text(&self) -> String {
         String::new()
