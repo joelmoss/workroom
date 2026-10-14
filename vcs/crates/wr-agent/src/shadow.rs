@@ -279,6 +279,18 @@ mod tests {
         assert_eq!(changed, None);
     }
 
+    /// A probe and a report in one write never alert: the program printing them never read the
+    /// answer.
+    #[test]
+    fn a_probe_and_a_report_written_together_never_alert() {
+        let mut shadow = Shadow::new(80, 24);
+        shadow.write_from_pty(b"\x1b]7501;?\x07\x1b]7501;state=blocked\x07", || Some(0));
+        let id = crate::session::SessionId([0; 16]);
+        let status: serde_json::Value =
+            serde_json::from_slice(&shadow.status().unwrap().event(id, id)).unwrap();
+        assert_eq!(status["records"][0]["notify"], false);
+    }
+
     /// A report reaches the store with the foreground group as its sender, and a prompt ends it.
     #[test]
     fn reports_reach_the_store_and_a_prompt_ends_them() {
