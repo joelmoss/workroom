@@ -180,7 +180,7 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
   reattach via the bundled session helper — `wr-agent`
   for anything created since the migration, and the older `workroom-session` for sessions that
   helper is still holding, resolved per session so nothing is taken away mid-use. A pane whose
-  session is gone still opens a fresh shell in its remembered directory. Run tabs are
+  session has ended opens a shell in its remembered directory that says so. Run tabs are
   deliberately never restored.
 
 ## Things to verify on first build (marked `TODO` in code)
