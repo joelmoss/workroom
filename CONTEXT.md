@@ -78,6 +78,9 @@ Reconnecting a pane to a session that is still running and repainting its screen
 **Run command**:
 A command the user sets to run in a workroom, such as `npm start`, started in a tab.
 
+**Program status**:
+What the program in a session (Claude Code, say) reports about itself over OSC 7501: working, waiting on the user, finished or failed. wr-agent keeps it per session and the app shows it as a mark; not progress (OSC 9;4), which only says a command is busy.
+
 ## Remote hosts
 
 Owns hosts, their drivers, provisioning, the credential relay and port forwarding. A remote workroom is a workroom whose files, shells and agent live on a host.
