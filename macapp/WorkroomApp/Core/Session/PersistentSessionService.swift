@@ -404,7 +404,8 @@ final class PersistentSessionService {
   ///
   /// Asking again is what closes it. Ownership is otherwise resolved once per session and cached
   /// for the launch (a pane asks twice and the two answers must agree), and that cache is correct
-  /// for routing — but it long outlives the session it describes.
+  /// for routing — but it long outlives the session it describes. A lost session's cached owner is
+  /// dropped, so the attach re-resolves to the agent, whose `--no-create` attach shows it ended.
   ///
   /// **`.unreachable` proceeds, deliberately.** It means we could not ask, not that the session is
   /// gone, and the substitution needs the daemon to be RESPONSIVE enough to answer "not mine" and
@@ -414,15 +415,19 @@ final class PersistentSessionService {
   ///
   /// What it does not close: the daemon can still answer `.owned` here and lose the session before
   /// the attach lands. That race is narrow and cannot be closed from this side of the socket.
+  @discardableResult
   func confirmBeforeAttach(sessionID: UUID, wasRestored: Bool) -> DaemonSessionState {
     // A freshly minted id has never existed anywhere, so create-on-attach is the WANTED behaviour
     // and asking would refuse every new pane. Only an id carried over from a previous launch can
     // name a session that has since died.
     guard wasRestored else { return .attachable }
-    // Asked of the host's agent in the attach itself (`--no-create`): one request, so the answer
-    // cannot go stale between the question and the attach.
+    // The agent, local or remote, is asked in the attach itself (`--no-create`): one request, so
+    // the answer cannot go stale between the question and the attach. Only the retired daemon's
+    // client has no such flag.
     if isRemote(sessionID) { return .attachable }
-    guard let owner = backend(forSession: sessionID) else { return .attachable }
+    guard let owner = backend(forSession: sessionID), owner == .swiftDaemon else {
+      return .attachable
+    }
     switch ownership(of: sessionID, in: owner) {
     case .owned, .unreachable:
       return .attachable
@@ -539,7 +544,10 @@ final class PersistentSessionService {
       let path = binaryPath(for: owner),
       socketPath(for: owner) != nil
     else { return nil }
-    return path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
+    let command = path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
+    // A restored id the agent no longer holds is refused rather than created, and the agent opens
+    // the pane as a shell that says the session ended (`attach.rs`'s `ended`).
+    return restored && owner == .rustAgent ? command + " --no-create" : command
   }
 
   func launchEnvironment(

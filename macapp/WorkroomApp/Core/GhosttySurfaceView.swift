@@ -460,32 +460,14 @@ final class GhosttySurfaceView: NSView {
     // No session was requested for this pane — not a failure, nothing to log.
     guard let persistentSessionID else { return false }
 
-    // Ask the daemon once more, before committing to an attach, whether it still holds this.
-    // The shipped daemon CREATES a session on attach for an id it does not hold, so a cached
-    // ownership answer that has outlived its session turns a reattach into a brand new shell with
-    // nothing to mark it as one. See `confirmBeforeAttach`.
-    if PersistentSessionService.shared.confirmBeforeAttach(
-      sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored) == .gone,
-      let noticePointer = strdup(Self.lostSessionCommand())
-    {
-      Self.sessionLogger.error(
-        """
-        persistent session \(persistentSessionID.uuidString, privacy: .public) is gone; \
-        opening a shell with a notice rather than letting the daemon create a new session
-        """)
-      surfaceCStrings.append(noticePointer)
-      config.command = UnsafePointer(noticePointer)
-      config.wait_after_command = false
-      // This branch returns before `launchEnvironment`, so without this the notice pane would be a
-      // second-class terminal: no `GHOSTTY_RESOURCES_DIR` means no shell integration, which means
-      // no OSC 133 and no OSC 7 — the title latches to whatever the prompt last set and the footer
-      // never learns the directory. The agent's own fallback keeps them by routing through
-      // `shell::invocation`; losing a session should not also cost you a working title bar.
-      if let resources = GhosttyResources.bundledURL?.path {
-        environment.append(("GHOSTTY_RESOURCES_DIR", resources))
-      }
-      return true
-    }
+    // Ask the retired daemon once more, before committing to an attach, whether it still holds
+    // this. It CREATES a session on attach for an id it does not hold, so a cached ownership answer
+    // that has outlived its session would turn a reattach into a brand new shell with nothing to
+    // mark it as one. A lost one drops its cached owner, so the attach below re-resolves to the
+    // agent, whose `--no-create` attach shows the session ended and opens a shell with Ghostty's
+    // integration. See `confirmBeforeAttach`.
+    PersistentSessionService.shared.confirmBeforeAttach(
+      sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored)
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
     // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
     // for the backend a NEW session would go to, so it goes false whenever the agent is unhealthy
@@ -518,43 +500,6 @@ final class GhosttySurfaceView: NSView {
         workingDirectory: workingDirectory,
         metadata: sessionMetadata))
     return true
-  }
-
-  /// A command that says the previous session is gone, then becomes the user's shell.
-  ///
-  /// **Why a printed line and not silence.** Refusing the attach already prevents the wrong
-  /// outcome: the daemon does not get asked, so it cannot fork a replacement shell and pass it off
-  /// as the user's. But the pane still comes back showing a fresh prompt, which is exactly what a
-  /// successfully restored session looks like — and the thing that was running there is gone. A
-  /// terminal that quietly swaps a finished build for an empty prompt is the failure worth paying
-  /// a line of text to avoid.
-  ///
-  /// `exec` so the shell IS the pane's process: its exit status, title and signals behave the way
-  /// they would in any other terminal, rather than being wrapped by something the user did not ask
-  /// for. The agent's `fall_back_to_shell` shares that idea and little else — it builds its argv
-  /// through `shell::invocation`, strips `WORKROOM_SESSION_*` and sets a marker, none of which
-  /// apply here: this branch returns before `launchEnvironment`, so the pane never had those
-  /// variables to strip.
-  /// `SHELL`, or the default when it is unset OR EMPTY.
-  ///
-  /// `??` only defaults on absent, so `SHELL=""` produced `exec '' -l` — exit 127, and with
-  /// `wait_after_command` false that is the dead pane this whole function exists to prevent. The
-  /// Rust side has always filtered empties (`serve.rs`'s `from_vars`); these two are now in step.
-  static func resolvedShell(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-  ) -> String {
-    guard let shell = environment["SHELL"], !shell.isEmpty else {
-      return SessionShellIntegration.defaultShell
-    }
-    return shell
-  }
-
-  static func lostSessionCommand(
-    shell: String = GhosttySurfaceView.resolvedShell()
-  ) -> String {
-    let notice = "The terminal that was running here has ended, so this is a new shell."
-    let script = "printf '%s\\n' \(shellQuoted(notice)); exec \(shellQuoted(shell)) -l"
-    return "/bin/sh -c \(shellQuoted(script))"
   }
 
   /// A pane on a remote host whose ssh lost the link reattaches, rather than sitting on a dead

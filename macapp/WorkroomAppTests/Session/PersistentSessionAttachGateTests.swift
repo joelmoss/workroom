@@ -106,6 +106,10 @@ final class PersistentSessionAttachGateTests: XCTestCase {
     // Without its token the pane's attach holds nothing, and its host is not reconnected for it.
     XCTAssertTrue(
       body.contains("by: attachToken"), "applyPersistentSession no longer marks the pane attached")
+    // Without it a restored pane's attach creates a session it lost, rather than showing it ended.
+    XCTAssertTrue(
+      body.contains("restored: persistentSessionIsRestored"),
+      "applyPersistentSession no longer says whether the pane was restored")
   }
 
   /// The other call site this commit added, and the one with the same blind spot.
@@ -130,9 +134,6 @@ final class PersistentSessionAttachGateTests: XCTestCase {
         with nothing to mark it as one. See PersistentSessionService.confirmBeforeAttach.
         """)
     }
-    XCTAssertTrue(
-      body.contains(".gone"),
-      "the confirmation's answer is no longer acted on; only `.gone` must stop the attach")
 
     guard let attach = body.range(of: "attachCommand(") else {
       return XCTFail("applyPersistentSession no longer resolves an attach command")
@@ -141,7 +142,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
       confirm.lowerBound < attach.lowerBound,
       """
       the daemon is asked whether it still holds the session AFTER the attach command has been \
-      resolved, which vetoes nothing. Confirm first, then route.
+      resolved, so a stale daemon owner is still the one routed to. Confirm first, then route.
       """)
   }
 
