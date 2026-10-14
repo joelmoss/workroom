@@ -24,9 +24,9 @@ what the program said; the last line says it came from the program in that termi
 - A finished or failed mark clears when you move focus into that terminal. A finish you watched
   happen leaves no mark behind.
 - A program that left a request behind (it crashed mid-question, say) can be cleared by hand:
-  right-click the tab or the sidebar row, then **Clear status**.
+  right-click the tab or the sidebar row, then **Clear Status**.
 - When the link to a host drops, its marks stay with a small clock beside them, and the tooltip says
-  they may be out of date, until Workroom reconnects. Clear status waits for the link too: the host
+  they may be out of date, until Workroom reconnects. Clear Status waits for the link too: the host
   keeps the request, and reconnecting would bring the mark straight back.
 
 A terminal with no mark is **not reporting**, which is not the same as "not waiting". Programs other
@@ -173,5 +173,5 @@ category (`log stream --predicate 'category == "program-status"'`).
 
 A mark that never clears on a **remote** host usually means the host has no shell integration
 (OSC 133): Workroom pushes it on connect, and without it a request clears only on the next report,
-on exit or when its program's process group ends. Clear status always works while the host is
+on exit or when its program's process group ends. Clear Status always works while the host is
 reachable.
