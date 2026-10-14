@@ -899,9 +899,21 @@ fn a_replaced_ended_session_is_reattached_on_the_next_restore() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = first.kill();
     let _ = first.wait();
+    // Listed under the pane's id, so the second restore below reattaches it rather than making
+    // another, which would print the same output.
+    let listed = Command::new(agent_binary())
+        .args(["list", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("list");
 
     let (output, _) = attach_with_args(&["--no-create"], &env, None);
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains("6b9b968d-0bd7-4172-850a-a373da73bc7a"),
+        "the first restore's new session is not held under the pane's id: {:?}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
     assert!(
         output.contains("STILL-THE-SAME fb=[unset]"),
         "expected the session the first restore made. got: {output:?}"
