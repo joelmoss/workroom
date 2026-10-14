@@ -923,6 +923,70 @@ fn a_replaced_ended_session_is_reattached_on_the_next_restore() {
     assert!(!output.contains("has ended"), "got: {output:?}");
 }
 
+/// When the new session is refused too, the pane gets the fallback shell after exactly one retry,
+/// rather than asking again forever.
+// Value: protects=a refused create ends in a working shell after one retry; fails_when=the
+// one-retry guard goes, so a refusing agent is asked again and again; why_new=the real agent never
+// refuses a create; seam=none; no_claim=why a real create fails (fake agent)
+#[test]
+fn a_refused_new_session_falls_back_to_a_shell_after_one_retry() {
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wr_protocol::envelope::{Envelope, Hello, Service};
+    use wr_protocol::frame::{Frame, FrameKind};
+
+    let dir = scratch("no-create-refused-twice");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let attaches = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&attaches);
+    // Refuses the first two attaches. Any later one is closed unanswered, which the relay retries
+    // only until its 10s deadline, so a regression ends in a count above 2 instead of a hang.
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            if counted.fetch_add(1, Ordering::SeqCst) >= 2 {
+                continue;
+            }
+            let _ = stream.write_all(&Hello::current("fake-peer").encode());
+            let frame = Frame::new(FrameKind::Failure, b"session ended".to_vec());
+            let _ = stream.write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode());
+            let _ = stream.flush();
+            held.push(stream);
+        }
+    });
+
+    let (output, _) = attach_with_args(
+        &["--no-create"],
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC7B",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo FELL-BACK fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        attaches.load(Ordering::SeqCst),
+        2,
+        "expected the refusal and one retry. got: {output:?}"
+    );
+    assert!(
+        output.contains("has ended") && output.contains("FELL-BACK fb=[1]"),
+        "expected the ended notice and the fallback shell. got: {output:?}"
+    );
+}
+
 /// On a remote host (`--no-spawn`) a restored pane whose session has ended gets no shell (#255,
 /// D7): one started by the attach client would be no agent session, invisible to every other Mac
 /// and gone with the ssh link. The pane says the terminal ended and holds until it is closed, here
