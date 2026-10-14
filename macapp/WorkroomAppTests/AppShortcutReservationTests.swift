@@ -52,7 +52,7 @@ final class AppShortcutReservationTests: XCTestCase {
   // MARK: Regression guard for the combinations already reserved
 
   func testExistingShiftCommandShortcutsStayReserved() {
-    for key in ["d", "g", "k", "l", "n", "r"] {
+    for key in ["d", "g", "k", "l", "m", "n", "r"] {
       XCTAssertTrue(reserved(key, [.command, .shift]), "⇧⌘\(key.uppercased())")
     }
   }

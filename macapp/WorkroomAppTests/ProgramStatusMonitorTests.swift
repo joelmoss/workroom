@@ -186,6 +186,88 @@ final class ProgramStatusMonitorTests: XCTestCase {
     XCTAssertEqual(monitor.rollup(for: session)?.blocked.map(\.id), ["b", "a"])
     XCTAssertEqual(monitor.rollup(for: session)?.blockedSince, Date(timeIntervalSince1970: 100))
   }
+
+  /// A session that ends takes its records with it, and its panes hear which session went.
+  func testAnEndedSessionGoesAndItsPanesAreTold() async {
+    let (monitor, gate) = makeMonitor()
+    var changes: [ProgramStatusMonitor.Change] = []
+    _ = monitor.addListener { changes.append($0) }
+    let connection = FakeProgramStatusConnection()
+    gate.yield(connection)
+    monitor.watch(.local)
+    await until(
+      {
+        connection.push(.snapshotComplete(boot: "b", sessions: []))
+        return monitor.hosts[.local] == .live
+      }())
+    connection.push(status([blocked()]))
+    await until(monitor.rollup(for: session) != nil)
+    let before = changes.count
+
+    connection.push(.ended(boot: "b", session: session))
+    await until(changes.count > before)
+    XCTAssertNil(monitor.rollup(for: session))
+    XCTAssertEqual(changes.last?.sessions, [session])
+  }
+
+  /// A link that drops and comes back within the stale grace, as every app update's hand-off
+  /// does, never shows its host stale.
+  func testADisconnectShorterThanTheGraceNeverGoesStale() async {
+    let (monitor, gate) = makeMonitor()
+    let grace = SleepGate()
+    monitor.sleep = { duration in
+      if duration == ProgramStatusLimits.staleGrace { await grace.wait() }
+    }
+    var changes: [ProgramStatusMonitor.Change] = []
+    _ = monitor.addListener { changes.append($0) }
+    let first = FakeProgramStatusConnection()
+    gate.yield(first)
+    monitor.watch(.local)
+    await until(
+      {
+        first.push(.snapshotComplete(boot: "b", sessions: []))
+        return monitor.hosts[.local] == .live
+      }())
+
+    first.push(.lost)
+    await until(grace.isWaiting)
+    let second = FakeProgramStatusConnection()
+    gate.yield(second)
+    let working = ProgramStatusRecord(id: "", state: .working)
+    await until(
+      {
+        second.push(status([working]))
+        second.push(.snapshotComplete(boot: "b", sessions: []))
+        return monitor.rollup(for: session)?.working == true
+      }())
+    let published = changes.count
+
+    grace.release()
+    try? await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(monitor.hosts[.local], .live)
+    XCTAssertEqual(monitor.rollup(for: session)?.stale, false)
+    XCTAssertEqual(changes.count, published, "no stale change published")
+  }
+}
+
+/// Holds every sleep handed to `wait` until the test releases them.
+private final class SleepGate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  var isWaiting: Bool { lock.withLock { !waiters.isEmpty } }
+
+  func wait() async {
+    await withCheckedContinuation { continuation in lock.withLock { waiters.append(continuation) } }
+  }
+
+  func release() {
+    let held = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      defer { waiters = [] }
+      return waiters
+    }
+    for waiter in held { waiter.resume() }
+  }
 }
 
 /// Connections handed to a monitor's `connect` one at a time, as the test releases them.
@@ -349,6 +431,68 @@ final class ProgramStatusPaneTests: XCTestCase {
       try? await Task.sleep(for: .milliseconds(10))
     }
     XCTAssertEqual(connection.requests, ["seen 5 []"])
+  }
+
+  /// A finish the user watched happen, in the focused pane, is marked seen when focus leaves, and
+  /// only as finished.
+  func testAFinishWatchedInTheFocusedPaneIsSeenWhenFocusLeaves() async {
+    let monitor = ProgramStatusMonitor()
+    monitor.watchesHosts = true
+    let connection = FakeProgramStatusConnection()
+    monitor.connect = { _ in connection }
+    monitor.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
+    let s = makeSessions(monitor)
+    s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
+    let tab = s.addTab(for: target)
+    let view = tab.surface!
+    let id = session(of: tab)
+    for _ in 0..<200 where monitor.hosts[.local] != .live {
+      connection.push(.snapshotComplete(boot: "b", sessions: []))
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    let window = AlwaysKeyWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
+      backing: .buffered, defer: false)
+    window.contentView?.addSubview(view)
+    window.makeFirstResponder(view)
+    XCTAssertTrue(view.isEffectivelyFocused, "fixture: the pane has focus")
+
+    let done = ProgramStatusRecord(id: "", state: .done)
+    connection.push(.status(boot: "b", session: id, revision: 5, reporting: true, records: [done]))
+    for _ in 0..<200 where s.tabs(for: target)[0].indicator != .done {
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(connection.requests, [], "not seen while it is being watched")
+
+    view.removeFromSuperview()
+    for _ in 0..<200 where connection.requests.isEmpty {
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(connection.requests, [#"seen 5 ["done"]"#])
+  }
+
+  /// A tab pointed at another session shows that session's status at once, not the old one's
+  /// until the new session next changes.
+  func testATabPointedAtAnotherSessionShowsItsStatusAtOnce() {
+    let monitor = ProgramStatusMonitor()
+    let s = makeSessions(monitor)
+    monitor.seed(
+      session(of: s.addTab(for: target)),
+      records: [ProgramStatusRecord(id: "", state: .blocked, kind: .question, episode: 1)])
+    let other = UUID()
+    monitor.seed(other, records: [ProgramStatusRecord(id: "", state: .done)])
+    XCTAssertTrue(s.needsAttention(forTargetID: target.id), "fixture: the tab's own session waits")
+
+    var tab = s.tabs(for: target)[0]
+    guard case .terminal(var state) = tab.content else { return XCTFail("not a terminal") }
+    state.sessionID = other
+    tab.content = .terminal(state)
+    s.replace(tab, for: target)
+    s.refreshProgramStatus(tab: tab.id, target: target.id)
+
+    XCTAssertEqual(s.tabs(for: target)[0].programStatus, monitor.rollup(for: other))
+    XCTAssertEqual(s.tabs(for: target)[0].indicator, .done)
+    XCTAssertFalse(s.needsAttention(forTargetID: target.id))
   }
 }
 

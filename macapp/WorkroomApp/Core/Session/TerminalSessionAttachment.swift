@@ -25,6 +25,9 @@ enum TerminalSessionAttachment {
     state.view.reattachPersistentSession()
     tab.content = .terminal(state)
     sessions.replace(tab, for: target)
+    sessions.refreshProgramStatus(tab: tab.id, target: target.id)
+    // The waiting list counts only sessions an open pane shows.
+    WindowRegistry.shared.recomputeBadge()
     return true
   }
 }

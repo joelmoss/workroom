@@ -113,7 +113,9 @@ final class ProgramStatusMonitor: ObservableObject {
     let isLaunchSnapshot: Bool
   }
 
-  @Published private(set) var sessions: [UUID: ProgramStatusSession] = [:]
+  /// Not `@Published`: panes get it through their tab's state, by listener, and the sidebar and tab
+  /// strip, which observe this for `hosts`, would otherwise re-render on every session's change.
+  private(set) var sessions: [UUID: ProgramStatusSession] = [:]
   @Published private(set) var hosts: [HostID: HostState] = [:]
 
   /// Connects `host` and returns its connection: `LocalAgentVCS` for this Mac, which may start the

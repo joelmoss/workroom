@@ -1,4 +1,5 @@
 import AgentConnection
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -178,6 +179,37 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(store.notifications.items.count, 1)
   }
 
+  /// The control for the test above: in the key window, with its terminal holding focus,
+  /// activation reads that terminal's notifications.
+  func testActivationReadsTheKeyWindowsFocusedTerminal() {
+    let sid = SidebarID.workroom(project: "/p", name: "al")
+    store.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [Workroom(name: "al", path: "/p/al", vcsName: "git", warnings: [])])
+    ]
+    store.selectedTargetID = sid
+    let target = store.target(for: sid)!
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    let tab = store.terminals.addTab(for: target)
+    let window = AlwaysKeyWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
+      backing: .buffered, defer: false)
+    window.contentView?.addSubview(tab.surface!)
+    window.makeFirstResponder(tab.surface)
+    store.hostWindow = window
+    // After focus lands, so it is the activation that reads it, not the pane gaining focus.
+    store.notifications.record(
+      targetID: target.id, tabID: tab.id, activity: .osc(title: "t", body: nil), focused: false)
+    XCTAssertEqual(store.notifications.items.count, 1, "fixture: one unread notification")
+
+    store.dismissFocusedTerminalNotifications()
+    XCTAssertEqual(store.notifications.items.count, 0)
+    tab.surface?.removeFromSuperview()
+  }
+
   /// The badge counts other unread notifications plus waiting requests, never an alert twice.
   func testTheBadgeNeverCountsAnAlertTwice() {
     alerts.start()
@@ -241,6 +273,23 @@ final class ProgramStatusAlertsTests: XCTestCase {
     return notifier.posted
   }
 
+  /// A request's banner is posted under its episode, and answering the request withdraws that
+  /// banner, and only it.
+  func testAnsweringARequestWithdrawsItsOwnBanner() async {
+    let notifier = RecordingNotifier()
+    store.systemNotifier = notifier
+    store.isAppActive = { false }
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [blocked()])
+    for _ in 0..<200 where notifier.posted.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+    let episode = ProgramStatusAlerts.episode(boot: "fixture", session: id, record: blocked())
+    XCTAssertEqual(notifier.posted, [episode], "the banner's identifier is its episode")
+
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    XCTAssertEqual(notifier.withdrawn, [episode])
+  }
+
   // MARK: Windows
 
   /// A session attached in two windows is one waiting request and one alert; its row and count
@@ -297,6 +346,32 @@ private final class GatedNotifier: SystemNotifying, @unchecked Sendable {
   }
 
   func withdraw(tabIDs: [TerminalTab.ID]) {}
+}
+
+/// A notifier that is always allowed to post, and records each banner's identifier as the native
+/// request would carry it, and each identifier withdrawn.
+private final class RecordingNotifier: SystemNotifying, @unchecked Sendable {
+  private let lock = NSLock()
+  private var _posted: [String] = []
+  private var _withdrawn: [String] = []
+
+  var posted: [String] { lock.withLock { _posted } }
+  var withdrawn: [String] { lock.withLock { _withdrawn } }
+
+  func ensureAuthorized() async -> Bool { true }
+
+  func post(_ notification: WorkroomNotification) {
+    lock.withLock { _posted.append(SystemNotifier.payload(for: notification).identifier) }
+  }
+
+  func withdraw(tabIDs: [TerminalTab.ID]) {}
+
+  func withdraw(identifiers: [String]) { lock.withLock { _withdrawn += identifiers } }
+}
+
+/// A window that is key whatever the test host's activation state.
+private final class AlwaysKeyWindow: NSWindow {
+  override var isKeyWindow: Bool { true }
 }
 
 private struct QuietNotifier: SystemNotifying {
