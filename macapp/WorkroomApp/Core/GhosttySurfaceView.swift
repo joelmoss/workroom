@@ -447,9 +447,9 @@ final class GhosttySurfaceView: NSView {
 
   /// Configure libghostty to spawn a session helper for a background session.
   ///
-  /// Returns whether it set `config.command` — not strictly "a session was attached". The two
-  /// differ in one case: a restored session that has since ended, where the command is
-  /// `wr-agent attach --no-create`, which tells the user so and then becomes their shell. The
+  /// Returns whether it set `config.command` — not strictly "a session was attached". A restored
+  /// session that has since ended gets `wr-agent attach --no-create`, which tells the user so and
+  /// starts a new session in its place, or a plain shell if even that fails. The
   /// caller only uses the result to decide
   /// whether to install a run command, and a pane with a persistent session is never a run-command
   /// pane (`TerminalPersistentSessionPolicy` excludes them), so the distinction costs nothing.
@@ -465,8 +465,8 @@ final class GhosttySurfaceView: NSView {
     // this. It CREATES a session on attach for an id it does not hold, so a cached ownership answer
     // that has outlived its session would turn a reattach into a brand new shell with nothing to
     // mark it as one. A lost one drops its cached owner, so the attach below re-resolves to the
-    // agent, whose `--no-create` attach shows the session ended and opens a shell with Ghostty's
-    // integration. See `confirmBeforeAttach`.
+    // agent, whose `--no-create` attach shows the session ended and starts a new one in its place.
+    // See `confirmBeforeAttach`.
     PersistentSessionService.shared.confirmBeforeAttach(
       sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored)
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
