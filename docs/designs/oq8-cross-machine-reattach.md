@@ -67,8 +67,9 @@ Agreed by the owner, with premise 3 revised after the Codex cold read.
    - **recorded:** the frozen screen kept by #232 (`serve.rs`, the `existing_only && !exists`
      branch of the attach handler; tested by
      `a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host`);
-   - **missing:** the pane stays in the layout as an ended pane until the user closes it, exactly
-     as a restored pane whose session is gone behaves today. Restore never removes a pane from
+   - **missing:** the pane stays in the layout as an ended pane until the user closes it, as a
+     restored remote pane whose session is gone behaves today (a local pane gets a new session under
+     the same id and a toast, #459). Restore never removes a pane from
      the layout.
 
    Sessions tagged with this workroom that the layout does not mention, live or recorded, are
