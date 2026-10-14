@@ -230,9 +230,9 @@ mod tests {
         );
     }
 
-    /// The shell's command end (OSC 133 D) clears the report it follows, as the app's spinner
-    /// clears, even while the sender still owns the pty; a report after it is the next command's
-    /// (#464). A prompt start alone clears nothing, as in the app.
+    /// The shell's command end (OSC 133 D) clears the report it follows, even while the sender
+    /// still owns the pty; a report after it is the next command's (#464). A prompt start alone
+    /// clears nothing, as in the app.
     /// Value: protects=a reattach after a command ended is told idle even when the reporter never sent REMOVE and still owns the pty, and a report after D is kept; fails_when=the D arm is removed, the clear runs after the whole read instead of at the D, or a prompt start clears too; why_new=no test fed OSC 133 D to the shadow; seam=none
     #[test]
     fn a_command_end_clears_only_the_report_before_it() {

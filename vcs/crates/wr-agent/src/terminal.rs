@@ -26,9 +26,12 @@
 //! Then **the last OSC 9;4 progress report**, or an explicit REMOVE when there is none (#359). A
 //! program reports busy once, at the start of its work, so a client attaching mid-turn learns it
 //! only from here. Never in the on-disk record, which outlives the program. Two things clear it:
-//! the program's own REMOVE, and the shell's next command end (OSC 133 D, #464), where the app
-//! clears its spinner too. So a false D (a TUI printing one, a nested shell) clears it in both, and
-//! a job resumed with `fg` reads idle until it reports again. Separately, and for every session,
+//! the program's own REMOVE, and the shell's next command end (OSC 133 D, #464). The app clears
+//! its spinner at a D too, but only one that closes a command it saw start (OSC 133 C); the shadow
+//! clears at any D, so a report held at an idle prompt (a background job's) reads idle on a
+//! reattach after zsh's bare D for an empty Enter, while the live pane still spins. A false D
+//! inside a command (a TUI printing one, a nested shell) clears it in both, and a job resumed with
+//! `fg` reads idle until it reports again. Separately, and for every session,
 //! `Shadow::replay_for` leaves the report out of a replay while a known group other than its
 //! sender owns the pty, without clearing it. For a shell that sends no OSC 133 (a run command
 //! under `/bin/sh`, a shell without Ghostty's integration) that is all that hides a crashed
@@ -87,8 +90,8 @@ const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
 /// The last OSC 9;4 a session reported, as (state, percent); percent is -1 when omitted.
 pub type Progress = Option<(GhosttyTerminalProgressState, i8)>;
 
-/// Where the progress callback writes: the last report, and whether one has arrived since
-/// `take_fresh_report` last asked.
+/// Where the progress callback and a command end write: the held report, and whether it changed
+/// since `take_fresh_report` last asked.
 #[derive(Default)]
 struct ProgressSlot {
     report: Progress,
