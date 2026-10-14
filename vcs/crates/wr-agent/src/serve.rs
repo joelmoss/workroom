@@ -880,8 +880,9 @@ pub struct AttachRequest {
     pub env: Vec<(OsString, OsString)>,
     /// Attach only if the session exists; never create it (`CREATE=0`). A restored pane sends it,
     /// because creating would hand back a fresh shell that looks like the one that was running
-    /// there. The app asks first on a local host (`confirmBeforeAttach`); a pane on a remote host
-    /// has no such channel, and one request cannot race the answer. Inverted so the default,
+    /// there. Every agent-owned restored pane, local or remote, sends it, so one request cannot
+    /// race the answer; the app asks first (`confirmBeforeAttach`) only about a session the
+    /// retired daemon held, whose client has no such flag. Inverted so the default,
     /// and an older client that never sends it, keeps create-on-attach.
     pub existing_only: bool,
 }

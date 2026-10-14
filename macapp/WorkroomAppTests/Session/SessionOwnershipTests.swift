@@ -564,6 +564,11 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
 
     XCTAssertEqual(
       service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
+    // Value: protects=a restored daemon-owned attach omits --no-create, a flag its client lacks;
+    // fails_when=the rustAgent owner check is dropped; why_new=no test pinned attachCommand's
+    // owner scope; seam=none; no_claim=real daemon binary (path only)
+    let command = service.attachCommand(forSession: sessionID, restored: true)
+    XCTAssertEqual(command?.hasSuffix(" attach"), true, "got \(command ?? "nil")")
   }
 
   /// The bug. The owner is resolved and cached while the daemon holds the session; the shell then
@@ -694,8 +699,9 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
   /// `serve.rs` creates on first attach guarded only by `sessions.contains(id)`, exactly as the
   /// daemon does. Checking only the retired backend closed the hole on the one being drained and
   /// left it open on the one that owns every new session — and, once the drain finishes, on the
-  /// only one left. The inverted assertion lives in `testAnAgentOwnedSessionIsAlsoChallenged`; what
-  /// remains here is the cost question, which the answer above must not regress.
+  /// only one left. The agent is now asked in the attach itself
+  /// (`testAnAgentOwnedSessionIsRefusedInTheAttachItself`); what remains here is the cost question
+  /// for the daemon, which must not regress.
   @MainActor
   func testAChallengeCostsOneRoundTripAtMost() {
     let probes = Counter()

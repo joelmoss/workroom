@@ -403,8 +403,8 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                             // Exec'ing a shell on either is unrecoverable (exec is one-way, so the
                             // retry the agent is inviting can never happen) and, worse, it hands
                             // back a healthy-looking prompt for a session that is still running.
-                            // That is the exact failure `confirmBeforeAttach` exists to prevent on
-                            // the app side: the one that looks like success. A visible error and a
+                            // That is the exact failure `--no-create` exists to prevent: the one
+                            // that looks like success. A visible error and a
                             // non-zero exit is the honest answer, and it leaves the session where
                             // the user can still reach it from the detached-sessions list.
                             // The one exception: a `--no-create` attach whose session exited
