@@ -121,6 +121,12 @@ printf '\033]7501;state=done:app=demo:msg=%s\033\\' "$(b64 'Applied')"; echo "âœ
 sleep 3; printf '\033]7501;state=clear\033\\'
 ```
 
+To check the whole path without Claude Code (no account, no API turn), run
+`sh testdata/program-status/mock-claude-code.sh` in a workroom terminal. It replays the sequence
+below: it probes, waits for Enter as a prompt, then works, asks for permission (`--question` for a
+question), posts Claude's own alert 6 s later, and finishes when you press Enter again. `--auto`
+runs it unattended; the agent's tests use it that way.
+
 ## What Claude Code sends
 
 Recorded with Claude Code 2.1.299 on 2026-10-14 (the evidence for #358):

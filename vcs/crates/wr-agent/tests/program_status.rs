@@ -207,7 +207,7 @@ fn requests_are_answered_in_the_shapes_the_app_decodes() {
 #[cfg(feature = "terminal-state")]
 mod live {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -686,6 +686,43 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             "a killed program's blocked record outlived it"
         );
         assert_eq!(after["reporting"], false);
+        store.kill_all();
+    }
+
+    /// Value: protects=Claude Code's real sequence (probe, then idle, working, blocked, done, clear) gives the app a notifying blocked record and a done that outlives the turn, through a real session; fails_when=the agent stops answering the probe (the mock, like Claude, then reports nothing), or the records stop following Claude's order; why_new=every other test sends hand-written reports, none the recorded sequence; seam=testdata/program-status/mock-claude-code.sh
+    #[test]
+    fn the_recorded_claude_code_sequence_blocks_then_finishes() {
+        let mock = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../testdata/program-status/mock-claude-code.sh");
+        let store = SessionStore::new();
+        start(
+            &store,
+            id(1),
+            &format!(
+                "MOCK_STEP=1 MOCK_ALERT_DELAY=0.2 sh '{}' --auto; sleep 10",
+                mock.display()
+            ),
+        );
+
+        let blocked = wait_until(|| status_of(&store, id(1)), |s| states(s) == ["blocked"]);
+        let record = &blocked["records"][0];
+        assert_eq!(
+            (&record["state"], &record["kind"], &record["app"]),
+            (
+                &json!("blocked"),
+                &json!("permission"),
+                &json!("claude-code")
+            ),
+            "no request from the mock: did the agent answer its probe? {blocked}"
+        );
+        assert_eq!(record["message"], "approve Fetch: https://example.com");
+        assert_eq!(record["notify"], true, "it asked first, so it may notify");
+
+        let done = wait_until(|| status_of(&store, id(1)), |s| states(s) == ["done"]);
+        assert_eq!(states(&done), ["done"], "the finished turn: {done}");
+
+        let exited = wait_until(|| status_of(&store, id(1)), |s| states(s).is_empty());
+        assert_eq!(exited["records"], json!([]), "Claude clears on exit");
         store.kill_all();
     }
 }
