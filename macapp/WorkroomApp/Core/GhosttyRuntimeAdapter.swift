@@ -93,7 +93,7 @@ final class GhosttyRuntimeAdapter {
 
     case GHOSTTY_ACTION_MOUSE_SHAPE:
       // A program's OSC 22, a link hover, or a modifier override (#466). Can arrive under the
-      // engine's render lock, so the view only stores it.
+      // engine's render lock, so the view stores it and defers its cursor work.
       guard let view = surfaceView(from: target) else { return false }
       view.handleMouseShape(action.action.mouse_shape)
       return true

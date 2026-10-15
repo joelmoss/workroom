@@ -330,6 +330,8 @@ struct EdgeRevealSidebars: ViewModifier {
             localize: { overPanel($0) ? nil : localize($0) },
             dropTarget: { overPanel($0) ? nil : dropTarget($0) }
           )
+          // The arrow, not the cursor rect of a terminal beneath the revealed panel (#466).
+          .pointerStyle(.default)
         }
       }
   }
