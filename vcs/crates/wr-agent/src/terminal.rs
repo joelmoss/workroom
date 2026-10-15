@@ -117,6 +117,12 @@ const TAIL_SAMPLE_ROWS: u32 = 64;
 /// How many formats `format_tail` runs before it only halves: the sample and three guesses.
 const TAIL_GUESSES: u32 = 4;
 
+/// How many times the rows of `format_tail`'s last format a guess may grow to. The newest rows can
+/// be far sparser than the history behind them (prompts after a truecolour dump), where an unbounded
+/// guess formatted 118 MB once to send 4 MiB. Three steps of 8 still reach 32,768 rows, more than
+/// a full plain history holds at 200 columns.
+const TAIL_GROWTH: u32 = 8;
+
 /// `ghostty_mode_new` is a `static inline` in modes.h, so bindgen does not emit it.
 /// modes.h: `(value & 0x7FFF) | ((uint16_t)ansi << 15)`.
 const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
@@ -492,13 +498,16 @@ impl ShadowTerminal {
 
     /// Feed the emulator the same bytes the client is getting.
     ///
-    /// shortcut: a program that leaves the alternate screen and a second that enters it within one
-    /// write keep the first's primary paint, missing whatever was printed between; track the
-    /// screen switches if that is ever seen.
+    /// The kept primary paint goes when a write leaves the terminal off the alternate screen, and
+    /// when one holds a screen switch or a reset at all (`switches_screens`): a program leaving, the
+    /// shell clearing and another program starting can all arrive in one read, which ends back on
+    /// the alternate screen.
     pub fn write(&mut self, bytes: &[u8]) {
         // SAFETY: `inner` is a live terminal, and the pointer and length come from one live slice.
         unsafe { ghostty_terminal_vt_write(self.inner, bytes.as_ptr(), bytes.len()) }
-        if self.primary_paint.get_mut().is_some() && self.mode(modes::ALT_SCREEN) != Some(true) {
+        if self.primary_paint.get_mut().is_some()
+            && (self.mode(modes::ALT_SCREEN) != Some(true) || switches_screens(bytes))
+        {
             *self.primary_paint.get_mut() = None;
         }
     }
@@ -896,8 +905,11 @@ impl ShadowTerminal {
     /// `TAIL_SAMPLE_ROWS` rows go first, to measure the history's density; a first guess from the
     /// budget alone (`budget / columns` rows) is ~20,000 rows at 200 columns, which on dense
     /// history would format ~160 MB once before being rejected. Each later guess scales the last by
-    /// `budget / bytes` at 90%, and the search stops once a paint fits within 80% of the budget:
-    /// `TAIL_GUESSES` formats at most, then halvings, `TAIL_GUESSES + log2(history) + 1` in all.
+    /// `budget / bytes` at 90%, growing at most `TAIL_GROWTH` times, since the newest rows can be far
+    /// sparser than older ones, and the search stops once a paint fits within 80% of the budget:
+    /// `TAIL_GUESSES` formats, plus the fitting steps the growth cap held back (up to `log8(history)`
+    /// after each counted one, so a few dozen at most for history whose density swings back and
+    /// forth, and `until` still bounds the time), then halvings (at most `log2(history) + 1`).
     /// A bisection would take about 12, at up to ~27 ms each for a full 4 MiB tail, with every
     /// session frozen during a hand-off.
     ///
@@ -905,10 +917,6 @@ impl ShadowTerminal {
     /// when it does not fit a budget smaller than itself: a caller is sent the screen, never
     /// nothing. Past `until`, no more guesses are made: the best fit so far, or the screen alone,
     /// and a call that starts past it formats the screen alone.
-    ///
-    /// shortcut: the guesses assume older rows are about as dense as the newest, so a sparse tail
-    /// over much denser history can overshoot once, by up to the whole history's paint; cap how
-    /// far one guess may grow if that is ever seen.
     fn format_tail(&self, budget: usize, until: Option<Instant>) -> Tail {
         let history = self
             .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
@@ -921,10 +929,13 @@ impl ShadowTerminal {
             ATTEMPTS.with(|attempts| attempts.borrow_mut().push(bytes.len()));
             bytes
         };
-        // The next count to try after `rows` rows came to `len` bytes.
-        let guess = |rows: u32, len: usize| -> u32 {
+        // The next count to try after `rows` rows came to `len` bytes, and whether the growth cap
+        // held it back.
+        let guess = |rows: u32, len: usize| -> (u32, bool) {
             let scaled = u64::from(rows).saturating_mul(budget as u64) / len.max(1) as u64 / 10 * 9;
-            u32::try_from(scaled).unwrap_or(u32::MAX).min(history)
+            let wanted = u32::try_from(scaled).unwrap_or(u32::MAX).min(history);
+            let most = rows.saturating_mul(TAIL_GROWTH);
+            (wanted.min(most), wanted > most)
         };
 
         if late() {
@@ -936,7 +947,7 @@ impl ShadowTerminal {
         let mut best: Option<(u32, Vec<u8>)> = None;
         let mut rows = history.min(TAIL_SAMPLE_ROWS);
         let sample = format(rows);
-        let mut next = guess(rows, sample.len());
+        let (mut next, mut held_back) = guess(rows, sample.len());
         if sample.len() <= budget {
             if rows == history {
                 return Tail {
@@ -946,14 +957,20 @@ impl ShadowTerminal {
             }
             best = Some((rows, sample));
         }
-        for _ in 1..TAIL_GUESSES {
+        let mut guesses = 1;
+        while guesses < TAIL_GUESSES {
             if next == rows || late() {
                 break;
             }
             rows = next;
             let bytes = format(rows);
             let len = bytes.len();
-            next = guess(rows, len);
+            // A step the growth cap held back that still fitted was a step towards the answer,
+            // not a guess at it, so a long plain history is not cut short by the cap.
+            if !(held_back && len <= budget) {
+                guesses += 1;
+            }
+            (next, held_back) = guess(rows, len);
             if len <= budget {
                 if best.as_ref().is_none_or(|(kept, _)| rows > *kept) {
                     best = Some((rows, bytes));
@@ -1174,6 +1191,34 @@ impl Drop for ShadowTerminal {
         // terminal that held a copy of it is gone.
         drop(unsafe { Box::from_raw(self.effects) });
     }
+}
+
+/// Whether `bytes` hold a reset (`ESC c`) or a DECSET/DECRST of an alternate screen mode (47, 1047
+/// or 1049), as any parameter of a `CSI ?` sequence. Only escape sequences count: a pid or a size in
+/// a program's output is not a switch. A sequence cut across two writes is not seen; the leave half
+/// of a switch is still caught, as a write that ends off the alternate screen.
+fn switches_screens(bytes: &[u8]) -> bool {
+    let mut rest = bytes;
+    while let Some(at) = rest.iter().position(|byte| *byte == 0x1b) {
+        rest = &rest[at + 1..];
+        if rest.first() == Some(&b'c') {
+            return true;
+        }
+        if let Some(params) = rest.strip_prefix(b"[?") {
+            let end = params
+                .iter()
+                .position(|byte| !(byte.is_ascii_digit() || *byte == b';'))
+                .unwrap_or(params.len());
+            if matches!(params.get(end), Some(b'h' | b'l'))
+                && params[..end]
+                    .split(|byte| *byte == b';')
+                    .any(|param| matches!(param, b"47" | b"1047" | b"1049"))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Modes worth naming, for tests and for anything that needs to reason about what survived.
@@ -1489,6 +1534,11 @@ mod tests {
         }
         let rows = history_rows(&terminal);
         assert!(rows > 20_000, "{rows} history rows kept of 60,000 lines");
+        // And a repaint carries all of it: 60,000 short lines paint in well under the budget, so
+        // the search must reach the whole history however many steps that takes.
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&terminal.replay());
+        assert_eq!(history_rows(&client), rows, "the repaint left history out");
     }
 
     /// A record's size follows how densely its history is styled, not how much of it there is, and
@@ -1556,7 +1606,8 @@ mod tests {
         terminal.write(b"\x1b[?1049h\x1b[Hfirst program");
         let first = terminal.record();
         attempts();
-        terminal.write(b"\x1b[Hfirst program, redrawn");
+        // A switch's digits in the program's own output (a pid, a size) are not a switch.
+        terminal.write(b"\x1b[Hfirst program, redrawn, pid 1049 size 1047 ?47");
         let redrawn = terminal.record();
         assert_eq!(
             attempts().len(),
@@ -1574,6 +1625,64 @@ mod tests {
         assert!(
             client.visible_text().contains("printed between"),
             "the second program was shown the first's primary"
+        );
+    }
+
+    /// The same when the first program leaving, the shell clearing and the second program starting
+    /// all arrive in one read (`vim; clear; vim` in a script), and when a program resets the
+    /// terminal: the kept paint never shows a primary the shell has since cleared.
+    ///
+    /// Value: protects=a cleared or reset shell is never repainted from the kept primary paint;
+    /// fails_when=the paint is dropped only when a write ends off the alternate screen;
+    /// why_new=the other test splits the switch across writes; seam=none
+    #[test]
+    fn a_screen_switch_within_one_write_drops_the_kept_paint() {
+        for switch in [
+            b"\x1b[?1049l\x1b[2J\x1b[3J\x1b[Hcleared\r\n\x1b[?1049h\x1b[Hsecond".as_slice(),
+            b"\x1bc\x1b[?1049h\x1b[Hsecond",
+            b"\x1b[?25;1049l\x1b[2J\x1b[3J\x1b[Hcleared\r\n\x1b[?1;1049h\x1b[Hsecond",
+        ] {
+            let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+            for n in 0..100 {
+                terminal.write(format!("secret {n}\r\n").as_bytes());
+            }
+            terminal.write(b"\x1b[?1049h\x1b[Hfirst program");
+            terminal.record();
+            terminal.write(switch);
+            let mut client = ShadowTerminal::new(80, 24).expect("client");
+            client.write(&terminal.record());
+            client.write(b"\x1b[?1049l");
+            assert!(
+                !client.visible_text().contains("secret"),
+                "{:?}: a cleared primary was repainted from the kept paint",
+                String::from_utf8_lossy(switch)
+            );
+        }
+    }
+
+    /// The row guesses grow at most `TAIL_GROWTH` times a step, so a plain tail over much denser
+    /// history (prompts after a truecolour dump) never formats most of the history at once.
+    ///
+    /// Value: protects=no single format approaches the whole history's paint; fails_when=a guess
+    /// may jump from the sample straight to the whole history; why_new=the bounds test has uniform
+    /// density, where the sample predicts the rest; seam=none
+    #[test]
+    fn a_sparse_tail_over_dense_history_does_not_format_it_all() {
+        let mut terminal = ShadowTerminal::new(200, 24).expect("terminal");
+        for n in 0..6_000 {
+            terminal.write(truecolour_line(200, n).as_bytes());
+        }
+        for n in 0..200 {
+            terminal.write(format!("$ ls {n}\r\n").as_bytes());
+        }
+        let whole = terminal.format_rows(true, None).len();
+        attempts();
+        let tail = terminal.format_tail(1 << 20, None);
+        let sizes = attempts();
+        assert!(tail.bytes.len() <= 1 << 20, "{} bytes", tail.bytes.len());
+        assert!(
+            sizes.iter().all(|size| *size < whole / 8),
+            "a format approached the whole history ({whole} bytes): {sizes:?}"
         );
     }
 
@@ -1756,7 +1865,8 @@ mod tests {
                     "{label}: {} bytes",
                     tail.bytes.len()
                 );
-                let bound = TAIL_GUESSES + (u32::BITS - history.leading_zeros()) + 1;
+                let bits = u32::BITS - history.leading_zeros();
+                let bound = TAIL_GUESSES + bits / 3 + 1 + bits + 1;
                 assert!(
                     sizes.len() as u32 <= bound,
                     "{label}: {} formats, bound {bound}",
