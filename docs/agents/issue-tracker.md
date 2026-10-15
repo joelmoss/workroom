@@ -10,6 +10,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
+- **Reject an enhancement**: record why in `.out-of-scope/<concept>.md` (one file per concept, listing every issue that asked for it), link that file from the closing comment, and close with the `wontfix` label.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
