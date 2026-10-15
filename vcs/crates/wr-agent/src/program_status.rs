@@ -1535,7 +1535,11 @@ mod tests {
         store.commit();
         let back: Store = serde_json::from_slice(&serde_json::to_vec(&store).unwrap()).unwrap();
         assert_eq!(back, store);
-        assert_eq!(result(&back), Some((State::Error, 1)), "a command result too");
+        assert_eq!(
+            result(&back),
+            Some((State::Error, 1)),
+            "a command result too"
+        );
         assert_eq!((back.records[0].episode, back.records[0].notify), (1, true));
     }
 }
