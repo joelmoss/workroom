@@ -391,18 +391,23 @@ struct TerminalState {
 
   /// Precedence, one mark per slot: blocked > error > running > done > idle. A reporting program
   /// decides; otherwise OSC 9;4 does, and a `done` or `error` left from an earlier run only adds
-  /// its mark, so it never hides the next command's progress.
+  /// its mark, so it never hides the next command's progress. A failed shell command (#473) ranks
+  /// below anything running: `claude` started after failing tests shows working, not failed.
   var indicator: PaneIndicator {
+    let commandFailed = programStatus?.error?.exitCode != nil
     guard let status = programStatus, status.reporting else {
       let survivingError = programStatus?.error != nil
-      if progressActive == true { return .running(failed: progressFailed || survivingError) }
+      if progressActive == true {
+        return .running(failed: progressFailed || (survivingError && !commandFailed))
+      }
       if survivingError { return .error }
       return programStatus?.done != nil ? .done : .none
     }
     if !status.blocked.isEmpty { return .blocked }
-    if status.error != nil { return .error }
+    if status.error != nil, !commandFailed { return .error }
     if status.working { return .running(failed: false) }
     if progressActive == true { return .running(failed: progressFailed) }
+    if commandFailed { return .error }
     return status.done != nil ? .done : .none
   }
 }

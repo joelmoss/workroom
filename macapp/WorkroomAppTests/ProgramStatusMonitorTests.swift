@@ -472,6 +472,31 @@ final class ProgramStatusPaneTests: XCTestCase {
     XCTAssertEqual(indicator(), .running(failed: false), "running beats done")
   }
 
+  /// Value: protects=a failed shell command never reddens what runs next in the pane (#473); fails_when=a command result outranks working or 9;4 progress as a program's error does; why_new=the precedence test covers only a program's own error; seam=none
+  func testAFailedCommandRanksBelowAnythingRunning() {
+    let monitor = ProgramStatusMonitor()
+    let s = makeSessions(monitor)
+    let tab = s.addTab(for: target)
+    let view = tab.surface!
+    let id = session(of: tab)
+    func indicator() -> PaneIndicator { s.tabs(for: target)[0].indicator }
+    let failed = ProgramStatusRecord(id: "shell command", state: .error, exitCode: 1)
+
+    monitor.seed(
+      id, reporting: true, records: [failed, ProgramStatusRecord(id: "", state: .working)])
+    XCTAssertEqual(indicator(), .running(failed: false), "claude after failing tests is working")
+    monitor.seed(id, reporting: true, records: [failed, ProgramStatusRecord(id: "", state: .done)])
+    XCTAssertEqual(indicator(), .error, "back once nothing runs, until seen")
+
+    monitor.seed(id, reporting: false, records: [failed])
+    view.handleProgressReport(true)
+    XCTAssertEqual(
+      indicator(), .running(failed: false), "the next command's progress is not failed")
+    view.handleProgressReport(false)
+    XCTAssertEqual(indicator(), .error)
+    XCTAssertTrue(s.hasProgramError(forTargetID: target.id))
+  }
+
   /// A pane swapped out for a diff or file tab leaves its window without resigning first
   /// responder; it must stop counting as the one the user is looking at.
   func testAPaneLeavingItsWindowLosesEffectiveFocus() {
