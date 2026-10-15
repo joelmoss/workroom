@@ -156,12 +156,26 @@ struct ProgressSlot {
     fresh: bool,
 }
 
+/// The command the shell is running, from its OSC 133 marks, for its command result (#473).
+#[derive(Default)]
+struct CommandSlot {
+    /// When its C arrived. `None` between commands, so a D with no C before it closes nothing:
+    /// bash sends `D;<last status>` at every prompt, an empty Enter included.
+    started: Option<Instant>,
+    /// The title the shell gave it. No shell sends the command line with C, but zsh and bash set
+    /// the title to it when the integration's title feature is on: bash just before C, after its
+    /// prompt has set the directory, zsh just after C. So the last title since the prompt, or
+    /// else the first after C, and never a program's later one.
+    line: Option<String>,
+}
+
 /// Where the callbacks write: the progress slot, and what a write produced for program status
 /// (#358) until `take_program_status` collects it. The records themselves are kept by
 /// `crate::program_status::Store`, outside the terminal.
 #[derive(Default)]
 struct Effects {
     progress: ProgressSlot,
+    command: CommandSlot,
     program: Vec<Event>,
     /// Bytes for the pty: only the answer to a program status probe.
     replies: Vec<u8>,
@@ -313,8 +327,37 @@ unsafe extern "C" fn on_program_status(
     }));
 }
 
+/// `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED`: the title the shell gives the command it is running.
+unsafe extern "C" fn on_title_changed(terminal: GhosttyTerminal, userdata: *mut std::ffi::c_void) {
+    // SAFETY: libghostty passes the userdata `register_effects` set, from inside a write.
+    let Some(effects) = (unsafe { effects(userdata) }) else {
+        return;
+    };
+    let slot = &mut effects.command;
+    if slot.started.is_some() && slot.line.is_some() {
+        return;
+    }
+    let mut title = GhosttyString {
+        ptr: ptr::null(),
+        len: 0,
+    };
+    // SAFETY: `terminal` is the live terminal this callback runs for, which has already stored
+    // the new title, and `title` is a live out-pointer of the type DATA_TITLE writes.
+    let rc = unsafe {
+        ghostty_terminal_get(
+            terminal,
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_TITLE,
+            (&mut title as *mut GhosttyString).cast(),
+        )
+    };
+    if rc == OK {
+        // SAFETY: the title is borrowed until the next mutating call, and this copies it now.
+        slot.line = Some(unsafe { copied(&title) });
+    }
+}
+
 /// `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`: a new prompt ends the program run that reported, and a
-/// command end clears the progress report, as a REMOVE does.
+/// command end clears the progress report, as a REMOVE does, and closes the command C started.
 unsafe extern "C" fn on_semantic_prompt(
     _terminal: GhosttyTerminal,
     userdata: *mut std::ffi::c_void,
@@ -334,16 +377,41 @@ unsafe extern "C" fn on_semantic_prompt(
     if !has_kind {
         return;
     }
-    if event.kind == GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_START {
-        effects.program.push(Event::Prompt);
-    } else if event.kind == GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_COMMAND_END
-        // Only a held report: a fresh one makes the next read ask the pty for its foreground.
-        && effects.progress.report.is_some()
-    {
-        effects.progress = ProgressSlot {
-            report: None,
-            fresh: true,
-        };
+    match event.kind {
+        GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_START => {
+            effects.command = CommandSlot::default();
+            effects.program.push(Event::Prompt);
+        }
+        GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_INPUT_START => {
+            effects.command = CommandSlot::default();
+        }
+        GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START => {
+            effects.command.started = Some(Instant::now());
+        }
+        GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_COMMAND_END => {
+            // Only a held report: a fresh one makes the next read ask the pty for its foreground.
+            if effects.progress.report.is_some() {
+                effects.progress = ProgressSlot {
+                    report: None,
+                    fresh: true,
+                };
+            }
+            let command = std::mem::take(&mut effects.command);
+            let has_exit_code = event.size
+                >= std::mem::offset_of!(GhosttyTerminalSemanticPrompt, exit_code)
+                    + std::mem::size_of::<i32>();
+            if let Some(started) = command.started
+                && has_exit_code
+                && event.has_exit_code
+            {
+                effects.program.push(Event::Command {
+                    exit_code: event.exit_code,
+                    ran: started.elapsed(),
+                    line: command.line.unwrap_or_default(),
+                });
+            }
+        }
+        _ => {}
     }
 }
 
@@ -387,7 +455,7 @@ impl ShadowTerminal {
     /// only once something answers its probe, and the attached client never does (#358).
     /// Pointer-typed options are passed directly, not by address (`ghostty_terminal_set`'s doc).
     fn register_effects(&self) {
-        let callbacks: [(GhosttyTerminalOption, *const std::ffi::c_void); 5] = [
+        let callbacks: [(GhosttyTerminalOption, *const std::ffi::c_void); 6] = [
             (
                 GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
                 on_progress_report as *const std::ffi::c_void,
@@ -407,6 +475,10 @@ impl ShadowTerminal {
             (
                 GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_RESET,
                 on_reset as *const std::ffi::c_void,
+            ),
+            (
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
+                on_title_changed as *const std::ffi::c_void,
             ),
         ];
         // SAFETY: `inner` is a live terminal. The userdata is `effects`, which `Drop` frees only
@@ -2490,5 +2562,67 @@ mod tests {
             terminal.replay().len(),
             wr_protocol::frame::MAX_PAYLOAD_SIZE
         );
+    }
+
+    /// The command ends one write produced, as (exit code, command line).
+    fn commands(bytes: &[u8]) -> Vec<(i32, String)> {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        terminal.write(bytes);
+        let (events, _) = terminal.take_program_status();
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Command {
+                    exit_code, line, ..
+                } => Some((exit_code, line)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// zsh's integration with the title feature, byte for byte: the title is set to the directory
+    /// before the prompt, and to the command just after C.
+    const ZSH: &[u8] = b"\x1b]2;~/app\x07\x1b]133;A;cl=line\x07$ \x1b]133;B\x07\
+        \x1b]133;C\x07\x1b]2;npm test\x07FAIL\r\n\x1b]133;D;1\x07\x1b]2;~/app\x07";
+    /// bash's: the prompt sets the directory as title after B, and preexec sets the command just
+    /// before C. Its next prompt sends `D` with the last status again, empty Enter or not.
+    const BASH: &[u8] = b"\x1b]133;A;redraw=last;cl=line;aid=9\x07\x1b]133;P;k=i\x07$ \
+        \x1b]133;B\x07\x1b[5 q\x1b]2;~/app\x07\x1b]2;npm test\x07\x1b]133;C;\x07FAIL\r\n\
+        \x1b]133;D;1;aid=9\x07\x1b]133;A;redraw=last;cl=line;aid=9\x07\x1b]133;P;k=i\x07$ \
+        \x1b]133;B\x07\x1b]2;~/app\x07\r\n\x1b]133;D;1;aid=9\x07";
+
+    /// Value: protects=a command end becomes a result only after its own C, named by the title the shell gave it (#473); fails_when=a D with no C counts (bash repeats its status every prompt), or the line is the directory or a program's title; why_new=the pairing and the title timing differ per shell and nothing else pins them; seam=none
+    #[test]
+    fn a_command_end_closes_only_a_command_the_shell_started() {
+        assert_eq!(commands(ZSH), [(1, "npm test".to_string())]);
+        assert_eq!(
+            commands(BASH),
+            [(1, "npm test".to_string())],
+            "one, not two"
+        );
+        let program_titles = [
+            (
+                ZSH,
+                "\x1b]2;npm test\x07",
+                "\x1b]2;npm test\x07\x1b]2;vim\x07",
+            ),
+            (BASH, "\x1b]133;C;\x07", "\x1b]133;C;\x07\x1b]2;vim\x07"),
+        ];
+        for (shell, mark, renamed) in program_titles {
+            let bytes = String::from_utf8_lossy(shell).replacen(mark, renamed, 1);
+            assert_eq!(
+                commands(bytes.as_bytes())[0].1,
+                "npm test",
+                "a program's own title"
+            );
+        }
+        let untitled = b"\x1b]133;A\x07$ \x1b]133;B\x07\x1b]133;C\x07ok\r\n\x1b]133;D;0\x07";
+        assert_eq!(commands(untitled), [(0, String::new())], "no title feature");
+        assert_eq!(
+            commands(b"\x1b]133;C\x07\x1b]133;D\x07"),
+            [],
+            "a D with no exit code"
+        );
+        assert_eq!(commands(b"\x1b]133;D;0\x07"), [], "a D with no C");
     }
 }

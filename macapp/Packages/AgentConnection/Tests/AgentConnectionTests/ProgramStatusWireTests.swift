@@ -28,6 +28,23 @@ final class ProgramStatusWireTests: XCTestCase {
         ]))
   }
 
+  /// A command result (#473) is a record with an exit code, which no program's record carries.
+  func testCommandResultFixtureDecodes() throws {
+    let decoded = try ProgramStatusEvent.decode(fixture("status-command"))
+    XCTAssertEqual(decoded.droppedRecords, 0)
+    XCTAssertEqual(
+      decoded.event,
+      .status(
+        boot: boot, session: session, revision: 1, reporting: false,
+        records: [
+          ProgramStatusRecord(
+            id: "shell command", state: .error, message: "npm test", exitCode: 1)
+        ]))
+    let program = try ProgramStatusEvent.decode(fixture("status")).event
+    guard case .status(_, _, _, _, let records) = program else { return XCTFail() }
+    XCTAssertNil(records.first?.exitCode)
+  }
+
   func testEndedAndSnapshotCompleteFixturesDecode() throws {
     XCTAssertEqual(
       try ProgramStatusEvent.decode(fixture("ended")).event, .ended(boot: boot, session: session))

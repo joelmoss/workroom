@@ -62,6 +62,27 @@ on remote hosts, once the host's agent speaks protocol 8 or later. The agent, no
 see, keeps the status, so it survives closing the window, relaunching Workroom, an app update and a
 second Mac attaching to the same session.
 
+## Long shell commands
+
+A shell command that runs for 10 seconds or more leaves a **command result** (#473): ✓ when it
+exits 0, the failed mark for any other exit, and nothing when you stop it with ^C (exit 130). So a
+build or test run that ends in a background tab, or on a remote host while your laptop is closed, says how it went
+without your opening the terminal. Quicker commands leave nothing, and a later quick command or ^C
+keeps the last result; the next long command replaces it.
+
+- The tooltip says "Command finished" or "Command failed (exit 1)", then the command line, then
+  "Reported by the shell in this terminal". No shell sends the command line itself, so it is the
+  title the shell gives the command, which zsh and bash do while the integration's `title` feature
+  is on. Without that it is left out, or shows the first title the command's program set.
+- It needs Ghostty's shell integration (OSC 133), which marks where each command starts and ends.
+  Workroom turns it on for zsh, bash, fish, elvish and nu, except macOS's own `/bin/bash` 3.2, which
+  never shows one.
+- It follows the same rules as a program's finished and failed marks: focusing the terminal clears
+  it, a ✓ you watched clears itself, and it never alerts or counts in the Dock badge.
+- Only terminals whose shell runs under `wr-agent` show it. Run tabs and fallback panes don't
+  (#476).
+- A command still running when Workroom hands its agent off on an update leaves no result.
+
 ## The protocol, for program authors
 
 A program first checks for support, then reports. Everything is an OSC with `7501` and a body of
