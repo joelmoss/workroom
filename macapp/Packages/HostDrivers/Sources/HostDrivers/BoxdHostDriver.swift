@@ -528,6 +528,9 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     private let process = Process()
     private let lock = NSLock()
     private var heard = Data()
+    /// Left when it ends. Not `waitUntilExit` or `isRunning`: launched from async code, a waiter
+    /// on another thread can miss the exit for good (a spindump caught it, CI 2026-10-15).
+    private let exited = DispatchGroup()
 
     /// `inherited` is for tests: setting a variable in the test host's own environment crashes a
     /// later libghostty surface there (see `StatusCommandRunner.childEnvironment`).
@@ -548,7 +551,13 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       let pipe = Pipe()
       process.standardOutput = pipe
       process.standardError = pipe
-      try process.run()
+      exited.enter()
+      process.terminationHandler = { [exited] _ in exited.leave() }
+      do { try process.run() } catch {
+        // A group released while entered crashes.
+        exited.leave()
+        throw error
+      }
       let reading = pipe.fileHandleForReading
       DispatchQueue.global().async { [weak self] in
         while let chunk = try? reading.read(upToCount: 4096), !chunk.isEmpty {
@@ -576,8 +585,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     public func wait() async -> Int32 {
       let process = self.process
       return await withCheckedContinuation { continuation in
-        DispatchQueue.global().async {
-          process.waitUntilExit()
+        exited.notify(queue: .global()) {
           continuation.resume(returning: process.terminationStatus)
         }
       }
@@ -590,7 +598,9 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
 
     public func cancel() {
-      if process.isRunning { ProcessTree.killTree(process.processIdentifier) }
+      if exited.wait(timeout: .now()) == .timedOut {
+        ProcessTree.killTree(process.processIdentifier)
+      }
     }
   }
 
