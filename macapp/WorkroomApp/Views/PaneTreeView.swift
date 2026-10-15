@@ -1188,13 +1188,9 @@ private struct SplitDivider: View {
             baseTranslation = .zero
           }
       )
-      .onHover { inside in
-        if inside {
-          (orientation == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
-        } else {
-          NSCursor.pop()
-        }
-      }
+      // SwiftUI's pointer style, not an NSCursor push: the terminal panes beside the divider set
+      // their pointer with cursor rects, which override a pushed cursor (#466).
+      .pointerStyle(orientation == .horizontal ? .columnResize : .rowResize)
       // Adjustable so VoiceOver users can resize without a drag: ⌃⌥→/← nudge the split by 5%.
       .accessibilityElement()
       .accessibilityIdentifier("pane.divider")
