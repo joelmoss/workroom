@@ -74,6 +74,11 @@ struct ProgramStatusSession: Equatable {
   }
 
   func rollup(stale: Bool) -> ProgramStatusRollup {
+    // A command result (#473) a program has reported since is out of date: whichever came last
+    // shows. The agent sends the records oldest change first.
+    let lastProgram = records.lastIndex { $0.exitCode == nil } ?? -1
+    let records = records.enumerated()
+      .filter { $0.element.exitCode == nil || $0.offset > lastProgram }.map(\.element)
     let blocked = records.filter { $0.state == .blocked }.sorted {
       (blockedSince[Self.blockedKey($0)] ?? .distantFuture)
         < (blockedSince[Self.blockedKey($1)] ?? .distantFuture)
