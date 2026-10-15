@@ -29,13 +29,13 @@
 //! the program's own REMOVE, and the shell's next command end (OSC 133 D, #464). The app clears
 //! its spinner at a D too, but only one that closes a command it saw start (OSC 133 C); the shadow
 //! clears at any D, so a report held at an idle prompt (a background job's) reads idle on a
-//! reattach after zsh's bare D for an empty Enter, while the live pane still spins. A false D
-//! inside a command (a TUI printing one, a nested shell) clears it in both, and a job resumed with
-//! `fg` reads idle until it reports again. Separately, and for every session,
-//! `Shadow::replay_for` leaves the report out of a replay while a known group other than its
-//! sender owns the pty, without clearing it. For a shell that sends no OSC 133 (a run command
-//! under `/bin/sh`, a shell without Ghostty's integration) that is all that hides a crashed
-//! program's spinner.
+//! reattach after the D that zsh and bash send at a prompt with no command, as on an empty Enter,
+//! while the live pane still spins. A false D inside a command (a TUI printing one, a nested
+//! shell) clears it in both, and a job resumed with `fg` reads idle until it reports again.
+//! Separately, and for every session, `Shadow::replay_for` leaves the report out of a replay while
+//! a known group other than its sender owns the pty, without clearing it. For a shell that sends
+//! no OSC 133 (a run command under `/bin/sh`, a shell without Ghostty's integration) that is all
+//! that hides a crashed program's spinner.
 //!
 //! And **the parser continuation last**, because a byte stream cut mid-sequence leaves the VT
 //! parser or UTF-8 decoder unfinished and nothing in the grid expresses that. Without it the tail
@@ -363,7 +363,8 @@ impl ShadowTerminal {
         unsafe { (*self.effects).progress.report }
     }
 
-    /// Whether a report (a REMOVE included) has arrived since this was last asked.
+    /// Whether the held report changed since this was last asked: a report arrived (a REMOVE
+    /// included), or a command end (OSC 133 D) cleared one.
     pub fn take_fresh_report(&mut self) -> bool {
         // SAFETY: as in `progress`; `&mut self` also rules out the callbacks running meanwhile.
         unsafe { std::mem::take(&mut (*self.effects).progress.fresh) }
