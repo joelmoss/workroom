@@ -2144,6 +2144,11 @@ private final class GoToBottomButton: NSView {
     layer?.cornerRadius = bounds.height / 2
   }
 
+  // The arrow, not the terminal's cursor rect beneath it (#466).
+  override func resetCursorRects() {
+    addCursorRect(bounds, cursor: .arrow)
+  }
+
   /// Theme the circle + chevron for the current light/dark appearance.
   func applyColors() {
     let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

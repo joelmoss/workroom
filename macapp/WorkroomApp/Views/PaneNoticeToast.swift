@@ -102,4 +102,10 @@ final class PaneNoticeHost: NSHostingView<PaneNoticeToast> {
     guard bounds.insetBy(dx: room, dy: room).contains(local) else { return nil }
     return super.hitTest(point)
   }
+
+  // The arrow over the toast, not the terminal's cursor rect beneath it (#466).
+  override func resetCursorRects() {
+    let room = PaneNoticeToast.shadowRoom
+    addCursorRect(bounds.insetBy(dx: room, dy: room), cursor: .arrow)
+  }
 }
