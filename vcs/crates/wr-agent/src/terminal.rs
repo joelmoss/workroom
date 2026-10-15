@@ -181,7 +181,8 @@ pub struct ShadowTerminal {
     /// screen is active (`primary_screen`): reaching the primary takes a copy of the terminal, up
     /// to ~100 ms on 50 MB of history that compresses poorly, and a full-screen program's every
     /// redraw is recorded every 2 s. The primary does not change while the program runs, so the
-    /// paint is dropped when it leaves the alternate screen (`write`) and on a resize.
+    /// paint is dropped when output switches screens or resets the terminal (`write`) and on a
+    /// resize.
     primary_paint: std::cell::RefCell<Option<(usize, Vec<u8>)>>,
 }
 
@@ -848,19 +849,16 @@ impl ShadowTerminal {
     /// The copy is the only way in and costs a snapshot each time (about 27 ms on 50 MB of
     /// compressed history), so a hand-off past its deadline skips it (`record`).
     ///
-    /// The paint is kept (`primary_paint`) and reused by a record of a budget no larger than the
-    /// one it was made for, while it fits `budget`, what the alternate screen's paint leaves: a
-    /// paint made for more holds at least the history a fresh one for less would. One made
+    /// The paint is kept (`primary_paint`) with the `budget` it was made for, what the alternate
+    /// screen's paint left it, and reused while it fits and the budget has not grown by more than a
+    /// quarter: a paint made for more holds at least the history a fresh one for less would, and
+    /// the search only fills to 80% anyway, so the program's ordinary redraws reuse it while a
+    /// screen that gets much lighter gets a fresh paint with the history that now fits. One made
     /// against a deadline, which may have cut it short, is not kept.
-    fn primary_screen(
-        &self,
-        record_budget: usize,
-        budget: usize,
-        until: Option<Instant>,
-    ) -> Option<Vec<u8>> {
+    fn primary_screen(&self, budget: usize, until: Option<Instant>) -> Option<Vec<u8>> {
         if let Some((kept, paint)) = self.primary_paint.borrow().as_ref()
-            && *kept >= record_budget
             && paint.len() <= budget
+            && budget <= kept.saturating_add(kept / 4)
         {
             return Some(paint.clone());
         }
@@ -877,7 +875,7 @@ impl ShadowTerminal {
         // line is written onto the end of the last history line instead of below it.
         out.extend_from_slice(&copy.cursor_position());
         if until.is_none() {
-            *self.primary_paint.borrow_mut() = Some((record_budget, out.clone()));
+            *self.primary_paint.borrow_mut() = Some((budget, out.clone()));
         }
         Some(out)
     }
@@ -1115,7 +1113,7 @@ impl ShadowTerminal {
             let primary = if late {
                 None
             } else {
-                self.primary_screen(budget, left.saturating_sub(padding + CURSOR + KITTY), until)
+                self.primary_screen(left.saturating_sub(padding + CURSOR + KITTY), until)
             };
             // The switch whether or not the primary was painted. The formatter's mode extras set
             // it again within the paint (measured), but the screen switch is what separates the
@@ -1588,6 +1586,39 @@ mod tests {
                 "alternate {alternate}: the newest line is missing"
             );
         }
+    }
+
+    /// A kept primary paint made while the program's own screen was dense, and so left little of
+    /// the budget, is made again once that screen gets lighter: the record then carries the shell
+    /// history that now fits, not the old paint's share.
+    ///
+    /// Value: protects=the kept paint is reused only for a budget it was made for; fails_when=the
+    /// paint is keyed by the record's budget rather than what the alternate screen left it;
+    /// why_new=the other cache tests keep the program's screen the same size; seam=none
+    #[test]
+    fn a_lighter_program_screen_lets_the_primary_carry_more_history() {
+        let budget = 256 << 10;
+        let mut terminal = ShadowTerminal::new(200, 24).expect("terminal");
+        for n in 0..20_000 {
+            terminal.write(plain_line(200, n).as_bytes());
+        }
+        terminal.write(b"\x1b[?1049h\x1b[H");
+        for n in 0..23 {
+            terminal.write(truecolour_line(200, n).as_bytes());
+        }
+        let primary_rows = |record: &[u8]| {
+            let mut client = ShadowTerminal::new(200, 24).expect("client");
+            client.write(record);
+            client.write(b"\x1b[?1049l");
+            history_rows(&client)
+        };
+        let dense = primary_rows(&terminal.record_within(budget, None));
+        terminal.write(b"\x1b[2J\x1b[Hhelp");
+        let light = primary_rows(&terminal.record_within(budget, None));
+        assert!(
+            light > dense * 3 / 2,
+            "the primary kept {dense} rows under a dense screen and {light} under a light one"
+        );
     }
 
     /// Under a full-screen program the primary's paint is made once and kept, since reaching it
