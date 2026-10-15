@@ -51,6 +51,16 @@ the likeliest suspects.
       (`printf '\e]8;;https://example.com\e\\link\e]8;;\e\\\n'`) → opens in browser.
 - [ ] 🔧 **⌘-click on a non-file word** → does **not** get swallowed; normal text selection
       still happens.
+- [ ] **Pointer shape (OSC 22, #466)**: over a pane the pointer is the I-beam;
+      `printf '\e]22;pointer\e\\'` → pointing hand, `printf '\e]22;text\e\\'` → I-beam again. The
+      shape follows the pane under the pointer (another pane's shape, or a split divider's resize
+      cursor, never sticks).
+- [ ] 🔧 **Arrow over app overlays (#466)**: the ⌘F find bar, a dialog or sheet, a toast, a pane's
+      go-to-bottom button and notice, and a revealed edge sidebar all show the arrow, not the
+      terminal's shape beneath them.
+- [ ] 🔧 **Pointer position on entry (#466)**: in a mouse-reporting TUI (`htop`, or `vim` with
+      `:set mouse=a`), move the pointer out of the pane and back in, then scroll the wheel → the TUI
+      scrolls. Same with the window in the background (wheel over an unfocused window).
 
 ## F. Selection / copy-on-select
 - [ ] Copy-on-select **on**: drag-select → text is on the clipboard (paste elsewhere); no ⌘C.
