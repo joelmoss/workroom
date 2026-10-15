@@ -1682,6 +1682,16 @@ final class GhosttySurfaceView: NSView {
     updateCmdHoverCursor(modifierFlags: event.modifierFlags)
   }
 
+  // mouseExited leaves the engine a negative position; put the real one back, or it treats the
+  // pointer as outside and drops wheel reports to a mouse-reporting program. Ghostty's own view
+  // does the same.
+  override func mouseEntered(with event: NSEvent) {
+    super.mouseEntered(with: event)
+    guard let surface else { return }
+    let pt = mousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
+  }
+
   override func mouseExited(with event: NSEvent) {
     super.mouseExited(with: event)
     setHandCursor(false)
@@ -1838,9 +1848,12 @@ final class GhosttySurfaceView: NSView {
     guard let window else { return }
     window.invalidateCursorRects(for: self)
     // Rects are rebuilt on the next event; show the change now if the pointer is on the terminal.
-    guard window.isKeyWindow, let superview else { return }
-    let point = superview.convert(window.mouseLocationOutsideOfEventStream, from: nil)
-    guard hitTest(point) === self else { return }
+    // From the content view, so an overlay that isn't ours (the ⌘F bar) counts as covering it.
+    guard window.isKeyWindow, let contentView = window.contentView,
+      let frameView = contentView.superview
+    else { return }
+    let point = frameView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    guard contentView.hitTest(point) === self else { return }
     Self.paneCursor(shape: mouseShape, showingHand: isShowingHandCursor).set()
   }
 

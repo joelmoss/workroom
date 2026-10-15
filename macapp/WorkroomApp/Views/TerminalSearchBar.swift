@@ -68,6 +68,8 @@ struct TerminalSearchBar: View {
         RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.separator)
       )
       .shadow(radius: 8, y: 2)
+      // The arrow, not the terminal's cursor rect beneath the bar (#466).
+      .pointerStyle(.default)
       .padding(10)
       // Focus the field as soon as the bar opens so you can type immediately. Deferred a runloop:
       // at `onAppear` the field's backing view isn't in the window yet, and the surrounding pane is
