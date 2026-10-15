@@ -1736,11 +1736,6 @@ final class GhosttySurfaceView: NSView {
 
   override func scrollWheel(with event: NSEvent) {
     guard let surface else { return }
-    // Wheel events reach a window that isn't key, where no enter or move has replaced the negative
-    // position mouseExited left; without this the engine drops the wheel for a mouse-reporting
-    // program.
-    let pt = mousePoint(from: event)
-    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
     var mods: ghostty_input_scroll_mods_t = 0
     if event.hasPreciseScrollingDeltas { mods |= 1 }
     ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
@@ -1933,9 +1928,12 @@ final class GhosttySurfaceView: NSView {
 
   private func setupTrackingArea() {
     if let existing = trackingAreaRef { removeTrackingArea(existing) }
+    // `.activeAlways`, as Ghostty's own view: the engine keeps a current pointer position (and mouse
+    // reports reach programs) in a window that isn't key, so the negative position mouseExited
+    // leaves is always replaced on the way back in (#466).
     let area = NSTrackingArea(
       rect: bounds,
-      options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+      options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
       owner: self)
     addTrackingArea(area)
     trackingAreaRef = area
