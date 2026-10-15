@@ -81,6 +81,9 @@ A command the user sets to run in a workroom, such as `npm start`, started in a 
 **Program status**:
 What the program in a session (Claude Code, say) reports about itself over OSC 7501: working, waiting on the user, finished or failed. wr-agent keeps it per session and the app shows it as a mark; not progress (OSC 9;4), which only says a command is busy.
 
+**Command result**:
+How the last long shell command in a session ended, passed or failed, as the shell reports it. wr-agent keeps it beside program status and the app shows it with the same finished and failed marks; not program status, which the program reports about itself.
+
 ## Remote hosts
 
 Owns hosts, their drivers, provisioning, the credential relay and port forwarding. A remote workroom is a workroom whose files, shells and agent live on a host.
