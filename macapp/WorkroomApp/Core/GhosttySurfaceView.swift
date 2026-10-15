@@ -191,6 +191,8 @@ final class GhosttySurfaceView: NSView {
   nonisolated(unsafe) private var envVarCount = 0
   private var pendingSurfaceCreation = false
   private var isShowingHandCursor = false
+  /// The pointer shape the engine last asked for (#466). It never sends a starting one.
+  private var mouseShape = GhosttySurfaceView.restingMouseShape
   /// Set in mouseDown when a ⌘-click opened a file (no terminal press was sent); makes the matching
   /// mouseUp a no-op so it doesn't send an unbalanced RELEASE or run copy-on-select.
   private var suppressNextMouseUp = false
@@ -1683,6 +1685,11 @@ final class GhosttySurfaceView: NSView {
   override func mouseExited(with event: NSEvent) {
     super.mouseExited(with: event)
     setHandCursor(false)
+    // A negative position tells the engine the pointer left, so it drops its link hover and
+    // highlight. Not mid-drag: the drag keeps sending positions, and the engine reports a
+    // negative one to a mouse-reporting program and scrolls the selection by it.
+    guard NSEvent.pressedMouseButtons == 0, let surface else { return }
+    ghostty_surface_mouse_pos(surface, -1, -1, modsFromEvent(event))
   }
 
   override func rightMouseDown(with event: NSEvent) {
@@ -1766,7 +1773,75 @@ final class GhosttySurfaceView: NSView {
   private func setHandCursor(_ on: Bool) {
     guard on != isShowingHandCursor else { return }
     isShowingHandCursor = on
-    if on { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+    refreshCursor()
+  }
+
+  // MARK: Pointer shape (#466)
+
+  /// The engine's default shape, shown until it asks for another.
+  static let restingMouseShape = GHOSTTY_MOUSE_SHAPE_TEXT
+
+  /// The engine's shape as an AppKit cursor. Shapes AppKit has no cursor for show the arrow.
+  static func cursor(for shape: ghostty_action_mouse_shape_e) -> NSCursor {
+    switch shape {
+    case GHOSTTY_MOUSE_SHAPE_TEXT: .iBeam
+    case GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT: .iBeamCursorForVerticalLayout
+    case GHOSTTY_MOUSE_SHAPE_POINTER: .pointingHand
+    case GHOSTTY_MOUSE_SHAPE_CONTEXT_MENU: .contextualMenu
+    case GHOSTTY_MOUSE_SHAPE_CROSSHAIR, GHOSTTY_MOUSE_SHAPE_CELL: .crosshair
+    case GHOSTTY_MOUSE_SHAPE_ALIAS: .dragLink
+    case GHOSTTY_MOUSE_SHAPE_COPY: .dragCopy
+    case GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED, GHOSTTY_MOUSE_SHAPE_NO_DROP: .operationNotAllowed
+    case GHOSTTY_MOUSE_SHAPE_GRAB: .openHand
+    case GHOSTTY_MOUSE_SHAPE_GRABBING: .closedHand
+    case GHOSTTY_MOUSE_SHAPE_ZOOM_IN: .zoomIn
+    case GHOSTTY_MOUSE_SHAPE_ZOOM_OUT: .zoomOut
+    case GHOSTTY_MOUSE_SHAPE_COL_RESIZE, GHOSTTY_MOUSE_SHAPE_EW_RESIZE:
+      .columnResize(directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_ROW_RESIZE, GHOSTTY_MOUSE_SHAPE_NS_RESIZE: .rowResize(directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_N_RESIZE: .frameResize(position: .top, directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_E_RESIZE: .frameResize(position: .right, directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_S_RESIZE: .frameResize(position: .bottom, directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_W_RESIZE: .frameResize(position: .left, directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_NE_RESIZE, GHOSTTY_MOUSE_SHAPE_NESW_RESIZE:
+      .frameResize(position: .topRight, directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_NW_RESIZE, GHOSTTY_MOUSE_SHAPE_NWSE_RESIZE:
+      .frameResize(position: .topLeft, directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_SE_RESIZE: .frameResize(position: .bottomRight, directions: .all)
+    case GHOSTTY_MOUSE_SHAPE_SW_RESIZE: .frameResize(position: .bottomLeft, directions: .all)
+    default: .arrow
+    }
+  }
+
+  /// The one cursor the pane shows: its ⌘-hover hand while that's up, else the engine's shape.
+  static func paneCursor(shape: ghostty_action_mouse_shape_e, showingHand: Bool) -> NSCursor {
+    showingHand ? .pointingHand : cursor(for: shape)
+  }
+
+  /// `GHOSTTY_ACTION_MOUSE_SHAPE`. The engine sends it holding its render lock (link refresh inside
+  /// `ghostty_surface_mouse_pos`), so this only stores the shape: calling back into the surface
+  /// here, e.g. the ⌘-hover word lookup, deadlocks.
+  func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {
+    guard shape != mouseShape else { return }
+    mouseShape = shape
+    refreshCursor()
+  }
+
+  // A cursor rect, not NSCursor.set/push: AppKit re-applies it whenever the pointer enters the
+  // pane, so another pane's shape or a divider's resize cursor never sticks here.
+  override func resetCursorRects() {
+    addCursorRect(
+      bounds, cursor: Self.paneCursor(shape: mouseShape, showingHand: isShowingHandCursor))
+  }
+
+  private func refreshCursor() {
+    guard let window else { return }
+    window.invalidateCursorRects(for: self)
+    // Rects are rebuilt on the next event; show the change now if the pointer is on the terminal.
+    guard window.isKeyWindow, let superview else { return }
+    let point = superview.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    guard hitTest(point) === self else { return }
+    Self.paneCursor(shape: mouseShape, showingHand: isShowingHandCursor).set()
   }
 
   // MARK: Context menu
