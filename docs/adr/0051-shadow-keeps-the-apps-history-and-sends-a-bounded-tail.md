@@ -9,7 +9,7 @@ The invariants:
 - **Kept follows the app.** When #471 makes the app's limit a setting, the shadow's follows it.
 - **Each paint is the newest history that fits its budget.** A repaint (`REPAINT_MAX_BYTES`, `MAX_RECORD` less 64 KiB), a record on disk (`RECORD_MAX_BYTES`, 1 MiB: rewritten every 2 s on a busy remote session and read only after a host restart), a hand-off screen (its share of `HANDOFF_TOTAL_BYTES`, 16 MiB, at most a repaint).
 - **The parts whose size history does not change are sized first** (the erase, kitty flags, cursor, scroll padding at its most, and on the alternate screen that screen's paint); the primary's history gets what is left. The screen alone is always sent, even over a budget smaller than itself.
-- **How many rows fit comes from the formatter's own output**: the newest 64 rows are formatted first to measure density, then at most three guesses scaled at 90% of `budget / bytes`, stopping within 80% of the budget, then halvings.
+- **How many rows fit comes from the formatter's own output**: the newest 64 rows are formatted first to measure density, then at most three guesses scaled at 90% of `budget / bytes` and growing at most 8 times a step (prompts over an older truecolour dump otherwise formatted 118 MB once to send 4 MiB), stopping within 80% of the budget, then halvings.
 - **The scroll padding follows the history sent**, not the history kept, so the next output lands below the last line.
 - **A hand-off that runs out of time still happens.** Screens are captured within `HANDOFF_FORMAT_DEADLINE` (250 ms) with every session stopped; sessions reached after it carry their screen alone, and one under a full-screen program skips the primary's paint, which costs a copy of the terminal. Refusing instead would refuse again at every launch while the same sessions stayed open, and the agent would never upgrade. The timeout sum in `handoff.rs` counts the deadline and a 250 ms table-write allowance; the app waits 7 s.
 
@@ -25,14 +25,13 @@ Measured (release, Apple silicon, 200 by 50, `measure_shadow_history` and `measu
 | Dense (truecolour alternating per cell) | 47.7 MiB | 0.92 MiB | 5 ms | 3.39 MiB, 810 rows, 16 ms | 42 ms |
 | High-entropy (random base64) | 47.7 MiB | 16.8 MiB | 68 ms | 3.53 MiB, 18,315 rows, 24 ms | 96 ms |
 
-A hand-off of ten sessions like the first row, each under a full-screen program, captured five with their history and five with their screen alone in 257 ms, and encoded and wrote its 7.5 MiB table in 10 ms. Because the copy can take ~100 ms, the primary's paint is kept while a program runs and reused until it leaves the alternate screen or the pane resizes.
+A hand-off of ten sessions like the first row, each under a full-screen program, captured five with their history and five with their screen alone in 257 ms, and encoded and wrote its 7.5 MiB table in 10 ms. Because the copy can take ~100 ms, the primary's paint is kept while a program runs, and dropped when the pane resizes or output switches screens or resets the terminal.
 
 Alternatives rejected: a byte cap on what is kept (bounds memory, not what is sent, and the densest record still exceeded `MAX_RECORD`); a line cap (the same, and fewer rows than the app); paging history to the client on demand (#470: GhosttyKit cannot insert history above what a surface shows, so it needs an app-side history view); a hand-off by snapshot (TODOS.md: snapshots have no cross-revision guarantee, ADR 0031, so it needs a same-engine check); refusing a hand-off that runs out of time (above).
 
 Residual risks, accepted:
 
 - History that compresses poorly (random base64) keeps about 17 MB per full session, about 340 MB for twenty such panes on one host. The app's own panes keep their 50 MB uncompressed.
-- The row guesses assume older rows are about as dense as the newest. A sparse tail over much denser history can overshoot once, by up to the whole history's paint (a `shortcut:` comment marks it).
-- A program that leaves the alternate screen and another that enters it within one pty read keep the first's primary paint, missing what was printed between.
+- A row guess can still overshoot when density changes sharply, by at most 8 times the rows of the last format (measured peak 4.6 MB for a 4 MiB repaint over truecolour history).
 
 Source: [`vcs/crates/wr-agent/src/terminal.rs`](../../vcs/crates/wr-agent/src/terminal.rs), [`vcs/crates/wr-agent/src/session.rs`](../../vcs/crates/wr-agent/src/session.rs) (`frozen_formatting`, `compress_shadows`), [`vcs/crates/wr-agent/src/screens.rs`](../../vcs/crates/wr-agent/src/screens.rs), [`vcs/crates/wr-agent/src/handoff.rs`](../../vcs/crates/wr-agent/src/handoff.rs).

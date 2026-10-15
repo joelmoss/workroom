@@ -2380,6 +2380,39 @@ mod tests {
         format!("\x1b[mline {n:<6} {cells}\x1b[m\r\n")
     }
 
+    /// Taking a session's record compresses its shadow in the same hold, so the pages the record
+    /// re-inflated are not kept through every record's disk write and sync that follow.
+    ///
+    /// Value: protects=changed_screens leaves each recorded shadow compressed; fails_when=the
+    /// compress after record() is dropped (the tick's later pass hides it); why_new=the tick test
+    /// runs both passes; seam=none
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn taking_a_record_leaves_the_shadow_compressed() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 10")];
+        let e = env();
+        store.create(spec(id(120), &args, &e)).expect("create");
+        let shadow = store.shadow(id(120)).expect("shadow");
+        {
+            let mut shadow = shadow.lock().expect("shadow");
+            for n in 0..20_000 {
+                shadow.write(format!("line {n} {}\r\n", "z".repeat(60)).as_bytes());
+            }
+            shadow.compress();
+        }
+        store.mark_changed(id(120));
+        let taken = store.changed_screens();
+        let memory = shadow.lock().expect("shadow").memory().expect("memory");
+        store.kill_all();
+        assert_eq!(taken.len(), 1, "fixture: the record was not taken");
+        assert!(
+            memory.primary_resident_bytes < 4 << 20,
+            "{} bytes resident after taking the record",
+            memory.primary_resident_bytes
+        );
+    }
+
     /// A hand-off shares `HANDOFF_TOTAL_BYTES` between its sessions, each carrying the newest
     /// history that fits its share, and one that runs out of time still happens: the sessions it
     /// reaches late carry their screen alone, and one under a full-screen program its alternate
