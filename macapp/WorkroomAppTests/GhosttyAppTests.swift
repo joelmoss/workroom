@@ -1,3 +1,5 @@
+import AppKit
+import GhosttyKit
 import XCTest
 
 @testable import Workroom
@@ -115,5 +117,73 @@ final class ClipboardConfirmationCopyTests: XCTestCase {
       XCTAssertFalse(copy.allowButton.isEmpty)
       XCTAssertFalse(copy.denyButton.isEmpty)
     }
+  }
+}
+
+/// The pane's pointer (#466): which `NSCursor` each engine shape shows, and which one the pane shows
+/// when its own ⌘-hover hand is up. AppKit applying it needs a window, so a person checks that.
+@MainActor
+final class MouseShapeCursorTests: XCTestCase {
+  func testEachShapeShowsItsCursor() {
+    let expected: [(ghostty_action_mouse_shape_e, NSCursor)] = [
+      (GHOSTTY_MOUSE_SHAPE_DEFAULT, .arrow),
+      (GHOSTTY_MOUSE_SHAPE_TEXT, .iBeam),
+      (GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT, .iBeamCursorForVerticalLayout),
+      (GHOSTTY_MOUSE_SHAPE_POINTER, .pointingHand),
+      (GHOSTTY_MOUSE_SHAPE_CONTEXT_MENU, .contextualMenu),
+      (GHOSTTY_MOUSE_SHAPE_CROSSHAIR, .crosshair),
+      (GHOSTTY_MOUSE_SHAPE_CELL, .crosshair),
+      (GHOSTTY_MOUSE_SHAPE_ALIAS, .dragLink),
+      (GHOSTTY_MOUSE_SHAPE_COPY, .dragCopy),
+      (GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED, .operationNotAllowed),
+      (GHOSTTY_MOUSE_SHAPE_NO_DROP, .operationNotAllowed),
+      (GHOSTTY_MOUSE_SHAPE_GRAB, .openHand),
+      (GHOSTTY_MOUSE_SHAPE_GRABBING, .closedHand),
+      (GHOSTTY_MOUSE_SHAPE_ZOOM_IN, .zoomIn),
+      (GHOSTTY_MOUSE_SHAPE_ZOOM_OUT, .zoomOut),
+    ]
+    for (shape, cursor) in expected {
+      XCTAssertIdentical(GhosttySurfaceView.cursor(for: shape), cursor, "shape \(shape.rawValue)")
+    }
+  }
+
+  func testResizeShapesShowAResizeCursor() {
+    let resizes = [
+      GHOSTTY_MOUSE_SHAPE_COL_RESIZE, GHOSTTY_MOUSE_SHAPE_ROW_RESIZE, GHOSTTY_MOUSE_SHAPE_EW_RESIZE,
+      GHOSTTY_MOUSE_SHAPE_NS_RESIZE, GHOSTTY_MOUSE_SHAPE_N_RESIZE, GHOSTTY_MOUSE_SHAPE_E_RESIZE,
+      GHOSTTY_MOUSE_SHAPE_S_RESIZE, GHOSTTY_MOUSE_SHAPE_W_RESIZE, GHOSTTY_MOUSE_SHAPE_NE_RESIZE,
+      GHOSTTY_MOUSE_SHAPE_NW_RESIZE, GHOSTTY_MOUSE_SHAPE_SE_RESIZE, GHOSTTY_MOUSE_SHAPE_SW_RESIZE,
+      GHOSTTY_MOUSE_SHAPE_NESW_RESIZE, GHOSTTY_MOUSE_SHAPE_NWSE_RESIZE,
+    ]
+    for shape in resizes {
+      XCTAssertNotIdentical(
+        GhosttySurfaceView.cursor(for: shape), NSCursor.arrow, "shape \(shape.rawValue)")
+    }
+  }
+
+  func testShapesWithNoAppKitCursorShowTheArrow() {
+    for shape in [
+      GHOSTTY_MOUSE_SHAPE_HELP, GHOSTTY_MOUSE_SHAPE_PROGRESS, GHOSTTY_MOUSE_SHAPE_WAIT,
+      GHOSTTY_MOUSE_SHAPE_MOVE, GHOSTTY_MOUSE_SHAPE_ALL_SCROLL,
+      ghostty_action_mouse_shape_e(rawValue: 999),
+    ] {
+      XCTAssertIdentical(
+        GhosttySurfaceView.cursor(for: shape), NSCursor.arrow, "shape \(shape.rawValue)")
+    }
+  }
+
+  func testAPaneRestsOnTheIBeam() {
+    // The engine never sends a starting shape; its own default is the I-beam.
+    XCTAssertIdentical(
+      GhosttySurfaceView.cursor(for: GhosttySurfaceView.restingMouseShape), NSCursor.iBeam)
+  }
+
+  func testTheHoverHandWinsOverTheEngineShape() {
+    XCTAssertIdentical(
+      GhosttySurfaceView.paneCursor(shape: GHOSTTY_MOUSE_SHAPE_TEXT, showingHand: true),
+      NSCursor.pointingHand)
+    XCTAssertIdentical(
+      GhosttySurfaceView.paneCursor(shape: GHOSTTY_MOUSE_SHAPE_CROSSHAIR, showingHand: false),
+      NSCursor.crosshair)
   }
 }

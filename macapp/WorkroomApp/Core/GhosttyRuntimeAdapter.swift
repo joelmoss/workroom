@@ -91,6 +91,13 @@ final class GhosttyRuntimeAdapter {
       view.hasOSC8LinkUnderCursor = link.len > 0 && link.url != nil
       return true
 
+    case GHOSTTY_ACTION_MOUSE_SHAPE:
+      // A program's OSC 22, a link hover, or a modifier override (#466). Can arrive under the
+      // engine's render lock, so the view only stores it.
+      guard let view = surfaceView(from: target) else { return false }
+      view.handleMouseShape(action.action.mouse_shape)
+      return true
+
     case GHOSTTY_ACTION_SCROLLBAR:
       // libghostty draws no scrollbar of its own — it reports the scroll geometry (rows) and lets the
       // host render one. We show a fading overlay indicator (plan: restore SwiftTerm's scrollbar).
