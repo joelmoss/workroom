@@ -66,7 +66,7 @@ struct ProgramStatusSession: Equatable {
     return ProgramStatusRecord(
       id: record.id, state: record.state, kind: record.kind, app: record.app,
       title: shown ? record.title : "", message: shown ? record.message : "",
-      episode: record.episode, notify: record.notify)
+      episode: record.episode, notify: record.notify, exitCode: record.exitCode)
   }
 
   static func blockedKey(_ record: ProgramStatusRecord) -> String {

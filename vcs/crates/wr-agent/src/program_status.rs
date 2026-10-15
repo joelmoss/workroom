@@ -18,8 +18,12 @@
 //!   `snapshot-complete`, then live events. Without `terminal-state`, `{"available":false,…}`.
 //! - `unsubscribe` — `{"ok":true}`.
 //! - `seen {session, revision, states?}` — drops the session's `done`/`error` records the app has
-//!   shown (as of `revision`); `{"ok":true}`, or `unknown_session`.
+//!   shown (as of `revision`), its command result too; `{"ok":true}`, or `unknown_session`.
 //! - `clear {session}` — drops every record (the app's "Clear status"); the same replies.
+//!
+//! A session also keeps one **command result** (#473): how its shell's last long command ended,
+//! from OSC 133 rather than from the program. It is sent as one more record, with an `exitCode`
+//! no program's record has, so an app that predates it shows a plain finished or failed mark.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write as _;
@@ -48,7 +52,18 @@ pub mod limits {
     /// The most bytes of a `title` or `message` kept: a tooltip line and a notification body, with
     /// room to spare, and 64 of them stay far under one envelope.
     pub const MAX_TEXT: usize = 512;
+    /// How long a shell command runs before its end is a command result (#473): long enough to
+    /// switch away over, and longer than the quick commands and typos that would only be noise.
+    pub const LONG_COMMAND: Duration = Duration::from_secs(10);
 }
+
+/// The exit status of a command stopped with ^C (128 + SIGINT): the user ended it, so it is
+/// neither a pass nor a failure worth a mark.
+const INTERRUPTED: i32 = 130;
+
+/// The wire id of a command result. It has a space, which `printable` refuses in a report's id,
+/// so no program's record can share it.
+const COMMAND_ID: &str = "shell command";
 
 /// The wire version of this service, in every reply. Separate from `PROTOCOL_VERSION`, which says
 /// whether the service exists at all.
@@ -111,6 +126,13 @@ pub enum Event {
     Reset,
     /// The agent answered a support probe from the foreground group.
     Probed,
+    /// The shell's OSC 133 D closed a command whose C the terminal saw, `ran` after it, with
+    /// `line` the title the shell gave the command (empty when it gave none).
+    Command {
+        exit_code: i32,
+        ran: Duration,
+        line: String,
+    },
 }
 
 /// One record, as the session keeps it.
@@ -135,6 +157,26 @@ pub struct Record {
     notify: bool,
 }
 
+/// How the shell's last long command ended (#473), kept apart from the records so no program's
+/// report, CLEAR or reset touches it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandResult {
+    exit_code: i32,
+    line: String,
+    /// As `Record::updated`.
+    updated: u64,
+}
+
+impl CommandResult {
+    fn state(&self) -> State {
+        if self.exit_code == 0 {
+            State::Done
+        } else {
+            State::Error
+        }
+    }
+}
+
 /// What `Store` logs once per session.
 const LOGGED_INVALID: u8 = 1;
 const LOGGED_EVICTED: u8 = 2;
@@ -154,6 +196,9 @@ pub struct Store {
     reporting: Option<Group>,
     /// The group that was foreground when the agent answered a probe in this run.
     probed: Option<Group>,
+    /// The default reads a hand-off from an agent that kept none.
+    #[serde(default)]
+    command: Option<CommandResult>,
     /// Changed since the last `commit`. Never carried: a hand-off freezes between commits.
     #[serde(skip)]
     dirty: bool,
@@ -173,7 +218,26 @@ impl Store {
             Event::Prompt => self.drop_on_prompt(),
             Event::Reset => self.reset(),
             Event::Probed => self.probed = Some(owner),
+            Event::Command {
+                exit_code,
+                ran,
+                line,
+            } => self.command_ended(exit_code, ran, &line, owner),
         }
+    }
+
+    /// A long command's end replaces the command result; a quick one or a ^C leaves it alone.
+    pub fn command_ended(&mut self, exit_code: i32, ran: Duration, line: &str, owner: Group) {
+        if exit_code == INTERRUPTED || ran < limits::LONG_COMMAND {
+            return;
+        }
+        let line = self.sanitized(line, LOGGED_TITLE, owner);
+        self.command = Some(CommandResult {
+            exit_code,
+            line,
+            updated: self.revision + 1,
+        });
+        self.dirty = true;
     }
 
     /// One read's events, in order, except that a probe counts only after the reports read with
@@ -316,12 +380,24 @@ impl Store {
             let seen = matches!(r.state, State::Done | State::Error) && states.contains(&r.state);
             !(seen && r.updated <= revision)
         });
+        if self
+            .command
+            .as_ref()
+            .is_some_and(|c| states.contains(&c.state()) && c.updated <= revision)
+        {
+            self.command = None;
+            self.dirty = true;
+        }
     }
 
-    /// The app's "Clear status": every record, and `reporting`. Not `probed`: that names the
-    /// program, which is still running and asked once, so its later requests still notify.
+    /// The app's "Clear status": every record, the command result, and `reporting`. Not
+    /// `probed`: that names the program, which is still running and asked once, so its later
+    /// requests still notify.
     pub fn clear_all(&mut self) {
         self.retain(|_| false);
+        if self.command.take().is_some() {
+            self.dirty = true;
+        }
         if self.reporting.take().is_some() {
             self.dirty = true;
         }
@@ -339,7 +415,7 @@ impl Store {
 
     /// The `status` event for this store.
     pub fn event(&self, boot: SessionId, session: SessionId) -> Vec<u8> {
-        let records: Vec<WireRecord> = self
+        let mut records: Vec<WireRecord> = self
             .records
             .iter()
             .map(|r| WireRecord {
@@ -352,8 +428,33 @@ impl Store {
                 message: &r.message,
                 episode: r.episode,
                 notify: r.notify,
+                exit_code: None,
             })
             .collect();
+        // Among the records by when it changed, so the app's latest finished or failed mark is
+        // the latest whichever reported it. An older app shows it as a program's record.
+        if let Some(command) = &self.command {
+            let at = self
+                .records
+                .iter()
+                .position(|r| r.updated > command.updated)
+                .unwrap_or(records.len());
+            records.insert(
+                at,
+                WireRecord {
+                    id: COMMAND_ID,
+                    state: command.state(),
+                    kind: Kind::None,
+                    progress: -1,
+                    app: "",
+                    title: "",
+                    message: &command.line,
+                    episode: 0,
+                    notify: false,
+                    exit_code: Some(command.exit_code),
+                },
+            );
+        }
         serde_json::to_vec(&StatusEvent {
             event: "status",
             boot: boot.to_hyphenated(),
@@ -482,6 +583,9 @@ struct WireRecord<'a> {
     message: &'a str,
     episode: u64,
     notify: bool,
+    /// Only on the command result (#473): what tells the app the shell reported it.
+    #[serde(rename = "exitCode", skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -931,6 +1035,9 @@ mod tests {
         match name {
             "status" => include_str!("../../../../testdata/program-status/status.json"),
             "ended" => include_str!("../../../../testdata/program-status/ended.json"),
+            "status-command" => {
+                include_str!("../../../../testdata/program-status/status-command.json")
+            }
             _ => include_str!("../../../../testdata/program-status/snapshot-complete.json"),
         }
         .trim_end()
@@ -970,6 +1077,12 @@ mod tests {
             String::from_utf8(snapshot_complete(uuid(BOOT), &[uuid(SESSION)])).unwrap(),
             fixture("snapshot-complete")
         );
+
+        let mut store = Store::default();
+        store.apply(command(1, limits::LONG_COMMAND), 10);
+        store.commit();
+        let event = store.event(uuid(BOOT), uuid(SESSION));
+        assert_eq!(String::from_utf8(event).unwrap(), fixture("status-command"));
     }
 
     /// A report replaces its record whole, and moves it to the newest end.
@@ -1131,6 +1244,106 @@ mod tests {
         assert_eq!(store.commit(), Some(false));
         done_only.seen(done_only.revision, &[State::Done]);
         assert_eq!(ids(&done_only), ["err"]);
+    }
+
+    fn command(exit_code: i32, ran: Duration) -> Event {
+        Event::Command {
+            exit_code,
+            ran,
+            line: "npm test".into(),
+        }
+    }
+
+    fn result(store: &Store) -> Option<(State, i32)> {
+        store.command.as_ref().map(|c| (c.state(), c.exit_code))
+    }
+
+    /// Value: protects=which command ends earn a mark (#473): long ones, passed or failed, never ^C; fails_when=the threshold, the 130 exemption or the exit-0 split goes; why_new=these rules exist nowhere else; seam=none
+    #[test]
+    fn only_a_long_command_that_was_not_interrupted_leaves_a_result() {
+        let long = limits::LONG_COMMAND;
+        for (exit_code, ran, expected) in [
+            (0, long, Some((State::Done, 0))),
+            (2, long, Some((State::Error, 2))),
+            (137, long * 6, Some((State::Error, 137))),
+            (143, long, Some((State::Error, 143))),
+            (130, long * 60, None),
+            (0, long - Duration::from_millis(1), None),
+            (1, Duration::ZERO, None),
+        ] {
+            let mut store = Store::default();
+            store.apply(command(exit_code, ran), 1);
+            assert_eq!(result(&store), expected, "exit {exit_code} after {ran:?}");
+            assert_eq!(store.commit().is_some(), expected.is_some());
+        }
+    }
+
+    /// Value: protects=one result per session that only a later long command replaces; fails_when=a quick command or a ^C clears or replaces it, or a long one does not; why_new=the replace rule is new; seam=none
+    #[test]
+    fn only_a_later_long_command_replaces_the_result() {
+        let long = limits::LONG_COMMAND;
+        let mut store = Store::default();
+        store.apply(command(2, long), 1);
+        store.commit();
+        store.apply(command(0, Duration::from_secs(1)), 1);
+        store.apply(command(130, long), 1);
+        assert_eq!(store.commit(), None, "neither is a change");
+        assert_eq!(result(&store), Some((State::Error, 2)));
+        store.apply(command(0, long), 1);
+        assert_eq!(
+            store.commit(),
+            Some(false),
+            "never counts as entering blocked"
+        );
+        assert_eq!(result(&store), Some((State::Done, 0)));
+    }
+
+    /// Value: protects=the result follows the seen rules and nothing a program sends clears it; fails_when=seen ignores its state or revision, or a prompt, CLEAR, RIS or exit drops it; why_new=it is kept apart from the records those rules walk; seam=none
+    #[test]
+    fn a_result_goes_only_when_seen_or_cleared_by_the_user() {
+        let mut store = Store::default();
+        store.apply(command(1, limits::LONG_COMMAND), 1);
+        store.commit();
+        let shown = store.revision;
+        for event in [Event::Prompt, Event::Clear(String::new()), Event::Reset] {
+            store.apply(event, 1);
+        }
+        store.drop_on_exit();
+        store.drop_dead_owners(|_| false);
+        store.seen(shown - 1, &[State::Done, State::Error]);
+        store.seen(shown, &[State::Done]);
+        assert_eq!(result(&store), Some((State::Error, 1)));
+        store.seen(shown, &[State::Error]);
+        assert_eq!(result(&store), None);
+        assert_eq!(store.commit(), Some(false));
+
+        store.apply(command(0, limits::LONG_COMMAND), 1);
+        store.clear_all();
+        assert_eq!(result(&store), None, "Clear status takes it too");
+    }
+
+    /// Value: protects=the result sits among the records in the order they changed, with an exitCode no program record has; fails_when=it always goes first or last, or the field leaks onto a program's record; why_new=the app's latest mark and its shell wording read these; seam=none
+    #[test]
+    fn the_result_is_sent_among_the_records_in_change_order() {
+        let mut store = Store::default();
+        store.report(report("a", State::Done), 1);
+        store.commit();
+        store.apply(command(1, limits::LONG_COMMAND), 1);
+        store.commit();
+        store.report(report("b", State::Done), 1);
+        store.commit();
+        let event: Value = serde_json::from_slice(&store.event(uuid(BOOT), uuid(SESSION))).unwrap();
+        let records = event["records"].as_array().unwrap();
+        let shape: Vec<_> = records
+            .iter()
+            .map(|r| (r["id"].as_str().unwrap(), r.get("exitCode").cloned()))
+            .collect();
+        assert_eq!(
+            shape,
+            [("a", None), (COMMAND_ID, Some(json!(1))), ("b", None)]
+        );
+        assert_eq!(records[1]["state"], "error");
+        assert_eq!(records[1]["message"], "npm test");
     }
 
     #[test]

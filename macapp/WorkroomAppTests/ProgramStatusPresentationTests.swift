@@ -84,6 +84,40 @@ final class ProgramStatusPresentationTests: XCTestCase {
       ["Turn finished", "All tests pass", "Reported by the program in this terminal"])
   }
 
+  /// A command result (#473) says what the shell reported, and never speaks for the program.
+  func testACommandResultSaysTheShellReportedItWithItsCommandLine() {
+    let passed = ProgramStatusRecord(
+      id: "shell command", state: .done, message: "npm test", exitCode: 0)
+    let failed = ProgramStatusRecord(
+      id: "shell command", state: .error, message: "npm test", exitCode: 1)
+    XCTAssertEqual(
+      lines(.done, rollup(done: passed)),
+      ["Command finished", "npm test", "Reported by the shell in this terminal"])
+    XCTAssertEqual(
+      lines(.error, rollup(error: failed)),
+      ["Command failed (exit 1)", "npm test", "Reported by the shell in this terminal"])
+    let untitled = ProgramStatusRecord(id: "shell command", state: .error, exitCode: 2)
+    XCTAssertEqual(
+      lines(.error, rollup(error: untitled)),
+      ["Command failed (exit 2)", "Reported by the shell in this terminal"])
+
+    XCTAssertEqual(
+      ProgramStatusPresentation.accessibilityValue(indicator: .done, rollup: rollup(done: passed)),
+      "Command finished")
+    XCTAssertEqual(
+      ProgramStatusPresentation.accessibilityValue(
+        indicator: .error, rollup: rollup(error: failed)),
+      "Command failed (exit 1)")
+    XCTAssertEqual(
+      ProgramStatusPresentation.accessibilityParts(indicator: .done, rollup: rollup(done: passed)),
+      ["command finished"])
+
+    let program = ProgramStatusRecord(id: "", state: .error, message: "Crashed")
+    XCTAssertEqual(
+      lines(.error, rollup(error: program)),
+      ["The program reported an error", "Crashed", "Reported by the program in this terminal"])
+  }
+
   /// With nothing reported, the last line says why, from the pane's host; nothing at all for a pane
   /// with no session or a host nobody follows.
   func testNothingReportedSaysWhyFromTheHost() {

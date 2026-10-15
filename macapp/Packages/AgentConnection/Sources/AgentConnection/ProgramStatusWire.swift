@@ -31,11 +31,14 @@ public struct ProgramStatusRecord: Sendable, Equatable {
   /// Whether the program that reported it answered the agent's support probe in its current run.
   /// Only these may notify: a bare `printf` of a report still shows, but never alerts.
   public let notify: Bool
+  /// Set only on a command result (#473): the shell, not the program, reported it, and this is
+  /// how its command exited. `message` is then the command line, or empty.
+  public let exitCode: Int32?
 
   public init(
     id: String, state: ProgramStatusState, kind: ProgramStatusKind = .none, progress: Int = -1,
     app: String = "", title: String = "", message: String = "", episode: UInt64 = 0,
-    notify: Bool = false
+    notify: Bool = false, exitCode: Int32? = nil
   ) {
     self.id = id
     self.state = state
@@ -46,6 +49,7 @@ public struct ProgramStatusRecord: Sendable, Equatable {
     self.message = message
     self.episode = episode
     self.notify = notify
+    self.exitCode = exitCode
   }
 }
 
@@ -116,6 +120,7 @@ public enum ProgramStatusEvent: Sendable, Equatable {
       let message: String
       let episode: UInt64
       let notify: Bool
+      let exitCode: Int32?
     }
 
     init(from decoder: Decoder) throws {
@@ -129,7 +134,7 @@ public enum ProgramStatusEvent: Sendable, Equatable {
       record = ProgramStatusRecord(
         id: fields.id, state: state, kind: kind, progress: fields.progress, app: fields.app,
         title: fields.title, message: fields.message, episode: fields.episode,
-        notify: fields.notify)
+        notify: fields.notify, exitCode: fields.exitCode)
     }
   }
 }

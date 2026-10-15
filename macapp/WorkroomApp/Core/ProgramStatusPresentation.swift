@@ -10,10 +10,17 @@ enum ProgramStatusPresentation {
   /// The accessibility action on every glyph button and on the rows that carry one.
   static let showWaitingAction = "Show the terminal that needs you"
   static let reportedBy = "Reported by the program in this terminal"
+  static let reportedByShell = "Reported by the shell in this terminal"
   static let staleLine = "May be out of date: reconnecting…"
   static let stuckLine = "Stuck? Right-click, then Clear status."
   static let mayBeOutOfDate = "may be out of date"
   static let turnFinished = "Turn finished"
+  /// A command result's headline (#473), in the shell's words; nil for a program's record.
+  static func commandHeadline(_ record: ProgramStatusRecord) -> String? {
+    guard let exitCode = record.exitCode else { return nil }
+    return exitCode == 0 ? "Command finished" : "Command failed (exit \(exitCode))"
+  }
+
   /// The program's message, kept to one tooltip line.
   static let messageLimit = 120
 
@@ -68,6 +75,7 @@ enum ProgramStatusPresentation {
       }
     }
     var lines: [String]
+    var source = reportedBy
     switch indicator {
     case .blocked:
       lines = [headline(rollup.blocked)]
@@ -77,13 +85,21 @@ enum ProgramStatusPresentation {
     case .done:
       lines = [turnFinished]
       if let message = rollup.done.flatMap({ oneLine($0.message) }) { lines.append(message) }
+      if let headline = rollup.done.flatMap(commandHeadline) {
+        lines[0] = headline
+        source = reportedByShell
+      }
     case .error where rollup.error != nil:
       lines = ["The program reported an error"]
       if let message = rollup.error.flatMap({ oneLine($0.message) }) { lines.append(message) }
+      if let headline = rollup.error.flatMap(commandHeadline) {
+        lines[0] = headline
+        source = reportedByShell
+      }
     default:
       return rollup.stale ? [staleLine] : []
     }
-    lines.append(reportedBy)
+    lines.append(source)
     if rollup.stale { lines.append(staleLine) }
     // A stale mark can't be cleared until its host is back, so the hint waits for it.
     if indicator == .blocked, !rollup.stale, let since = rollup.blockedSince,
@@ -111,8 +127,9 @@ enum ProgramStatusPresentation {
   static func accessibilityValue(indicator: PaneIndicator, rollup: ProgramStatusRollup?) -> String {
     switch indicator {
     case .blocked: sentence(rollup?.blocked.first?.kind ?? .none)
-    case .done: turnFinished
-    case .error, .running(failed: true): "Error"
+    case .done: rollup?.done.flatMap(commandHeadline) ?? turnFinished
+    case .error: rollup?.error.flatMap(commandHeadline) ?? "Error"
+    case .running(failed: true): "Error"
     case .running: "Busy"
     case .none: "Idle"
     }
@@ -126,7 +143,7 @@ enum ProgramStatusPresentation {
     var parts: [String] = []
     switch indicator {
     case .blocked: parts.append(sentence(rollup?.blocked.first?.kind ?? .none).lowercased())
-    case .done: parts.append(turnFinished.lowercased())
+    case .done: parts.append((rollup?.done.flatMap(commandHeadline) ?? turnFinished).lowercased())
     default: break
     }
     if !parts.isEmpty, rollup?.stale == true { parts.append(mayBeOutOfDate) }
