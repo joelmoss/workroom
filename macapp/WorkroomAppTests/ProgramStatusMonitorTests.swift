@@ -187,6 +187,20 @@ final class ProgramStatusMonitorTests: XCTestCase {
     XCTAssertEqual(monitor.rollup(for: session)?.blockedSince, Date(timeIntervalSince1970: 100))
   }
 
+  /// Value: protects=a command result whose only change is its exit code is republished, so the tooltip never says the old code (#473); fails_when=`visible` drops exitCode; why_new=no other test compares exit codes; seam=none
+  func testACommandResultThatOnlyChangesItsExitCodeIsPublished() {
+    func session(_ exitCode: Int32) -> ProgramStatusSession {
+      ProgramStatusSession(
+        host: .local, boot: "b", revision: 1, reporting: false,
+        records: [
+          ProgramStatusRecord(
+            id: "shell command", state: .error, message: "npm test", exitCode: exitCode)
+        ])
+    }
+    XCTAssertTrue(session(2).differsVisibly(from: session(1)))
+    XCTAssertFalse(session(1).differsVisibly(from: session(1)))
+  }
+
   /// A session that ends takes its records with it, and its panes hear which session went.
   func testAnEndedSessionGoesAndItsPanesAreTold() async {
     let (monitor, gate) = makeMonitor()
