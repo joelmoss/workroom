@@ -15,7 +15,8 @@ which Claude Code 2.1.295 and later speak. Issue #358; the design decision is
 | Spinner / sweep | The program is working | As before |
 | ✓ (`checkmark.circle.fill`) | The program finished its turn | Terminal tab and sidebar terminal row only |
 
-Only one mark shows per place, in this order: waiting, failed, working, finished. Hover a mark for
+Only one mark shows per place, in this order: waiting, failed, working, finished. The exception is
+a failed shell command (see Long shell commands below), which ranks below working. Hover a mark for
 what the program said; the last line says it came from the program in that terminal.
 
 - Clicking the ✋ on a workroom row, a project header or a rail card goes to the terminal that has
@@ -79,6 +80,10 @@ keeps the last result; the next long command replaces it.
   never shows one.
 - It follows the same rules as a program's finished and failed marks: focusing the terminal clears
   it, a ✓ you watched clears itself, and it never alerts or counts in the Dock badge.
+- A failed command result ranks below anything running in the pane, a program's working state or
+  OSC 9;4 progress: start `claude` after a failed test run and the pane shows working, not failed.
+- Whichever came last shows. If a program reports after the command ended, the older command
+  result is hidden; a command that ends after a program's report shows its own result.
 - Only terminals whose shell runs under `wr-agent` show it. Run tabs and fallback panes don't
   (#476).
 - A command still running when Workroom hands its agent off on an update leaves no result.
