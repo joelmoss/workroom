@@ -485,7 +485,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     monitor.seed(
       id, reporting: true, records: [failed, ProgramStatusRecord(id: "", state: .working)])
     XCTAssertEqual(indicator(), .running(failed: false), "claude after failing tests is working")
-    monitor.seed(id, reporting: true, records: [failed, ProgramStatusRecord(id: "", state: .done)])
+    monitor.seed(id, reporting: true, records: [failed])
     XCTAssertEqual(indicator(), .error, "back once nothing runs, until seen")
 
     monitor.seed(id, reporting: false, records: [failed])
@@ -495,6 +495,23 @@ final class ProgramStatusPaneTests: XCTestCase {
     view.handleProgressReport(false)
     XCTAssertEqual(indicator(), .error)
     XCTAssertTrue(s.hasProgramError(forTargetID: target.id))
+  }
+
+  /// Value: protects=whichever of a command result and a program's report came last shows (#473); fails_when=an older command failure outranks claude's newer finished turn, or a newer failure hides behind an older one; why_new=the rank test seeds no order between the two; seam=none
+  func testTheLaterOfACommandResultAndAProgramReportShows() {
+    let monitor = ProgramStatusMonitor()
+    let s = makeSessions(monitor)
+    let tab = s.addTab(for: target)
+    let id = session(of: tab)
+    func indicator() -> PaneIndicator { s.tabs(for: target)[0].indicator }
+    let failed = ProgramStatusRecord(id: "shell command", state: .error, exitCode: 1)
+    let turn = ProgramStatusRecord(id: "", state: .done)
+
+    monitor.seed(id, reporting: true, records: [failed, turn])
+    XCTAssertEqual(indicator(), .done, "claude's turn after the failing tests")
+    XCTAssertNil(s.tabs(for: target)[0].programStatus?.error)
+    monitor.seed(id, reporting: false, records: [turn, failed])
+    XCTAssertEqual(indicator(), .error, "tests failing again after claude stopped")
   }
 
   /// A pane swapped out for a diff or file tab leaves its window without resigning first
