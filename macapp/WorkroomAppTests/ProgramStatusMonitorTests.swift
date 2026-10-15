@@ -512,6 +512,13 @@ final class ProgramStatusPaneTests: XCTestCase {
     XCTAssertNil(s.tabs(for: target)[0].programStatus?.error)
     monitor.seed(id, reporting: false, records: [turn, failed])
     XCTAssertEqual(indicator(), .error, "tests failing again after claude stopped")
+    let crashed = ProgramStatusRecord(id: "", state: .error)
+    let passed = ProgramStatusRecord(id: "shell command", state: .done, exitCode: 0)
+    monitor.seed(id, reporting: false, records: [crashed, passed])
+    XCTAssertEqual(indicator(), .done, "a passing build after claude's error")
+    let waiting = ProgramStatusRecord(id: "w", state: .blocked, episode: 1)
+    monitor.seed(id, reporting: true, records: [waiting, passed])
+    XCTAssertEqual(indicator(), .blocked, "a program's live records always stay")
   }
 
   /// A pane swapped out for a diff or file tab leaves its window without resigning first
