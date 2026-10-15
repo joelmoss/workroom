@@ -1736,6 +1736,11 @@ final class GhosttySurfaceView: NSView {
 
   override func scrollWheel(with event: NSEvent) {
     guard let surface else { return }
+    // Wheel events reach a window that isn't key, where no enter or move has replaced the negative
+    // position mouseExited left; without this the engine drops the wheel for a mouse-reporting
+    // program.
+    let pt = mousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
     var mods: ghostty_input_scroll_mods_t = 0
     if event.hasPreciseScrollingDeltas { mods |= 1 }
     ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
@@ -1829,12 +1834,13 @@ final class GhosttySurfaceView: NSView {
   }
 
   /// `GHOSTTY_ACTION_MOUSE_SHAPE`. The engine sends it holding its render lock (link refresh inside
-  /// `ghostty_surface_mouse_pos`), so this only stores the shape: calling back into the surface
-  /// here, e.g. the ⌘-hover word lookup, deadlocks.
+  /// `ghostty_surface_mouse_pos`), so this stores the shape and defers the cursor work a runloop:
+  /// nothing reachable from here may call back into the surface, e.g. the ⌘-hover word lookup,
+  /// or it deadlocks.
   func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {
     guard shape != mouseShape else { return }
     mouseShape = shape
-    refreshCursor()
+    DispatchQueue.main.async { [weak self] in self?.refreshCursor() }
   }
 
   // A cursor rect, not NSCursor.set/push: AppKit re-applies it whenever the pointer enters the

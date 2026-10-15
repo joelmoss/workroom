@@ -60,6 +60,8 @@ struct DialogOverlay<Content: View>: View {
         .scaleEffect(shown ? 1 : 0.96)
         .opacity(shown ? 1 : 0)
     }
+    // The arrow, not the cursor rect of a terminal beneath the dialog (#466).
+    .pointerStyle(.default)
     // Esc otherwise depends entirely on the Cancel button's `.keyboardShortcut(.cancelAction)`, which
     // needs SwiftUI focus to already be inside the dialog. `onDismiss` is idempotent (it nils
     // `activePicker`), so the two paths are safe together.
