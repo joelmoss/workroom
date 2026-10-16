@@ -3130,20 +3130,33 @@ final class AppStore: ObservableObject {
       isSelectedMember: isSelectedMember, isCursorTab: isCursorTab,
       detachedWindowKey: detachedPanes.window(for: tabID)?.isKeyWindow)
     if outcome.pulse { terminals.pulsePaneActivity(tabID) }
-    // The program's own alert about a request Workroom already raised, or the same alert from
-    // another pane of the session a moment ago, is folded in rather than shown twice (#358).
+    let show = { [weak self] () -> (() -> Void)? in
+      guard let self, outcome.record,
+        let note = self.notifications.record(
+          targetID: targetID, tabID: tabID, source: self.notificationSource(forTargetID: targetID),
+          activity: activity, focused: false)
+      else { return nil }
+      self.surface(note)
+      return { [weak self] in self?.withdrawNotification(note) }
+    }
+    // A program's own notification goes through its session's requests, so one request makes one
+    // notification (#358, #481): folded into its alert, held for it, or shown.
     if case .osc(let title, let body) = activity,
-      let session = terminals.sessionID(forTab: tabID, inTarget: targetID),
-      ProgramStatusAlerts.shared.absorbsOSC(session: session, title: title, body: body)
+      let session = terminals.sessionID(forTab: tabID, inTarget: targetID)
     {
+      ProgramStatusAlerts.shared.programNotified(
+        session: session, title: title, body: body, show: show)
       return
     }
-    guard outcome.record,
-      let note = notifications.record(
-        targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
-        activity: activity, focused: false)
-    else { return }
-    surface(note)
+    _ = show()
+  }
+
+  /// A program's own notification that a "needs you" alert replaces (#481): its toast, its entry
+  /// and its banner, which is keyed by tab.
+  private func withdrawNotification(_ note: WorkroomNotification) {
+    toasts.removeAll { $0.id == note.id }
+    notifications.dismiss(notifID: note.id)
+    systemNotifier.withdraw(identifiers: [note.tabID.uuidString])
   }
 
   // MARK: Program status alerts (#358)
@@ -3154,11 +3167,14 @@ final class AppStore: ObservableObject {
   /// banner posts, since asking for permission can take as long as the user takes to answer.
   func raiseNeedsYou(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, episode: String,
-    record: ProgramStatusRecord, stillWanted: @escaping () -> Bool
+    record: ProgramStatusRecord, detail: String? = nil, stillWanted: @escaping () -> Bool
   ) {
     let name = terminalPlace(targetID: targetID, tabID: tabID)
     var body = ProgramStatusPresentation.sentence(record.kind)
-    if let message = ProgramStatusPresentation.oneLine(record.message) {
+    // A report with no message (Codex sends none) takes the program's own notification text.
+    if let message = ProgramStatusPresentation.oneLine(record.message)
+      ?? detail.flatMap(ProgramStatusPresentation.oneLine)
+    {
       body += ": \u{201C}\(message)\u{201D}"
     }
     // The title already names the workroom, or a root's project, so the origin line adds only a
@@ -3181,7 +3197,7 @@ final class AppStore: ObservableObject {
     return place.isEmpty ? name : "\(name) in \(place)"
   }
 
-  /// The program's own text for a request already raised (see `ProgramStatusAlerts.absorbsOSC`).
+  /// The program's own text for a request already raised (see `ProgramStatusAlerts.programNotified`).
   func mergeIntoNeedsYou(episode: String, body: String?) {
     notifications.merge(episode: episode, body: body)
   }
