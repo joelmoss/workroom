@@ -213,6 +213,10 @@ pub struct SessionInfo {
     /// it is right.
     pub foreground: Option<String>,
     pub cwd: Option<String>,
+    /// The foreground program's Claude profile (`CLAUDE_CONFIG_DIR`), read at the same time and
+    /// for the same reason as `foreground`; the app uses it to tell which Claude account a pane
+    /// runs (#480).
+    pub claude_profile: Option<String>,
     /// What the client said about the session when it created it (`Session::metadata`).
     pub metadata: Vec<(String, String)>,
 }
@@ -258,6 +262,7 @@ impl Session {
                 .unwrap_or(false),
             foreground: foreground.and_then(crate::process::executable_name),
             cwd: foreground.and_then(crate::process::working_directory),
+            claude_profile: foreground.and_then(crate::process::claude_profile),
             metadata: self.metadata.clone(),
         }
     }
