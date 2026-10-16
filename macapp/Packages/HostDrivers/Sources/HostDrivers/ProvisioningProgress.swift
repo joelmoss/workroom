@@ -44,6 +44,20 @@ public enum ProvisioningProgress {
     }
   }
 
+  /// One command's exchange, logged: `shown` before it runs and its output after, unless
+  /// `logOutput` says not to for the status it exited with. `shown` is the caller's to make safe: a
+  /// command line (`commandLine`, or `$ ` and a shell line), never its environment, a script fed on
+  /// its stdin or a token. Nil logs nothing.
+  static func logged(
+    _ shown: String?, logOutput: (Int32) -> Bool = { _ in true },
+    _ exchange: () async throws -> (status: Int32, output: String)
+  ) async rethrows -> (status: Int32, output: String) {
+    if let shown { record(shown) }
+    let result = try await exchange()
+    if shown != nil, logOutput(result.status) { record(result.output) }
+    return result
+  }
+
   /// Logs a command as it starts.
   static func record(command program: String, _ arguments: [String]) {
     guard log != nil else { return }

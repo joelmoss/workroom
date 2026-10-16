@@ -709,18 +709,22 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     // `quiet` is for a poll, which would log the same line a hundred times. The environment is never
     // logged, and `commandLine` hides the one the arguments carry (`--env AUTHORIZED_KEY=…`).
-    let logged = Self.runtimeArguments(arguments, context: provisioning.context)
-    if !quiet { ProvisioningProgress.record(command: provisioning.runtime.path, logged) }
+    let full = Self.runtimeArguments(arguments, context: provisioning.context)
     let environment = ProcessInfo.processInfo.environment.filter {
       ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
     }
-    let (status, output) = try await HostStream.spawn(
-      provisioning.runtime, Self.runtimeArguments(arguments, context: provisioning.context),
-      environment: environment, handshakeTimeout: 20, purpose: .exchange
-    ).communicate(nil, timeout: timeout, onOutput: onOutput)
-    let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
     // A pull streams progress bars (`onOutput`); its failure says what it printed.
-    if !quiet, onOutput == nil || status != 0 { ProvisioningProgress.record(said) }
+    let logOutput: (Int32) -> Bool = { onOutput == nil || $0 != 0 }
+    let (status, said) = try await ProvisioningProgress.logged(
+      quiet ? nil : ProvisioningProgress.commandLine(provisioning.runtime.path, full),
+      logOutput: logOutput
+    ) {
+      let (status, output) = try await HostStream.spawn(
+        provisioning.runtime, full, environment: environment, handshakeTimeout: 20,
+        purpose: .exchange
+      ).communicate(nil, timeout: timeout, onOutput: onOutput)
+      return (status, output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
     guard status == 0 else {
       if let context = provisioning.context, said.contains("context not found") {
         throw HostDriverError.provisioning(

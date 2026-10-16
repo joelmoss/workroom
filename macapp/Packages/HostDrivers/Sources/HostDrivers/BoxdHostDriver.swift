@@ -135,14 +135,9 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
           "sudo sh -s -- "
           + [user, configuration.agentSocket, configuration.screens]
           .map(PosixShell.quoted).joined(separator: " ")
-        // The command line only: the script on stdin is never logged.
-        ProvisioningProgress.record("$ \(command)")
-        let (status, output) = try await exec(command, on: .remote(id))
-          .communicate(Data(script.utf8), timeout: 120)
-        ProvisioningProgress.record(output)
-        guard status == 0 else {
-          throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
-        }
+        try await setUp(
+          command, on: .remote(id), stdin: Data(script.utf8), timeout: 120,
+          failure: "setting up \(name) failed")
         try await awaitIdentity(of: id, named: name)
       }
       return .remote(id)

@@ -122,23 +122,14 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
           "sudo sh -s -- "
           + [Self.user, configuration.agentSocket, configuration.screens]
           .map(PosixShell.quoted).joined(separator: " ")
-        // Command lines only: the scripts on stdin are never logged.
-        ProvisioningProgress.record("$ \(command)")
-        let (status, output) = try await exec(command, on: .remote(id))
-          .communicate(Data(try HostSetup.systemdScript().utf8), timeout: 120)
-        ProvisioningProgress.record(output)
-        guard status == 0 else {
-          throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
-        }
+        try await setUp(
+          command, on: .remote(id), stdin: Data(try HostSetup.systemdScript().utf8),
+          timeout: 120, failure: "setting up \(name) failed")
         // git and gh reach GitHub through exe.dev's integration, never with a token on the VM.
-        let integrationCommand = "sudo sh -s -- /etc/profile.d"
-        ProvisioningProgress.record("$ \(integrationCommand)")
-        let (gitStatus, gitOutput) = try await exec(integrationCommand, on: .remote(id))
-          .communicate(Data(try HostSetup.exeDevGitHubScript().utf8), timeout: 30)
-        ProvisioningProgress.record(gitOutput)
-        guard gitStatus == 0 else {
-          throw HostDriverError.provisioning("setting up git on \(name) failed: \(gitOutput)")
-        }
+        try await setUp(
+          "sudo sh -s -- /etc/profile.d", on: .remote(id),
+          stdin: Data(try HostSetup.exeDevGitHubScript().utf8), timeout: 30,
+          failure: "setting up git on \(name) failed")
         try await awaitIdentity(of: id, named: name)
       }
       return .remote(id)
