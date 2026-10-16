@@ -16,6 +16,9 @@ struct CreationPane: View {
   @FocusState private var focusedRow: String?
   /// How tall the open log's lines are, so a short log is only as tall as they are.
   @State private var logContentHeight: CGFloat = 0
+  /// The header's and each row's height: what the open log leaves room for (D9).
+  @State private var headerHeight: CGFloat = 0
+  @State private var rowHeights: [String: CGFloat] = [:]
   private let theme = ThemeService.shared
 
   private typealias P = CreationPanePresentation
@@ -25,6 +28,8 @@ struct CreationPane: View {
   /// Three log lines and the log's padding: the open log shrinks no further before the column
   /// scrolls.
   private static let minimumLogHeight: CGFloat = 3 * 16 + 2 * CreationLogView.padding
+  /// The space above and below an open log.
+  private static let logPadding: CGFloat = 4
 
   var body: some View {
     GeometryReader { geo in
@@ -53,31 +58,37 @@ struct CreationPane: View {
 
   private func checklist(inset: CGFloat) -> some View {
     GeometryReader { geo in
+      // A ScrollView offers its content unlimited height, so the column's height is worked out here
+      // (D9): the pane's, with the log taking what the header and rows leave.
+      let layout = P.openLogLayout(
+        pane: geo.size.height - 2 * inset,
+        fixed: headerHeight + rowHeights.values.reduce(0, +) + Self.logPadding * 2,
+        logContent: logContentHeight, minimum: Self.minimumLogHeight)
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           header.padding(.bottom, 20)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
           ForEach(run.steps) { step in
             row(step)
+              .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                rowHeights[step.id] = $0
+              }
             if expanded == step.id {
               CreationLogView(
                 lines: step.log, isFinished: !Self.isActive(step),
                 onContentHeight: { logContentHeight = $0 }
               )
               .id(step.id)
-              .frame(
-                minHeight: Self.minimumLogHeight,
-                maxHeight: max(Self.minimumLogHeight, logContentHeight)
-              )
-              // Takes the room first, so the spacer only gets what a short log leaves.
-              .layoutPriority(1)
+              .frame(height: layout.log)
               .padding(.leading, CreationStepRow.titleInset)
-              .padding(.vertical, 4)
-              // Pushes the rows below to the bottom edge.
+              .padding(.vertical, Self.logPadding)
+              // What a short log leaves, which puts the rows below on the pane's bottom edge.
               Spacer(minLength: 0)
             }
           }
         }
         .frame(maxWidth: Self.columnWidth, alignment: .leading)
+        .frame(height: expanded == nil ? nil : layout.column, alignment: .top)
         .padding(inset)
         .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .topLeading)
       }
