@@ -1825,8 +1825,17 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     The pull's output is read as it arrives (`HostStream.communicate`'s `onOutput`) and turned
     into a fraction (`ImagePullProgress`): Docker prints only each layer's state without a
     terminal, so it is the layers done of those seen; Apple's `[step/steps] … N%` lines give its
-    step and percent. It reaches the create through a task-local (`pullProgress`), and the
-    project row's spinner fills as a circle with the percentage as its tooltip.
+    step and percent. It reaches the create through a task-local (`pullProgress`). Since #483 it
+    fills the create pane's "Pull host image" row as a circle, and the project row shows nothing.
+  - **Progress steps (#483).** Every create, container and remote alike, opens its pane on the
+    click with its kind's whole plan of steps (`CreationKind.plan`): a container's `repository`,
+    `image`, `machine`, `connect`, `clone` and `checkout`; boxd adds `account` and `setup`; exe.dev
+    adds `boot` too. The drivers report each step through `ProvisioningProgress.$reportStep`, set
+    for every kind, and each command line (`$ <command>`, never an environment variable, a stdin
+    script or a token) and its output through `ProvisioningProgress.$log`, which names its step, so
+    each row's log is one click away. The image step ends skipped, "Image already downloaded", when
+    nothing was pulled. A failed create keeps its pane, the failed row and its log; the workroom
+    row's `CreateStepCircle` counts done, warning and skipped steps.
   - **Not done.** A development environment in the container (toolchains, agent CLIs) is #308;
     Docker on another machine is #307.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
@@ -2234,8 +2243,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the readiness poll is a `HostDriver` extension; `Place.remoteProviders` feeds the menu, the
     picker and the "+" tooltip. boxd's sleep and presence code stays boxd-specific (D1; #380 removed the let-go): exe.dev doesn't sleep,
     so a presence protocol would have had one adopter. A new provider is one driver file, one
-    `DriverKey` case and one `Place` entry. A create's progress row counts
-    only the steps the provider takes: exe.dev's has no reboot step (`AppStore.createStep`).
+    `DriverKey` case and one `Place` entry. A create's progress counts only the steps the provider
+    takes: exe.dev's plan has `boot` and no reboot step (`CreationKind.plan`, #483).
   - **Parity.** `ProviderParityTestCase` holds the cases every real provider must pass alike;
     `BoxdIntegrationTests` and `ExeDevIntegrationTests` each call them. The identity case reads each
     provider's sshd host key where that provider keeps it (M5). Live on exe.dev (2026-10-08): all
