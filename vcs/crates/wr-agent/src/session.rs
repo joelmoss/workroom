@@ -2667,7 +2667,8 @@ mod tests {
         let store = SessionStore::new();
         let args = [
             OsString::from("-c"),
-            OsString::from(r#"printf "\033]7501;state=blocked\033\\"; sleep 5"#),
+            // Longer than any loaded run can take to get here; `kill_all` ends it.
+            OsString::from(r#"printf "\033]7501;state=blocked\033\\"; sleep 60"#),
         ];
         let e = env();
         for (n, interactive) in [(91, true), (92, false)] {
