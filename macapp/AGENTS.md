@@ -212,6 +212,28 @@ package patches that change what the terminal itself does are vendored in
 local engine agree. A package bump means re-diffing the package's `Patches/ghostty/` against that
 directory (see its README).
 
+## Creating a workroom (#483)
+
+Every create, local, container or remote, and from any door (sidebar, context menu, File ▸ New
+Workroom…), is a `CreationRun` (`Core/CreationRun.swift`) in `ProjectStore.creationRuns`, shared by
+every window. Its pane opens on the click, before any work: beside the split anchor, or as the
+selection, as a `.creation(project:id:)` target that becomes the workroom's
+`.workroom(project:name:)` in place once it has a name (`creationRunForTarget` records it before
+the reload that publishes it, so no window mounts a terminal there early). While a run lasts, its
+pane draws `Views/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
+`removeWorkroomSplitMember` refuses a running one. The pane lists the kind's whole plan of steps
+(`CreationKind.plan`), fed by the CLI's NDJSON `step` and `log` events for a local create and by
+`ProvisioningProgress.$reportStep` and `$log` for the others; what it says lives in
+`CreationPanePresentation`, which is unit-tested. On success the checklist holds for
+`creationSuccessHold` (0.6 s), then the run is dropped and the terminal mounts; on failure the run
+stays for its footer (Try Again, Close, Open Anyway or Delete Workroom). `creatingWorkrooms`, the
+delete guard, is released when the create's process ends, not when the run goes. Creates in one
+project may overlap; only a project being deleted blocks one. A provider's setup sheet holds the run
+on its `account` step and Create Workroom carries the same run on (`RemoteSetupWait`). VoiceOver
+hears three moments only, from the store: the sheet, a failure and a success
+(`AppStore.announceCreation`). `-WorkroomUITestScriptedCreate 1` plays a local create in fixture
+mode (`ScriptedCreateCLI`), for UI tests.
+
 ## Git credentials on a host
 
 Workroom gives a remote provider's host no git credential (ADR 0049): a boxd machine uses the

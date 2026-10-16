@@ -34,6 +34,14 @@ user ever opening a terminal: Install, Sign In and Connect GitHub are buttons. E
 from boxd itself, ticks itself off, and Create Workroom resumes the create the sheet interrupted,
 with the same project, base branch and split placement.
 
+**Since #483** the create is not re-run: its pane opens on the click, the sheet comes up over it,
+and the pane's `account` row waits for the user ("Waiting for you", its timer paused). Create
+Workroom carries on that same run in the same pane, so the repository checks don't run twice;
+Cancel ends it and removes the pane. `PendingRemoteSetup` is now `{ place, setup }`; the creates
+waiting on a provider are a `RemoteSetupWait` in `ProjectStore.remoteSetupWaits`, one per
+provider, and one sheet is up at a time across every window, the next provider's following when it
+closes (`AppStore.resolveRemoteSetup(carryOn:)`).
+
 ## Constraints
 
 - **Every boxd command that needs an account starts the browser login when signed out**, not just
@@ -184,7 +192,8 @@ In `BoxdHostDriver`:
   `@ViewBuilder`. exe.dev's step content (key creation, email, in-sheet terminal, plan, GitHub) moves
   into `ExeDevSetupSteps` with no wording or behaviour change.
 - `PendingRemoteSetup { project, splitAnchor, place, setup: any RemoteSetup }` replaces
-  `PendingExeDevSetup`; `ModalState.hasModalPresentation` counts it; RootView keeps one
+  `PendingExeDevSetup` (reduced to `{ place, setup }` by #483, which carries the waiting create on
+  rather than re-running it; see What Makes This Cool); `ModalState.hasModalPresentation` counts it; RootView keeps one
   `.sheet(item:)`. The create gate in `createRemoteWorkroom` becomes one call:
   `RemoteSetups.needed(for: place, ...)`, returning nil (ready) or the setup to show, after the
   project checks as today, so nobody installs boxd for a project boxd can't take.
