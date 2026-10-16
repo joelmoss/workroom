@@ -252,11 +252,13 @@ impl Store {
     /// One read's events, in order, except that a probe counts only after the reports read with
     /// it. A prober has to read the agent's answer before it can report, so a probe and a report
     /// in one read were printed by something that never read it, which must not alert. A prompt
-    /// or reset after the probe ends that run, and the probe with it.
+    /// or reset after the probe ends that run, and the probe with it. `now` is when the read
+    /// arrived: it starts the grace of each new unprobed request (`promote_unprobed`, #481).
     ///
     /// shortcut: a replay whose probe and report land in different reads still alerts (a `cat` of
     /// a recorded Claude session: a macOS pty read is at most 1 KiB, and a screen paint separates
-    /// them); telling those apart needs a clock or the pty's input queue, if replays ever matter.
+    /// them); the probe rule keeps no clock, and telling those apart needs one or the pty's input
+    /// queue, if replays ever matter.
     pub fn apply_read(&mut self, events: Vec<Event>, owner: Group, now: Instant) {
         let mut probed = false;
         for event in events {
@@ -1255,6 +1257,26 @@ mod tests {
         assert_eq!(store.commit(), None, "nothing changed");
         store.apply_read(blocked(), 8, start + limits::GRACE * 2);
         assert!(!store.records[0].notify, "another sender starts over");
+    }
+
+    /// A request restored without a grace start (a hand-off does not carry it) starts its grace at
+    /// the first tick, and a sender the agent could not identify (group 0) never alerts.
+    /// Value: protects=a handed-off request alerts a grace later, never at once, and an unidentified sender never; fails_when=promote_unprobed treats a missing start as elapsed or drops the owner check; why_new=the other tests always set the start through apply_read; seam=none; no_claim=a real hand-off
+    #[test]
+    fn a_request_without_a_grace_start_waits_a_grace_from_the_tick() {
+        let start = Instant::now();
+        let mut store = Store::default();
+        store.apply_read(vec![Event::Report(report("", State::Blocked))], 7, start);
+        store.records[0].blocked_at = None;
+        store.promote_unprobed(start + limits::GRACE * 5, |_| true);
+        assert!(!store.records[0].notify, "the tick starts the grace");
+        store.promote_unprobed(start + limits::GRACE * 6, |_| true);
+        assert!(store.records[0].notify, "a grace after that tick");
+
+        let mut store = Store::default();
+        store.apply_read(vec![Event::Report(report("", State::Blocked))], 0, start);
+        store.promote_unprobed(start + limits::GRACE * 5, |_| true);
+        assert!(!store.records[0].notify, "an unidentified sender");
     }
 
     /// A probe and a report in one read (a `cat` of a recorded session) never alert; the same

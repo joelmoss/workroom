@@ -85,8 +85,12 @@ final class ProgramStatusAlerts: ObservableObject {
       for (key, record) in keys {
         if open[key] == nil {
           open[key] = (session, record.id)
-          // There before the app was: shown, never alerted.
-          if change.isLaunchSnapshot { notified.insert(key) }
+          // There before the app was, or blocked while someone was looking at its terminal (the
+          // rule a probed request gets from `alert`, for one the agent promotes later): shown,
+          // never alerted.
+          if change.isLaunchSnapshot || attachments(of: session).contains(where: \.focused) {
+            notified.insert(key)
+          }
         }
         // A program that never probed alerts once the agent has seen it stay running, or once
         // its own notification announced the request (#481).

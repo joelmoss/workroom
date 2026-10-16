@@ -511,7 +511,7 @@ fn dispatch(
                         columns: request.columns,
                         rows: request.rows,
                         metadata: &session_metadata(&request.env),
-                        interactive: request.command.as_ref().is_none_or(|c| c.is_empty()),
+                        interactive: invocation.interactive,
                     },
                     |_| attach(),
                 )

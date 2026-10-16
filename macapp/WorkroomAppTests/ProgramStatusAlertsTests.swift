@@ -238,6 +238,22 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(requests.first?.body?.contains("Build finished"), true)
   }
 
+  /// A program's own notification shown long before its request is a different event: the alert
+  /// leaves it alone.
+  /// Value: protects=an earlier, unrelated notification is not withdrawn; fails_when=the backstop has no time limit; why_new=the late-request test stays inside the limit; seam=none; no_claim=real banner withdrawal
+  func testALongShownNotificationIsNotWithdrawnByALaterRequest() async {
+    alerts.sleep = { _ in }
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    programNotified(id, "Build finished")
+    for _ in 0..<50 where shown.isEmpty { await Task.yield() }
+    clock += 60
+    monitor.seed(id, records: [blocked(message: "Apply?")])
+    XCTAssertEqual(requests.count, 1)
+    XCTAssertEqual(withdrawn, [], "a minute-old notification is not its announcement")
+  }
+
   /// The same notification from two panes of one session within a second is one; a session that
   /// reports no program status shows it at once.
   func testARepeatFromAnotherAttachmentIsDropped() {
