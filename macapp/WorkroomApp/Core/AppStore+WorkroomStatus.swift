@@ -295,7 +295,7 @@ extension AppStore {
       // makes `targetExists` false, so commits, PR actions and late status merges skip it.
       if w.isRemote { return remoteStatusWorkItem(w, in: p) }
       return StatusWorkItem(sid: sid, path: w.path, projectRoot: p.path)
-    case .project:
+    case .project, .creation:
       return nil
     }
   }

@@ -87,27 +87,24 @@ final class ProjectStore {
   /// production never reassigns it.
   var vcsToolVersionCache = VCSToolVersionCache()
 
-  /// How many creates are in flight against each project path (for the sidebar row's spinner +
-  /// disabling). Counted rather than a `Set` for the reason `committingProjectRoots` is: two creates
-  /// in one project are a normal action, and the first to finish must not clear the other's spinner.
-  var busyProjects: [String: Int] = [:]
-
-  /// Target ids of workrooms whose create is still in flight — from the "created" event until the
-  /// create flow ends (issue #116). A workroom here must not be deleted: its setup script is running
-  /// against the worktree. Shared across windows so a delete from ANY window is blocked, not just the
-  /// creating one.
+  /// Target ids of workrooms whose create process is still running — from the moment the workroom
+  /// has a name until the CLI or the provisioning returns (issue #116, #483). A workroom here must not
+  /// be deleted: its setup is running against it. Shared across windows so a delete from ANY window
+  /// is blocked, not just the creating one.
   var creatingWorkrooms: Set<TerminalTarget.ID> = []
 
-  /// The subset of `creatingWorkrooms` that is running an actual SETUP SCRIPT — the ones whose
-  /// terminal must stay withheld, not merely undeletable (issue #167).
-  ///
-  /// Shared for the reason `creatingWorkrooms` is, and it has to be: `AppStore.creations` is per
-  /// WINDOW, so window 1 starting a create publishes the new workroom through THIS shared store,
-  /// window 2's sidebar shows it, and clicking it there mounted a login shell cwd'd into the worktree
-  /// the setup script was still writing. The withholding belongs to the operation, and the operation
-  /// outlives any one window's dialog. Held separately from `creatingWorkrooms` because that set also
-  /// covers no-setup creates, which must never withhold — their terminal is the point.
-  var settingUpWorkrooms: Set<TerminalTarget.ID> = []
+  /// Every create's progress, running or failed, by run id (#483). Shared, so every window that
+  /// shows a create shows the same checklist.
+  var creationRuns: [UUID: CreationRun] = [:]
+
+  /// The run each pane belongs to: its provisional `TerminalTarget.creationID`, then its workroom's
+  /// own id once it has a name. A target here keeps its terminal withheld in every window until the
+  /// run ends (issue #167), which is why the named id goes in before the reload that publishes it.
+  var creationRunForTarget: [TerminalTarget.ID: UUID] = [:]
+
+  /// Creates waiting on a provider's setup, one entry per provider, in the order they began waiting
+  /// (R2, #483). Only the first has its sheet up, one sheet at a time across every window.
+  var remoteSetupWaits: [RemoteSetupWait] = []
 
   /// Sidebar rows with a commit in flight, for the per-row button state.
   ///

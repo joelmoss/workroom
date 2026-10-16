@@ -422,7 +422,7 @@ final class AppStore: ObservableObject {
     let projectPath: String
     let path: String
     switch sid {
-    case .project:
+    case .project, .creation:
       return nil
     case .root(let p):
       projectPath = p
@@ -577,31 +577,21 @@ final class AppStore: ObservableObject {
   }
 
   var isLoading = false
-  /// How many creates are in flight per project path (for the sidebar row's spinner + disabling).
-  /// Counted, not a set — see `ProjectStore.busyProjects`. (Named for creates AND deletes when it
-  /// was introduced, but only `createWorkroom` has ever written it; deletes are optimistic.)
-  var busyProjects: [String: Int] {
-    get { projectStore.busyProjects }
-    set { projectStore.busyProjects = newValue }
-  }
-  /// Whether `path` has any create/delete in flight — the sidebar row's spinner gate.
-  func isBusyProject(_ path: String) -> Bool { (busyProjects[path] ?? 0) > 0 }
-  func beginBusy(_ path: String) { busyProjects[path, default: 0] += 1 }
-  func endBusy(_ path: String) {
-    guard let n = busyProjects[path] else { return }
-    if n <= 1 { busyProjects[path] = nil } else { busyProjects[path] = n - 1 }
-  }
   /// Target ids of workrooms whose create is still in flight (issue #116) — must not be deleted while
   /// their setup runs. Shared across windows (see `ProjectStore`).
   var creatingWorkrooms: Set<TerminalTarget.ID> {
     get { projectStore.creatingWorkrooms }
     set { projectStore.creatingWorkrooms = newValue }
   }
-  /// Target ids whose SETUP SCRIPT is running — the withholding signal, shared across windows so a
-  /// second window can't mount a terminal into the worktree (issue #167). See `ProjectStore`.
-  var settingUpWorkrooms: Set<TerminalTarget.ID> {
-    get { projectStore.settingUpWorkrooms }
-    set { projectStore.settingUpWorkrooms = newValue }
+  /// Every create's progress (#483), shared across windows (see `ProjectStore`).
+  var creationRuns: [UUID: CreationRun] {
+    get { projectStore.creationRuns }
+    set { projectStore.creationRuns = newValue }
+  }
+  /// The run each pane belongs to (#483), shared across windows (see `ProjectStore`).
+  var creationRunForTarget: [TerminalTarget.ID: UUID] {
+    get { projectStore.creationRunForTarget }
+    set { projectStore.creationRunForTarget = newValue }
   }
   /// Target ids of workrooms with an in-flight optimistic deletion — filtered out of every reload so a
   /// stale `list` can't resurrect them (the create/delete race). Shared across windows.
@@ -662,20 +652,6 @@ final class AppStore: ObservableObject {
     get { modals.pendingRemoteConfirm }
     set { modals.pendingRemoteConfirm = newValue }
   }
-  /// Workrooms being created in THIS window, keyed by their own target id (issue #167). An entry
-  /// lands the moment the CLI reports the workroom exists and lives until that workroom's setup
-  /// dialog is dismissed (a setup script ran) or the create auto-dismisses it (no script) — so it
-  /// tracks the OPERATION, not which dialog is on screen. Keyed per target because nothing
-  /// serializes concurrent creates: two overlapping creates each keep their own log, their own
-  /// terminal withholding and their own Dismiss. Per-window, like selection.
-  var creations: [TerminalTarget.ID: WorkroomCreation] = [:]
-  /// The one create still in its PRE-NAME phase — no target id exists yet, so it can't be keyed, and
-  /// having no workroom to render beside it can only be full-frame. That is why `focusedCreation`
-  /// shows it ONLY when nothing else is selected: full-frame is a window-wide blackout, and a create
-  /// is not a reason to take the window away from a workroom the user is already looking at.
-  /// Presentation only: newest create wins, and each create clears this slot only if it still owns
-  /// it (by session id).
-  var pendingCreation: WorkroomCreation?
   var auxSheetPresented: Bool {
     get { modals.auxSheetPresented }
     set { modals.auxSheetPresented = newValue }
@@ -1326,6 +1302,9 @@ final class AppStore: ObservableObject {
       guard let project = projects.first(where: { $0.id == path })?.displayName else { return name }
       // Show the workroom's display label when set (issue #41); falls back to the real name.
       return "\(project) — \(displayName(forWorkroom: name, inProject: path))"
+    case .creation(let path, _):
+      let project = projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
+      return "\(project) — New workroom"
     case .project, nil:
       return defaultWindowTitle
     }
@@ -1346,8 +1325,21 @@ final class AppStore: ObservableObject {
     case .workroom(let path, let name):
       guard let project = projects.first(where: { $0.id == path }),
         let workroom = project.workrooms.first(where: { $0.id == name })
-      else { return nil }
+      else {
+        // A create's named pane whose workroom a reload hasn't listed (yet, or any more): its run
+        // still draws it.
+        let id = TerminalTarget.workroomID(project: path, name: name)
+        guard creationRunForTarget[id] != nil else { return nil }
+        return TerminalTarget(id: id, title: name, path: path, unavailability: .creating)
+      }
       return workroom.target(inProject: path)
+    case .creation(let path, let id):
+      // R1: a stand-in for the workroom being made. Unavailable, so every local action (terminal,
+      // editor, run, status) stays off for it without a check of its own.
+      guard let run = creationRuns[id], run.project.path == path else { return nil }
+      return TerminalTarget(
+        id: TerminalTarget.creationID(id), title: run.project.displayName, path: path,
+        unavailability: .creating)
     case .project:
       return nil
     }
@@ -1489,7 +1481,7 @@ final class AppStore: ObservableObject {
     // Include every in-progress creation's target (issue #116): its terminal is withheld during a
     // setup script, so it isn't yet "active" (no terminal), but its chip must still show through setup.
     var active = terminals.activeTargetIDs
-    active.formUnion(creations.keys)
+    active.formUnion(creationRunForTarget.keys)
     return Self.orderedActiveTargets(
       persisted: order ?? workroomTabOrder, active: active
     )
@@ -1799,10 +1791,16 @@ final class AppStore: ObservableObject {
   private func loadFixture() {
     let fixtures = applyingDeletionTombstones(UITestFixture.projects())
     projects = fixtures
-    // A create mid-download, for the row's progress (#309).
-    if let pulled = UITestFixture.imagePull, let project = fixtures.first {
-      beginBusy(project.path)
-      imagePulls[project.path] = pulled
+    // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
+    if let pulled = UITestFixture.imagePull, let project = fixtures.first,
+      !creationRuns.values.contains(where: { $0.project.path == project.path })
+    {
+      let run = CreationRun(
+        project: project, kind: .container(.docker), splitAnchor: nil, previousSelection: nil)
+      run.begin("repository")
+      run.begin("image")
+      run.pullFraction = pulled
+      register(run)
     }
     // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
     // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
@@ -1899,17 +1897,20 @@ final class AppStore: ObservableObject {
           // Run gate and `startRunCommand` both read, so seeding it is what makes the absent Run
           // assertable.
           //
-          // Two variants, because the two states render differently and the difference is the point:
-          // a setup script draws `SetupOverlay`, a no-setup create draws `CreationLoader` — the
-          // branch issue #171 added, where the pane used to draw nothing.
+          // Two variants: a create on its setup script, and one still on its worktree (#483).
           let hasSetup = !UITestFixture.creatingSplitMemberNoSetup
           if UITestFixture.creatingSplitMember || UITestFixture.creatingSplitMemberNoSetup {
-            let session = ScriptLogSession(
-              title: "Setting up new workroom in \(project.displayName)", phase: "setup")
-            if hasSetup { session.append("Running setup script…") }
-            creations[target.id] = WorkroomCreation(
-              session: session, project: project, name: workroom.name, targetID: target.id,
-              hasSetup: hasSetup)
+            let run = CreationRun(
+              project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+            run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
+            run.begin("worktree")
+            if hasSetup {
+              run.begin("script")
+              run.append("Running setup script…", to: "script")
+            }
+            run.setName(workroom.name)
+            creationRuns[run.id] = run
+            creationRunForTarget[target.id] = run.id
             creatingWorkrooms.insert(target.id)
           }
           // Second-group scenario: a window holds SEVERAL split groups, so seed a second one from two
@@ -2019,7 +2020,10 @@ final class AppStore: ObservableObject {
     // group the user was viewing, and the prune's re-point needs it to land on THAT group's survivor
     // rather than some other group's.
     let formerSelection = selectedTargetID
-    selectedTargetID = Self.validatedSelection(selectedTargetID, in: fresh)
+    // A create's pane lives as long as its run, whatever the list says (#483).
+    if selectedTargetID.flatMap(target(for:))?.unavailability != .creating {
+      selectedTargetID = Self.validatedSelection(selectedTargetID, in: fresh)
+    }
     // Drop any split leaf whose workroom went away on reload (issue #23 follow-up self-heal); collapses
     // to a survivor / dissolves below two, re-pointing selection. Runs after selection is validated so
     // history/notifications/run-toolbar (all keyed on `selectedTargetID`) follow the survivor.
@@ -2109,7 +2113,8 @@ final class AppStore: ObservableObject {
       return projects.contains { $0.id == path }
     case .workroom(let path, let name):
       return projects.first { $0.id == path }?.workrooms.contains { $0.id == name } ?? false
-    case .project:
+    case .project, .creation:
+      // A create's pane exists while its run does, which `reconcileWindow` checks itself.
       return false
     }
   }
@@ -2266,15 +2271,13 @@ final class AppStore: ObservableObject {
 
   // Workroom creation's stored state. Its code is in `AppStore+WorkroomCreation.swift`.
 
-  /// How far each project's container workroom create has got downloading its host image, 0 to 1
-  /// (#309): the first create in a project pulls it, a couple of hundred MB. The row's spinner
-  /// shows it.
-  var imagePulls: [String: Double] = [:]
+  /// How long a finished create's checklist stays on screen before the workroom's own UI replaces
+  /// it (design D13). Tests shorten it.
+  var creationSuccessHold: Duration = .milliseconds(600)
 
-  /// How far each remote provider's workroom create has got (#356): the step it is on, and that as
-  /// a fraction of the steps it will take. Keyed by the row that shows it: the project's while the
-  /// create builds the project's base, then the new workroom's once it has a name.
-  var createSteps: [SidebarID: CreateStep] = [:]
+  /// What a remote create reaches beyond the app: GitHub and the project's git, the provider's
+  /// account, and its hosts. Tests stand in fakes.
+  var remoteCreateServices = RemoteCreateServices.live
 
   /// Removes the workroom from the sidebar immediately, then runs its teardown (script +
   /// workspace removal) in the background. On success the optimistic removal already
@@ -2334,7 +2337,7 @@ final class AppStore: ObservableObject {
 
   /// Self plus every other window's store, de-duplicated by identity (issue #70). In tests no windows
   /// are registered, so this is just `[self]` and single-window behaviour is unchanged.
-  private var affectedStores: [AppStore] {
+  var affectedStores: [AppStore] {
     var seen: Set<ObjectIdentifier> = [ObjectIdentifier(self)]
     return [self]
       + WindowRegistry.shared.allStores.filter { seen.insert(ObjectIdentifier($0)).inserted }
@@ -2345,17 +2348,11 @@ final class AppStore: ObservableObject {
   func detachTarget(_ sid: SidebarID) {
     removeWorkroomSplitMember(sid)
     if selectedTargetID == sid { selectedTargetID = nil }
-    // Drop the creation entry too (issue #167). Its own create has already ended — `createWorkroom`'s
-    // defer lifts the delete guard while the setup dialog is still up — so the workroom CAN be
-    // deleted out from under its own open dialog, and nothing else ever removes the entry:
-    // `dismissCreation` is the only other remover and there is no longer a dialog to press it on.
-    // The old single slot self-healed (the next create overwrote it); a map accumulates, retaining a
-    // whole `ScriptLogSession` per orphan and leaving `isCreationBlocking` true forever for that
-    // project+name — so a regenerated same-name workroom would mount withheld, under a stale log.
-    if let tid = Self.targetIDString(for: sid) {
-      creations[tid] = nil
-      settingUpWorkrooms.remove(tid)
-    }
+    // Drop its create's run too (issue #167, #483). Its process has already ended — Delete Workroom
+    // on a failed setup script is how the run's own pane offers this — and nothing else would remove
+    // it, leaving `isCreationBlocking` true for that project+name, so a regenerated same-name
+    // workroom would mount withheld, under a stale checklist.
+    if let tid = Self.targetIDString(for: sid) { discardCreationRun(forTargetID: tid) }
   }
 
   /// Gracefully stop `ids`' run commands across the given windows, then run `then` once all have
@@ -2473,10 +2470,11 @@ final class AppStore: ObservableObject {
     // worktree underneath it, and the in-flight landing would then resume and record creation state
     // for a project that no longer exists. Unlike `deleteWorkroom`'s silent `return`, this one speaks:
     // the user just typed the project name to confirm, so a no-op would read as a broken button.
+    // O1 (#483): any running create, named or not. Before it has a name, nothing else says so.
     let creatingHere = creatingWorkrooms.contains {
       Self.projectPath(of: Self.sidebarID(forTargetID: $0, in: projects)) == project.path
     }
-    guard !isBusyProject(project.path), !creatingHere else {
+    guard !hasRunningCreation(inProject: project.path), !creatingHere else {
       errorTitle = "Can't delete \(project.displayName)"
       errorMessage =
         "A workroom is still being created in this project. Wait for it to finish, then try again."
@@ -2628,10 +2626,13 @@ final class AppStore: ObservableObject {
       workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
       setResolvedBranchName(nil, for: .workroom(project: project.path, name: w.name))
     }
-    // Drop this window's creation entries for the project as well — `deleteProject` calls
-    // `detachTarget` only on the OTHER windows, so this is where they go here (issue #167, same
-    // reasoning as the labels below: a same-named recreate must not inherit stale state).
-    for id in targetIDs { creations[id] = nil }
+    // Drop the project's create runs as well — `deleteProject` calls `detachTarget` only on the
+    // OTHER windows, so this is where they go here (issue #167, same reasoning as the labels below:
+    // a same-named recreate must not inherit stale state). Only ended runs can be here: a running
+    // one refuses the delete.
+    for run in creationRuns.values where run.project.path == project.path {
+      discardCreationRun(run)
+    }
     // Drop every label belonging to this project's workrooms (issue #41) — prune-on-load is the
     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
     // inheriting a stale label.
@@ -3440,6 +3441,8 @@ final class AppStore: ObservableObject {
       let ref = rootRefs[path] ?? .unresolved
       let branch = ref.kind == .none ? nil : RootPresentation.make(ref).label
       return WorkroomLabel(project: project, branch: branch)
+    case .creation(_, let id):
+      return WorkroomLabel(project: project, workroom: creationRuns[id]?.name ?? "New workroom")
     case .project:
       return WorkroomLabel(project: project)
     }
@@ -3485,6 +3488,7 @@ final class AppStore: ObservableObject {
     switch id {
     case .root(let path): return TerminalTarget.rootID(project: path)
     case .workroom(let path, let name): return TerminalTarget.workroomID(project: path, name: name)
+    case .creation(_, let id): return TerminalTarget.creationID(id)
     case .project, .none: return nil
     }
   }
@@ -3493,7 +3497,8 @@ final class AppStore: ObservableObject {
   /// restored selection's project).
   nonisolated static func projectPath(of id: SidebarID?) -> String? {
     switch id {
-    case .root(let path), .workroom(let path, _), .project(let path): return path
+    case .root(let path), .workroom(let path, _), .project(let path), .creation(let path, _):
+      return path
     case .none: return nil
     }
   }
