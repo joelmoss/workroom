@@ -17,7 +17,8 @@ make app-run-boxd-fresh # app-run as a user boxd has never seen (Scripts/boxd-fr
                     # rm -rf ~/.workroom-boxd-fresh to start over
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize.
-                    # Ends with the run's counts + failing tests from its .xcresult (Scripts/test-summary.sh)
+                    # Ends with the run's counts + failing tests from its .xcresult (Scripts/test-summary.sh);
+                    # for a CI artifact's bundle run `sh macapp/Scripts/test-summary.sh <x.xcresult>` (sandbox off)
 make red-proof FILE=… PATTERN=… TEST=<Class>[/<method>]
                     # the way to prove a test goes red: breaks the line, runs the test, and
                     # restores FILE however the run ends (Scripts/red-proof.sh); sandbox off
