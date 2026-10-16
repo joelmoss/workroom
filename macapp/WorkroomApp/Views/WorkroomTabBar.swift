@@ -55,7 +55,7 @@ struct WorkroomTabBar: View {
   /// hairline with nothing to its left is a divider between nothing and the buttons.
   private func showsTrailingDivider(overflowing: Bool, groupOf: [SidebarID: Int]) -> Bool {
     guard !overflowing else { return false }
-    guard let last = tabs.last else { return provisionalCreation != nil }
+    guard let last = tabs.last else { return false }
     return groupOf[last.sid] == nil && last.sid != selectedID && last.sid != hoveredID
   }
 
@@ -192,21 +192,6 @@ struct WorkroomTabBar: View {
         // same id `ForEach` already keys identity on.
         .id(tab.sid)
       }
-      // A provisional "Creating…" chip while a workroom is being created in this window (issue
-      // #116), shown from the first click until its real named chip resolves into `tabs`. Tapping it
-      // refocuses the creating slot (its loader/dialog); it takes no part in drag/reorder.
-      if let creating = provisionalCreation {
-        ProvisionalWorkroomChip(
-          project: creating.project, isActive: store.isCreationFocused,
-          onSelect: {
-            if let name = creating.name {
-              store.selectedTargetID = .workroom(project: creating.project.path, name: name)
-            } else {
-              store.selectedTargetID = nil
-            }
-            store.selectedProjectID = creating.project.id
-          })
-      }
       // A divider sets the trailing controls apart from the last tab — see `showsTrailingDivider` for
       // when it hides. Toggled via OPACITY (not removed) so the controls never shift as hover and
       // selection come and go, which also keeps the measured run width stable across those
@@ -221,25 +206,6 @@ struct WorkroomTabBar: View {
     }
     .background(alignment: .leading) { splitWell(groupOf: groupOf) }
     .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
-  }
-
-  /// The in-progress create whose chip isn't yet a real tab (issue #116): the pre-name slot, else a
-  /// LANDED create whose named chip hasn't resolved into `tabs`. nil otherwise — no double chip.
-  ///
-  /// Shared load generations prevent stale snapshots from reverting the project list (#170).
-  /// Keep the landed fallback if loading the new workroom fails: its setup dialog must remain
-  /// reachable even before a successful reload makes its target available in `tabs`.
-  ///
-  /// The pre-name slot wins, matching `focusedCreation`. Sorted so two unresolved creates pick the
-  /// same one every render rather than flickering between them.
-  private var provisionalCreation: WorkroomCreation? {
-    if let pending = store.pendingCreation { return pending }
-    return store.creations.values
-      .sorted { ($0.targetID ?? "") < ($1.targetID ?? "") }
-      .first { creation in
-        guard let tid = creation.targetID else { return false }
-        return !tabs.contains { $0.target.id == tid }
-      }
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`. Every tab gets a leading divider
@@ -468,7 +434,8 @@ private struct WorkroomTabChip: View {
   /// rides alongside as `workroomName` (secondary text); a root is marked by its house glyph.
   private var primaryLabel: String {
     switch sid {
-    case .workroom(let project, _), .root(let project), .project(let project):
+    case .workroom(let project, _), .root(let project), .project(let project),
+      .creation(let project, _):
       return (project as NSString).lastPathComponent
     }
   }
@@ -701,61 +668,6 @@ private struct WorkroomTabChip: View {
     }
     if hasActivity { parts.append("unread activity") }
     return parts.joined(separator: ", ")
-  }
-}
-
-/// The provisional "Creating…" chip shown while a workroom is being created and its real named chip
-/// hasn't resolved yet (issue #116). Mirrors `WorkroomTabChip`'s layout — a leading cube glyph, the
-/// project name, then a small spinner in place of the (not-yet-known) workroom name — with the same
-/// selected/hover fill. Tapping it refocuses the creating slot; it takes no part in drag/reorder
-/// or width measurement, so it never enters the tab-reorder math.
-private struct ProvisionalWorkroomChip: View {
-  let project: Project
-  var isActive: Bool
-  var onSelect: () -> Void
-  @State private var hovered = false
-  private let theme = ThemeService.shared
-
-  private var projectName: String { (project.path as NSString).lastPathComponent }
-
-  var body: some View {
-    HStack(spacing: 6) {
-      Image(systemName: "cube")
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
-      HStack(alignment: .firstTextBaseline, spacing: 4) {
-        Text(projectName).foregroundStyle(.secondary)
-        Text("/").foregroundStyle(.tertiary)
-      }
-      .font(.subheadline)
-      .lineLimit(1)
-      ProgressView().controlSize(.small).scaleEffect(0.7)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 4)
-    // The same fill + outline the real chips use for the selected/hover state — so the creating slot
-    // reads as the active tab while its loader/dialog owns the detail.
-    .background {
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(isActive ? theme.tokens.bg : (hovered ? theme.tokens.hover : Color.clear))
-    }
-    .overlay {
-      if isActive {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
-      }
-    }
-    .contentShape(Rectangle())
-    // Outer margin outside the pill — matches the real chips so the creating slot lines up with them.
-    .padding(.horizontal, 2)
-    .padding(.vertical, 3)
-    .onHover { hovered = $0 }
-    .onTapGesture(perform: onSelect)
-    .help("Creating workroom in \(projectName)…")
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Creating workroom in \(projectName)")
-    .accessibilityIdentifier("workroom.tab.creating")
-    .transition(.opacity)
   }
 }
 

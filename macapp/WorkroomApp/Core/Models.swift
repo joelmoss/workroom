@@ -86,12 +86,15 @@ struct TerminalTarget: Identifiable, Hashable {
     case remote
     /// A remote workroom whose host its provider destroyed. Not a missing directory.
     case hostDestroyed
+    /// A workroom still being created (#483): its creation pane stands in for it.
+    case creating
 
     var title: String {
       switch self {
       case .directoryMissing: return "Directory not found"
       case .remote: return "Remote workroom"
       case .hostDestroyed: return "Host destroyed"
+      case .creating: return "Creating workroom"
       }
     }
 
@@ -100,6 +103,7 @@ struct TerminalTarget: Identifiable, Hashable {
       case .directoryMissing: return "questionmark.folder"
       case .remote: return "network"
       case .hostDestroyed: return "xmark.icloud"
+      case .creating: return "hammer"
       }
     }
 
@@ -114,6 +118,8 @@ struct TerminalTarget: Identifiable, Hashable {
         return "\(target.title) is on another host, and this build cannot open it.\n\(target.path)"
       case .hostDestroyed:
         return "\(target.title)'s host was destroyed by its provider.\n\(target.path)"
+      case .creating:
+        return "A workroom of \(target.title) is still being created."
       }
     }
   }
@@ -123,6 +129,8 @@ struct TerminalTarget: Identifiable, Hashable {
   // that fixes the same-name collision can't drift.
   static func workroomID(project: String, name: String) -> String { "wr|\(project)|\(name)" }
   static func rootID(project: String) -> String { "root|\(project)" }
+  /// A create's pane before its workroom has a name (#483).
+  static func creationID(_ id: UUID) -> String { "creation:\(id.uuidString)" }
 }
 
 extension TerminalTarget {
