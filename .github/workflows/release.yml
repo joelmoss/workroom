@@ -61,7 +61,7 @@ jobs:
   # The release's DMG pins the `workroom-host` image its container workrooms run (#309), by digest.
   macapp:
     needs: host-image
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 120
     permissions:
       contents: read
@@ -71,9 +71,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # Pinned to the Xcode the app is developed with; xcode-27 is the only runner image that has it.
       - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
-          xcode-version: latest-stable
+          xcode-version: "27.1"
 
       # Scripts/build-helper.sh compiles + embeds the workroom CLI into the app bundle.
       # No module cache: this job's output is published, and a restored entry could be poisoned.

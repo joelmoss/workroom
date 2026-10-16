@@ -155,7 +155,7 @@ jobs:
   macapp:
     needs: [check, host-image]
     if: needs.check.outputs.should_build == 'true'
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 120
     permissions:
       contents: read
@@ -167,9 +167,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # Pinned to the Xcode the app is developed with; xcode-27 is the only runner image that has it.
       - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
-          xcode-version: latest-stable
+          xcode-version: "27.1"
 
       # No module cache: this job's output is published, and a restored entry could be poisoned.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

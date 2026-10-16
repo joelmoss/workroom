@@ -55,7 +55,7 @@ maintainer follows.
 
 **To develop the app** (the primary product):
 
-- **Xcode 16+** with the macOS 15 SDK.
+- **Xcode 27.1**, the version CI, Nightly and Release build with.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
 - **Rust** (rustup `stable`) — the app build compiles the embedded `wr-agent` from the `vcs/` workspace
@@ -508,7 +508,7 @@ and every PR against either:
   `RUSTDOCFLAGS="-D warnings"`, and `cargo test` for the whole `vcs/` Rust workspace, on a pinned
   toolchain. `make vcs-lint` runs the same format, lint and doc checks locally, plus the
   `agent-terminal-state` job's clippy pass and a `terminal-state` doc check CI does not run.
-- **`app` job** (`macos-15`): sets up Xcode + Go, `brew install xcodegen`, runs `make app-lint`
+- **`app` job** (`xcode-27`): sets up Xcode 27.1 + Go, `brew install xcodegen`, runs `make app-lint`
   (swift-format `--strict`), `make app-package-test` and `make app-test` with **ad-hoc signing** flags (hosted runners have
   no signing cert), e.g.:
 
@@ -671,7 +671,7 @@ two paths must stay in lockstep — a rename in one without the others breaks `c
 
 ### The macOS app release pipeline
 
-The `macapp` job runs `make app-release` (`macapp/Scripts/release.sh`) on `macos-15`:
+The `macapp` job runs `make app-release` (`macapp/Scripts/release.sh`) on `xcode-27` with Xcode 27.1:
 
 1. `xcodegen generate`, then `xcodebuild archive` with `MARKETING_VERSION` from the tag and
    `CURRENT_PROJECT_VERSION` from the commit count (a monotonic build number for Sparkle).
