@@ -159,6 +159,26 @@ enum CreationPanePresentation {
     }
   }
 
+  // MARK: Open log layout
+
+  /// How tall the checklist column and its open log are (design D9).
+  struct OpenLogLayout: Equatable {
+    let column: CGFloat
+    let log: CGFloat
+  }
+
+  /// The open log takes the pane's room left after everything else in the column (`fixed`: the
+  /// header, every row and the log's padding), down to `minimum`, and is never taller than its lines.
+  /// The column is the pane's height, so the rows below the log sit on its bottom edge; only when
+  /// the log is at its minimum does the column outgrow the pane, and scroll.
+  static func openLogLayout(
+    pane: CGFloat, fixed: CGFloat, logContent: CGFloat, minimum: CGFloat
+  ) -> OpenLogLayout {
+    // Whole points down, so rounding never leaves the column a fraction taller than the pane.
+    let room = max((pane - fixed).rounded(.down), minimum)
+    return OpenLogLayout(column: max(pane, fixed + room), log: min(max(logContent, minimum), room))
+  }
+
   // MARK: Following new output
 
   /// Whether an open log is scrolled to its end, within a couple of points (D10): only then does it

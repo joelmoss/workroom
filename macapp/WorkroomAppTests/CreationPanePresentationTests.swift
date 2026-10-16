@@ -217,6 +217,30 @@ final class CreationPanePresentationTests: XCTestCase {
     XCTAssertEqual(store.createStep(for: pane)?.label, "Check repository")
   }
 
+  // MARK: Open log layout
+
+  /// Value: protects=D9, an open log takes the pane's room left after the header and rows (so the
+  /// column is exactly the pane's height and the rows below sit on its bottom edge), is only as tall
+  /// as its lines when they are fewer, and in a short pane shrinks to its 3-line minimum, past which
+  /// the column outgrows the pane and scrolls; fails_when=the log grows to its content and pushes
+  /// the rows below out of the pane, or a short pane squeezes the log under its minimum;
+  /// no_claim=the drawing (measured heights stand in for SwiftUI's layout)
+  func testAnOpenLogFillsThePaneAndPinsTheRowsBelow() {
+    let minimum: CGFloat = 68
+    func layout(pane: CGFloat, fixed: CGFloat, lines: CGFloat) -> P.OpenLogLayout {
+      P.openLogLayout(pane: pane, fixed: fixed, logContent: lines, minimum: minimum)
+    }
+    // A long log in a tall pane: the log takes the room, the column fills the pane exactly.
+    XCTAssertEqual(
+      layout(pane: 700, fixed: 300, lines: 5000), .init(column: 700, log: 400))
+    // A short log: only as tall as its lines; the column still fills the pane, rows below pinned.
+    XCTAssertEqual(layout(pane: 700, fixed: 300, lines: 120), .init(column: 700, log: 120))
+    // Fewer than three lines: still the minimum.
+    XCTAssertEqual(layout(pane: 700, fixed: 300, lines: 20), .init(column: 700, log: 68))
+    // A short pane: the log stops at its minimum and the column outgrows the pane, so it scrolls.
+    XCTAssertEqual(layout(pane: 330, fixed: 300, lines: 5000), .init(column: 368, log: 68))
+  }
+
   // MARK: Following new output
 
   /// Value: protects=D10, an open log counts as at its bottom (so it follows) only within a couple of
