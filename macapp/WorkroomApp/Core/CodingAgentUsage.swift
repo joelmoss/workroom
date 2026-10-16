@@ -1,4 +1,5 @@
 import Darwin
+import Defaults
 import Foundation
 import WorkroomSystem
 
@@ -122,11 +123,28 @@ struct CodingAgentQuotaSnapshot: Equatable, Sendable {
   let windows: [CodingAgentQuotaWindow]
   let capturedAt: Date
 
-  func fresh(at now: Date) -> CodingAgentQuotaSnapshot? {
-    let freshWindows = windows.filter { $0.isFresh(at: now) }
-    guard !freshWindows.isEmpty else { return nil }
-    return CodingAgentQuotaSnapshot(backend: backend, windows: freshWindows, capturedAt: capturedAt)
+  /// How old a reading may be before it is shown dimmed: two missed polls.
+  static let staleAfter: TimeInterval = 2 * CodingAgentUsageMonitor.defaultPollInterval
+
+  /// Not a current reading (#480): older than two polls, or a window has passed its reset with
+  /// nothing read since. A reset window still draws at 0%, the true minimum, but dimmed, because
+  /// usage elsewhere since the reset would not show.
+  func isStale(at now: Date) -> Bool {
+    now.timeIntervalSince(capturedAt) > Self.staleAfter
+      || windows.contains { !$0.isFresh(at: now) }
   }
+}
+
+/// The two processes the monitor starts for usage, as closures so a test can stand in for them.
+struct CodingAgentUsagePollers: Sendable {
+  var cswap: @Sendable (Date) async -> CswapUsage.Read
+  var codexServer: @Sendable (Date) async -> CodexAppServerUsage.Read
+
+  static let live = CodingAgentUsagePollers(
+    cswap: { await CswapUsage.read(runner: StatusCommandRunner(), now: $0) },
+    codexServer: {
+      await CodexAppServerUsage.read(transport: CodexAppServerUsage.processTransport(), now: $0)
+    })
 }
 
 enum CodingAgentTitleRecognition {
@@ -222,18 +240,10 @@ enum CodingAgentUsageDecoding {
         "Workroom hasn't received a Claude quota snapshot yet — Claude writes one each time its "
           + "status line runs.")
     }
-    if let snapshot = claude(data: data, capturedAt: modified, now: now) {
-      return .snapshot(snapshot)
-    }
-    // `isFresh` is `now < resetsAt`, so decoding again at `.distantPast` keeps every window that
-    // parsed — the only thing that separates "the file is unreadable" from "its windows have all
-    // reset since it was written".
-    guard claude(data: data, capturedAt: modified, now: .distantPast) != nil else {
+    guard let snapshot = claude(data: data, capturedAt: modified, now: now) else {
       return .failure("Claude's cached quota file couldn't be read.")
     }
-    let written = modified.formatted(.relative(presentation: .named))
-    return .failure(
-      "Claude's cached quota (written \(written)) covers windows that have since reset.")
+    return .snapshot(snapshot)
   }
 
   static func codexRollout(data: Data, fileSize: UInt64, modifiedAt: Date, now: Date)
@@ -270,7 +280,7 @@ enum CodingAgentUsageDecoding {
         guard let reset else { continue }
         windows.append(
           CodingAgentQuotaWindow(
-            kind: kind(for: minutes), usedPercentage: used,
+            kind: windowKind(forMinutes: minutes), usedPercentage: used,
             duration: TimeInterval(minutes * 60), resetsAt: reset))
       }
       if let snapshot = normalized(.codex, windows: windows, capturedAt: capturedAt, now: now) {
@@ -421,15 +431,18 @@ enum CodingAgentUsageDecoding {
       resetsAt: Date(timeIntervalSince1970: reset))
   }
 
+  /// Windows past their reset are kept (#480): the footer shows them at 0%, dimmed, rather than
+  /// dropping the agent's usage altogether.
   private static func normalized(
     _ backend: CodingAgentBackend, windows: [CodingAgentQuotaWindow], capturedAt: Date, now: Date
   ) -> CodingAgentQuotaSnapshot? {
-    let fresh = windows.filter { $0.isFresh(at: now) }.sorted { $0.duration < $1.duration }
-    guard !fresh.isEmpty else { return nil }
-    return CodingAgentQuotaSnapshot(backend: backend, windows: fresh, capturedAt: capturedAt)
+    guard !windows.isEmpty else { return nil }
+    return CodingAgentQuotaSnapshot(
+      backend: backend, windows: windows.sorted { $0.duration < $1.duration },
+      capturedAt: capturedAt)
   }
 
-  private static func kind(for minutes: Int) -> CodingAgentQuotaWindowKind {
+  static func windowKind(forMinutes minutes: Int) -> CodingAgentQuotaWindowKind {
     switch minutes {
     case 300: return .fiveHour
     case 10080: return .weekly
@@ -458,7 +471,7 @@ enum CodingAgentUsageDecoding {
   private static let iso8601Fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
   private static let iso8601 = Date.ISO8601FormatStyle()
 
-  private static func parseISO8601(_ value: String) -> Date? {
+  static func parseISO8601(_ value: String) -> Date? {
     (try? iso8601Fractional.parse(value)) ?? (try? iso8601.parse(value))
   }
 }
@@ -498,6 +511,22 @@ final class CodingAgentUsageMonitor: ObservableObject {
   /// Why the last read produced no snapshot, per backend. Surfaced by the footer so an unavailable
   /// quota says what's missing instead of being a dead end.
   @Published private(set) var readFailures: [CodingAgentBackend: String] = [:]
+  /// Every Claude account cswap manages, in slot order, or nil when cswap is not installed (or
+  /// its output is unreadable) and Claude usage comes from the status-line bridge instead (#480).
+  @Published private(set) var claudeAccounts: [ClaudeAccountUsage]?
+  /// The account the default `~/.claude` login is, so a pane with no Claude profile set maps to it.
+  @Published private(set) var claudeActiveSlot: Int?
+  /// The last reading `codex app-server` gave; shown when it is newer than the rollouts'.
+  @Published private(set) var codexServerSnapshot: CodingAgentQuotaSnapshot?
+  /// Why the last cswap or Codex app-server poll gave nothing new, for the popover.
+  @Published private(set) var pollFailures: [CodingAgentBackend: String] = [:]
+  /// Polls that finished. Not `@Published`; it lets a test wait for a poll to land.
+  private(set) var completedPollCount = 0
+  /// When each backend's file-based reading was last written, newer than the published snapshot's
+  /// `capturedAt` when a read found the same numbers (see `apply`).
+  private var latestCapture: [CodingAgentBackend: Date] = [:]
+
+  nonisolated static let defaultPollInterval: TimeInterval = 180
 
   let codexSessionsURL: URL
   let claudeCacheURL: URL
@@ -522,17 +551,30 @@ final class CodingAgentUsageMonitor: ObservableObject {
   private static let maximumWatchRetryDelay: TimeInterval = 60
   nonisolated(unsafe) private var watchRetry: DispatchWorkItem?
   private var watchRetryDelay: TimeInterval = initialWatchRetryDelay
+  private let pollers: CodingAgentUsagePollers
+  private let pollInterval: TimeInterval
+  private let pollingEnabled: @MainActor () -> Bool
+  private var pollTask: Task<Void, Never>?
+  // `nonisolated(unsafe)` for the same reason as `debounce`: invalidated only in `deinit`.
+  nonisolated(unsafe) private var pollTimer: Timer?
 
   init(
     codexSessionsURL: URL = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".codex/sessions", isDirectory: true),
     claudeCacheURL: URL = ClaudeUsageBridge.defaultDirectory
       .appendingPathComponent("claude-rate-limits.json"),
-    now: @escaping () -> Date = Date.init, startAutomatically: Bool = true
+    now: @escaping () -> Date = Date.init, startAutomatically: Bool = true,
+    pollers: CodingAgentUsagePollers = .live, pollInterval: TimeInterval = defaultPollInterval,
+    pollingEnabled: @escaping @MainActor () -> Bool = {
+      Defaults[.usageInWindowFooter] || Defaults[.usageInPaneFooter]
+    }
   ) {
     self.codexSessionsURL = codexSessionsURL
     self.claudeCacheURL = claudeCacheURL
     self.now = now
+    self.pollers = pollers
+    self.pollInterval = pollInterval
+    self.pollingEnabled = pollingEnabled
     if let fixture = UITestFixture.usageSnapshot {
       snapshots[fixture.backend] = fixture
       return
@@ -541,10 +583,19 @@ final class CodingAgentUsageMonitor: ObservableObject {
     // No `installWatches()` here: the first read reports which directories to watch (it enumerates
     // the tree anyway, off the main thread), so the watches come up with its result rather than
     // costing a second recursive walk during window setup.
-    if startAutomatically { refresh() }
+    if startAutomatically {
+      refresh()
+      poll()
+      pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) {
+        [weak self] _ in
+        MainActor.assumeIsolated { self?.poll() }
+      }
+    }
   }
 
   deinit {
+    pollTimer?.invalidate()
+    pollTask?.cancel()
     refreshTask?.cancel()
     activeRead?.cancel()
     debounce?.cancel()
@@ -552,20 +603,66 @@ final class CodingAgentUsageMonitor: ObservableObject {
     for watch in watches { watch.cancel() }
   }
 
+  /// The newest reading for a backend from the file-based sources and, for Codex, the app server.
+  /// With cswap installed, Claude's per-account readings are in `claudeAccounts` instead.
   func snapshot(for backend: CodingAgentBackend) -> CodingAgentQuotaSnapshot? {
-    snapshots[backend]?.fresh(at: now())
+    let read = snapshots[backend].map {
+      CodingAgentQuotaSnapshot(
+        backend: $0.backend, windows: $0.windows,
+        capturedAt: max($0.capturedAt, latestCapture[backend] ?? .distantPast))
+    }
+    let candidates = [read, backend == .codex ? codexServerSnapshot : nil]
+    return candidates.compactMap { $0 }.max { $0.capturedAt < $1.capturedAt }
   }
 
-  /// One sentence explaining an empty `snapshot(for:)`, evaluated at READ time — a stored snapshot
-  /// expires wherever it sits, with no refresh running to record why, so expiry can only be caught
-  /// here.
+  /// One sentence explaining an empty `snapshot(for:)`.
   func unavailableReason(for backend: CodingAgentBackend) -> String {
-    let name = backend.displayName
-    if let stored = snapshots[backend], stored.fresh(at: now()) == nil {
-      let captured = stored.capturedAt.formatted(.relative(presentation: .named))
-      return "The last \(name) quota snapshot (\(captured)) covers windows that have since reset."
+    pollFailures[backend] ?? readFailures[backend]
+      ?? "No \(backend.displayName) quota snapshot has been read yet."
+  }
+
+  /// Read cswap and the Codex app server, unless a poll is already running (then this joins it)
+  /// or no footer shows usage. Only the timer and an opened usage popover call this; file events
+  /// and new segments call `refresh`, which never starts either process.
+  func poll() {
+    guard UITestFixture.usageAgentTitle == nil, UITestFixture.usageSnapshot == nil,
+      pollTask == nil, pollingEnabled()
+    else { return }
+    let pollers = pollers
+    let current = now()
+    pollTask = Task { [weak self] in
+      async let cswap = pollers.cswap(current)
+      async let codex = pollers.codexServer(current)
+      let (cswapRead, codexRead) = await (cswap, codex)
+      guard let self else { return }
+      self.applyPoll(cswap: cswapRead, codex: codexRead)
     }
-    return readFailures[backend] ?? "No \(name) quota snapshot has been read yet."
+  }
+
+  private func applyPoll(cswap: CswapUsage.Read, codex: CodexAppServerUsage.Read) {
+    var failures: [CodingAgentBackend: String] = [:]
+    switch cswap {
+    case .accounts(let accounts, let activeSlot):
+      if claudeAccounts != accounts { claudeAccounts = accounts }
+      if claudeActiveSlot != activeSlot { claudeActiveSlot = activeSlot }
+    case .notInstalled, .incompatible:
+      if claudeAccounts != nil { claudeAccounts = nil }
+      if claudeActiveSlot != nil { claudeActiveSlot = nil }
+    case .failed(let reason):
+      // Last-known accounts stay, dimming as they age, rather than flipping to the bridge.
+      failures[.claude] = reason
+    }
+    switch codex {
+    case .snapshot(let snapshot):
+      if codexServerSnapshot != snapshot { codexServerSnapshot = snapshot }
+    case .notInstalled:
+      break
+    case .failed(let reason):
+      failures[.codex] = reason
+    }
+    if pollFailures != failures { pollFailures = failures }
+    completedPollCount += 1
+    pollTask = nil
   }
 
   /// Re-read both backends.
@@ -653,6 +750,9 @@ final class CodingAgentUsageMonitor: ObservableObject {
   ) {
     completedReadCount += 1
     let keyed = Dictionary(uniqueKeysWithValues: read.map { ($0.backend, $0) })
+    // Unpublished on purpose: a reading's age moves on every bridge rewrite, and only staleness
+    // (re-evaluated on the footer's own one-minute tick) needs it.
+    latestCapture = keyed.mapValues(\.capturedAt)
     if !Self.displaysSame(snapshots, keyed) { snapshots = keyed }
     if readFailures != failures { readFailures = failures }
     if !loading.isEmpty { loading.removeAll() }
