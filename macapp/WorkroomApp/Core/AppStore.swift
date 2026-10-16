@@ -588,6 +588,9 @@ final class AppStore: ObservableObject {
     get { projectStore.creationRuns }
     set { projectStore.creationRuns = newValue }
   }
+  /// The step whose log is open in each run's pane in this window (#483, design D9), by run id. Here
+  /// rather than in the pane's own state, which goes when the pane's id becomes the workroom's.
+  var expandedCreationLogs: [UUID: String] = [:]
   /// The run each pane belongs to (#483), shared across windows (see `ProjectStore`).
   var creationRunForTarget: [TerminalTarget.ID: UUID] {
     get { projectStore.creationRunForTarget }

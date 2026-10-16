@@ -201,6 +201,53 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertTrue(store.creationRuns.isEmpty)
   }
 
+  /// Value: protects=AC 2, a running create's pane can't be taken out of its split (its pane has no
+  /// ✕, and the store refuses too); fails_when=the running pane leaves the split; no_claim=the bare
+  /// pane's drawing, and a failed pane's Close (testAFailedWorktreeKeepsItsPaneAndTryAgainRunsThere
+  /// and testCloseGoesBackToThePreviousSelection)
+  func testARunningCreatesPaneCanNotBeTakenOutOfItsSplit() async {
+    let fake = GatedFakeCLI(
+      projectPath: projectPath, names: ["wr"], hasSetup: false, gate: .beforeReady,
+      existing: ["anchor"])
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
+    store.selectedTargetID = anchor
+
+    let task = Task { await store.createWorkroom(in: emptyProject, splitAnchor: anchor) }
+    await waitUntil({ fake.assignedCount == 1 }, "the create never reached the CLI")
+    guard let pane = store.workroomSplits.first?.tabIDs.last else {
+      fake.release("wr")
+      await task.value
+      return XCTFail("no creation pane in the split")
+    }
+    store.removeWorkroomSplitMember(pane)
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [anchor, pane], "the running pane stays")
+
+    fake.release("wr")
+    await task.value
+  }
+
+  /// Value: protects=D17, VoiceOver hears a failure naming its step and a success naming the
+  /// workroom, once each; fails_when=a step-by-step announcement is posted, or a moment is silent;
+  /// no_claim=that VoiceOver speaks them (the poster is replaced)
+  func testAFailureAndASuccessAreAnnounced() async throws {
+    var heard: [String] = []
+    let post = AppStore.announceCreation
+    AppStore.announceCreation = { heard.append($0) }
+    defer { AppStore.announceCreation = post }
+    let store = makeStore(WorktreeFailsOnceCLI(projectPath: projectPath))
+    store.projects = [project(["anchor"])]
+
+    await store.createWorkroom(in: emptyProject)
+    XCTAssertEqual(heard, ["Couldn't create the workroom: Create worktree failed"])
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.retryCreation(run)
+    XCTAssertEqual(heard.last, "wr is ready")
+    XCTAssertEqual(heard.count, 2)
+  }
+
   /// Value: protects=Close on a failed create removes its pane and goes back to what was selected;
   /// fails_when=the pane or its run stays, or the selection is lost; no_claim=the split case
   /// (collapses through `removeWorkroomSplitMember`, covered by the split tests)

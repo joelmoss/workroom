@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import HostDrivers
 import WorkroomDomain
 
@@ -50,6 +50,7 @@ extension AppStore {
     creationRuns[run.id] = nil
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     for store in affectedStores {
+      store.expandedCreationLogs[run.id] = nil
       store.removeWorkroomSplitMember(pane)
       if store.selectedTargetID == pane { store.selectedTargetID = nil }
     }
@@ -140,6 +141,27 @@ extension AppStore {
     run.succeed()
     try? await Task.sleep(for: creationSuccessHold)
     discardCreationRun(run)
+    if let name = run.name {
+      Self.announceCreation(CreationPanePresentation.successAnnouncement(name: name))
+    }
+  }
+
+  /// The create failed: its pane shows which step and what to do next, and VoiceOver hears it once
+  /// (design D17), from here rather than from each window that shows the pane.
+  private func failCreationRun(_ run: CreationRun, _ outcome: CreationOutcome) {
+    run.fail(outcome)
+    Self.announceCreation(CreationPanePresentation.failureAnnouncement(for: run))
+  }
+
+  /// Speaks one of a create's three moments (design D17): its provider needing setup, its failure and
+  /// its success. Step-by-step progress is never announced. Replaced in tests.
+  static var announceCreation: (String) -> Void = { message in
+    NSAccessibility.post(
+      element: NSApp as Any, notification: .announcementRequested,
+      userInfo: [
+        .announcement: message,
+        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+      ])
   }
 
   // MARK: Failure actions
@@ -251,11 +273,11 @@ extension AppStore {
         // The workroom exists but setup failed. Disarm the auto-run armed at the landing so Open
         // Anyway doesn't launch the command against a half-set-up tree (issue #7).
         if case .armed = runStates[id] { runStates[id] = nil }
-        run.fail(.setupScriptFailed(message: errorText(error)))
+        failCreationRun(run, .setupScriptFailed(message: errorText(error)))
         // Offline, the fetch and a networked setup script fail together: say both.
         if let text = warning.value { noticeStaleStart(of: id, text) }
       } else {
-        run.fail(.failedBeforeWorkroom(message: errorText(error)))
+        failCreationRun(run, .failedBeforeWorkroom(message: errorText(error)))
       }
       return nil
     }
@@ -316,13 +338,17 @@ extension AppStore {
   struct CreateStep: Equatable {
     let fraction: Double
     let label: String
+    /// The create failed: its row shows the failed mark instead (5a).
+    var failed = false
   }
 
-  /// The progress of the create whose pane `sid` is, or nil when none is running.
+  /// The progress of the create whose pane `sid` is, or nil when it has none.
   func createStep(for sid: SidebarID) -> CreateStep? {
     guard let run = creationRun(for: sid) else { return nil }
     let progress = run.progress
-    return CreateStep(fraction: progress.fraction, label: progress.label)
+    return CreateStep(
+      fraction: progress.fraction, label: progress.label,
+      failed: !run.isRunning && run.outcome != .succeeded)
   }
 
   /// Why no workroom can be created in `project` right now, as the New Workroom menu shows it beside
@@ -393,7 +419,7 @@ extension AppStore {
       if case RemoteProvisioning.Failure.rollbackIncomplete = error { leftBehind = true }
       await Self.drainMainQueue()  // the failing step's lines and its start
       await reload()
-      run.fail(.remoteFailed(message: errorText(error), leftBehind: leftBehind))
+      failCreationRun(run, .remoteFailed(message: errorText(error), leftBehind: leftBehind))
       if let name = run.name {
         releaseCreatingWorkroom(TerminalTarget.workroomID(project: path, name: name))
       }
@@ -495,6 +521,7 @@ extension AppStore {
   private func presentRemoteSetup(_ wait: RemoteSetupWait) {
     (wait.window ?? self).pendingRemoteSetup = PendingRemoteSetup(
       place: wait.place, setup: wait.setup)
+    Self.announceCreation(CreationPanePresentation.setupAnnouncement(for: wait.place))
   }
 
   /// The provider setup sheet in this window closed: Create Workroom (`carryOn`) or Cancel. Every

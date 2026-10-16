@@ -210,58 +210,17 @@ private struct WorkroomPaneLeaf: View {
     // This mirrors `PaneLeafView`, which keeps its content in one slot and expresses the `multiPane`
     // chrome as always-mounted overlays (issue #3).
     //
-    // Since issue #139 the title bar is UNCONDITIONAL, which strengthens that invariant rather than
-    // straining it: with no `if` there is no branch left to flip on this axis. The hazard of the same
+    // Since issue #139 every workroom has the title bar; only a create's bare pane (#483) goes
+    // without, as an optional sibling, so the content's slot never moves. The hazard of the same
     // shape that remains is the missing-directory choice, which is why `TargetTerminalDetail` owns it
     // as a ZStack sibling rather than this view branching on it.
     VStack(spacing: 0) {
       // Every workroom is identified by its own header (issue #139), which in a split also names
-      // *which* member this is and offers the way back out of the group.
-      WorkroomPaneTitleBar(
-        target: target, projectPath: projectPath, projectLabel: projectLabel,
-        workroomName: workroomName, focused: focused, memberCount: memberCount,
-        controls: toolbarControls, onClose: onClose,
-        // The bar stays store-free (see `WorkroomSplitView.store`), so the leaf — which has the
-        // store — supplies the action.
-        onCloseAll: { store.requestCloseAllTerminalTabs(for: target) }
-      )
-      // Drag the group by its title bar to move the whole member within the split (issue #110) —
-      // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
-      // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
-      // falls through to the leaf's focus tap.
-      //
-      // `including:` MUST be `.subviews` (not `.none`) when solo: `GestureMask.none` disables every
-      // gesture in the SUBVIEW hierarchy as well as the added one, which would kill this bar's own
-      // Run / Open-in buttons in exactly the single-workroom case issue #139 exists to serve — and
-      // `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so they would still light
-      // up and look alive. `.subviews` drops only the drag.
-      .gesture(
-        DragGesture(minimumDistance: 6, coordinateSpace: .global)
-          .onChanged { value in
-            externalDrag = localize(value.location).map {
-              WorkroomPaneDrag(sid: sid, location: $0)
-            }
-          }
-          .onEnded { value in
-            if let drop = dropTarget(value.location), drop.sid != sid {
-              onMove(sid, drop.sid, drop.edge, drop.rect)
-            }
-            externalDrag = nil
-          },
-        including: multi ? .all : .subviews
-      )
-      // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
-      // "Close"). "Remove from Split" (the menu equivalent of the ✕) is offered only for a real
-      // member; `workroomContextMenu` drops the item and its divider on a nil closure. `closeName`
-      // matches the chip's `workroomName ?? primaryLabel`. Attached AFTER `.gesture` so both share
-      // the bar's `.contentShape`; secondary-click (menu) and the primary-button drag coexist.
-      // The bar's own controls are separate hit targets, so a right-click landing directly on one may
-      // not raise this menu (already true of the ✕ before issue #139 added its neighbours) — the
-      // leading label region always does, and that is the region to aim for.
-      .contextMenu {
-        workroomContextMenu(
-          store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
-          onRemoveFromSplit: multi ? onClose : nil)
+      // *which* member this is and offers the way back out of the group. A create's pane is bare
+      // (#483): its checklist names it, and it has no ✕ or menu to close it by while it runs. The
+      // bar is a sibling above the content, so the content keeps its one structural slot.
+      if store.creationRun(forTargetID: target.id) == nil {
+        titleBar
       }
       // One unconditional slot. The "Directory not found" state and the withheld-during-setup state
       // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
@@ -294,12 +253,67 @@ private struct WorkroomPaneLeaf: View {
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("workroom.pane")
     // Roots aren't workrooms — say what this pane actually is (the chip makes the same distinction).
-    .accessibilityLabel(
-      Text(workroomName.map { "Workroom \($0)" } ?? "Project \(target.title)")
-    )
+    .accessibilityLabel(Text(paneLabel))
     // Only meaningful with peers to be selected *among*: this trait tracks MODEL focus, and a solo
     // pane reporting `.isSelected` would say nothing while breaking how tests read it.
     .accessibilityAddTraits(focused && multi ? .isSelected : [])
+  }
+
+  /// What VoiceOver calls this pane: its workroom, a create not yet named (#483), or its project.
+  private var paneLabel: String {
+    if let workroomName { return "Workroom \(workroomName)" }
+    if case .creation = sid { return "New workroom in \(projectLabel)" }
+    return "Project \(target.title)"
+  }
+
+  /// The title bar (issue #139): the workroom's name and actions, its drag handle and its menu.
+  private var titleBar: some View {
+    WorkroomPaneTitleBar(
+      target: target, projectPath: projectPath, projectLabel: projectLabel,
+      workroomName: workroomName, focused: focused, memberCount: memberCount,
+      controls: toolbarControls, onClose: onClose,
+      // The bar stays store-free (see `WorkroomSplitView.store`), so the leaf — which has the
+      // store — supplies the action.
+      onCloseAll: { store.requestCloseAllTerminalTabs(for: target) }
+    )
+    // Drag the group by its title bar to move the whole member within the split (issue #110) —
+    // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
+    // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
+    // falls through to the leaf's focus tap.
+    //
+    // `including:` MUST be `.subviews` (not `.none`) when solo: `GestureMask.none` disables every
+    // gesture in the SUBVIEW hierarchy as well as the added one, which would kill this bar's own
+    // Run / Open-in buttons in exactly the single-workroom case issue #139 exists to serve — and
+    // `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so they would still light
+    // up and look alive. `.subviews` drops only the drag.
+    .gesture(
+      DragGesture(minimumDistance: 6, coordinateSpace: .global)
+        .onChanged { value in
+          externalDrag = localize(value.location).map {
+            WorkroomPaneDrag(sid: sid, location: $0)
+          }
+        }
+        .onEnded { value in
+          if let drop = dropTarget(value.location), drop.sid != sid {
+            onMove(sid, drop.sid, drop.edge, drop.rect)
+          }
+          externalDrag = nil
+        },
+      including: multi ? .all : .subviews
+    )
+    // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
+    // "Close"). "Remove from Split" (the menu equivalent of the ✕) is offered only for a real
+    // member; `workroomContextMenu` drops the item and its divider on a nil closure. `closeName`
+    // matches the chip's `workroomName ?? primaryLabel`. Attached AFTER `.gesture` so both share
+    // the bar's `.contentShape`; secondary-click (menu) and the primary-button drag coexist.
+    // The bar's own controls are separate hit targets, so a right-click landing directly on one may
+    // not raise this menu (already true of the ✕ before issue #139 added its neighbours) — the
+    // leading label region always does, and that is the region to aim for.
+    .contextMenu {
+      workroomContextMenu(
+        store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
+        onRemoveFromSplit: multi ? onClose : nil)
+    }
   }
 
   /// Whether this card wears the focused treatment — derived ONCE here so the frame, the fill and the

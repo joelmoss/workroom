@@ -22,17 +22,25 @@ struct TargetTerminalDetail: View {
   /// `WorkroomTerminalsView` (see `PaneTreeView.workroomIsSplit`).
   var workroomIsSplit: Bool = false
   @EnvironmentObject var store: AppStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
+    let run = store.creationRun(forTargetID: target.id)
     ZStack {
       // A create's run covers its pane in every window, its terminal withheld, until the run ends
       // (`isCreationBlocking`, issue #167, #483). It wins over `.creating`'s unavailability below.
-      if let run = store.creationRun(forTargetID: target.id) {
+      if let run {
+        // On top, so when the run ends it fades out over the terminal mounting beneath it (design
+        // D13); under Reduce Motion, a plain swap.
         CreationPane(run: run)
+          .zIndex(1)
+          .transition(.opacity)
       } else if target.opensTerminals {
         WorkroomTerminalsView(
           target: target, sessions: store.terminals, surfaceActive: surfaceActive,
-          workroomIsSplit: workroomIsSplit)
+          workroomIsSplit: workroomIsSplit
+        )
+        .transition(.identity)
       } else if let reason = target.terminalUnavailability {
         ContentUnavailableView {
           Label(reason.title, systemImage: reason.systemImage)
@@ -41,6 +49,7 @@ struct TargetTerminalDetail: View {
         }
       }
     }
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: run == nil)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }
