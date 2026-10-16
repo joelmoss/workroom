@@ -131,7 +131,7 @@ extension Defaults.Keys {
   static let usageInWindowFooter = Key<Bool>("usageInWindowFooter", default: true, suite: .app)
   /// Coding-agent usage in a pane's footer while an agent runs in it (#480). Off by default.
   static let usageInPaneFooter = Key<Bool>("usageInPaneFooter", default: false, suite: .app)
-  /// Set the first time Claude is seen running in a pane, so the footer's one-time "Enable…" for
+  /// Set the first time Claude is seen running in a pane, so the footer's one-time "Enable usage…" for
   /// the status-line bridge survives a relaunch until the bridge is enabled (#480).
   static let claudeSessionSeen = Key<Bool>("claudeSessionSeen", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
