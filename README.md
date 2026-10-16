@@ -164,10 +164,13 @@ also shows when it is waiting on you (a permission, a question) or has finished 
 alerts you once when it starts waiting or finishes in a terminal you are not looking at (the
 toggles are in **Settings ▸ Notifications**). ⇧⌘M goes to the terminal that has waited longest. See [program status](docs/program-status.md).
 
-The [persistent app footer](docs/screenshots/window-footer.png) also shows usage for each running
-agent provider on the left, including agents in background tabs and other windows. Click its usage
-bars for details. The footer stays visible when switching workrooms or hiding sidebars; undocked
-terminal windows keep only their pane footer.
+The [persistent app footer](docs/screenshots/window-footer.png) also shows Claude and Codex usage on
+the left, once there is a reading, whether or not an agent is running. With
+[cswap](https://github.com/realiti4/claude-swap) installed it shows every Claude account it manages;
+without it, Claude usage comes from Claude's status line, which you enable once from the footer.
+Click the usage bars for details. **Settings ▸ Coding agents** hides it, and can also show the
+usage of the agent running in a pane in that pane's footer. The footer stays visible when switching
+workrooms or hiding sidebars; undocked terminal windows keep only their pane footer.
 
 **Review your work without leaving the app.** A right-hand inspector reads each workroom's VCS
 directly — a **History** log of commits, a **changeset detail** tab (message, authors, changed files,

@@ -531,10 +531,8 @@ private struct CodingAgentSettingsPane: View {
   @Default(.terminalAgentBackend) private var agentBackend
   @Default(.terminalAgentAutoDiagnose) private var agentAutoDiagnose
   @Default(.terminalAgentRedactSecrets) private var agentRedactSecrets
-  @EnvironmentObject private var claudeUsageBridge: ClaudeUsageBridge
-  @EnvironmentObject private var agentUsage: CodingAgentUsageMonitor
-  @State private var confirmingClaudeAction = false
-  @State private var bridgeError: String?
+  @Default(.usageInWindowFooter) private var usageInWindowFooter
+  @Default(.usageInPaneFooter) private var usageInPaneFooter
 
   var body: some View {
     Form {
@@ -566,17 +564,16 @@ private struct CodingAgentSettingsPane: View {
       }
 
       VStack(alignment: .leading, spacing: 4) {
-        LabeledContent("Show usage") {
-          HStack(spacing: 8) {
-            Text(claudeBridgeStatus)
-              .foregroundStyle(.secondary)
-            Button(claudeBridgeActionTitle) { confirmingClaudeAction = true }
-          }
-        }
+        Toggle("Show usage in the window footer", isOn: $usageInWindowFooter)
+          .accessibilityIdentifier("settings.control.usageInWindowFooter")
+        Toggle("Show usage in the terminal pane footer", isOn: $usageInPaneFooter)
+          .help("Only while a coding agent runs in that pane.")
+          .accessibilityIdentifier("settings.control.usageInPaneFooter")
 
         Text(
-          "Optional. Workroom reads Claude's supported status-line rate-limit payload and Codex's "
-            + "local rollout snapshots. It never reads credentials or calls private usage endpoints."
+          "Claude usage comes from cswap when it is installed, one reading per account; otherwise "
+            + "from Claude's status line, once you enable it from the footer. Codex usage comes "
+            + "from the Codex app server, or its local session files."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -584,77 +581,5 @@ private struct CodingAgentSettingsPane: View {
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
-    .onAppear { claudeUsageBridge.refreshState() }
-    .alert(claudeBridgeAlertTitle, isPresented: $confirmingClaudeAction) {
-      Button("Cancel", role: .cancel) {}
-      Button(claudeBridgeActionVerb, role: claudeUsageBridge.state == .enabled ? .destructive : nil)
-      {
-        performClaudeBridgeAction()
-      }
-    } message: {
-      Text(claudeBridgeAlertMessage)
-    }
-    .alert("Claude usage change failed", isPresented: bridgeErrorPresented) {
-      Button("OK", role: .cancel) {}
-    } message: {
-      Text(bridgeError ?? "The Claude usage integration could not be changed.")
-    }
-  }
-
-  private var claudeBridgeStatus: String {
-    switch claudeUsageBridge.state {
-    case .disabled: return "Disabled"
-    case .enabled: return "Enabled"
-    case .needsRepair: return "Needs repair"
-    }
-  }
-
-  private var claudeBridgeActionTitle: String {
-    switch claudeUsageBridge.state {
-    case .disabled: return "Enable…"
-    case .enabled: return "Disable…"
-    case .needsRepair: return "Repair…"
-    }
-  }
-
-  private var claudeBridgeActionVerb: String {
-    switch claudeUsageBridge.state {
-    case .disabled: return "Enable"
-    case .enabled: return "Disable"
-    case .needsRepair: return "Repair"
-    }
-  }
-
-  private var claudeBridgeAlertTitle: String { "\(claudeBridgeActionVerb) Claude usage?" }
-
-  private var claudeBridgeAlertMessage: String {
-    switch claudeUsageBridge.state {
-    case .disabled, .needsRepair:
-      return
-        "Workroom will update ~/.claude/settings.json to run its status-line wrapper. It stores "
-        + "only rate_limits and forwards the original input unchanged to your current command."
-    case .enabled:
-      return
-        "Workroom will restore the exact statusLine setting saved when integration was enabled. "
-        + "If that setting has since changed, Workroom will leave it untouched."
-    }
-  }
-
-  private var bridgeErrorPresented: Binding<Bool> {
-    Binding(get: { bridgeError != nil }, set: { if !$0 { bridgeError = nil } })
-  }
-
-  private func performClaudeBridgeAction() {
-    do {
-      switch claudeUsageBridge.state {
-      case .disabled: try claudeUsageBridge.enable()
-      case .enabled: try claudeUsageBridge.disable()
-      case .needsRepair: try claudeUsageBridge.repair()
-      }
-      agentUsage.refresh()
-    } catch {
-      bridgeError = error.localizedDescription
-      claudeUsageBridge.refreshState()
-    }
   }
 }
