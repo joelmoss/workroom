@@ -184,7 +184,7 @@ final class CodingAgentUsageTests: XCTestCase {
     let monitor = CodingAgentUsageMonitor(
       codexSessionsURL: root.appendingPathComponent("sessions"), claudeCacheURL: cacheURL,
       now: { clock.value }, startAutomatically: false)
-    XCTAssertTrue(monitor.unavailableReason(for: .claude).contains("has been read yet"))
+    XCTAssertNil(monitor.snapshot(for: .claude))
 
     monitor.refresh()
     await settle { monitor.completedReadCount == 1 }

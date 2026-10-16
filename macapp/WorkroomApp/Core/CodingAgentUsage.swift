@@ -512,9 +512,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
   static let shared = CodingAgentUsageMonitor()
 
   @Published private(set) var snapshots: [CodingAgentBackend: CodingAgentQuotaSnapshot] = [:]
-  /// Why the last read produced no snapshot, per backend. Surfaced by the footer so an unavailable
-  /// quota says what's missing instead of being a dead end.
-  @Published private(set) var readFailures: [CodingAgentBackend: String] = [:]
   /// Every Claude account cswap manages, in slot order, or nil when cswap is not installed (or
   /// its output is unreadable) and Claude usage comes from the status-line bridge instead (#480).
   @Published private(set) var claudeAccounts: [ClaudeAccountUsage]?
@@ -630,12 +627,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
     return candidates.compactMap { $0 }.max { $0.capturedAt < $1.capturedAt }
   }
 
-  /// One sentence explaining an empty `snapshot(for:)`.
-  func unavailableReason(for backend: CodingAgentBackend) -> String {
-    pollFailures[backend] ?? readFailures[backend]
-      ?? "No \(backend.displayName) quota snapshot has been read yet."
-  }
-
   /// Read cswap and the Codex app server, unless a poll is already running (then this joins it)
   /// or no footer shows usage. Only the timer and an opened usage popover call this; file events
   /// and new segments call `refresh`, which never starts either process.
@@ -715,15 +706,9 @@ final class CodingAgentUsageMonitor: ObservableObject {
         )
       }
       guard let self, let read, !cancellation.isCancelled(), !Task.isCancelled else { return }
-      var failures: [CodingAgentBackend: String] = [:]
-      if read.codex.snapshot == nil {
-        failures[.codex] =
-          "No recent Codex rate-limit record in \(codexURL.path(percentEncoded: false))."
-      }
-      if case .failure(let reason) = read.claude { failures[.claude] = reason }
       self.apply(
         snapshots: [read.codex.snapshot, read.claude.snapshot].compactMap { $0 },
-        failures: failures, codexDirectories: read.codex.watchDirectories)
+        codexDirectories: read.codex.watchDirectories)
     }
   }
 
@@ -733,13 +718,11 @@ final class CodingAgentUsageMonitor: ObservableObject {
   /// `ViewThatFits` instantiates all of its children to measure them — so the common read (one
   /// rollout line appended, same percentages) has to be silent.
   private func apply(
-    snapshots read: [CodingAgentQuotaSnapshot], failures: [CodingAgentBackend: String],
-    codexDirectories: [URL]
+    snapshots read: [CodingAgentQuotaSnapshot], codexDirectories: [URL]
   ) {
     completedReadCount += 1
     let keyed = Dictionary(uniqueKeysWithValues: read.map { ($0.backend, $0) })
     if !Self.displaysSame(snapshots, keyed) { snapshots = keyed }
-    if readFailures != failures { readFailures = failures }
     updateWatches(codexDirectories: codexDirectories)
   }
 

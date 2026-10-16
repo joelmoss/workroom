@@ -89,7 +89,7 @@ final class CodexAppServerUsageTests: XCTestCase {
         *rateLimits*) printf '%s\\n' '{"method":"remoteControl/status/changed"}' '\(String(decoding: reply, as: UTF8.self))' ;;
       esac
     done
-    sleep 600
+    exec sleep 600
     """.write(to: server, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: server.path)
 
@@ -116,7 +116,7 @@ final class CodexAppServerUsageTests: XCTestCase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let server = directory.appendingPathComponent("codex")
-    try "#!/bin/sh\nsleep 600\n".write(to: server, atomically: true, encoding: .utf8)
+    try "#!/bin/sh\nexec sleep 600\n".write(to: server, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: server.path)
 
     let read = await CodexAppServerUsage.read(

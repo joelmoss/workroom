@@ -567,12 +567,12 @@ struct PaneUsageSlot: View {
           backend: backend, claudeProfile: claudeProfile, monitor: agentUsage)
         {
           ViewThatFits(in: .horizontal) {
-            ForEach(CodingAgentUsageSegment.barWidths, id: \.self) { width in
-              CodingAgentUsageSegment(item: item, barWidth: width, now: context.date)
-            }
             CodingAgentUsageSegment(
-              item: item, barWidth: CodingAgentUsageSegment.barWidths.last ?? 24,
-              showsLabel: false, now: context.date)
+              item: item, barWidth: CodingAgentUsageSegment.barWidths[0], now: context.date)
+            ForEach(CodingAgentUsageSegment.barWidths, id: \.self) { width in
+              CodingAgentUsageSegment(
+                item: item, barWidth: width, showsLabel: false, now: context.date)
+            }
             Color.clear.frame(width: 0, height: 0)
           }
         }

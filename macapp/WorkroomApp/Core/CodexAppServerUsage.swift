@@ -99,6 +99,8 @@ enum CodexAppServerUsage {
         environment["PATH"] = ShellEnvironment.path()
         process.environment = environment
         let input = Pipe()
+        // A codex gone before its input is written would raise SIGPIPE, which ends the app.
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         let output = Pipe()
         process.standardInput = input
         process.standardOutput = output

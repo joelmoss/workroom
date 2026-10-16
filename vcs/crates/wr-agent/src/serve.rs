@@ -723,15 +723,20 @@ pub fn encode_descriptor_list(sessions: &[crate::session::SessionInfo]) -> Vec<u
         // Metadata: the foreground command, under the key the app's own daemon uses for it, so a
         // pane title resolves identically on either backend; then what the client said about the
         // session, which is how the app finds a workroom's sessions (#255). The Claude profile is
-        // always sent, empty when unset, so its absence tells the app the agent predates it (#480).
-        let entries = u32::from(info.foreground.is_some()) + 1 + info.metadata.len() as u32;
+        // sent only for a confirmed `claude`, empty when unset; its absence tells the app there is
+        // no account to show (#480).
+        let entries = u32::from(info.foreground.is_some())
+            + u32::from(info.claude_profile.is_some())
+            + info.metadata.len() as u32;
         out.extend_from_slice(&entries.to_be_bytes());
         if let Some(command) = &info.foreground {
             put_string(&mut out, "command");
             put_string(&mut out, command);
         }
-        put_string(&mut out, "claude_profile");
-        put_string(&mut out, info.claude_profile.as_deref().unwrap_or(""));
+        if let Some(profile) = &info.claude_profile {
+            put_string(&mut out, "claude_profile");
+            put_string(&mut out, profile);
+        }
         for (key, value) in &info.metadata {
             put_string(&mut out, key);
             put_string(&mut out, value);
@@ -1102,10 +1107,10 @@ mod tests {
         assert_eq!(decoded[1].2, "-");
     }
 
-    /// The Claude profile entry is sent for every session, empty when the foreground has none, so
-    /// the app can read a missing entry as "an agent too old to say" rather than "unset" (#480).
+    /// The Claude profile entry is sent for a confirmed `claude`, empty when it has none, and not at
+    /// all otherwise, so the app shows no account rather than guessing one (#480).
     #[test]
-    fn descriptor_list_always_carries_the_claude_profile() {
+    fn descriptor_list_carries_the_claude_profile_of_a_claude_only() {
         use crate::session::SessionInfo;
         let entry = |key: &str, value: &str| {
             let mut out = Vec::new();
@@ -1135,12 +1140,15 @@ mod tests {
             &set,
             &entry("claude_profile", "/p/sessions/2-u_example.com")
         ));
-        let unset = encode_descriptor_list(&[session(None)]);
+        let unset = encode_descriptor_list(&[session(Some(""))]);
         assert!(contains(&unset, &entry("claude_profile", "")));
         // And the entry count covers it, so the app's decoder reads past it to the end.
         let decoded = decode_descriptor_list(&unset);
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].2, "claude");
+        let unknown = encode_descriptor_list(&[session(None)]);
+        assert!(!contains(&unknown, b"claude_profile"));
+        assert_eq!(decode_descriptor_list(&unknown)[0].2, "claude");
     }
 
     /// The header the Swift decoder reads first, pinned explicitly: a count, then a 16-byte id.
@@ -1161,9 +1169,8 @@ mod tests {
         }]);
         assert_eq!(&bytes[..4], &[0, 0, 0, 1], "count is a big-endian u32");
         assert_eq!(&bytes[4..20], &[1u8; 16], "then the 16-byte identifier");
-        // 4 (count) + 16 + 4 (pid) + 8 (tty) + 4 (empty cwd) + 1 (attached) + 4 (one entry)
-        // + 4 + 14 ("claude_profile") + 4 (empty value), the entry every descriptor carries
-        assert_eq!(bytes.len(), 63);
+        // 4 (count) + 16 + 4 (pid) + 8 (tty) + 4 (empty cwd) + 1 (attached) + 4 (no metadata)
+        assert_eq!(bytes.len(), 41);
         assert!(
             1 <= bytes.len() / 37,
             "a single descriptor must satisfy Swift's minimumEncodedSize guard"
