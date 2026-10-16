@@ -565,7 +565,7 @@ jobs:
   # If required status checks are ever configured for master, list this job beside `app`: the script
   # tests no longer run inside `app`, so requiring only `app` would stop them gating a merge.
   app-scripts:
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 30
     permissions:
       contents: read
@@ -576,6 +576,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      # The script tests run xcrun, lipo and codesign; the image's default Xcode is 27.0, not the app job's 27.1.
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "27.1"
 
       # build-helper_test.sh cross-compiles the workroom CLI.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
