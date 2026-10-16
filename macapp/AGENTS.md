@@ -144,7 +144,8 @@ attaches to older daemons that are still running (issue #154):
   rather than a byte replay. A newer app does not kill a running agent: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
   (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`, #230), in every build; see
-  the "As built (#230)" section of `docs/designs/remote-workrooms.md` for the mechanics.
+  the module comment in `vcs/crates/wr-agent/src/handoff.rs` for the mechanics, and ADR 0009 for
+  why.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — attach-only now. The `daemon`
   subcommand is gone, so this build cannot start one; the tool only attaches to daemons an app at or
   before v2.0.0 left running, which keep their sessions until the user closes them and cannot hand a
@@ -155,9 +156,9 @@ supervisor opts in (`wr-agent serve --screens <dir>`), the agent keeps each sess
 disk and, after a reboot kills the shells, answers a reattach for a session it no longer holds with
 that screen plus a bottom-row notice rather than the usual fresh shell. The app needs no code for
 this: the notice arrives as ordinary VT bytes over the same reattach path `terminal-state` already
-repaints from. See the "As built (#232)" section of `docs/designs/remote-workrooms.md` for the
-write/prune/restore mechanics — no real host's supervisor passes `--screens` yet, only the ssh
-fixture's (Phase 4 provisioning).
+repaints from. See the module comment in `vcs/crates/wr-agent/src/screens.rs` for the
+write/prune/restore mechanics, and ADR 0031 for why. The supervisor boxd and exe.dev hosts run
+(`Resources/host-setup/systemd.sh`) passes `--screens`, as does the ssh fixture's.
 
 **The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.rustAgent`, or nil
 when the agent fails its probe (there is no fallback to the daemon, which this build cannot start); `PersistentSessionService.backend(forSession:)` resolves each EXISTING
@@ -262,17 +263,19 @@ boxd that token as `BOXD_TOKEN`: it takes it for an API key and then writes no s
 machines it makes, so every create fails. A new user's first boxd create walks them through `BoxdSetupSheet`
 (install, sign in, GitHub), on the same shell as exe.dev's (`RemoteSetupSheet`); try it as a user
 boxd has never seen with `make app-run-boxd-fresh`. See `docs/designs/boxd-first-time-setup.md`.
-See "As built (#256)", "As built (#356)" and "As built (#380)" in
-`docs/designs/remote-workrooms.md`.
+The decisions behind it are ADR 0017 (a fresh host per workroom, no wakefulness obligation),
+ADR 0036 (Release and Nightly share provider hosts), ADR 0038 (pending-only cleanup sweeps) and
+ADR 0049 (hosts bring their own git credentials).
 
 ## Remote workrooms in config (#249)
 
 A workroom or project entry in `config.json` can carry a `"host"` object, which `list --json`
-passes through as `host`. The app owns its schema (`HostDescriptor` in `Core/Models.swift`); the
-CLI reads only whether a workroom has one (remote) and `state == "destroyed"`. `workroom host
-set|clear` (#252) writes one verbatim on an existing entry; the app (#253) will be its caller.
+passes through as `host`. The app owns its schema (`HostDescriptor` in
+`Packages/WorkroomDomain/Sources/WorkroomDomain/Model.swift`); the CLI reads only whether a
+workroom has one (remote) and `state == "destroyed"`. `workroom host set|clear` (#252) writes one
+verbatim on an existing entry, and the app calls it through `WorkroomCLI.setHost`.
 Every CLI config write preserves an existing one, so a change to a config writer must keep `host`,
-or a remote workroom silently turns local. What the app relies on until then:
+or a remote workroom silently turns local. What the app relies on:
 
 - `TerminalTarget.unavailability` is `.directoryMissing`, `.remote` or `.hostDestroyed`, and
   `isMissing` is derived from it. A new local action should guard on `isMissing`, as the existing
@@ -280,10 +283,12 @@ or a remote workroom silently turns local. What the app relies on until then:
 - A remote workroom's `path` is not a path on this Mac. Code that probes, watches or registers
   paths must skip `Workroom.isRemote`, as `RepositoryRouter.prepare`, `statusWorkItems` and
   `selectedStatusWorkItem` do.
-- Deleting is refused until #253 builds remote deletion, in both the CLI
-  (`RemoteWorkroomUnsupported`) and the app's delete actions, before any local cleanup.
-- Session restore is not gated yet: see "Known gaps" under "As built (#249, PR #275, merged
-  2026-10-01)" in `docs/designs/remote-workrooms.md`.
+- Deleting a live remote workroom is app-only: the app destroys the host, then has the CLI drop
+  the entry. The CLI deletes only a workroom whose host is already `destroyed`, and refuses the
+  rest with `RemoteWorkroomUnsupported` (ADR 0040).
+- Session restore is gated on availability (#253): `PersistentSessionRecovery` reattaches only
+  targets `AppStore.reattachesLocally` accepts, and an unreachable remote workroom's saved session
+  is held in `deferredTargetSessions` until its first pane opens.
 
 ## Working rules for the session/VCS layers
 
