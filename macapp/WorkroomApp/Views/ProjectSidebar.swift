@@ -153,6 +153,14 @@ struct ProjectSidebar: View {
               .listRowBackground(rowHighlight(wid, selected: store.selectedTargetID == wid))
             terminalSubtree(for: workroom.target(inProject: project.path), parent: wid)
           }
+          // A create with no workroom row yet (R5): before its name lands, or after a failed remote
+          // create dropped its record.
+          ForEach(store.provisionalCreationRows(inProject: project.path)) { row in
+            provisionalCreationRow(row)
+              .listRowInsets(childRowInsets)
+              .listRowSeparator(.hidden)
+              .listRowBackground(rowHighlight(row.id, selected: store.selectedTargetID == row.id))
+          }
         }
       }
       // No trailing spacer needed: the footer is a solid `safeAreaInset` (see `body`) that reserves
@@ -463,11 +471,9 @@ struct ProjectSidebar: View {
       // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
       // fixes the slot's size and the smaller spinner can't shift the row.
       ZStack {
+        // A create's progress, for every kind, while its run lasts (#483).
         if let step = store.createStep(for: id) {
           CreateStepCircle(step: step)
-        } else if store.isCreatingWorkroom(workroom, in: project) {
-          // Setup script still running against the new worktree — a spinner, and (below) no delete.
-          SetupSpinner()
         } else if waiting == 0, failed || terminals.isRunning(forTargetID: targetID),
           hovered != id
         {
@@ -552,6 +558,28 @@ struct ProjectSidebar: View {
           .disabled(store.isCreatingWorkroom(workroom, in: project))
         }
       }
+  }
+
+  /// A create's provisional row (R5, design D18): "New workroom · <destination>", with its step
+  /// circle. Selecting it shows the create's pane in this window. It has no menu: there is nothing
+  /// to label, open or delete yet.
+  private func provisionalCreationRow(_ row: AppStore.ProvisionalCreationRow) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: "cube")
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .frame(width: caretWidth, height: 18, alignment: .center)
+      Text(row.label).font(.callout).lineLimit(1).truncationMode(.tail)
+      Spacer()
+      if let step = store.createStep(for: row.id) { CreateStepCircle(step: step) }
+    }
+    .frame(height: rowHeight)
+    .contentShape(Rectangle())
+    .onTapGesture { selectTarget(row.id) }
+    .help(row.label)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isButton)
+    .accessibilityIdentifier("sidebar.creation.\(row.label)")
   }
 
   /// The leading icon column for a root/workroom row (issue #30): the identity glyph — a house for the
@@ -848,27 +876,25 @@ private struct RunningSpinner: View {
   }
 }
 
-/// Row spinner shown while a newly-created workroom's setup script is still running (issue #116) —
-/// mirrors `RunningSpinner`, but says "setting up" so the row's state reads correctly.
-private struct SetupSpinner: View {
-  var body: some View {
-    ProgressView()
-      .controlSize(.small)
-      .help("Setting up workroom")
-      .accessibilityLabel("Setting up workroom")
-  }
-}
-
-/// How far a remote create has got (#356), on the row that has it: its project's while it builds
-/// the project's base, then its new workroom's.
+/// How far a create has got (#356, #483), on its row: complete steps out of all of them, with the
+/// step it is on as its tooltip, or the failed mark once it has failed.
 private struct CreateStepCircle: View {
   let step: AppStore.CreateStep
+  private let theme = ThemeService.shared
+
   var body: some View {
-    ProgressView(value: step.fraction)
-      .progressViewStyle(.circular)
-      .controlSize(.small)
-      .help(step.label)
-      .accessibilityLabel(step.label)
+    if step.failed {
+      Image(systemName: "xmark.octagon.fill")
+        .foregroundStyle(theme.tokens.failure)
+        .help("Couldn't create the workroom: \(step.label) failed")
+        .accessibilityLabel("Couldn't create the workroom: \(step.label) failed")
+    } else {
+      ProgressView(value: step.fraction)
+        .progressViewStyle(.circular)
+        .controlSize(.small)
+        .help(step.label)
+        .accessibilityLabel(step.label)
+    }
   }
 }
 
