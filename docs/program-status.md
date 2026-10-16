@@ -208,6 +208,9 @@ sends only OSC 9;4.
   that holds both a program's notification and its request, in a terminal you are not looking at,
   raises a "needs you" alert that goes when the shell's prompt comes back. Before #481 the same
   recording showed an ordinary notification.
+- **A prompt that appears while you are looking never alerts.** That holds for every program, but
+  Workroom trusts a program that never probed (Codex) only 1 to 3 seconds after it starts waiting:
+  switch away within that time and you get the ✋ mark and the Dock count, not a banner.
 - **One notification, almost always.** On a lagging remote link, a program's own notification can
   be shown, with its sound, before its request arrives. Workroom then withdraws it when the alert
   is raised, but the banner may already have been seen. A program whose own notification comes
