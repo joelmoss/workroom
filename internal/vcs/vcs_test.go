@@ -589,3 +589,68 @@ func TestChildEnvironmentDisablesGitsTerminalPrompt(t *testing.T) {
 		t.Fatal("GIT_TERMINAL_PROMPT not forced to 0")
 	}
 }
+
+// recordedCreate runs a real Create from project with base and records its step events, as
+// "id:state" plus ":detail" when there is one, and its log.
+func recordedCreate(t *testing.T, project, base string, fallback bool) (steps []string, log string, err error) {
+	t.Helper()
+	var buf strings.Builder
+	progress := Progress{Log: &buf, Step: func(id, state, detail string) {
+		s := id + ":" + state
+		if detail != "" {
+			s += ":" + detail
+		}
+		steps = append(steps, s)
+	}}
+	_, err = (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), base, fallback, progress)
+	return steps, buf.String(), err
+}
+
+// Value: protects=a fetch that worked but left the start point in doubt (origin lacks the base, so
+// the local copy is used) ends the fetch step as a warning carrying the CLI's warning text;
+// fails_when=the step ends done and the warning reaches only the created event; no_claim=the
+// app's rendering of the caption
+func TestGitCreateReportsTheLocalBaseWarningOnTheFetchStep(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	git(t, project, "branch", "develop")
+	steps, _, err := recordedCreate(t, project, "develop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"fetch:running", "fetch:warning:origin has no develop, so the workroom starts from your local develop, which may be out of date.", "worktree:running", "worktree:done"}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q\nwant    %q", steps, want)
+	}
+}
+
+// Value: protects=the app-wide default giving way to origin's default branch ends the fetch step
+// as a warning with that text; fails_when=the step ends done; no_claim=none beyond protects
+func TestGitCreateReportsTheDefaultFallbackWarningOnTheFetchStep(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	steps, _, err := recordedCreate(t, project, "upstream/main", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) < 2 || steps[0] != "fetch:running" || !strings.HasPrefix(steps[1], "fetch:warning:The default base branch upstream/main") {
+		t.Fatalf("steps = %q, want fetch running then the fallback warning", steps)
+	}
+}
+
+// Value: protects=a base branch found nowhere after a fetch that worked fails the fetch step, with
+// the error as its detail and in its log, and never starts the worktree step; fails_when=fetch
+// ends done and the failure lands on a worktree step that never ran, with an empty log;
+// no_claim=the app's mapping of the events (CreationRunTests covers finish and fail)
+func TestGitCreateFailsTheFetchStepWhenTheBaseIsNowhere(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	steps, log, err := recordedCreate(t, project, "nope", false)
+	if !errors.Is(err, errs.ErrBaseBranchNotFound) {
+		t.Fatalf("err = %v, want ErrBaseBranchNotFound", err)
+	}
+	want := []string{"fetch:running", "fetch:failed:" + err.Error()}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q\nwant    %q", steps, want)
+	}
+	if !strings.Contains(log, err.Error()) {
+		t.Fatalf("fetch log lacks the error %q:\n%s", err, log)
+	}
+}

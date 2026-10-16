@@ -62,15 +62,19 @@ type fetchStep struct {
 	attempted, failed bool
 }
 
-// finish closes the step once startPoint is done, which is after any fetch in originDefault.
+// finish closes the step once startPoint is done, which is after any fetch in originDefault. The
+// step owns startPoint's outcome: a base found nowhere fails it, and any start-point warning ends it.
 func (f *fetchStep) finish(warning string, err error) {
 	switch {
+	case err != nil:
+		if f.progress.Log != nil {
+			fmt.Fprintln(f.progress.Log, err.Error())
+		}
+		f.progress.step("fetch", "failed", err.Error())
+	case warning != "":
+		f.progress.step("fetch", "warning", warning)
 	case !f.attempted:
 		f.progress.step("fetch", "skipped", "No remote to fetch from")
-	case f.failed && err != nil:
-		f.progress.step("fetch", "failed", err.Error())
-	case f.failed:
-		f.progress.step("fetch", "warning", warning)
 	default:
 		f.progress.step("fetch", "done", "")
 	}
