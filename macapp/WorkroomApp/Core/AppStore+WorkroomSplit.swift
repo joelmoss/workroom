@@ -344,7 +344,10 @@ extension AppStore {
   /// keeps running; it just leaves the split). No-op if `sid` isn't a member of any group. Mirrors
   /// `TerminalSessions.extractFromSplit`.
   func removeWorkroomSplitMember(_ sid: SidebarID) {
-    guard let index = splitIndex(containing: sid) else { return }
+    // A running create's pane can't be closed (#483, AC 2); a run that has ended is dropped first.
+    guard let index = splitIndex(containing: sid), creationRun(for: sid)?.isRunning != true else {
+      return
+    }
     let wasFocused = selectedTargetID == sid
     // Non-nil for a group (≥2 leaves, so removing one always leaves a subtree); its first leaf is the
     // survivor to land on, whether the group collapses or dissolves. Read it BEFORE the structural
