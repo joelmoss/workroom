@@ -250,6 +250,30 @@ sends only OSC 9;4.
   shows its mark and count, but no alert, since Workroom cannot tell it from one that was waiting
   before the app started.
 
+## Where the code lives
+
+Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the prefix.
+
+| What | Where |
+|---|---|
+| Answering the probe | `vcs/crates/wr-agent/src/terminal.rs` (`PROBE_REPLY`): the shadow terminal answers it |
+| Record rules, command results (#473), unprobed programs | `vcs/crates/wr-agent/src/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
+| The service: subscribe, `seen`, `clear` | `program_status.rs`: `Hub` publishes, `dispatch` answers |
+| `wr-agent program-status` | `vcs/crates/wr-agent/src/cli/program_status.rs` |
+| Wire records, app side | `Packages/AgentConnection/Sources/AgentConnection/ProgramStatusWire.swift`; requests in `AgentVCSConnection.swift`; shared fixtures in `testdata/program-status/` |
+| Per-host subscriptions, stale clock, reconnect, rollup per session | `WorkroomApp/Core/ProgramStatusMonitor.swift` (`ProgramStatusMonitor.shared`, `ProgramStatusRollup`, `seen`) |
+| Which mark a tab shows | `WorkroomApp/Core/TerminalSessions.swift` (`programStatus`, the tab's `indicator`) |
+| Tooltip and VoiceOver wording | `WorkroomApp/Core/ProgramStatusPresentation.swift` |
+| The ✋ and ✓ glyphs, the clock | `WorkroomApp/Views/ProgramStatusGlyph.swift` (`ProgramStatusGlyph`, `NeedsYouButton`); drawn by `TerminalTabStrip`, `ProjectSidebar`, `WorkroomTabBar`, `SwitcherRailView` |
+| Unread dot, and when a mark hides it | `TerminalTabStrip.swift` (`markSaysIt`) |
+| Requests, badge count, ⇧⌘M, holding a program's own notification (#481) | `WorkroomApp/Core/ProgramStatusAlerts.swift` (`ProgramStatusAlerts.shared`, `goToNextWaiting`) |
+| Posting and withdrawing alerts | `WorkroomApp/Core/AppStore.swift`: `raiseNeedsYou`, `raiseFinished`, `mergeIntoNeedsYou`, `withdrawNeedsYou`; a program's own notification enters at `handleActivity` |
+| Notification list and banners | `NotificationCenterStore.swift` (`recordNeedsYou`), `SystemNotifier.swift` |
+| Dock badge, menu bar | `DockBadge.swift` (applied from `WindowRegistry`), `MenuBarController.swift`, `WorkroomApp/Views/MenuBarNotificationsView.swift` |
+| Clear Status | `clearProgramStatus` in `TerminalSessions.swift`; menu items in `TerminalTabStrip` and `ProjectSidebar` |
+| Settings | `DefaultsKeys.swift` (`notifyWhenTerminalNeedsMe`, `notifyWhenTurnFinishes`), `WorkroomApp/Views/SettingsView.swift` |
+| Tests | Rust: `vcs/crates/wr-agent/tests/program_status.rs`. App: `ProgramStatusMonitorTests`, `ProgramStatusAlertsTests`, `ProgramStatusConnectionTests`, `ProgramStatusPresentationTests`, `NotificationRoutingTests`, `NotificationStoreTests`. UI: `ProgramStatusUITests`, `ProgramStatusLiveAgentUITests` |
+
 ## Troubleshooting
 
 `wr-agent program-status` prints what the agent holds for every session: whether its program is
