@@ -4,6 +4,13 @@ The Workroom macOS app: a SwiftUI (macOS 15+) front-end that bundles the `workro
 Go binary and drives it over the CLI's `--json` contract. See README.md and CONTRIBUTING.md for full
 architecture, signing, and notarization detail — this file is the quick reference.
 
+## Product quality bar
+
+The app must always be a polished, friendly and delightful experience, in both its UX and its UI.
+Aim for perfection as far as is possible and appropriate: sweat the details of layout, spacing,
+copy, motion, empty and error states, and keyboard flow, and follow the macOS Human Interface
+Guidelines. A change that works but feels rough is not finished.
+
 ## Dev tasks (Makefile)
 
 Every dev task runs through the **repo-root `Makefile`**, namespaced `app-*` (run from the repo
