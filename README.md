@@ -180,8 +180,9 @@ with language detection and syntax highlighting. It's read structurally from Git
 scraped from CLI output.
 
 **Create and delete without touching the command line.** Hit the **+** on a project to spin up a
-new workroom. Your `scripts/workroom_setup` runs behind a live progress overlay so you watch
-dependencies install and config copy in real time, and the terminal opens only once setup is done.
+new workroom. Its pane opens at once with a checklist of the create's steps, each with its time
+and its log a click away, so you watch the fetch, the worktree and your `scripts/workroom_setup`
+in real time; the terminal opens only once setup is done.
 Deleting is a hover-to-trash with a confirmation; teardown runs in the background and the row clears
 immediately. (See [Setup and teardown scripts](#setup-and-teardown-scripts).)
 
@@ -420,11 +421,23 @@ exits with a [stable code](#exit-codes). Progress (setup/teardown logs) streams 
 **Streaming log event (stderr, one per line):**
 
 ```json
-{ "type": "log", "phase": "setup", "text": "npm install…" }
+{ "type": "log", "phase": "setup", "step": "script", "text": "npm install…" }
 ```
 
 `create --json` also emits an early `{"type":"created", …}` event on stderr the moment the workroom
 exists (before setup runs), so a GUI can mount it and dock the streaming setup log immediately.
+
+`create --json` reports its steps as `step` events, in order: `fetch` (fetch the base branch),
+`worktree` (`git worktree add`) and `script` (the setup script). `state` is `running`, `done`,
+`warning`, `skipped` or `failed`; `detail` carries the warning text, the reason a step was skipped,
+or the failure message, and is left out when there is none:
+
+```json
+{ "type": "step", "id": "fetch", "state": "warning", "detail": "Could not fetch origin. …" }
+```
+
+Each `log` event carries the `step` running when it was written (left out before any step runs).
+The `fetch` and `worktree` logs hold each `$ git …` command line and its output.
 
 **Commands available in `--json` mode:** `create`, `list` (with `--warnings none|fast|full`),
 `delete` (requires `--confirm <name>`), `version`, plus two hidden, app-only commands — `add-project`
@@ -493,7 +506,7 @@ script is gitignored, Workroom runs the copy in the root project. A new workroom
 newer commit than your root checkout, so the script that runs can be newer than the one you see. It
 runs **inside the new workroom** right after creation — a good place to install dependencies and
 pull in gitignored local config that the worktree/workspace doesn't carry over. (In the macOS app,
-its output streams into the setup overlay as it runs.)
+its output streams into the new workroom's creation checklist, under "Run setup script", as it runs.)
 
 ```bash
 #!/usr/bin/env bash
