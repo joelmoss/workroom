@@ -127,6 +127,13 @@ extension Defaults.Keys {
   /// Diagnose). Prevents re-asking on every manual diagnosis.
   static let terminalAgentAutoDiagnosePrompted = Key<Bool>(
     "terminalAgentAutoDiagnosePrompted", default: false, suite: .app)
+  /// Coding-agent usage in every window's footer (#480). On by default.
+  static let usageInWindowFooter = Key<Bool>("usageInWindowFooter", default: true, suite: .app)
+  /// Coding-agent usage in a pane's footer while an agent runs in it (#480). Off by default.
+  static let usageInPaneFooter = Key<Bool>("usageInPaneFooter", default: false, suite: .app)
+  /// Set the first time a Claude session is seen running, so the footer's one-time "Enable…" for
+  /// the status-line bridge survives a relaunch until the bridge is enabled (#480).
+  static let claudeSessionSeen = Key<Bool>("claudeSessionSeen", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
   static let terminalAgentRedactSecrets = Key<Bool>(
     "terminalAgentRedactSecrets", default: true, suite: .app)

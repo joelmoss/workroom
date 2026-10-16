@@ -131,17 +131,22 @@ final class CodingAgentUsageTests: XCTestCase {
       CodingAgentUsageDecoding.claude(data: one, capturedAt: now, now: now)?.windows.count, 1)
   }
 
-  func testClaudeRejectsMalformedPartialAndExpiredData() {
+  /// A window past its reset is kept (#480): the footer draws it at 0%, dimmed, instead of dropping
+  /// the agent's usage.
+  func testClaudeRejectsMalformedAndPartialDataButKeepsAnExpiredWindow() throws {
     XCTAssertNil(CodingAgentUsageDecoding.claude(data: Data("{".utf8), capturedAt: now, now: now))
-    let expired = Data(#"{"five_hour":{"used_percentage":10,"resets_at":1999999999}}"#.utf8)
-    XCTAssertNil(CodingAgentUsageDecoding.claude(data: expired, capturedAt: now, now: now))
     let partial = Data(#"{"five_hour":{"used_percentage":10}}"#.utf8)
     XCTAssertNil(CodingAgentUsageDecoding.claude(data: partial, capturedAt: now, now: now))
+    let expired = Data(#"{"five_hour":{"used_percentage":10,"resets_at":1999999999}}"#.utf8)
+    let snapshot = try XCTUnwrap(
+      CodingAgentUsageDecoding.claude(data: expired, capturedAt: now, now: now))
+    XCTAssertEqual(snapshot.windows.map(\.usedPercentage), [10])
+    XCTAssertTrue(snapshot.isStale(at: now))
   }
 
   /// Every empty-quota footer has to be able to say WHY, so each way the Claude cache comes up empty
   /// gets its own sentence.
-  func testClaudeReadDistinguishesMissingUnreadableAndResetCaches() throws {
+  func testClaudeReadDistinguishesMissingAndUnreadableCaches() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -158,25 +163,22 @@ final class CodingAgentUsageTests: XCTestCase {
     XCTAssertTrue(reason().contains("hasn't received"), reason())
     try Data("{".utf8).write(to: cacheURL)
     XCTAssertTrue(reason().contains("couldn't be read"), reason())
-    try Data(#"{"five_hour":{"used_percentage":10,"resets_at":1999999999}}"#.utf8).write(
-      to: cacheURL)
-    XCTAssertTrue(reason().contains("since reset"), reason())
-
     try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
       to: cacheURL)
     let read = CodingAgentUsageDecoding.readClaudeSnapshot(cacheURL: cacheURL, now: now)
     XCTAssertEqual(read.snapshot?.windows.first?.usedPercentage, 10)
   }
 
-  /// A stored snapshot expires where it sits, with no refresh running to record why — so the reason
-  /// has to be derived when the footer reads it, not when the file was read.
-  @MainActor func testStoredSnapshotThatExpiresExplainsItselfWithoutARefresh() async throws {
+  /// A stored snapshot whose window passes its reset stays on screen, stale, with no refresh needed
+  /// to notice (#480; it used to vanish).
+  @MainActor func testAStoredSnapshotThatExpiresIsKeptAndTurnsStale() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let cacheURL = root.appendingPathComponent("claude-rate-limits.json")
     try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
       to: cacheURL)
+    try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: cacheURL.path)
 
     let clock = Clock(value: now)
     let monitor = CodingAgentUsageMonitor(
@@ -185,16 +187,41 @@ final class CodingAgentUsageTests: XCTestCase {
     XCTAssertTrue(monitor.unavailableReason(for: .claude).contains("has been read yet"))
 
     monitor.refresh()
-    for _ in 0..<200 where monitor.loading.contains(.claude) {
-      try await Task.sleep(nanoseconds: 10_000_000)
-    }
-    XCTAssertNotNil(monitor.snapshot(for: .claude))
+    await settle { monitor.completedReadCount == 1 }
+    clock.value = now.addingTimeInterval(1)
+    XCTAssertFalse(try XCTUnwrap(monitor.snapshot(for: .claude)).isStale(at: clock.value))
 
     clock.value = now.addingTimeInterval(4_000)
-    XCTAssertNil(monitor.snapshot(for: .claude))
-    XCTAssertTrue(
-      monitor.unavailableReason(for: .claude).contains("since reset"),
-      monitor.unavailableReason(for: .claude))
+    let expired = try XCTUnwrap(monitor.snapshot(for: .claude))
+    XCTAssertEqual(expired.windows.map(\.usedPercentage), [10])
+    XCTAssertTrue(expired.isStale(at: clock.value))
+  }
+
+  /// The bridge rewrites its file with the same numbers while Claude runs. That read publishes
+  /// nothing, but the reading's age still has to move, or live usage would dim after two polls.
+  @MainActor func testAnIdenticalReadStillRefreshesTheReadingsAge() async throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let cacheURL = root.appendingPathComponent("claude-rate-limits.json")
+    let bytes = Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8)
+    try bytes.write(to: cacheURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: now.addingTimeInterval(-1_000)], ofItemAtPath: cacheURL.path)
+
+    let monitor = CodingAgentUsageMonitor(
+      codexSessionsURL: root.appendingPathComponent("sessions"), claudeCacheURL: cacheURL,
+      now: { self.now }, startAutomatically: false)
+    monitor.refresh()
+    await settle { monitor.completedReadCount == 1 }
+    XCTAssertTrue(try XCTUnwrap(monitor.snapshot(for: .claude)).isStale(at: now))
+
+    try bytes.write(to: cacheURL)
+    try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: cacheURL.path)
+    monitor.refresh()
+    await settle { monitor.completedReadCount == 2 }
+    XCTAssertFalse(try XCTUnwrap(monitor.snapshot(for: .claude)).isStale(at: now))
   }
 
   private final class Clock: @unchecked Sendable {
