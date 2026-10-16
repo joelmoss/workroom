@@ -203,6 +203,27 @@ final class CodingAgentUsagePollingTests: XCTestCase {
     XCTAssertEqual(monitor.snapshot(for: .codex)?.windows.count, 1)
     XCTAssertTrue(monitor.snapshot(for: .codex)?.isStale(at: now) ?? false)
   }
+
+  /// Without cswap and with the bridge off, the footer offers "Enable usage…" once Claude has run,
+  /// until the user enables it or chooses "Don't Ask Again" (#480).
+  func testTheEnableOfferStopsAfterDontAskAgain() async {
+    let monitor = monitor(
+      CodingAgentUsagePollers(cswap: { _ in .notInstalled }, codexServer: { _ in .notInstalled }))
+    monitor.poll()
+    await waitForPoll(monitor)
+    XCTAssertEqual(
+      CodingAgentUsageSegment.items(
+        monitor: monitor, bridgeState: .disabled, claudeSeen: true, enableDeclined: false),
+      [.enableClaude])
+    XCTAssertEqual(
+      CodingAgentUsageSegment.items(
+        monitor: monitor, bridgeState: .disabled, claudeSeen: true, enableDeclined: true),
+      [])
+    XCTAssertEqual(
+      CodingAgentUsageSegment.items(
+        monitor: monitor, bridgeState: .disabled, claudeSeen: false, enableDeclined: false),
+      [], "nothing is offered before Claude has run")
+  }
 }
 
 private actor PollCounter {

@@ -52,6 +52,8 @@ struct CodingAgentUsageSegment: View {
     segment
       .alert("Enable Claude usage?", isPresented: $confirmingClaudeUsage) {
         Button("Cancel", role: .cancel) {}
+        // Declines for good: the footer stops offering it; Settings › Coding agents still can.
+        Button("Don’t Ask Again") { Defaults[.claudeUsageDeclined] = true }
         Button("Enable") {
           do {
             try claudeUsageBridge.enable()
@@ -262,7 +264,8 @@ struct CodingAgentUsageSegment: View {
   /// What a footer shows, in order: every Claude account cswap manages (or, without cswap, the bridge's one
   /// reading or its Enable offer), then Codex. A backend with no reading at all is absent.
   @MainActor static func items(
-    monitor: CodingAgentUsageMonitor, bridgeState: ClaudeUsageBridge.State, claudeSeen: Bool
+    monitor: CodingAgentUsageMonitor, bridgeState: ClaudeUsageBridge.State, claudeSeen: Bool,
+    enableDeclined: Bool
   ) -> [CodingAgentUsageItem] {
     var items: [CodingAgentUsageItem] = []
     if let accounts = monitor.claudeAccounts {
@@ -272,7 +275,7 @@ struct CodingAgentUsageSegment: View {
       }
     } else if monitor.claudeUsesBridge {
       if bridgeState == .disabled {
-        if claudeSeen { items.append(.enableClaude) }
+        if claudeSeen, !enableDeclined { items.append(.enableClaude) }
       } else if let snapshot = monitor.snapshot(for: .claude) {
         items.append(.reading(snapshot))
       }
@@ -303,6 +306,7 @@ struct CodingAgentUsageRow: View {
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @ObservedObject private var registry = WindowRegistry.shared
   @Default(.claudeSessionSeen) private var claudeSessionSeen
+  @Default(.claudeUsageDeclined) private var claudeUsageDeclined
 
   private struct Variant: Hashable {
     let barWidth: CGFloat
@@ -317,7 +321,8 @@ struct CodingAgentUsageRow: View {
       let now = context.date
       let items = CodingAgentUsageSegment.items(
         monitor: agentUsage, bridgeState: claudeUsageBridge.state,
-        claudeSeen: claudeSessionSeen || registry.activeAgentBackends.contains(.claude))
+        claudeSeen: claudeSessionSeen || registry.activeAgentBackends.contains(.claude),
+        enableDeclined: claudeUsageDeclined)
       ViewThatFits(in: .horizontal) {
         ForEach(Self.variants(claudeAccounts: items.filter(\.isClaudeAccount).count), id: \.self) {
           variant in
