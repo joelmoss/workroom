@@ -67,10 +67,16 @@ struct CreationPane: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           header.padding(.bottom, 20)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              headerHeight = $0
+            }
           ForEach(run.steps) { step in
             row(step)
-              .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
                 rowHeights[step.id] = $0
               }
             if expanded == step.id {
