@@ -364,6 +364,10 @@ struct TerminalState {
   /// fallback for multiplexed sessions). Providers repaint OSC titles while they run, so this is
   /// deliberately latched until `command_finished` instead of being derived from `liveTitle`.
   var activeAgentBackend: CodingAgentBackend?
+  /// The running Claude's profile as wr-agent reported it, read once when the agent starts in a
+  /// daemon-backed pane and cleared with `activeAgentBackend` (#480). Nil until read, and never
+  /// read for a remote or fallback pane.
+  var claudeProfile: PaneClaudeProfile?
   /// Reject recovery metadata if the command ended while the helper query was in flight.
   var commandFinishGeneration = 0
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
@@ -637,6 +641,8 @@ final class TerminalSessions: ObservableObject {
   /// Each remote tab's latest host cwd query. An entry also marks a tab whose first prompt has
   /// already asked, so after that only `command_finished` asks again.
   private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
+  /// Each tab's in-flight Claude profile read (`readClaudeProfile`).
+  private var claudeProfileQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
 
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
@@ -1763,6 +1769,7 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[target.id]?.removeAll { $0 == tabID }
     activityPulses[tabID] = nil
     hostCwdQueries.removeValue(forKey: tabID)?.cancel()
+    claudeProfileQueries.removeValue(forKey: tabID)?.cancel()
 
     // A lone remaining member is not a group any more; two or more get evened, since their dividers
     // still budget space for the pane that just closed (issue #126).
@@ -1798,6 +1805,7 @@ final class TerminalSessions: ObservableObject {
       teardown(tab)
       activityPulses[tab.id] = nil
       hostCwdQueries.removeValue(forKey: tab.id)?.cancel()
+      claudeProfileQueries.removeValue(forKey: tab.id)?.cancel()
     }
     await sessionService.endSessions(matchingWorkroom: id)
     tabsByTarget[id] = nil
@@ -1895,11 +1903,46 @@ final class TerminalSessions: ObservableObject {
     {
       recordUnrecognizedTool(rawName)
     }
+    let claudeStarted = s.activeAgentBackend == nil && detectedAgent == .claude
     mutateTerminalState(tabID, target: target) {
       $0.liveTitle = trimmed
       if $0.activeAgentBackend == nil { $0.activeAgentBackend = detectedAgent }
       if $0.activeTool == nil { $0.activeTool = detectedTool }
     }
+    if claudeStarted { readClaudeProfile(forTab: tabID, target: target) }
+  }
+
+  /// Ask wr-agent which Claude profile the pane's new `claude` runs with (#480), so the pane footer
+  /// can show that account's usage. Its session list is otherwise read only at launch, so this is
+  /// the one moment it is asked again. Only a local daemon-backed pane can be asked: a remote one
+  /// runs on a host whose login cannot be matched to a local account, and a fallback pane has no
+  /// session.
+  private func readClaudeProfile(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
+      let session = s.sessionID ?? s.view.persistentSessionID,
+      !sessionService.isRemote(session)
+    else { return }
+    let generation = s.commandFinishGeneration
+    let service = sessionService
+    claudeProfileQueries[tabID]?.cancel()
+    claudeProfileQueries[tabID] = Task { [weak self] in
+      let live = await service.liveSessions()
+      guard let self, !Task.isCancelled else { return }
+      let descriptor = live.first { $0.identifier.uuid == session }
+      self.mutateTerminalState(tabID, target: target) {
+        // The command may have ended, or another started, while the list was in flight.
+        guard $0.commandFinishGeneration == generation, $0.activeAgentBackend == .claude else {
+          return
+        }
+        $0.claudeProfile = Self.claudeProfile(from: descriptor)
+      }
+    }
+  }
+
+  /// The profile entry from a session descriptor; no entry means an agent too old to send one.
+  nonisolated static func claudeProfile(from descriptor: SessionDescriptor?) -> PaneClaudeProfile {
+    descriptor?.value(forMetadataKey: "claude_profile").map(PaneClaudeProfile.reported)
+      ?? .notReported
   }
 
   /// Mirror the surface's reported cwd into observable tab state so the status bar tracks it live
@@ -1935,6 +1978,7 @@ final class TerminalSessions: ObservableObject {
       $0.commandFinishGeneration += 1
       $0.liveTitle = nil
       $0.activeAgentBackend = nil
+      $0.claudeProfile = nil
       $0.activeTool = nil
       $0.progressActive = nil
       $0.progressFailed = false
@@ -2634,6 +2678,8 @@ final class TerminalSessions: ObservableObject {
           mutateTerminalState(tab.id, target: target) {
             $0.activeAgentBackend = backend
             if $0.liveTitle == nil { $0.liveTitle = command }
+            // The same list carries the Claude profile (#480), so no second request is needed.
+            if backend == .claude { $0.claudeProfile = Self.claudeProfile(from: descriptor) }
           }
         }
         state.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))

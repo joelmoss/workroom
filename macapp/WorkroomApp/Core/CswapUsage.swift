@@ -18,6 +18,40 @@ struct ClaudeAccountUsage: Equatable, Sendable {
   let unavailableReason: String?
 }
 
+/// What wr-agent said about a pane's Claude profile (#480).
+enum PaneClaudeProfile: Equatable, Sendable {
+  /// The foreground's `CLAUDE_CONFIG_DIR`, empty when unset.
+  case reported(String)
+  /// The agent sent no entry: it predates reporting one, so the account is unknown.
+  case notReported
+}
+
+/// Which cswap account a pane's `claude` bills, from its Claude profile (#480).
+enum ClaudeProfileResolution {
+  /// `profile` is nil when the agent did not report one. Empty (unset) is the default
+  /// `~/.claude` login, which is cswap's active account. `cswap run` makes
+  /// `<backup>/sessions/<slot>-<email>`, whose prefix is the slot. Anything else is no account:
+  /// never a guess.
+  static func account(
+    forProfile profile: String?, accounts: [ClaudeAccountUsage], activeSlot: Int?
+  ) -> ClaudeAccountUsage? {
+    guard let profile else { return nil }
+    let slot: Int?
+    if profile.isEmpty {
+      slot = activeSlot
+    } else {
+      let url = URL(fileURLWithPath: profile).standardizedFileURL
+      let name = url.lastPathComponent
+      guard url.deletingLastPathComponent().lastPathComponent == "sessions",
+        let dash = name.firstIndex(of: "-")
+      else { return nil }
+      slot = Int(name[..<dash])
+    }
+    guard let slot else { return nil }
+    return accounts.first { $0.account.slot == slot }
+  }
+}
+
 /// Claude usage for every account cswap manages, from `cswap list --json`.
 ///
 /// Workroom never reads Claude credentials or calls Anthropic itself: cswap does, keeps its own

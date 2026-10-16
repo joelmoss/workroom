@@ -505,3 +505,69 @@ struct CodingAgentUsagePopover: View {
     return "Updated \(CodingAgentUsageSegment.age(of: snapshot, now: now))"
   }
 }
+
+/// A pane footer's usage (#480): only the agent running in that pane, while it runs. In a narrow
+/// pane it drops its label, then its bars, so the pane's own state is never truncated for it.
+struct PaneUsageSlot: View {
+  let backend: CodingAgentBackend
+  let claudeProfile: PaneClaudeProfile?
+  @EnvironmentObject var agentUsage: CodingAgentUsageMonitor
+  @Default(.usageInPaneFooter) private var showsUsage
+
+  var body: some View {
+    if showsUsage {
+      TimelineView(.periodic(from: .now, by: 60)) { context in
+        if let item = Self.item(
+          backend: backend, claudeProfile: claudeProfile, monitor: agentUsage)
+        {
+          ViewThatFits(in: .horizontal) {
+            ForEach(CodingAgentUsageSegment.barWidths, id: \.self) { width in
+              CodingAgentUsageSegment(item: item, barWidth: width, now: context.date)
+            }
+            CodingAgentUsageSegment(
+              item: item, barWidth: CodingAgentUsageSegment.barWidths.last ?? 24,
+              showsLabel: false, now: context.date)
+            Color.clear.frame(width: 0, height: 0)
+          }
+        }
+      }
+    }
+  }
+
+  /// The pane's reading. Claude needs a profile read (a local daemon-backed pane); with cswap it
+  /// picks that profile's account, without it the bridge's one reading.
+  @MainActor static func item(
+    backend: CodingAgentBackend, claudeProfile: PaneClaudeProfile?,
+    monitor: CodingAgentUsageMonitor
+  ) -> CodingAgentUsageItem? {
+    switch backend {
+    case .codex:
+      return monitor.snapshot(for: .codex).map {
+        .reading($0, label: nil, account: nil, reason: nil)
+      }
+    case .claude:
+      guard let claudeProfile else { return nil }
+      guard let accounts = monitor.claudeAccounts else {
+        return monitor.snapshot(for: .claude).map {
+          .reading($0, label: nil, account: nil, reason: nil)
+        }
+      }
+      let profile: String?
+      if case .reported(let value) = claudeProfile { profile = value } else { profile = nil }
+      guard
+        let usage = ClaudeProfileResolution.account(
+          forProfile: profile, accounts: accounts, activeSlot: monitor.claudeActiveSlot)
+      else { return nil }
+      let label =
+        CodingAgentUsageSegment.accountLabels(accounts.map(\.account))[usage.account.slot]
+        ?? "#\(usage.account.slot)"
+      if let snapshot = usage.snapshot {
+        return .reading(
+          snapshot, label: label, account: usage.account, reason: usage.unavailableReason)
+      }
+      return .unavailable(
+        label: label, account: usage.account,
+        reason: usage.unavailableReason ?? "cswap has no reading for this account yet.")
+    }
+  }
+}

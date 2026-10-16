@@ -62,6 +62,12 @@ struct TerminalStatusBar: View {
       if hasLeading || hasBranch, hasDiagnosis { statusBarDivider }
       if let diagnosis { diagnosisSegment(diagnosis) }
       Spacer(minLength: 8)
+      // The running agent's usage (#480). Before the detached-sessions button, so nothing trailing
+      // moves when it comes and goes, and lowest priority, so it gives way before cwd or branch.
+      if let state, let backend = state.activeAgentBackend {
+        PaneUsageSlot(backend: backend, claudeProfile: state.claudeProfile)
+          .layoutPriority(-1)
+      }
       DetachedSessionsButton(target: target)
       if hasDetached, hasRun { statusBarDivider }
       if isRunTab, let run = runStatePresentation { runSegment(run) }
