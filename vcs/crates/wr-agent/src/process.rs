@@ -679,6 +679,36 @@ mod tests {
         );
     }
 
+    // Value: protects=the profile lookup returning exactly CLAUDE_CONFIG_DIR's value;
+    // fails_when=matching is by prefix or substring (CLAUDE_CONFIG_DIR_OLD, or a value that
+    // mentions the key) or padding is read as an entry; why_new=the spawned-child test only sets
+    // the one variable; seam=none; no_claim=reading a live process.
+    #[test]
+    fn environment_lookup_matches_the_whole_key_only() {
+        let env: &[&[u8]] = &[
+            b"CLAUDE_CONFIG_DIR_OLD=/old",
+            b"NOTE=CLAUDE_CONFIG_DIR=/in/value",
+            b"CLAUDE_CONFIG_DIR=/p/sessions/2-u",
+            b"",
+        ];
+        assert_eq!(
+            value_in_environment(env.iter().copied(), "CLAUDE_CONFIG_DIR").as_deref(),
+            Some("/p/sessions/2-u")
+        );
+        assert_eq!(
+            value_in_environment(env[..2].iter().copied(), "CLAUDE_CONFIG_DIR"),
+            None
+        );
+        assert_eq!(
+            value_in_environment(
+                [b"CLAUDE_CONFIG_DIR=".as_slice()].into_iter(),
+                "CLAUDE_CONFIG_DIR"
+            )
+            .as_deref(),
+            Some("")
+        );
+    }
+
     #[test]
     fn rejects_invalid_pids() {
         assert_eq!(claude_profile(0), None);
