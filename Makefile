@@ -12,7 +12,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
+        app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
         app-check remote-host-image remote-host-image-test actions-lint vcs-lint vcs-test
 
 help: ## List available targets
@@ -184,6 +184,18 @@ app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	    test-without-building; \
 	  $(call test_summary,WorkroomApp); }
 
+# Proves a unit test covers a line (macapp/Scripts/red-proof.sh): breaks FILE by replacing PATTERN,
+# the exact text, which must occur once, with REPLACE (default: nothing), runs TEST through
+# app-test, and restores FILE however the run ends. RED only counts when test-summary.sh reports
+# failed tests, so a build error reads INCONCLUSIVE. The variables come from the command line, which
+# make exports, so the recipe passes them through the shell and their quotes survive.
+red-proof: ## Prove a unit test goes red without a line: FILE= PATTERN= [REPLACE=] TEST=<Class>[/<method>]
+	@test -n "$${FILE-}" && test -n "$${PATTERN-}" && test -n "$${TEST-}" || { \
+	  echo 'usage: make red-proof FILE=<path> PATTERN=<exact text> [REPLACE=<text>] TEST=<Class>[/<method>]' >&2; \
+	  exit 2; }
+	@bash macapp/Scripts/red-proof.sh "$$FILE" "$$PATTERN" "$${REPLACE-}" '^Tests: Failed' -- \
+	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/$$TEST"
+
 # Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock.
 # CI, nightly and release run it beside `make app-test`. Each package resolves first, up to three
 # times: SyntaxHighlighting clones 16 grammars, and a github.com blip would otherwise fail a release
@@ -219,7 +231,7 @@ remote-host-image-test: ## Build the `workroom-host` image, without its tag, and
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol, exe.dev git setup, test summary)
+app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol, exe.dev git setup, test summary, red proof)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-agent_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
@@ -230,6 +242,7 @@ app-test-scripts: ## Run the script tests (build-helper/build-agent archs, chann
 	sh macapp/Scripts/dev-identity_test.sh
 	sh macapp/Scripts/stop-dev-app_test.sh
 	sh macapp/Scripts/test-summary_test.sh
+	sh macapp/Scripts/red-proof_test.sh
 	python3 macapp/Scripts/gui-lock_test.py
 
 app-scripts-lint: ## Lint macapp/Scripts/*.sh with shellcheck (needs shellcheck on PATH)

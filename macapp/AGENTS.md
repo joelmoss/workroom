@@ -18,10 +18,13 @@ make app-run-boxd-fresh # app-run as a user boxd has never seen (Scripts/boxd-fr
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize.
                     # Ends with the run's counts + failing tests from its .xcresult (Scripts/test-summary.sh)
+make red-proof FILE=… PATTERN=… TEST=<Class>[/<method>]
+                    # the way to prove a test goes red: breaks the line, runs the test, and
+                    # restores FILE however the run ends (Scripts/red-proof.sh); sandbox off
 make app-package-test # swift test in each macapp/Packages package — no app host, no GUI lock
 make app-uitest     # XCUITest — needs the GUI session to itself; queues behind other workrooms
 make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
-make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock, test summary)
+make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock, test summary, red proof)
 make app-scripts-lint # shellcheck over macapp/Scripts/*.sh
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-format     # swift-format, rewrite sources in place
