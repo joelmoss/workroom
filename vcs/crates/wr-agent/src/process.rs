@@ -59,6 +59,24 @@ pub fn executable_name(pid: i32) -> Option<String> {
     platform::executable_name(pid)
 }
 
+/// The Claude profile (`CLAUDE_CONFIG_DIR`) a process runs with, for the app to tell which Claude
+/// account a pane uses (#480). `Some("")` when it is set empty, `None` when it is unset or the
+/// environment cannot be read.
+pub fn claude_profile(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    platform::environment_value(pid, "CLAUDE_CONFIG_DIR")
+}
+
+/// The value of `key` in a list of `KEY=value` environment entries.
+fn value_in_environment<'a>(entries: impl Iterator<Item = &'a [u8]>, key: &str) -> Option<String> {
+    entries.into_iter().find_map(|entry| {
+        let value = entry.strip_prefix(key.as_bytes())?.strip_prefix(b"=")?;
+        Some(String::from_utf8_lossy(value).into_owned())
+    })
+}
+
 /// A process's current working directory, for OSC 7.
 pub fn working_directory(pid: i32) -> Option<String> {
     if pid <= 0 {
@@ -182,6 +200,20 @@ mod platform {
     /// (NUL-terminated), NUL padding, then `argc` NUL-terminated argv strings.
     pub(super) fn executable_name(pid: i32) -> Option<String> {
         let buffer = procargs2(pid)?;
+        let (argv, _) = split_procargs(&buffer)?;
+        name_from_argv(&argv)
+    }
+
+    /// The environment follows argv in the same buffer, as NUL-terminated `KEY=value` strings with
+    /// no count of its own; whatever trails the last one is padding, which never matches the key.
+    pub(super) fn environment_value(pid: i32, key: &str) -> Option<String> {
+        let buffer = procargs2(pid)?;
+        let (_, environment) = split_procargs(&buffer)?;
+        super::value_in_environment(environment.split(|b| *b == 0), key)
+    }
+
+    /// argv, and the bytes after it (the environment), from a `KERN_PROCARGS2` buffer.
+    fn split_procargs(buffer: &[u8]) -> Option<(Vec<String>, &[u8])> {
         if buffer.len() <= 4 {
             return None;
         }
@@ -213,7 +245,7 @@ mod platform {
             }
             offset += 1;
         }
-        name_from_argv(&argv)
+        Some((argv, buffer.get(offset..).unwrap_or_default()))
     }
 
     fn procargs2(pid: i32) -> Option<Vec<u8>> {
@@ -411,6 +443,11 @@ mod platform {
             .unwrap_or_default()
     }
 
+    pub(super) fn environment_value(pid: i32, key: &str) -> Option<String> {
+        let raw = fs::read(format!("/proc/{pid}/environ")).ok()?;
+        super::value_in_environment(raw.split(|b| *b == 0), key)
+    }
+
     pub(super) fn working_directory(pid: i32) -> Option<String> {
         fs::read_link(format!("/proc/{pid}/cwd"))
             .ok()
@@ -582,8 +619,69 @@ mod tests {
         );
     }
 
+    /// Set on the child `reads_a_childs_claude_profile` spawns, which makes this test sleep so the
+    /// parent can read its environment. Without it (an ordinary test run) it returns at once.
+    const PROFILE_PROBE: &str = "WR_AGENT_CLAUDE_PROFILE_PROBE";
+
+    #[test]
+    fn claude_profile_probe() {
+        if std::env::var_os(PROFILE_PROBE).is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
+    }
+
+    /// The Claude profile a running `claude` uses is read from its environment (#480). A spawned
+    /// child stands in for it, so the read crosses a real process boundary rather than reading our
+    /// own environment back. The child is this test binary, not `/bin/sleep`: macOS withholds the
+    /// environment of Apple platform binaries from `KERN_PROCARGS2` (measured: `ps eww` shows none
+    /// for `/bin/sleep`, `/bin/sh` or a copy of either), while `claude` is not one.
+    #[test]
+    fn reads_a_childs_claude_profile() {
+        use std::process::{Command, Stdio};
+
+        let profile_of = |configure: &dyn Fn(&mut Command)| {
+            let mut command = Command::new(std::env::current_exe().expect("test binary"));
+            command
+                .args(["--exact", "process::tests::claude_profile_probe"])
+                .env(PROFILE_PROBE, "1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            configure(&mut command);
+            let mut child = command.spawn().expect("spawn sleep");
+            let profile = claude_profile(child.id() as i32);
+            let _ = child.kill();
+            let _ = child.wait();
+            profile
+        };
+
+        assert_eq!(
+            profile_of(&|c| {
+                c.env(
+                    "CLAUDE_CONFIG_DIR",
+                    "/Users/u/.claude-swap-backup/sessions/2-u_example.com",
+                );
+            })
+            .as_deref(),
+            Some("/Users/u/.claude-swap-backup/sessions/2-u_example.com")
+        );
+        assert_eq!(
+            profile_of(&|c| {
+                c.env("CLAUDE_CONFIG_DIR", "");
+            })
+            .as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            profile_of(&|c| {
+                c.env_remove("CLAUDE_CONFIG_DIR");
+            }),
+            None
+        );
+    }
+
     #[test]
     fn rejects_invalid_pids() {
+        assert_eq!(claude_profile(0), None);
         assert_eq!(executable_name(0), None);
         assert_eq!(executable_name(-1), None);
         assert_eq!(working_directory(0), None);

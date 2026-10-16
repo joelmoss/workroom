@@ -722,13 +722,16 @@ pub fn encode_descriptor_list(sessions: &[crate::session::SessionInfo]) -> Vec<u
         out.push(u8::from(info.attached));
         // Metadata: the foreground command, under the key the app's own daemon uses for it, so a
         // pane title resolves identically on either backend; then what the client said about the
-        // session, which is how the app finds a workroom's sessions (#255).
-        let entries = u32::from(info.foreground.is_some()) + info.metadata.len() as u32;
+        // session, which is how the app finds a workroom's sessions (#255). The Claude profile is
+        // always sent, empty when unset, so its absence tells the app the agent predates it (#480).
+        let entries = u32::from(info.foreground.is_some()) + 1 + info.metadata.len() as u32;
         out.extend_from_slice(&entries.to_be_bytes());
         if let Some(command) = &info.foreground {
             put_string(&mut out, "command");
             put_string(&mut out, command);
         }
+        put_string(&mut out, "claude_profile");
+        put_string(&mut out, info.claude_profile.as_deref().unwrap_or(""));
         for (key, value) in &info.metadata {
             put_string(&mut out, key);
             put_string(&mut out, value);
@@ -1077,6 +1080,7 @@ mod tests {
                 attached: true,
                 foreground: Some("nvim".into()),
                 cwd: Some("/work/room".into()),
+                claude_profile: None,
                 metadata: Vec::new(),
             },
             SessionInfo {
@@ -1085,6 +1089,7 @@ mod tests {
                 attached: false,
                 foreground: None,
                 cwd: None,
+                claude_profile: None,
                 metadata: Vec::new(),
             },
         ];
@@ -1095,6 +1100,47 @@ mod tests {
         assert_eq!(decoded[0].2, "nvim");
         assert!(!decoded[1].1);
         assert_eq!(decoded[1].2, "-");
+    }
+
+    /// The Claude profile entry is sent for every session, empty when the foreground has none, so
+    /// the app can read a missing entry as "an agent too old to say" rather than "unset" (#480).
+    #[test]
+    fn descriptor_list_always_carries_the_claude_profile() {
+        use crate::session::SessionInfo;
+        let entry = |key: &str, value: &str| {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(key.len() as u32).to_be_bytes());
+            out.extend_from_slice(key.as_bytes());
+            out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            out.extend_from_slice(value.as_bytes());
+            out
+        };
+        let contains = |haystack: &[u8], needle: &[u8]| {
+            haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+        };
+        let session = |claude_profile: Option<&str>| SessionInfo {
+            id: SessionId([5u8; 16]),
+            pid: 9,
+            attached: false,
+            foreground: Some("claude".into()),
+            cwd: None,
+            claude_profile: claude_profile.map(str::to_string),
+            metadata: Vec::new(),
+        };
+
+        let set = encode_descriptor_list(&[session(Some("/p/sessions/2-u_example.com"))]);
+        assert!(contains(
+            &set,
+            &entry("claude_profile", "/p/sessions/2-u_example.com")
+        ));
+        let unset = encode_descriptor_list(&[session(None)]);
+        assert!(contains(&unset, &entry("claude_profile", "")));
+        // And the entry count covers it, so the app's decoder reads past it to the end.
+        let decoded = decode_descriptor_list(&unset);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].2, "claude");
     }
 
     /// The header the Swift decoder reads first, pinned explicitly: a count, then a 16-byte id.
@@ -1110,12 +1156,14 @@ mod tests {
             attached: true,
             foreground: None,
             cwd: None,
+            claude_profile: None,
             metadata: Vec::new(),
         }]);
         assert_eq!(&bytes[..4], &[0, 0, 0, 1], "count is a big-endian u32");
         assert_eq!(&bytes[4..20], &[1u8; 16], "then the 16-byte identifier");
-        // 4 (count) + 16 + 4 (pid) + 8 (tty) + 4 (empty cwd) + 1 (attached) + 4 (no metadata)
-        assert_eq!(bytes.len(), 41);
+        // 4 (count) + 16 + 4 (pid) + 8 (tty) + 4 (empty cwd) + 1 (attached) + 4 (one entry)
+        // + 4 + 14 ("claude_profile") + 4 (empty value), the entry every descriptor carries
+        assert_eq!(bytes.len(), 63);
         assert!(
             1 <= bytes.len() / 37,
             "a single descriptor must satisfy Swift's minimumEncodedSize guard"
@@ -1237,6 +1285,7 @@ mod tests {
                 attached: false,
                 foreground: Some("nvim".into()),
                 cwd: Some("c".repeat(1024)),
+                claude_profile: None,
                 metadata: metadata.clone(),
             })
             .collect();
@@ -1261,6 +1310,7 @@ mod tests {
             attached: true,
             foreground: None,
             cwd: None,
+            claude_profile: None,
             metadata: Vec::new(),
         }]);
         // Cut mid-descriptor: no panic, no phantom entry.
