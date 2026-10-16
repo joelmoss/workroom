@@ -224,10 +224,12 @@ private struct CreationStepRow: View {
         }
       }
       Spacer(minLength: 8)
+      // Smaller than the title (owner), centred on the title's line like the glyph, so the row's
+      // height never changes.
       trailing
-        .font(.body.monospacedDigit())
+        .font(.subheadline.monospacedDigit())
         .lineLimit(1)
-        .frame(minWidth: Self.durationWidth, alignment: .trailing)
+        .frame(minWidth: Self.durationWidth, minHeight: 17, alignment: .trailing)
     }
     .padding(.vertical, 6)
     .contentShape(Rectangle())
