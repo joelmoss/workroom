@@ -51,15 +51,22 @@ struct ScriptLogContent: View {
     } else if session.failureMessage != nil {
       Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
     } else {
-      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+      Image(systemName: "checkmark.circle.fill").foregroundStyle(
+        ThemeService.shared.tokens.success)
     }
+  }
+
+  /// What an empty log says: still waiting while its run goes on, none once it has finished. Shared
+  /// with a create's step logs (#483).
+  static func emptyText(isFinished: Bool) -> String {
+    isFinished ? "No output." : "Waiting for output…"
   }
 
   private var logBody: some View {
     ScrollViewReader { proxy in
       ScrollView {
         if session.lines.isEmpty {
-          Text(session.isFinished ? "No output." : "Waiting for output…")
+          Text(Self.emptyText(isFinished: session.isFinished))
             .font(.callout)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
