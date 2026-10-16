@@ -122,6 +122,9 @@ struct CodingAgentQuotaSnapshot: Equatable, Sendable {
   let backend: CodingAgentBackend
   let windows: [CodingAgentQuotaWindow]
   let capturedAt: Date
+  /// Whether age alone makes the reading stale. Off for the Claude status-line bridge, which
+  /// writes only while Claude runs: an idle Claude would otherwise dim nearly all the time (#480).
+  var agesOut = true
 
   /// How old a reading may be before it is shown dimmed: two missed polls.
   static let staleAfter: TimeInterval = 2 * CodingAgentUsageMonitor.defaultPollInterval
@@ -130,7 +133,7 @@ struct CodingAgentQuotaSnapshot: Equatable, Sendable {
   /// nothing read since. A reset window still draws at 0%, the true minimum, but dimmed, because
   /// usage elsewhere since the reset would not show.
   func isStale(at now: Date) -> Bool {
-    now.timeIntervalSince(capturedAt) > Self.staleAfter
+    (agesOut && now.timeIntervalSince(capturedAt) > Self.staleAfter)
       || windows.contains { !$0.isFresh(at: now) }
   }
 }
@@ -217,7 +220,9 @@ enum CodingAgentUsageDecoding {
     {
       windows.append(value)
     }
-    return normalized(.claude, windows: windows, capturedAt: capturedAt, now: now)
+    var snapshot = normalized(.claude, windows: windows, capturedAt: capturedAt, now: now)
+    snapshot?.agesOut = false
+    return snapshot
   }
 
   /// A Claude cache read, carrying WHY it produced nothing so the footer can say so.
@@ -527,9 +532,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
   @Published private(set) var isPolling = false
   /// Polls that finished. Not `@Published`; it lets a test wait for a poll to land.
   private(set) var completedPollCount = 0
-  /// When each backend's file-based reading was last written, newer than the published snapshot's
-  /// `capturedAt` when a read found the same numbers (see `apply`).
-  private var latestCapture: [CodingAgentBackend: Date] = [:]
 
   nonisolated static let defaultPollInterval: TimeInterval = 180
 
@@ -622,12 +624,7 @@ final class CodingAgentUsageMonitor: ObservableObject {
   /// The newest reading for a backend from the file-based sources and, for Codex, the app server.
   /// With cswap installed, Claude's per-account readings are in `claudeAccounts` instead.
   func snapshot(for backend: CodingAgentBackend) -> CodingAgentQuotaSnapshot? {
-    let read = snapshots[backend].map {
-      CodingAgentQuotaSnapshot(
-        backend: $0.backend, windows: $0.windows,
-        capturedAt: max($0.capturedAt, latestCapture[backend] ?? .distantPast))
-    }
-    let candidates = [read, backend == .codex ? codexServerSnapshot : nil]
+    let candidates = [snapshots[backend], backend == .codex ? codexServerSnapshot : nil]
     return candidates.compactMap { $0 }.max { $0.capturedAt < $1.capturedAt }
   }
 
@@ -739,9 +736,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
   ) {
     completedReadCount += 1
     let keyed = Dictionary(uniqueKeysWithValues: read.map { ($0.backend, $0) })
-    // Unpublished on purpose: a reading's age moves on every bridge rewrite, and only staleness
-    // (re-evaluated on the footer's own one-minute tick) needs it.
-    latestCapture = keyed.mapValues(\.capturedAt)
     if !Self.displaysSame(snapshots, keyed) { snapshots = keyed }
     if readFailures != failures { readFailures = failures }
     updateWatches(codexDirectories: codexDirectories)

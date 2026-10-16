@@ -197,31 +197,20 @@ final class CodingAgentUsageTests: XCTestCase {
     XCTAssertTrue(expired.isStale(at: clock.value))
   }
 
-  /// The bridge rewrites its file with the same numbers while Claude runs. That read publishes
-  /// nothing, but the reading's age still has to move, or live usage would dim after two polls.
-  @MainActor func testAnIdenticalReadStillRefreshesTheReadingsAge() async throws {
-    let root = FileManager.default.temporaryDirectory.standardizedFileURL
-      .appendingPathComponent(UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let cacheURL = root.appendingPathComponent("claude-rate-limits.json")
+  /// The bridge writes only while Claude runs, so its reading's age alone never dims it; a window
+  /// that has passed its reset still does (#480).
+  func testABridgeReadingDimsOnlyAfterAReset() throws {
     let bytes = Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8)
-    try bytes.write(to: cacheURL)
-    try FileManager.default.setAttributes(
-      [.modificationDate: now.addingTimeInterval(-1_000)], ofItemAtPath: cacheURL.path)
+    let old = try XCTUnwrap(
+      CodingAgentUsageDecoding.claude(
+        data: bytes, capturedAt: now.addingTimeInterval(-3_000), now: now))
+    XCTAssertFalse(old.isStale(at: now), "an idle Claude's reading must not dim on age")
+    XCTAssertTrue(old.isStale(at: now.addingTimeInterval(4_000)), "past its reset it dims")
 
-    let monitor = CodingAgentUsageMonitor(
-      codexSessionsURL: root.appendingPathComponent("sessions"), claudeCacheURL: cacheURL,
-      now: { self.now }, startAutomatically: false)
-    monitor.refresh()
-    await settle { monitor.completedReadCount == 1 }
-    XCTAssertTrue(try XCTUnwrap(monitor.snapshot(for: .claude)).isStale(at: now))
-
-    try bytes.write(to: cacheURL)
-    try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: cacheURL.path)
-    monitor.refresh()
-    await settle { monitor.completedReadCount == 2 }
-    XCTAssertFalse(try XCTUnwrap(monitor.snapshot(for: .claude)).isStale(at: now))
+    // The control: a polled reading of the same age does dim.
+    let polled = CodingAgentQuotaSnapshot(
+      backend: .claude, windows: old.windows, capturedAt: old.capturedAt)
+    XCTAssertTrue(polled.isStale(at: now))
   }
 
   private final class Clock: @unchecked Sendable {
