@@ -197,10 +197,27 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let other = session(store.terminals.addTab(for: target))
     monitor.seed(other, records: [blocked("a")])
     clock += 1
-    monitor.seed(other, records: [blocked("a"), blocked("b", episode: 2)])
-    programNotified(other, "x", title: "Claude Code")
+    monitor.seed(other, records: [blocked("a"), blocked("b", episode: 2, notify: false)])
+    programNotified(other, "x")
     for _ in 0..<50 { await Task.yield() }
     XCTAssertEqual(shown, [], "folded, not held and shown")
+    XCTAssertEqual(
+      alerts.waiting.filter { $0.session == other && $0.counted }.count, 2,
+      "the newest request is raised, not folded into the older")
+  }
+
+  /// A held notification whose request Workroom will not alert (nobody can be shown it in a
+  /// window, as when its terminal is being looked at) is shown as before, not lost.
+  /// Value: protects=a held notification is never swallowed; fails_when=the raise path consumes the hold without alerting; why_new=review finding on #481; seam=none; no_claim=the focused case itself (focus needs a window)
+  func testAHeldNotificationIsShownWhenItsRequestCannotAlert() {
+    alerts.start()
+    let id = UUID()
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    programNotified(id, "Approval requested")
+    XCTAssertEqual(shown, [], "fixture: held")
+    monitor.seed(id, records: [blocked(message: "", notify: false)])
+    XCTAssertEqual(shown, ["Approval requested"])
+    XCTAssertTrue(requests.isEmpty)
   }
 
   /// A reporting program's notification that announces no request is shown after the hold, and
