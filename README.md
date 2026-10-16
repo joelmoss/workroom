@@ -433,7 +433,7 @@ or the failure message, and is left out when there is none:
 { "type": "step", "id": "fetch", "state": "warning", "detail": "Could not fetch origin. …" }
 ```
 
-Each `log` event carries the `step` running when it was written (left out before any step runs).
+Each `log` event carries the `step` that last started (left out before any step has).
 The `fetch` and `worktree` logs hold each `$ git …` command line and its output.
 
 **Commands available in `--json` mode:** `create`, `list` (with `--warnings none|fast|full`),
