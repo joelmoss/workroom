@@ -50,8 +50,6 @@ struct CreationPane: View {
     // failed create never answers them, as a window-wide `.keyboardShortcut` would.
     .onKeyPress(.return) { answer { $0.primary } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("CreationPane")
   }
 
   // MARK: Checklist
@@ -93,6 +91,11 @@ struct CreationPane: View {
             }
           }
         }
+        // The checklist's container sits on the column, the first view here with several children: a
+        // container with a single child folds into it, and the bare pane's `workroom.pane` container
+        // (`WorkroomPaneLeaf`) folds into the same element and takes its identifier.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("CreationPane")
         .frame(maxWidth: Self.columnWidth, alignment: .leading)
         .frame(height: expanded == nil ? nil : layout.column, alignment: .top)
         .padding(inset)
