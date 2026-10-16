@@ -257,6 +257,31 @@ final class ProgramStatusAlertsTests: XCTestCase {
     tab.surface?.removeFromSuperview()
   }
 
+  /// The title names the workroom, or a root's project, so the origin line never repeats it: a
+  /// workroom alert adds just its project, a root's adds nothing.
+  func testANeedsYouAlertNamesItsPlaceOnce() {
+    store.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [Workroom(name: "al", path: "/p/al", vcsName: "git", warnings: [])])
+    ]
+    for (sid, title, source) in [
+      (SidebarID.workroom(project: "/p", name: "al"), "Terminal 1 in al needs you", "p"),
+      (SidebarID.root(project: "/p"), "Terminal 1 in p needs you", ""),
+    ] {
+      let target = store.target(for: sid)!
+      let tab = store.terminals.addTab(for: target)
+      store.raiseNeedsYou(
+        targetID: target.id, tabID: tab.id, episode: "\(sid)", record: blocked(),
+        stillWanted: { true })
+      let note = requests.first { $0.episode == "\(sid)" }
+      XCTAssertEqual(note?.title, title)
+      XCTAssertEqual(note?.source, source)
+      XCTAssertEqual(SystemNotifier.payload(for: note!).subtitle, source.isEmpty ? nil : source)
+      XCTAssertEqual(resolvedNotificationSource(store, note!), source)
+    }
+  }
+
   /// The badge counts other unread notifications plus waiting requests, never an alert twice.
   func testTheBadgeNeverCountsAnAlertTwice() {
     alerts.start()

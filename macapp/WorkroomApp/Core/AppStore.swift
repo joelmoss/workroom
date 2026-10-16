@@ -3161,8 +3161,12 @@ final class AppStore: ObservableObject {
     if let message = ProgramStatusPresentation.oneLine(record.message) {
       body += ": \u{201C}\(message)\u{201D}"
     }
+    // The title already names the workroom, or a root's project, so the origin line adds only a
+    // workroom's project: "london" under "Terminal 7 in london needs you" said it twice.
+    let label = Self.sidebarID(forTargetID: targetID, in: projects).map { label(for: $0) }
     let note = notifications.recordNeedsYou(
-      targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
+      targetID: targetID, tabID: tabID,
+      source: label?.workroom == nil ? "" : label?.project ?? "",
       title: "\(name) needs you", body: body, episode: episode)
     surface(note, stillWanted: stillWanted)
   }

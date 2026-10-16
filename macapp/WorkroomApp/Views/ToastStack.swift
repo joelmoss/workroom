@@ -71,7 +71,7 @@ struct ToastStack: View {
       ForEach(visibleToasts) { toast in
         ToastView(
           item: toast,
-          source: resolvedSource(forTargetID: toast.targetID, fallback: toast.source),
+          source: resolvedNotificationSource(store, toast),
           onTap: {
             store.openTerminal(targetID: toast.targetID, tabID: toast.tabID, notifID: toast.id)
             store.dismissToast(toast.id)

@@ -7,6 +7,8 @@ import SwiftUI
 @MainActor func resolvedNotificationSource(_ store: AppStore, _ item: WorkroomNotification)
   -> String
 {
+  // A "needs you" alert's title names its place, so its source is only what the title leaves out.
+  if item.episode != nil { return item.source }
   let live = store.notificationSource(forTargetID: item.targetID)
   return live.isEmpty ? item.source : live
 }
