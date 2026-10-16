@@ -315,8 +315,12 @@ enum RemoteWorkrooms {
     environment: RemoteProvisioning.Environment, recorder: Recorder,
     pendingIn: URL? = RemoteHosts.pendingIn
   ) async throws -> Created {
-    // Before anything is made or recorded: a repository the provider can't reach fails at once.
-    try await environment.grantRepository?(repository)
+    // Before anything is made or recorded: a repository the provider can't reach fails at once. Its
+    // commands go in the `repository` row's log (#483), without starting that row again: the app
+    // has already moved on to the account by now.
+    try await ProvisioningProgress.step(.repository, report: false) {
+      try await environment.grantRepository?(repository)
+    }
     let recorder = recorder.forgettingPending(in: pendingIn)
     let origin = "\(repository.owner)/\(repository.name)"
     let path = clonePath(for: repository, on: key)

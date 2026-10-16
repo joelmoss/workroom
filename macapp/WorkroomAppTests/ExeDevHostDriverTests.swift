@@ -241,6 +241,55 @@ final class ExeDevHostDriverTests: XCTestCase {
     XCTAssertEqual(elsewhere.commands, [])
   }
 
+  private final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var heard: [(ProvisioningProgress.Step, String)] = []
+    var all: [(ProvisioningProgress.Step, String)] { lock.withLock { heard } }
+    func add(_ step: ProvisioningProgress.Step, _ line: String) {
+      lock.withLock { heard.append((step, line)) }
+    }
+  }
+
+  private struct Stop: Error {}
+
+  /// Value: protects=#483's command log, the repository grant a create runs first logs its exe.dev
+  /// commands under the `repository` step, without announcing a step of its own; fails_when=the
+  /// grant's commands are lost from the log, filed under another step, or restart the repository
+  /// row; no_claim=exe.dev's real answers (a stubbed lobby stands in)
+  func testACreatesRepositoryGrantIsLoggedUnderItsRepositoryStep() async throws {
+    let exe = StubExeDev([
+      "integrations list": Self.ok("[]"), "integrations add": Self.ok(""),
+    ])
+    let driver = driver(exe)
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    let environment = RemoteProvisioning.Environment(
+      driver: driver, agentSocket: driver.agentSocket,
+      grantRepository: { repository in
+        try await driver.grantGitHub(
+          host: repository.host, owner: repository.owner, name: repository.name)
+      },
+      connect: { _ in throw Stop() })
+    let lines = Lines()
+    let steps = Lines()
+    let log: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add($0, $1) }
+    let report: @Sendable (ProvisioningProgress.Step) -> Void = { steps.add($0, "") }
+    await ProvisioningProgress.$reportStep.withValue(report) {
+      await ProvisioningProgress.$log.withValue(log) {
+        _ = try? await RemoteWorkrooms.create(
+          repository: repository, cloneURL: "https://github.com/o/r.git",
+          key: .exeDev(account: "me@x.dev"), driver: driver, environment: environment,
+          recorder: RemoteWorkrooms.Recorder(
+            reserve: { _, _ in throw Stop() }, record: { _, _ in }, forget: { _ in }),
+          pendingIn: nil)
+      }
+    }
+    XCTAssertTrue(
+      lines.all.contains { $0.1.hasPrefix("$ ssh") && $0.1.contains("integrations add") },
+      "the grant's commands aren't logged: \(lines.all.map(\.1))")
+    XCTAssertTrue(lines.all.allSatisfy { $0.0 == .repository }, "\(lines.all.map(\.0))")
+    XCTAssertTrue(steps.all.isEmpty, "the grant announced a step: \(steps.all.map(\.0))")
+  }
+
   /// A repository exe.dev won't add an integration for (its owner hasn't installed exe.dev's
   /// GitHub App, as for a public upstream) is left to the clone: exe.dev serves public ones anyway.
   func testARepositoryExeDevWontGrantIsLeftToTheClone() async throws {
