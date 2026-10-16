@@ -1,6 +1,7 @@
 import AgentConnection
 import Foundation
 import HostDrivers
+import WorkroomSystem
 import WorkroomVCS
 
 /// Making remote workrooms the portable way (#252; design doc Phase 4, "Remote creation is one
@@ -138,13 +139,14 @@ enum RemoteProvisioning {
     var connection: AgentVCSConnection?
     do {
       try await checkpoint(host)
+      ProvisioningProgress.reportStep?(.connect)
       let connected = try await environment.connect(host)
       connection = connected
       ProvisioningProgress.reportStep?(.clone)
       do {
         _ = try await git(
           ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
-          environment: header ?? [:], on: connected)
+          environment: header ?? [:], on: connected, step: .clone)
       } catch Failure.git(let command, let detail) where environment.credentialHint != nil {
         throw Failure.git(
           command: command, detail: "\(detail)\n\n\(environment.credentialHint ?? "")")
@@ -156,7 +158,7 @@ enum RemoteProvisioning {
           "switch", "--quiet", "--no-track", "--create", branch,
           "refs/remotes/origin/\(startBranch ?? "HEAD")",
         ],
-        in: path, environment: header ?? [:], on: connected)
+        in: path, environment: header ?? [:], on: connected, step: .checkout)
       return Instance(
         host: host, path: path, branch: branch, connection: connected, relayed: header != nil)
     } catch {
@@ -195,17 +197,31 @@ enum RemoteProvisioning {
   // MARK: Plumbing
 
   /// One git command on the host, through the agent's exec service: the host's own environment,
-  /// the remote policy pins, and `extra` on top.
+  /// the remote policy pins, and `extra` on top. With `step`, the command line and its output go to
+  /// the create's log (`ProvisioningProgress.log`, #483) under that step. Never `extra`, which can
+  /// carry the clone's token header (`cloneEnvironment`).
   static func git(
     _ args: [String], in directory: String, environment extra: [String: String] = [:],
-    on connection: AgentVCSConnection
+    on connection: AgentVCSConnection, step: ProvisioningProgress.Step? = nil
   ) async throws -> String {
+    let log = step.flatMap { step in
+      ProvisioningProgress.log.map { log in { @Sendable (text: String) in log(step, text) } }
+    }
+    log?(
+      "$ git "
+        + args.map { $0.contains(where: \.isWhitespace) ? PosixShell.quoted($0) : $0 }
+        .joined(separator: " "))
     var request = AgentCommandRunner.request(
       "git", args, in: directory, timeout: gitTimeout, stdin: nil, network: true,
       host: connection.host)
     request.env.merge(extra) { _, new in new }
     let reply = try await connection.request(request, timeout: gitTimeout + 15)
     let result = try AgentVCSReply<AgentExecResult>.decode(reply)
+    if let log {
+      for line in (result.stdout + "\n" + result.stderr).split(separator: "\n") {
+        log(String(line))
+      }
+    }
     guard result.exitCode == 0, !result.timedOut, !result.signaled else {
       throw Failure.git(
         command: args.first ?? "",

@@ -47,12 +47,8 @@ struct RootView: View {
 
   /// True when the selected target can host a terminal right now: it exists, isn't missing, and its
   /// terminal isn't withheld behind its own create (issue #116).
-  ///
-  /// Reads `isCreationBlocking` — the same predicate `TargetTerminalDetail` withholds on — rather
-  /// than `isCreationFocused`. They used to agree, because a selected create owned the whole detail;
-  /// since issue #171 it renders inside its pane instead, so `isCreationFocused` is false there while
-  /// the terminal is still withheld. Asking the pane's own question keeps ⌘T and its neighbours
-  /// disabled over a create that has no terminal to act on.
+  /// Reads `isCreationBlocking`, the same predicate `TargetTerminalDetail` withholds on, so ⌘T and
+  /// its neighbours stay disabled over a create that has no terminal to act on.
   private var terminalInteractionAvailable: Bool {
     guard let target = store.selectedTarget, target.opensTerminals else { return false }
     return !store.isCreationBlocking(target.id)
@@ -351,23 +347,22 @@ struct RootView: View {
           .environmentObject(store)
       }
       // A first create at a remote provider, held until the user's account there is ready.
-      .sheet(item: $store.pendingRemoteSetup) { pending in
+      // A sheet dismissed any other way than its buttons cancels, so no create waits for good.
+      .sheet(
+        item: Binding(
+          get: { store.pendingRemoteSetup },
+          set: { if $0 == nil { store.resolveRemoteSetup(carryOn: false) } })
+      ) { pending in
         remoteSetupSheet(pending)
       }
   }
 
-  /// The provider's own setup sheet for `pending`. Create Workroom carries on with the create it
-  /// held, at the same place and split.
+  /// The provider's own setup sheet for `pending`. Create Workroom carries on every create waiting on
+  /// it, in their own panes (#483, R2); Cancel ends them.
   @ViewBuilder
   private func remoteSetupSheet(_ pending: PendingRemoteSetup) -> some View {
-    let create = {
-      store.pendingRemoteSetup = nil
-      Task {
-        await store.createRemoteWorkroom(
-          in: pending.project, place: pending.place, splitAnchor: pending.splitAnchor)
-      }
-    }
-    let cancel = { store.pendingRemoteSetup = nil }
+    let create = { store.resolveRemoteSetup(carryOn: true) }
+    let cancel = { store.resolveRemoteSetup(carryOn: false) }
     if let setup = pending.setup as? ExeDevSetup {
       ExeDevSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     } else if let setup = pending.setup as? BoxdSetup {
@@ -688,23 +683,7 @@ struct RootView: View {
 
   @ViewBuilder
   private var detailContent: some View {
-    if let creation = store.focusedCreation {
-      // The two creates with no pane to draw in (issue #171). Both are full-frame because there is
-      // nowhere else, not because full-frame is preferred:
-      //
-      // 1. A create still in its PRE-NAME phase, started with nothing selected (issue #116) — the
-      //    workroom has no name yet, so there is no target and no pane. Just the loader.
-      // 2. A LANDED create whose target stopped resolving in `projects` (see `focusedCreation`) —
-      //    its pane is gone, so its setup dialog has to come back here. It must keep its log AND its
-      //    Dismiss: that entry is what withholds the terminal, and this is the only surface left that
-      //    can clear it.
-      //
-      // Deliberately chrome-less: no pane card, no title bar, no run/open-in. There is no workroom on
-      // screen to act on. So issue #139's "always" means every workroom with a mounted pane, not every
-      // state the detail can be in.
-      creationDetail(creation)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    } else if store.selectedTarget != nil {
+    if store.selectedTarget != nil {
       // The focused target's terminal body — ALWAYS rendered through `WorkroomSplitView` (a no-split
       // case is just `.leaf(selected)`), so single↔split is a leaf-set change, never a structural swap
       // that would re-parent the surface and blank a pane (issue #23, the same lesson as
@@ -753,19 +732,6 @@ struct RootView: View {
             .accessibilityIdentifier("EmptyStateAddProject")
         }
       }
-    }
-  }
-
-  /// The full-frame create's detail: the streaming setup dialog when this create has a script AND a
-  /// target to dismiss against, else the centred loader. Mirrors `TargetTerminalDetail`'s in-pane
-  /// branch, because it renders the same two states for the panes that no longer exist — a pre-name
-  /// create (no target) and the recovery path (target, but unresolvable).
-  @ViewBuilder
-  private func creationDetail(_ creation: WorkroomCreation) -> some View {
-    if let id = creation.targetID, creation.hasSetup {
-      SetupOverlay(session: creation.session) { store.dismissCreation(id) }
-    } else {
-      CreationLoader()
     }
   }
 

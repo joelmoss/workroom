@@ -78,7 +78,7 @@ struct NewWorkroomDialog: View {
   /// New Workroom menu.
   private func isUsable(_ place: WorkroomPlace, in project: Project) -> Bool {
     switch place {
-    case .thisMac: !store.isBusyProject(project.path)
+    case .thisMac: store.createBlockedReason(in: project) == nil
     case .remote(let remote):
       RemoteWorkrooms.unavailability(of: remote) == nil
         && store.canCreateRemoteWorkroom(in: project)
