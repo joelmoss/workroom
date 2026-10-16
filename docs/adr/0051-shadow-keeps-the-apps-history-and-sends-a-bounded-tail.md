@@ -6,7 +6,7 @@ What is kept is not what is sent. Every record, repaint and hand-off screen carr
 
 The invariants:
 
-- **Kept follows the app.** When #471 makes the app's limit a setting, the shadow's follows it.
+- **Kept follows the app.** Both keep 50 MB, fixed on purpose: there is no setting for it (#471, `.out-of-scope/scrollback-size-setting.md`). If the app's limit changes, the shadow's changes with it.
 - **Each paint is the newest history that fits its budget.** A repaint (`REPAINT_MAX_BYTES`, `MAX_RECORD` less 64 KiB), a record on disk (`RECORD_MAX_BYTES`, 1 MiB: rewritten every 2 s on a busy remote session and read only after a host restart), a hand-off screen (its share of `HANDOFF_TOTAL_BYTES`, 16 MiB, at most a repaint).
 - **The parts whose size history does not change are sized first** (the erase, kitty flags, cursor, scroll padding at its most, and on the alternate screen that screen's paint); the primary's history gets what is left. The screen alone is always sent, even over a budget smaller than itself.
 - **How many rows fit comes from the formatter's own output**: the newest 64 rows are formatted first to measure density, then at most three guesses scaled at 90% of `budget / bytes` and growing at most 8 times a step (prompts over an older truecolour dump otherwise formatted 118 MB once to send 4 MiB), stopping within 80% of the budget, then halvings.
@@ -15,7 +15,7 @@ The invariants:
 
 What a user sees: a reattached pane has up to 50 MB of history in the agent, and a repaint of up to about 4 MiB: all of a full history of short coloured lines (28,809 rows at 200 columns came to 2.5 MiB), about 18,000 rows of full-width random text, about 800 of the densest (truecolour changing every cell). A pane restored after its host restarted has up to 1 MiB: about 10,000, 4,500 and 160 rows of the same. After an agent upgrade each session starts from the tail it was handed, its share of 16 MiB; if capturing screens takes longer than 250 ms, the rest start from their screen alone, and `agent.log` says how many.
 
-There is no runtime override, no environment variable or flag, for any of these numbers; tuning goes through #471's setting.
+There is no runtime override, no setting, environment variable or flag, for any of these numbers. They are fixed on purpose, and changing one is a code change (#471 was closed rather than add a setting).
 
 Measured (release, Apple silicon, 200 by 50, `measure_shadow_history` and `measure_hand_off`; re-run both on every engine bump):
 
