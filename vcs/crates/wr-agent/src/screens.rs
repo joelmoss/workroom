@@ -276,7 +276,7 @@ pub fn spawn(sessions: SessionStore) {
 }
 
 /// One tick: the records, then the compression, which then also undoes what the records' reads
-/// re-inflated.
+/// re-inflated, then the unprobed requests whose grace has passed (#481).
 fn tick(
     sessions: &SessionStore,
     written: &mut HashSet<SessionId>,
@@ -284,6 +284,7 @@ fn tick(
 ) {
     flush(sessions, written, failing);
     sessions.compress_shadows();
+    sessions.promote_unprobed(std::time::Instant::now());
 }
 
 /// One tick: writes the screens that changed, and removes the records of sessions that ended.
@@ -443,6 +444,7 @@ mod tests {
             columns: 80,
             rows: 24,
             metadata: &[],
+            interactive: false,
         };
         sessions.create(spec()).expect("create");
         assert!(
@@ -646,6 +648,7 @@ mod tests {
                 columns: 80,
                 rows: 24,
                 metadata: &[],
+                interactive: false,
             })
             .expect("create");
         let busy = b"\x1b]9;4;3";
@@ -708,6 +711,7 @@ mod tests {
                 columns: 80,
                 rows: 24,
                 metadata: &[],
+                interactive: false,
             })
             .expect("create");
         std::thread::sleep(Duration::from_millis(400));
@@ -760,6 +764,7 @@ mod tests {
                     columns: 80,
                     rows: 24,
                     metadata: &[],
+                    interactive: false,
                 })
                 .expect("create");
             let shadow = sessions.shadow(ID).expect("shadow");

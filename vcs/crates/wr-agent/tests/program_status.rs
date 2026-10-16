@@ -121,6 +121,7 @@ fn start(store: &SessionStore, session: SessionId, script: &str) {
             columns: 80,
             rows: 24,
             metadata: &[],
+            interactive: false,
         })
         .expect("create");
 }

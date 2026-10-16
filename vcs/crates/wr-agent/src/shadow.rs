@@ -83,7 +83,8 @@ impl Shadow {
         if fresh {
             self.progress_owner = terminal.progress().and(sender);
         }
-        self.status.apply_read(events, sender.unwrap_or(0));
+        self.status
+            .apply_read(events, sender.unwrap_or(0), std::time::Instant::now());
         // At most once per read, and only while a running program's record could outlive it.
         if self.status.has_live() {
             self.status

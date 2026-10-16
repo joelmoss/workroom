@@ -237,6 +237,8 @@ pub struct Session {
     /// client that created it said (`serve::session_metadata`), plus `created` from here. Fixed for
     /// the session's life: the app's own layout is what follows a renamed tab (#255).
     metadata: Vec<(String, String)>,
+    /// `SessionSpec::interactive`.
+    interactive: bool,
 }
 
 impl Session {
@@ -458,6 +460,9 @@ pub struct SessionSpec<'a> {
     pub rows: u16,
     /// The client's metadata for the session (`Session::metadata`); `created` is added here.
     pub metadata: &'a [(String, String)],
+    /// The program is an interactive shell, not a run command: a report it sends itself is never
+    /// a program waiting on the user (#481).
+    pub interactive: bool,
 }
 
 impl SessionStore {
@@ -630,6 +635,7 @@ impl SessionStore {
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
             number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             metadata,
+            interactive: spec.interactive,
         };
         let info = session.info();
         let number = session.number;
@@ -1129,6 +1135,8 @@ impl SessionStore {
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
             number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             metadata,
+            // shortcut: a hand-off carries no such flag and the app only makes shells, so a handed-off run command's own reports never alert; carry it in the table if run commands ever report.
+            interactive: true,
         };
         let number = session.number;
         let pty = Arc::clone(&session.pty);
@@ -1366,6 +1374,41 @@ impl SessionStore {
         };
         for shadow in shadows {
             shadow.lock().unwrap_or_else(|e| e.into_inner()).compress();
+        }
+    }
+
+    /// Lets each unprobed request alert whose sender is still running in the foreground a grace
+    /// after it blocked, and is not the session's interactive shell (#481). `screens::tick` runs
+    /// it every `screens::INTERVAL`; as `compress_shadows`, it takes each shadow's lock on its own,
+    /// never a session's attachment lock.
+    pub fn promote_unprobed(&self, now: Instant) {
+        let sessions: Vec<_> = {
+            let sessions = self.sessions.lock().expect("session store poisoned");
+            sessions
+                .values()
+                .map(|s| {
+                    (
+                        s.id,
+                        Arc::clone(&s.pty),
+                        Arc::clone(&s.shadow),
+                        s.interactive,
+                    )
+                })
+                .collect()
+        };
+        for (id, pty, shadow, interactive) in sessions {
+            change_program_status(id, &shadow, &self.program_status, |status| {
+                if !status.has_unprobed_request() {
+                    return;
+                }
+                let foreground = pty.foreground_pgid();
+                let shell = interactive.then(|| pty.child_pid());
+                status.promote_unprobed(now, |group| {
+                    Some(group) == foreground
+                        && Some(group) != shell
+                        && crate::program_status::group_alive(group)
+                });
+            });
         }
     }
 
@@ -2026,6 +2069,7 @@ mod tests {
             columns: 80,
             rows: 24,
             metadata: &[],
+            interactive: false,
         }
     }
 
@@ -2593,6 +2637,60 @@ mod tests {
         bytes
     }
 
+    /// Whether `id`'s first record may alert, as the app is told: polls until the session reports.
+    #[cfg(feature = "terminal-state")]
+    fn first_record_notifies(store: &SessionStore, id: SessionId) -> Option<bool> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let notify = store
+                .program_status_events()
+                .into_iter()
+                .find(|(session, _)| *session == id)
+                .and_then(|(_, event)| {
+                    let event: serde_json::Value = serde_json::from_slice(&event).ok()?;
+                    event["records"][0]["notify"].as_bool()
+                });
+            if notify.is_some() || Instant::now() > deadline {
+                return notify;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// An unprobed request alerts once the tick finds its sender still running in the foreground
+    /// after the grace, unless the sender is the session's interactive shell itself (#481): a
+    /// `printf` from a shell is not a program waiting. A run command's child is the program.
+    /// Value: protects=Codex requests alert and a shell's printf never does; fails_when=the tick never promotes, or excludes a run command's child, or not a shell's; why_new=the Store tests inject eligibility; seam=none; no_claim=Codex itself (a printf stands in)
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn the_tick_promotes_a_running_sender_but_never_the_shell() {
+        let store = SessionStore::new();
+        let args = [
+            OsString::from("-c"),
+            OsString::from(r#"printf "\033]7501;state=blocked\033\\"; sleep 5"#),
+        ];
+        let e = env();
+        for (n, interactive) in [(91, true), (92, false)] {
+            store
+                .create(SessionSpec {
+                    interactive,
+                    ..spec(id(n), &args, &e)
+                })
+                .expect("create");
+            assert_eq!(
+                first_record_notifies(&store, id(n)),
+                Some(false),
+                "fixture: no unprobed request"
+            );
+        }
+        store.promote_unprobed(Instant::now() + crate::program_status::limits::GRACE);
+        let shell = first_record_notifies(&store, id(91));
+        let command = first_record_notifies(&store, id(92));
+        store.kill_all();
+        assert_eq!(shell, Some(false), "the interactive shell's own report");
+        assert_eq!(command, Some(true), "a run command's program");
+    }
+
     /// A program killed or crashed mid-turn never sends its REMOVE. The app clears its spinner at
     /// the shell's next command end (OSC 133 D); `/bin/sh` sends none, so the replay says idle
     /// once the program that sent the report no longer owns the pty (#359).
@@ -3003,6 +3101,7 @@ mod tests {
                 columns: 0,
                 rows: 0,
                 metadata: &[],
+                interactive: false,
             })
             .expect("create");
 
@@ -3116,6 +3215,7 @@ mod tests {
                 columns: 80,
                 rows: 24,
                 metadata: &[],
+                interactive: false,
             })
             .expect("create");
     }
