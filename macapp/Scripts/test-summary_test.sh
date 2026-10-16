@@ -59,6 +59,16 @@ check "bundle path" "$out" "Test-WorkroomApp-new.xcresult"
 
 run >/dev/null || { echo "FAIL: exit status non-zero"; fails=$((fails + 1)); }
 
+# A bundle named outright (one downloaded from CI, say) is reported whatever its age or name.
+mkdir "$TMP/ci.xcresult"
+touch -t 202001010000 "$TMP/ci.xcresult"
+out="$(PATH="$TMP/bin:$PATH" STUB_JSON="$TMP/failed.json" sh "$DIR/test-summary.sh" "$TMP/ci.xcresult")"
+check "named bundle counts" "$out" "Tests: Failed - 7 passed, 1 failed, 2 skipped (of 10)"
+check "named bundle path" "$out" "Result bundle: $TMP/ci.xcresult"
+
+out="$(sh "$DIR/test-summary.sh" "$TMP/missing.xcresult")"
+check "named bundle missing" "$out" "test-summary: no result bundle at $TMP/missing.xcresult"
+
 if [ "$fails" -ne 0 ]; then
   echo "test-summary_test: $fails failure(s)" >&2
   exit 1

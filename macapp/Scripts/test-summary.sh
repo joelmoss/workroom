@@ -9,21 +9,31 @@
 #   Reports the newest `Test-<scheme>-*.xcresult` in <logs-dir> that is newer than <stamp-file>,
 #   which the caller touches just before the test step. An older bundle is a previous run's, so it
 #   is never reported as this one's.
+# Usage: test-summary.sh <bundle.xcresult>
+#   Reports that bundle, such as one downloaded from a CI run's artifacts.
 #
 # Always exits 0: the caller keeps xcodebuild's exit status, and a summary that cannot be read must
 # not turn a passing run red. Needs the command sandbox off (xcresulttool writes to system temp).
 set -u
 
-logs="$1"
-scheme="$2"
-stamp="$3"
+if [ "$#" -eq 1 ]; then
+  bundle="$1"
+  if [ ! -d "$bundle" ]; then
+    echo "test-summary: no result bundle at ${bundle}"
+    exit 0
+  fi
+else
+  logs="$1"
+  scheme="$2"
+  stamp="$3"
 
-bundle="$(find "$logs" -maxdepth 1 -name "Test-${scheme}-*.xcresult" -newer "$stamp" 2>/dev/null |
-  sort | tail -n 1)"
-if [ -z "$bundle" ]; then
-  echo "test-summary: no ${scheme} result bundle from this run in ${logs} (the run stopped before" \
-    "tests started, or -resultBundlePath put it elsewhere)"
-  exit 0
+  bundle="$(find "$logs" -maxdepth 1 -name "Test-${scheme}-*.xcresult" -newer "$stamp" 2>/dev/null |
+    sort | tail -n 1)"
+  if [ -z "$bundle" ]; then
+    echo "test-summary: no ${scheme} result bundle from this run in ${logs} (the run stopped before" \
+      "tests started, or -resultBundlePath put it elsewhere)"
+    exit 0
+  fi
 fi
 
 if ! json="$(xcrun xcresulttool get test-results summary --compact --path "$bundle" 2>&1)"; then
