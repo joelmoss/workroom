@@ -121,26 +121,30 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// A fresh machine, set up as a workroom's host: the identity unit has minted its identity and
   /// the supervisor is waiting for an agent. A machine that gets no further is removed.
   public func create() async throws -> HostID {
-    try await checkOrg()
+    // The app announces the account step itself (it asks before the driver does): only its log here.
+    try await ProvisioningProgress.step(.account, report: false) { try await checkOrg() }
     let id = UUID()
     let name = name(of: id)
     try markPending(id)
     do {
-      ProvisioningProgress.reportStep?(.machine)
-      _ = try await cli(["machine", "new", name])
-      ProvisioningProgress.reportStep?(.setup)
-      let script = try HostSetup.systemdScript()
-      let user = try ssh(id).user
-      let (status, output) = try await exec(
-        "sudo sh -s -- "
+      try await ProvisioningProgress.step(.machine) { _ = try await cli(["machine", "new", name]) }
+      try await ProvisioningProgress.step(.setup) {
+        let script = try HostSetup.systemdScript()
+        let user = try ssh(id).user
+        let command =
+          "sudo sh -s -- "
           + [user, configuration.agentSocket, configuration.screens]
-          .map(PosixShell.quoted).joined(separator: " "),
-        on: .remote(id)
-      ).communicate(Data(script.utf8), timeout: 120)
-      guard status == 0 else {
-        throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
+          .map(PosixShell.quoted).joined(separator: " ")
+        // The command line only: the script on stdin is never logged.
+        ProvisioningProgress.record("$ \(command)")
+        let (status, output) = try await exec(command, on: .remote(id))
+          .communicate(Data(script.utf8), timeout: 120)
+        ProvisioningProgress.record(output)
+        guard status == 0 else {
+          throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
+        }
+        try await awaitIdentity(of: id, named: name)
       }
-      try await awaitIdentity(of: id, named: name)
       return .remote(id)
     } catch {
       try await undo(error, id: id)
@@ -379,10 +383,14 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     case .unreadable:
       throw CLIFailure(command: command, said: Self.unreadableSignIn, answered: true)
     }
+    // Never the environment (`HOME`), and the token is read from a file, not passed.
+    ProvisioningProgress.record(command: configuration.cli.path, arguments + ["--json"])
     let result = await runner.run(
       configuration.cli.path, arguments + ["--json"], in: configuration.home.path,
       timeout: timeout,
       environment: ["HOME": configuration.home.path])
+    ProvisioningProgress.record(result.stdout)
+    ProvisioningProgress.record(result.stderr)
     // The runner kills the CLI when the task is cancelled, and that reads as a failure.
     try Task.checkCancellation()
     guard result.ok else {
