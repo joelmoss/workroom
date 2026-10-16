@@ -107,31 +107,40 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// A fresh VM, set up as a workroom's host: the identity unit has minted its identity and the
   /// supervisor is waiting for an agent. A VM that gets no further is removed.
   public func create() async throws -> HostID {
-    try await checkAccount()
+    // The app announces the account step itself (it asks before the driver does): only its log here.
+    try await ProvisioningProgress.step(.account, report: false) { try await checkAccount() }
     let id = UUID()
     let name = name(of: id)
     try markPending(id)
     do {
-      ProvisioningProgress.reportStep?(.machine)
-      _ = try await cli(["new", "--name", name, "--no-email"])
-      try await awaitBoot(of: id)
-      ProvisioningProgress.reportStep?(.setup)
-      let (status, output) = try await exec(
-        "sudo sh -s -- "
+      try await ProvisioningProgress.step(.machine) {
+        _ = try await cli(["new", "--name", name, "--no-email"])
+      }
+      try await ProvisioningProgress.step(.boot) { try await awaitBoot(of: id) }
+      try await ProvisioningProgress.step(.setup) {
+        let command =
+          "sudo sh -s -- "
           + [Self.user, configuration.agentSocket, configuration.screens]
-          .map(PosixShell.quoted).joined(separator: " "),
-        on: .remote(id)
-      ).communicate(Data(try HostSetup.systemdScript().utf8), timeout: 120)
-      guard status == 0 else {
-        throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
+          .map(PosixShell.quoted).joined(separator: " ")
+        // Command lines only: the scripts on stdin are never logged.
+        ProvisioningProgress.record("$ \(command)")
+        let (status, output) = try await exec(command, on: .remote(id))
+          .communicate(Data(try HostSetup.systemdScript().utf8), timeout: 120)
+        ProvisioningProgress.record(output)
+        guard status == 0 else {
+          throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
+        }
+        // git and gh reach GitHub through exe.dev's integration, never with a token on the VM.
+        let integrationCommand = "sudo sh -s -- /etc/profile.d"
+        ProvisioningProgress.record("$ \(integrationCommand)")
+        let (gitStatus, gitOutput) = try await exec(integrationCommand, on: .remote(id))
+          .communicate(Data(try HostSetup.exeDevGitHubScript().utf8), timeout: 30)
+        ProvisioningProgress.record(gitOutput)
+        guard gitStatus == 0 else {
+          throw HostDriverError.provisioning("setting up git on \(name) failed: \(gitOutput)")
+        }
+        try await awaitIdentity(of: id, named: name)
       }
-      // git and gh reach GitHub through exe.dev's integration, never with a token on the VM.
-      let (gitStatus, gitOutput) = try await exec("sudo sh -s -- /etc/profile.d", on: .remote(id))
-        .communicate(Data(try HostSetup.exeDevGitHubScript().utf8), timeout: 30)
-      guard gitStatus == 0 else {
-        throw HostDriverError.provisioning("setting up git on \(name) failed: \(gitOutput)")
-      }
-      try await awaitIdentity(of: id, named: name)
       return .remote(id)
     } catch {
       try await undo(error, id: id)
@@ -721,9 +730,14 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// `ssh exe.dev <arguments>`, as the user's own ssh signs in: with the login shell's ssh agent
   /// when the app has none, as a VM's ssh gets it (`sshAgent`), for an app launched from Finder.
   private func run(_ arguments: [String], timeout: TimeInterval) async -> CommandResult {
-    await runner.runNetwork(
+    // The command as typed, without ssh's options (they name the agent socket and the config).
+    ProvisioningProgress.record(command: "ssh", [Self.lobby] + arguments)
+    let result = await runner.runNetwork(
       "/usr/bin/ssh", Self.sshOptions + [Self.lobby] + arguments,
       in: NSHomeDirectory(), timeout: timeout)
+    ProvisioningProgress.record(result.stdout)
+    ProvisioningProgress.record(result.stderr)
+    return result
   }
 
   /// exe.dev's error from a command's output: `{"error": "..."}`, printed on stdout and stderr

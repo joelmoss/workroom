@@ -44,6 +44,7 @@ extension HostDriver {
     _ host: HostID, _ check: String, tries: Int, failure: (String) -> String
   ) async throws {
     var last = ""
+    ProvisioningProgress.record("$ \(check)")
     for _ in 0..<tries {
       do {
         let (status, output) = try await exec(check, on: host).communicate(nil, timeout: 20)

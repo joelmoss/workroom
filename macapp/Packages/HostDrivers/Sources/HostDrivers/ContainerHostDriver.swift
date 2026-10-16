@@ -104,8 +104,11 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
 
   public func create() async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
-    try await ensureImage(provisioning.image)
-    return try await run(provisioning.image)
+    // The app announces the image step itself, around `ensureHostImage`: only its log here.
+    try await ProvisioningProgress.step(.image, report: false) {
+      try await ensureImage(provisioning.image)
+    }
+    return try await ProvisioningProgress.step(.machine) { try await run(provisioning.image) }
   }
 
   /// Pulls the host image unless this runtime has it. A create calls it before it names its
@@ -113,7 +116,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   /// one that shows it; `create` then finds the image there.
   public func ensureHostImage() async throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
-    try await ensureImage(provisioning.image)
+    try await ProvisioningProgress.step(.image) { try await ensureImage(provisioning.image) }
   }
 
   /// Told how far a host image's pull has got, 0 to 1, then nil once it is done, for a create run
@@ -674,7 +677,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   /// every driver's must be (design doc, host-key policy).
   private func identity(of container: String) async throws -> String {
     for _ in 0..<100 {
-      if let key = try? await runtime(["exec", container, "identity.sh"]),
+      if let key = try? await runtime(["exec", container, "identity.sh"], quiet: true),
         key.split(separator: " ").count == 2
       {
         return key
@@ -701,9 +704,13 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   /// talk to, never the app's whole one.
   private func runtime(
     _ arguments: [String], timeout: TimeInterval = 120, allLines: Bool = false,
-    onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)? = nil
+    onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)? = nil, quiet: Bool = false
   ) async throws -> String {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
+    // `quiet` is for a poll, which would log the same line a hundred times. The environment is never
+    // logged, and `commandLine` hides the one the arguments carry (`--env AUTHORIZED_KEY=…`).
+    let logged = Self.runtimeArguments(arguments, context: provisioning.context)
+    if !quiet { ProvisioningProgress.record(command: provisioning.runtime.path, logged) }
     let environment = ProcessInfo.processInfo.environment.filter {
       ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
     }
@@ -712,6 +719,8 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
       environment: environment, handshakeTimeout: 20, purpose: .exchange
     ).communicate(nil, timeout: timeout, onOutput: onOutput)
     let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    // A pull streams progress bars (`onOutput`); its failure says what it printed.
+    if !quiet, onOutput == nil || status != 0 { ProvisioningProgress.record(said) }
     guard status == 0 else {
       if let context = provisioning.context, said.contains("context not found") {
         throw HostDriverError.provisioning(
