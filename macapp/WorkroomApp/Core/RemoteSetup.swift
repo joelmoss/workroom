@@ -13,14 +13,30 @@ protocol RemoteSetup: AnyObject {
   func cancel()
 }
 
-/// A create held until the user's account at `place` is ready. `id` keys the sheet on the project,
-/// so a second create for it while one is up doesn't stack a second sheet.
+/// The provider setup sheet on screen in this window. Keyed on the provider: every create waiting
+/// on it shares the one sheet (R2, #483), and its Create Workroom carries all of them on.
 struct PendingRemoteSetup: Identifiable {
-  let project: Project
-  let splitAnchor: SidebarID?
   let place: RemoteWorkrooms.Place
   let setup: any RemoteSetup
-  var id: String { project.path }
+  var id: String { place.displayName }
+}
+
+/// The creates waiting on one provider's setup (R2, #483), in `ProjectStore.remoteSetupWaits`. A
+/// create that finds setup missing while one is waiting for the same provider joins it rather than
+/// raising a second sheet. Each waiting create resumes with true on Create Workroom, false on Cancel.
+@MainActor
+final class RemoteSetupWait {
+  let place: RemoteWorkrooms.Place
+  let setup: any RemoteSetup
+  /// The window the first create started in, which shows the sheet.
+  weak var window: AppStore?
+  var waiting: [CheckedContinuation<Bool, Never>] = []
+
+  init(place: RemoteWorkrooms.Place, setup: any RemoteSetup, window: AppStore) {
+    self.place = place
+    self.setup = setup
+    self.window = window
+  }
 }
 
 /// Checks a setup's waiting steps 3 s after the user acts, then backing off to every 30 s, until

@@ -339,6 +339,8 @@ public struct DeleteProjectResponse: Codable, Sendable {
 ///  - "log": a line of setup/teardown output (`text`, `phase`).
 ///  - "created": the new workroom exists (`name`, `path`) but setup is still running;
 ///    `setup` reports whether a setup script will run, so the GUI can block on its log.
+///  - "step": a create step (`id`) changed `state` (running, done, warning, skipped or failed),
+///    with `detail` for the last three (#483).
 public struct StreamEvent: Decodable, Sendable {
   public let type: String
   public let phase: String?
@@ -348,10 +350,17 @@ public struct StreamEvent: Decodable, Sendable {
   public let setup: Bool?
   /// On "created": the create's fetch warning, which arrives before setup runs.
   public var warning: String? = nil
+  /// On "log": the create step the line belongs to, when it belongs to one.
+  public var step: String? = nil
+  /// On "step": which step, its new state, and why (a warning's text, a skip's reason).
+  public var id: String? = nil
+  public var state: String? = nil
+  public var detail: String? = nil
 
   public init(
     type: String, phase: String?, text: String?, name: String?, path: String?, setup: Bool?,
-    warning: String? = nil
+    warning: String? = nil, step: String? = nil, id: String? = nil, state: String? = nil,
+    detail: String? = nil
   ) {
     self.type = type
     self.phase = phase
@@ -360,6 +369,10 @@ public struct StreamEvent: Decodable, Sendable {
     self.path = path
     self.setup = setup
     self.warning = warning
+    self.step = step
+    self.id = id
+    self.state = state
+    self.detail = detail
   }
 
 }

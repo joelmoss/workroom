@@ -214,9 +214,7 @@ struct ProjectSidebar: View {
     }
   }
 
-  /// New Workroom on this Mac. Disabled while a create is in flight, matching the row's own "+"
-  /// button (issue #167): ungated, the menu was one right-click away from N concurrent pre-name
-  /// creates, only one of which can own the loader slot.
+  /// New Workroom on this Mac. Creates in one project may overlap, each in its own pane (#483).
   private func newLocalWorkroomButton(_ label: some View, in project: Project) -> some View {
     Button {
       Task { await store.createWorkroom(in: project) }
@@ -224,7 +222,7 @@ struct ProjectSidebar: View {
       label
     }
     .help("A workroom of \(project.displayName) on this Mac")
-    .disabled(store.isBusyProject(project.path))
+    .disabled(store.createBlockedReason(in: project) != nil)
   }
 
   /// New Workroom at `place` (#309, #356): a local container, or a boxd machine, cloned from the
@@ -300,44 +298,21 @@ struct ProjectSidebar: View {
         VCSAggregateDot(status: agg)
       }
 
-      // Both buttons stay laid out while a workroom is being created so the row size never shifts
-      // (issue #51) — the create spinner overlays the new-workroom button (which it replaces) rather
-      // than swapping the buttons out for a smaller ProgressView.
-      let busy = store.isBusyProject(project.path)
       // Project settings (run command, etc.), revealed on hover to the left of the new-workroom
-      // button (issue #7). Laid out always (opacity-gated) so the row size is stable. Hidden while
-      // busy so the spinner reads as the sole active control.
+      // button (issue #7). Laid out always (opacity-gated) so the row size is stable.
       SettingsRowButton(
-        help: "Project settings for \(project.displayName)", visible: hovered == id && !busy
+        help: "Project settings for \(project.displayName)", visible: hovered == id
       ) {
         store.pendingProjectSettings = PendingProjectSettings(project: project)
       }
-      // "+" asks where, as the context menu does (#309).
+      // "+" asks where, as the context menu does (#309). A create shows its progress in its own pane
+      // and row, never here (#483).
       CreateRowButton(
         help:
           "New workroom in \(project.displayName), on this Mac, in a local container or on "
           + RemoteWorkrooms.Place.remoteProviders.map(\.displayName).joined(separator: " or "),
         places: { newWorkroomPlaces(in: project) }
       )
-      .opacity(busy ? 0 : 1)
-      .allowsHitTesting(!busy)
-      .overlay {
-        if busy {
-          // A container workroom's first create downloads its host image, which can take a while:
-          // how far it has got, rather than a spinner that says nothing (#309).
-          if let pulled = store.imagePulls[project.path] {
-            ProgressView(value: pulled)
-              .progressViewStyle(.circular)
-              .controlSize(.small)
-              .help("Downloading the workroom image: \(Int(pulled * 100))%")
-          } else if let step = store.createSteps[id] {
-            // A boxd create's steps take a while each (#356): which one it is on.
-            CreateStepCircle(step: step)
-          } else {
-            ProgressView().controlSize(.small)
-          }
-        }
-      }
     }
     .frame(height: rowHeight)
     .contentShape(Rectangle())
@@ -488,7 +463,7 @@ struct ProjectSidebar: View {
       // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
       // fixes the slot's size and the smaller spinner can't shift the row.
       ZStack {
-        if let step = store.createSteps[id] {
+        if let step = store.createStep(for: id) {
           CreateStepCircle(step: step)
         } else if store.isCreatingWorkroom(workroom, in: project) {
           // Setup script still running against the new worktree — a spinner, and (below) no delete.

@@ -413,10 +413,9 @@ enum UITestFixture {
   }
 
   /// When set (`-WorkroomUITestCreatingSplitMember 1`, alongside `-WorkroomUITestWorkroomSplit 1`),
-  /// the split's selected workroom member is seeded **mid-setup-script**: a `creations` entry whose
-  /// log is still streaming (unfinished, so no Dismiss yet — `SetupOverlay` only offers one once the
-  /// run ends) plus the `creatingWorkrooms` guard, which is the real state during a script and the
-  /// one issue #171's second half is about.
+  /// the split's selected workroom member is seeded **mid-setup-script**: a running `CreationRun` on
+  /// its `script` step (#483) plus the `creatingWorkrooms` guard, which is the real state during a
+  /// script and the one issue #171's second half is about.
   ///
   /// Covers #171's visible half: the FOCUSED create renders inside its own pane, so the pane it was
   /// created beside stays on screen, and that pane's title bar drops its Run control for the
@@ -426,10 +425,8 @@ enum UITestFixture {
     flag("WorkroomUITestCreatingSplitMember")
   }
 
-  /// `-WorkroomUITestCreatingSplitMemberNoSetup 1` — the same seed, but for a project with NO setup
-  /// script: `hasSetup: false`, so the pane draws `CreationLoader` instead of `SetupOverlay`. That
-  /// branch is new in issue #171 (the pane previously drew nothing for a no-setup create) and is
-  /// otherwise unexercised, since the flag above hardcodes a script.
+  /// `-WorkroomUITestCreatingSplitMemberNoSetup 1` — the same seed, but with the run still on its
+  /// `worktree` step rather than a setup script.
   static var creatingSplitMemberNoSetup: Bool {
     flag("WorkroomUITestCreatingSplitMemberNoSetup")
   }
