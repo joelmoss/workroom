@@ -134,6 +134,9 @@ extension Defaults.Keys {
   /// Set the first time Claude is seen running in a pane, so the footer's one-time "Enable usage…" for
   /// the status-line bridge survives a relaunch until the bridge is enabled (#480).
   static let claudeSessionSeen = Key<Bool>("claudeSessionSeen", default: false, suite: .app)
+  /// The user chose "Don't Ask Again" on the footer's "Enable usage…" (#480): the footer stops
+  /// offering the status-line bridge, and Settings › Coding agents offers it instead.
+  static let claudeUsageDeclined = Key<Bool>("claudeUsageDeclined", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
   static let terminalAgentRedactSecrets = Key<Bool>(
     "terminalAgentRedactSecrets", default: true, suite: .app)

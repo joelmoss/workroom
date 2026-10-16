@@ -533,6 +533,11 @@ private struct CodingAgentSettingsPane: View {
   @Default(.terminalAgentRedactSecrets) private var agentRedactSecrets
   @Default(.usageInWindowFooter) private var usageInWindowFooter
   @Default(.usageInPaneFooter) private var usageInPaneFooter
+  @Default(.claudeUsageDeclined) private var claudeUsageDeclined
+  @EnvironmentObject private var claudeUsageBridge: ClaudeUsageBridge
+  @EnvironmentObject private var agentUsage: CodingAgentUsageMonitor
+  @State private var confirmingClaudeUsage = false
+  @State private var bridgeError: String?
 
   var body: some View {
     Form {
@@ -569,6 +574,12 @@ private struct CodingAgentSettingsPane: View {
         Toggle("Show usage in the pane footer", isOn: $usageInPaneFooter)
           .help("Only while a coding agent runs in that pane.")
           .accessibilityIdentifier("settings.control.usageInPaneFooter")
+        // Only after "Don't Ask Again" in the footer: the one place left to change one's mind.
+        if claudeUsageDeclined, claudeUsageBridge.state == .disabled {
+          LabeledContent("Claude usage") {
+            Button("Enable Claude usage…") { confirmingClaudeUsage = true }
+          }
+        }
 
         Text(
           "Claude usage comes from cswap when it is installed, one reading per account; otherwise "
@@ -581,5 +592,31 @@ private struct CodingAgentSettingsPane: View {
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+    .onAppear { claudeUsageBridge.refreshState() }
+    .alert("Enable Claude usage?", isPresented: $confirmingClaudeUsage) {
+      Button("Cancel", role: .cancel) {}
+      Button("Enable") {
+        do {
+          try claudeUsageBridge.enable()
+          claudeUsageDeclined = false
+          agentUsage.refresh()
+        } catch {
+          bridgeError = error.localizedDescription
+        }
+      }
+    } message: {
+      Text(
+        "Workroom will update ~/.claude/settings.json to run its status-line wrapper. It stores "
+          + "only rate_limits and forwards the original input unchanged to your current command."
+      )
+    }
+    .alert(
+      "Claude usage wasn’t enabled",
+      isPresented: Binding(get: { bridgeError != nil }, set: { if !$0 { bridgeError = nil } })
+    ) {
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text(bridgeError ?? "")
+    }
   }
 }
