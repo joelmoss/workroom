@@ -160,7 +160,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   }
 
   /// A finished turn in a terminal nobody is looking at alerts once; the next turn's finish
-  /// alerts again.
+  /// alerts again, replacing the first, so a session looping on its own leaves one entry.
   func testAFinishedTurnAlertsOncePerTurn() {
     alerts.start()
     let id = session(store.terminals.addTab(for: target))
@@ -174,9 +174,11 @@ final class ProgramStatusAlertsTests: XCTestCase {
     monitor.seed(id, records: [])  // seen
     XCTAssertEqual(finishes.count, 1, "the same finish never alerts twice")
 
+    let first = finishes.first?.id
     monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
-    monitor.seed(id, records: [done()])
-    XCTAssertEqual(finishes.count, 2)
+    monitor.seed(id, records: [done(message: "Ran the tests")])
+    XCTAssertEqual(finishes.map(\.body), ["Turn finished: \u{201C}Ran the tests\u{201D}"])
+    XCTAssertNotEqual(finishes.first?.id, first, "the next turn's finish alerted again")
   }
 
   /// A finish already there at launch, a shell command's result, a `printf` of a report, and any

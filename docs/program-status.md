@@ -59,7 +59,8 @@ notifications still arrive as before.
 
 When a program finishes its turn and you are not looking at its terminal, Workroom posts an
 ordinary notification ("Terminal 2 in fix-auth finished", then what the program said). It alerts
-once per turn, and focusing the terminal reads it. A finish you watched, one already there at
+once per turn, focusing the terminal reads it, and the terminal's next finish replaces it, so a
+session running turns on its own (`/loop`) leaves one entry and one count, not one per turn. A finish you watched, one already there at
 launch, and a shell command's result (see Long shell commands below) only show the ✓. So does the
 finish of a program that never answered the probe (Codex): its own notification arrives as before.
 
@@ -68,7 +69,8 @@ Code's "Claude is waiting for your input", a minute after the turn, says the sam
 notification the program writes just before its finish is folded into the alert.
 **Settings ▸ Notifications ▸ Notify when a terminal finishes** turns both off.
 
-A tab with a ✋ or ✓ shows no unread dot: the mark already says it.
+A tab with a ✋, or a program's ✓, shows no unread dot: the mark already says it. A shell
+command's ✓ carries no notification, so the dot still shows beside it.
 
 A program that asked whether the terminal supports the protocol (the probe, below) can alert you at
 once. One that never asked, as Codex doesn't (the spec allows it: "a program MAY send reports
@@ -212,6 +214,11 @@ sends only OSC 9;4.
 - A finished turn alerts once, in a terminal you are not looking at (see A finished turn above).
 
 ## Known limits
+
+- **After a finish, a session drops every program's own notification, not just the finished
+  program's,** until the next turn or until the program exits. Ordinarily nothing else can write
+  to that terminal meanwhile. With the program suspended (^Z), or run over `ssh` to a shell without
+  OSC 133, another program's notification in that pane (a build's, say) is dropped too.
 
 - **Run commands and other non-daemon panes** never show program status: only a terminal whose
   shell runs under `wr-agent` has an agent to keep it (see `TODOS.md`).
