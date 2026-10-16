@@ -417,7 +417,8 @@ final class CreationFlowTests: XCTestCase {
 
   private func services(
     driver: any HostTerminalDriver, agent: FakeAgent?, setup: (any RemoteSetup)? = nil,
-    plans: Counter = Counter(), hosts: Counter = Counter()
+    plans: Counter = Counter(), hosts: Counter = Counter(),
+    gitHubToken: (@Sendable () async throws -> String)? = nil
   ) -> RemoteCreateServices {
     let repository = GitHubRepository(host: "github.com", owner: "o", name: "r")
     return RemoteCreateServices(
@@ -435,7 +436,7 @@ final class CreationFlowTests: XCTestCase {
         return RemoteCreateHost(
           key: .boxd(org: "acme", account: "u"), driver: driver,
           environment: RemoteProvisioning.Environment(
-            driver: driver, agentSocket: driver.agentSocket,
+            driver: driver, agentSocket: driver.agentSocket, gitHubToken: gitHubToken,
             connect: { host in try await AgentVCSConnection.connect(host: host, socketPath: socket)
             }
           ))
@@ -675,6 +676,33 @@ final class CreationFlowTests: XCTestCase {
         "present: \(present)")
       XCTAssertEqual(run.steps.first { $0.id == "machine" }?.state, .failed, "the stub's run")
     }
+  }
+
+  /// Value: protects=a container create whose Mac token can't be had (gh signed out) fails its
+  /// `repository` row, before any image is pulled; fails_when=the failure lands on `image` or
+  /// `machine`, rows that describe something else; no_claim=a real gh or runtime (a throwing
+  /// closure and a stub script stand in)
+  func testAContainerCreateWithoutTheMacsTokenFailsItsRepositoryStep() async throws {
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let driver = ContainerHostDriver(
+      hosts: [:],
+      directory: FileManager.default.temporaryDirectory.appendingPathComponent(
+        "wr-hosts-\(UUID().uuidString)", isDirectory: true),
+      provisioning: ContainerHostDriver.Provisioning(
+        runtime: try stubRuntime(inspect: 1), image: "workroom-host",
+        user: RemoteWorkrooms.user, identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
+        agentSocket: RemoteWorkrooms.agentSocket, labels: ["workroom.provisioner=test"]))
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    store.remoteCreateServices = services(
+      driver: driver, agent: agent, gitHubToken: { throw RemoteWorkrooms.Failure.signedOut })
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.steps.first { $0.id == "repository" }?.state, .failed)
+    XCTAssertEqual(run.steps.first { $0.id == "image" }?.state, .skipped(reason: nil), "no pull")
+    XCTAssertEqual(run.steps.first { $0.id == "machine" }?.state, .skipped(reason: nil))
   }
 
   /// Value: protects=R2, two creates needing boxd setup share one sheet, both carry on after one
