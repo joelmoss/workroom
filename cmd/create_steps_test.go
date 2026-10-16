@@ -66,6 +66,9 @@ func assertSteps(t *testing.T, events []map[string]any, want ...string) {
 	}
 }
 
+// Value: protects=create --json streams the local plan's step events in order, with fetch and
+// script skipped and their reasons as detail; fails_when=a step is missing, out of order, or
+// skipped without its reason; no_claim=a real remote or setup script (the project has neither)
 func TestCreateStepsWithNoRemoteAndNoScript(t *testing.T) {
 	assertSteps(t, createEvents(t, noRemoteProject(t)),
 		"fetch:skipped:No remote to fetch from",
@@ -73,6 +76,9 @@ func TestCreateStepsWithNoRemoteAndNoScript(t *testing.T) {
 		"script:skipped:No setup script")
 }
 
+// Value: protects=a setup script's output arrives as log events tagged step script;
+// fails_when=the line is untagged or tagged with an earlier step; no_claim=fetch and worktree log
+// tagging (no remote here), and the app's routing of untagged lines
 func TestCreateStepsTagLogsWithTheRunningStep(t *testing.T) {
 	project := noRemoteProject(t)
 	writeSetup(t, project, "#!/bin/sh\necho hello\n")
@@ -86,6 +92,10 @@ func TestCreateStepsTagLogsWithTheRunningStep(t *testing.T) {
 	t.Fatalf("no log line 'hello' tagged step script: %v", events)
 }
 
+// Value: protects=an unreachable origin ends fetch as a warning with the CLI's text, and its log
+// holds the git fetch command line and git's stderr; fails_when=fetch ends done or failed, or the
+// log lacks the command or the error; no_claim=a fetch that works (a missing local path stands in
+// for an unreachable host)
 func TestCreateStepsFailedFetchWarnsAndLogsStderr(t *testing.T) {
 	events := createEvents(t, unreachableOriginProject(t))
 	got := steps(events)
@@ -106,6 +116,9 @@ func TestCreateStepsFailedFetchWarnsAndLogsStderr(t *testing.T) {
 	}
 }
 
+// Value: protects=a setup script that exits non-zero ends script as failed with the error as
+// detail, after fetch and worktree; fails_when=script ends done, or the failure has no detail;
+// no_claim=the failure's wording, or the created event the app reads alongside it
 func TestCreateStepsFailedSetupScript(t *testing.T) {
 	project := noRemoteProject(t)
 	writeSetup(t, project, "#!/bin/sh\nexit 1\n")
