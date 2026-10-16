@@ -154,7 +154,7 @@ final class CodingAgentUsagePollingTests: XCTestCase {
   }
 
   /// Until cswap has answered once, Claude shows nothing: neither the bridge's reading nor its
-  /// "Enable…" may flash up for a cswap user at launch. A first poll that fails falls back.
+  /// "Enable usage…" may flash up for a cswap user at launch. A first poll that fails falls back.
   func testClaudeWaitsForCswapThenFallsBackIfItNeverAnswered() async {
     let replies = PollReplies<CswapUsage.Read>([
       .accounts([account(1, used: 9)], activeSlot: 1), .failed("cswap exited with status 1."),

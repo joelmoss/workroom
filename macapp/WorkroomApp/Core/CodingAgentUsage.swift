@@ -522,7 +522,7 @@ final class CodingAgentUsageMonitor: ObservableObject {
   @Published private(set) var claudeActiveSlot: Int?
   /// Claude usage comes from the status-line bridge: cswap is not installed, its output is
   /// unreadable, or it failed before ever answering. False until the first poll settles it, so a
-  /// cswap user never sees the bridge's reading or its "Enable…" flash up at launch.
+  /// cswap user never sees the bridge's reading or its "Enable usage…" flash up at launch.
   @Published private(set) var claudeUsesBridge = false
   /// The last reading `codex app-server` gave; shown when it is newer than the rollouts'.
   @Published private(set) var codexServerSnapshot: CodingAgentQuotaSnapshot?

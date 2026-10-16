@@ -94,11 +94,12 @@ struct CodingAgentUsageSegment: View {
       } label: {
         HStack(spacing: 6) {
           Self.logo(.claude)
-          Text("Enable…")
+          Text("Enable usage…")
         }
       }
-      // As wide as the logo-and-bars segment that replaces it, so enabling moves nothing.
-      .frame(width: 18 + barWidth * 2 + 8, alignment: .leading)
+      // At least as wide as the logo-and-bars segment that replaces it, so enabling moves nothing
+      // at the wider bar widths; never narrower than its own label.
+      .frame(minWidth: 18 + barWidth * 2 + 8, alignment: .leading)
       .buttonStyle(StatusBarSegmentButtonStyle())
       .foregroundStyle(theme.tokens.accent)
       .help("Enable Claude usage")
@@ -358,19 +359,34 @@ struct CodingAgentUsageRow: View {
     }
     // Hidden accounts' chip sits where they would have been: after the shown accounts, before
     // Codex.
-    let chipIndex = shown.lastIndex(where: \.isClaudeAccount).map { $0 + 1 } ?? 0
+    var entries = shown.map(RowEntry.item)
+    if !hidden.isEmpty {
+      let chipIndex = shown.lastIndex(where: \.isClaudeAccount).map { $0 + 1 } ?? 0
+      entries.insert(.overflow(hidden), at: chipIndex)
+    }
     return HStack(spacing: 20) {
-      ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
-        if index == chipIndex, !hidden.isEmpty {
+      ForEach(entries) { entry in
+        switch entry {
+        case .item(let item):
+          CodingAgentUsageSegment(item: item, barWidth: variant.barWidth, now: now)
+        case .overflow(let hidden):
           CodingAgentUsageOverflowChip(hidden: hidden, now: now)
         }
-        CodingAgentUsageSegment(item: item, barWidth: variant.barWidth, now: now)
-      }
-      if chipIndex == shown.count, !hidden.isEmpty {
-        CodingAgentUsageOverflowChip(hidden: hidden, now: now)
       }
     }
     .fixedSize()
+  }
+
+  private enum RowEntry: Identifiable {
+    case item(CodingAgentUsageItem)
+    case overflow([CodingAgentUsageItem])
+
+    var id: String {
+      switch self {
+      case .item(let item): return item.id
+      case .overflow: return "overflow"
+      }
+    }
   }
 }
 
@@ -470,11 +486,16 @@ struct CodingAgentUsagePopover: View {
           }
           .help("Remove Workroom's Claude status-line bridge and restore your own status line")
         }
-        Button("Refresh") {
+        Button {
           agentUsage.refresh()
           agentUsage.poll()
+        } label: {
+          Image(systemName: "arrow.clockwise")
         }
+        .buttonStyle(.borderless)
         .disabled(agentUsage.isPolling)
+        .help("Refresh")
+        .accessibilityLabel("Refresh")
       }
       .padding(14)
     }
