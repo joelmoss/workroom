@@ -79,33 +79,6 @@ impl Client {
         reply
     }
 
-    /// The `ok` reply to a `seen` or `clear` and the one status event it publishes. The agent hands
-    /// the event to the subscriber's thread before it writes the reply, so they arrive in either order.
-    fn update(&mut self, request: Value) -> Value {
-        let stream = self.send_bytes(serde_json::to_vec(&request).unwrap());
-        let (mut reply, mut event) = (None, None);
-        while reply.is_none() || event.is_none() {
-            let (got, body) = self
-                .next(Duration::from_secs(10))
-                .expect("a reply and an event");
-            let slot = if got == stream {
-                &mut reply
-            } else {
-                &mut event
-            };
-            assert!(got == stream || got == 0, "stray stream {got}: {body}");
-            assert!(
-                slot.replace(body).is_none(),
-                "a second envelope on stream {got}"
-            );
-        }
-        assert_eq!(
-            reply.unwrap(),
-            json!({"version": 1, "result": {"ok": true}})
-        );
-        event.unwrap()
-    }
-
     /// The next event on stream 0.
     fn event(&mut self) -> Value {
         let (stream, event) = self.next(Duration::from_secs(10)).expect("an event");
@@ -277,6 +250,33 @@ mod live {
             .iter()
             .map(|r| r["state"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    /// The `ok` reply to a `seen` or `clear` and the one status event it publishes. The agent hands
+    /// the event to the subscriber's thread before it writes the reply, so they arrive in either order.
+    fn update(client: &mut Client, request: Value) -> Value {
+        let stream = client.send_bytes(serde_json::to_vec(&request).unwrap());
+        let (mut reply, mut event) = (None, None);
+        while reply.is_none() || event.is_none() {
+            let (got, body) = client
+                .next(Duration::from_secs(10))
+                .expect("a reply and an event");
+            let slot = if got == stream {
+                &mut reply
+            } else {
+                &mut event
+            };
+            assert!(got == stream || got == 0, "stray stream {got}: {body}");
+            assert!(
+                slot.replace(body).is_none(),
+                "a second envelope on stream {got}"
+            );
+        }
+        assert_eq!(
+            reply.unwrap(),
+            json!({"version": 1, "result": {"ok": true}})
+        );
+        event.unwrap()
     }
 
     fn text(store: &SessionStore, session: SessionId) -> String {
@@ -507,13 +507,17 @@ sleep 5"#,
         let shown = snapshot[0]["revision"].as_u64().unwrap();
         let session = id(1).to_hyphenated();
 
-        let after_seen = client
-            .update(json!({"version": 1, "method": "seen", "session": session, "revision": shown}));
+        let after_seen = update(
+            &mut client,
+            json!({"version": 1, "method": "seen", "session": session, "revision": shown}),
+        );
         assert_eq!(states(&after_seen), ["blocked"]);
         assert_eq!(after_seen["revision"], shown + 1);
 
-        let after_clear =
-            client.update(json!({"version": 1, "method": "clear", "session": session}));
+        let after_clear = update(
+            &mut client,
+            json!({"version": 1, "method": "clear", "session": session}),
+        );
         assert_eq!(after_clear["records"], json!([]));
         assert_eq!(after_clear["reporting"], false);
         store.kill_all();
