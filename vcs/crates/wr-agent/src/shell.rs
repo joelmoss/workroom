@@ -32,6 +32,9 @@ pub struct Invocation {
     /// Including `argv[0]`, which is NOT the program path — see the module doc.
     pub arguments: Vec<OsString>,
     pub environment: Vec<(OsString, OsString)>,
+    /// An interactive shell, not a run command: a report it sends itself is never a program
+    /// waiting on the user (#481).
+    pub interactive: bool,
 }
 
 /// The basename of a shell path.
@@ -86,6 +89,7 @@ pub fn invocation(
                 OsString::from(format!("exec {command}")),
             ],
             environment: env.entries(),
+            interactive: false,
         };
     }
 
@@ -101,6 +105,7 @@ pub fn invocation(
         program: OsString::from(resolved_shell),
         arguments,
         environment: env.entries(),
+        interactive: true,
     }
 }
 
@@ -219,6 +224,7 @@ mod tests {
         let result = invocation("", "/bin/zsh", "", &[]);
         assert_eq!(result.program, OsString::from("/bin/zsh"));
         assert_eq!(result.arguments[0], OsString::from("-zsh"));
+        assert!(result.interactive);
     }
 
     /// The other one: without ghostty's ZDOTDIR there are no OSC 133 prompt marks, so the app
@@ -385,6 +391,10 @@ mod tests {
                 OsString::from("-c"),
                 OsString::from("exec npm run dev"),
             ]
+        );
+        assert!(
+            !result.interactive,
+            "its own reports are a program's (#481)"
         );
     }
 

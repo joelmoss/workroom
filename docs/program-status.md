@@ -202,8 +202,8 @@ sends only OSC 9;4.
   shell runs under `wr-agent` has an agent to keep it (see `TODOS.md`).
 - **A long-running program can relay someone else's request.** A program that never probed alerts
   once it stays running in the foreground, and that cannot tell a relay (`ssh`, `mosh`, `tmux`,
-  which is how Codex on another machine reaches you) from `tail -f` on a raw recording. The
-  second can alert.
+  which is how Codex on another machine reaches you) from `tail -f` on a raw recording, or a `cat`
+  of one inside a nested shell. Those can alert too.
 - **A recording with a program's own notification in it alerts briefly.** `cat`ing a raw recording
   that holds both a program's notification and its request, in a terminal you are not looking at,
   raises a "needs you" alert that goes when the shell's prompt comes back. Before #481 the same
