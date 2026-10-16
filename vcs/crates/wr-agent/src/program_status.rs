@@ -55,6 +55,10 @@ pub mod limits {
     /// How long a shell command runs before its end is a command result (#473): long enough to
     /// switch away over, and longer than the quick commands and typos that would only be noise.
     pub const LONG_COMMAND: Duration = Duration::from_secs(10);
+    /// How long a program that never probed (#481) must stay running and in the foreground after
+    /// it blocks before it may alert: a `cat` of a recording has exited by then, or the shell's
+    /// prompt has dropped the record.
+    pub const GRACE: Duration = Duration::from_secs(1);
 }
 
 /// The exit status of a command stopped with ^C (128 + SIGINT): the user ended it, so it is
@@ -152,9 +156,14 @@ pub struct Record {
     updated: u64,
     /// Which time this record blocked, numbered across the session; 0 until it first blocks.
     episode: u64,
-    /// Whether its sender is the program that asked whether the agent supports the protocol, so
-    /// the app may alert for it. A `cat` of a file full of 7501 never probed.
+    /// Whether the app may alert for it: its sender asked whether the agent supports the
+    /// protocol, or, never having asked, stayed a running program for `GRACE` after it blocked
+    /// (`promote_unprobed`). A `cat` of a file full of 7501 does neither.
     notify: bool,
+    /// When an unprobed request blocked, for `promote_unprobed`. Never carried: a hand-off's
+    /// starts its grace again at the next tick.
+    #[serde(skip)]
+    blocked_at: Option<Instant>,
 }
 
 /// How the shell's last long command ended (#473), kept apart from the records so no program's
@@ -248,7 +257,7 @@ impl Store {
     /// shortcut: a replay whose probe and report land in different reads still alerts (a `cat` of
     /// a recorded Claude session: a macOS pty read is at most 1 KiB, and a screen paint separates
     /// them); telling those apart needs a clock or the pty's input queue, if replays ever matter.
-    pub fn apply_read(&mut self, events: Vec<Event>, owner: Group) {
+    pub fn apply_read(&mut self, events: Vec<Event>, owner: Group, now: Instant) {
         let mut probed = false;
         for event in events {
             match event {
@@ -263,6 +272,42 @@ impl Store {
         if probed {
             self.probed = Some(owner);
         }
+        for record in self.unprobed_requests() {
+            record.blocked_at.get_or_insert(now);
+        }
+    }
+
+    /// Lets each unprobed request alert once `GRACE` has passed since it blocked and its sender
+    /// is still `eligible`: alive, in the foreground, and not the shell itself (#481). One the
+    /// tick meets without a start (handed off) starts its grace now.
+    pub fn promote_unprobed(&mut self, now: Instant, eligible: impl Fn(Group) -> bool) {
+        let revision = self.revision + 1;
+        let mut promoted = false;
+        for record in self.unprobed_requests() {
+            let since = *record.blocked_at.get_or_insert(now);
+            if now.duration_since(since) >= limits::GRACE
+                && record.owner > 0
+                && eligible(record.owner)
+            {
+                record.notify = true;
+                record.updated = revision;
+                promoted = true;
+            }
+        }
+        self.dirty |= promoted;
+    }
+
+    /// Whether `promote_unprobed` has anything to look at, before the tick reads the pty.
+    pub fn has_unprobed_request(&self) -> bool {
+        self.records
+            .iter()
+            .any(|r| r.state == State::Blocked && !r.notify)
+    }
+
+    fn unprobed_requests(&mut self) -> impl Iterator<Item = &mut Record> {
+        self.records
+            .iter_mut()
+            .filter(|r| r.state == State::Blocked && !r.notify)
     }
 
     /// Replaces the report's record completely (terminal.h: a value it leaves out is gone).
@@ -293,6 +338,10 @@ impl Store {
         } else {
             previous.as_ref().map_or(0, |p| p.episode)
         };
+        // The same request from the same sender, sent again: it keeps its grace and promotion.
+        let again = previous
+            .as_ref()
+            .filter(|p| was_blocked && report.state == State::Blocked && p.owner == owner);
         let mut record = Record {
             id: report.id,
             state: report.state,
@@ -304,7 +353,8 @@ impl Store {
             owner,
             updated: self.revision + 1,
             episode,
-            notify: self.probed == Some(owner),
+            notify: self.probed == Some(owner) || again.is_some_and(|p| p.notify),
+            blocked_at: again.and_then(|p| p.blocked_at),
         };
         match &previous {
             // Progress alone is not worth an event: the app shows none of it.
@@ -1162,24 +1212,69 @@ mod tests {
         assert_eq!((store.reporting, store.probed), (None, None));
     }
 
+    /// A request from a program that never probed (Codex, #481) alerts once its sender has stayed
+    /// a running program for `GRACE` after it blocked; a tick before then leaves it alone.
+    /// Value: protects=Codex requests alert at all; fails_when=promotion is missing or ignores the grace; why_new=notify was probe-only; seam=none; no_claim=the tick thread and real pty groups (unit only)
+    #[test]
+    fn an_unprobed_request_alerts_once_its_sender_outlasts_the_grace() {
+        let start = Instant::now();
+        let mut store = Store::default();
+        store.apply_read(vec![Event::Report(report("", State::Blocked))], 7, start);
+        store.commit();
+        store.promote_unprobed(start + limits::GRACE / 2, |_| true);
+        assert!(!store.records[0].notify, "within the grace");
+        assert_eq!(store.commit(), None);
+        store.promote_unprobed(start + limits::GRACE, |_| false);
+        assert!(
+            !store.records[0].notify,
+            "a sender gone or in the background"
+        );
+        store.promote_unprobed(start + limits::GRACE, |group| group == 7);
+        assert!(store.records[0].notify);
+        assert_eq!(store.commit(), Some(false), "published");
+    }
+
+    /// Codex re-sends its state after an external program returns: the same request from the
+    /// same sender keeps its grace start and, once promoted, its promotion.
+    /// Value: protects=one alert per request across re-reports; fails_when=report() recomputes notify from the probe alone or restarts the grace; why_new=no test re-reports an unprobed request; seam=none; no_claim=none beyond protects
+    #[test]
+    fn a_repeated_request_keeps_its_grace_and_its_promotion() {
+        let start = Instant::now();
+        let blocked = || vec![Event::Report(report("", State::Blocked))];
+        let mut store = Store::default();
+        store.apply_read(blocked(), 7, start);
+        store.apply_read(blocked(), 7, start + limits::GRACE / 2);
+        store.promote_unprobed(start + limits::GRACE, |_| true);
+        assert!(
+            store.records[0].notify,
+            "the grace ran from the first report"
+        );
+        store.commit();
+        store.apply_read(blocked(), 7, start + limits::GRACE * 2);
+        assert!(store.records[0].notify, "still promoted");
+        assert_eq!(store.commit(), None, "nothing changed");
+        store.apply_read(blocked(), 8, start + limits::GRACE * 2);
+        assert!(!store.records[0].notify, "another sender starts over");
+    }
+
     /// A probe and a report in one read (a `cat` of a recorded session) never alert; the same
     /// report in a later read does, and a prompt after the probe voids it.
     #[test]
     fn a_probe_counts_only_after_the_reports_read_with_it() {
         let blocked = || Event::Report(report("", State::Blocked));
         let mut store = Store::default();
-        store.apply_read(vec![Event::Probed, blocked()], 7);
+        store.apply_read(vec![Event::Probed, blocked()], 7, Instant::now());
         assert!(!store.records[0].notify, "probe and report in one read");
-        store.apply_read(vec![blocked()], 7);
+        store.apply_read(vec![blocked()], 7, Instant::now());
         assert!(
             store.records[0].notify,
             "the probe counts from the next read"
         );
 
         let mut store = Store::default();
-        store.apply_read(vec![Event::Probed, Event::Prompt], 7);
+        store.apply_read(vec![Event::Probed, Event::Prompt], 7, Instant::now());
         assert_eq!(store.probed, None, "a prompt ends the run that probed");
-        store.apply_read(vec![Event::Prompt, Event::Probed], 7);
+        store.apply_read(vec![Event::Prompt, Event::Probed], 7, Instant::now());
         assert_eq!(store.probed, Some(7));
     }
 
