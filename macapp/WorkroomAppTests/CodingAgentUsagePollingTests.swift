@@ -224,6 +224,44 @@ final class CodingAgentUsagePollingTests: XCTestCase {
         monitor: monitor, bridgeState: .disabled, claudeSeen: false, enableDeclined: false),
       [], "nothing is offered before Claude has run")
   }
+
+  /// Value: protects=a pane footer showing the right account (or nothing) for the running Claude and
+  /// the poll failure reason reaching the popover; fails_when=a pane without a read profile shows
+  /// some account, the default login stops mapping to cswap's active slot, an unmatched profile
+  /// guesses, a failed Codex poll leaves no reason or keeps it after recovery;
+  /// why_new=ClaudeProfileResolution is tested alone, nothing exercises PaneUsageSlot.item or
+  /// applyPoll's failure bookkeeping; seam=none; no_claim=drawing or fitting.
+  func testAPaneShowsItsProfilesAccountAndAFailedPollSaysWhy() async {
+    let replies = PollReplies<CodexAppServerUsage.Read>([
+      .failed("The Codex app server didn't answer in time."),
+      .notInstalled,
+    ])
+    let accounts = [account(1, used: 9), account(2, used: 92)]
+    let monitor = monitor(
+      CodingAgentUsagePollers(
+        cswap: { _ in .accounts(accounts, activeSlot: 2) },
+        codexServer: { _ in await replies.next() }))
+    monitor.poll()
+    await waitForPoll(monitor)
+
+    func used(_ profile: PaneClaudeProfile?) -> [Double]? {
+      guard
+        case .reading(let snapshot, _, _, _)? = PaneUsageSlot.item(
+          backend: .claude, claudeProfile: profile, monitor: monitor)
+      else { return nil }
+      return snapshot.windows.map(\.usedPercentage)
+    }
+    XCTAssertNil(used(nil), "a profile not read yet shows nothing")
+    XCTAssertEqual(used(.reported("")), [92], "unset is the active account")
+    XCTAssertEqual(used(.reported("/b/sessions/1-a_example.com")), [9])
+    XCTAssertNil(used(.reported("/elsewhere/.claude-work")), "an unknown profile is not guessed")
+    XCTAssertNil(used(.notReported))
+
+    XCTAssertEqual(monitor.pollFailures[.codex], "The Codex app server didn't answer in time.")
+    monitor.poll()
+    await waitForPoll(monitor, count: 2)
+    XCTAssertNil(monitor.pollFailures[.codex], "a later poll that does not fail clears the reason")
+  }
 }
 
 private actor PollCounter {

@@ -1939,7 +1939,8 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
-  /// The profile entry from a session descriptor; no entry means an agent too old to send one.
+  /// The profile entry from a session descriptor; no entry means the agent cannot say (too old, or
+  /// the foreground is not a confirmed `claude`).
   nonisolated static func claudeProfile(from descriptor: SessionDescriptor?) -> PaneClaudeProfile {
     descriptor?.value(forMetadataKey: "claude_profile").map(PaneClaudeProfile.reported)
       ?? .notReported

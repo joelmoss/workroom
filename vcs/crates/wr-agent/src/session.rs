@@ -262,10 +262,11 @@ impl Session {
                 .map(|attached| !attached.clients.is_empty())
                 .unwrap_or(false),
             cwd: foreground.and_then(crate::process::working_directory),
-            // Only `claude`'s environment is read: no other program's is anyone's business.
+            // Only `claude`'s environment is read: no other program's is anyone's business. Anything
+            // not confirmed as `claude` reports no profile, so the app never guesses an account.
             claude_profile: foreground
                 .filter(|_| name.as_deref() == Some("claude"))
-                .and_then(crate::process::claude_profile),
+                .map(|pid| crate::process::claude_profile(pid).unwrap_or_default()),
             foreground: name,
             metadata: self.metadata.clone(),
         }

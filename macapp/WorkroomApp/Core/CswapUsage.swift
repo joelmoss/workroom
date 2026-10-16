@@ -22,13 +22,14 @@ struct ClaudeAccountUsage: Equatable, Sendable {
 enum PaneClaudeProfile: Equatable, Sendable {
   /// The foreground's `CLAUDE_CONFIG_DIR`, empty when unset.
   case reported(String)
-  /// The agent sent no entry: it predates reporting one, so the account is unknown.
+  /// The agent sent no entry: it predates reporting one, or could not confirm the foreground is
+  /// `claude`, so the account is unknown.
   case notReported
 }
 
 /// Which Claude account a pane's `claude` bills, from its Claude profile (#480).
 enum ClaudeProfileResolution {
-  /// `.notReported` is an agent too old to say. An empty profile (unset) is the default
+  /// `.notReported` is an agent that cannot say. An empty profile (unset) is the default
   /// `~/.claude` login, which is cswap's active account. `cswap run` makes
   /// `<backup>/sessions/<slot>-<email>`, whose prefix is the slot. Anything else is no account:
   /// never a guess.
