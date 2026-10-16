@@ -51,9 +51,24 @@ notification for half a second while that program is reporting; the request it a
 alerts at once, with the program's text (Codex's report has none). A held notification that
 announces no request is shown as it would have been, half a second late.
 
-**Settings ▸ Notify when a terminal needs me** turns Workroom's alerts and their Dock count off. The
-marks stay, and the requests still show in the menu bar list. Programs' own notifications still
-arrive as before.
+**Settings ▸ Notifications ▸ Notify when a terminal needs me** turns Workroom's alerts and their
+Dock count off. The marks stay, and the requests still show in the menu bar list. Programs' own
+notifications still arrive as before.
+
+### A finished turn
+
+When a program finishes its turn and you are not looking at its terminal, Workroom posts an
+ordinary notification ("Terminal 2 in fix-auth finished", then what the program said). It alerts
+once per turn, and focusing the terminal reads it. A finish you watched, one already there at
+launch, and a shell command's result (see Long shell commands below) only show the ✓. So does the
+finish of a program that never answered the probe (Codex): its own notification arrives as before.
+
+After a finish, the program's own notification is dropped until its next turn starts: Claude
+Code's "Claude is waiting for your input", a minute after the turn, says the same thing again. A
+notification the program writes just before its finish is folded into the alert.
+**Settings ▸ Notifications ▸ Notify when a terminal finishes** turns both off.
+
+A tab with a ✋ or ✓ shows no unread dot: the mark already says it.
 
 A program that asked whether the terminal supports the protocol (the probe, below) can alert you at
 once. One that never asked, as Codex doesn't (the spec allows it: "a program MAY send reports
@@ -194,7 +209,7 @@ sends only OSC 9;4.
 
 - The **mark** on a terminal is what the program in it reports now.
 - The **unread dot** and the **Dock badge** count notifications, plus requests waiting on you.
-- A finished turn never alerts.
+- A finished turn alerts once, in a terminal you are not looking at (see A finished turn above).
 
 ## Known limits
 
