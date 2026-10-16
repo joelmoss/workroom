@@ -66,6 +66,10 @@ A tree that lays several of a target's tabs, or several workrooms in a window, o
 **Pane**:
 The area on screen that shows one tab.
 
+**Pane footer**:
+The strip along the bottom of a pane about that pane alone: its tab's live state and the coding agent running in it.
+_Avoid_: Status bar, terminal footer
+
 **Session**:
 A persistent pseudo-terminal held by wr-agent, so a pane's shell outlives the pane, the window and the app.
 
@@ -140,12 +144,23 @@ A banner action on a failed command that opens a coding agent in a terminal to l
 **Usage**:
 A coding agent's quota in each of its windows, such as five hours or a week.
 
+**Claude account**:
+One Claude login whose usage is metered on its own, such as a personal plan and a work organization. cswap numbers each one with a slot.
+_Avoid_: cswap account, slot (for the account itself)
+
+**Claude profile**:
+The config directory a running Claude Code uses, the default one or one cswap made; it decides which Claude account that Claude bills.
+_Avoid_: Config dir, session (wr-agent's term)
+
 ## App shell
 
 Owns windows, selection, navigation, inspector layout, notifications and theme. It is the composition root that wires the other contexts together.
 
 **Window**:
 One app window, with its own selection and layout. Windows share projects.
+
+**Window footer**:
+The strip along the bottom of a window about the whole app, such as every coding agent's usage and notifications; not tied to any pane.
 
 **Selection**:
 The target a window's sidebar has chosen.
