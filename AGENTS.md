@@ -56,6 +56,13 @@ A finding from a review, a reviewer bot or an agent is not a bug until it is che
 
 Fix it only when it is likely enough to happen, or costly enough when it does. Otherwise reply on the thread with that reasoning and close it. File an issue only when a future change could make it reachable. Comment wording, test-timing hypotheticals and style suggestions never justify another review round.
 
+## Code Review Rules
+
+These apply when reviewing a pull request. Raise a finding only when it passes the three questions in Reviews & Reported Bugs above: name the trigger in ordinary use, how likely it is, and what it costs, in the finding itself.
+
+- Ground a finding in what the programs and hosts Workroom serves actually send. For program status, `docs/program-status.md` records what Claude Code and Codex report: Claude Code sends one record with no id, and Codex never answers the probe.
+- Treat the findings a PR body lists as reviewed and skipped as decided. Raise one again only when the diff changes the code it names.
+
 ## Architecture & Configuration
 
 Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md` and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
