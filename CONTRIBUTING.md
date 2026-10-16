@@ -274,14 +274,20 @@ renders each `DeleteResult`.
    does a base that origin lacks when the local branch is used instead.
    With no usable start, the command has no start point and no `--no-track`, so git uses `HEAD`, or
    makes an orphan branch in a repository with no commits.
+   `Git.Create` reports this as two steps through `vcs.Progress` (`Service.OnStep`, and each
+   `$ git …` line and its output to `ScriptLogWriter`), which `create --json` streams as `step` and
+   `log` events for the app's creation checklist. `fetch` owns the start point: it ends `skipped`
+   with no remote, `warning` with the warning above, and `failed` when the base is found nowhere;
+   `worktree` covers `git worktree add`.
 6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,
    with the VCS type.
-7. **Signal readiness:** fire `OnReady` (the app mounts the workroom and starts streaming the setup
-   log) before the potentially slow setup script runs.
+7. **Signal readiness:** fire `OnReady` (the `created` event: the app gives the creation pane it
+   opened on the click the workroom's name, and keeps showing its checklist) before the potentially
+   slow setup script runs.
 8. **Run setup:** if `scripts/workroom_setup` exists in the new workroom, else in the root project,
    `script.Run("setup", …)` executes it inside the new workroom with the
    [environment variables](README.md#environment-variables), streaming combined
-   stdout/stderr live.
+   stdout/stderr live, as the `script` step (`skipped` when there is no script).
 
 Creation is **not transactional**: if setup fails, the workspace and config entry already exist, so
 the returned `CreateResult` is populated even on error — callers can report "created, but setup
