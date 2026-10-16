@@ -140,55 +140,6 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     }
   }
 
-  /// A hand-off whose reload fails keeps the project locked, with the progress on its row: the
-  /// list still lacks the base this create recorded, so a second create would build another.
-  /// Value: protects=one base per place when a reload fails after the name is reserved;
-  /// fails_when=the hand-off frees the project without checking the reload took; why_new=the
-  /// hand-off test only covers a reload that lists the workroom; seam=none
-  @MainActor
-  func testAHandOffWhoseReloadFailsKeepsTheProjectLocked() async {
-    let cli = RecordingCLI()
-    let store = AppStore(cli: cli)
-    let project = Project(path: "/proj", vcs: "git", workrooms: [])
-    cli.listed = [project]  // the reload does not list the new workroom
-    store.projects = [project]
-    let row = AppStore.RemoteCreateRow()
-    let step = AppStore.CreateStep(fraction: 0.25, label: "clone")
-    store.busyProjects["/proj"] = 1
-    store.showRemoteCreateStep(step, in: "/proj", row: row)
-
-    await store.handOffRemoteCreate(named: "c", in: "/proj", to: row)
-    XCTAssertTrue(store.isBusyProject("/proj"), "a second create could build a second base")
-    XCTAssertNil(row.workroom)
-    XCTAssertEqual(store.createSteps, [.project("/proj"): step])
-    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
-
-    store.endRemoteCreate(in: "/proj", row: row)
-    XCTAssertFalse(store.isBusyProject("/proj"))
-  }
-
-  /// A remote create that ends before its workroom has a name (it failed building the base, say)
-  /// frees its project and clears the row's progress and image pull, as the project row spinner's
-  /// old `defer` did.
-  /// Value: protects=a failed pre-name create leaving the project busy, its "+" disabled and its
-  /// spinner on for good; fails_when=endRemoteCreate's no-row branch loses endBusy or a clear;
-  /// why_new=only the post-hand-off branch was asserted; seam=none
-  @MainActor
-  func testARemoteCreateThatEndsBeforeItsNameFreesItsProject() {
-    let store = AppStore()
-    let row = AppStore.RemoteCreateRow()
-    store.busyProjects["/proj"] = 1
-    store.imagePulls["/proj"] = 0.5
-    store.showRemoteCreateStep(
-      AppStore.CreateStep(fraction: 0.1, label: "machine"), in: "/proj", row: row)
-    XCTAssertNotNil(store.createSteps[.project("/proj")])
-
-    store.endRemoteCreate(in: "/proj", row: row)
-    XCTAssertFalse(store.isBusyProject("/proj"))
-    XCTAssertEqual(store.createSteps, [:])
-    XCTAssertNil(store.imagePulls["/proj"])
-  }
-
   /// Every Dev build keeps its own config, a workroom's included; Release and Nightly share the
   /// CLI's own.
   func testOnlyDevBuildsKeepTheirOwnConfig() {
@@ -279,8 +230,11 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(store.projects.first?.workrooms, [])
   }
 
-  /// A remote workroom still being created (its project busy with the create) can't be deleted,
-  /// so its row offers no Delete; one a crash left at `creating` can.
+  /// A remote workroom still being created (a create running in its project) can't be deleted,
+  /// so its row offers no Delete; one a crash left at `creating` can. Ported (#483): the running
+  /// create is its run, not a busy project.
+  /// Value: protects=a `creating` record is undeletable while its create runs and deletable after
+  /// a crash; fails_when=the run isn't consulted; no_claim=none beyond protects
   @MainActor
   func testARemoteWorkroomIsCreatingOnlyWhileItsProjectIsBusy() {
     let store = AppStore()
@@ -291,48 +245,11 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     store.projects = [project]
     XCTAssertFalse(store.isCreatingWorkroom(creating, in: project))
 
-    store.busyProjects["/proj"] = 1
+    store.register(
+      CreationRun(project: project, kind: .boxd, splitAnchor: nil, previousSelection: nil))
     XCTAssertTrue(store.isCreatingWorkroom(creating, in: project))
     store.deleteWorkroom(creating, in: project)
     XCTAssertEqual(store.projects, [project], "a create still deriving was deleted")
-  }
-
-  /// Once a remote create's workroom has a name, its row takes the create's progress and the
-  /// project is free for another create; the workroom stays undeletable until the create ends.
-  @MainActor
-  func testARemoteCreateHandsItsProgressToItsWorkroomOnceNamed() async {
-    let cli = RecordingCLI()
-    let store = AppStore(cli: cli)
-    let creating = Workroom(
-      name: "c", path: "/home/workroom/r", vcsName: "workroom/c", warnings: [],
-      host: HostDescriptor(state: "creating", provisioner: mine, workroomID: UUID()))
-    let project = Project(path: "/proj", vcs: "git", workrooms: [])
-    cli.listed = [Project(path: "/proj", vcs: "git", workrooms: [creating])]
-    store.projects = [project]
-    let row = AppStore.RemoteCreateRow()
-    let clone = AppStore.CreateStep(fraction: 0.25, label: "clone")
-    let snapshot = AppStore.CreateStep(fraction: 0.5, label: "snapshot")
-    let sid = SidebarID.workroom(project: "/proj", name: "c")
-
-    store.busyProjects["/proj"] = 1
-    store.showRemoteCreateStep(clone, in: "/proj", row: row)
-    XCTAssertEqual(store.createSteps, [.project("/proj"): clone])
-
-    await store.handOffRemoteCreate(named: "c", in: "/proj", to: row)
-    XCTAssertEqual(store.createSteps, [sid: clone], "the step moves to the workroom's row")
-    XCTAssertTrue(store.canCreateRemoteWorkroom(in: project), "the project is free again")
-    XCTAssertEqual(store.projects.first?.workrooms, [creating], "the row is listed")
-    XCTAssertTrue(store.isCreatingWorkroom(creating, in: project))
-
-    store.showRemoteCreateStep(snapshot, in: "/proj", row: row)
-    XCTAssertEqual(store.createSteps, [sid: snapshot])
-
-    store.endRemoteCreate(in: "/proj", row: row)
-    XCTAssertEqual(store.createSteps, [:])
-    XCTAssertFalse(store.isCreatingWorkroom(creating, in: project))
-    XCTAssertFalse(store.isBusyProject("/proj"))
-    store.showRemoteCreateStep(snapshot, in: "/proj", row: row)
-    XCTAssertEqual(store.createSteps, [:], "a step after the create ended shows nowhere")
   }
 
   /// A teardown that fails says what is still up and why, ending in one full stop whether or not

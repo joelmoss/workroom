@@ -87,7 +87,7 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     let driver = CountingDriver()
     let steps = StepLog()
     _ = try? await provision(environment(gitHubToken: { "gho_mac" }, driver: driver), steps: steps)
-    XCTAssertEqual(steps.take(), [.clone])
+    XCTAssertEqual(steps.take(), [.connect, .clone])
     XCTAssertEqual(driver.creates, 1)
     XCTAssertEqual(driver.destroys, 1, "the failed create left its machine")
   }
@@ -127,6 +127,45 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
       for (key, value) in RemoteProvisioning.cloneEnvironment(token: "gho_mac") {
         XCTAssertEqual(env[key], value, key)
       }
+    }
+  }
+
+  /// The create's log shows each git command under its own step, and never the token git was
+  /// given (#483, AC 5).
+  /// Value: protects=the clone and checkout rows show `$ git …` and git's output, and no line
+  /// carries the Mac's token or the extraHeader; fails_when=git's commands go unlogged, land under
+  /// the wrong step, or the clone environment is logged; no_claim=the drivers' own command logs
+  /// (HostDrivers' ProvisioningLogTests); a FakeAgent stands in for the host's git
+  func testTheCreateLogShowsGitCommandsAndNeverTheToken() async throws {
+    let fake = try FakeAgent(
+      version: 4,
+      execResult:
+        #"{"stdout":"","stderr":"Cloning into 'p'...","exit_code":0,"timed_out":false,"signaled":false}"#
+    )
+    defer { fake.stop() }
+    let lines = LineLog()
+    let sink: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add($0, $1) }
+
+    let instance = try await ProvisioningProgress.$log.withValue(sink) {
+      try await RemoteProvisioning.provision(
+        cloneURL: "git@github.com:o/r.git", path: "/p", branch: "wr-b",
+        in: environment(gitHubToken: { "gho_mac" }, connect: Self.connecting(to: fake)))
+    }
+    await instance.connection.close()
+
+    let all = lines.all
+    XCTAssertEqual(
+      all.filter { $0.0 == .clone }.map(\.1),
+      ["$ git clone --quiet --origin origin -- git@github.com:o/r.git /p", "Cloning into 'p'..."])
+    XCTAssertEqual(
+      all.filter { $0.0 == .checkout }.first?.1,
+      "$ git switch --quiet --no-track --create wr-b refs/remotes/origin/HEAD")
+    // The header and its encoded token; the clone URL itself is no secret.
+    let secrets =
+      ["gho_mac", "extraHeader", "Authorization", "GIT_CONFIG"]
+      + [Data("x-access-token:gho_mac".utf8).base64EncodedString()]
+    for (_, line) in all {
+      for secret in secrets { XCTAssertFalse(line.contains(secret), line) }
     }
   }
 
@@ -246,4 +285,13 @@ private final class StepLog: @unchecked Sendable {
       return seen
     }
   }
+}
+
+private final class LineLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var seen: [(ProvisioningProgress.Step, String)] = []
+  func add(_ step: ProvisioningProgress.Step, _ line: String) {
+    lock.withLock { seen.append((step, line)) }
+  }
+  var all: [(ProvisioningProgress.Step, String)] { lock.withLock { seen } }
 }

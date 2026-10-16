@@ -398,7 +398,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     await store.createWorkroom(in: project([a]))
     XCTAssertEqual(store.errorMessage, "\(project([a]).displayName) is being deleted.")
-    XCTAssertFalse(store.isBusyProject(projectPath), "no create was started")
+    XCTAssertTrue(store.creationRuns.isEmpty, "no create was started")
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project([a])), "nor a remote one")
 
     fake.allowDelete = true

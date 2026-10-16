@@ -232,11 +232,15 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let created = SidebarID.workroom(project: path, name: "created")
     let finished = expectation(description: "landing must wait")
     finished.isInverted = true
+    // The create's pane opened beside the anchor on the click (#483); the landing names it.
+    let run = CreationRun(
+      project: projects(["anchor"])[0], kind: .local, splitAnchor: anchor,
+      previousSelection: anchor)
+    store.register(run)
+    store.insertWorkroomSplit(.creation(project: path, id: run.id), beside: anchor, edge: .right)
     let landing = Task {
       await store.landOnCreatedWorkroom(
-        name: "created", project: projects(["anchor"])[0], setup: true,
-        session: ScriptLogSession(title: "Setup", phase: "setup"),
-        splitAnchor: anchor, landing: CreationLandingBox())
+        name: "created", run: run, setup: true, landing: CreationLandingBox())
       finished.fulfill()
     }
     await fulfillment(of: [started[0]], timeout: 5)
