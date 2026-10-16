@@ -82,7 +82,7 @@ struct SetupStep<Content: View>: View {
   @ViewBuilder private var indicator: some View {
     switch state {
     case .done:
-      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+      Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.tokens.success)
         .font(.system(size: 17))
         .accessibilityLabel("Done")
     case .waiting:
