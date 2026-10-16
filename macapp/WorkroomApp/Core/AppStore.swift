@@ -3209,6 +3209,8 @@ final class AppStore: ObservableObject {
     if let earlier = lastFinish.updateValue(note.id, forKey: tabID) {
       notifications.dismiss(notifID: earlier)
       toasts.removeAll { $0.id == earlier }
+      // Its banner too: this finish may surface as a toast, which never replaces a banner.
+      systemNotifier.withdraw(tabIDs: [tabID])
     }
     surface(note)
   }

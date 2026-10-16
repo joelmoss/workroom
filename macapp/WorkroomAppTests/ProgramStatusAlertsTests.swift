@@ -11,6 +11,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   private var monitor: ProgramStatusMonitor!
   private var alerts: ProgramStatusAlerts!
   private var store: AppStore!
+  private var notifier: QuietNotifier!
   private var enabled = true
   private var finishEnabled = true
   private var clock = Date(timeIntervalSince1970: 1000)
@@ -19,7 +20,8 @@ final class ProgramStatusAlertsTests: XCTestCase {
     monitor = ProgramStatusMonitor()
     monitor.now = { [unowned self] in clock }
     store = AppStore()
-    store.systemNotifier = QuietNotifier()
+    notifier = QuietNotifier()
+    store.systemNotifier = notifier
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     store.terminals.programStatus = monitor
     alerts = ProgramStatusAlerts()
@@ -175,10 +177,14 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(finishes.count, 1, "the same finish never alerts twice")
 
     let first = finishes.first?.id
+    XCTAssertTrue(notifier.withdrawnTabs.isEmpty, "fixture: nothing replaced yet")
     monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
     monitor.seed(id, records: [done(message: "Ran the tests")])
     XCTAssertEqual(finishes.map(\.body), ["Turn finished: \u{201C}Ran the tests\u{201D}"])
     XCTAssertNotEqual(finishes.first?.id, first, "the next turn's finish alerted again")
+    XCTAssertEqual(
+      notifier.withdrawnTabs, [finishes.first?.tabID].compactMap { $0 },
+      "the first finish's banner goes with its entry")
   }
 
   /// A finish already there at launch, a shell command's result, a `printf` of a report, and any
@@ -665,8 +671,10 @@ private final class AlwaysKeyWindow: NSWindow {
   override var isKeyWindow: Bool { true }
 }
 
-private struct QuietNotifier: SystemNotifying {
+/// Posts nothing; keeps the tabs whose banners were withdrawn.
+private final class QuietNotifier: SystemNotifying, @unchecked Sendable {
+  var withdrawnTabs: [TerminalTab.ID] = []
   func ensureAuthorized() async -> Bool { false }
   func post(_ notification: WorkroomNotification) {}
-  func withdraw(tabIDs: [TerminalTab.ID]) {}
+  func withdraw(tabIDs: [TerminalTab.ID]) { withdrawnTabs += tabIDs }
 }
