@@ -36,6 +36,7 @@ final class ProgramStatusAlerts: ObservableObject {
   var monitor: ProgramStatusMonitor = .shared
   var stores: () -> [AppStore] = { WindowRegistry.shared.allStores }
   var isEnabled: () -> Bool = { Defaults[.notifyWhenTerminalNeedsMe] }
+  var isFinishEnabled: () -> Bool = { Defaults[.notifyWhenTurnFinishes] }
   var now: () -> Date = Date.init
   var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   /// Told when `waiting` changes, so the Dock badge and the menu bar follow (`WindowRegistry`).
@@ -56,6 +57,9 @@ final class ProgramStatusAlerts: ObservableObject {
   private var held: [UUID: (body: String?, show: Show, task: Task<Void, Never>)] = [:]
   /// The program's own notification last shown per session, until a request's alert replaces it.
   private var shown: [UUID: (date: Date, body: String?, withdraw: () -> Void)] = [:]
+  /// Sessions whose program finished its turn and has not started another: one alert per finish,
+  /// and the program's own notification after it is dropped.
+  private var finished: Set<UUID> = []
 
   /// Records and surfaces a program's own notification as an ordinary one, and returns how to
   /// withdraw it; nil when nothing was shown (its pane is the one being looked at).
@@ -103,8 +107,40 @@ final class ProgramStatusAlerts: ObservableObject {
           }
         }
       }
+      followFinish(session, current: current, isLaunchSnapshot: change.isLaunchSnapshot)
     }
     recomputeWaiting()
+  }
+
+  /// Alerts a program's finished turn once, when nobody is looking at its terminal. A finish that
+  /// was there before the app was, or that the user watched, is only marked.
+  private func followFinish(_ session: UUID, current: ProgramStatusSession?, isLaunchSnapshot: Bool)
+  {
+    guard let current else {
+      finished.remove(session)
+      return
+    }
+    // A command result (#473) is the shell's, not a turn.
+    let records = current.records.filter { $0.exitCode == nil }
+    // Not reporting: the program has gone, so the next one's notifications are its own.
+    if !current.reporting
+      || records.contains(where: { $0.state == .working || $0.state == .blocked })
+    {
+      finished.remove(session)
+      return
+    }
+    // Only a program that answered the probe: a `printf` of a report never alerts.
+    guard let done = records.last(where: { $0.state == .done && $0.notify }),
+      finished.insert(session).inserted, !isLaunchSnapshot, isFinishEnabled()
+    else { return }
+    let attachments = attachments(of: session)
+    guard let destination = attachments.first, !attachments.contains(where: \.focused) else {
+      return
+    }
+    // A program that writes its own notification just before its report (Codex): this replaces it.
+    let held = takeHeldEntry(session)
+    destination.store.raiseFinished(
+      targetID: destination.target, tabID: destination.tab, record: done, detail: held?.body)
   }
 
   /// A pane stopped showing `session` (Detached sessions › Active tab) while it still runs: once
@@ -205,6 +241,9 @@ final class ProgramStatusAlerts: ObservableObject {
       return
     }
     lastOSC[session] = (title, body, date)
+    // After a finished turn, the program's own notification (Claude Code's "waiting for your
+    // input", a minute later) only says it again: Workroom alerted the finish, or it was watched.
+    if isFinishEnabled(), finished.contains(session) { return }
     // With alerts off, the program's own notification is all the user gets, as before.
     guard isEnabled(), let current = monitor.sessions[session] else {
       return showNow(session, body: body, show)

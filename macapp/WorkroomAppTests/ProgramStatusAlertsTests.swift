@@ -12,6 +12,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   private var alerts: ProgramStatusAlerts!
   private var store: AppStore!
   private var enabled = true
+  private var finishEnabled = true
   private var clock = Date(timeIntervalSince1970: 1000)
 
   override func setUp() async throws {
@@ -25,6 +26,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     alerts.monitor = monitor
     alerts.stores = { [unowned self] in [store] }
     alerts.isEnabled = { [unowned self] in enabled }
+    alerts.isFinishEnabled = { [unowned self] in finishEnabled }
     alerts.now = { [unowned self] in clock }
     alerts.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
   }
@@ -144,6 +146,121 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertTrue(requests.isEmpty)
     XCTAssertEqual(alerts.waiting.count, 2)
     XCTAssertEqual(alerts.countedWaiting, 1)
+  }
+
+  private func done(message: String = "", notify: Bool = true, exitCode: Int32? = nil)
+    -> ProgramStatusRecord
+  {
+    ProgramStatusRecord(
+      id: "", state: .done, message: message, notify: notify, exitCode: exitCode)
+  }
+
+  private var finishes: [WorkroomNotification] {
+    store.notifications.items.filter { $0.title.hasSuffix(" finished") }
+  }
+
+  /// A finished turn in a terminal nobody is looking at alerts once; the next turn's finish
+  /// alerts again.
+  func testAFinishedTurnAlertsOncePerTurn() {
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    monitor.seed(id, records: [done(message: "Fixed the build")])
+    XCTAssertEqual(finishes.map(\.title), ["Terminal 1 finished"])
+    XCTAssertEqual(finishes.first?.body, "Turn finished: \u{201C}Fixed the build\u{201D}")
+    XCTAssertNil(finishes.first?.episode, "an ordinary notification, not a waiting request")
+
+    monitor.seed(id, records: [done(message: "Fixed the build")])
+    monitor.seed(id, records: [])  // seen
+    XCTAssertEqual(finishes.count, 1, "the same finish never alerts twice")
+
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    monitor.seed(id, records: [done()])
+    XCTAssertEqual(finishes.count, 2)
+  }
+
+  /// A finish already there at launch, a shell command's result, a `printf` of a report, and any
+  /// finish with the setting off only show the mark.
+  func testFinishesThatOnlyShowTheMark() {
+    let first = session(store.terminals.addTab(for: target))
+    monitor.seed(first, records: [done()])  // not listening yet: this is the launch snapshot
+    alerts.apply(.init(host: .local, sessions: [first], isLaunchSnapshot: true))
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [done(exitCode: 0)])
+    monitor.seed(id, records: [done(notify: false)])
+    finishEnabled = false
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    monitor.seed(id, records: [done()])
+    XCTAssertTrue(finishes.isEmpty)
+  }
+
+  /// After a finish, the program's own notification (Claude Code's "waiting for your input" a
+  /// minute later) is dropped, also once the finish was seen; with the setting off it shows.
+  func testTheProgramsOwnNotificationAfterAFinishIsDropped() {
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [done()])
+    programNotified(id, "Claude is waiting for your input", title: "Claude Code")
+    monitor.seed(id, records: [])  // seen
+    clock += 60
+    programNotified(id, "Claude is waiting for your input again", title: "Claude Code")
+    XCTAssertEqual(shown, [])
+
+    finishEnabled = false
+    clock += 60
+    monitor.seed(id, reporting: false, records: [])  // not held: shown at once
+    programNotified(id, "Claude is waiting for your input", title: "Claude Code")
+    XCTAssertEqual(shown, ["Claude is waiting for your input"])
+  }
+
+  /// A finish in the terminal the user is looking at only shows the mark; once they look away, the
+  /// next turn's finish alerts.
+  /// Value: protects=a watched finish never alerts; fails_when=followFinish drops its focused-attachment guard; why_new=the other finish tests use unfocused panes; seam=none; no_claim=real key-window changes (AlwaysKeyWindow)
+  func testAFinishInTheFocusedTerminalDoesNotAlert() {
+    alerts.start()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    let tab = store.terminals.addTab(for: target)
+    let window = AlwaysKeyWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
+      backing: .buffered, defer: false)
+    window.contentView?.addSubview(tab.surface!)
+    window.makeFirstResponder(tab.surface)
+    let id = session(tab)
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    monitor.seed(id, records: [done()])
+    XCTAssertTrue(finishes.isEmpty)
+
+    window.makeFirstResponder(nil)
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    monitor.seed(id, records: [done()])
+    XCTAssertEqual(finishes.count, 1, "control: the same pane alerts once nobody is looking")
+    tab.surface?.removeFromSuperview()
+  }
+
+  /// Once the program that finished has gone, the next one's notifications are its own (a build
+  /// with a shell notify plugin, say).
+  func testANotificationAfterTheFinishedProgramExitsShows() {
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [done()])
+    monitor.seed(id, reporting: false, records: [])
+    programNotified(id, "Build finished", title: "zsh")
+    XCTAssertEqual(shown, ["Build finished"])
+  }
+
+  /// A program that writes its own notification just before reporting the finish (Codex) gets
+  /// one notification: the finish alert, with the program's words.
+  func testAHeldNotificationFoldsIntoTheFinish() {
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    programNotified(id, "Done: tests pass")
+    monitor.seed(id, records: [done()])
+    XCTAssertEqual(shown, [])
+    XCTAssertEqual(finishes.map(\.body), ["Turn finished: \u{201C}Done: tests pass\u{201D}"])
   }
 
   /// A program that never probed (Codex) alerts once the agent has seen it stay running (#481):
