@@ -57,6 +57,10 @@ type Service struct {
 	// "created" event so a GUI can mount the new workroom and stream the setup log
 	// beneath its terminal from the start.
 	OnReady func(CreateResult)
+	// OnStep, when set, reports each step of a create (fetch, worktree, script) as it changes
+	// state: running, done, warning, skipped or failed. detail is the warning text, the skip
+	// reason or the failure message.
+	OnStep func(id, state, detail string)
 }
 
 func (s *Service) sayStatus(status, msg string) {
@@ -241,7 +245,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		// An app-wide default must not block a project it doesn't fit (`upstream/main` in a
 		// repository with no upstream), so it may fall back; a project's own base is an explicit
 		// choice and still fails.
-		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global)
+		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global, vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep})
 		if errors.Is(err, ErrBaseBranchNotFound) {
 			return res, err
 		}
@@ -280,12 +284,17 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	if res.HasSetup {
 		s.sayStatus("setup", fmt.Sprintf("Running %s from %q", setupScript, wrPath))
 		if !s.Pretend {
+			s.step("script", "running", "")
 			out, scriptErr := script.Run("setup", setupScript, wrPath, name, dir, setupOut)
 			res.SetupOutput = out
 			if scriptErr != nil {
+				s.step("script", "failed", scriptErr.Error())
 				return res, scriptErr
 			}
+			s.step("script", "done", "")
 		}
+	} else if !s.Pretend {
+		s.step("script", "skipped", "No setup script")
 	}
 
 	return res, nil
@@ -797,4 +806,10 @@ func (s *Service) forgetDestroyedRemote(dir, name string) (DeleteResult, error) 
 		}
 	}
 	return DeleteResult{Name: name, Outcome: ForgotDestroyedRemote}, nil
+}
+
+func (s *Service) step(id, state, detail string) {
+	if s.OnStep != nil {
+		s.OnStep(id, state, detail)
+	}
 }

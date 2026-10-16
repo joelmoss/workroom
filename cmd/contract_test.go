@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -156,6 +157,8 @@ func createdName(t *testing.T, stdout []byte) string {
 func checkContract(t *testing.T, file string, got []byte, home string, subs ...string) {
 	t.Helper()
 	norm := strings.NewReplacer(append([]string{home, contractHome}, subs...)...).Replace(string(got))
+	// A commit's hash differs on every run, and `git worktree add` prints it into the step logs.
+	norm = regexp.MustCompile(`HEAD is now at [0-9a-f]+`).ReplaceAllString(norm, "HEAD is now at <commit>")
 	path := filepath.Join("..", "testdata", "contracts", file)
 	if *updateContracts {
 		if err := os.WriteFile(path, []byte(norm), 0o644); err != nil {

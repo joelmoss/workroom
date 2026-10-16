@@ -46,6 +46,18 @@ var createCmd = &cobra.Command{
 			// stays on stdout. The macOS app reads these live.
 			logWriter := newJSONLogWriter(os.Stderr, "setup")
 			svc.ScriptLogWriter = logWriter
+			// Step events drive the app's creation checklist; log events carry the running step.
+			svc.OnStep = func(id, state, detail string) {
+				if state == "running" {
+					logWriter.Flush()
+					logWriter.step = id
+				}
+				event := map[string]any{"type": "step", "id": id, "state": state}
+				if detail != "" {
+					event["detail"] = detail
+				}
+				writeJSONEvent(os.Stderr, event)
+			}
 			// Emit an early "created" event (before setup runs) so the GUI can mount
 			// the workroom and dock the streaming setup log under its terminal.
 			svc.OnReady = func(r workroom.CreateResult) {

@@ -1,1 +1,15 @@
+{"id":"fetch","state":"running","type":"step"}
+{"type":"log","phase":"setup","step":"fetch","text":"$ git fetch --prune origin"}
+{"type":"log","phase":"setup","step":"fetch","text":"fatal: '/Users/dev/gone.git' does not appear to be a git repository"}
+{"type":"log","phase":"setup","step":"fetch","text":"fatal: Could not read from remote repository."}
+{"type":"log","phase":"setup","step":"fetch","text":""}
+{"type":"log","phase":"setup","step":"fetch","text":"Please make sure you have the correct access rights"}
+{"type":"log","phase":"setup","step":"fetch","text":"and the repository exists."}
+{"detail":"Could not fetch origin. The workroom starts from HEAD, which may be out of date.","id":"fetch","state":"warning","type":"step"}
+{"id":"worktree","state":"running","type":"step"}
+{"type":"log","phase":"setup","step":"worktree","text":"$ git worktree add -b workroom/calm-river /Users/dev/workrooms/calm-river"}
+{"type":"log","phase":"setup","step":"worktree","text":"Preparing worktree (new branch 'workroom/calm-river')"}
+{"type":"log","phase":"setup","step":"worktree","text":"HEAD is now at <commit> first"}
+{"id":"worktree","state":"done","type":"step"}
 {"name":"calm-river","path":"/Users/dev/workrooms/calm-river","project":"/Users/dev/src/app","setup":false,"type":"created","vcs":"git","warning":"Could not fetch origin. The workroom starts from HEAD, which may be out of date."}
+{"detail":"No setup script","id":"script","state":"skipped","type":"step"}

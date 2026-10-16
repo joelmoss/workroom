@@ -19,6 +19,7 @@ import (
 type jsonLogWriter struct {
 	w     io.Writer
 	phase string
+	step  string // the create step now running; tags each log event, "" when none
 	buf   []byte // bytes received since the last newline, not yet emitted
 }
 
@@ -60,8 +61,9 @@ func (l *jsonLogWriter) emit(line string) {
 	rec := struct {
 		Type  string `json:"type"`
 		Phase string `json:"phase"`
+		Step  string `json:"step,omitempty"`
 		Text  string `json:"text"`
-	}{Type: "log", Phase: l.phase, Text: strings.TrimSuffix(line, "\r")}
+	}{Type: "log", Phase: l.phase, Step: l.step, Text: strings.TrimSuffix(line, "\r")}
 
 	data, err := json.Marshal(rec)
 	if err != nil {
