@@ -438,10 +438,10 @@ extension AppStore {
       DispatchQueue.main.async { MainActor.assumeIsolated(body) }
     }
     let stepped: @Sendable (ProvisioningProgress.Step) -> Void = { step in
-      onMain { run.begin(CreationKind.stepID(step)) }
+      onMain { run.begin(step.rawValue) }
     }
     let logged: @Sendable (ProvisioningProgress.Step, String) -> Void = { step, line in
-      onMain { run.append(line, to: CreationKind.stepID(step)) }
+      onMain { run.append(line, to: step.rawValue) }
     }
     // Set once the driver reports a pull: still nil after `ensureHostImage`, the image was here.
     let pulled = CreationWarningBox()

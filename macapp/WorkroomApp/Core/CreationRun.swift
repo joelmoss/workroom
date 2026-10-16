@@ -28,50 +28,38 @@ enum CreationKind: Equatable {
     }
   }
 
-  /// The steps a create of this kind runs, in order (spec section 3), all pending.
+  /// The steps a create of this kind runs, in order (spec section 3), all pending. A remote step's
+  /// id is its `ProvisioningProgress.Step`'s, which is how a driver's report finds its row.
   var plan: [CreationStep] {
-    let steps: [(String, String)]
+    typealias Step = ProvisioningProgress.Step
+    let remote: [(Step, String)]
     switch self {
     case .local:
-      steps = [
-        ("fetch", "Fetch base branch"), ("worktree", "Create worktree"),
-        ("script", "Run setup script"),
+      return [
+        CreationStep(id: "fetch", title: "Fetch base branch"),
+        CreationStep(id: "worktree", title: "Create worktree"),
+        CreationStep(id: "script", title: "Run setup script"),
       ]
     case .container:
-      steps = [
-        ("repository", "Check repository"), ("image", "Pull host image"),
-        ("machine", "Start container"), ("connect", "Connect"), ("clone", "Clone repository"),
-        ("checkout", "Check out branch"),
+      remote = [
+        (.repository, "Check repository"), (.image, "Pull host image"),
+        (.machine, "Start container"), (.connect, "Connect"), (.clone, "Clone repository"),
+        (.checkout, "Check out branch"),
       ]
     case .boxd:
-      steps = [
-        ("repository", "Check repository"), ("account", "Check boxd account"),
-        ("machine", "Create machine"), ("setup", "Set up machine"), ("connect", "Connect"),
-        ("clone", "Clone repository"), ("checkout", "Check out branch"),
+      remote = [
+        (.repository, "Check repository"), (.account, "Check boxd account"),
+        (.machine, "Create machine"), (.setup, "Set up machine"), (.connect, "Connect"),
+        (.clone, "Clone repository"), (.checkout, "Check out branch"),
       ]
     case .exeDev:
-      steps = [
-        ("repository", "Check repository"), ("account", "Check exe.dev account"),
-        ("machine", "Create VM"), ("boot", "Wait for boot"), ("setup", "Set up machine"),
-        ("connect", "Connect"), ("clone", "Clone repository"), ("checkout", "Check out branch"),
+      remote = [
+        (.repository, "Check repository"), (.account, "Check exe.dev account"),
+        (.machine, "Create VM"), (.boot, "Wait for boot"), (.setup, "Set up machine"),
+        (.connect, "Connect"), (.clone, "Clone repository"), (.checkout, "Check out branch"),
       ]
     }
-    return steps.map { CreationStep(id: $0.0, title: $0.1) }
-  }
-
-  /// The plan's id for a step a driver or `RemoteProvisioning` reports.
-  static func stepID(_ step: ProvisioningProgress.Step) -> String {
-    switch step {
-    case .repository: "repository"
-    case .account: "account"
-    case .image: "image"
-    case .machine: "machine"
-    case .boot: "boot"
-    case .setup: "setup"
-    case .connect: "connect"
-    case .clone: "clone"
-    case .checkout: "checkout"
-    }
+    return remote.map { CreationStep(id: $0.0.rawValue, title: $0.1) }
   }
 }
 

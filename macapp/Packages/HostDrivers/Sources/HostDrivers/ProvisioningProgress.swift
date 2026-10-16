@@ -6,17 +6,10 @@ import WorkroomSystem
 /// the creation pane (#483).
 public enum ProvisioningProgress {
   /// A step of a remote create that takes long enough to say (#356): the drivers' machine work
-  /// and the sequence's own git and checks.
+  /// and the sequence's own git and checks. The raw value is the step's id in the app's creation
+  /// checklist (#483).
   public enum Step: String, CaseIterable, Sendable {
-    case repository = "Checking the repository"
-    case account = "Checking the account"
-    case image = "Pulling the host image"
-    case machine = "Creating the workroom's machine"
-    case boot = "Waiting for it to boot"
-    case setup = "Setting it up"
-    case connect = "Connecting"
-    case clone = "Cloning the repository"
-    case checkout = "Checking out the workroom's branch"
+    case repository, account, image, machine, boot, setup, connect, clone, checkout
   }
 
   /// Told each `Step` as it starts, for a create's progress on its project row. Set with
