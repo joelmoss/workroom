@@ -91,7 +91,12 @@ final class ProgramStatusAlerts: ObservableObject {
         // A program that never probed alerts once the agent has seen it stay running, or once
         // its own notification announced the request (#481).
         if !notified.contains(key), record.notify || held[session] != nil {
-          alert(key, session: session, record: record, detail: takeHeld(session))
+          let held = takeHeldEntry(session)
+          // Workroom will not alert it (its terminal is being looked at): the program's own
+          // notification is shown as before.
+          if !alert(key, session: session, record: record, detail: held?.body), let held {
+            showNow(session, body: held.body, held.show)
+          }
         }
       }
     }
@@ -118,15 +123,17 @@ final class ProgramStatusAlerts: ObservableObject {
   }
 
   /// `detail` is the program's own notification text, for a request whose report has no message.
+  /// False when it will not alert: alerts are off, or someone is looking at the terminal.
+  @discardableResult
   private func alert(
     _ key: String, session: UUID, record: ProgramStatusRecord, detail: String? = nil
-  ) {
+  ) -> Bool {
     notified.insert(key)
-    guard isEnabled() else { return }
+    guard isEnabled() else { return false }
     let attachments = attachments(of: session)
     // Looking at it already, in any window: nothing to say.
     guard let destination = attachments.first, !attachments.contains(where: \.focused) else {
-      return
+      return false
     }
     if let last = lastSurfaced[destination.tab], open[last.episode] != nil,
       now().timeIntervalSince(last.date) < ProgramStatusLimits.notifyCooldown.seconds
@@ -141,9 +148,10 @@ final class ProgramStatusAlerts: ObservableObject {
         self.deferred.removeValue(forKey: key)
         self.post(key, session: session, record: record, detail: detail)
       }
-      return
+      return true
     }
     post(key, session: session, record: record, detail: detail)
+    return true
   }
 
   private func post(
@@ -181,9 +189,9 @@ final class ProgramStatusAlerts: ObservableObject {
 
   /// A program's own notification (`.osc`) from a terminal of `session`: one request, one
   /// notification (#481). Dropped when another pane of the session raised the same one a moment
-  /// ago; folded into the newest request Workroom has alerted, whenever it comes (Claude Code's
-  /// comes 6 s after its report); raising, with its text, the request it announces that has not
-  /// alerted yet; held for `notificationHold` when the program reports but has no request yet
+  /// ago; folded into its session's newest open request when Workroom has alerted it, whenever it
+  /// comes (Claude Code's comes 6 s after its report), or raising it, with its text, when it has
+  /// not alerted yet; held for `notificationHold` when the program reports but has no request yet
   /// (Codex writes its own just before its report); otherwise shown through `show`.
   func programNotified(session: UUID, title: String, body: String?, show: @escaping Show) {
     let date = now()
@@ -205,10 +213,16 @@ final class ProgramStatusAlerts: ObservableObject {
         let since = { current.blockedSince[ProgramStatusSession.blockedKey($0)] ?? .distantPast }
         return since($0.record) > since($1.record)
       }
-    if let request = requests.first(where: { raised.contains($0.key) }) {
-      for store in stores() { store.mergeIntoNeedsYou(episode: request.key, body: body) }
-    } else if let request = requests.first(where: { !notified.contains($0.key) }) {
-      alert(request.key, session: session, record: request.record, detail: body)
+    if let request = requests.first {
+      if raised.contains(request.key) {
+        for store in stores() { store.mergeIntoNeedsYou(episode: request.key, body: body) }
+      } else if notified.contains(request.key)
+        || !alert(request.key, session: session, record: request.record, detail: body)
+      {
+        // A request Workroom does not alert (its terminal is being looked at): shown as before.
+        showNow(session, body: body, show)
+      }
+      recomputeWaiting()
     } else if current.reporting {
       if let earlier = takeHeldEntry(session) { showNow(session, body: earlier.body, earlier.show) }
       let task = Task { [weak self] in
@@ -225,11 +239,6 @@ final class ProgramStatusAlerts: ObservableObject {
   private func showNow(_ session: UUID, body: String?, _ show: Show) {
     guard let withdraw = show() else { return }
     shown[session] = (now(), body, withdraw)
-  }
-
-  /// The held notification's text, which its request's alert now carries instead.
-  private func takeHeld(_ session: UUID) -> String? {
-    takeHeldEntry(session)?.body
   }
 
   private func takeHeldEntry(_ session: UUID) -> (body: String?, show: Show)? {

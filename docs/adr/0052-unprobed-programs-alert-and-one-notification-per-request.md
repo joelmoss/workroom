@@ -8,8 +8,7 @@ Codex reports OSC 7501 without sending the support probe. The spec allows that (
 
 **One notification per request.** Workroom's "needs you" alert owns the request, and the program's own notification is folded into it whichever comes first (`ProgramStatusAlerts.programNotified`):
 
-- While its session has an open request Workroom has alerted, the notification is folded into the newest one, however late it comes. Its text fills the alert only where the alert has none.
-- While its session has a request that has not alerted yet, the notification raises the alert at once, carrying its text. That text is the request's detail when the report has no message (Codex sends none).
+- While its session has an open request, the notification goes to the newest one, however late it comes. If Workroom has alerted that request, the notification is folded into the alert, and its text fills the alert only where the alert has none. If Workroom has not alerted it yet, the notification raises the alert at once, carrying its text, which is the request's detail when the report has no message (Codex sends none). If Workroom will not alert it, because its terminal is being looked at, the notification is shown as before.
 - While its session reports program status but has no request, the notification is held for 500 ms. A request that appears in that time raises the alert at once, with the notification's text. Otherwise the notification is shown as it would have been.
 - A session that reports no program status, or alerts turned off, shows it at once, as before.
 - When an alert is raised, any ordinary notification Workroom showed for the same session in the previous 5 s is withdrawn, and its text carried into the alert.
