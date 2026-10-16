@@ -12,6 +12,9 @@ import XCTest
 final class InspectorSplitLayoutTests: XCTestCase {
   private func makeContainer(heights: [CGFloat]) -> InspectorSplitContainerController {
     let container = InspectorSplitContainerController()
+    // Never the real mouse: a button held anywhere on the Mac during the run would make a
+    // programmatic divider move read as a user drag (#484). Drag tests set it to true.
+    container.isLikelyUserDrag = { false }
     // One pane per supplied height, so a change to the section count doesn't break the drag tests
     // (which exercise controller logic with a fixed small pane set, not the live section count).
     let panes = (0..<heights.count).map { _ in InspectorPaneViewController() }
