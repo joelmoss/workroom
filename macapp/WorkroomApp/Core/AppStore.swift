@@ -3163,10 +3163,10 @@ final class AppStore: ObservableObject {
     }
     // The title already names the workroom, or a root's project, so the origin line adds only a
     // workroom's project: "london" under "Terminal 7 in london needs you" said it twice.
-    let label = Self.sidebarID(forTargetID: targetID, in: projects).map { label(for: $0) }
+    let origin = Self.sidebarID(forTargetID: targetID, in: projects).map { label(for: $0) }
     let note = notifications.recordNeedsYou(
       targetID: targetID, tabID: tabID,
-      source: label?.workroom == nil ? "" : label?.project ?? "",
+      source: origin?.workroom == nil ? "" : origin?.project ?? "",
       title: "\(name) needs you", body: body, episode: episode)
     surface(note, stillWanted: stillWanted)
   }
