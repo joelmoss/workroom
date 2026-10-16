@@ -876,7 +876,10 @@ final class AppStore: ObservableObject {
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
     let store = projectStore ?? ProjectStore()
     self.projectStore = store
-    self.cli = cli ?? WorkroomCLI.shared
+    self.cli =
+      cli
+      ?? (AppEnvironment.current.isFixture && UITestFixture.scriptedCreate
+        ? ScriptedCreateCLI.shared : WorkroomCLI.shared)
     // `commitHistory` is assigned here (not inline) for the same @MainActor reason: a test injects a
     // stub to observe the live-refresh triggers; production/fixture keep the default.
     self.commitHistory =
