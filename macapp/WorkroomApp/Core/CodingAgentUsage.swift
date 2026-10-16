@@ -588,7 +588,9 @@ final class CodingAgentUsageMonitor: ObservableObject {
       claudeUsesBridge = true
       return
     }
-    if UITestFixture.usageAgentTitle != nil {
+    // A UI-test launch never reads this Mac's real usage: with the footer no longer waiting for an
+    // agent to run, the developer's own Codex sessions and cswap accounts would otherwise show.
+    if UITestFixture.usageAgentTitle != nil || AppEnvironment.isUILaunch {
       claudeUsesBridge = true
       return
     }
@@ -639,7 +641,7 @@ final class CodingAgentUsageMonitor: ObservableObject {
   /// and new segments call `refresh`, which never starts either process.
   func poll() {
     guard UITestFixture.usageAgentTitle == nil, UITestFixture.usageSnapshot == nil,
-      pollTask == nil, pollingEnabled()
+      !AppEnvironment.isUILaunch, pollTask == nil, pollingEnabled()
     else { return }
     let pollers = pollers
     let current = now()
@@ -690,7 +692,7 @@ final class CodingAgentUsageMonitor: ObservableObject {
   func refresh() {
     // A seeded agent title is a model-only UI fixture. Never replace its deterministic snapshot
     // (including the intentional unavailable case) by reading the developer's real provider files.
-    guard UITestFixture.usageAgentTitle == nil else { return }
+    guard UITestFixture.usageAgentTitle == nil, !AppEnvironment.isUILaunch else { return }
     refreshTask?.cancel()
     activeRead?.cancel()
     let cancellation = ReadCancellation()
