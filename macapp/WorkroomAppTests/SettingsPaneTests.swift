@@ -29,7 +29,8 @@ final class SettingsPaneTests: XCTestCase {
   }
 
   func testAllCasesOrderMatchesSidebarOrder() {
-    XCTAssertEqual(SettingsPane.allCases, [.general, .appearance, .terminal, .agent, .about])
+    XCTAssertEqual(
+      SettingsPane.allCases, [.general, .notifications, .appearance, .terminal, .agent, .about])
   }
 
   func testEveryCaseHasNonEmptyLabelAndSystemImage() {

@@ -76,6 +76,7 @@ struct SettingsView: View {
   @ViewBuilder private var pane: some View {
     switch selection {
     case .general: GeneralSettingsPane()
+    case .notifications: NotificationsSettingsPane()
     case .appearance: AppearanceSettingsPane()
     case .terminal: TerminalSettingsPane()
     case .agent: CodingAgentSettingsPane()
@@ -182,8 +183,6 @@ private struct SettingsWindowThemer: NSViewRepresentable {
 private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.globalHotkey) private var globalHotkey
-  @Default(.showMenuBarItem) private var showMenuBarItem
-  @Default(.notifyWhenTerminalNeedsMe) private var notifyWhenTerminalNeedsMe
 
   var body: some View {
     Form {
@@ -196,6 +195,20 @@ private struct GeneralSettingsPane: View {
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
         .help("Register the system-wide ⌘§ shortcut to show or hide Workroom.")
 
+      NewWorkroomsSection()
+    }
+    .formStyle(.grouped)
+    .scrollContentBackground(.hidden)
+  }
+}
+
+private struct NotificationsSettingsPane: View {
+  @Default(.showMenuBarItem) private var showMenuBarItem
+  @Default(.notifyWhenTerminalNeedsMe) private var notifyWhenTerminalNeedsMe
+  @Default(.notifyWhenTurnFinishes) private var notifyWhenTurnFinishes
+
+  var body: some View {
+    Form {
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
 
@@ -211,7 +224,14 @@ private struct GeneralSettingsPane: View {
       .accessibilityIdentifier("settings.control.notifyWhenTerminalNeedsMe")
       .onChange(of: notifyWhenTerminalNeedsMe) { WindowRegistry.shared.recomputeBadge() }
 
-      NewWorkroomsSection()
+      Toggle(isOn: $notifyWhenTurnFinishes) {
+        Text("Notify when a terminal finishes")
+        Text(
+          "When a program finishes its turn in a terminal you are not looking at. Replaces the "
+            + "program's own notification after its turn.")
+      }
+      .help("Alert you when a program in a terminal you are not looking at finishes its turn.")
+      .accessibilityIdentifier("settings.control.notifyWhenTurnFinishes")
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)

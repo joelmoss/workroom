@@ -162,6 +162,11 @@ extension Defaults.Keys {
   static let notifyWhenTerminalNeedsMe = Key<Bool>(
     "notifyWhenTerminalNeedsMe", default: true, suite: .app)
 
+  /// Alert when a program in a terminal nobody is looking at finishes its turn. On, it replaces
+  /// the program's own notification after the turn (Claude Code's "waiting for your input").
+  static let notifyWhenTurnFinishes = Key<Bool>(
+    "notifyWhenTurnFinishes", default: true, suite: .app)
+
   /// Load remote author/reviewer avatars — Gravatar (by commit-author email) and
   /// `github.com/<login>.png`. On by default. Off ⇒ only the coloured initials chip renders and NO
   /// avatar image request is made, so opening an untrusted repo's History never beacons the viewer's

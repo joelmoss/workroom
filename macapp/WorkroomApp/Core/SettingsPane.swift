@@ -15,6 +15,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
   Defaults.PreferRawRepresentable
 {
   case general
+  case notifications
   case appearance
   case terminal
   case agent
@@ -26,6 +27,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
   var label: String {
     switch self {
     case .general: return "General"
+    case .notifications: return "Notifications"
     case .appearance: return "Appearance"
     case .terminal: return "Terminal"
     case .agent: return "Agent"
@@ -37,6 +39,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
   var systemImage: String {
     switch self {
     case .general: return "gearshape"
+    case .notifications: return "bell"
     case .appearance: return "paintbrush"
     case .terminal: return "terminal"
     case .agent: return "sparkles"

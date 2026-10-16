@@ -3177,14 +3177,40 @@ final class AppStore: ObservableObject {
     {
       body += ": \u{201C}\(message)\u{201D}"
     }
-    // The title already names the workroom, or a root's project, so the origin line adds only a
-    // workroom's project: "london" under "Terminal 7 in london needs you" said it twice.
-    let origin = Self.sidebarID(forTargetID: targetID, in: projects).map { label(for: $0) }
     let note = notifications.recordNeedsYou(
-      targetID: targetID, tabID: tabID,
-      source: origin?.workroom == nil ? "" : origin?.project ?? "",
+      targetID: targetID, tabID: tabID, source: placeSource(targetID: targetID),
       title: "\(name) needs you", body: body, episode: episode)
     surface(note, stillWanted: stillWanted)
+  }
+
+  /// Alert that the program in `tabID` finished its turn while nobody was looking: "Terminal 2 in
+  /// fix-auth finished", then what it said. An ordinary notification, so focusing the terminal
+  /// dismisses it and the next finish there replaces its banner.
+  func raiseFinished(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, record: ProgramStatusRecord,
+    detail: String? = nil
+  ) {
+    var body = ProgramStatusPresentation.turnFinished
+    if let message = ProgramStatusPresentation.oneLine(record.message)
+      ?? detail.flatMap(ProgramStatusPresentation.oneLine)
+    {
+      body += ": \u{201C}\(message)\u{201D}"
+    }
+    guard
+      let note = notifications.record(
+        targetID: targetID, tabID: tabID, source: placeSource(targetID: targetID),
+        activity: .osc(
+          title: "\(terminalPlace(targetID: targetID, tabID: tabID)) finished", body: body),
+        focused: false)
+    else { return }
+    surface(note)
+  }
+
+  /// The origin line under a title that already names the workroom, or a root's project: only a
+  /// workroom's project, since "london" under "Terminal 7 in london needs you" said it twice.
+  private func placeSource(targetID: TerminalTarget.ID) -> String {
+    let origin = Self.sidebarID(forTargetID: targetID, in: projects).map { label(for: $0) }
+    return origin?.workroom == nil ? "" : origin?.project ?? ""
   }
 
   /// "Terminal 2 in fix-auth": a terminal's own name and where it is, as alerts and the menu bar's
