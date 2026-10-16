@@ -3,8 +3,9 @@
 A program running in a Workroom terminal can say what it is doing: working, waiting on you, finished,
 or failed. Workroom shows it beside the terminal and, when the program is waiting on you, can alert
 you. This is the OSC 7501 [program status protocol](https://www.superlogical.com/rex/docs/build/program-status),
-which Claude Code 2.1.295 and later speak. Issue #358; the design decision is
-[ADR 0050](adr/0050-program-status-service.md).
+which Claude Code 2.1.295 and later and Codex 0.163 and later speak. Issues #358 and #481; the
+design decisions are [ADR 0050](adr/0050-program-status-service.md) and
+[ADR 0052](adr/0052-unprobed-programs-alert-and-one-notification-per-request.md).
 
 ## What you see
 
@@ -31,7 +32,7 @@ what the program said; the last line says it came from the program in that termi
   keeps the request, and reconnecting would bring the mark straight back.
 
 A terminal with no mark is **not reporting**, which is not the same as "not waiting". Programs other
-than Claude Code mostly don't report yet. The tooltip's last line says so: "Program status: not
+than Claude Code and Codex mostly don't report yet. The tooltip's last line says so: "Program status: not
 reported", or "unavailable on this host" for an agent too old to keep status.
 
 ### Alerts and the Dock badge
@@ -42,19 +43,28 @@ count goes down when the request is answered, here or on another Mac, or the pro
 the notification does not lower it. The menu bar's list shows requests under **Waiting for you**
 and other notifications under **Unread notifications**.
 
-Claude Code also posts its own notification about 6 seconds after it starts waiting. Workroom folds
-it into its own alert rather than showing two. If you answer within those 6 seconds, Claude never
-alerts at all.
+One request makes one notification. A program's own notification about a request Workroom has
+alerted is folded into that alert, however late it comes: Claude Code posts its own about 6
+seconds after it starts waiting, and if you answer within those 6 seconds, Claude never alerts at
+all. Codex posts its own just before it reports the request, so Workroom holds a program's
+notification for half a second while that program is reporting; the request it announces then
+alerts at once, with the program's text (Codex's report has none). A held notification that
+announces no request is shown as it would have been, half a second late.
 
 **Settings ▸ Notify when a terminal needs me** turns Workroom's alerts and their Dock count off. The
 marks stay, and the requests still show in the menu bar list. Programs' own notifications still
 arrive as before.
 
-Only a program that asked whether the terminal supports the protocol (the probe, below) can alert
-you. A report printed by anything else (`cat`ing a file, say) shows its mark but never alerts, and
-neither does a probe and a report printed back to back: a prober has to read the reply before it
-reports. A replayed recording of a session that probed can still alert, because a screen of output
-separates its probe from its report and the agent reads them apart.
+A program that asked whether the terminal supports the protocol (the probe, below) can alert you at
+once. One that never asked, as Codex doesn't (the spec allows it: "a program MAY send reports
+without querying first"), alerts once it has shown it is a running program: still alive and in the
+foreground 1 second after it started waiting, which the agent checks every 2 seconds, so its alert
+comes 1 to 3 seconds in. A report printed by anything else (`cat`ing a file, say) shows its mark
+but never alerts: `cat` has exited by then, or the shell's prompt has dropped the request. Neither
+does a report printed by the shell itself, nor a probe and a report printed back to back: a prober
+has to read the reply before it reports. A replayed recording of a session that probed can still
+alert, because a screen of output separates its probe from its report and the agent reads them
+apart.
 
 ## Which terminals support it
 
@@ -190,6 +200,18 @@ sends only OSC 9;4.
 
 - **Run commands and other non-daemon panes** never show program status: only a terminal whose
   shell runs under `wr-agent` has an agent to keep it (see `TODOS.md`).
+- **A long-running program can relay someone else's request.** A program that never probed alerts
+  once it stays running in the foreground, and that cannot tell a relay (`ssh`, `mosh`, `tmux`,
+  which is how Codex on another machine reaches you) from `tail -f` on a raw recording. The
+  second can alert.
+- **A recording with a program's own notification in it alerts briefly.** `cat`ing a raw recording
+  that holds both a program's notification and its request, in a terminal you are not looking at,
+  raises a "needs you" alert that goes when the shell's prompt comes back. Before #481 the same
+  recording showed an ordinary notification.
+- **One notification, almost always.** On a lagging remote link, a program's own notification can
+  be shown, with its sound, before its request arrives. Workroom then withdraws it when the alert
+  is raised, but the banner may already have been seen. A program whose own notification comes
+  before its first report is not held; Claude Code and Codex both report as they start.
 - **A replayed recording can alert.** `cat`ing a raw recording of a session that probed, in a
   terminal you are not looking at, can flash one "needs you" alert: the agent sees its probe and its
   report in separate reads. The recording's next state takes it back at once.

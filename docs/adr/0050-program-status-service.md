@@ -1,5 +1,7 @@
 # Program status (OSC 7501) is kept by wr-agent and published on its own service, not passed through the terminal relay
 
+**Superseded in part by ADR 0052 (2026-10-16):** a program that never probes may alert once the agent has seen it stay running, and a program's own notification is folded into its request whichever comes first, not only within 10 s.
+
 Decided 2026-10-14 (#358). A program's OSC 7501 reports are parsed by each session's shadow terminal in `wr-agent`, which keeps the records, answers the support probe, and publishes each session's records on `Service::ProgramStatus` (`0x07`, protocol 8) over the agent connection the app already holds for each host. The app shows them beside the pane's busy indicator and, for a request that waits on the user, alerts and counts it in the Dock badge.
 
 The agent owns the state because the pane does not see the bytes in a form it can use. GhosttyKit's apprt ignores `.program_status`, so the app's own terminal drops 7501. A daemon-backed pane's process is the `wr-agent attach` relay, which writes `Output` frames to the pane and ignores every other frame kind, so a new `0x1*` frame reaches the relay and stops there (`attach.rs`); Swift never reads attach frames. Synthesising some other escape into the pty stream is ruled out too: GhosttyKit drops 7501 itself, and an escape injected at an arbitrary chunk boundary can split one of the program's own sequences. The service also gives reattach, relaunch, a second Mac and an agent hand-off one answer: the subscribe snapshot.
