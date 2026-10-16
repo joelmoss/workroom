@@ -204,6 +204,8 @@ private struct CreationStepRow: View {
   private static let spacing: CGFloat = 10
   /// The timing column's width: fixed, so the timer never jitters as a split is resized (D15).
   private static let durationWidth: CGFloat = 56
+  /// A row's widest: its glyph, title, caption and duration, inside the 640pt column.
+  private static let maxWidth: CGFloat = 420
 
   var body: some View {
     HStack(alignment: .top, spacing: Self.spacing) {
@@ -231,6 +233,9 @@ private struct CreationStepRow: View {
         .lineLimit(1)
         .frame(minWidth: Self.durationWidth, minHeight: 17, alignment: .trailing)
     }
+    // Narrower than the column (owner), so a wide pane's durations sit near their titles and still
+    // line up; a narrower pane's row fills it.
+    .frame(maxWidth: Self.maxWidth, alignment: .leading)
     .padding(.vertical, 6)
     .contentShape(Rectangle())
     .onTapGesture(perform: toggle)
