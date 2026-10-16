@@ -85,4 +85,21 @@ final class ProvisioningLogTests: XCTestCase {
     XCTAssertFalse(logged.contains("boxd-secret-token"), logged)
     XCTAssertFalse(logged.contains("HOME"), logged)
   }
+
+  // Value: protects=the one logged exchange every setup and runtime command goes through logs the
+  // shown command line then the output, skips the output when told (a pull's progress bars), and
+  // logs nothing for a poll; fails_when=output is logged before the command, logged when told not
+  // to, or a quiet command logs; no_claim=what each driver passes as its command line
+  func testALoggedExchangeLogsTheCommandThenItsOutput() async {
+    let lines = Lines()
+    let sink: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add($0, $1) }
+    await ProvisioningProgress.$log.withValue(sink) {
+      await ProvisioningProgress.step(.setup, report: false) {
+        _ = await ProvisioningProgress.logged("$ sudo sh") { (0, "ok\ndone") }
+        _ = await ProvisioningProgress.logged("$ pull", logOutput: { $0 != 0 }) { (0, "bars") }
+        _ = await ProvisioningProgress.logged(nil) { (1, "polled") }
+      }
+    }
+    XCTAssertEqual(lines.all, ["setup:$ sudo sh", "setup:ok", "setup:done", "setup:$ pull"])
+  }
 }

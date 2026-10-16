@@ -36,6 +36,18 @@ public protocol HostDriver: Sendable {
 }
 
 extension HostDriver {
+  /// Runs `command`, a line for `host`'s shell, with `stdin` fed to it, for a machine's setup. The
+  /// log gets the command line and its output, never `stdin` (a script). One that exits non-zero
+  /// throws "`failure`: <its output>".
+  func setUp(
+    _ command: String, on host: HostID, stdin: Data, timeout: TimeInterval, failure: String
+  ) async throws {
+    let (status, output) = try await ProvisioningProgress.logged("$ \(command)") {
+      try await exec(command, on: host).communicate(stdin, timeout: timeout)
+    }
+    guard status == 0 else { throw HostDriverError.provisioning("\(failure): \(output)") }
+  }
+
   /// Runs `check`, a line for `host`'s shell, until it exits 0: up to `tries` times, 400 ms apart,
   /// for a wait on a machine coming up (its name, its identity, its agent). A machine mid-reboot
   /// refuses or holds the connection; neither is the answer, but the last one is what the failure
