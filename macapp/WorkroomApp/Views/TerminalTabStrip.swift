@@ -609,8 +609,12 @@ private struct TerminalTabChip: View {
       }
       // Unread activity is marked by a leading accent dot (+ accent title) — a different visual
       // primitive from the selected tab's neutral fill, so the two never read alike. A waiting or
-      // finished mark already says it, so the dot gives way to it.
-      if hasActivity, tab.indicator != .blocked, tab.indicator != .done {
+      // program's finished mark already says it, so the dot gives way to it; a shell command's ✓
+      // carries no notification, so it does not.
+      let markSaysIt =
+        tab.indicator == .blocked
+        || (tab.indicator == .done && tab.programStatus?.done?.exitCode == nil)
+      if hasActivity, !markSaysIt {
         Circle()
           .fill(theme.tokens.accent)
           .frame(width: 6, height: 6)

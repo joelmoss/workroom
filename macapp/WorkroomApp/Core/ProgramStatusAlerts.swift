@@ -137,7 +137,7 @@ final class ProgramStatusAlerts: ObservableObject {
     guard let destination = attachments.first, !attachments.contains(where: \.focused) else {
       return
     }
-    // A program that writes its own notification just before its report (Codex): this replaces it.
+    // A program that wrote its own notification just before its finish report: this replaces it.
     let held = takeHeldEntry(session)
     destination.store.raiseFinished(
       targetID: destination.target, tabID: destination.tab, record: done, detail: held?.body)

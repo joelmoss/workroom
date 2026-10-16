@@ -696,6 +696,8 @@ final class AppStore: ObservableObject {
   /// each toast carries the `WorkroomNotification` it mirrors so a tap can route via `openTerminal`.
   /// Rendered by `ToastStack`, overlaid bottom-right in `RootView`.
   var toasts: [WorkroomNotification] = []
+  /// Each tab's latest "finished" notification, which the tab's next finish replaces.
+  private var lastFinish: [TerminalTab.ID: UUID] = [:]
   /// Max simultaneously-visible toasts; beyond this the oldest is dropped so a chatty emitter can't
   /// overflow the window (matches the "stack a few, drop oldest" decision).
   private static let maxToasts = 4
@@ -3185,7 +3187,8 @@ final class AppStore: ObservableObject {
 
   /// Alert that the program in `tabID` finished its turn while nobody was looking: "Terminal 2 in
   /// fix-auth finished", then what it said. An ordinary notification, so focusing the terminal
-  /// dismisses it and the next finish there replaces its banner.
+  /// dismisses it, and the next finish there replaces it: a session running turns on its own
+  /// (`/loop`) leaves one entry, not one per turn.
   func raiseFinished(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, record: ProgramStatusRecord,
     detail: String? = nil
@@ -3203,6 +3206,10 @@ final class AppStore: ObservableObject {
           title: "\(terminalPlace(targetID: targetID, tabID: tabID)) finished", body: body),
         focused: false)
     else { return }
+    if let earlier = lastFinish.updateValue(note.id, forKey: tabID) {
+      notifications.dismiss(notifID: earlier)
+      toasts.removeAll { $0.id == earlier }
+    }
     surface(note)
   }
 
