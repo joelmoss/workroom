@@ -33,12 +33,23 @@ final class ProgramStatusAlertsTests: XCTestCase {
     store.terminals.sessionID(forTab: tab.id, inTarget: target.id)!
   }
 
-  private func blocked(_ id: String = "", episode: UInt64 = 1, notify: Bool = true)
-    -> ProgramStatusRecord
-  {
+  private func blocked(
+    _ id: String = "", episode: UInt64 = 1, message: String = "Apply?", notify: Bool = true
+  ) -> ProgramStatusRecord {
     ProgramStatusRecord(
-      id: id, state: .blocked, kind: .permission, message: "Apply?", episode: episode,
+      id: id, state: .blocked, kind: .permission, message: message, episode: episode,
       notify: notify)
+  }
+
+  /// The program's own notifications shown as ordinary ones, and those withdrawn again, by body.
+  private var shown: [String] = []
+  private var withdrawn: [String] = []
+
+  private func programNotified(_ session: UUID, _ body: String, title: String = "Codex") {
+    alerts.programNotified(session: session, title: title, body: body) { [unowned self] in
+      shown.append(body)
+      return { [unowned self] in withdrawn.append(body) }
+    }
   }
 
   private var requests: [WorkroomNotification] {
@@ -135,37 +146,92 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(alerts.countedWaiting, 1)
   }
 
-  /// The program's own notification about the one request just raised is folded in; with two
-  /// requests waiting, or long after, it stays a notification of its own.
-  func testTheProgramsOwnAlertMergesOnlyWhenUnambiguous() {
+  /// A program that never probed (Codex) alerts once the agent has seen it stay running (#481):
+  /// the request it already showed alerts when it turns `notify`, once, and counts from then.
+  /// Value: protects=Codex requests alert at all; fails_when=apply looks only at new episodes; why_new=every other test seeds notify from the start; seam=none; no_claim=the agent's promotion (seeded)
+  func testAnUnprobedRequestAlertsOnceTheAgentPromotesIt() {
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [blocked(notify: false)])
+    XCTAssertTrue(requests.isEmpty, "fixture: not yet")
+    monitor.seed(id, records: [blocked()])
+    XCTAssertEqual(requests.count, 1)
+    XCTAssertEqual(alerts.countedWaiting, 1)
+    monitor.seed(id, records: [blocked(notify: false)])
+    monitor.seed(id, records: [blocked()])
+    XCTAssertEqual(requests.count, 1, "the same request alerts once")
+  }
+
+  /// Codex posts its own notification just before it reports the request (#481): it is held, and
+  /// the request it announces raises one alert at once, carrying the program's text, since Codex's
+  /// report has none. The agent's later promotion adds nothing.
+  /// Value: protects=one notification per Codex request, with its detail; fails_when=the hold, the immediate raise or the detail is missing; why_new=folding needed the alert raised first; seam=none; no_claim=real cross-route timing
+  func testAProgramsNotificationBeforeItsRequestRaisesOneAlertCarryingItsText() {
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    programNotified(id, "Approval requested: rm -rf build")
+    XCTAssertEqual(shown, [], "held")
+    monitor.seed(id, records: [blocked(message: "", notify: false)])
+    XCTAssertEqual(requests.count, 1, "raised without waiting for the agent")
+    XCTAssertEqual(requests.first?.body?.contains("Approval requested: rm -rf build"), true)
+    XCTAssertEqual(alerts.countedWaiting, 1, "counted once raised")
+    monitor.seed(id, records: [blocked(message: "", notify: true)])
+    XCTAssertEqual(requests.count, 1, "the agent's promotion adds nothing")
+    XCTAssertEqual(shown, [])
+  }
+
+  /// The program's own notification is folded into its session's request while the request is
+  /// open, however late (Claude Code's comes 6 s after its report), and into the newest of two.
+  /// Value: protects=no second notification for a request already alerted; fails_when=folding is limited to a window or to one request; why_new=the window and the one-request rule are gone (#481); seam=none; no_claim=the merged entry's text
+  func testTheProgramsOwnNotificationFoldsIntoAnOpenRequest() async {
+    alerts.sleep = { _ in }
     alerts.start()
     let id = session(store.terminals.addTab(for: target))
     monitor.seed(id, records: [blocked()])
     clock += 6
-    XCTAssertTrue(alerts.absorbsOSC(session: id, title: "Claude Code", body: "needs permission"))
-    XCTAssertFalse(
-      alerts.absorbsOSC(session: id, title: "Claude Code", body: "later"),
-      "a request merges once")
+    programNotified(id, "needs permission", title: "Claude Code")
+    clock += 60
+    programNotified(id, "still waiting", title: "Claude Code")
 
     let other = session(store.terminals.addTab(for: target))
+    monitor.seed(other, records: [blocked("a")])
+    clock += 1
     monitor.seed(other, records: [blocked("a"), blocked("b", episode: 2)])
-    clock += 2
-    XCTAssertFalse(alerts.absorbsOSC(session: other, title: "Claude Code", body: "x"))
-
-    let late = session(store.terminals.addTab(for: target))
-    monitor.seed(late, records: [blocked()])
-    clock += 11
-    XCTAssertFalse(alerts.absorbsOSC(session: late, title: "Claude Code", body: "y"))
+    programNotified(other, "x", title: "Claude Code")
+    for _ in 0..<50 { await Task.yield() }
+    XCTAssertEqual(shown, [], "folded, not held and shown")
   }
 
-  /// The same notification from two panes of one session within a second is one.
+  /// A reporting program's notification that announces no request is shown after the hold, and
+  /// the alert of a request that comes after all replaces it (a lagging remote link).
+  /// Value: protects=a held notification is never lost, and a late request still makes one notification; fails_when=the hold never releases or the backstop is missing; why_new=the hold is new (#481); seam=none; no_claim=real banner withdrawal (QuietNotifier)
+  func testAHeldNotificationShowsAndALateRequestReplacesIt() async {
+    alerts.sleep = { _ in }
+    alerts.start()
+    let id = session(store.terminals.addTab(for: target))
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    programNotified(id, "Build finished")
+    for _ in 0..<50 where shown.isEmpty { await Task.yield() }
+    XCTAssertEqual(shown, ["Build finished"], "shown once the hold ends")
+    clock += 3
+    monitor.seed(id, records: [blocked(message: "")])
+    XCTAssertEqual(requests.count, 1)
+    XCTAssertEqual(withdrawn, ["Build finished"], "the alert replaces it")
+    XCTAssertEqual(requests.first?.body?.contains("Build finished"), true)
+  }
+
+  /// The same notification from two panes of one session within a second is one; a session that
+  /// reports no program status shows it at once.
   func testARepeatFromAnotherAttachmentIsDropped() {
     alerts.start()
     let id = session(store.terminals.addTab(for: target))
-    XCTAssertFalse(alerts.absorbsOSC(session: id, title: "Build", body: "done"))
-    XCTAssertTrue(alerts.absorbsOSC(session: id, title: "Build", body: "done"))
+    programNotified(id, "done", title: "Build")
+    programNotified(id, "done", title: "Build")
+    XCTAssertEqual(shown, ["done"])
     clock += 2
-    XCTAssertFalse(alerts.absorbsOSC(session: id, title: "Build", body: "done"))
+    programNotified(id, "done", title: "Build")
+    XCTAssertEqual(shown, ["done", "done"])
   }
 
   /// A program toggling its state alerts once per cooldown; a new request after the last one was
@@ -195,7 +261,8 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertTrue(requests.isEmpty)
     XCTAssertEqual(alerts.waiting.count, 1)
     XCTAssertEqual(alerts.countedWaiting, 0)
-    XCTAssertFalse(alerts.absorbsOSC(session: id, title: "Claude Code", body: "x"))
+    programNotified(id, "x", title: "Claude Code")
+    XCTAssertEqual(shown, ["x"], "shown at once, not held")
   }
 
   /// ⇧⌘M from a waiting terminal goes to the next, wrapping; from elsewhere to the oldest.

@@ -13,7 +13,8 @@ struct WaitingRequest: Identifiable, Equatable {
   let since: Date
   /// Its host's link is down: it may have been answered meanwhile.
   let stale: Bool
-  /// Counted in the badge: its program answered the probe, and alerts are on.
+  /// Counted in the badge: alerts are on, and its program answered the probe, or the agent saw
+  /// it stay running, or Workroom alerted it (#481).
   let counted: Bool
 }
 
@@ -44,7 +45,6 @@ final class ProgramStatusAlerts: ObservableObject {
   /// Episodes now blocked, with the session and record they belong to.
   private var open: [String: (session: UUID, record: String)] = [:]
   private var notified: Set<String> = []
-  private var merged: Set<String> = []
   /// Episodes Workroom has alerted, or will once a cooldown ends: only these absorb the program's own
   /// notification, so one that arrives for a request Workroom never raised is still shown.
   private var raised: Set<String> = []
@@ -52,6 +52,14 @@ final class ProgramStatusAlerts: ObservableObject {
   private var lastSurfaced: [TerminalTab.ID: (date: Date, episode: String)] = [:]
   private var deferred: [String: Task<Void, Never>] = [:]
   private var lastOSC: [UUID: (title: String, body: String?, date: Date)] = [:]
+  /// A reporting program's own notification, waiting for the request it may announce (#481).
+  private var held: [UUID: (body: String?, show: Show, task: Task<Void, Never>)] = [:]
+  /// The program's own notification last shown per session, until a request's alert replaces it.
+  private var shown: [UUID: (date: Date, body: String?, withdraw: () -> Void)] = [:]
+
+  /// Records and surfaces a program's own notification as an ordinary one, and returns how to
+  /// withdraw it; nil when nothing was shown (its pane is the one being looked at).
+  typealias Show = () -> (() -> Void)?
 
   func start() {
     guard listener == nil else { return }
@@ -74,14 +82,16 @@ final class ProgramStatusAlerts: ObservableObject {
       for (key, entry) in open where entry.session == session && keys[key] == nil {
         resolve(key)
       }
-      for (key, record) in keys where open[key] == nil {
-        open[key] = (session, record.id)
-        if change.isLaunchSnapshot || !record.notify {
-          // There before the app was, or reported by a program that never asked whether this
-          // terminal supports the protocol: shown, never alerted.
-          notified.insert(key)
-        } else if !notified.contains(key) {
-          alert(key, session: session, record: record)
+      for (key, record) in keys {
+        if open[key] == nil {
+          open[key] = (session, record.id)
+          // There before the app was: shown, never alerted.
+          if change.isLaunchSnapshot { notified.insert(key) }
+        }
+        // A program that never probed alerts once the agent has seen it stay running, or once
+        // its own notification announced the request (#481).
+        if !notified.contains(key), record.notify || held[session] != nil {
+          alert(key, session: session, record: record, detail: takeHeld(session))
         }
       }
     }
@@ -107,7 +117,10 @@ final class ProgramStatusAlerts: ObservableObject {
     for store in stores() { store.withdrawNeedsYou(episode: key) }
   }
 
-  private func alert(_ key: String, session: UUID, record: ProgramStatusRecord) {
+  /// `detail` is the program's own notification text, for a request whose report has no message.
+  private func alert(
+    _ key: String, session: UUID, record: ProgramStatusRecord, detail: String? = nil
+  ) {
     notified.insert(key)
     guard isEnabled() else { return }
     let attachments = attachments(of: session)
@@ -126,14 +139,16 @@ final class ProgramStatusAlerts: ObservableObject {
         try? await self?.sleep(.seconds(delay))
         guard let self, !Task.isCancelled else { return }
         self.deferred.removeValue(forKey: key)
-        self.post(key, session: session, record: record)
+        self.post(key, session: session, record: record, detail: detail)
       }
       return
     }
-    post(key, session: session, record: record)
+    post(key, session: session, record: record, detail: detail)
   }
 
-  private func post(_ key: String, session: UUID, record: ProgramStatusRecord) {
+  private func post(
+    _ key: String, session: UUID, record: ProgramStatusRecord, detail: String?
+  ) {
     guard open[key] != nil, isEnabled() else { return }
     let attachments = attachments(of: session)
     guard let destination = attachments.first, !attachments.contains(where: \.focused) else {
@@ -141,8 +156,18 @@ final class ProgramStatusAlerts: ObservableObject {
     }
     lastSurfaced[destination.tab] = (now(), key)
     raised.insert(key)
+    var detail = detail
+    // The program's own notification, shown moments ago because its request came late: the alert
+    // replaces it rather than following it.
+    if let earlier = shown.removeValue(forKey: session),
+      now().timeIntervalSince(earlier.date) <= ProgramStatusLimits.notificationBackstop.seconds
+    {
+      earlier.withdraw()
+      detail = detail ?? earlier.body
+    }
     destination.store.raiseNeedsYou(
-      targetID: destination.target, tabID: destination.tab, episode: key, record: record
+      targetID: destination.target, tabID: destination.tab, episode: key, record: record,
+      detail: detail
     ) { [weak self] in self?.isStillWaiting(key, session: session) ?? false }
   }
 
@@ -154,31 +179,63 @@ final class ProgramStatusAlerts: ObservableObject {
 
   // MARK: The program's own notification
 
-  /// Whether `.osc` from a terminal of `session` is absorbed rather than recorded: the same alert
-  /// raised by another pane of the session a moment ago, or the program's own alert about the
-  /// request Workroom has already raised. Claude Code's arrives 6.0 s after its report (measured),
-  /// so it merges only when exactly one request in the session began within `mergeWindow` and has
-  /// not merged yet; anything ambiguous stays a separate entry.
-  func absorbsOSC(session: UUID, title: String, body: String?) -> Bool {
+  /// A program's own notification (`.osc`) from a terminal of `session`: one request, one
+  /// notification (#481). Dropped when another pane of the session raised the same one a moment
+  /// ago; folded into the newest request Workroom has alerted, whenever it comes (Claude Code's
+  /// comes 6 s after its report); raising, with its text, the request it announces that has not
+  /// alerted yet; held for `notificationHold` when the program reports but has no request yet
+  /// (Codex writes its own just before its report); otherwise shown through `show`.
+  func programNotified(session: UUID, title: String, body: String?, show: @escaping Show) {
     let date = now()
     if let last = lastOSC[session], last.title == title, last.body == body,
       date.timeIntervalSince(last.date) < ProgramStatusLimits.attachmentDedupe.seconds
     {
-      return true
+      return
     }
     lastOSC[session] = (title, body, date)
     // With alerts off, the program's own notification is all the user gets, as before.
-    guard isEnabled(), let current = monitor.sessions[session] else { return false }
-    let blocked = current.records.filter { $0.state == .blocked }
-    guard blocked.count == 1, let record = blocked.first else { return false }
-    let key = Self.episode(boot: current.boot, session: session, record: record)
-    let began = current.blockedSince[ProgramStatusSession.blockedKey(record)] ?? .distantPast
-    guard raised.contains(key), !merged.contains(key),
-      date.timeIntervalSince(began) <= ProgramStatusLimits.mergeWindow.seconds
-    else { return false }
-    merged.insert(key)
-    for store in stores() { store.mergeIntoNeedsYou(episode: key, body: body) }
-    return true
+    guard isEnabled(), let current = monitor.sessions[session] else {
+      return showNow(session, body: body, show)
+    }
+    let requests = current.records
+      .filter { $0.state == .blocked }
+      .map { (key: Self.episode(boot: current.boot, session: session, record: $0), record: $0) }
+      .filter { open[$0.key] != nil }
+      .sorted {
+        let since = { current.blockedSince[ProgramStatusSession.blockedKey($0)] ?? .distantPast }
+        return since($0.record) > since($1.record)
+      }
+    if let request = requests.first(where: { raised.contains($0.key) }) {
+      for store in stores() { store.mergeIntoNeedsYou(episode: request.key, body: body) }
+    } else if let request = requests.first(where: { !notified.contains($0.key) }) {
+      alert(request.key, session: session, record: request.record, detail: body)
+    } else if current.reporting {
+      if let earlier = takeHeldEntry(session) { showNow(session, body: earlier.body, earlier.show) }
+      let task = Task { [weak self] in
+        try? await self?.sleep(ProgramStatusLimits.notificationHold)
+        guard let self, !Task.isCancelled, let held = self.takeHeldEntry(session) else { return }
+        self.showNow(session, body: held.body, held.show)
+      }
+      held[session] = (body, show, task)
+    } else {
+      showNow(session, body: body, show)
+    }
+  }
+
+  private func showNow(_ session: UUID, body: String?, _ show: Show) {
+    guard let withdraw = show() else { return }
+    shown[session] = (now(), body, withdraw)
+  }
+
+  /// The held notification's text, which its request's alert now carries instead.
+  private func takeHeld(_ session: UUID) -> String? {
+    takeHeldEntry(session)?.body
+  }
+
+  private func takeHeldEntry(_ session: UUID) -> (body: String?, show: Show)? {
+    guard let entry = held.removeValue(forKey: session) else { return nil }
+    entry.task.cancel()
+    return (entry.body, entry.show)
   }
 
   // MARK: Waiting requests
@@ -216,7 +273,8 @@ final class ProgramStatusAlerts: ObservableObject {
       return WaitingRequest(
         id: key, session: entry.session, record: record,
         since: session.blockedSince[ProgramStatusSession.blockedKey(record)] ?? .distantPast,
-        stale: monitor.hosts[session.host] == .stale, counted: record.notify && enabled)
+        stale: monitor.hosts[session.host] == .stale,
+        counted: (record.notify || raised.contains(key)) && enabled)
     }
     .sorted { ($0.since, $0.id) < ($1.since, $1.id) }
     guard next != waiting else { return }

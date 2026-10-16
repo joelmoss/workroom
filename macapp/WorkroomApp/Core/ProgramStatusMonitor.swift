@@ -11,9 +11,12 @@ enum ProgramStatusLimits {
   /// Reconnect backoff for a host whose link dropped: 1 s doubling to 30 s.
   static let backoffFloor: Duration = .seconds(1)
   static let backoffCeiling: Duration = .seconds(30)
-  /// How long after a request begins a program's own notification still belongs to it. Claude
-  /// Code's arrives 6.0 s after its `blocked` report (measured, Step 0 of #358).
-  static let mergeWindow: Duration = .seconds(10)
+  /// How long a reporting program's own notification waits for the request it may announce
+  /// (#481): Codex writes it just before its report, which reaches the app by another route.
+  static let notificationHold: Duration = .milliseconds(500)
+  /// A program's own notification shown this long before its request is raised is withdrawn
+  /// (#481): one held past `notificationHold` on a lagging remote link.
+  static let notificationBackstop: Duration = .seconds(5)
   /// At most one surfaced "needs you" per tab in this long, so a program toggling its state cannot
   /// flood the user.
   static let notifyCooldown: Duration = .seconds(30)
