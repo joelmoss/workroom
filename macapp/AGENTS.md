@@ -27,6 +27,8 @@ make app-identity   # the bundle id this checkout's Debug build gets (one per wo
 make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock, test summary, red proof)
 make app-scripts-lint # shellcheck over macapp/Scripts/*.sh
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
+make app-lsp        # write buildServer.json so SourceKit-LSP sees packages and sibling files;
+                    # once per checkout, after a build (needs brew install xcode-build-server)
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
 make app-check      # app-format, then app-lint
@@ -401,8 +403,9 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   cannot be found" error) until the project is regenerated. The `make app-*` build
   targets now run `xcodegen generate` every time, so this is handled automatically —
   it only bites when building from Xcode directly (regenerate, or run `make app-generate`).
-- **SourceKit "Cannot find type X in scope" is usually noise.** The single-file indexer
-  doesn't see sibling files; a clean `xcodebuild` is authoritative.
+- **SourceKit "No such module" or "Cannot find type X in scope" means no `buildServer.json`.**
+  Without it the indexer sees one file at a time, with no packages; run `make app-lsp` in that
+  checkout. A clean `xcodebuild` stays authoritative either way.
 - **The app binary is also the `ghostty` CLI, and the entry point is `main.swift`, not `@main`.**
   `Contents/MacOS/ghostty` is a **relative** symlink to the app binary (a `postCompileScripts` phase
   in `project.yml`, before the final code-sign so the link is sealed into the signature).

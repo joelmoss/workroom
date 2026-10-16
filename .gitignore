@@ -13,6 +13,8 @@ CLAUDE.local.md
 # macOS app (macapp/)
 /macapp/build/
 /macapp/DerivedData/
+# SourceKit-LSP's build server config (make app-lsp): absolute paths, so one per checkout.
+/buildServer.json
 # `swift test` output and SwiftPM's editor state in each local package (make app-package-test).
 /macapp/Packages/*/.build/
 /macapp/Packages/*/.swiftpm/

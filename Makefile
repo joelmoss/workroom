@@ -12,7 +12,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
+        app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
         app-check remote-host-image remote-host-image-test actions-lint vcs-lint vcs-test
 
 help: ## List available targets
@@ -250,6 +250,17 @@ app-scripts-lint: ## Lint macapp/Scripts/*.sh with shellcheck (needs shellcheck 
 
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
+
+# SourceKit-LSP reads compile flags through xcode-build-server, which parses the build logs under
+# --build_root. The make builds put them in macapp/DerivedData (-derivedDataPath), not Xcode's
+# default, so the root is named here. Without it the editor's Swift diagnostics report every package
+# import as "No such module" and every sibling-file type as missing.
+app-lsp: ## Write buildServer.json so SourceKit-LSP resolves the app's packages (brew install xcode-build-server)
+	@command -v xcode-build-server >/dev/null || { \
+	  echo 'xcode-build-server not found: brew install xcode-build-server' >&2; exit 1; }
+	cd macapp && xcodegen generate
+	xcode-build-server config -project macapp/WorkroomApp.xcodeproj -scheme WorkroomApp \
+	  --build_root "$(CURDIR)/macapp/DerivedData"
 
 # The Swift that app-format and app-lint cover, relative to macapp/. Each package's manifest, Sources
 # and Tests, never its .build: that holds its dependencies' checkouts.
