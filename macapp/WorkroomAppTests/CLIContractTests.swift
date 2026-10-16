@@ -111,17 +111,28 @@ final class CLIContractTests: XCTestCase {
     }
   }
 
+  /// The step events (#483), as `id:state`, in order.
+  private func steps(_ events: [StreamEvent]) -> [String] {
+    events.filter { $0.type == "step" }.map { "\($0.id ?? ""):\($0.state ?? "")" }
+  }
+
   func testCreateEvents() throws {
     let events = try events("create-events.ndjson")
-    XCTAssertEqual(events.map(\.type), ["created", "log", "log"])
+    XCTAssertEqual(
+      steps(events),
+      ["fetch:skipped", "worktree:running", "worktree:done", "script:running", "script:done"])
+    XCTAssertEqual(events[0].detail, "No remote to fetch from")
 
-    XCTAssertEqual(events[0].name, "calm-river")
-    XCTAssertEqual(events[0].path, "/Users/dev/workrooms/calm-river")
-    XCTAssertEqual(events[0].setup, true)
-    XCTAssertEqual(events[0].warning, "")
+    let created = try XCTUnwrap(events.first { $0.type == "created" })
+    XCTAssertEqual(created.name, "calm-river")
+    XCTAssertEqual(created.path, "/Users/dev/workrooms/calm-river")
+    XCTAssertEqual(created.setup, true)
+    XCTAssertEqual(created.warning, "")
 
-    XCTAssertEqual(events[1].phase, "setup")
-    XCTAssertEqual(events.dropFirst().map(\.text), ["installing", "done"])
+    let logs = events.filter { $0.type == "log" }
+    XCTAssertEqual(logs.first?.phase, "setup")
+    XCTAssertEqual(logs.map(\.step), ["worktree", "worktree", "worktree", "script", "script"])
+    XCTAssertEqual(logs.suffix(2).map(\.text), ["installing", "done"])
   }
 
   func testCreateFetchWarning() throws {
@@ -129,9 +140,17 @@ final class CLIContractTests: XCTestCase {
     try assertSuccess("create-fetch-warning.json")
     XCTAssertEqual(try decode(CreateResponse.self, "create-fetch-warning.json").warning, warning)
     let events = try events("create-fetch-warning-events.ndjson")
-    XCTAssertEqual(events.map(\.type), ["created"])
-    XCTAssertEqual(events[0].warning, warning)
-    XCTAssertEqual(events[0].setup, false)
+    XCTAssertEqual(
+      steps(events),
+      ["fetch:running", "fetch:warning", "worktree:running", "worktree:done", "script:skipped"])
+    XCTAssertEqual(events.first { $0.state == "warning" }?.detail, warning)
+    XCTAssertEqual(events.first { $0.state == "skipped" }?.detail, "No setup script")
+    XCTAssertEqual(
+      events.first { $0.type == "log" }?.text, "$ git fetch --prune origin",
+      "the fetch's log starts with its command")
+    let created = try XCTUnwrap(events.first { $0.type == "created" })
+    XCTAssertEqual(created.warning, warning)
+    XCTAssertEqual(created.setup, false)
   }
 
   func testCreateRemote() throws {
@@ -147,11 +166,37 @@ final class CLIContractTests: XCTestCase {
     try assertError("create-setup-failed.json", kind: "SetupScriptFailed")
     // The app still mounts the workroom and shows the setup log up to the failure.
     let events = try events("create-setup-failed-events.ndjson")
-    XCTAssertEqual(events.map(\.type), ["created", "log"])
-    XCTAssertEqual(events[0].name, "calm-river")
-    XCTAssertEqual(events[0].setup, true)
-    XCTAssertEqual(events[1].phase, "setup")
-    XCTAssertEqual(events[1].text, "boom")
+    XCTAssertEqual(
+      steps(events),
+      ["fetch:skipped", "worktree:running", "worktree:done", "script:running", "script:failed"])
+    let created = try XCTUnwrap(events.first { $0.type == "created" })
+    XCTAssertEqual(created.name, "calm-river")
+    XCTAssertEqual(created.setup, true)
+    let last = try XCTUnwrap(events.last { $0.type == "log" })
+    XCTAssertEqual(last.phase, "setup")
+    XCTAssertEqual(last.step, "script")
+    XCTAssertEqual(last.text, "boom")
+  }
+
+  /// The app's own reading of a create's events (#483): the golden sequences drive a run to the
+  /// states the CLI meant.
+  /// Value: protects=WorkroomCLI step parsing as `CreationRun` applies it, against the CLI's real
+  /// output; fails_when=a step state or a log's step is misread; no_claim=the hop to the main queue
+  @MainActor
+  func testAGoldenCreateDrivesARunToItsStates() throws {
+    let run = CreationRun(
+      project: Project(path: "/p", vcs: "git", workrooms: []), kind: .local, splitAnchor: nil,
+      previousSelection: nil)
+    for event in try events("create-fetch-warning-events.ndjson") { run.apply(event) }
+    XCTAssertEqual(
+      run.steps.map(\.state),
+      [
+        .warning(
+          "Could not fetch origin. The workroom starts from HEAD, which may be out of date."),
+        .done, .skipped(reason: "No setup script"),
+      ])
+    XCTAssertEqual(run.steps[0].log.first, "$ git fetch --prune origin")
+    XCTAssertEqual(run.steps[1].log.count, 3)
   }
 
   func testAddProject() throws {

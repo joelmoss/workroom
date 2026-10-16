@@ -609,14 +609,18 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(remote.claimSweep([docker, apple], allowed: true), [])
   }
 
-  /// A container workroom's create is off while its project is busy: a second create would build a second
-  /// base.
+  /// REWRITTEN (#483, R3): a remote create stays on while another create runs in its project (each
+  /// gets its own pane), and goes off only while the project is being deleted.
+  /// Value: protects=concurrent creates in one project (spec section 7); fails_when=a running
+  /// create still blocks the next, or a deleting project allows one; no_claim=the menu's drawing
   @MainActor
-  func testARemoteCreateIsOffWhileItsProjectIsBusy() {
+  func testARemoteCreateIsOffOnlyWhileItsProjectIsDeleted() {
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
-    XCTAssertTrue(store.canCreateRemoteWorkroom(in: project))
-    store.busyProjects["/proj"] = 1
+    store.creationRuns[UUID()] = CreationRun(
+      project: project, kind: .boxd, splitAnchor: nil, previousSelection: nil)
+    XCTAssertTrue(store.canCreateRemoteWorkroom(in: project), "a running create doesn't block")
+    store.deletingProjects.insert("/proj")
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project))
   }
 
@@ -713,15 +717,18 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(host(nil, nil).kindDescription, "Remote workroom")
   }
 
-  /// The New Workroom menu says why its entries are off while a create holds the project, or a
-  /// delete is taking it (#309).
+  /// The New Workroom menu says why its entries are off while a delete is taking the project
+  /// (#309). REWRITTEN (#483, R3): a create in flight no longer holds the project.
+  /// Value: protects=the menu's reason; fails_when=a running create is still given as a reason,
+  /// or a delete isn't; no_claim=the menu's drawing
   @MainActor
   func testACreateBlockedProjectSaysWhy() {
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
     XCTAssertNil(store.createBlockedReason(in: project))
-    store.busyProjects["/proj"] = 1
-    XCTAssertEqual(store.createBlockedReason(in: project), "a workroom is already being created")
+    store.creationRuns[UUID()] = CreationRun(
+      project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+    XCTAssertNil(store.createBlockedReason(in: project), "a create in flight blocks nothing")
     store.deletingProjects.insert("/proj")
     XCTAssertEqual(store.createBlockedReason(in: project), "the project is being deleted")
   }
@@ -2197,15 +2204,24 @@ final class RemoteHostsTests: XCTestCase {
       "run gh auth login")
   }
 
-  /// A remote provider's create row shows the step it is on as a fraction of its four (#356).
-  func testARemoteCreateShowsItsStepOfFour() {
-    XCTAssertEqual(
-      AppStore.createStep(.machine),
-      .init(fraction: 0, label: "Creating the workroom's machine (step 1 of 4)"))
-    XCTAssertEqual(AppStore.createStep(.clone).fraction, 2.0 / 4)
-    XCTAssertEqual(
-      AppStore.createStep(.checkout),
-      .init(fraction: 3.0 / 4, label: "Checking out the workroom's branch (step 4 of 4)"))
+  /// REWRITTEN (#483, R3): a create's row shows the step it is on, with done, warning and skipped
+  /// steps counted complete out of its kind's whole plan.
+  /// Value: protects=the step circle reads its own run's plan; fails_when=the fraction ignores
+  /// skipped steps or the label isn't the running step's title; no_claim=the circle's drawing
+  @MainActor
+  func testARemoteCreateShowsItsStepOfItsPlan() {
+    let store = AppStore()
+    let run = CreationRun(
+      project: Project(path: "/proj", vcs: "git", workrooms: []), kind: .boxd, splitAnchor: nil,
+      previousSelection: nil)
+    store.register(run)
+    let pane = SidebarID.creation(project: "/proj", id: run.id)
+    run.begin("repository")
+    run.begin("machine")
+    XCTAssertEqual(store.createStep(for: pane), .init(fraction: 2.0 / 7, label: "Create machine"))
+    run.begin("clone")
+    XCTAssertEqual(store.createStep(for: pane)?.fraction, 5.0 / 7)
+    XCTAssertNil(store.createStep(for: .workroom(project: "/proj", name: "other")))
   }
 
   /// A driver takes on only a host of its own context: its commands would not reach another's.
