@@ -1,2 +1,10 @@
+{"detail":"No remote to fetch from","id":"fetch","state":"skipped","type":"step"}
+{"id":"worktree","state":"running","type":"step"}
+{"type":"log","phase":"setup","step":"worktree","text":"$ git worktree add -b workroom/calm-river /Users/dev/workrooms/calm-river"}
+{"type":"log","phase":"setup","step":"worktree","text":"Preparing worktree (new branch 'workroom/calm-river')"}
+{"type":"log","phase":"setup","step":"worktree","text":"HEAD is now at <commit> first"}
+{"id":"worktree","state":"done","type":"step"}
 {"name":"calm-river","path":"/Users/dev/workrooms/calm-river","project":"/Users/dev/src/app","setup":true,"type":"created","vcs":"git","warning":""}
-{"type":"log","phase":"setup","text":"boom"}
+{"id":"script","state":"running","type":"step"}
+{"type":"log","phase":"setup","step":"script","text":"boom"}
+{"detail":"setup script failed: /Users/dev/src/app/scripts/workroom_setup returned a non-zero exit code","id":"script","state":"failed","type":"step"}

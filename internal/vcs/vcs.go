@@ -1,6 +1,7 @@
 package vcs
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 
@@ -14,6 +15,20 @@ const (
 	TypeGit Type = "git"
 )
 
+// Progress receives a create's step events and the git output behind them. Both fields are
+// optional. Step states are running, done, warning, skipped and failed; detail is the warning
+// text, the skip reason or the failure message.
+type Progress struct {
+	Log  io.Writer
+	Step func(id, state, detail string)
+}
+
+func (p Progress) step(id, state, detail string) {
+	if p.Step != nil {
+		p.Step(id, state, detail)
+	}
+}
+
 // VCS defines the interface for version control operations on workrooms.
 type VCS interface {
 	Type() Type
@@ -21,7 +36,7 @@ type VCS interface {
 	// Create makes the workspace, starting from base when non-empty, and returns a warning
 	// for the user, or "". fallback marks base as the app-wide default, which gives way to
 	// origin's default branch in a project it doesn't fit.
-	Create(dir, vcsName, path, base string, fallback bool) (string, error)
+	Create(dir, vcsName, path, base string, fallback bool, progress Progress) (string, error)
 	Delete(dir, vcsName, path string) (string, error)
 	// ListWorkrooms is the sole membership primitive: a caller that needs an existence check
 	// lists once and does an in-memory lookup, rather than the interface exposing a second

@@ -2,6 +2,7 @@ package vcs
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,19 +23,57 @@ func (g *Git) Label() string { return "Git worktree" }
 // app-wide default, which gives way to origin's default branch where it doesn't fit (see
 // startPoint). `--no-track`: a workroom's branch has no upstream until published. The returned
 // string is a warning for the user, non-empty when the start point may not be what they expect.
-func (g *Git) Create(dir, vcsName, path, base string, fallback bool) (string, error) {
-	start, warning, err := g.startPoint(dir, base, fallback)
+func (g *Git) Create(dir, vcsName, path, base string, fallback bool, progress Progress) (string, error) {
+	fs := &fetchStep{progress: progress}
+	start, warning, err := g.startPoint(dir, base, fallback, fs)
+	fs.finish(warning, err)
 	if err != nil {
 		return "", err
 	}
+	progress.step("worktree", "running", "")
 	args := []string{"worktree", "add", "-b", vcsName, path}
 	if start != "" {
 		args = []string{"worktree", "add", "--no-track", "-b", vcsName, path, start}
 	}
-	if _, err := g.Executor.Run(dir, "git", args...); err != nil {
+	if _, err := g.run(progress.Log, dir, args...); err != nil {
+		progress.step("worktree", "failed", err.Error())
 		return "", err
 	}
+	progress.step("worktree", "done", "")
 	return warning, nil
+}
+
+// run is git in dir; with a log it writes "$ git <args>" and then the combined output there.
+func (g *Git) run(log io.Writer, dir string, args ...string) (string, error) {
+	if log != nil {
+		fmt.Fprintf(log, "$ git %s\n", strings.Join(args, " "))
+	}
+	out, err := g.Executor.Run(dir, "git", args...)
+	if log != nil && out != "" {
+		fmt.Fprintln(log, out)
+	}
+	return out, err
+}
+
+// fetchStep reports the create's fetch step. The step stays unannounced until a fetch is
+// attempted, so a project with no remote goes straight to skipped.
+type fetchStep struct {
+	progress          Progress
+	attempted, failed bool
+}
+
+// finish closes the step once startPoint is done, which is after any fetch in originDefault.
+func (f *fetchStep) finish(warning string, err error) {
+	switch {
+	case !f.attempted:
+		f.progress.step("fetch", "skipped", "No remote to fetch from")
+	case f.failed && err != nil:
+		f.progress.step("fetch", "failed", err.Error())
+	case f.failed:
+		f.progress.step("fetch", "warning", warning)
+	default:
+		f.progress.step("fetch", "done", "")
+	}
 }
 
 // SplitBase reads a base branch setting: "<remote>/<branch>" when the part before the first "/"
@@ -57,12 +96,12 @@ func SplitBase(base string, remotes []string) (remote, branch string) {
 // the local branches both lack gives way to origin's default branch, with a warning. With no
 // base and no origin/HEAD it returns "", so the caller passes no start point: git then uses HEAD,
 // or makes an orphan branch in a repository with no commits, where an explicit HEAD is refused.
-func (g *Git) startPoint(dir, base string, fallback bool) (start, warning string, err error) {
+func (g *Git) startPoint(dir, base string, fallback bool, fs *fetchStep) (start, warning string, err error) {
 	out, _ := g.Executor.Run(dir, "git", "remote")
 	remotes := strings.Fields(out)
 	remote, branch := SplitBase(base, remotes)
 	hasRemote := slices.Contains(remotes, remote)
-	fetched := hasRemote && g.fetch(dir, remote, branch == "")
+	fetched := hasRemote && g.fetch(dir, remote, branch == "", fs)
 	// Fully qualified: a tag or branch named like the short form would make it ambiguous.
 	var candidates []string
 	if hasRemote {
@@ -83,7 +122,7 @@ func (g *Git) startPoint(dir, base string, fallback bool) (start, warning string
 		case !fallback:
 			return "", "", fmt.Errorf("%w: '%s'", errs.ErrBaseBranchNotFound, base)
 		}
-		return g.originDefault(dir, base, remotes, remote == "origin" && fetched)
+		return g.originDefault(dir, base, remotes, remote == "origin" && fetched, fs)
 	}
 	switch {
 	case hasRemote && !fetched:
@@ -99,12 +138,12 @@ func (g *Git) startPoint(dir, base string, fallback bool) (start, warning string
 // originDefault is origin's default branch for an app-wide default base that doesn't exist in
 // this project. Origin is fetched only if the base named another remote; otherwise its fetch for
 // the base already happened (originFetched), so a create never fetches the same remote twice.
-func (g *Git) originDefault(dir, base string, remotes []string, originFetched bool) (start, warning string, err error) {
+func (g *Git) originDefault(dir, base string, remotes []string, originFetched bool, fs *fetchStep) (start, warning string, err error) {
 	if slices.Contains(remotes, "origin") {
 		if originFetched {
 			_, _ = g.Executor.Run(dir, "git", "remote", "set-head", "origin", "--auto")
 		} else {
-			originFetched = g.fetch(dir, "origin", true)
+			originFetched = g.fetch(dir, "origin", true, fs)
 		}
 		start = g.firstRef(dir, []string{"refs/remotes/origin/HEAD"})
 	}
@@ -117,8 +156,13 @@ func (g *Git) originDefault(dir, base string, remotes []string, originFetched bo
 
 // fetch fetches remote, pruned, and with setHead refreshes its HEAD, which fetch never moves after
 // a default-branch rename. It reports whether the fetch worked.
-func (g *Git) fetch(dir, remote string, setHead bool) bool {
-	if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "--prune", remote); err != nil {
+func (g *Git) fetch(dir, remote string, setHead bool, fs *fetchStep) bool {
+	if !fs.attempted {
+		fs.progress.step("fetch", "running", "")
+	}
+	fs.attempted = true
+	if _, err := g.run(fs.progress.Log, dir, "fetch", "--prune", remote); err != nil {
+		fs.failed = true
 		return false
 	}
 	if setHead {
