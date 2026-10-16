@@ -106,11 +106,12 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
-  /// A create downloading its host image shows how far it has got in place of the row's spinner,
-  /// and meanwhile the project's New Workroom menu and then the File ▸ New Workroom… picker say
-  /// once that a create is running and offer no place. The picker goes last: it leaves a sheet
-  /// open.
-  func testADownloadingImageShowsItsProgressAndTurnsThePlacesOff() {
+  /// A create downloading its host image (#309) no longer shows on its project's row and no longer
+  /// turns the places off (#483): it lists its own provisional row, which shows its pane with the
+  /// image step running, while the project's New Workroom menu and the File ▸ New Workroom… picker
+  /// still offer every place, since creates in one project may overlap. The picker goes last: it
+  /// leaves a sheet open.
+  func testADownloadingImageShowsInItsOwnRowAndPaneAndLeavesThePlacesOn() {
     let app = XCUIApplication()
     app.launchArguments += [
       "-WorkroomUITestFixture", "1", "-WorkroomUITestImagePull", "0.42",
@@ -118,49 +119,48 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     ]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
-    // The row's own identifier is the indicator's too.
-    let progress = app.progressIndicators.matching(identifier: "sidebar.project.UITestProject")
-      .firstMatch
-    XCTAssertTrue(progress.waitForExistence(timeout: 10), "the row shows no download progress")
-    XCTAssertEqual(progress.value as? Double, 0.42)
-    attach(app, "image-pull-progress")
+    let row = app.descendants(matching: .any)
+      .matching(identifier: "sidebar.creation.New workroom · Docker").firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "the unnamed create lists no row of its own")
+    XCTAssertFalse(
+      app.progressIndicators.matching(identifier: "sidebar.project.UITestProject").firstMatch
+        .exists,
+      "the project row still shows the create")
+    attach(app, "image-pull-row")
 
-    // Meanwhile the project's New Workroom says once why its entries are off, and each is off.
+    row.click()
+    let image = app.descendants(matching: .any)
+      .matching(identifier: "CreationPane.step.image").firstMatch
+    XCTAssertTrue(image.waitForExistence(timeout: 5), "the row doesn't show the create's pane")
+    XCTAssertEqual(image.label, "Pull host image, running")
+    attach(app, "image-pull-pane")
+
+    // Meanwhile the project's New Workroom offers every place it would anyway.
     app.otherElements["sidebar.project.UITestProject"].rightClick()
     app.menuItems["New Workroom"].hover()
-    XCTAssertTrue(
-      app.menuItems["A workroom is already being created"].waitForExistence(timeout: 5),
-      "the submenu doesn't say why its entries are off")
     let thisMac = app.menuItems["This Mac"]
     XCTAssertTrue(thisMac.waitForExistence(timeout: 5))
-    XCTAssertFalse(thisMac.isEnabled)
+    XCTAssertTrue(thisMac.isEnabled, "a running create turns This Mac off")
+    XCTAssertFalse(app.menuItems["A workroom is already being created"].exists)
     for runtime in ["Docker", "Apple Container", "boxd"] {
       let entry = app.menuItems.matching(
         NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
       ).firstMatch
       XCTAssertTrue(entry.waitForExistence(timeout: 5), "\(runtime) isn't listed")
-      XCTAssertFalse(entry.isEnabled, entry.title)
-      XCTAssertFalse(
-        entry.title.contains("already being created"), "the reason is repeated: \(entry.title)")
+      XCTAssertEqual(
+        entry.isEnabled, entry.title == runtime,
+        "\(entry.title): disabled exactly when its title gives a reason, never for a create")
     }
-    let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-    shot.name = "new-workroom-busy"
-    shot.lifetime = .keepAlways
-    add(shot)
     // Closed before File is used, or a stale menu can cover its items.
     dismissMenus(app)
 
-    // The picker says so once too, and offers no place.
+    // The picker offers the places too.
     pickProject(app)
-    let blocked = app.staticTexts["newWorkroom.placesBlocked"]
-    XCTAssertTrue(blocked.waitForExistence(timeout: 5), "the picker doesn't say why")
-    XCTAssertEqual(blocked.value as? String, "A workroom is already being created")
-    for place in ["thisMac", "container", "apple-container"] {
-      let button = app.buttons["newWorkroom.place.\(place)"]
-      XCTAssertTrue(button.exists, "\(place) isn't listed")
-      XCTAssertFalse(button.isEnabled, "\(place) can be picked while a create runs")
-    }
-    attach(app, "picker-places-busy")
+    let pickerThisMac = app.buttons["newWorkroom.place.thisMac"]
+    XCTAssertTrue(pickerThisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
+    XCTAssertTrue(pickerThisMac.isEnabled, "a running create turns This Mac off in the picker")
+    XCTAssertFalse(app.staticTexts["newWorkroom.placesBlocked"].exists)
+    attach(app, "picker-places-while-creating")
     app.typeKey(.escape, modifierFlags: [])
   }
 

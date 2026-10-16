@@ -431,6 +431,24 @@ enum UITestFixture {
     flag("WorkroomUITestCreatingSplitMemberNoSetup")
   }
 
+  /// `-WorkroomUITestScriptedCreate 1`: a local create runs against `ScriptedCreateCLI` (#483), a
+  /// stand-in for the CLI that plays a create's steps, log and "created" event over a few seconds,
+  /// so a UI test sees the creation pane run and give way to the terminal. The fixture's paths are
+  /// not repositories, so the real CLI would fail at its worktree.
+  static var scriptedCreate: Bool {
+    flag("WorkroomUITestScriptedCreate")
+  }
+
+  /// The workroom a scripted create makes.
+  static let scriptedWorkroomName = "uitest-created"
+
+  /// Where a scripted create's workroom lives; `projects()` lists it once it exists.
+  static var scriptedWorkroomDirectory: URL {
+    URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+      .appendingPathComponent(
+        "workroom-uitest/workrooms/\(scriptedWorkroomName)", isDirectory: true)
+  }
+
   /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
   /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
   /// `conflicted` flag. Covers the per-file conflict status end-to-end in the UI — the Changes row
@@ -992,6 +1010,13 @@ enum UITestFixture {
       dirs.append(dir)
       workrooms.append(Workroom(name: name, path: dir.path, vcsName: vcs, warnings: []))
     }
+    // A scripted create's workroom, once it has made it (#483).
+    if scriptedCreate, FileManager.default.fileExists(atPath: scriptedWorkroomDirectory.path) {
+      workrooms.append(
+        Workroom(
+          name: scriptedWorkroomName, path: scriptedWorkroomDirectory.path, vcsName: vcs,
+          warnings: []))
+    }
     for dir in dirs {
       try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
@@ -1432,5 +1457,81 @@ actor FixtureVCSWriter: LocalVCSWriting {
     return failing
       ? .failed(.authRequired("fixture: authentication refused"))
       : .ok(summary: "fixture \(action.rawValue)")
+  }
+}
+
+/// The CLI under `-WorkroomUITestScriptedCreate 1` (#483): the real one for everything but a local
+/// create, which it plays out over a few seconds, as `workroom create --json` would report it: the
+/// fetch skipped, the worktree, "created", then a short setup script. The workroom it makes is a
+/// directory `UITestFixture.projects()` lists once it exists.
+final class ScriptedCreateCLI: WorkroomCLIProtocol {
+  static let shared = ScriptedCreateCLI()
+  private let base = WorkroomCLI.shared
+
+  private init() {
+    // A workroom a previous launch made would otherwise be listed before this one creates it.
+    try? FileManager.default.removeItem(at: UITestFixture.scriptedWorkroomDirectory)
+  }
+
+  func list(warnings: String, project: String?) async throws -> ListResponse {
+    try await base.list(warnings: warnings, project: project)
+  }
+
+  func addProject(_ path: String, create: Bool) async throws -> String {
+    try await base.addProject(path, create: create)
+  }
+
+  func create(
+    project: String, onLog: (@Sendable (String) -> Void)?,
+    onReady: (@Sendable (String, String, Bool) -> Void)?
+  ) async throws -> CreateResponse {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "the scripted create reports steps")
+  }
+
+  func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
+    -> CreateResponse
+  {
+    let name = UITestFixture.scriptedWorkroomName
+    let path = UITestFixture.scriptedWorkroomDirectory.path
+    func step(_ id: String, _ state: String, _ detail: String? = nil) {
+      onEvent(
+        StreamEvent(
+          type: "step", phase: nil, text: nil, name: nil, path: nil, setup: nil, id: id,
+          state: state, detail: detail))
+    }
+    func log(_ text: String, _ id: String) {
+      onEvent(
+        StreamEvent(
+          type: "log", phase: "setup", text: text, name: nil, path: nil, setup: nil, step: id))
+    }
+    step("fetch", "skipped", "No remote to fetch from")
+    step("worktree", "running")
+    log("$ git worktree add -b workroom/\(name) \(path)", "worktree")
+    try await Task.sleep(for: .seconds(1.5))
+    try FileManager.default.createDirectory(
+      at: UITestFixture.scriptedWorkroomDirectory, withIntermediateDirectories: true)
+    log("Preparing worktree (new branch 'workroom/\(name)')", "worktree")
+    step("worktree", "done")
+    onEvent(
+      StreamEvent(
+        type: "created", phase: nil, text: nil, name: name, path: path, setup: true, warning: ""))
+    step("script", "running")
+    for line in ["Installing dependencies…", "Done."] {
+      try await Task.sleep(for: .seconds(1))
+      log(line, "script")
+    }
+    step("script", "done")
+    return CreateResponse(name: name, path: path, vcs: "git", project: project)
+  }
+
+  func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws {
+    try await base.delete(name: name, project: project, onLog: onLog)
+  }
+
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: (@Sendable (String) -> Void)?
+  ) async throws -> [URL] {
+    try await base.deleteProject(
+      path, withWorkrooms: withWorkrooms, fromDisk: fromDisk, onLog: onLog)
   }
 }
