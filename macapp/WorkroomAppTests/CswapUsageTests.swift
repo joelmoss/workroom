@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSystem
 import XCTest
 
 @testable import Workroom
@@ -111,5 +112,65 @@ final class CswapUsageTests: XCTestCase {
     XCTAssertEqual(
       decode(#"{"schemaVersion":1,"error":{"type":"LockError","message":"busy"}}"#),
       .failed("cswap failed: busy"))
+  }
+
+  /// Value: protects=reading cswap through the runner (cswap missing, hung or failing becomes the
+  /// right state; the profile of a launching terminal never narrows cswap to one account);
+  /// fails_when=the CLAUDE_CONFIG_DIR override is dropped, 127 stops meaning not installed, a
+  /// timeout or non-zero exit is read as accounts; why_new=the existing tests cover decode only;
+  /// seam=none; no_claim=the real cswap output or the live runner's process handling.
+  func testReadMapsTheRunnersOutcomesAndNeutralisesTheCallersProfile() async {
+    func read(_ result: CommandResult) async -> (CswapUsage.Read, CswapRunner) {
+      let runner = CswapRunner(result)
+      return (await CswapUsage.read(runner: runner, now: now), runner)
+    }
+    let ok = #"{"schemaVersion":1,"activeAccountNumber":1,"accounts":[]}"#
+
+    let (good, runner) = await read(
+      CommandResult(stdout: ok, stderr: "", exitCode: 0, timedOut: false))
+    XCTAssertEqual(good, .accounts([], activeSlot: 1))
+    XCTAssertEqual(runner.args, ["list", "--json"])
+    XCTAssertEqual(runner.environment, ["CLAUDE_CONFIG_DIR": ""])
+
+    let missing = await read(CommandResult(stdout: "", stderr: "", exitCode: 127, timedOut: false))
+    XCTAssertEqual(missing.0, .notInstalled)
+    let hung = await read(CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true))
+    XCTAssertEqual(hung.0, .failed("cswap took longer than 30 seconds."))
+    let crashed = await read(
+      CommandResult(stdout: "Traceback", stderr: "", exitCode: 1, timedOut: false))
+    XCTAssertEqual(crashed.0, .failed("cswap exited with status 1."))
+    let garbled = await read(
+      CommandResult(stdout: "Traceback", stderr: "", exitCode: 0, timedOut: false))
+    XCTAssertEqual(garbled.0, .incompatible("cswap's output couldn't be read."))
+    let errorPayload = await read(
+      CommandResult(
+        stdout: #"{"schemaVersion":1,"error":{"message":"busy"}}"#, stderr: "", exitCode: 1,
+        timedOut: false))
+    XCTAssertEqual(errorPayload.0, .failed("cswap failed: busy"))
+  }
+}
+
+private final class CswapRunner: StatusCommandRunning, @unchecked Sendable {
+  private let result: CommandResult
+  private let lock = NSLock()
+  private var _args: [String] = []
+  private var _environment: [String: String] = [:]
+  init(_ result: CommandResult) { self.result = result }
+  var args: [String] { lock.withLock { _args } }
+  var environment: [String: String] { lock.withLock { _environment } }
+
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    lock.withLock { _args = args }
+    return result
+  }
+
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    environment: [String: String]
+  ) async -> CommandResult {
+    lock.withLock { _environment = environment }
+    return await run(executable, args, in: directory, timeout: timeout)
   }
 }
