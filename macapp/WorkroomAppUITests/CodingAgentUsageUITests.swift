@@ -132,16 +132,14 @@ final class CodingAgentUsageUITests: XCTestCase {
     XCTAssertTrue(app.buttons["Cancel"].exists)
   }
 
-  func testDetectedAgentWithoutSnapshotExplainsWhyAndOffersARefresh() {
+  /// A running agent with no reading yet shows nothing in the footer until its first one (#480):
+  /// no spinner, no "unavailable" text, so a refresh never moves the row.
+  func testDetectedAgentWithoutSnapshotShowsNothingUntilItsFirstReading() {
     let app = launchedApp(agent: "codex", usageUnavailable: true)
-    let unavailable = app.descendants(matching: .any)[
-      "terminal.statusBar.agentUsage.unavailable"]
-    XCTAssertTrue(unavailable.waitForExistence(timeout: 15))
-    XCTAssertTrue(unavailable.label.contains("has been read yet"), unavailable.label)
-    XCTAssertTrue(unavailable.label.contains("Click to refresh"), unavailable.label)
-    XCTAssertTrue(unavailable.isHittable)
-    unavailable.click()
-    XCTAssertTrue(unavailable.waitForExistence(timeout: 5))
+    XCTAssertTrue(app.descendants(matching: .any)["window.footer"].waitForExistence(timeout: 15))
+    XCTAssertFalse(app.descendants(matching: .any)["terminal.statusBar.agentUsage"].exists)
+    XCTAssertFalse(
+      app.descendants(matching: .any)["terminal.statusBar.agentUsage.unavailable"].exists)
   }
 
   func testNonAgentTabKeepsRunningAgentQuotaSegment() {

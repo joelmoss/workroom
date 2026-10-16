@@ -498,41 +498,6 @@ final class CodingAgentUsageTests: XCTestCase {
       "a cancelled read must not report a watch set — apply would install it")
   }
 
-  /// The spinner belongs to the click that asked for it.
-  ///
-  /// `pendingBackends` excludes a backend that has already recorded a failure, so an AUTOMATIC read
-  /// landing mid-retry would recompute `loading` without it and take the spinner away — the exact
-  /// "no visible response" the `userInitiated` flag exists to prevent. Automatic reads may only add.
-  @MainActor func testUserInitiatedSpinnerSurvivesAnAutomaticRefresh() async throws {
-    let root = FileManager.default.temporaryDirectory.standardizedFileURL
-      .appendingPathComponent(UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    // No Claude cache file and no Codex sessions tree: both backends settle as unavailable.
-    let monitor = CodingAgentUsageMonitor(
-      codexSessionsURL: root.appendingPathComponent("sessions"),
-      claudeCacheURL: root.appendingPathComponent("claude-rate-limits.json"), now: { self.now },
-      startAutomatically: false)
-
-    monitor.refresh()
-    await settle { monitor.completedReadCount == 1 }
-    XCTAssertFalse(monitor.readFailures.isEmpty, "both backends should have settled as failed")
-    XCTAssertTrue(monitor.loading.isEmpty)
-
-    // An automatic read never re-raises a settled backend...
-    monitor.refresh()
-    XCTAssertTrue(monitor.loading.isEmpty, "an automatic read must not flag a settled backend")
-    await settle { monitor.completedReadCount == 2 }
-
-    // ...but a click must, and a watch event landing underneath it must not undo that.
-    monitor.refresh(userInitiated: true)
-    XCTAssertEqual(monitor.loading, Set(CodingAgentBackend.allCases))
-    monitor.refresh()
-    XCTAssertEqual(
-      monitor.loading, Set(CodingAgentBackend.allCases),
-      "an automatic refresh stole the spinner from a user-initiated retry")
-  }
-
   /// `capturedAt` comes from the rollout's own timestamp, not the file's mtime.
   ///
   /// The parser was swapped from `ISO8601DateFormatter` to a cached `ISO8601FormatStyle`, and the

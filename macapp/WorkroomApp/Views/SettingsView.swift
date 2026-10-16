@@ -651,7 +651,7 @@ private struct CodingAgentSettingsPane: View {
       case .enabled: try claudeUsageBridge.disable()
       case .needsRepair: try claudeUsageBridge.repair()
       }
-      agentUsage.refresh(userInitiated: true)
+      agentUsage.refresh()
     } catch {
       bridgeError = error.localizedDescription
       claudeUsageBridge.refreshState()

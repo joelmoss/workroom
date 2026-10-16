@@ -144,6 +144,9 @@ struct QuotaBar: View {
   /// swallowing the entire gap between the fill's edge and the pin — leaving a pin that no longer
   /// showed which side of sustainable pace the window was on.
   var compact: Bool = false
+  /// Off for a window past its reset (#480), where nothing has been read since and a pin would sit
+  /// at a meaningless 100%.
+  var showsMarker: Bool = true
 
   /// The one place a `PaceSeverity` becomes a colour, shared by the footer segment and the popover
   /// rows so the two cannot disagree about the same window.
@@ -174,19 +177,23 @@ struct QuotaBar: View {
         .frame(width: width * CGFloat(usedPercentage / 100), height: trackHeight)
       // Erases the track and fill beneath it rather than painting over them, so the gap reads the
       // same whether the pin lands on the filled or the empty portion, on any background.
-      Capsule()
-        .frame(width: markerHaloWidth, height: markerHeight)
-        .offset(x: max(0, markerCenter - markerHaloWidth / 2))
-        .blendMode(.destinationOut)
+      if showsMarker {
+        Capsule()
+          .frame(width: markerHaloWidth, height: markerHeight)
+          .offset(x: max(0, markerCenter - markerHaloWidth / 2))
+          .blendMode(.destinationOut)
+      }
     }
     // Required for `.destinationOut`: it composites against the group, not the whole window.
     .compositingGroup()
     // The pin itself goes OUTSIDE the group, or the knockout would erase it too.
     .overlay(alignment: .leading) {
-      Capsule()
-        .fill(theme.tokens.fgMuted)
-        .frame(width: markerLineWidth, height: markerHeight)
-        .offset(x: max(0, markerCenter - markerLineWidth / 2))
+      if showsMarker {
+        Capsule()
+          .fill(theme.tokens.fgMuted)
+          .frame(width: markerLineWidth, height: markerHeight)
+          .offset(x: max(0, markerCenter - markerLineWidth / 2))
+      }
     }
     .frame(height: markerHeight)
   }

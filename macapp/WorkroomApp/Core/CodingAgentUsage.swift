@@ -507,7 +507,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
   static let shared = CodingAgentUsageMonitor()
 
   @Published private(set) var snapshots: [CodingAgentBackend: CodingAgentQuotaSnapshot] = [:]
-  @Published private(set) var loading: Set<CodingAgentBackend> = []
   /// Why the last read produced no snapshot, per backend. Surfaced by the footer so an unavailable
   /// quota says what's missing instead of being a dead end.
   @Published private(set) var readFailures: [CodingAgentBackend: String] = [:]
@@ -520,6 +519,8 @@ final class CodingAgentUsageMonitor: ObservableObject {
   @Published private(set) var codexServerSnapshot: CodingAgentQuotaSnapshot?
   /// Why the last cswap or Codex app-server poll gave nothing new, for the popover.
   @Published private(set) var pollFailures: [CodingAgentBackend: String] = [:]
+  /// A poll is running; the popover says "Updating…" meanwhile. The footer never shows it.
+  @Published private(set) var isPolling = false
   /// Polls that finished. Not `@Published`; it lets a test wait for a poll to land.
   private(set) var completedPollCount = 0
   /// When each backend's file-based reading was last written, newer than the published snapshot's
@@ -630,6 +631,7 @@ final class CodingAgentUsageMonitor: ObservableObject {
     else { return }
     let pollers = pollers
     let current = now()
+    isPolling = true
     pollTask = Task { [weak self] in
       async let cswap = pollers.cswap(current)
       async let codex = pollers.codexServer(current)
@@ -663,34 +665,20 @@ final class CodingAgentUsageMonitor: ObservableObject {
     if pollFailures != failures { pollFailures = failures }
     completedPollCount += 1
     pollTask = nil
+    isPolling = false
   }
 
-  /// Re-read both backends.
-  ///
-  /// `userInitiated` is the difference between a read the user asked for and the many that arrive on
-  /// their own. It decides only whether a backend that has ALREADY failed gets a spinner: an
-  /// automatic read must not flag one (see `pendingBackends`), but the footer's retry button and the
-  /// Settings toggle must, or a click on "usage unavailable" produces no visible response at all.
-  func refresh(userInitiated: Bool = false) {
+  /// Re-read the file-based sources: the Claude bridge's file and Codex's rollouts. Never starts
+  /// cswap or the Codex app server (that is `poll`), so a watch event or a new segment costs a
+  /// file read and nothing more.
+  func refresh() {
     // A seeded agent title is a model-only UI fixture. Never replace its deterministic snapshot
     // (including the intentional unavailable case) by reading the developer's real provider files.
-    guard UITestFixture.usageAgentTitle == nil else {
-      loading.removeAll()
-      return
-    }
+    guard UITestFixture.usageAgentTitle == nil else { return }
     refreshTask?.cancel()
     activeRead?.cancel()
     let cancellation = ReadCancellation()
     activeRead = cancellation
-    // An AUTOMATIC read may only ADD to `loading`, never shrink it. A watch event landing while a
-    // user-initiated retry is still in flight would otherwise recompute `pending` from the
-    // not-yet-cleared `readFailures`, drop that backend, and take the spinner away from the click
-    // that asked for it — the exact response `userInitiated` exists to guarantee. `apply` stays the
-    // only place that clears. Unioning with an empty set is a no-op, so the `[] -> [x] -> []` flip
-    // this parameter was added to kill does not come back.
-    let pending = pendingBackends(userInitiated: userInitiated)
-    let next = userInitiated ? pending : loading.union(pending)
-    if loading != next { loading = next }
     let codexURL = codexSessionsURL
     let claudeURL = claudeCacheURL
     let current = now()
@@ -721,24 +709,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
     }
   }
 
-  /// Which backends may show a spinner.
-  ///
-  /// Only a backend with nothing on screen can: `TerminalStatusBar` reads `loading` solely in its
-  /// no-snapshot branch, and only for the ONE active agent's backend. A backend that has already
-  /// recorded a `readFailures` reason is excluded too, because it is not loading — it is settled and
-  /// unavailable, and it never resolves for a user who runs only the other agent. Without that
-  /// exclusion `loading` flips `[] -> [backend] -> []` on every automatic read forever, which is two
-  /// whole view-graph passes per read (the status bar's `ViewThatFits` instantiates every child to
-  /// measure it) for a spinner nothing renders — and automatic reads are frequent: every watched
-  /// directory event schedules one, and the Claude bridge's status line rewrites its cache file (a
-  /// create + rename in a watched directory) on every single invocation.
-  private func pendingBackends(userInitiated: Bool) -> Set<CodingAgentBackend> {
-    Set(
-      CodingAgentBackend.allCases.filter {
-        snapshot(for: $0) == nil && (userInitiated || readFailures[$0] == nil)
-      })
-  }
-
   /// Publish only what actually changed.
   ///
   /// Every `@Published` write invalidates every view observing this object, and the status bar's
@@ -755,7 +725,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
     latestCapture = keyed.mapValues(\.capturedAt)
     if !Self.displaysSame(snapshots, keyed) { snapshots = keyed }
     if readFailures != failures { readFailures = failures }
-    if !loading.isEmpty { loading.removeAll() }
     updateWatches(codexDirectories: codexDirectories)
   }
 
