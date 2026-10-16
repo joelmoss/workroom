@@ -461,6 +461,13 @@ extension AppStore {
       try await forget(name)
       await self?.returnPaneToRun(run, name: name)
     }
+    // The Mac's token (a container's) is part of checking the repository: had while `repository`
+    // runs, so a signed-out gh fails that row, before an image pull that can take minutes.
+    var environment = host.environment
+    if let gitHubToken = environment.gitHubToken {
+      let token = try await gitHubToken()
+      environment.gitHubToken = { token }
+    }
     let container = host.driver as? ContainerHostDriver
     if container != nil { run.begin("image") }
     return try await ProvisioningProgress.$reportStep.withValue(stepped) {
@@ -478,7 +485,7 @@ extension AppStore {
           }
           return try await RemoteWorkrooms.create(
             repository: plan.repository, cloneURL: plan.cloneURL, startBranch: plan.startBranch,
-            key: host.key, driver: host.driver, environment: host.environment, recorder: recorder)
+            key: host.key, driver: host.driver, environment: environment, recorder: recorder)
         }
       }
     }
