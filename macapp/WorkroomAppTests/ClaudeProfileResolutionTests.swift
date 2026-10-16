@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Workroom
 
-/// Which cswap account a pane's `claude` bills, from the Claude profile wr-agent reports (#480).
+/// Which Claude account a pane's `claude` bills, from the Claude profile wr-agent reports (#480).
 final class ClaudeProfileResolutionTests: XCTestCase {
   private func usage(_ slot: Int) -> ClaudeAccountUsage {
     ClaudeAccountUsage(
@@ -17,14 +17,15 @@ final class ClaudeProfileResolutionTests: XCTestCase {
 
   func testACswapProfileDirectoryIsItsSlot() {
     let resolved = ClaudeProfileResolution.account(
-      forProfile: "/Users/u/.claude-swap-backup/sessions/2-u_example.com", accounts: accounts,
+      forProfile: .reported("/Users/u/.claude-swap-backup/sessions/2-u_example.com"),
+      accounts: accounts,
       activeSlot: 1)
     XCTAssertEqual(resolved?.account.slot, 2)
   }
 
   func testNoProfileIsTheDefaultLoginsAccount() {
     XCTAssertEqual(
-      ClaudeProfileResolution.account(forProfile: "", accounts: accounts, activeSlot: 1)?
+      ClaudeProfileResolution.account(forProfile: .reported(""), accounts: accounts, activeSlot: 1)?
         .account.slot, 1)
   }
 
@@ -34,7 +35,8 @@ final class ClaudeProfileResolutionTests: XCTestCase {
       "/Users/u/elsewhere/2-u_example.com", "/Users/u/.claude-swap-backup/sessions/notaslot",
     ] {
       XCTAssertNil(
-        ClaudeProfileResolution.account(forProfile: profile, accounts: accounts, activeSlot: 1),
+        ClaudeProfileResolution.account(
+          forProfile: .reported(profile), accounts: accounts, activeSlot: 1),
         profile)
     }
   }
@@ -42,7 +44,7 @@ final class ClaudeProfileResolutionTests: XCTestCase {
   /// An agent too old to report the profile sends no entry at all: never guess an account.
   func testAMissingProfileIsNoAccount() {
     XCTAssertNil(
-      ClaudeProfileResolution.account(forProfile: nil, accounts: accounts, activeSlot: 1))
+      ClaudeProfileResolution.account(forProfile: .notReported, accounts: accounts, activeSlot: 1))
   }
 
   /// wr-agent always sends the entry, empty when unset; its absence is what marks an old agent.

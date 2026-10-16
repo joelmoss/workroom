@@ -566,7 +566,7 @@ private struct CodingAgentSettingsPane: View {
       VStack(alignment: .leading, spacing: 4) {
         Toggle("Show usage in the window footer", isOn: $usageInWindowFooter)
           .accessibilityIdentifier("settings.control.usageInWindowFooter")
-        Toggle("Show usage in the terminal pane footer", isOn: $usageInPaneFooter)
+        Toggle("Show usage in the pane footer", isOn: $usageInPaneFooter)
           .help("Only while a coding agent runs in that pane.")
           .accessibilityIdentifier("settings.control.usageInPaneFooter")
 

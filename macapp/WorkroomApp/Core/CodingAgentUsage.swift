@@ -515,6 +515,10 @@ final class CodingAgentUsageMonitor: ObservableObject {
   @Published private(set) var claudeAccounts: [ClaudeAccountUsage]?
   /// The account the default `~/.claude` login is, so a pane with no Claude profile set maps to it.
   @Published private(set) var claudeActiveSlot: Int?
+  /// Claude usage comes from the status-line bridge: cswap is not installed, its output is
+  /// unreadable, or it failed before ever answering. False until the first poll settles it, so a
+  /// cswap user never sees the bridge's reading or its "Enable…" flash up at launch.
+  @Published private(set) var claudeUsesBridge = false
   /// The last reading `codex app-server` gave; shown when it is newer than the rollouts'.
   @Published private(set) var codexServerSnapshot: CodingAgentQuotaSnapshot?
   /// Why the last cswap or Codex app-server poll gave nothing new, for the popover.
@@ -558,6 +562,7 @@ final class CodingAgentUsageMonitor: ObservableObject {
   private var pollTask: Task<Void, Never>?
   // `nonisolated(unsafe)` for the same reason as `debounce`: invalidated only in `deinit`.
   nonisolated(unsafe) private var pollTimer: Timer?
+  private var settingsObservation: Defaults.Observation?
 
   init(
     codexSessionsURL: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -578,9 +583,13 @@ final class CodingAgentUsageMonitor: ObservableObject {
     self.pollingEnabled = pollingEnabled
     if let fixture = UITestFixture.usageSnapshot {
       snapshots[fixture.backend] = fixture
+      claudeUsesBridge = true
       return
     }
-    if UITestFixture.usageAgentTitle != nil { return }
+    if UITestFixture.usageAgentTitle != nil {
+      claudeUsesBridge = true
+      return
+    }
     // No `installWatches()` here: the first read reports which directories to watch (it enumerates
     // the tree anyway, off the main thread), so the watches come up with its result rather than
     // costing a second recursive walk during window setup.
@@ -590,6 +599,12 @@ final class CodingAgentUsageMonitor: ObservableObject {
       pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) {
         [weak self] _ in
         MainActor.assumeIsolated { self?.poll() }
+      }
+      // Turning a footer setting on reads at once rather than at the next tick.
+      settingsObservation = Defaults.observe(
+        keys: .usageInWindowFooter, .usageInPaneFooter, options: []
+      ) { [weak self] in
+        Task { @MainActor in self?.poll() }
       }
     }
   }
@@ -647,12 +662,16 @@ final class CodingAgentUsageMonitor: ObservableObject {
     case .accounts(let accounts, let activeSlot):
       if claudeAccounts != accounts { claudeAccounts = accounts }
       if claudeActiveSlot != activeSlot { claudeActiveSlot = activeSlot }
+      if claudeUsesBridge { claudeUsesBridge = false }
     case .notInstalled, .incompatible:
       if claudeAccounts != nil { claudeAccounts = nil }
       if claudeActiveSlot != nil { claudeActiveSlot = nil }
+      if !claudeUsesBridge { claudeUsesBridge = true }
     case .failed(let reason):
-      // Last-known accounts stay, dimming as they age, rather than flipping to the bridge.
+      // Last-known accounts stay, dimming as they age, rather than flipping to the bridge; with
+      // none yet, the bridge stands in.
       failures[.claude] = reason
+      if claudeAccounts == nil, !claudeUsesBridge { claudeUsesBridge = true }
     }
     switch codex {
     case .snapshot(let snapshot):

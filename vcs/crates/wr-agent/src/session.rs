@@ -252,6 +252,7 @@ impl Session {
 
     pub fn info(&self) -> SessionInfo {
         let foreground = self.pty.foreground_pgid();
+        let name = foreground.and_then(crate::process::executable_name);
         SessionInfo {
             id: self.id,
             pid: self.pty.child_pid(),
@@ -260,9 +261,12 @@ impl Session {
                 .lock()
                 .map(|attached| !attached.clients.is_empty())
                 .unwrap_or(false),
-            foreground: foreground.and_then(crate::process::executable_name),
             cwd: foreground.and_then(crate::process::working_directory),
-            claude_profile: foreground.and_then(crate::process::claude_profile),
+            // Only `claude`'s environment is read: no other program's is anyone's business.
+            claude_profile: foreground
+                .filter(|_| name.as_deref() == Some("claude"))
+                .and_then(crate::process::claude_profile),
+            foreground: name,
             metadata: self.metadata.clone(),
         }
     }

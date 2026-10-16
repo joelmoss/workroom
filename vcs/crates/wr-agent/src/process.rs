@@ -647,7 +647,7 @@ mod tests {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
             configure(&mut command);
-            let mut child = command.spawn().expect("spawn sleep");
+            let mut child = command.spawn().expect("spawn the profile probe");
             let profile = claude_profile(child.id() as i32);
             let _ = child.kill();
             let _ = child.wait();

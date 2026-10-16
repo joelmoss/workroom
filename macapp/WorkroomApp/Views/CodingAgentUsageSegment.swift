@@ -4,11 +4,16 @@ import SwiftUI
 /// One thing a usage row can show (#480): a reading, a Claude account with none, or the one-time
 /// offer to enable the Claude status-line bridge.
 enum CodingAgentUsageItem: Identifiable, Equatable {
-  /// `label` and `account` are set for a cswap account; `reason` when its last poll failed.
+  /// `label` and `account` are set for a Claude account from cswap; `reason` when its last poll failed.
   case reading(
     CodingAgentQuotaSnapshot, label: String?, account: ClaudeAccount?, reason: String?)
   case unavailable(label: String, account: ClaudeAccount, reason: String)
   case enableClaude
+
+  /// A reading that belongs to no particular account: Codex, or Claude from the bridge.
+  static func reading(_ snapshot: CodingAgentQuotaSnapshot) -> CodingAgentUsageItem {
+    .reading(snapshot, label: nil, account: nil, reason: nil)
+  }
 
   var id: String {
     switch self {
@@ -28,7 +33,7 @@ enum CodingAgentUsageItem: Identifiable, Equatable {
   }
 }
 
-/// A coding agent's usage as a footer segment: its logo, an account label for a cswap account,
+/// A coding agent's usage as a footer segment: its logo, an account label for a Claude account from cswap,
 /// then one bar per window. Clicking opens the detail popover, which polls for a fresh reading.
 struct CodingAgentUsageSegment: View {
   let item: CodingAgentUsageItem
@@ -92,6 +97,8 @@ struct CodingAgentUsageSegment: View {
           Text("Enable…")
         }
       }
+      // As wide as the logo-and-bars segment that replaces it, so enabling moves nothing.
+      .frame(width: 18 + barWidth * 2 + 8, alignment: .leading)
       .buttonStyle(StatusBarSegmentButtonStyle())
       .foregroundStyle(theme.tokens.accent)
       .help("Enable Claude usage")
@@ -251,7 +258,7 @@ struct CodingAgentUsageSegment: View {
     return formatter.localizedString(for: snapshot.capturedAt, relativeTo: now)
   }
 
-  /// What a footer shows, in order: every cswap account (or, without cswap, the bridge's one
+  /// What a footer shows, in order: every Claude account cswap manages (or, without cswap, the bridge's one
   /// reading or its Enable offer), then Codex. A backend with no reading at all is absent.
   @MainActor static func items(
     monitor: CodingAgentUsageMonitor, bridgeState: ClaudeUsageBridge.State, claudeSeen: Bool
@@ -259,31 +266,32 @@ struct CodingAgentUsageSegment: View {
     var items: [CodingAgentUsageItem] = []
     if let accounts = monitor.claudeAccounts {
       let labels = accountLabels(accounts.map(\.account))
-      let pollFailure = monitor.pollFailures[.claude]
       for usage in accounts {
-        let label = labels[usage.account.slot] ?? "#\(usage.account.slot)"
-        if let snapshot = usage.snapshot {
-          items.append(
-            .reading(
-              snapshot, label: label, account: usage.account,
-              reason: usage.unavailableReason ?? pollFailure))
-        } else {
-          items.append(
-            .unavailable(
-              label: label, account: usage.account,
-              reason: usage.unavailableReason ?? pollFailure
-                ?? "cswap has no reading for this account yet."))
-        }
+        items.append(item(for: usage, labels: labels, pollFailure: monitor.pollFailures[.claude]))
       }
-    } else if bridgeState == .disabled {
-      if claudeSeen { items.append(.enableClaude) }
-    } else if let snapshot = monitor.snapshot(for: .claude) {
-      items.append(.reading(snapshot, label: nil, account: nil, reason: nil))
+    } else if monitor.claudeUsesBridge {
+      if bridgeState == .disabled {
+        if claudeSeen { items.append(.enableClaude) }
+      } else if let snapshot = monitor.snapshot(for: .claude) {
+        items.append(.reading(snapshot))
+      }
     }
-    if let snapshot = monitor.snapshot(for: .codex) {
-      items.append(.reading(snapshot, label: nil, account: nil, reason: nil))
-    }
+    if let snapshot = monitor.snapshot(for: .codex) { items.append(.reading(snapshot)) }
     return items
+  }
+
+  /// A cswap account's item: its reading, or why there is none.
+  static func item(
+    for usage: ClaudeAccountUsage, labels: [Int: String], pollFailure: String?
+  ) -> CodingAgentUsageItem {
+    let label = labels[usage.account.slot] ?? "#\(usage.account.slot)"
+    let reason = usage.unavailableReason ?? pollFailure
+    if let snapshot = usage.snapshot {
+      return .reading(snapshot, label: label, account: usage.account, reason: reason)
+    }
+    return .unavailable(
+      label: label, account: usage.account,
+      reason: reason ?? "cswap has no reading for this account yet.")
   }
 }
 
@@ -518,7 +526,7 @@ struct CodingAgentUsagePopover: View {
   }
 }
 
-/// A pane footer's usage (#480): only the agent running in that pane, while it runs. In a narrow
+/// A pane footer's usage (#480): only the coding agent running in that pane, while it runs. In a narrow
 /// pane it drops its label, then its bars, so the pane's own state is never truncated for it.
 struct PaneUsageSlot: View {
   let backend: CodingAgentBackend
@@ -554,32 +562,20 @@ struct PaneUsageSlot: View {
   ) -> CodingAgentUsageItem? {
     switch backend {
     case .codex:
-      return monitor.snapshot(for: .codex).map {
-        .reading($0, label: nil, account: nil, reason: nil)
-      }
+      return monitor.snapshot(for: .codex).map(CodingAgentUsageItem.reading)
     case .claude:
       guard let claudeProfile else { return nil }
-      guard let accounts = monitor.claudeAccounts else {
-        return monitor.snapshot(for: .claude).map {
-          .reading($0, label: nil, account: nil, reason: nil)
+      if let accounts = monitor.claudeAccounts {
+        return ClaudeProfileResolution.account(
+          forProfile: claudeProfile, accounts: accounts, activeSlot: monitor.claudeActiveSlot
+        ).map {
+          CodingAgentUsageSegment.item(
+            for: $0, labels: CodingAgentUsageSegment.accountLabels(accounts.map(\.account)),
+            pollFailure: monitor.pollFailures[.claude])
         }
       }
-      let profile: String?
-      if case .reported(let value) = claudeProfile { profile = value } else { profile = nil }
-      guard
-        let usage = ClaudeProfileResolution.account(
-          forProfile: profile, accounts: accounts, activeSlot: monitor.claudeActiveSlot)
-      else { return nil }
-      let label =
-        CodingAgentUsageSegment.accountLabels(accounts.map(\.account))[usage.account.slot]
-        ?? "#\(usage.account.slot)"
-      if let snapshot = usage.snapshot {
-        return .reading(
-          snapshot, label: label, account: usage.account, reason: usage.unavailableReason)
-      }
-      return .unavailable(
-        label: label, account: usage.account,
-        reason: usage.unavailableReason ?? "cswap has no reading for this account yet.")
+      guard monitor.claudeUsesBridge else { return nil }
+      return monitor.snapshot(for: .claude).map(CodingAgentUsageItem.reading)
     }
   }
 }
