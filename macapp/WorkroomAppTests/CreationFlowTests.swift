@@ -416,7 +416,7 @@ final class CreationFlowTests: XCTestCase {
     #"{"stdout":"","stderr":"","exit_code":0,"timed_out":false,"signaled":false}"#
 
   private func services(
-    driver: FakeDriver, agent: FakeAgent?, setup: (any RemoteSetup)? = nil,
+    driver: any HostTerminalDriver, agent: FakeAgent?, setup: (any RemoteSetup)? = nil,
     plans: Counter = Counter(), hosts: Counter = Counter()
   ) -> RemoteCreateServices {
     let repository = GitHubRepository(host: "github.com", owner: "o", name: "r")
@@ -593,6 +593,88 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertTrue(store.creationRuns.isEmpty)
     XCTAssertEqual(store.selectedTargetID, .root(project: projectPath))
     XCTAssertEqual(hosts.count, 0, "nothing was made")
+  }
+
+  /// Value: protects=section 6, two providers' sheets queue, one at a time across the app, each
+  /// announced as it comes up (D17); fails_when=the second provider's sheet replaces the first, is
+  /// never shown, or its creates are stranded; no_claim=the sheets' drawing
+  func testTwoProvidersSetupSheetsQueueOneAfterTheOther() async throws {
+    var heard: [String] = []
+    let post = AppStore.announceCreation
+    AppStore.announceCreation = { heard.append($0) }
+    defer { AppStore.announceCreation = post }
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    store.remoteCreateServices = services(driver: FakeDriver(), agent: nil, setup: FakeSetup())
+
+    let boxd = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
+    await waitUntil({ store.pendingRemoteSetup != nil }, "boxd's sheet never came up")
+    let exeDev = Task { await store.createRemoteWorkroom(in: emptyProject, place: .exeDev) }
+    await waitUntil(
+      { store.projectStore.remoteSetupWaits.count == 2 }, "exe.dev's create never queued")
+    XCTAssertEqual(store.pendingRemoteSetup?.place, .boxd, "the first sheet stays up")
+
+    store.resolveRemoteSetup(carryOn: false)
+    await boxd.value
+    XCTAssertEqual(store.pendingRemoteSetup?.place, .exeDev, "the next provider's sheet follows")
+    let waiting = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(waiting.kind, .exeDev)
+    XCTAssertEqual(waiting.steps[1].state, .waitingForUser)
+
+    store.resolveRemoteSetup(carryOn: false)
+    await exeDev.value
+    XCTAssertNil(store.pendingRemoteSetup)
+    XCTAssertTrue(store.creationRuns.isEmpty)
+    XCTAssertEqual(heard, ["boxd needs setting up", "exe.dev needs setting up"])
+  }
+
+  /// A stand-in container runtime: `image inspect` answers `inspect` (0 when the image is here),
+  /// `pull` succeeds, and anything else (the container's `run`) fails, ending the create there.
+  private func stubRuntime(inspect: Int) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-runtime-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let runtime = directory.appendingPathComponent("docker")
+    try """
+    #!/bin/sh
+    case "$*" in
+      "image inspect"*) exit \(inspect) ;;
+      pull*) exit 0 ;;
+    esac
+    exit 1
+    """.write(to: runtime, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
+    return runtime
+  }
+
+  /// Value: protects=section 3, a container create whose host image is already here shows its
+  /// image step skipped with "Image already downloaded", and one that pulls shows it done;
+  /// fails_when=a present image reads as pulled, or a pull reads as skipped; no_claim=a real runtime
+  /// (a stub script stands in for docker)
+  func testAnImageAlreadyHereIsSkippedWithItsReason() async throws {
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    for present in [true, false] {
+      let driver = ContainerHostDriver(
+        hosts: [:],
+        directory: FileManager.default.temporaryDirectory.appendingPathComponent(
+          "wr-hosts-\(UUID().uuidString)", isDirectory: true),
+        provisioning: ContainerHostDriver.Provisioning(
+          runtime: try stubRuntime(inspect: present ? 0 : 1), image: "workroom-host",
+          user: RemoteWorkrooms.user, identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
+          agentSocket: RemoteWorkrooms.agentSocket, labels: ["workroom.provisioner=test"]))
+      let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+      store.remoteCreateServices = services(driver: driver, agent: agent)
+
+      await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+
+      let run = try XCTUnwrap(store.creationRuns.values.first)
+      let image = try XCTUnwrap(run.steps.first { $0.id == "image" })
+      XCTAssertEqual(
+        image.state, present ? .skipped(reason: "Image already downloaded") : .done,
+        "present: \(present)")
+      XCTAssertEqual(run.steps.first { $0.id == "machine" }?.state, .failed, "the stub's run")
+    }
   }
 
   /// Value: protects=R2, two creates needing boxd setup share one sheet, both carry on after one
