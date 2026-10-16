@@ -648,7 +648,16 @@ mod tests {
                 .stderr(Stdio::null());
             configure(&mut command);
             let mut child = command.spawn().expect("spawn the profile probe");
-            let profile = claude_profile(child.id() as i32);
+            let pid = child.id() as i32;
+            // On Linux `spawn` can return before `execve` has laid out the new environment, which
+            // then reads as empty: wait until the probe's own variable is readable.
+            for _ in 0..100 {
+                if platform::environment_value(pid, PROFILE_PROBE).is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let profile = claude_profile(pid);
             let _ = child.kill();
             let _ = child.wait();
             profile
