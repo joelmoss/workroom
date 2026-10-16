@@ -439,7 +439,19 @@ struct CodingAgentUsagePopover: View {
           .font(.caption)
           .foregroundStyle(theme.tokens.fgMuted)
         Spacer()
-        if isBridgeReading {
+        if isBridgeReading, claudeUsageBridge.state == .needsRepair {
+          // Workroom's command is installed but its saved metadata is gone (or stale); repairing
+          // rebuilds it so Remove can work again.
+          Button("Repair") {
+            do {
+              try claudeUsageBridge.repair()
+              agentUsage.refresh()
+            } catch {
+              removeError = error.localizedDescription
+            }
+          }
+          .help("Rebuild Workroom's Claude status-line bridge")
+        } else if isBridgeReading {
           Button("Remove") {
             do {
               try claudeUsageBridge.disable()
@@ -459,7 +471,7 @@ struct CodingAgentUsagePopover: View {
       .padding(14)
     }
     .alert(
-      "The Claude bridge wasn’t removed",
+      "The Claude bridge wasn’t changed",
       isPresented: Binding(get: { removeError != nil }, set: { if !$0 { removeError = nil } })
     ) {
       Button("OK", role: .cancel) {}
