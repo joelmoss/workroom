@@ -150,6 +150,34 @@ final class CodingAgentUsagePollingTests: XCTestCase {
     monitor.poll()
     await waitForPoll(monitor, count: 3)
     XCTAssertNil(monitor.claudeAccounts, "without cswap, Claude usage comes from the bridge")
+    XCTAssertTrue(monitor.claudeUsesBridge)
+  }
+
+  /// Until cswap has answered once, Claude shows nothing: neither the bridge's reading nor its
+  /// "Enable…" may flash up for a cswap user at launch. A first poll that fails falls back.
+  func testClaudeWaitsForCswapThenFallsBackIfItNeverAnswered() async {
+    let replies = PollReplies<CswapUsage.Read>([
+      .accounts([account(1, used: 9)], activeSlot: 1), .failed("cswap exited with status 1."),
+    ])
+    let withCswap = monitor(
+      CodingAgentUsagePollers(
+        cswap: { _ in await replies.next() }, codexServer: { _ in .notInstalled }))
+    XCTAssertFalse(withCswap.claudeUsesBridge, "nothing is known before the first poll")
+    withCswap.poll()
+    await waitForPoll(withCswap)
+    XCTAssertFalse(withCswap.claudeUsesBridge)
+    withCswap.poll()
+    await waitForPoll(withCswap, count: 2)
+    XCTAssertFalse(withCswap.claudeUsesBridge, "a later failure keeps the accounts")
+
+    let failing = monitor(
+      CodingAgentUsagePollers(
+        cswap: { _ in .failed("cswap exited with status 1.") }, codexServer: { _ in .notInstalled })
+    )
+    failing.poll()
+    await waitForPoll(failing)
+    XCTAssertNil(failing.claudeAccounts)
+    XCTAssertTrue(failing.claudeUsesBridge, "a cswap that never answered falls back to the bridge")
   }
 
   func testCodexShowsTheNewerOfTheServerAndTheRollouts() async throws {

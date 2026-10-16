@@ -26,16 +26,16 @@ enum PaneClaudeProfile: Equatable, Sendable {
   case notReported
 }
 
-/// Which cswap account a pane's `claude` bills, from its Claude profile (#480).
+/// Which Claude account a pane's `claude` bills, from its Claude profile (#480).
 enum ClaudeProfileResolution {
-  /// `profile` is nil when the agent did not report one. Empty (unset) is the default
+  /// `.notReported` is an agent too old to say. An empty profile (unset) is the default
   /// `~/.claude` login, which is cswap's active account. `cswap run` makes
   /// `<backup>/sessions/<slot>-<email>`, whose prefix is the slot. Anything else is no account:
   /// never a guess.
   static func account(
-    forProfile profile: String?, accounts: [ClaudeAccountUsage], activeSlot: Int?
+    forProfile reported: PaneClaudeProfile, accounts: [ClaudeAccountUsage], activeSlot: Int?
   ) -> ClaudeAccountUsage? {
-    guard let profile else { return nil }
+    guard case .reported(let profile) = reported else { return nil }
     let slot: Int?
     if profile.isEmpty {
       slot = activeSlot
@@ -75,7 +75,7 @@ enum CswapUsage {
     let result = await runner.run(
       "cswap", ["list", "--json"],
       in: FileManager.default.homeDirectoryForCurrentUser.path, timeout: timeout,
-      // Empty is unset to cswap. Without this, an app launched from a Claude session's terminal
+      // Empty is unset to cswap. Without this, an app launched from a terminal running Claude
       // passes that one profile's directory on and cswap reads only that profile.
       environment: ["CLAUDE_CONFIG_DIR": ""])
     if result.exitCode == CommandResult.commandNotFound { return .notInstalled }

@@ -169,7 +169,7 @@ the left, once there is a reading, whether or not an agent is running. With
 [cswap](https://github.com/realiti4/claude-swap) installed it shows every Claude account it manages;
 without it, Claude usage comes from Claude's status line, which you enable once from the footer.
 Click the usage bars for details. **Settings ▸ Coding agents** hides it, and can also show the
-usage of the agent running in a pane in that pane's footer. The footer stays visible when switching
+usage of the coding agent running in a pane in that pane's footer. The footer stays visible when switching
 workrooms or hiding sidebars; undocked terminal windows keep only their pane footer.
 
 **Review your work without leaving the app.** A right-hand inspector reads each workroom's VCS
