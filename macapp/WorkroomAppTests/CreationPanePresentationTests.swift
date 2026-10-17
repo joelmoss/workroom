@@ -143,9 +143,6 @@ final class CreationPanePresentationTests: XCTestCase {
 
   // MARK: Failure footer
 
-  /// Value: protects=D3/D12, each failure's reason headline, its buttons in order and its default;
-  /// fails_when=a left-behind machine offers Try Again, a setup-script failure offers Close, or the
-  /// headline loses the message; no_claim=the buttons' actions (CreationFlowTests)
   /// Value: protects=a failed setup script's footer says "setup script failed" once, with the CLI's
   /// own message (`errs.ErrSetup`, as in testdata/contracts/create-setup-failed.json); fails_when=the
   /// footer repeats it; no_claim=the footer's drawing
@@ -159,6 +156,9 @@ final class CreationPanePresentationTests: XCTestCase {
         + "exit code")
   }
 
+  /// Value: protects=D3/D12, each failure's reason headline, its buttons in order and its default;
+  /// fails_when=a left-behind machine offers Try Again, a setup-script failure offers Close, or the
+  /// headline loses the message; no_claim=the buttons' actions (CreationFlowTests)
   func testEachFailureOffersItsOwnFooter() {
     XCTAssertNil(P.footer(for: .running))
     XCTAssertNil(P.footer(for: .succeeded))

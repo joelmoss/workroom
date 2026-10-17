@@ -260,7 +260,7 @@ private struct NewWorkroomsSection: View {
       if let failure {
         Text(failure).font(.footnote).foregroundStyle(.red)
       }
-      Toggle("Close the checklist when done", isOn: $closeCreationPaneWhenDone)
+      Toggle("Close the checklist automatically when done", isOn: $closeCreationPaneWhenDone)
         .help(
           "Close a new workroom's checklist a few seconds after it is ready, instead of waiting "
             + "for Done.")
