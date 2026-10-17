@@ -78,14 +78,11 @@ struct CreationPane: View {
                 rowHeights[step.id] = $0
               }
             if expanded == step.id {
-              CreationLogView(
-                lines: step.log, isFinished: !Self.isActive(step),
-                onContentHeight: { logContentHeight = $0 }
-              )
-              .id(step.id)
-              .frame(height: layout.log)
-              .padding(.leading, CreationStepRow.titleInset)
-              .padding(.vertical, Self.logPadding)
+              CreationLogView(lines: P.log(of: step), onContentHeight: { logContentHeight = $0 })
+                .id(step.id)
+                .frame(height: layout.log)
+                .padding(.leading, CreationStepRow.titleInset)
+                .padding(.vertical, Self.logPadding)
               // What a short log leaves, which puts the rows below on the pane's bottom edge.
               Spacer(minLength: 0)
             }
@@ -113,7 +110,9 @@ struct CreationPane: View {
         case .leftArrow: .left
         default: .space
         }
-      let result = P.handle(key, focused: focused, expanded: expanded, rows: run.steps.map(\.id))
+      let result = P.handle(
+        key, focused: focused, expanded: expanded, rows: run.steps.map(\.id),
+        expandable: Set(run.steps.filter(P.isExpandable).map(\.id)))
       focusedRow = result.focused
       setExpanded(result.expanded)
       return .handled
@@ -140,27 +139,30 @@ struct CreationPane: View {
   private func row(_ step: CreationStep) -> some View {
     CreationStepRow(
       step: step, pullFraction: step.id == "image" ? run.pullFraction : nil,
-      isExpanded: expanded == step.id
+      isExpandable: P.isExpandable(step), isExpanded: expanded == step.id
     ) {
       focusedRow = step.id
-      setExpanded(expanded == step.id ? nil : step.id)
+      if P.isExpandable(step) { setExpanded(expanded == step.id ? nil : step.id) }
     }
     .focusable()
+    // No focus ring (owner): the open log already shows which row is in use.
+    .focusEffectDisabled()
     .focused($focusedRow, equals: step.id)
   }
 
   /// The row whose log is open: one at a time, and none until the user opens one (D7). Kept on this
-  /// window's store, not in the view, so it survives the pane's id becoming the workroom's.
-  private var expanded: String? { store.expandedCreationLogs[run.id] }
+  /// window's store, not in the view, so it survives the pane's id becoming the workroom's. Only a
+  /// row that `isExpandable` shows its log.
+  private var expanded: String? {
+    store.expandedCreationLogs[run.id].flatMap { id in
+      run.steps.contains { $0.id == id && P.isExpandable($0) } ? id : nil
+    }
+  }
 
   private func setExpanded(_ id: String?) {
     guard id != expanded else { return }
     logContentHeight = 0
     store.expandedCreationLogs[run.id] = id
-  }
-
-  private static func isActive(_ step: CreationStep) -> Bool {
-    step.state == .running || step.state == .waitingForUser
   }
 
   // MARK: Actions
@@ -197,8 +199,10 @@ struct CreationPane: View {
 private struct CreationStepRow: View {
   let step: CreationStep
   let pullFraction: Double?
+  let isExpandable: Bool
   let isExpanded: Bool
   let toggle: () -> Void
+  @State private var hovering = false
   private let theme = ThemeService.shared
 
   /// Where a row's title starts, which an open log lines up with.
@@ -207,8 +211,10 @@ private struct CreationStepRow: View {
   private static let spacing: CGFloat = 10
   /// The timing column's width: fixed, so the timer never jitters as a split is resized (D15).
   private static let durationWidth: CGFloat = 56
-  /// A row's widest: its glyph, title, caption and duration, inside the 640pt column.
-  private static let maxWidth: CGFloat = 420
+  /// The expand/collapse chevron's slot, after the duration.
+  private static let chevronWidth: CGFloat = 12
+  /// A row's widest: its glyph, title, caption, duration and chevron, inside the 640pt column.
+  private static let maxWidth: CGFloat = 420 + spacing + chevronWidth
 
   var body: some View {
     HStack(alignment: .top, spacing: Self.spacing) {
@@ -235,12 +241,20 @@ private struct CreationStepRow: View {
         .font(.subheadline.monospacedDigit())
         .lineLimit(1)
         .frame(minWidth: Self.durationWidth, minHeight: 17, alignment: .trailing)
+      // Its slot is always laid out, so the chevron showing on hover never moves the row.
+      Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(theme.tokens.fgDim)
+        .frame(width: Self.chevronWidth, height: 17)
+        .opacity(hovering && isExpandable ? 1 : 0)
+        .accessibilityHidden(true)
     }
     // Narrower than the column (owner), so a wide pane's durations sit near their titles and still
     // line up; a narrower pane's row fills it.
     .frame(maxWidth: Self.maxWidth, alignment: .leading)
     .padding(.vertical, 6)
     .contentShape(Rectangle())
+    .onHover { hovering = $0 }
     .onTapGesture(perform: toggle)
     // The full title and caption, which truncate in a narrow pane (D15).
     .help(
@@ -249,14 +263,21 @@ private struct CreationStepRow: View {
     )
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(CreationPanePresentation.accessibilityLabel(for: step))
-    .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     .accessibilityHint(CreationPanePresentation.caption(for: step) ?? "")
-    .accessibilityAddTraits(.isButton)
-    .accessibilityAction(named: isExpanded ? "Collapse log" : "Expand log", toggle)
+    // A row with no log to open isn't a button.
+    .accessibilityValue(isExpandable ? isExpanded ? "Expanded" : "Collapsed" : "")
+    .accessibilityAddTraits(isExpandable ? .isButton : [])
+    .accessibilityActions {
+      if isExpandable { Button(isExpanded ? "Collapse log" : "Expand log", action: toggle) }
+    }
     .accessibilityIdentifier("CreationPane.step.\(step.id)")
   }
 
   private var isActive: Bool { step.state == .running || step.state == .waitingForUser }
+  private var isSkipped: Bool {
+    if case .skipped = step.state { return true }
+    return false
+  }
 
   @ViewBuilder private var glyph: some View {
     switch step.state {
@@ -299,11 +320,6 @@ private struct CreationStepRow: View {
     }
   }
 
-  private var isSkipped: Bool {
-    if case .skipped = step.state { return true }
-    return false
-  }
-
   private var titleColor: Color {
     switch step.state {
     case .pending, .skipped: theme.tokens.fgDim
@@ -322,8 +338,8 @@ private struct CreationStepRow: View {
 /// `surface` fill with a hairline. It follows new lines only while it is scrolled to its bottom; once
 /// scrolled up it stays put, with "Jump to latest" over its corner until it is back (design D10).
 private struct CreationLogView: View {
-  let lines: [String]
-  let isFinished: Bool
+  /// Never empty: only a row with output opens (`isExpandable`).
+  let lines: ArraySlice<String>
   let onContentHeight: (CGFloat) -> Void
   /// Opens at the latest output, where a running or failed step's news is: through
   /// `defaultScrollAnchor`, as a `ScrollPosition(edge: .bottom)` start left a log a little shorter
@@ -342,22 +358,14 @@ private struct CreationLogView: View {
 
   var body: some View {
     ScrollView {
-      Group {
-        if lines.isEmpty {
-          Text(ScriptLogContent.emptyText(isFinished: isFinished))
-            .font(.callout)
-            .foregroundStyle(theme.tokens.fgMuted)
-        } else {
-          LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(lines.indices, id: \.self) { index in
-              Text(lines[index].isEmpty ? " " : lines[index])
-                .font(.system(.callout, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-          }
-          .textSelection(.enabled)
+      LazyVStack(alignment: .leading, spacing: 0) {
+        ForEach(lines.indices, id: \.self) { index in
+          Text(lines[index].isEmpty ? " " : lines[index])
+            .font(.system(.footnote, design: .monospaced))
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
+      .textSelection(.enabled)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(Self.padding)
     }

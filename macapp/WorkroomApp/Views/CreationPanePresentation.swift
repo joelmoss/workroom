@@ -28,6 +28,22 @@ enum CreationPanePresentation {
     }
   }
 
+  // MARK: Logs
+
+  /// A step's log as its open row shows it: from its first line with something on it (owner).
+  static func log(of step: CreationStep) -> ArraySlice<String> {
+    step.log.drop { $0.allSatisfy(\.isWhitespace) }
+  }
+
+  /// Whether a row opens a log (owner): only a step that has started and has output. A pending, a
+  /// skipped or a silent step has nothing to show.
+  static func isExpandable(_ step: CreationStep) -> Bool {
+    switch step.state {
+    case .pending, .skipped: false
+    default: !log(of: step).isEmpty
+    }
+  }
+
   // MARK: Captions and header
 
   /// A row's second line (design D11): a skipped step's reason, or a warning's text. Steps skipped
@@ -148,14 +164,20 @@ enum CreationPanePresentation {
   }
 
   /// Up and Down move between rows, stopping at the ends; Space toggles the focused row's log, Right
-  /// expands it and Left collapses it. One log is open at a time (D9).
-  static func handle(_ key: Key, focused: String, expanded: String?, rows: [String]) -> KeyResult {
+  /// expands it and Left collapses it. One log is open at a time (D9), and a row outside
+  /// `expandable` (`isExpandable`) has none to open.
+  static func handle(
+    _ key: Key, focused: String, expanded: String?, rows: [String], expandable: Set<String>
+  ) -> KeyResult {
     let index = rows.firstIndex(of: focused) ?? 0
+    let opens = expandable.contains(focused)
     switch key {
     case .up: return KeyResult(focused: rows[max(index - 1, 0)], expanded: expanded)
     case .down: return KeyResult(focused: rows[min(index + 1, rows.count - 1)], expanded: expanded)
-    case .space: return KeyResult(focused: focused, expanded: expanded == focused ? nil : focused)
-    case .right: return KeyResult(focused: focused, expanded: focused)
+    case .space:
+      return KeyResult(
+        focused: focused, expanded: expanded == focused ? nil : opens ? focused : expanded)
+    case .right: return KeyResult(focused: focused, expanded: opens ? focused : expanded)
     case .left: return KeyResult(focused: focused, expanded: expanded == focused ? nil : expanded)
     }
   }
