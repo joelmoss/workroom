@@ -52,6 +52,16 @@
     "testdata/fixtures/**": [
       "internal/script/script_test.go"
     ],
+    "cmd/**": ["cmd/main_test.go"],
+    "internal/channel/**": ["internal/channel/channel_test.go"],
+    "internal/config/**": ["internal/config/canonicalpath_test.go"],
+    "internal/errs/**": ["internal/errs/errs_test.go"],
+    "internal/namegen/**": ["internal/namegen/namegen_test.go"],
+    "internal/script/**": ["internal/script/script_test.go"],
+    "internal/ui/**": ["internal/ui/panel_test.go"],
+    "internal/updater/**": ["internal/updater/updater_test.go"],
+    "internal/vcs/**": ["internal/vcs/vcs_test.go"],
+    "internal/workroom/**": ["internal/workroom/main_test.go"],
     "**/*.md": [],
     "docs/**": []
   },
