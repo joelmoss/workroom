@@ -80,6 +80,16 @@ func TestCreateOutput(t *testing.T) {
 	code, out, errOut = humanCreate(t, home, included, "--verbose")
 	check("included files, verbose", code, out, errOut, 0, "        repo  Detected Git worktree\n     include  Copied 1 file from .worktreeinclude\nWorkroom 'calm-river' created successfully at ~/workrooms/calm-river.\n", "")
 
+	symlinked := project("symlinked", "")
+	writeRootFile(t, symlinked, ".gitignore", ".env\nshared.env\n")
+	writeRootFile(t, symlinked, ".worktreeinclude", ".env\n")
+	writeRootFile(t, symlinked, "shared.env", "SECRET=1")
+	if err := os.Symlink(filepath.Join(symlinked, "shared.env"), filepath.Join(symlinked, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut = humanCreate(t, home, symlinked)
+	check("symlinked included file", code, out, errOut, 0, "Skipped .env: it's a symlink\nWorkroom 'calm-river' created successfully at ~/workrooms/calm-river.\n", "")
+
 	if os.Geteuid() != 0 {
 		unreadable := project("unreadable", "")
 		writeRootFile(t, unreadable, ".gitignore", "*.key\n")

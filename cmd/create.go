@@ -103,6 +103,9 @@ func createWorkroom(svc *workroom.Service, dir string, out io.Writer, offerEdito
 	if res.Warning != "" {
 		fmt.Fprintln(out, ui.Yellow(res.Warning))
 	}
+	for _, f := range res.IncludeSkipped {
+		fmt.Fprintln(out, ui.Yellow(workroom.SkippedSymlink(f)))
+	}
 	if res.IncludeWarning != "" {
 		fmt.Fprintln(out, ui.Yellow(res.IncludeWarning))
 	}
