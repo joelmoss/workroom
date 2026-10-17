@@ -325,8 +325,10 @@ private struct CreationLogView: View {
   let lines: [String]
   let isFinished: Bool
   let onContentHeight: (CGFloat) -> Void
-  /// Opens at the latest output, where a running or failed step's news is.
-  @State private var position = ScrollPosition(edge: .bottom)
+  /// Opens at the latest output, where a running or failed step's news is: through
+  /// `defaultScrollAnchor`, as a `ScrollPosition(edge: .bottom)` start left a log a little shorter
+  /// than its frame drawing only its last few lines, the lazy rows above it never laid out.
+  @State private var position = ScrollPosition()
   @State private var following = true
   private let theme = ThemeService.shared
 
@@ -360,6 +362,7 @@ private struct CreationLogView: View {
       .padding(Self.padding)
     }
     .scrollPosition($position)
+    .defaultScrollAnchor(.bottom)
     .onScrollGeometryChange(for: Metrics.self) { geometry in
       Metrics(
         offset: geometry.contentOffset.y, visible: geometry.containerSize.height,
