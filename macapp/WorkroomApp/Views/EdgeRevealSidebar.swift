@@ -323,7 +323,9 @@ struct EdgeRevealSidebars: ViewModifier {
           // can never cover — so without this a hover would slide the Projects panel out over the
           // dialog. Folded into `enabled` rather than added beside it because `enabled` already has the
           // reset path this needs (`onChange(of: enabled)` below).
-          side: .leading, enabled: !sidebarVisible && store.activePicker == nil, width: panelWidth
+          side: .leading,
+          enabled: !sidebarVisible && store.activePicker == nil && !store.projects.isEmpty,
+          width: panelWidth
         ) {
           ProjectSidebar(
             paneDrag: paneDrag,

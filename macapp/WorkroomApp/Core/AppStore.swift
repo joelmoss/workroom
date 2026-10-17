@@ -210,6 +210,12 @@ final class AppStore: ObservableObject {
   {
     didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
   }
+
+  /// Shows or hides the Projects sidebar (the title-bar button, ⌃⌘S, ⌥⌘S, ⌥⌘B): nothing with no
+  /// projects, where it has nothing to list and stays hidden (`RootView.splitView`).
+  func toggleSidebar() {
+    if !projects.isEmpty { sidebarVisible.toggle() }
+  }
   /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
   /// left Projects overlay (`previewingLeft`) and the right inspector overlay (`previewingRight`).
   /// These are observable app state, not view-local, because other surfaces must react: notification

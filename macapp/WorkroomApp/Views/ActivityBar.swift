@@ -27,7 +27,8 @@ struct ActivityBar: View {
     // Re-renders on every click, so `showInspector` is read fresh (`AppStore.inspectorToggles`).
     let _ = store.inspectorToggles
     VStack(spacing: 2) {
-      ForEach(ActivitySection.allCases) { section in
+      // No projects: no inspector to show, so only Settings stays on the rail.
+      ForEach(store.projects.isEmpty ? [] : ActivitySection.allCases) { section in
         ActivityBarButton(
           section: section,
           // Active only while the pane is actually shown — a closed inspector highlights nothing
