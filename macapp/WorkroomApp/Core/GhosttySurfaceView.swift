@@ -167,10 +167,11 @@ final class GhosttySurfaceView: NSView {
   private var isPaneVisible = true
   private var isWindowVisible = true
   nonisolated(unsafe) private var occlusionObserver: NSObjectProtocol?
-  // Key-window focus observers (scoped to this view's window), driving the surface's focus report
+  // Observers scoped to this view's window: key-window focus, driving the surface's focus report
   // when the *key window* changes without a first-responder change — e.g. switching between two
-  // Workroom windows or the Quick Terminal, and app activate/deactivate. See `syncFocusToKeyWindow`.
-  nonisolated(unsafe) private var keyWindowObservers: [NSObjectProtocol] = []
+  // Workroom windows or the Quick Terminal, and app activate/deactivate (see `syncFocusToKeyWindow`);
+  // and screen changes (see `syncDisplayID`).
+  nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
 
   // IME / marked-text state.
   private var markedText = ""
@@ -350,11 +351,7 @@ final class GhosttySurfaceView: NSView {
     ghostty_surface_set_content_scale(surface, scale, scale)
     ghostty_surface_set_size(surface, backingSize.width, backingSize.height)
     applyColorScheme(isDark: Self.isCurrentAppearanceDark())
-    if let screen = window?.screen ?? NSScreen.main,
-      let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
-    {
-      ghostty_surface_set_display_id(surface, displayID)
-    }
+    syncDisplayID()
     applyOcclusionState()
     // Keep the overlay scrollbar and go-to-bottom button above the surface's Metal content.
     addSubview(scrollbarThumb, positioned: .above, relativeTo: nil)
@@ -423,8 +420,8 @@ final class GhosttySurfaceView: NSView {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
     }
-    for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
-    keyWindowObservers = []
+    for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
+    windowObservers = []
     destroySurface()
     removeFromSuperview()
   }
@@ -433,7 +430,7 @@ final class GhosttySurfaceView: NSView {
     progressTimeoutTimer?.invalidate()
     accessibilityPollTimer?.invalidate()
     if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
-    for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
+    for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
     // A window closing frees its panes without a teardown; their ssh goes with them (#356). Only
@@ -575,14 +572,19 @@ final class GhosttySurfaceView: NSView {
     layer?.contentsScale = window.backingScaleFactor
     let scale = Double(window.backingScaleFactor)
     ghostty_surface_set_content_scale(surface, scale, scale)
-    if let screen = window.screen,
-      let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
-    {
-      ghostty_surface_set_display_id(surface, displayID)
-    }
     if let backingSize = backingPixelSize() {
       ghostty_surface_set_size(surface, backingSize.width, backingSize.height)
     }
+  }
+
+  /// Points the renderer's display link at this view's screen. Only on surface creation and screen
+  /// changes, as Ghostty does: each call queues a renderer message with no timeout and can stop the
+  /// display link, so calling it per resize frame froze the app after wake (WORKROOM-3V).
+  private func syncDisplayID() {
+    guard let surface, let screen = window?.screen ?? NSScreen.main,
+      let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
+    else { return }
+    ghostty_surface_set_display_id(surface, displayID)
   }
 
   override func viewDidMoveToWindow() {
@@ -591,8 +593,8 @@ final class GhosttySurfaceView: NSView {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
     }
-    for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
-    keyWindowObservers = []
+    for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
+    windowObservers = []
     guard let window else {
       // Detached from any window → stop rendering. `updateWindowVisibility` defaults to "visible"
       // when window is nil, so set it explicitly here rather than leaving the last (stale) value.
@@ -618,16 +620,21 @@ final class GhosttySurfaceView: NSView {
     // (a window is not key while its app is inactive). Scoped to `window`; torn down above on the
     // next move. First-responder-driven focus is still handled by become/resignFirstResponder.
     let center = NotificationCenter.default
-    keyWindowObservers = [
+    windowObservers = [
       center.addObserver(
         forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
       ) { [weak self] _ in MainActor.assumeIsolated { self?.syncFocusToKeyWindow() } },
       center.addObserver(
         forName: NSWindow.didResignKeyNotification, object: window, queue: .main
       ) { [weak self] _ in MainActor.assumeIsolated { self?.syncFocusToKeyWindow() } },
+      center.addObserver(
+        forName: NSWindow.didChangeScreenNotification, object: window, queue: .main
+      ) { [weak self] _ in MainActor.assumeIsolated { self?.syncDisplayID() } },
     ]
     updateWindowVisibility()
     updateMetalLayerSize()
+    // A pane moved into another window (detached or back) may now be on another screen.
+    syncDisplayID()
     // Claim first responder the moment the focused pane's surface lands in a window. On a tab/target
     // switch the active tab gets a freshly-mounted container that often isn't in the window yet when the
     // host's `applyFocus` runs, so that one-shot async `makeFirstResponder` silently bailed and the

@@ -1,4 +1,5 @@
 import Defaults
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -151,6 +152,24 @@ final class SharedPrefDefaultsTests: XCTestCase {
 
     Defaults[.sidebarVisible] = true
     XCTAssertTrue(AppStore().sidebarVisible, "and must reopen a persisted-visible sidebar")
+  }
+
+  /// Value: protects=with no projects the sidebar toggles (⌃⌘S, ⌥⌘S, ⌥⌘B, the title-bar button) do
+  /// nothing, as the sidebar has nothing to list; fails_when=a toggle flips the setting with no
+  /// projects, or stops flipping it with one; no_claim=the hidden button and disabled menu item
+  @MainActor
+  func testTheSidebarTogglesOnlyWithAProject() {
+    let store = AppStore()
+    store.projects = []
+    let shown = store.sidebarVisible
+    store.toggleSidebar()
+    XCTAssertEqual(store.sidebarVisible, shown, "no projects: nothing to show")
+
+    store.projects = [
+      Project(path: "/private/var/tmp/wr-sidebar-project", vcs: "git", workrooms: [])
+    ]
+    store.toggleSidebar()
+    XCTAssertEqual(store.sidebarVisible, !shown, "a project: it toggles")
   }
 
   // MARK: inspector visibility, as the store reads it

@@ -110,7 +110,8 @@ struct RootView: View {
 
   private var workroomTabsBar: some View {
     // ALWAYS mounted, even with no tabs: its trailing Open/New buttons are how you get your first
-    // workroom open in a fresh window, so they can't be gated on a tab already existing. (It also
+    // workroom open in a fresh window, so they can't be gated on a tab already existing (only on a
+    // project existing, without which they hide). (It also
     // hosts the provisional "Creating…" chip before any tab resolves — issue #116.) With an empty
     // run the bar is just those two buttons over the draggable title bar.
     WorkroomTabBar(
@@ -721,7 +722,7 @@ struct RootView: View {
         // Zero projects: the sidebar's own empty-state copy (`ProjectSidebar`) — the sidebar itself
         // is hidden in this state (see `splitView`), so this is the only place left to say it.
         if store.projects.isEmpty {
-          Text("Add a Git project folder to start managing its workrooms.")
+          Text("Add your first project!")
         } else {
           Text("Select a project's root, or open (⌘O) or create (⌘N) a workroom to get started.")
         }

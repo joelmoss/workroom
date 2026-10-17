@@ -105,8 +105,11 @@ struct WorkroomTabBar: View {
   /// branch-independent.
   private var trailingControls: some View {
     HStack(spacing: tabSpacing) {
-      openWorkroomButton
-      addWorkroomButton
+      // No projects: nothing to open or create a workroom in (⌘O and ⌘N are off too).
+      if !store.projects.isEmpty {
+        openWorkroomButton
+        addWorkroomButton
+      }
     }
     .fixedSize()
   }

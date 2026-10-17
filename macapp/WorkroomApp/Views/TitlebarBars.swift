@@ -75,23 +75,26 @@ struct LeadingTitlebarBar: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Button {
-        store.sidebarVisible.toggle()
-      } label: {
-        Image(systemName: "sidebar.left")
-      }
-      .help(store.sidebarVisible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
-      .accessibilityLabel("Toggle sidebar")
-      .accessibilityIdentifier("toolbar.toggleSidebar")
-      // Hovering this button (while the sidebar is collapsed) peeks the sidebar via the edge-reveal
-      // overlay (issue #74) — the trigger is the button alone, never the toolbar strip that used to
-      // sit above the workroom tabs. Only report while collapsed so a hover with the sidebar pinned
-      // doesn't churn reveal state.
-      .onHover { hovering in
-        if !store.sidebarVisible { store.hoveringLeftToggle = hovering }
-      }
+      // No projects: no sidebar to show, so no button for it.
+      if !store.projects.isEmpty {
+        Button {
+          store.toggleSidebar()
+        } label: {
+          Image(systemName: "sidebar.left")
+        }
+        .help(store.sidebarVisible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+        .accessibilityLabel("Toggle sidebar")
+        .accessibilityIdentifier("toolbar.toggleSidebar")
+        // Hovering this button (while the sidebar is collapsed) peeks the sidebar via the edge-reveal
+        // overlay (issue #74) — the trigger is the button alone, never the toolbar strip that used to
+        // sit above the workroom tabs. Only report while collapsed so a hover with the sidebar pinned
+        // doesn't churn reveal state.
+        .onHover { hovering in
+          if !store.sidebarVisible { store.hoveringLeftToggle = hovering }
+        }
 
-      TitlebarDivider()
+        TitlebarDivider()
+      }
 
       // The two identifiers below are a deliberate hook with no test behind them yet: the nav UI test
       // drives ⌘[/⌘] instead, because these buttons live in an AppKit titlebar accessory that no

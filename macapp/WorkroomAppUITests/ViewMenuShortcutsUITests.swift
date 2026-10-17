@@ -119,6 +119,32 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     XCTAssertTrue(waitExists(row, before), "\(message) (and back again)")
   }
 
+  /// No projects (`-WorkroomUITestNoProjects`): the View menu's sidebar and inspector toggles are
+  /// disabled, which also drops their key equivalents (⌃⌘S, ⌘B, ⌥⌘C, ⌥⌘Y, ⌥⌘P, ⌥⌘F). Theme… stays
+  /// enabled as the control, so a menu that never opened, or reads every item as disabled, can't pass.
+  func testWithNoProjectsTheSidebarAndInspectorItemsAreDisabled() {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1", "-WorkroomUITestNoProjects", "1",
+      "-WorkroomUITestOnboarding", "hide",
+    ]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    addTeardownBlock { app.terminate() }
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    XCTAssertTrue(
+      element(app, id: "EmptyStateAddProject").waitForExistence(timeout: 10),
+      "the app should show its no-projects state")
+
+    let view = app.menuBars.menuBarItems["View"]
+    view.click()
+    XCTAssertTrue(view.menuItems["Theme…"].isEnabled, "a window-level View item stays enabled")
+    for title in ["Projects", "Inspector", "Changes", "History", "Pull Request", "Files"] {
+      XCTAssertFalse(view.menuItems[title].isEnabled, "View ▸ \(title) is enabled with no projects")
+    }
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
   /// One launch, ordered. Every step reads its own starting state (the toggles' `Defaults` persist
   /// across runs), so a flip left by an earlier step can't satisfy a later assertion.
   ///
