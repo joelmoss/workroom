@@ -427,6 +427,8 @@ private struct CreationFailureFooter: View {
   let narrow: Bool
   let inset: CGFloat
   let perform: (CreationPanePresentation.Action) -> Void
+  /// The reason's height as laid out, which its scroll view is, up to `maxReasonHeight`.
+  @State private var reasonHeight: CGFloat = 0
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -456,14 +458,27 @@ private struct CreationFailureFooter: View {
   }
 
   /// Wrapped, never truncated (owner): a reason cut short behind a tooltip hid the part that said
-  /// why.
+  /// why. One taller than `maxReasonHeight` (a failed command's whole output) scrolls, so it never
+  /// pushes the buttons out of the pane.
   private var reason: some View {
-    Text(footer.reason)
-      .font(.callout)
-      .foregroundStyle(theme.tokens.failure)
-      .fixedSize(horizontal: false, vertical: true)
-      .textSelection(.enabled)
+    ScrollView {
+      Text(footer.reason)
+        .font(.callout)
+        .foregroundStyle(theme.tokens.failure)
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) {
+          $0.size.height
+        } action: {
+          reasonHeight = $0
+        }
+    }
+    .scrollBounceBehavior(.basedOnSize)
+    .frame(height: min(reasonHeight, Self.maxReasonHeight))
   }
+
+  private static let maxReasonHeight: CGFloat = 120
 
   @ViewBuilder private var buttons: some View {
     HStack(spacing: 8) {

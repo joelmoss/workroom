@@ -75,9 +75,10 @@ final class CreationPanePresentationTests: XCTestCase {
   }
 
   /// Value: protects=D5, the header reads "Creating workroom…" until the name lands, then "Creating
-  /// workroom <name>…", then the name once the create ends, over "<project> · <destination>";
-  /// fails_when=the subtitle drops the destination, the name never shows while it runs, or a
-  /// finished create still says it is creating; no_claim=none beyond protects
+  /// workroom <name>…", then the name (or "New workroom" unnamed) once the create ends, over
+  /// "<project> · <destination>"; fails_when=the subtitle drops the destination, the name never
+  /// shows while it runs, or an ended create still says it is creating; no_claim=none beyond
+  /// protects
   func testTheHeaderNamesTheWorkroomAndWhereItGoes() {
     let run = CreationRun(
       project: Project(path: "/code/acme-web", vcs: "git", workrooms: []), kind: .boxd,
@@ -88,6 +89,11 @@ final class CreationPanePresentationTests: XCTestCase {
     XCTAssertEqual(P.title(of: run), "Creating workroom quiet-otter…")
     run.succeed()
     XCTAssertEqual(P.title(of: run), "quiet-otter")
+    let unnamed = CreationRun(
+      project: Project(path: "/code/acme-web", vcs: "git", workrooms: []), kind: .boxd,
+      splitAnchor: nil, previousSelection: nil)
+    unnamed.fail(.remoteFailed(message: "x", leftBehind: false))
+    XCTAssertEqual(P.title(of: unnamed), "New workroom", "a failed create isn't still creating")
     let local = CreationRun(
       project: Project(path: "/code/acme-web", vcs: "git", workrooms: []), kind: .local,
       splitAnchor: nil, previousSelection: nil)
