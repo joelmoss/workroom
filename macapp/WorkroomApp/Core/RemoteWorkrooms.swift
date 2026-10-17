@@ -317,9 +317,15 @@ enum RemoteWorkrooms {
   ) async throws -> Created {
     // Before anything is made or recorded: a repository the provider can't reach fails at once. Its
     // commands go in the `repository` row's log (#483), without starting that row again: the app
-    // has already moved on to the account by now.
-    try await ProvisioningProgress.step(.repository, report: false) {
-      try await environment.grantRepository?(repository)
+    // has already moved on to the account by now. A refusal is the repository's, so it reports that
+    // row, which the failure then marks, not the account or image row the checklist is on.
+    do {
+      try await ProvisioningProgress.step(.repository, report: false) {
+        try await environment.grantRepository?(repository)
+      }
+    } catch {
+      ProvisioningProgress.reportStep?(.repository)
+      throw error
     }
     let recorder = recorder.forgettingPending(in: pendingIn)
     let origin = "\(repository.owner)/\(repository.name)"

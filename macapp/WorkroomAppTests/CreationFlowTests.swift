@@ -436,7 +436,8 @@ final class CreationFlowTests: XCTestCase {
   private func services(
     driver: any HostTerminalDriver, agent: FakeAgent?, setup: (any RemoteSetup)? = nil,
     plans: Counter = Counter(), hosts: Counter = Counter(),
-    gitHubToken: (@Sendable () async throws -> String)? = nil
+    gitHubToken: (@Sendable () async throws -> String)? = nil,
+    grantRepository: (@Sendable (GitHubRepository) async throws -> Void)? = nil
   ) -> RemoteCreateServices {
     let repository = GitHubRepository(host: "github.com", owner: "o", name: "r")
     return RemoteCreateServices(
@@ -455,6 +456,7 @@ final class CreationFlowTests: XCTestCase {
           key: .boxd(org: "acme", account: "u"), driver: driver,
           environment: RemoteProvisioning.Environment(
             driver: driver, agentSocket: driver.agentSocket, gitHubToken: gitHubToken,
+            grantRepository: grantRepository,
             connect: { host in try await AgentVCSConnection.connect(host: host, socketPath: socket)
             }
           ))
@@ -466,6 +468,24 @@ final class CreationFlowTests: XCTestCase {
     store.projects = [project(["anchor"])]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     return store
+  }
+
+  /// Value: protects=a repository the provider refuses fails the repository row, not the account
+  /// row the checklist had moved on to; fails_when=the failure lands on account or image;
+  /// no_claim=a real provider (a fake grant refuses)
+  func testARefusedRepositoryGrantFailsTheRepositoryRow() async throws {
+    let agent = try FakeAgent(version: 4)
+    defer { agent.stop() }
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    store.remoteCreateServices = services(
+      driver: FakeDriver(), agent: agent,
+      grantRepository: { _ in throw HostDriverError.provisioning("o/r is not shared") })
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.steps.first { $0.id == "repository" }?.state, .failed)
+    XCTAssertEqual(run.steps.first { $0.id == "account" }?.state, .done)
   }
 
   /// Value: protects=AC 10 and O2 solo, a remote create failing in `clone` keeps its pane, the git
