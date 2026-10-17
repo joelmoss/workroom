@@ -495,6 +495,22 @@ final class WorkroomHandOverTests: XCTestCase {
       destination.terminals.tab(moved, for: t)?.isPreview, false, "the moved one is pinned")
   }
 
+  /// Value: protects=find closes with the selected workroom's content pane leaving, rather than
+  /// lingering in the old window with a stale query; fails_when=the hand-off leaves it open (its
+  /// silent focus clear skips the focus-change close); why_new=find was never checked across a move;
+  /// seam=none; no_claim=the find bar's rendering.
+  func testMovingTheSelectedWorkroomClosesItsFind() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    _ = origin.terminals.addTab(for: target(origin))
+    origin.selectedTargetID = sid
+    origin.contentFind.open()
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertFalse(origin.contentFind.isOpen)
+  }
+
   /// Value: protects=a moved terminal's next finished-turn notification replaces its last one rather
   /// than adding a second; fails_when=the finish index stays in the old window; why_new=only the
   /// notifications themselves were checked; seam=none; no_claim=raising a real finish.

@@ -88,6 +88,9 @@ extension AppStore {
   private func takeWorkroom(_ sid: SidebarID, target: TerminalTarget) -> WorkroomHandOff? {
     let run = runCommand.takeHandOff(for: target.id)
     let notes = notifications.take(target: target.id)
+    // Find belongs to the selected workroom's focused content pane, which is leaving. Its own
+    // focus-change close does not fire: the hand-off clears focus without notifying.
+    if selectedTargetID == sid, contentFind.isOpen { contentFind.close() }
     // A torn-off pane's window belongs to this window, so it closes here and the destination opens
     // its own at the same frame.
     var frames: [TerminalTab.ID: NSRect] = [:]
