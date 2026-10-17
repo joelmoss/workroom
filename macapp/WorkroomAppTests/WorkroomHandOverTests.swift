@@ -19,7 +19,7 @@ final class WorkroomHandOverTests: XCTestCase {
     shared.projects = [
       Project(
         path: "/p", vcs: "git",
-        workrooms: ["a", "b"].map {
+        workrooms: ["a", "b", "c"].map {
           Workroom(name: $0, path: "/p/\($0)", vcsName: "workroom/\($0)", warnings: [])
         })
     ]
@@ -450,6 +450,42 @@ final class WorkroomHandOverTests: XCTestCase {
 
     origin2.moveWorkroom(otherSid, to: atEnd)
     XCTAssertEqual(atEnd.displayedWorkroomTargets().map(\.sid), [sid, otherSid], "nil: at the end")
+  }
+
+  /// Value: protects=a drop on a window that already shows the workroom lands under the cursor;
+  /// fails_when=the slot, which counted that window's own tab of it, is used unchanged after the tab
+  /// is lifted out (one slot right of the cursor); why_new=the slot tests had no merge; seam=none;
+  /// no_claim=the drag gap.
+  func testADropOnAWindowShowingTheWorkroomLandsUnderTheCursor() {
+    let destination = makeStore()
+    let third = SidebarID.workroom(project: "/p", name: "c")
+    for sid in [sid, otherSid, third] {
+      _ = destination.terminals.addTab(for: target(destination, sid))
+    }
+    XCTAssertEqual(destination.displayedWorkroomTargets().map(\.sid), [sid, otherSid, third])
+    let origin = makeOrigin()
+    _ = origin.terminals.addTab(for: target(origin))
+
+    // Dropped between b and c: slot 2, counting the window's own `a` at 0.
+    origin.moveWorkroom(sid, to: destination, at: 2)
+
+    XCTAssertEqual(destination.displayedWorkroomTargets().map(\.sid), [otherSid, sid, third])
+  }
+
+  /// Value: protects=a moved terminal's next finished-turn notification replaces its last one rather
+  /// than adding a second; fails_when=the finish index stays in the old window; why_new=only the
+  /// notifications themselves were checked; seam=none; no_claim=raising a real finish.
+  func testAMovedTerminalsLatestFinishMovesWithIt() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    let tab = origin.terminals.addTab(for: target(origin))
+    let note = UUID()
+    origin.adoptLastFinishes([tab.id: note])
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertEqual(origin.takeLastFinishes([tab.id]), [:])
+    XCTAssertEqual(destination.takeLastFinishes([tab.id]), [tab.id: note])
   }
 
   /// Value: protects=the run toast state and investigate tabs travelling with the workroom, a

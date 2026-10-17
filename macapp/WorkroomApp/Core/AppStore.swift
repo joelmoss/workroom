@@ -698,6 +698,16 @@ final class AppStore: ObservableObject {
   var toasts: [WorkroomNotification] = []
   /// Each tab's latest "finished" notification, which the tab's next finish replaces.
   private var lastFinish: [TerminalTab.ID: UUID] = [:]
+
+  /// The finish index for tabs moving to another window, with their notifications (#444): left
+  /// here, a moved terminal's next finish would add a second notification rather than replace one.
+  func takeLastFinishes(_ tabs: [TerminalTab.ID]) -> [TerminalTab.ID: UUID] {
+    tabs.reduce(into: [:]) { taken, tab in taken[tab] = lastFinish.removeValue(forKey: tab) }
+  }
+
+  func adoptLastFinishes(_ finishes: [TerminalTab.ID: UUID]) {
+    lastFinish.merge(finishes) { _, moved in moved }
+  }
   /// Max simultaneously-visible toasts; beyond this the oldest is dropped so a chatty emitter can't
   /// overflow the window (matches the "stack a few, drop oldest" decision).
   private static let maxToasts = 4
