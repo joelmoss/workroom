@@ -367,6 +367,52 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(try leftovers("ps", label: label), [], "a failed workroom was left running")
   }
 
+  /// Value: protects=the root's included files land in a Linux host's checkout through GNU tar as
+  /// the host's ordinary user, with their modes despite its umask, and a file the checkout has is
+  /// kept (#367); fails_when=`-p` or `-k` is dropped, or the stream never reaches tar;
+  /// no_claim=boxd's and exe.dev's images (Debian here), and the CLI's own archive (a ustar the
+  /// test makes stands in)
+  func testIncludedFilesLandInTheCheckoutOnALinuxHost() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let instance = try await provision(environment(fixture, driver: driver), branch: "wr-include")
+    await instance.connection.close()
+    cleanups.append { try? await driver.destroy(instance.host) }
+    _ = try await onHost(driver, instance.host, "echo kept > \(Self.path)/kept.env")
+
+    let root = directory.appendingPathComponent("root")
+    let files = [".env": 0o600, "config/shared.yml": 0o664, "kept.env": 0o644]
+    for (path, mode) in files {
+      let url = root.appendingPathComponent(path)
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try Data("from the root".utf8).write(to: url)
+      try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+    }
+    let paths = files.keys.sorted()
+    let result = await RemoteProvisioning.copyIncluded(
+      into: Self.path, on: instance.host, driver: driver
+    ) { output in
+      let tar = Process()
+      tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+      tar.environment = ["COPYFILE_DISABLE": "1"]
+      tar.arguments = ["--format", "ustar", "-cf", output.path, "-C", root.path] + paths
+      try tar.run()
+      tar.waitUntilExit()
+      return IncludeArchive(paths: paths, bytes: 0, warnings: [])
+    }
+
+    // GNU tar's -k refuses the file the checkout has, and says so: a warning, the rest extracted.
+    guard case .warning(let text, _) = result else { return XCTFail("\(result)") }
+    XCTAssertTrue(text.contains("kept.env"), text)
+    let (_, modes) = try await onHost(
+      driver, instance.host,
+      "cd \(Self.path) && stat -c '%a %n' .env config/shared.yml && cat kept.env && umask")
+    XCTAssertEqual(
+      modes.split(separator: "\n").prefix(3), ["600 .env", "664 config/shared.yml", "kept"])
+  }
+
   // MARK: Workrooms
 
   @MainActor
