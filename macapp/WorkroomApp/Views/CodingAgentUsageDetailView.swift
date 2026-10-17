@@ -47,24 +47,33 @@ struct CodingAgentUsageDetailView: View {
 
   private func windowRow(_ window: CodingAgentQuotaWindow) -> some View {
     let pace = window.pace(at: currentTime)
-    let paceMarker = window.sustainablePacePercentage(at: currentTime)
+    // Past its reset the window reads as the footer draws it: empty, no pin (#480).
+    let shown = CodingAgentUsageSegment.displayed(window, now: currentTime)
+    let fresh = window.isFresh(at: currentTime)
 
     return VStack(alignment: .leading, spacing: 6) {
       HStack(alignment: .firstTextBaseline) {
-        Text("\(title(for: window.kind)) \(Int(window.usedPercentage.rounded()))% used")
-          .font(.callout)
-          .fontWeight(.semibold)
+        Text(
+          fresh
+            ? "\(title(for: window.kind)) \(Int(window.usedPercentage.rounded()))% used"
+            : "\(title(for: window.kind)) reset"
+        )
+        .font(.callout)
+        .fontWeight(.semibold)
         Spacer(minLength: 12)
-        Text(capitalizedResetDescription(window))
-          .font(.caption)
-          .foregroundStyle(theme.tokens.fgMuted)
+        if fresh {
+          Text(capitalizedResetDescription(window))
+            .font(.caption)
+            .foregroundStyle(theme.tokens.fgMuted)
+        }
       }
 
       QuotaBar(
-        usedPercentage: window.usedPercentage, markerPercentage: paceMarker,
-        fill: QuotaBar.fill(for: pace.severity, theme.tokens), width: barWidth)
+        usedPercentage: shown.usedPercentage, markerPercentage: shown.marker ?? 0,
+        fill: QuotaBar.fill(for: pace.severity, theme.tokens), width: barWidth,
+        showsMarker: shown.marker != nil)
 
-      Text(caption(for: pace))
+      Text(fresh ? caption(for: pace) : "Nothing read since the reset")
         .font(.caption)
         .foregroundStyle(theme.tokens.fgMuted)
         .fixedSize(horizontal: false, vertical: true)

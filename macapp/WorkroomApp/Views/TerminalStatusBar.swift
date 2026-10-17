@@ -63,8 +63,9 @@ struct TerminalStatusBar: View {
       if let diagnosis { diagnosisSegment(diagnosis) }
       Spacer(minLength: 8)
       // The running agent's usage (#480). Before the detached-sessions button, so nothing trailing
-      // moves when it comes and goes, and lowest priority, so it gives way before cwd or branch.
-      if let state, let backend = state.activeAgentBackend {
+      // moves when it comes and goes, and lowest priority, so it gives way before cwd or branch. Not
+      // in a remote pane: its agent bills the host's login, which this Mac's readings may not be.
+      if let state, let backend = state.activeAgentBackend, !target.isRemoteWorkroom {
         PaneUsageSlot(backend: backend, claudeProfile: state.claudeProfile)
           .layoutPriority(-1)
       }
