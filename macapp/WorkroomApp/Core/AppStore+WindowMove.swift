@@ -9,6 +9,8 @@ struct WorkroomHandOff {
   var sessions: TerminalSessions.TargetHandOff
   let run: RunCommandController.HandOff
   let notifications: [WorkroomNotification]
+  /// Which of those is each tab's latest finish, the one its next finish replaces.
+  let lastFinishes: [TerminalTab.ID: UUID]
 }
 
 /// Moves waiting on a window that has been asked for but does not exist yet (issue #444). The new
@@ -100,7 +102,9 @@ extension AppStore {
     }
     for id in sessions.detached.keys { sessions.detached[id] = frames[id] ?? .zero }
     WindowRegistry.shared.recomputeBadge()
-    return WorkroomHandOff(sid: sid, sessions: sessions, run: run, notifications: notes)
+    return WorkroomHandOff(
+      sid: sid, sessions: sessions, run: run, notifications: notes,
+      lastFinishes: takeLastFinishes(sessions.tabs.map(\.id)))
   }
 
   /// Take in a workroom another window handed over, select it and bring this window forward. Into a
@@ -113,20 +117,24 @@ extension AppStore {
     var closing: TerminalTab.ID?
     if let own = runStates[id]?.tab, let moved = run.state?.tab {
       if run.state?.isRunning == true {
-        // Only one window runs a workroom's command (#70), so this one's is stopped: it goes now,
-        // and its `.tabsRemoved` clears its state before the moved run's is taken in.
+        // Only one window runs a workroom's command (#70), so this one's is stopped, though its
+        // supervisor may still be up and its stop then waits on it. Its exit must not land on the
+        // run taken in meanwhile: that would mark the moved run ended and kill its session.
+        terminals.tab(own, for: target)?.surface?.onChildExited = nil
         closingRunTab(own, for: id) { [weak self] in self?.terminals.closeTab(own, for: target) }
       } else {
         closing = moved
         run = RunCommandController.HandOff(investigateTabs: run.investigateTabs)
       }
     }
+    let wasAt = displayedWorkroomTargets().firstIndex { $0.target.id == id }
     terminals.adopt(handOff.sessions)
     runCommand.adopt(run, for: id)
     notifications.adopt(handOff.notifications)
+    adoptLastFinishes(handOff.lastFinishes)
     resumeAdoptedRun(for: target)
     if let closing { terminals.closeTab(closing, for: target) }
-    placeWorkroomTab(id, at: index)
+    placeWorkroomTab(id, at: index, wasAt: wasAt)
     selectedTargetID = handOff.sid
     selectedProjectID = Self.projectPath(of: handOff.sid)
     refreshSelectionHasTabs()
@@ -166,9 +174,14 @@ extension AppStore {
   }
 
   /// Put `targetID`'s workroom tab at `index` among this window's, or at the end.
-  private func placeWorkroomTab(_ targetID: TerminalTarget.ID, at index: Int?) {
+  /// `index` counts this window's tabs as they stood under the cursor, so in a window that already
+  /// showed the workroom (`wasAt`) it counts that tab too: past it, the slot is one less once that
+  /// tab is lifted out.
+  private func placeWorkroomTab(_ targetID: TerminalTarget.ID, at index: Int?, wasAt: Int?) {
     var order = displayedWorkroomTargets().map(\.target.id).filter { $0 != targetID }
-    order.insert(targetID, at: min(max(index ?? order.count, 0), order.count))
+    var slot = index ?? order.count
+    if let index, let wasAt, wasAt < index { slot -= 1 }
+    order.insert(targetID, at: min(max(slot, 0), order.count))
     workroomTabOrder = order
   }
 }
