@@ -1643,6 +1643,8 @@ final class TerminalSessions: ObservableObject {
     /// The tabs in their own windows, each with its window's frame (`AppStore` fills the frames
     /// in, since it owns the windows).
     var detached: [TerminalTab.ID: NSRect]
+    /// Each tab's coding-agent banner and last failure, from this window's manager.
+    let agent: [TerminalTab.ID: (banner: CodingAgentBannerState?, failure: FailedCommand?)]
   }
 
   /// Lift `target`'s tabs out of this window WITHOUT ending a session or freeing a surface: the one
@@ -1658,14 +1660,14 @@ final class TerminalSessions: ObservableObject {
       target: target, tabs: ids.compactMap { dict[$0] }, splits: splitsByTarget[target.id] ?? [],
       focused: focusedTabByTarget[target.id], counter: counts[target.id] ?? ids.count,
       detached: Dictionary(
-        uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }))
+        uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }),
+      agent: Dictionary(uniqueKeysWithValues: ids.map { ($0, agentManager.handOff($0)) }))
     for id in ids {
       detachedTabIDs.remove(id)
       activityPulses[id] = nil
       hostCwdQueries.removeValue(forKey: id)?.cancel()
       claudeProfileQueries.removeValue(forKey: id)?.cancel()
       watchedDone.remove(id)
-      agentManager.tabClosed(id)
     }
     // Emptied, not forgotten, as a close of every tab leaves it: `ensureTab` must not read the
     // workroom as never opened and start a fresh terminal behind the move.
@@ -1695,6 +1697,9 @@ final class TerminalSessions: ObservableObject {
       }
     }
     for id in handOff.detached.keys { detachedTabIDs.insert(id) }
+    for (id, agent) in handOff.agent {
+      agentManager.adopt(id, banner: agent.banner, failure: agent.failure)
+    }
     if !merging {
       splitsByTarget[target.id] = handOff.splits.isEmpty ? nil : handOff.splits
     }

@@ -175,8 +175,7 @@ struct PaneTreeView: View {
   @ViewBuilder
   private func dragGhost() -> some View {
     if let drag = activeDrag, let tab = sessions.tab(drag.tabID, for: target) {
-      DragTitleGhost(title: tab.title)
-        .position(x: drag.location.x, y: drag.location.y - 14)  // float just above the cursor
+      DragTitleGhost(title: tab.title, at: drag.location)
     }
   }
 
@@ -1207,6 +1206,8 @@ private struct SplitDivider: View {
 /// tracking the cursor. A pane's (`PaneTreeView`) and a workroom's (`WorkroomSplitView`, #444).
 struct DragTitleGhost: View {
   let title: String
+  /// The cursor, in the space the ghost is drawn in: it floats just above it.
+  let at: CGPoint
 
   var body: some View {
     HStack(spacing: 5) {
@@ -1220,6 +1221,7 @@ struct DragTitleGhost: View {
     .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
     .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
     .fixedSize()
+    .position(x: at.x, y: at.y - 14)
     .allowsHitTesting(false)
   }
 }

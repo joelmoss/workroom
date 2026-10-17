@@ -187,6 +187,24 @@ final class TerminalCodingAgentManager: ObservableObject {
     clear(tab: tab)
   }
 
+  /// A tab moving to another window (#444) takes its banner and last failure with it, for that
+  /// window's manager to `adopt`. A diagnosis still running is cancelled here, since its result would
+  /// land in this window, and arrives as the Diagnose offer for the same failure instead.
+  func handOff(_ tab: TerminalTab.ID) -> (banner: CodingAgentBannerState?, failure: FailedCommand?)
+  {
+    var banner = banners[tab]
+    if case .loading(let failure)? = banner { banner = .awaitingDiagnose(failure) }
+    let failure = lastFailure[tab]
+    tabClosed(tab)
+    return (banner, failure)
+  }
+
+  /// The other half of `handOff`, in the window the tab moved to.
+  func adopt(_ tab: TerminalTab.ID, banner: CodingAgentBannerState?, failure: FailedCommand?) {
+    setBanner(banner, tab: tab)
+    lastFailure[tab] = failure
+  }
+
   /// The pane/tab went away (A6): cancel in-flight, drop all state for it.
   func tabClosed(_ tab: TerminalTab.ID) {
     if autoOptInPromptTab == tab { autoOptInPromptTab = nil }

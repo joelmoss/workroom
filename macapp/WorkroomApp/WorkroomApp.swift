@@ -234,7 +234,11 @@ struct RootWindow: View {
           return
         }
         // Again now it shows: SwiftUI has placed it by now, over where it was set up to go.
-        if store.opensForHandOff, let window = store.hostWindow { store.placeHandOffWindow(window) }
+        // Once: a `.task` that re-fires must not put back a window the user has since moved.
+        if store.opensForHandOff, let window = store.hostWindow {
+          store.placeHandOffWindow(window)
+          store.opensForHandOff = false
+        }
         await store.bootstrap(restore: seed.restore)
         if let handOff = seed.handOff { WorkroomHandOffs.shared.complete(handOff, into: store) }
         // Reopen the windows that were open at the last quit (issue #46). Only the launch window
