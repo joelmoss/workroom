@@ -127,6 +127,7 @@ final class CreationFlowTests: XCTestCase {
     private var calls = 0
     private var made: [String] = []
     init(projectPath: String) { self.projectPath = projectPath }
+    var createCalls: Int { lock.withLock { calls } }
 
     func list(warnings: String, project: String?) async throws -> ListResponse {
       let names = lock.withLock { made }
@@ -246,6 +247,23 @@ final class CreationFlowTests: XCTestCase {
     await store.retryCreation(run)
     XCTAssertEqual(heard.last, "wr is ready")
     XCTAssertEqual(heard.count, 2)
+  }
+
+  /// Value: protects=a double-click on Try Again starts one create, not two (for a remote create, a
+  /// second paid machine); fails_when=the second click starts its own create; no_claim=the button
+  func testTryAgainTwiceOnOneFailureStartsOneCreate() async throws {
+    let fake = WorktreeFailsOnceCLI(projectPath: projectPath)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+
+    let first = Task { await store.retryCreation(run) }
+    let second = Task { await store.retryCreation(run) }
+    await first.value
+    await second.value
+
+    XCTAssertEqual(fake.createCalls, 2, "the failed create and one retry")
   }
 
   /// Value: protects=Close on a failed create removes its pane and goes back to what was selected;

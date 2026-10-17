@@ -472,8 +472,8 @@ struct ProjectSidebar: View {
       // fixes the slot's size and the smaller spinner can't shift the row.
       ZStack {
         // A create's progress, for every kind, while its run lasts (#483).
-        if let step = store.createStep(for: id) {
-          CreateStepCircle(step: step)
+        if let run = store.creationRun(for: id) {
+          CreateStepCircle(run: run)
         } else if waiting == 0, failed || terminals.isRunning(forTargetID: targetID),
           hovered != id
         {
@@ -571,7 +571,7 @@ struct ProjectSidebar: View {
         .frame(width: caretWidth, height: 18, alignment: .center)
       Text(row.label).font(.callout).lineLimit(1).truncationMode(.tail)
       Spacer()
-      if let step = store.createStep(for: row.id) { CreateStepCircle(step: step) }
+      if let run = store.creationRun(for: row.id) { CreateStepCircle(run: run) }
     }
     .frame(height: rowHeight)
     .contentShape(Rectangle())
@@ -879,10 +879,12 @@ private struct RunningSpinner: View {
 /// How far a create has got (#356, #483), on its row: complete steps out of all of them, with the
 /// step it is on as its tooltip, or the failed mark once it has failed.
 private struct CreateStepCircle: View {
-  let step: AppStore.CreateStep
+  /// Observed here: a run's steps change without the store (read through Observation) changing.
+  @ObservedObject var run: CreationRun
   private let theme = ThemeService.shared
 
   var body: some View {
+    let step = AppStore.CreateStep(run)
     if step.failed {
       Image(systemName: "xmark.octagon.fill")
         .foregroundStyle(theme.tokens.failure)

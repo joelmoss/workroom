@@ -1490,7 +1490,11 @@ final class AppStore: ObservableObject {
       persisted: order ?? workroomTabOrder, active: active
     )
     .compactMap { tid in
-      guard let sid = Self.sidebarID(forTargetID: tid, in: projects), let target = target(for: sid)
+      // A create before its name lands (#483) has no workroom yet: its chip is its `.creation` pane.
+      guard
+        let sid = Self.sidebarID(forTargetID: tid, in: projects)
+          ?? creationRun(forTargetID: tid).map(paneID(of:)),
+        let target = target(for: sid)
       else { return nil }
       return (sid, target)
     }

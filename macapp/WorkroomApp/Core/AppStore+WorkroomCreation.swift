@@ -186,6 +186,8 @@ extension AppStore {
   /// Try Again: the same request again, in the same pane, as a new run that replaces `run`. The base
   /// branch is read afresh, as a new create does.
   func retryCreation(_ run: CreationRun) async {
+    // A second click before the pane redraws must not start a second create (or paid machine).
+    guard creationRuns[run.id] === run else { return }
     let project = projects.first { $0.path == run.project.path } ?? run.project
     let retry = CreationRun(
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
@@ -344,11 +346,7 @@ extension AppStore {
 
   /// The progress of the create whose pane `sid` is, or nil when it has none.
   func createStep(for sid: SidebarID) -> CreateStep? {
-    guard let run = creationRun(for: sid) else { return nil }
-    let progress = run.progress
-    return CreateStep(
-      fraction: progress.fraction, label: progress.label,
-      failed: !run.isRunning && run.outcome != .succeeded)
+    creationRun(for: sid).map(CreateStep.init)
   }
 
   /// Why no workroom can be created in `project` right now, as the New Workroom menu shows it beside
@@ -737,5 +735,14 @@ final class CreationLandingBox: @unchecked Sendable {
   func finish() async {
     let pending = lock.withLock { task }
     await pending?.value
+  }
+}
+
+extension AppStore.CreateStep {
+  @MainActor init(_ run: CreationRun) {
+    let progress = run.progress
+    self.init(
+      fraction: progress.fraction, label: progress.label,
+      failed: !run.isRunning && run.outcome != .succeeded)
   }
 }

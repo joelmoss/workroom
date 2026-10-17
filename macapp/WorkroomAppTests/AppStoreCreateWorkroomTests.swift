@@ -322,6 +322,19 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
   /// A run holding `name`'s pane, as a create that has landed leaves it.
   @discardableResult
+  /// Value: protects=a create shows its tab chip from the click, before its name lands, as the
+  /// "Creating…" chip did before #483; fails_when=the chip waits for the name; no_claim=the chip's
+  /// drawing
+  func testAnUnnamedCreationAppearsAsTab() {
+    let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
+    let run = CreationRun(
+      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil)
+    store.register(run)
+
+    XCTAssertEqual(
+      store.orderedWorkroomTargets().map(\.sid), [.creation(project: projectPath, id: run.id)])
+  }
+
   private func seedRun(
     _ store: AppStore, holding name: String, outcome: CreationOutcome = .running
   ) -> CreationRun {
@@ -705,8 +718,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// even before its terminal exists — so the chip is present through setup (issue #116) — and
   /// goes once the run does.
   /// Value: protects=a landed create keeps its tab chip until its run ends; fails_when=the chip
-  /// waits for a terminal or outlives the run; no_claim=the provisional (unnamed) pane, which has
-  /// no chip
+  /// waits for a terminal or outlives the run; no_claim=the provisional (unnamed) pane
+  /// (testAnUnnamedCreationAppearsAsTab)
   func testCreationTargetAppearsAsTab() async {
     let fake = FakeWorkroomCLI(canonical: projectPath, projects: [project(withWorkroom: "tab-wr")])
     let store = makeStore(fake)
