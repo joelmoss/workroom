@@ -524,7 +524,7 @@ struct RootView: View {
           // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
           // member of a workroom-into-workroom split.
           workroomSplitVisible: store.isWorkroomSplitVisible && !store.hasModalPresentation,
-          canMoveWorkroom: store.selectedTargetID.map(store.canMoveWorkroomToNewWindow) == true
+          canMoveWorkroom: store.selectedTargetID.map(store.canMoveWorkroom) == true
             && !store.hasModalPresentation,
           modalPresented: store.hasModalPresentation))
   }

@@ -122,6 +122,11 @@ struct WorkroomSplitView: View {
           .position(x: d.rect.midX, y: d.rect.midY)
         }
         dropHighlight(plan: plan)
+        // The dragged workroom's title follows the cursor over the panes, as a dragged pane's does.
+        if let drag = externalDrag, let dragged = resolve(drag.sid) {
+          DragTitleGhost(title: dragged.title)
+            .position(x: drag.location.x, y: drag.location.y - 14)
+        }
       }
       .coordinateSpace(.named(Self.space))
     }

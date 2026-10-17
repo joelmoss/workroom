@@ -46,6 +46,8 @@ struct WorkroomTabBar: View {
   @State private var drag = TabReorderDrag<SidebarID>()
 
   private let tabSpacing: CGFloat = 4
+  /// The tab row's coordinate space, which the tabs' frames are measured in.
+  static let runSpace = "workroomTabRun"
 
   /// Whether the hairline before the trailing controls shows. Hidden when the last tab stands apart on
   /// its own (selected or hovered — its filled pill already separates it), when it's in a split group
@@ -222,6 +224,10 @@ struct WorkroomTabBar: View {
         .opacity(showsTrailingDivider(overflowing: overflowing, groupOf: groupOf) ? 1 : 0)
     }
     .background(alignment: .leading) { splitWell(groupOf: groupOf) }
+    // The row's own space and its view, so a drop from another window maps a screen point onto
+    // these tabs (#444).
+    .coordinateSpace(.named(Self.runSpace))
+    .background { ViewAnchor { [store] in store.workroomTabRun = $0 } }
     .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
     .onPreferenceChange(WorkroomTabFrameKey.self) { store.workroomTabFrames = $0 }
   }
@@ -679,7 +685,9 @@ private struct WorkroomTabChip: View {
         GeometryReader { geo in
           Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
             // Where it sits in the window, for a workroom dragged in from another window (#444).
-            .preference(key: WorkroomTabFrameKey.self, value: [sid: geo.frame(in: .global)])
+            .preference(
+              key: WorkroomTabFrameKey.self,
+              value: [sid: geo.frame(in: .named(WorkroomTabBar.runSpace))])
         }
       }
   }

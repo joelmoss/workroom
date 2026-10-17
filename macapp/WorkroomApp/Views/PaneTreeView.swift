@@ -175,19 +175,8 @@ struct PaneTreeView: View {
   @ViewBuilder
   private func dragGhost() -> some View {
     if let drag = activeDrag, let tab = sessions.tab(drag.tabID, for: target) {
-      HStack(spacing: 5) {
-        Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .semibold))
-        Text(tab.title).font(.caption).lineLimit(1)
-      }
-      .foregroundStyle(.primary)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(.regularMaterial, in: Capsule())
-      .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
-      .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
-      .fixedSize()
-      .position(x: drag.location.x, y: drag.location.y - 14)  // float just above the cursor
-      .allowsHitTesting(false)
+      DragTitleGhost(title: tab.title)
+        .position(x: drag.location.x, y: drag.location.y - 14)  // float just above the cursor
     }
   }
 
@@ -1211,5 +1200,26 @@ private struct SplitDivider: View {
         @unknown default: break
         }
       }
+  }
+}
+
+/// What a drag carries across the window: the dragged thing's title and a grip, with a shadow,
+/// tracking the cursor. A pane's (`PaneTreeView`) and a workroom's (`WorkroomSplitView`, #444).
+struct DragTitleGhost: View {
+  let title: String
+
+  var body: some View {
+    HStack(spacing: 5) {
+      Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .semibold))
+      Text(title).font(.caption).lineLimit(1)
+    }
+    .foregroundStyle(.primary)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(.regularMaterial, in: Capsule())
+    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
+    .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+    .fixedSize()
+    .allowsHitTesting(false)
   }
 }

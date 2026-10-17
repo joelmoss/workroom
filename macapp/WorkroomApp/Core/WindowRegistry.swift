@@ -446,3 +446,16 @@ private final class WindowResolvingView: NSView {
     if let window { onResolve(window) }
   }
 }
+
+/// Hands back the `NSView` behind a SwiftUI view, for asking AppKit where that view is on screen.
+struct ViewAnchor: NSViewRepresentable {
+  let onMake: (NSView) -> Void
+
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView()
+    onMake(view)
+    return view
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {}
+}
