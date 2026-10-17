@@ -322,15 +322,24 @@ func (s *Service) copyIncluded(root, wrPath string) string {
 		s.step("include", "warning", text)
 		return text
 	}
-	files, _, err := IncludedFiles(root)
+	inc, _, err := IncludedFiles(root)
 	if err != nil {
 		return warn(fmt.Sprintf("Could not list the included files: %v", err))
 	}
-	if len(files) == 0 {
-		s.step("include", "skipped", "No matching files")
+	if s.ScriptLogWriter != nil {
+		for _, f := range inc.Symlinks {
+			fmt.Fprintln(s.ScriptLogWriter, SkippedSymlink(f))
+		}
+	}
+	if len(inc.Files) == 0 {
+		reason := "No matching files"
+		if len(inc.Symlinks) > 0 {
+			reason = "Only symlinks matched"
+		}
+		s.step("include", "skipped", reason)
 		return ""
 	}
-	res := CopyIncluded(root, wrPath, files)
+	res := CopyIncluded(root, wrPath, inc.Files)
 	if s.ScriptLogWriter != nil {
 		for _, f := range res.Copied {
 			fmt.Fprintf(s.ScriptLogWriter, "Copied %s\n", f)

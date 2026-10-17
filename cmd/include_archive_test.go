@@ -49,6 +49,9 @@ func TestIncludeArchive(t *testing.T) {
 	if err := os.Chmod(filepath.Join(project, ".env"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(filepath.Join(project, ".env"), filepath.Join(project, "link.key")); err != nil {
+		t.Fatal(err)
+	}
 	unreadable := os.Geteuid() != 0
 	if unreadable {
 		if err := os.Chmod(filepath.Join(project, "bad.key"), 0); err != nil {
@@ -68,6 +71,7 @@ func TestIncludeArchive(t *testing.T) {
 		Count    int      `json:"count"`
 		Bytes    int64    `json:"bytes"`
 		Warnings []string `json:"warnings"`
+		Skipped  []string `json:"skipped"`
 	}
 	if err := json.Unmarshal(run.stdout, &env); err != nil {
 		t.Fatalf("stdout is not one JSON envelope: %v\n%s", err, run.stdout)
@@ -78,6 +82,9 @@ func TestIncludeArchive(t *testing.T) {
 	}
 	if !env.OK || env.Command != "include-archive" || !slices.Equal(env.Paths, wantPaths) || env.Count != len(wantPaths) {
 		t.Fatalf("envelope = %+v, want paths %v", env, wantPaths)
+	}
+	if !slices.Equal(env.Skipped, []string{"link.key"}) {
+		t.Fatalf("skipped = %q, want the symlink link.key", env.Skipped)
 	}
 	if unreadable && (len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "bad.key")) {
 		t.Fatalf("warnings = %q, want one naming bad.key", env.Warnings)

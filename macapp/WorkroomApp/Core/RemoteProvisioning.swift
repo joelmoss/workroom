@@ -217,8 +217,11 @@ enum RemoteProvisioning {
       made.warnings.isEmpty
       ? nil
       : "Could not copy \(files(made.warnings.count)): \(made.warnings.joined(separator: "; "))"
+    // As the CLI's local step says it (`workroom.SkippedSymlink`).
+    let skipped = (made.skipped ?? []).map { "Skipped \($0): it's a symlink" }
     guard !made.paths.isEmpty else {
-      return unread.map { .warning($0, log: []) } ?? .skipped("No matching files")
+      return unread.map { .warning($0, log: skipped) }
+        ?? .skipped(skipped.isEmpty ? "No matching files" : "Only symlinks matched", log: skipped)
     }
     let command =
       "command -v tar >/dev/null 2>&1 || { echo 'tar is not installed on the host'; exit 127; }; "
@@ -242,7 +245,8 @@ enum RemoteProvisioning {
         "Could not copy the included files to the host: \(error.localizedDescription)", log: [])
     }
     let size = ByteCountFormatter.string(fromByteCount: made.bytes, countStyle: .file)
-    let log = made.paths.map { "Copied \($0)" } + ["Copied \(files(made.paths.count)) (\(size))"]
+    let log =
+      skipped + made.paths.map { "Copied \($0)" } + ["Copied \(files(made.paths.count)) (\(size))"]
     return unread.map { .warning($0, log: log) } ?? .copied(log: log)
   }
 
@@ -285,17 +289,18 @@ enum RemoteProvisioning {
   }
 }
 
-/// What the CLI's `include-archive` wrote (#367): the archived paths, their total size, and each
-/// file it couldn't read, as "path: reason".
+/// What the CLI's `include-archive` wrote (#367): the archived paths, their total size, each file it
+/// couldn't read, as "path: reason", and the symlinks it matched but never copies.
 struct IncludeArchive: Decodable, Equatable {
   var paths: [String]
   var bytes: Int64
   var warnings: [String]
+  var skipped: [String]?
 }
 
 /// How copying the root's included files into a workroom ended (#367), with its log.
 enum IncludeResult: Equatable {
   case copied(log: [String])
-  case skipped(String)
+  case skipped(String, log: [String])
   case warning(String, log: [String])
 }

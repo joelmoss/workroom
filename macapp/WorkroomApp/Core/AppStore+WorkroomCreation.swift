@@ -541,7 +541,8 @@ extension AppStore {
     case .copied(let log):
       for line in log { run.append(line, to: step) }
       run.finish(step, as: .done)
-    case .skipped(let reason):
+    case .skipped(let reason, let log):
+      for line in log { run.append(line, to: step) }
       run.finish(step, as: .skipped(reason: reason))
     case .warning(let text, let log):
       for line in log { run.append(line, to: step) }

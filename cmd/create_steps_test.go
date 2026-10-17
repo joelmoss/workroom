@@ -160,6 +160,28 @@ func TestCreateStepsIncludeFileThatMatchesNothing(t *testing.T) {
 		"script:skipped:No setup script")
 }
 
+// Value: protects=a symlinked .env, the only match, is named as skipped and the step says only
+// symlinks matched, not that nothing did; fails_when=the skip is silent or reads "No matching
+// files"; no_claim=the remote path (RemoteIncludeTests)
+func TestCreateStepsOnlySymlinksMatched(t *testing.T) {
+	project := noRemoteProject(t)
+	writeRootFile(t, project, ".gitignore", ".env\nshared.env\n")
+	writeRootFile(t, project, "shared.env", "SECRET=1")
+	writeRootFile(t, project, ".worktreeinclude", ".env\n")
+	if err := os.Symlink(filepath.Join(project, "shared.env"), filepath.Join(project, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	events := createEvents(t, project)
+	assertSteps(t, events, "fetch:skipped:No remote to fetch from", "worktree:running", "worktree:done",
+		"include:running", "include:skipped:Only symlinks matched", "script:skipped:No setup script")
+	for _, e := range events {
+		if e["type"] == "log" && e["step"] == "include" && e["text"] == "Skipped .env: it's a symlink" {
+			return
+		}
+	}
+	t.Fatalf("no log line naming the skipped symlink: %v", events)
+}
+
 // Value: protects=an unreadable included file ends the step as a warning naming it, and the
 // create carries on to the setup script; fails_when=the copy fails the create, or the warning
 // doesn't name the file; no_claim=the warning's exact wording past the file name

@@ -15,8 +15,8 @@ var (
 
 // includeArchiveCmd writes a root's included files (#367) to a tar the desktop app streams into a
 // remote workroom's checkout on its host. The archive goes to --output, not stdout, so stdout stays
-// one JSON envelope (ADR 0013): the archived paths, their count and size, and each file it couldn't
-// read.
+// one JSON envelope (ADR 0013): the archived paths, their count and size, each file it couldn't
+// read, and the symlinks it skipped.
 var includeArchiveCmd = &cobra.Command{
 	Use:    "include-archive",
 	Short:  "Write the project's included files to a tar (used by the desktop app)",
@@ -28,7 +28,7 @@ var includeArchiveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		files, _, err := workroom.IncludedFiles(root)
+		inc, _, err := workroom.IncludedFiles(root)
 		if err != nil {
 			return err
 		}
@@ -36,7 +36,7 @@ var includeArchiveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		res, err := workroom.ArchiveIncluded(root, files, out)
+		res, err := workroom.ArchiveIncluded(root, inc.Files, out)
 		if closeErr := out.Close(); err == nil {
 			err = closeErr
 		}
@@ -46,7 +46,7 @@ var includeArchiveCmd = &cobra.Command{
 		if jsonOutput {
 			return writeJSONSuccess(os.Stdout, "include-archive", map[string]any{
 				"paths": nonNil(res.Copied), "count": len(res.Copied), "bytes": res.Bytes,
-				"warnings": nonNil(res.Failures),
+				"warnings": nonNil(res.Failures), "skipped": nonNil(inc.Symlinks),
 			})
 		}
 		fmt.Printf("Archived %d files to %s\n", len(res.Copied), includeArchiveOutput)

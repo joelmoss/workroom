@@ -166,7 +166,7 @@ final class CLIContractTests: XCTestCase {
     try assertSuccess("include-archive.json")
     XCTAssertEqual(
       try decode(IncludeArchive.self, "include-archive.json"),
-      IncludeArchive(paths: [".env"], bytes: 8, warnings: []))
+      IncludeArchive(paths: [".env"], bytes: 8, warnings: [], skipped: []))
   }
 
   func testCreateSetupFailed() throws {
