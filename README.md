@@ -502,23 +502,47 @@ Non-interactive callers can branch on the process exit code:
 Both the macOS app **and** the CLI automatically run user-defined scripts during create and delete
 operations — the app drives the same engine, so the same hooks work no matter how you use Workroom.
 
+### Gitignored files (`.worktreeinclude`)
+
+A fresh workroom is a clean checkout, so gitignored files your project needs (`.env`,
+`config/master.key`, local certificates) are missing. List them in a `.worktreeinclude` file at your
+project's root, in `.gitignore` syntax, and Workroom copies them from the root into every new
+workroom, on this Mac or on a remote host, before the setup script runs:
+
+```gitignore
+.env
+.env.local
+config/master.key
+certs/
+```
+
+- Only files that match a pattern **and** are gitignored in the root are copied. A tracked file, or
+  an untracked file git doesn't ignore, never is.
+- Patterns mean what git means by them: `**/`, directories and anchoring work as in a `.gitignore`,
+  and so does git's re-include rule. `!x` can't bring back a file under a directory a pattern already
+  included: `secrets/**` followed by `!secrets/skip.json` still copies `skip.json`.
+- Only the root's `.worktreeinclude` counts, whatever branch the workroom starts from.
+- Each file keeps its mode. A file the workroom already has is left alone, and symlinks are skipped.
+- Nothing is copied when the file is missing. When a file can't be copied, the create still finishes:
+  its "Copy local files" step ends as a warning naming the file.
+
+The same file name and format work with Orca, Claude Code and the Codex app, so you can commit it
+once for every tool your team uses.
+
 ### Setup script
 
 Place an executable script at `scripts/workroom_setup` in your project (remember `chmod +x`). Workroom
 runs the new workroom's own copy of the script. If the workroom has no copy, for example because the
 script is gitignored, Workroom runs the copy in the root project. A new workroom can start from a
 newer commit than your root checkout, so the script that runs can be newer than the one you see. It
-runs **inside the new workroom** right after creation — a good place to install dependencies and
-pull in gitignored local config that the worktree/workspace doesn't carry over. (In the macOS app,
-its output streams into the new workroom's creation checklist, under "Run setup script", as it runs.)
+runs **inside the new workroom** right after creation, and after its [gitignored
+files](#gitignored-files-worktreeinclude) are copied in: a good place to install dependencies. (In
+the macOS app, its output streams into the new workroom's creation checklist, under "Run setup
+script", as it runs.) A remote workroom runs no setup script.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-
-# A fresh workroom is a clean checkout, so copy gitignored local config (e.g. .env)
-# from the root project this workroom belongs to.
-cp "$WORKROOM_ROOT_PATH/.env" .env 2>/dev/null || true
 
 # Install dependencies for this isolated copy.
 npm install
