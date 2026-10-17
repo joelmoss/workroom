@@ -240,7 +240,7 @@ type Service struct {
 
 `internal/workroom` prints nothing. Its methods return results, and `cmd/` renders them: the
 `--json` envelope, or the human output (tables, log panels, success lines). Prompts reach the
-user through the `PromptFn`/`ConfirmFn` hooks. In `--json` mode, `newService()` pins empty projects and makes the interactive prompt/confirm hooks return
+user through the `PromptFn`/`ConfirmFn` hooks. In `--json` mode, `newService()` makes the interactive prompt/confirm hooks return
 errors rather than block. This is how the same `Service` serves both the interactive terminal and
 the GUI.
 
@@ -304,8 +304,8 @@ failed" and offer cleanup.
    run it inside the workroom (streaming).
 4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
    **The branch is intentionally left intact.**
-5. **Update config:** remove the workroom entry. If it was the project's last workroom, the project
-   is dropped too — unless `KeepEmptyProject` is set (the app pins empty projects in its sidebar).
+5. **Update config:** remove the workroom entry. The project stays registered even with no
+   workrooms left: the config is shared with the app, whose sidebar keeps empty projects.
 
 ### VCS abstraction
 

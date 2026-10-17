@@ -433,41 +433,10 @@ func (c *Config) AddRemoteWorkroom(parentPath, name, workroomPath string, host m
 	})
 }
 
-// RemoveWorkroom removes a workroom entry. If the parent has no remaining workrooms, it is
-// removed, unless it carries a host descriptor: that describes a remote machine, and dropping it
-// with the entry would lose the only record of it.
+// RemoveWorkroom removes a workroom entry and leaves its project registered, even with no
+// workrooms left: the config is shared with the app, whose sidebar keeps an empty project, and
+// nothing here tells a project the app pinned from one only the CLI used.
 func (c *Config) RemoveWorkroom(parentPath, name string) error {
-	return c.withLock(func() error {
-		data, err := c.Read()
-		if err != nil {
-			return err
-		}
-
-		project, ok := data[parentPath].(map[string]any)
-		if !ok {
-			return nil
-		}
-
-		workrooms, ok := project["workrooms"].(map[string]any)
-		if !ok {
-			return nil
-		}
-
-		delete(workrooms, name)
-
-		// A host or a base branch is the project's own setting: keep the entry that holds it.
-		if len(workrooms) == 0 && project["host"] == nil && project["base_branch"] == nil {
-			delete(data, parentPath)
-		}
-
-		return c.Write(data)
-	})
-}
-
-// RemoveWorkroomKeepProject removes a workroom entry but leaves the parent project
-// registered even when it has no remaining workrooms. Used by GUI callers that pin
-// empty projects in the sidebar.
-func (c *Config) RemoveWorkroomKeepProject(parentPath, name string) error {
 	return c.withLock(func() error {
 		data, err := c.Read()
 		if err != nil {

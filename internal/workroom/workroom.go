@@ -39,9 +39,6 @@ type Service struct {
 	// Status, when set, receives a progress step as it happens: a short status word and what was
 	// done, e.g. ("setup", "Running <script> from <dir>"). --verbose prints them.
 	Status func(status, msg string)
-	// KeepEmptyProject leaves a project registered after its last workroom is
-	// deleted. Set by GUI callers that pin empty projects in the sidebar.
-	KeepEmptyProject bool
 	// ScriptLogWriter, when set, receives setup/teardown script output as it runs.
 	// It is the --json mode sink (an NDJSON event stream on stderr) and takes the
 	// place of the human terminal log panel. The captured output is still returned,
@@ -657,13 +654,7 @@ func (s *Service) nonGitWorkroomPath(dir, name string) (string, error) {
 // (git there would discover an ANCESTOR repository) and no teardown script (which would run in that
 // folder), and it leaves the folder for the user to remove.
 func (s *Service) forgetNonGitWorkroom(dir, name, path string) (DeleteResult, error) {
-	var err error
-	if s.KeepEmptyProject {
-		err = s.Config.RemoveWorkroomKeepProject(dir, name)
-	} else {
-		err = s.Config.RemoveWorkroom(dir, name)
-	}
-	if err != nil {
+	if err := s.Config.RemoveWorkroom(dir, name); err != nil {
 		return DeleteResult{}, err
 	}
 	return DeleteResult{Name: name, Outcome: ForgotNonGit, Path: path}, nil
@@ -858,14 +849,8 @@ func (s *Service) deleteByName(dir, name string) (DeleteResult, error) {
 
 	// Update config
 	if !s.Pretend {
-		if s.KeepEmptyProject {
-			if err := s.Config.RemoveWorkroomKeepProject(dir, name); err != nil {
-				return DeleteResult{}, err
-			}
-		} else {
-			if err := s.Config.RemoveWorkroom(dir, name); err != nil {
-				return DeleteResult{}, err
-			}
+		if err := s.Config.RemoveWorkroom(dir, name); err != nil {
+			return DeleteResult{}, err
 		}
 	}
 
@@ -876,11 +861,7 @@ func (s *Service) deleteByName(dir, name string) (DeleteResult, error) {
 // runs: there is no box for the teardown script, and no workspace on this Mac.
 func (s *Service) forgetDestroyedRemote(dir, name string) (DeleteResult, error) {
 	if !s.Pretend {
-		remove := s.Config.RemoveWorkroom
-		if s.KeepEmptyProject {
-			remove = s.Config.RemoveWorkroomKeepProject
-		}
-		if err := remove(dir, name); err != nil {
+		if err := s.Config.RemoveWorkroom(dir, name); err != nil {
 			return DeleteResult{}, err
 		}
 	}

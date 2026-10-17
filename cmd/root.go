@@ -82,7 +82,6 @@ func newService() (*workroom.Service, error) {
 		}
 	}
 	if jsonOutput {
-		svc.KeepEmptyProject = true
 		svc.PromptFn = func(string, []string) ([]string, error) {
 			return nil, errors.New("interactive prompt not available in --json mode")
 		}

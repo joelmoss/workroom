@@ -70,9 +70,8 @@ func setupGitProject(t *testing.T) (svc *workroom.Service, cfg *config.Config, c
 	}
 
 	svc = &workroom.Service{
-		Config:           cfg,
-		VCS:              g,
-		KeepEmptyProject: true,
+		Config: cfg,
+		VCS:    g,
 	}
 	return svc, cfg, canon, wrPath
 }
