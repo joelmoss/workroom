@@ -495,6 +495,56 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNil(AppStore.workroomTabSlot(at: CGPoint(x: 230, y: 20), frames: []))
   }
 
+  /// Value: protects=a drop on another window's tab bar lands in the slot under the cursor;
+  /// fails_when=the screen point is mapped into the wrong space (the window's, not the tab row's)
+  /// or the y flip is lost; why_new=only the pure slot maths was tested; seam=none; no_claim=a real
+  /// title-bar accessory's layout (a plain window and view stand in).
+  func testAScreenPointMapsOntoTheTabRowItIsOver() {
+    let store = makeStore()
+    _ = store.terminals.addTab(for: target(store))
+    _ = store.terminals.addTab(for: target(store, otherSid))
+    let window = NSWindow(
+      contentRect: NSRect(x: 100, y: 100, width: 600, height: 100), styleMask: [.borderless],
+      backing: .buffered, defer: true)
+    let row = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 100))
+    window.contentView?.addSubview(row)
+    store.workroomTabRun = row
+    let order = store.displayedWorkroomTargets().map(\.sid)
+    store.workroomTabFrames = [
+      order[0]: CGRect(x: 10, y: 8, width: 120, height: 24),
+      order[1]: CGRect(x: 134, y: 8, width: 120, height: 24),
+    ]
+
+    // Row top-left is screen (100, 200): 20pt down the row is screen y 180, and 80pt down (off the
+    // tabs) is 120. Asymmetric on purpose, so a lost y flip reads one as the other.
+    XCTAssertEqual(store.incomingWorkroomSlot(at: CGPoint(x: 105, y: 180)), 0)
+    XCTAssertEqual(store.incomingWorkroomSlot(at: CGPoint(x: 240, y: 180)), 1)
+    XCTAssertEqual(store.incomingWorkroomSlot(at: CGPoint(x: 600, y: 180)), 2)
+    XCTAssertNil(
+      store.incomingWorkroomSlot(at: CGPoint(x: 240, y: 120)), "off the tabs: at the end")
+  }
+
+  /// Value: protects=a moved workroom's window opens at the standard size with its top-left at the
+  /// drop point, whatever window it left; fails_when=the size or the placement is dropped or taken
+  /// from the old window; why_new=nothing checked the new window's frame; seam=none;
+  /// no_claim=SwiftUI's own placement after show (the re-application is what covers that).
+  func testAMovedWorkroomsWindowOpensAtTheStandardSizeWhereItWasDropped() throws {
+    let store = makeStore()
+    let screen = try XCTUnwrap(NSScreen.main?.visibleFrame)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: true)
+    let drop = CGPoint(x: screen.minX + 40, y: screen.maxY - 40)
+    store.pendingInitialWindowTopLeft = drop
+
+    store.placeHandOffWindow(window)
+
+    XCTAssertEqual(
+      window.contentRect(forFrameRect: window.frame).size, AppStore.newWindowContentSize)
+    XCTAssertEqual(window.frame.minX, drop.x, accuracy: 1)
+    XCTAssertEqual(window.frame.maxY, drop.y, accuracy: 1)
+  }
+
   /// The drag's own ghost sits under the cursor: a drop must look past it to the window beneath,
   /// or every drop would open a new window.
   func testTheWindowUnderADropIsFoundPastTheGhost() {
