@@ -91,6 +91,20 @@ func TestIncludeArchive(t *testing.T) {
 	}
 }
 
+// The include-archive envelope, as the app decodes it into IncludeArchive (CLIContractTests.swift).
+func TestContractIncludeArchive(t *testing.T) {
+	home := contractHomeDir(t)
+	project := gitRepo(t, filepath.Join(home, "src", "app"))
+	writeRootFile(t, project, ".gitignore", ".env\n")
+	writeRootFile(t, project, ".worktreeinclude", ".env\n")
+	writeRootFile(t, project, ".env", "SECRET=1")
+	r := runCLI(t, "include-archive", "--json", "--project", project, "--output", filepath.Join(t.TempDir(), "a.tar"))
+	if r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.stdout)
+	}
+	checkContract(t, "include-archive.json", r.stdout, home)
+}
+
 // Value: protects=a root with no include file archives nothing and says so, without failing;
 // fails_when=the command errors or invents files; no_claim=none beyond protects
 func TestIncludeArchiveWithoutAnIncludeFile(t *testing.T) {

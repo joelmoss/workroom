@@ -295,3 +295,137 @@ private final class LineLog: @unchecked Sendable {
   }
   var all: [(ProvisioningProgress.Step, String)] { lock.withLock { seen } }
 }
+
+/// Copying the root's included files into a remote workroom's checkout (#367): the CLI's archive,
+/// streamed into tar on the host. The "host" here is a local shell, so the extraction is real tar.
+final class RemoteIncludeTests: XCTestCase {
+  /// A driver whose host is this Mac's shell; `prefix` runs first (a PATH with no tar, say).
+  private struct ShellHost: HostDriver {
+    var prefix = ""
+    var execFails = false
+    func create() async throws -> HostID { .local }
+    func destroy(_ host: HostID) async throws {}
+    func openStream(to host: HostID) async throws -> HostStream {
+      throw HostDriverError.notImplemented("stream")
+    }
+    func exec(_ command: String, on host: HostID) async throws -> HostStream {
+      if execFails { throw HostDriverError.provisioning("the host is gone") }
+      return try HostStream.spawn(
+        URL(fileURLWithPath: "/bin/sh"), ["-c", prefix + command], environment: [:],
+        handshakeTimeout: 5, purpose: .exchange)
+    }
+  }
+
+  private var scratch: URL!
+
+  override func setUpWithError() throws {
+    scratch = FileManager.default.temporaryDirectory
+      .appendingPathComponent("remote-include-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+  }
+
+  override func tearDownWithError() throws {
+    try? FileManager.default.removeItem(at: scratch)
+  }
+
+  /// An archive closure that tars `files` (path: mode) from a root of its own into the URL it gets.
+  private func archive(
+    _ files: [String: Int], warnings: [String] = []
+  ) throws -> @Sendable (URL) async throws -> IncludeArchive {
+    let root = scratch.appendingPathComponent("root")
+    for (path, mode) in files {
+      let url = root.appendingPathComponent(path)
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try Data(path.utf8).write(to: url)
+      try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+    }
+    let paths = files.keys.sorted()
+    return { output in
+      let tar = Process()
+      tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+      tar.arguments = ["-cf", output.path, "-C", root.path] + paths
+      try tar.run()
+      tar.waitUntilExit()
+      return IncludeArchive(
+        paths: paths, bytes: Int64(paths.map(\.utf8.count).reduce(0, +)), warnings: warnings)
+    }
+  }
+
+  private func checkout() throws -> URL {
+    let url = scratch.appendingPathComponent("checkout")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  /// Value: protects=the included files land in the host's checkout at their paths with their
+  /// modes, and the log names each; fails_when=the archive isn't streamed into tar, the mode is
+  /// lost, or the log is missing; no_claim=GNU tar on Linux (see the ssh-fixture test)
+  func testTheIncludedFilesLandInTheCheckoutWithTheirModes() async throws {
+    let checkout = try checkout()
+    let result = await RemoteProvisioning.copyIncluded(
+      into: checkout.path, on: .local, driver: ShellHost(),
+      archive: try archive([".env": 0o600, "secrets/a.json": 0o664]))
+    guard case .copied(let log) = result else { return XCTFail("\(result)") }
+    XCTAssertEqual(Array(log.prefix(2)), ["Copied .env", "Copied secrets/a.json"])
+    for (path, mode) in [".env": 0o600, "secrets/a.json": 0o664] {
+      let url = checkout.appendingPathComponent(path)
+      XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), path)
+      let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+      XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, mode, path)
+    }
+  }
+
+  /// Value: protects=a file the checkout already has is kept; fails_when=tar overwrites it;
+  /// no_claim=none beyond protects
+  func testAFileTheCheckoutHasIsKept() async throws {
+    let checkout = try checkout()
+    try Data("mine".utf8).write(to: checkout.appendingPathComponent(".env"))
+    _ = await RemoteProvisioning.copyIncluded(
+      into: checkout.path, on: .local, driver: ShellHost(), archive: try archive([".env": 0o644]))
+    XCTAssertEqual(
+      try String(contentsOf: checkout.appendingPathComponent(".env"), encoding: .utf8), "mine")
+  }
+
+  /// Value: protects=every way the copy can fail ends as a warning saying why, never a throw that
+  /// would undo the create (Q4); fails_when=a failure is swallowed or escapes; no_claim=the
+  /// warnings' full wording
+  func testEachFailureIsAWarningSayingWhy() async throws {
+    let checkout = try checkout()
+    let noTar = await RemoteProvisioning.copyIncluded(
+      into: checkout.path, on: .local, driver: ShellHost(prefix: "PATH=/nonexistent; "),
+      archive: try archive([".env": 0o644]))
+    guard case .warning(let text, _) = noTar else { return XCTFail("\(noTar)") }
+    XCTAssertTrue(text.contains("tar is not installed"), text)
+
+    let gone = await RemoteProvisioning.copyIncluded(
+      into: checkout.path, on: .local, driver: ShellHost(execFails: true),
+      archive: try archive([".env": 0o644]))
+    guard case .warning(let goneText, _) = gone else { return XCTFail("\(gone)") }
+    XCTAssertTrue(goneText.contains("the host is gone"), goneText)
+
+    let unarchived = await RemoteProvisioning.copyIncluded(
+      into: checkout.path, on: .local, driver: ShellHost()
+    ) { _ in throw WorkroomCLIError.cli(kind: "Boom", message: "no archive") }
+    guard case .warning(let archiveText, _) = unarchived else { return XCTFail("\(unarchived)") }
+    XCTAssertTrue(archiveText.contains("no archive"), archiveText)
+
+    let unreadable = await RemoteProvisioning.copyIncluded(
+      into: checkout.path, on: .local, driver: ShellHost(),
+      archive: try archive(["ok.env": 0o644], warnings: ["bad.key: permission denied"]))
+    guard case .warning(let unreadableText, let log) = unreadable else {
+      return XCTFail("\(unreadable)")
+    }
+    XCTAssertTrue(unreadableText.contains("bad.key"), unreadableText)
+    XCTAssertEqual(log.first, "Copied ok.env")
+  }
+
+  /// Value: protects=an include file that matches nothing ends skipped, and nothing runs on the
+  /// host; fails_when=it ends copied or warns; no_claim=none beyond protects
+  func testNothingToCopyIsSkipped() async throws {
+    let result = await RemoteProvisioning.copyIncluded(
+      into: try checkout().path, on: .local, driver: ShellHost(execFails: true)
+    ) { _ in IncludeArchive(paths: [], bytes: 0, warnings: []) }
+    XCTAssertEqual(result, .skipped("No matching files"))
+  }
+}

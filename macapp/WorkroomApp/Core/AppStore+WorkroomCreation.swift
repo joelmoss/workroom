@@ -99,7 +99,8 @@ extension AppStore {
   ) -> CreationRun {
     let run = CreationRun(
       project: project, kind: kind, splitAnchor: splitAnchor, previousSelection: selectedTargetID,
-      hasSetupScript: Self.hasSetupScript(project, kind))
+      hasSetupScript: Self.hasSetupScript(project, kind),
+      hasIncludeFile: Self.hasIncludeFile(project))
     register(run)
     selectedProjectID = project.id
     let pane = SidebarID.creation(project: project.path, id: run.id)
@@ -118,6 +119,12 @@ extension AppStore {
   private static func hasSetupScript(_ project: Project, _ kind: CreationKind) -> Bool {
     kind == .local
       && FileManager.default.fileExists(atPath: project.path + "/scripts/workroom_setup")
+  }
+
+  /// Whether the root has an include file (#367), so any kind of create copies its included files:
+  /// only the root's copy counts, as the CLI's `IncludedFiles` reads it.
+  static func hasIncludeFile(_ project: Project) -> Bool {
+    FileManager.default.fileExists(atPath: project.path + "/.worktreeinclude")
   }
 
   /// The workroom `run` makes has a name: its pane becomes the workroom's, in place. Its target is
@@ -216,7 +223,8 @@ extension AppStore {
     let retry = CreationRun(
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
       previousSelection: run.previousSelection,
-      hasSetupScript: Self.hasSetupScript(project, run.kind))
+      hasSetupScript: Self.hasSetupScript(project, run.kind),
+      hasIncludeFile: Self.hasIncludeFile(project))
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)
@@ -424,6 +432,9 @@ extension AppStore {
       let host = try await services.host(place)
       let created = try await provisionRemote(run, plan: plan, host: host)
       await Self.drainMainQueue()  // the last step's lines, before it is marked done
+      if run.steps.contains(where: { $0.id == ProvisioningProgress.Step.include.rawValue }) {
+        await copyIncluded(run, into: created.instance, driver: host.driver)
+      }
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
       await reload()
@@ -511,6 +522,30 @@ extension AppStore {
             key: host.key, driver: host.driver, environment: environment, recorder: recorder)
         }
       }
+    }
+  }
+
+  /// A remote create's "Copy local files" step (#367): the root's included files, into the host's
+  /// checkout once it is out. It never fails the create: the step ends as a warning instead.
+  private func copyIncluded(
+    _ run: CreationRun, into instance: RemoteProvisioning.Instance, driver: any HostDriver
+  ) async {
+    let step = ProvisioningProgress.Step.include.rawValue
+    let cli = self.cli
+    let path = run.project.path
+    run.begin(step)
+    let result = await RemoteProvisioning.copyIncluded(
+      into: instance.path, on: instance.host, driver: driver
+    ) { file in try await cli.includeArchive(project: path, output: file.path) }
+    switch result {
+    case .copied(let log):
+      for line in log { run.append(line, to: step) }
+      run.finish(step, as: .done)
+    case .skipped(let reason):
+      run.finish(step, as: .skipped(reason: reason))
+    case .warning(let text, let log):
+      for line in log { run.append(line, to: step) }
+      run.warn(step, text)
     }
   }
 

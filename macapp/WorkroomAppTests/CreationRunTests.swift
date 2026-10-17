@@ -67,6 +67,39 @@ final class CreationRunTests: XCTestCase {
     XCTAssertEqual(states(run)["script"], .running)
   }
 
+  /// Value: protects=a root with a `.worktreeinclude` gets a "Copy local files" row in every kind,
+  /// after the worktree or the checkout, and one without gets none; fails_when=the row is missing,
+  /// misplaced, or shown with no include file; no_claim=the file check (`hasIncludeFile`)
+  func testTheCopyLocalFilesRowIsListedOnlyWhenTheRootHasAnIncludeFile() {
+    func ids(_ kind: CreationKind, _ include: Bool) -> [String] {
+      CreationRun(
+        project: project, kind: kind, splitAnchor: nil, previousSelection: nil,
+        hasIncludeFile: include
+      ).steps.map(\.id)
+    }
+    XCTAssertEqual(ids(.local, true), ["fetch", "worktree", "include", "script"])
+    XCTAssertEqual(ids(.local, false), ["fetch", "worktree", "script"])
+    for kind in [CreationKind.container(.docker), .boxd, .exeDev] {
+      XCTAssertEqual(Array(ids(kind, true).suffix(2)), ["checkout", "include"], "\(kind)")
+      XCTAssertFalse(ids(kind, false).contains("include"), "\(kind)")
+    }
+    let run = CreationRun(
+      project: project, kind: .local, splitAnchor: nil, previousSelection: nil,
+      hasIncludeFile: true)
+    XCTAssertEqual(run.steps[2].title, "Copy local files")
+  }
+
+  /// Value: protects=a row left out of the plan that runs after all comes back in its plan place,
+  /// not after a later step; fails_when=a late include row lands after the setup script;
+  /// no_claim=none beyond protects
+  func testALeftOutRowComesBackInItsPlanPlace() {
+    let run = CreationRun(
+      project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+    XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree", "script"])
+    run.begin("include")
+    XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree", "include", "script"])
+  }
+
   /// Value: protects=begin ends the running step done and skips the pending steps it jumped;
   /// fails_when=the previous step stays running or a jumped step stays pending; no_claim=none
   /// beyond protects
