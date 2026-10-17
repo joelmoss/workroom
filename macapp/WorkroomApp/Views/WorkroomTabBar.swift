@@ -684,7 +684,7 @@ private struct WorkroomTabChip: View {
       .background {
         GeometryReader { geo in
           Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
-            // Where it sits in the window, for a workroom dragged in from another window (#444).
+            // Where it sits in its row, for a workroom dragged in from another window (#444).
             .preference(
               key: WorkroomTabFrameKey.self,
               value: [sid: geo.frame(in: .named(WorkroomTabBar.runSpace))])

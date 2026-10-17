@@ -472,6 +472,29 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(destination.displayedWorkroomTargets().map(\.sid), [otherSid, sid, third])
   }
 
+  /// Value: protects=a workroom keeps at most one preview tab when two windows' copies merge;
+  /// fails_when=the moved preview arrives still a preview beside the window's own, so the next
+  /// Changes/Files click retargets an arbitrary one; why_new=merges were tested with terminals only;
+  /// seam=none; no_claim=the inspector's clicks.
+  func testAMergeKeepsOnePreviewAndPinsTheMovedOne() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    let t = target(origin)
+    _ = origin.terminals.addTab(for: t)
+    let moved = origin.terminals.openFilePreview(
+      FileDescriptor(path: "a.swift", isPreview: true), for: t)
+    _ = destination.terminals.addTab(for: t)
+    let own = destination.terminals.openFilePreview(
+      FileDescriptor(path: "b.swift", isPreview: true), for: t)
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertEqual(
+      destination.terminals.tab(own, for: t)?.isPreview, true, "its own stays the preview")
+    XCTAssertEqual(
+      destination.terminals.tab(moved, for: t)?.isPreview, false, "the moved one is pinned")
+  }
+
   /// Value: protects=a moved terminal's next finished-turn notification replaces its last one rather
   /// than adding a second; fails_when=the finish index stays in the old window; why_new=only the
   /// notifications themselves were checked; seam=none; no_claim=raising a real finish.
@@ -556,6 +579,8 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertTrue(HostLayoutOwners.shared.claim(workroom, targetID: t.id, by: origin))
     origin.hostLayouts.fetched.insert(t.id)
     origin.hostLayouts.revisions[t.id] = 7
+    // The host never answered this launch: the destination must keep that guard while it waits.
+    origin.hostLayouts.unanswered.insert(t.id)
     let (gate, open) = AsyncStream<Void>.makeStream()
     origin.hostLayouts.writing[t.id] = Task {
       for await _ in gate { break }
@@ -564,6 +589,9 @@ final class WorkroomHandOverTests: XCTestCase {
     origin.handHostLayout(of: t, to: destination)
     XCTAssertNotNil(destination.hostLayouts.writing[t.id], "the destination waits on it")
     XCTAssertNil(destination.hostLayouts.revisions[t.id])
+    XCTAssertTrue(
+      destination.hostLayouts.unanswered.contains(t.id),
+      "a quit meanwhile must not mark its copy as the newer one")
     // The write lands, in the origin, as `finishHostWrite` records it.
     origin.hostLayouts.revisions[t.id] = 8
     origin.hostLayouts.writing[t.id] = nil
