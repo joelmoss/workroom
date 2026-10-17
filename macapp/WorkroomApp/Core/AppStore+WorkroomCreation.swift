@@ -144,15 +144,23 @@ extension AppStore {
     scheduleSelectedStatusRefresh()
   }
 
-  /// A finished create: its checklist holds for a moment (design D13), then goes, and the
+  /// A finished create: its checklist stays, with Done, until the user closes it (`finishCreation`),
+  /// or with "Close automatically when done" on, for `creationSuccessHold` (design D13). Then the
   /// workroom's terminal mounts (firing an armed auto-run, issue #7).
   private func completeCreationRun(_ run: CreationRun) async {
     run.succeed()
-    try? await Task.sleep(for: creationSuccessHold)
-    discardCreationRun(run)
     if let name = run.name {
       Self.announceCreation(CreationPanePresentation.successAnnouncement(name: name))
     }
+    guard closesFinishedCreations() else { return }
+    try? await Task.sleep(for: creationSuccessHold)
+    // Unticked in the footer meanwhile: it waits for Done after all.
+    if closesFinishedCreations() { finishCreation(run) }
+  }
+
+  /// Done on a finished create: the checklist goes and the workroom's terminal mounts.
+  func finishCreation(_ run: CreationRun) {
+    discardCreationRun(run)
   }
 
   /// The create failed: its pane shows which step and what to do next, and VoiceOver hears it once

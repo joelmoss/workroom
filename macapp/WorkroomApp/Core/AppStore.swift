@@ -2290,8 +2290,11 @@ final class AppStore: ObservableObject {
   // Workroom creation's stored state. Its code is in `AppStore+WorkroomCreation.swift`.
 
   /// How long a finished create's checklist stays on screen before the workroom's own UI replaces
-  /// it (design D13). Tests shorten it.
-  var creationSuccessHold: Duration = .milliseconds(600)
+  /// it, when it closes automatically (design D13). Tests shorten it.
+  var creationSuccessHold: Duration = .seconds(3)
+
+  /// Whether a finished create's checklist closes by itself, else it waits for Done. Tests replace it.
+  var closesFinishedCreations: () -> Bool = { Defaults[.closeCreationPaneWhenDone] }
 
   /// What a remote create reaches beyond the app: GitHub and the project's git, the provider's
   /// account, and its hosts. Tests stand in fakes.

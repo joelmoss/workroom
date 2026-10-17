@@ -317,6 +317,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let store = AppStore(cli: fake)
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     store.creationSuccessHold = .zero
+    store.closesFinishedCreations = { true }
     return store
   }
 
@@ -1300,6 +1301,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a"], hasSetup: true)
     let store = AppStore(cli: fake)
     store.creationSuccessHold = .zero
+    store.closesFinishedCreations = { true }
     // Never spawn a real PTY: this test only cares whether a run TAB was opened.
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)

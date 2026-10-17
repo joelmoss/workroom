@@ -878,7 +878,8 @@ private struct RunningSpinner: View {
 }
 
 /// How far a create has got (#356, #483), on its row: complete steps out of all of them, with the
-/// step it is on as its tooltip, or the failed mark once it has failed.
+/// step it is on as its tooltip, the failed mark once it has failed, and nothing once it has
+/// succeeded, while its checklist waits for Done.
 private struct CreateStepCircle: View {
   /// Observed here: a run's steps change without the store (read through Observation) changing.
   @ObservedObject var run: CreationRun
@@ -886,7 +887,9 @@ private struct CreateStepCircle: View {
 
   var body: some View {
     let step = AppStore.CreateStep(run)
-    if step.failed {
+    if run.outcome == .succeeded {
+      EmptyView()
+    } else if step.failed {
       Image(systemName: "xmark.octagon.fill")
         .foregroundStyle(theme.tokens.failure)
         .help("Couldn't create the workroom: \(step.label) failed")

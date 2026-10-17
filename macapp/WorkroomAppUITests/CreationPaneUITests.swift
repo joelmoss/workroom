@@ -7,9 +7,9 @@ import XCTest
 /// paths aren't repositories, so the real CLI would fail at its worktree. The script plays the
 /// steps over a few seconds, so the checklist is on screen long enough to see.
 // Value: protects=AC 1 and AC 7 end to end, a local create started from File ▸ New Workroom… with
-// the sidebar hidden shows its checklist in the detail, then its terminal with no click;
-// fails_when=nothing shows until the create ends, the checklist never goes, or the terminal never
-// mounts; no_claim=a real `workroom create` (ScriptedCreateCLI stands in), the crossfade's look
+// the sidebar hidden shows its checklist in the detail, then Done, then its terminal;
+// fails_when=nothing shows until the create ends, no Done is offered, the checklist never goes, or
+// the terminal never mounts; no_claim=a real `workroom create` (ScriptedCreateCLI stands in), the crossfade's look
 final class CreationPaneUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
@@ -59,7 +59,10 @@ final class CreationPaneUITests: XCTestCase {
     shot.lifetime = .keepAlways
     add(shot)
 
-    XCTAssertTrue(pane.waitForNonExistence(timeout: 20), "the checklist never gave way")
+    let done = element(app, "CreationPane.Done")
+    XCTAssertTrue(done.waitForExistence(timeout: 20), "the finished checklist offers no Done")
+    done.click()
+    XCTAssertTrue(pane.waitForNonExistence(timeout: 5), "the checklist never gave way")
     let workroomPane = app.descendants(matching: .any).matching(identifier: "workroom.pane")
       .matching(NSPredicate(format: "label == %@", "Workroom uitest-created")).firstMatch
     XCTAssertTrue(workroomPane.waitForExistence(timeout: 5), "the new workroom's pane isn't shown")
