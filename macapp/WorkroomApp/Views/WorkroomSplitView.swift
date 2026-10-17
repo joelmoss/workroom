@@ -281,25 +281,36 @@ private struct WorkroomPaneLeaf: View {
     // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
     // falls through to the leaf's focus tap.
     //
-    // `including:` MUST be `.subviews` (not `.none`) when solo: `GestureMask.none` disables every
-    // gesture in the SUBVIEW hierarchy as well as the added one, which would kill this bar's own
-    // Run / Open-in buttons in exactly the single-workroom case issue #139 exists to serve — and
-    // `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so they would still light
-    // up and look alive. `.subviews` drops only the drag.
+    // Alone, the drag only moves the workroom out of the window (#444), to another window or a new
+    // one as its tab does; rearranging needs a split. `including:` stays `.all`, never `.none`:
+    // `GestureMask.none` disables every gesture in the SUBVIEW hierarchy as well as the added one,
+    // which would kill this bar's own Run / Open-in buttons in exactly the single-workroom case issue
+    // #139 exists to serve, while `ToolbarIconButtonStyle`'s `.onHover` well kept them looking alive.
     .gesture(
       DragGesture(minimumDistance: 6, coordinateSpace: .global)
         .onChanged { value in
+          if isDragOutsideWindow(value.location) {
+            externalDrag = nil
+            WorkroomWindowDrag.update(
+              store: store, sid: sid, target: target,
+              width: store.workroomTabFrames[sid]?.width ?? 0)
+            return
+          }
+          WorkroomWindowDrag.cancel()
+          guard multi else { return }
           externalDrag = localize(value.location).map {
             WorkroomPaneDrag(sid: sid, location: $0)
           }
         }
         .onEnded { value in
-          if let drop = dropTarget(value.location), drop.sid != sid {
+          if isDragOutsideWindow(value.location) {
+            WorkroomWindowDrag.end(store: store, sid: sid)
+          } else if multi, let drop = dropTarget(value.location), drop.sid != sid {
             onMove(sid, drop.sid, drop.edge, drop.rect)
           }
           externalDrag = nil
         },
-      including: multi ? .all : .subviews
+      including: .all
     )
     // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
     // "Close"). "Remove from Split" (the menu equivalent of the ✕) is offered only for a real

@@ -22,11 +22,15 @@ final class DetachedPaneDragPreview {
   private var panel: NSPanel?
   private var host: NSHostingView<DetachedPaneGhost>?
 
+  /// The ghost's own window, which a drop under the cursor must look past (#444).
+  var windowNumber: Int? { panel?.windowNumber }
+
   /// Show (or move) the ghost, with its top-left at `screenPoint` — the same placement
   /// `DetachedPaneWindows.open` gives the real window, so the preview does not lie about where the
-  /// pane will end up.
-  func show(title: String, glyph: String?, at screenPoint: CGPoint) {
-    let size = DetachedPaneWindows.defaultSize
+  /// pane will end up. `size` is the window's to come: a torn-off pane's standard size unless given
+  /// (a workroom's new window takes its old window's, #444).
+  func show(title: String, glyph: String?, at screenPoint: CGPoint, size: NSSize? = nil) {
+    let size = size ?? DetachedPaneWindows.defaultSize
     let panelSize = NSSize(
       width: size.width + 2 * Self.shadowMargin, height: size.height + 2 * Self.shadowMargin)
     let panel = existingPanel(size: panelSize)

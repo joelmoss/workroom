@@ -42,6 +42,50 @@ final class WindowRegistry: ObservableObject {
   /// so a modal alert / Settings becoming key never overwrites it — quit persistence can trust it.
   private(set) weak var lastActiveStore: AppStore?
 
+  /// SwiftUI's `openWindow`, handed over by each window as it appears, so a store can open a window
+  /// to move a workroom into (#444). Only views get the environment action.
+  var openWindow: ((WindowSeed) -> Void)?
+
+  /// What sits under a screen point, for a workroom dropped there (#444).
+  enum DropWindow {
+    /// A Workroom window, or the one that owns a torn-off pane's window there (Q22).
+    case store(AppStore)
+    /// Nothing of ours, or another app's window in front of ours: a new window.
+    case none
+  }
+
+  /// The frontmost window under `screenPoint`, skipping `skipped` (the drag's own ghost, which sits
+  /// under the cursor). Across every app, so a window of another app in front of one of ours wins.
+  func dropWindow(at screenPoint: CGPoint, skipping skipped: Set<Int>) -> DropWindow {
+    Self.frontmostDropWindow(
+      skipping: skipped,
+      numberBelow: { NSWindow.windowNumber(at: screenPoint, belowWindowWithWindowNumber: $0) },
+      resolve: { [self] number in
+        guard let window = NSApp.window(withWindowNumber: number) else { return DropWindow.none }
+        if let store = store(for: window) { return .store(store) }
+        if let pane = window as? DetachedPaneWindow, let tab = pane.tabID,
+          let owner = ownerOf(tabID: tab)
+        {
+          return .store(owner)
+        }
+        return DropWindow.none
+      })
+  }
+
+  /// The walk behind `dropWindow`, front to back: `numberBelow(n)` is the window under the point
+  /// below window `n` (0 for the frontmost, 0 when there is none).
+  static func frontmostDropWindow(
+    skipping skipped: Set<Int>, numberBelow: (Int) -> Int, resolve: (Int) -> DropWindow
+  ) -> DropWindow {
+    var below = 0
+    var seen: Set<Int> = []
+    while case let number = numberBelow(below), number > 0, seen.insert(number).inserted {
+      guard skipped.contains(number) else { return resolve(number) }
+      below = number
+    }
+    return DropWindow.none
+  }
+
   /// Combined unread notification count across every window — drives the menu-bar label + Dock badge
   /// (issue #70). `@Published` so the `MenuBarExtra` label re-renders as any window's count changes.
   @Published private(set) var aggregateUnread = 0

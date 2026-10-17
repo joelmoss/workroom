@@ -524,7 +524,11 @@ struct ProjectSidebar: View {
           // this row's menu is its own inline list, not that shared builder; migrating it wholesale
           // would silently add a "Close" item and reorder the menu.
           openInSplitMenuItem(store: store, sid: id)
-          if canOpenInSplit(store: store, sid: id) { Divider() }
+          // Into a window of its own (#444), when it has terminals here to move.
+          moveToNewWindowMenuItem(store: store, sid: id)
+          if canOpenInSplit(store: store, sid: id) || showsMoveToNewWindow(store: store, sid: id) {
+            Divider()
+          }
           // To find its machine in the provider's dashboard.
           if let machine = workroom.host?.machineName {
             Button {
@@ -698,6 +702,8 @@ struct ProjectSidebar: View {
         .disabled(tab.programStatus?.stale == true)
         Divider()
       }
+      paneWindowMenuItem(store: store, tabID: tab.id, targetID: target.id)
+      Divider()
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)
       } label: {

@@ -884,8 +884,11 @@ struct PaneLeafView: View {
         TerminalContainerView(
           view: s.view, isFocusedPane: focused && store.activePicker == nil,
           // Only the host whose kind matches the model may hold the surface (issue #172): the pane
-          // tree while the tab is docked, the detached window while it is not.
+          // tree while the tab is docked, the detached window while it is not. And only in the
+          // window whose sessions own the tab: one moved to another window (#444) leaves this
+          // window's tree a last pass that would otherwise take the surface back.
           mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached
+            && sessions.containsTab(tabID)
         )
         // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
         // is per-surface, and only the focused pane can be searched. Nothing until active.

@@ -71,6 +71,11 @@ final class HostLayoutOwners {
   }
 
   func owns(_ workroom: UUID, _ store: AppStore) -> Bool { owners[workroom]?.store === store }
+
+  /// The keeping of `workroom`'s layout moves with the workroom to another window (#444).
+  func transfer(_ workroom: UUID, targetID: TerminalTarget.ID, to store: AppStore) {
+    owners[workroom] = Owner(store: store, targetID: targetID)
+  }
 }
 
 extension AppStore {
@@ -377,6 +382,50 @@ extension AppStore {
     }
     // The revision and stale mark are this Mac's to remember, in session.json.
     markSessionDirty()
+  }
+
+  /// A remote workroom moving to `destination` (#444) takes the keeping of its host's layout with
+  /// it, along with what this window knows of the host's copy (revision, what was last written), so
+  /// the destination goes on writing it where this window left off and never fetches it again over
+  /// the live tabs. This window then writes nothing for it: still the keeper, its next save would
+  /// write the emptied workroom as an empty layout. A write already on its way finishes first, and
+  /// the destination takes what it left behind.
+  func handHostLayout(of target: TerminalTarget, to destination: AppStore) {
+    let id = target.id
+    guard let workroom = target.remoteWorkroomID,
+      HostLayoutOwners.shared.owns(workroom, self), hostLayouts.fetched.remove(id) != nil
+    else { return }
+    HostLayoutOwners.shared.transfer(workroom, targetID: id, to: destination)
+    destination.hostLayouts.fetched.insert(id)
+    guard let inFlight = hostLayouts.writing[id] else {
+      moveHostLayoutState(of: id, to: destination)
+      return
+    }
+    destination.hostLayouts.writing[id] = Task { @MainActor [weak self, weak destination] in
+      await inFlight.value
+      guard let destination else { return }
+      self?.moveHostLayoutState(of: id, to: destination)
+      destination.hostLayouts.writing[id] = nil
+      destination.writeHostLayouts()
+    }
+  }
+
+  private func moveHostLayoutState(of id: TerminalTarget.ID, to destination: AppStore) {
+    func move(_ set: WritableKeyPath<HostLayoutState, Set<TerminalTarget.ID>>) {
+      if hostLayouts[keyPath: set].remove(id) != nil {
+        destination.hostLayouts[keyPath: set].insert(id)
+      } else {
+        destination.hostLayouts[keyPath: set].remove(id)
+      }
+    }
+    move(\.unanswered)
+    move(\.stale)
+    move(\.readOnly)
+    destination.hostLayouts.unansweredWrite[id] = hostLayouts.unansweredWrite.removeValue(
+      forKey: id)
+    destination.hostLayouts.revisions[id] = hostLayouts.revisions.removeValue(forKey: id)
+    destination.hostLayouts.written[id] = hostLayouts.written.removeValue(forKey: id)
+    destination.hostLayouts.hosts[id] = hostLayouts.hosts.removeValue(forKey: id)
   }
 
   /// At quit (D14): every window's changed layouts go to their hosts, waited on for at most

@@ -403,6 +403,24 @@ extension AppStore {
     return tab
   }
 
+  /// A run that came here with its workroom from another window (#444): its surface's exit and close
+  /// now report to this window, and this window takes over polling the supervisor's status, which the
+  /// origin's poll stopped doing the moment it lost the run.
+  func resumeAdoptedRun(for target: TerminalTarget) {
+    for (tabID, targetID) in investigateTabs where targetID == target.id {
+      terminals.tab(tabID, for: target)?.surface?.onChildExited = { [weak self] _ in
+        self?.investigateTabs.removeValue(forKey: tabID)
+      }
+    }
+    guard let tabID = runStates[target.id]?.tab, let tab = terminals.tab(tabID, for: target)
+    else { return }
+    tab.surface?.onChildExited = { [weak self] code in
+      self?.markRunExited(for: target, exitCode: code)
+    }
+    wireRunClose(tabID, for: target)
+    pollRunStatus(for: target)
+  }
+
   /// The "press any key to close" / wait_after_command close for a run tab MUST go through the graceful
   /// stop (SIGTERM the supervisor + wait for it to fully exit) BEFORE freeing the surface — a raw
   /// `closeTab` frees the surface, which PTY-hangs-up (SIGHUP) the supervisor and can orphan a

@@ -161,6 +161,9 @@ struct WindowSeed: Codable, Hashable {
   /// launch window restore. Only the launch window runs the What's-New auto-check and fans the
   /// siblings out — without this distinction every restored window would pop that dialog.
   var isLaunch = false
+  /// A workroom this window opens to take from another (issue #444): a `WorkroomHandOffs` request,
+  /// completed once the window is up. Nil for every other window.
+  var handOff: UUID? = nil
 
   /// The launch window: a fresh id allowed to restore the saved session.
   static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true, isLaunch: true) }
@@ -186,6 +189,12 @@ struct RootWindow: View {
     // Capture the current window's size ONCE, at this window's creation, so the new window can be
     // sized to match it before it's shown (issue #70). nil for the launch window.
     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
+    // A window opened for a workroom dropped on the desktop opens where it was dropped, at the size
+    // of the window it came from (#444).
+    if let placement = seed.handOff.flatMap(WorkroomHandOffs.shared.placement(for:)) {
+      store.pendingInitialWindowSize = placement.size ?? store.pendingInitialWindowSize
+      store.pendingInitialWindowTopLeft = placement.topLeft
+    }
     // Only the launch window runs the What's-New auto-check (see RootView). Sibling windows reopened
     // from the saved session also carry `restore: true`, so gating on that would pop the dialog once
     // per restored window (issue #46).
@@ -212,6 +221,7 @@ struct RootWindow: View {
           store.attachWindow(window)
         }
       )
+      .onAppear { WindowRegistry.shared.openWindow = { openWindow(value: $0) } }
       .task {
         // Not under XCTest: `WorkroomAppTests` hosts this app to get `@testable import Workroom`,
         // which means this real WindowGroup scene renders too — and without this guard, its `.task`
@@ -225,6 +235,7 @@ struct RootWindow: View {
           return
         }
         await store.bootstrap(restore: seed.restore)
+        if let handOff = seed.handOff { WorkroomHandOffs.shared.complete(handOff, into: store) }
         // Reopen the windows that were open at the last quit (issue #46). Only the launch window
         // fans out, and each key is handed out once, so a `.task` re-fire cannot double-open.
         guard seed.isLaunch else { return }
@@ -858,6 +869,12 @@ struct HasWorkroomAnchorKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether Window ▸ "Move workroom into new window" applies to the selected workroom (#444): it has
+/// terminals here, no create is setting it up, and it is not the window's only workroom.
+struct CanMoveWorkroomKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether back/forward navigation can move (issue #26) — published by RootView, so the Go-menu
 /// Back/Forward commands disable at the ends of history.
 struct CanNavigateBackKey: FocusedValueKey {
@@ -1034,6 +1051,10 @@ extension FocusedValues {
     get { self[WorkroomSplitVisibleKey.self] }
     set { self[WorkroomSplitVisibleKey.self] = newValue }
   }
+  var canMoveWorkroom: Bool? {
+    get { self[CanMoveWorkroomKey.self] }
+    set { self[CanMoveWorkroomKey.self] = newValue }
+  }
 }
 
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
@@ -1076,6 +1097,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.canOpenInEditor) private var canOpenInEditor
   @FocusedValue(\.terminalSplitVisible) private var terminalSplitVisible
   @FocusedValue(\.workroomSplitVisible) private var workroomSplitVisible
+  @FocusedValue(\.canMoveWorkroom) private var canMoveWorkroom
   @FocusedValue(\.modalPresented) private var modalPresented
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showInspector) private var showInspector
@@ -1522,6 +1544,11 @@ struct WorkroomCommands: Commands {
           .keyboardShortcut("o", modifiers: [.command, .control])
           .disabled(!workroomCommandEnabled(workroomSelected))
       }
+      // The selected workroom, every terminal of it, into a window of its own (#444).
+      Button("Move workroom into new window") {
+        if let store, let sid = store.selectedTargetID { store.moveWorkroomToNewWindow(sid) }
+      }
+      .disabled(!workroomCommandEnabled(canMoveWorkroom))
       Divider()
     }
 
