@@ -162,6 +162,10 @@ One app window, with its own selection and layout. Windows share projects.
 **Window footer**:
 The strip along the bottom of a window about the whole app, such as every coding agent's usage and notifications; not tied to any pane.
 
+**Workroom tab**:
+A chip in a window's title bar for one target that has terminals open in that window; choosing it selects that target.
+_Avoid_: Tab (alone), chip
+
 **Selection**:
 The target a window's sidebar has chosen.
 
