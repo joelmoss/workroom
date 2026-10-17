@@ -16,9 +16,9 @@ var (
 )
 
 // deleteProjectCmd is an internal, app-only command: it removes a project from the
-// config so the macOS app's sidebar can drop it. The human CLI never needs it — a
-// project disappears on its own once its last workroom is deleted — so it is hidden
-// and available solely in --json mode, which is how the app invokes it.
+// config so the macOS app's sidebar can drop it. It is hidden and available solely in
+// --json mode, which is how the app invokes it: a project stays registered after its last
+// workroom is deleted, and only the app removes it.
 //
 // By default it is strictly config-only: the project entry is deleted and NOTHING on
 // disk is touched (worktree directories, branches, and files all stay). With
