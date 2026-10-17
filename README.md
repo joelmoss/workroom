@@ -520,7 +520,8 @@ certs/
   an untracked file git doesn't ignore, never is.
 - Patterns mean what git means by them: `**/`, directories and anchoring work as in a `.gitignore`,
   and so does git's re-include rule. `!x` can't bring back a file under a directory a pattern already
-  included: `secrets/**` followed by `!secrets/skip.json` still copies `skip.json`.
+  included: `secrets/` followed by `!secrets/skip.json` still copies `skip.json` (use `secrets/**`
+  to exclude it).
 - Only the root's `.worktreeinclude` counts, whatever branch the workroom starts from.
 - Each file keeps its mode. A file the workroom already has is left alone. Symlinks are never
   copied: the "Copy local files" step names each one it skipped, so link a symlinked `.env` yourself.
