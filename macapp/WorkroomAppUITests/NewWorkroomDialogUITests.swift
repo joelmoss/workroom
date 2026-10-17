@@ -51,12 +51,12 @@ final class NewWorkroomDialogUITests: XCTestCase {
   /// With no projects (issue #81 D3), the File ▸ New Workroom item still exists but is DISABLED —
   /// ⌘N is then a silent no-op instead of opening an empty dialog. Launched with an empty fixture.
   ///
-  /// Also: the title-bar Open / New Workroom buttons render even with NO tabs in the bar — they're
-  /// the mouse route to a first workroom, so gating them on a tab already existing left a fresh
-  /// window with nothing to click. The empty fixture has no workroom targets and so an empty chip
-  /// run. The button checks run BEFORE the File menu opens, so an open menu cannot hide or satisfy
-  /// them.
-  func testNoProjectsDisablesNewWorkroomAndTitleBarButtonsStillRender() throws {
+  /// Also: the title-bar Open / New Workroom buttons are hidden with no projects, as neither picker
+  /// has anything to offer (with a project they render even with no tabs, the mouse route to a first
+  /// workroom). The empty state's Add Project button is the control: it proves the window drew its
+  /// no-projects chrome, so the buttons' absence can't pass on a window that never rendered. The
+  /// checks run BEFORE the File menu opens, so an open menu cannot hide or satisfy them.
+  func testNoProjectsDisablesNewWorkroomAndHidesTitleBarButtons() throws {
     let app = launchedApp(extraArgs: ["-WorkroomUITestNoProjects", "1"])
     XCTAssertTrue(
       app.windows.firstMatch.waitForExistence(timeout: 15),
@@ -64,11 +64,10 @@ final class NewWorkroomDialogUITests: XCTestCase {
 
     // Title-bar buttons, menu still closed.
     XCTAssertTrue(
-      el(app, "OpenWorkroom").waitForExistence(timeout: 6),
-      "the Open Workroom button should render with an empty tab bar")
-    XCTAssertTrue(
-      el(app, "NewWorkroom").exists,
-      "…and so should the New Workroom button")
+      el(app, "EmptyStateAddProject").waitForExistence(timeout: 10),
+      "the no-projects empty state should render")
+    XCTAssertFalse(el(app, "OpenWorkroom").exists, "no Open Workroom button with no projects")
+    XCTAssertFalse(el(app, "NewWorkroom").exists, "…and no New Workroom button")
 
     // The menu item, present but disabled.
     let file = app.menuBars.menuBarItems["File"]
