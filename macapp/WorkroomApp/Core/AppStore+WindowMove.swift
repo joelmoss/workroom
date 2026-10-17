@@ -150,9 +150,23 @@ extension AppStore {
   func incomingWorkroomSlot(at screenPoint: CGPoint) -> Int? {
     guard let run = workroomTabRun, let window = run.window else { return nil }
     let row = window.convertToScreen(run.convert(run.bounds, to: nil))
+    let shown = displayedWorkroomTargets()
+    let groupOf = workroomSplitGroupIndices()
     return Self.workroomTabSlot(
       at: CGPoint(x: screenPoint.x - row.minX, y: row.maxY - screenPoint.y),
-      frames: displayedWorkroomTargets().compactMap { workroomTabFrames[$0.sid] })
+      frames: shown.compactMap { workroomTabFrames[$0.sid] }
+    ).map { Self.workroomTabSlot($0, outside: shown.map { groupOf[$0.sid] }) }
+  }
+
+  /// A slot inside a split group's run of tabs is not one a tab can land in, since the group keeps
+  /// its tabs together, so it moves to the group's nearer edge. `groups` is each tab's group, in
+  /// order (nil for a tab in none).
+  nonisolated static func workroomTabSlot(_ slot: Int, outside groups: [Int?]) -> Int {
+    guard slot > 0, slot < groups.count, let group = groups[slot - 1], groups[slot] == group
+    else { return slot }
+    let start = groups[..<slot].lastIndex { $0 != group }.map { $0 + 1 } ?? 0
+    let end = groups[slot...].firstIndex { $0 != group } ?? groups.count
+    return slot - start <= end - slot ? start : end
   }
 
   /// The pure half of `incomingWorkroomSlot`: `point` and `frames` (the tabs in order) share the

@@ -196,6 +196,8 @@ final class RunCommandController {
   func adopt(_ handOff: HandOff, for targetID: TerminalTarget.ID) {
     for tab in handOff.investigateTabs { investigateTabs[tab] = targetID }
     guard let state = handOff.state else { return }
+    // This window's own toast state was its replaced run's: the moved run's starts from its own.
+    resetRunToast(for: targetID)
     runStates[targetID] = state
     runOutcomes[targetID] = handOff.outcome
     runPidFiles[targetID] = handOff.pidFile
