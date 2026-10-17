@@ -619,6 +619,20 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNil(AppStore.workroomTabSlot(at: CGPoint(x: 230, y: 20), frames: []))
   }
 
+  /// Value: protects=the gap a drop shows is where the tab lands, never inside a split group's run
+  /// (which would regroup it to the far side); fails_when=a slot between two grouped tabs is kept;
+  /// why_new=slot maths had no groups; seam=none; no_claim=the gap animation.
+  func testADropSlotInsideASplitGroupMovesToItsNearerEdge() {
+    // Tabs: solo, [group 0, group 0, group 0], solo.
+    let groups: [Int?] = [nil, 0, 0, 0, nil]
+    XCTAssertEqual(AppStore.workroomTabSlot(1, outside: groups), 1, "before the group")
+    XCTAssertEqual(AppStore.workroomTabSlot(2, outside: groups), 1, "nearer its start")
+    XCTAssertEqual(AppStore.workroomTabSlot(3, outside: groups), 4, "nearer its end")
+    XCTAssertEqual(AppStore.workroomTabSlot(4, outside: groups), 4, "after the group")
+    XCTAssertEqual(AppStore.workroomTabSlot(5, outside: groups), 5)
+    XCTAssertEqual(AppStore.workroomTabSlot(1, outside: [0, 0]), 0, "a group at the start")
+  }
+
   /// Value: protects=a drop on another window's tab bar lands in the slot under the cursor;
   /// fails_when=the screen point is mapped into the wrong space (the window's, not the tab row's)
   /// or the y flip is lost; why_new=only the pure slot maths was tested; seam=none; no_claim=a real
