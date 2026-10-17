@@ -164,8 +164,6 @@ struct WorkroomTabBar: View {
                 tab.sid,
                 translation: clampReorder(
                   value.translation.width, draggedID: tab.sid, draggedIndex: index))
-              // Dragged into the detail content → preview a drop-into-pane split (the strip stops
-              // gapping); otherwise it's a plain reorder.
               // Out of the window: into another window, or a new one (#444).
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
@@ -175,6 +173,8 @@ struct WorkroomTabBar: View {
                 return
               }
               WorkroomWindowDrag.cancel()
+              // Dragged into the detail content → preview a drop-into-pane split (the strip stops
+              // gapping); otherwise it's a plain reorder.
               chipPaneDrag = localize(value.location).map {
                 WorkroomPaneDrag(sid: tab.sid, location: $0)
               }

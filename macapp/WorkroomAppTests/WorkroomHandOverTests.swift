@@ -234,7 +234,67 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNil(destination.terminals.tab(stopped.id, for: t))
   }
 
+  /// Value: protects=a run toast whose timer was pending when the workroom moved still hides in the
+  /// new window; fails_when=the hand-off cancels the timer and nothing restarts it; why_new=nothing
+  /// checked toast timers across a move; seam=none (the store's existing scheduleRunToastDismiss);
+  /// no_claim=the toast's rendering.
+  func testAPendingRunToastTimerStartsAgainInTheDestination() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    var delays: [TimeInterval] = []
+    destination.scheduleRunToastDismiss = { delay, _ in
+      delays.append(delay)
+      return DispatchWorkItem {}
+    }
+    let t = target(origin)
+    let run = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
+    origin.runStates[t.id] = .running(tab: run.id, interrupted: false)
+    origin.runToastDismissWork[t.id] = DispatchWorkItem {}
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertEqual(delays.count, 1, "the destination starts the running toast's auto-hide")
+    XCTAssertNotNil(destination.runToastDismissWork[t.id])
+  }
+
   // MARK: What else moves
+
+  /// Value: protects=a failed command's coding-agent banner travels with its terminal, and a
+  /// diagnosis cut short by the move comes back as the Diagnose offer; fails_when=the hand-off drops
+  /// the manager's state as a close does; why_new=no test covered agent state across a move;
+  /// seam=none; no_claim=the banner's rendering and a real diagnosis run.
+  func testACodingAgentBannerMovesWithItsTerminal() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    let t = target(origin)
+    let tab = origin.terminals.addTab(for: t)
+    let failure = FailedCommand(
+      command: "make", cwd: "/p/a", exitCode: 2, shell: "zsh", output: "boom", isRunTab: false,
+      isRemote: false)
+    origin.terminals.agentManager.adopt(tab.id, banner: .loading(failure), failure: failure)
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertNil(origin.terminals.agentManager.banners[tab.id])
+    XCTAssertEqual(
+      destination.terminals.agentManager.banners[tab.id], .awaitingDiagnose(failure),
+      "the diagnosis the move cancelled is offered again")
+  }
+
+  /// Value: protects=a remote workroom whose host is still being asked for its layout stays put;
+  /// fails_when=canMoveWorkroom stops consulting hostLayouts.fetching, so the answer restores the
+  /// workroom into the old window beside the moved terminals; why_new=no guard test covered it;
+  /// seam=none; no_claim=a real host's fetch.
+  func testAWorkroomWhoseHostLayoutIsStillBeingFetchedDoesNotMove() {
+    let origin = makeOrigin()
+    let t = target(origin)
+    _ = origin.terminals.addTab(for: t)
+    XCTAssertTrue(origin.canMoveWorkroom(sid))
+
+    origin.hostLayouts.fetching.insert(t.id)
+
+    XCTAssertFalse(origin.canMoveWorkroom(sid))
+  }
 
   func testNotificationsMoveStillUnread() {
     let origin = makeOrigin()

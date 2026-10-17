@@ -168,13 +168,16 @@ final class RunCommandController {
     var lastStatus: String?
     var toastDismissed = false
     var toastAutoHidden = false
+    /// A toast timer was still to fire: the destination starts its own.
+    var toastTimerPending = false
     var investigateTabs: [TerminalTab.ID] = []
   }
 
-  /// Lift `targetID`'s run bookkeeping out of this window. A pending toast dismissal is cancelled:
-  /// it would act on this window's toast, which goes with the workroom.
+  /// Lift `targetID`'s run bookkeeping out of this window. A pending toast timer is cancelled, since
+  /// it would act on this window's toast, and the destination starts its own.
   func takeHandOff(for targetID: TerminalTarget.ID) -> HandOff {
-    runToastDismissWork.removeValue(forKey: targetID)?.cancel()
+    let timer = runToastDismissWork.removeValue(forKey: targetID)
+    timer?.cancel()
     let investigate = investigateTabs.filter { $0.value == targetID }.map(\.key)
     for tab in investigate { investigateTabs[tab] = nil }
     return HandOff(
@@ -185,7 +188,7 @@ final class RunCommandController {
       lastStatus: lastRunStatus.removeValue(forKey: targetID),
       toastDismissed: dismissedRunToasts.remove(targetID) != nil,
       toastAutoHidden: runningToastAutoHidden.remove(targetID) != nil,
-      investigateTabs: investigate)
+      toastTimerPending: timer != nil, investigateTabs: investigate)
   }
 
   /// The other half of `takeHandOff`, in the window the workroom moved to. A hand-off with no run
@@ -200,6 +203,13 @@ final class RunCommandController {
     lastRunStatus[targetID] = handOff.lastStatus
     if handOff.toastDismissed { dismissedRunToasts.insert(targetID) }
     if handOff.toastAutoHidden { runningToastAutoHidden.insert(targetID) }
+    // Afresh rather than for what was left of it: a toast lingers a little longer, never forever.
+    guard handOff.toastTimerPending else { return }
+    if state.isRunning {
+      scheduleRunningToastAutoHide(for: targetID)
+    } else {
+      scheduleRunToastAutoDismiss(for: targetID)
+    }
   }
 
   // MARK: Run toast (issue #67) — DERIVED view-model, dismissal, native banner

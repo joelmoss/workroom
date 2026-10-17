@@ -49,7 +49,9 @@ extension AppStore {
   /// empty window behind. Every route asks this: the drags and every menu item.
   func canMoveWorkroom(_ sid: SidebarID) -> Bool {
     guard let target = target(for: sid) else { return false }
+    // Not while its host is still asked for its layout: that answer restores into this window.
     return terminals.tabCount(forTargetID: target.id) > 0 && !isCreationBlocking(target.id)
+      && !hostLayouts.fetching.contains(target.id)
       && orderedWorkroomTargets().contains { $0.sid != sid }
   }
 
