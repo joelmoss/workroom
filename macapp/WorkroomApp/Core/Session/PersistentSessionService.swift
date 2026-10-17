@@ -144,7 +144,19 @@ final class PersistentSessionService {
   private let hostUpdates: (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
 
   private init() {
-    self.probe = { SessionBackendProbe.probe($0) }
+    let probeLogger = Logger(
+      subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
+    self.probe = { backend in
+      let availability = SessionBackendProbe.probe(backend)
+      // A failed probe leaves every new pane a plain shell until a re-probe succeeds, and nothing
+      // else records why.
+      if !availability.isReady {
+        probeLogger.error(
+          "\(backend.binaryName, privacy: .public) probe failed: \(String(describing: availability), privacy: .public)"
+        )
+      }
+      return availability
+    }
     self.ownershipOverride = nil
     self.now = { ProcessInfo.processInfo.systemUptime }
     self.endRemote = { session, host in

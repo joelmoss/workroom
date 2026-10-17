@@ -6,6 +6,7 @@ import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire
+import os
 
 /// The terminal split's concrete instantiation (issue #3): leaves are tab ids. Keeps terminal call
 /// sites reading unchanged after the generic refactor (issue #23 needs `PaneLayout<SidebarID>`).
@@ -449,6 +450,9 @@ enum PaneIndicator: Equatable {
 /// ```
 @MainActor
 final class TerminalSessions: ObservableObject {
+  private static let logger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "TerminalSessions")
+
   /// Every tab for a target, by id — the single source of truth for surfaces/titles.
   @Published private var tabsByTarget: [TerminalTarget.ID: [TerminalTab.ID: TerminalTab]] = [:]
   /// The strip order (loose). The displayed order normalises this so EACH group's members are a
@@ -971,7 +975,14 @@ final class TerminalSessions: ObservableObject {
   func restore(
     _ session: TargetSession, for target: TerminalTarget
   ) -> RestoreResult {
-    guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return .nothing }
+    guard (tabsByTarget[target.id] ?? [:]).isEmpty else {
+      // Its saved panes, and the sessions they would reattach to, are dropped here.
+      let saved = session.sessionIDs.map(\.uuidString).sorted().joined(separator: ", ")
+      Self.logger.error(
+        "restore skipped \(target.id, privacy: .public): it already has tabs; saved sessions not reattached: [\(saved, privacy: .public)]"
+      )
+      return .nothing
+    }
 
     var idsByKey: [String: TerminalTab.ID] = [:]
     var order: [TerminalTab.ID] = []
