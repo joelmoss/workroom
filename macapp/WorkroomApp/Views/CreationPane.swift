@@ -2,13 +2,13 @@ import DesignSystem
 import SwiftUI
 
 /// A create's pane (#483): a GitHub Actions-style checklist of the steps its kind runs, each with its
-/// time and its log one click away, and on failure a footer with what to do next. Shown bare, with no
-/// title bar, tab bar or footer, from the click until the run ends (`TargetTerminalDetail`). What it
-/// says is `CreationPanePresentation`'s.
+/// time and its log one click away, and a footer with what to do next on failure, or Done on
+/// success. Shown bare, with no title bar, tab bar or footer, from the click until the run ends
+/// (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
 ///
 /// Layout (design D4): one continuous `panel` surface, a leading column at most 640pt wide holding the
-/// header and the rows. With a row's log open, the log fills what is left and the rows below it sit
-/// on the pane's bottom edge (D9); only below a 3-line log does the whole column scroll.
+/// header and the rows. A row's open log is as tall as its lines, up to what the pane has left, with
+/// the rows below straight after it (D9); only below a 3-line log does the whole column scroll.
 struct CreationPane: View {
   @ObservedObject var run: CreationRun
   @EnvironmentObject private var store: AppStore
@@ -27,7 +27,7 @@ struct CreationPane: View {
   private static let columnWidth: CGFloat = 640
   /// Three log lines and the log's padding: the open log shrinks no further before the column
   /// scrolls.
-  private static let minimumLogHeight: CGFloat = 3 * 16 + 2 * CreationLogView.padding
+  private static let minimumLogHeight: CGFloat = 3 * 13 + 2 * CreationLogView.padding
   /// The space above and below an open log.
   private static let logPadding: CGFloat = 4
 
@@ -58,9 +58,10 @@ struct CreationPane: View {
     GeometryReader { geo in
       // A ScrollView offers its content unlimited height, so the column's height is worked out here
       // (D9): the pane's, with the log taking what the header and rows leave.
-      let layout = P.openLogLayout(
+      let logHeight = P.openLogHeight(
         pane: geo.size.height - 2 * inset,
-        fixed: headerHeight + rowHeights.values.reduce(0, +) + Self.logPadding * 2,
+        fixed: headerHeight + run.steps.compactMap { rowHeights[$0.id] }.reduce(0, +)
+          + Self.logPadding * 2,
         logContent: logContentHeight, minimum: Self.minimumLogHeight)
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
@@ -80,11 +81,9 @@ struct CreationPane: View {
             if expanded == step.id {
               CreationLogView(lines: P.log(of: step), onContentHeight: { logContentHeight = $0 })
                 .id(step.id)
-                .frame(height: layout.log)
+                .frame(height: logHeight)
                 .padding(.leading, CreationStepRow.titleInset)
                 .padding(.vertical, Self.logPadding)
-              // What a short log leaves, which puts the rows below on the pane's bottom edge.
-              Spacer(minLength: 0)
             }
           }
         }
@@ -94,7 +93,6 @@ struct CreationPane: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CreationPane")
         .frame(maxWidth: Self.columnWidth, alignment: .leading)
-        .frame(height: expanded == nil ? nil : layout.column, alignment: .top)
         .padding(inset)
         .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .topLeading)
       }
