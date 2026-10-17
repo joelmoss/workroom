@@ -156,14 +156,15 @@ workroom/
 │   ├── add_project.go       # Hidden; --json only; used by the app to register a project (Service.AddProject)
 │   ├── delete_project.go    # Hidden; --json only; used by the app to drop a project (Service.DeleteProject)
 │   ├── claim.go             # Hidden; `claim-provisioned`; used by a Dev build of the app to move its remote entries into its own config
+│   ├── include_archive.go   # Hidden; `include-archive --output`; used by the app to tar a root's included files (.worktreeinclude) for a remote workroom
 │   ├── json.go              # --json success/error envelope writers
 │   ├── jsonlog.go           # NDJSON streaming of setup/teardown output (stderr)
 │   └── helpers.go           # cwd / --project resolution
 ├── internal/
 │   ├── config/              # JSON config CRUD (atomic writes + advisory lock)
 │   ├── namegen/             # Adjective-noun name generation (120 × 210)
-│   ├── vcs/                 # VCS interface + Git impl + CommandExecutor (testable)
-│   ├── workroom/            # Core orchestration, prints nothing: Service.{CreateNamed,Delete,InteractiveDelete,Listing,ListData,AddProject,DeleteProject}
+│   ├── vcs/                 # VCS interface + Git impl + CommandExecutor (testable); Included lists a root's .worktreeinclude matches
+│   ├── workroom/            # Core orchestration, prints nothing: Service.{CreateNamed,Delete,InteractiveDelete,Listing,ListData,AddProject,DeleteProject}; IncludedFiles, CopyIncluded, ArchiveIncluded
 │   ├── script/              # Setup/teardown script runner (env vars + live streaming)
 │   ├── ui/                  # Colored output, tables, log panels, interactive prompts (huh)
 │   ├── updater/             # `workroom update`: GitHub release check + binary swap
