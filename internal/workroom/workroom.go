@@ -175,9 +175,10 @@ type CreateResult struct {
 	Warning     string `json:"warning,omitempty"`
 	SetupOutput string `json:"-"`
 	HasSetup    bool   `json:"-"`
-	// IncludeWarning is the include step's warning (#367), for the human create; --json callers
-	// read it from the step event.
-	IncludeWarning string `json:"-"`
+	// IncludeWarning and IncludeSkipped are the include step's warning and the symlinks it skipped
+	// (#367), for the human create; --json callers read them from the step's events.
+	IncludeWarning string   `json:"-"`
+	IncludeSkipped []string `json:"-"`
 }
 
 // CreateNamed generates a unique name, creates the VCS workspace, updates config,
@@ -281,7 +282,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 
 	// The root's included files, before the setup script so it can rely on them (#367).
 	if !s.Pretend {
-		res.IncludeWarning = s.copyIncluded(dir, wrPath)
+		res.IncludeWarning, res.IncludeSkipped = s.copyIncluded(dir, wrPath)
 	}
 
 	// Run setup script. The human terminal passes a log panel via setupOut; --json
@@ -311,18 +312,19 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 // copyIncluded is the create's include step: it copies the root's included files into the new
 // workroom at wrPath, logging each one. Nothing that goes wrong here fails the create: the step
 // ends as a warning and the create carries on, since a missing file is easy to copy by hand. A
-// root with no include file has no step. It returns the step's warning, or "".
-func (s *Service) copyIncluded(root, wrPath string) string {
+// root with no include file has no step. It returns the step's warning, or "", and the symlinks it
+// skipped.
+func (s *Service) copyIncluded(root, wrPath string) (string, []string) {
 	// Announced before the listing, which takes a second or so in a root with a large ignored tree.
 	if _, err := os.Stat(filepath.Join(root, IncludeFile)); err != nil {
-		return ""
+		return "", nil
 	}
 	s.step("include", "running", "")
-	warn := func(text string) string {
-		s.step("include", "warning", text)
-		return text
-	}
 	inc, _, err := IncludedFiles(root)
+	warn := func(text string) (string, []string) {
+		s.step("include", "warning", text)
+		return text, inc.Symlinks
+	}
 	if err != nil {
 		return warn(fmt.Sprintf("Could not list the included files: %v", err))
 	}
@@ -338,7 +340,7 @@ func (s *Service) copyIncluded(root, wrPath string) string {
 			reason = "Only symlinks matched: " + strings.Join(inc.Symlinks, ", ")
 		}
 		s.step("include", "skipped", reason)
-		return ""
+		return "", inc.Symlinks
 	}
 	res := CopyIncluded(root, wrPath, inc.Files)
 	if s.ScriptLogWriter != nil {
@@ -352,7 +354,7 @@ func (s *Service) copyIncluded(root, wrPath string) string {
 		return warn(fmt.Sprintf("Could not copy %s: %s", countFiles(len(res.Failures)), strings.Join(res.Failures, "; ")))
 	}
 	s.step("include", "done", "")
-	return ""
+	return "", inc.Symlinks
 }
 
 func countFiles(n int) string {
