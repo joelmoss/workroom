@@ -112,36 +112,6 @@ func TestAllProjectsHandlesMalformedWorkroomsValue(t *testing.T) {
 	}
 }
 
-func TestRemoveWorkroomKeepProject(t *testing.T) {
-	c := newTestConfig(t)
-	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "git"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.RemoveWorkroomKeepProject("/proj", "foo"); err != nil {
-		t.Fatal(err)
-	}
-	data, _ := c.Read()
-	proj, ok := data["/proj"].(map[string]any)
-	if !ok {
-		t.Fatal("RemoveWorkroomKeepProject removed the project; expected it kept")
-	}
-	if wr := proj["workrooms"].(map[string]any); len(wr) != 0 {
-		t.Fatalf("expected 0 workrooms, got %d", len(wr))
-	}
-
-	// Contrast: plain RemoveWorkroom deletes the now-empty project.
-	if err := c.AddWorkroom("/p2", "bar", "/wr/bar", "git"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.RemoveWorkroom("/p2", "bar"); err != nil {
-		t.Fatal(err)
-	}
-	data, _ = c.Read()
-	if _, ok := data["/p2"]; ok {
-		t.Fatal("RemoveWorkroom should delete an emptied project")
-	}
-}
-
 func TestRemoveProjectRemovesEntryAndKeepsSiblings(t *testing.T) {
 	c := newTestConfig(t)
 	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "git"); err != nil {

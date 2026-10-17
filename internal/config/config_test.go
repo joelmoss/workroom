@@ -117,7 +117,9 @@ func TestAddMultipleWorkrooms(t *testing.T) {
 	}
 }
 
-func TestRemoveWorkroomCleansUpEmptyParent(t *testing.T) {
+// The config is shared with the app, whose sidebar keeps a project with no workrooms; the CLI
+// cannot tell one the app pinned from one only it used, so deleting the last workroom keeps both.
+func TestRemoveWorkroomKeepsTheEmptiedProject(t *testing.T) {
 	c := newTestConfig(t)
 
 	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
@@ -132,8 +134,12 @@ func TestRemoveWorkroomCleansUpEmptyParent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok := data["/project"]; ok {
-		t.Fatal("expected /project to be removed")
+	project, ok := data["/project"].(map[string]any)
+	if !ok {
+		t.Fatal("expected /project to be kept")
+	}
+	if wr := project["workrooms"].(map[string]any); len(wr) != 0 {
+		t.Fatalf("expected 0 workrooms, got %d", len(wr))
 	}
 }
 
@@ -383,8 +389,6 @@ func TestHostDescriptorsRoundTripThroughEveryWriter(t *testing.T) {
 		{"AddWorkroom", func() error { return c.AddWorkroom("/p", "local", "/wr/local", "git") }},
 		{"AddProject", func() error { return c.AddProject("/p", "git") }},
 		{"SetProjectVCS", func() error { return c.SetProjectVCS("/p", "git") }},
-		{"RemoveWorkroomKeepProject", func() error { return c.RemoveWorkroomKeepProject("/p", "local") }},
-		{"AddWorkroom again", func() error { return c.AddWorkroom("/p", "local", "/wr/local", "git") }},
 		{"RemoveWorkroom", func() error { return c.RemoveWorkroom("/p", "local") }},
 		{"RemoveProject of another", func() error { return c.RemoveProject("/other") }},
 		{"SetWorkroomsDir", func() error { return c.SetWorkroomsDir("~/elsewhere") }},
@@ -405,28 +409,6 @@ func TestHostDescriptorsRoundTripThroughEveryWriter(t *testing.T) {
 		if got := p.Workrooms["remote"]; !reflect.DeepEqual(got.Host, workroomHost) || got.Path != "/home/wr/remote" {
 			t.Fatalf("%s: remote workroom = %+v, want host %v", w.name, got, workroomHost)
 		}
-	}
-}
-
-// A project that carries a host descriptor outlives its last workroom: the descriptor is the
-// record of a remote machine. One without keeps the old cleanup.
-func TestRemoveWorkroomKeepsProjectWithHost(t *testing.T) {
-	c := newTestConfig(t)
-	c.AddWorkroom("/p", "a", "/wr/a", "git")
-	c.AddWorkroom("/q", "b", "/wr/b", "git")
-	data, _ := c.Read()
-	data["/p"].(map[string]any)["host"] = map[string]any{"provider": "boxd"}
-	c.Write(data)
-
-	c.RemoveWorkroom("/p", "a")
-	c.RemoveWorkroom("/q", "b")
-
-	data, _ = c.Read()
-	if _, ok := data["/p"]; !ok {
-		t.Fatal("a project with a host descriptor was dropped with its last workroom")
-	}
-	if _, ok := data["/q"]; ok {
-		t.Fatal("a project without one should still be dropped with its last workroom")
 	}
 }
 
@@ -618,8 +600,7 @@ func TestGlobalBaseBranchIsAReservedScalar(t *testing.T) {
 	}
 }
 
-// Deleting a project's last workroom from the CLI drops the empty project, but not one that holds
-// a base branch: that setting would be lost silently.
+// Deleting a project's last workroom keeps its base branch with it.
 func TestRemoveLastWorkroomKeepsAProjectWithABaseBranch(t *testing.T) {
 	c := newTestConfig(t)
 	if err := c.AddWorkroom("/project", "foo", "/w/foo", "git"); err != nil {

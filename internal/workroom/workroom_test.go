@@ -660,7 +660,7 @@ func TestDeleteForgetsAWorkroomThatIsNotAGitWorktree(t *testing.T) {
 	}
 }
 
-// With KeepEmptyProject (the app's mode), forgetting a non-git workroom keeps the project.
+// Forgetting a project's last workroom, a non-git one, keeps the project.
 func TestDeleteForgetsANonGitWorkroomButKeepsAnEmptyProject(t *testing.T) {
 	dir := t.TempDir()
 	vcstest.MakeGitDir(t, dir)
@@ -671,7 +671,6 @@ func TestDeleteForgetsANonGitWorkroomButKeepsAnEmptyProject(t *testing.T) {
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(filepath.Join(dir, "workrooms"))
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
-	svc.KeepEmptyProject = true
 
 	if _, err := svc.Delete(dir, "foo", "foo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -759,9 +758,13 @@ func TestDeleteUpdatesConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, _ := svc.Config.Read()
-	if _, ok := data[dir]; ok {
-		t.Fatal("expected project to be removed from config")
+	projects, _ := svc.Config.AllProjects()
+	project, ok := projects[dir]
+	if !ok {
+		t.Fatal("expected the now-empty project to be kept in config")
+	}
+	if _, ok := project.Workrooms["foo"]; ok {
+		t.Fatal("expected the workroom entry to be removed")
 	}
 }
 

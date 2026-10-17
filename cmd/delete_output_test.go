@@ -138,8 +138,7 @@ func TestDeleteOutput(t *testing.T) {
 
 				var prompts strings.Builder
 				svc := &workroom.Service{
-					Config:           cfg,
-					KeepEmptyProject: true,
+					Config: cfg,
 					PromptFn: func(message string, options []string) ([]string, error) {
 						sorted := slices.Sorted(slices.Values(options)) // the prompt's order is the config's
 						prompts.WriteString(message + " " + strings.Join(sorted, ",") + "\n")

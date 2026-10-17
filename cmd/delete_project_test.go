@@ -42,8 +42,7 @@ func (f *fakeVCS) Delete(_, vcsName, _ string) (string, error) {
 }
 
 // newTestSvc builds a Service backed by a throwaway temp config and the given VCS
-// double — never the real ~/.config/workroom/config.json. KeepEmptyProject mirrors
-// --json mode so the cascade keeps the (now-empty) project until RemoveProject runs.
+// double — never the real ~/.config/workroom/config.json.
 func newTestSvc(t *testing.T, v vcs.VCS) (*workroom.Service, *config.Config) {
 	t.Helper()
 	dir := t.TempDir()
@@ -52,9 +51,8 @@ func newTestSvc(t *testing.T, v vcs.VCS) (*workroom.Service, *config.Config) {
 		t.Fatal(err)
 	}
 	return &workroom.Service{
-		Config:           cfg,
-		VCS:              v,
-		KeepEmptyProject: true,
+		Config: cfg,
+		VCS:    v,
 	}, cfg
 }
 
