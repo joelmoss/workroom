@@ -188,15 +188,35 @@ final class CreationPanePresentationTests: XCTestCase {
       P.footer(for: .remoteFailed(message: "x", leftBehind: true))?.escapeAction, .close)
   }
 
+  // MARK: Logs
+
+  /// Value: protects=only a started step with output opens, and its log starts at its first line
+  /// with something on it (owner); fails_when=a pending, skipped or silent row opens, or an open log
+  /// starts with blank lines; no_claim=the chevron's drawing
+  func testOnlyAStartedStepWithOutputOpensFromItsFirstLine() {
+    func step(_ state: CreationStep.State, _ log: [String]) -> CreationStep {
+      CreationStep(id: "s", title: "S", state: state, log: log)
+    }
+    XCTAssertFalse(P.isExpandable(step(.pending, ["queued"])))
+    XCTAssertFalse(P.isExpandable(step(.skipped(reason: nil), ["x"])))
+    XCTAssertFalse(P.isExpandable(step(.running, [])))
+    XCTAssertFalse(P.isExpandable(step(.done, ["", "  "])), "blank lines are no output")
+    XCTAssertTrue(P.isExpandable(step(.running, ["$ git fetch"])))
+    XCTAssertTrue(P.isExpandable(step(.failed, ["fatal: x"])))
+    XCTAssertEqual(Array(P.log(of: step(.done, ["", " ", "a", "", "b"]))), ["a", "", "b"])
+  }
+
   // MARK: Keyboard
 
   /// Value: protects=D16 and D9, Up/Down move between rows without wrapping, Space toggles, Right
-  /// expands (collapsing any other), Left collapses; fails_when=focus wraps, two rows end expanded,
-  /// or Left collapses another row; no_claim=the focus ring
+  /// expands (collapsing any other), Left collapses, and a skipped row opens nothing;
+  /// fails_when=focus wraps, two rows end expanded, Left collapses another row, or a skipped row
+  /// opens; no_claim=the focus ring
   func testKeysMoveFocusAndExpandOneRowAtATime() {
     let rows = ["fetch", "worktree", "script"]
     func key(_ key: P.Key, _ focused: String, _ expanded: String?) -> P.KeyResult {
-      P.handle(key, focused: focused, expanded: expanded, rows: rows)
+      P.handle(
+        key, focused: focused, expanded: expanded, rows: rows, expandable: ["worktree", "script"])
     }
     XCTAssertEqual(key(.down, "fetch", nil), .init(focused: "worktree", expanded: nil))
     XCTAssertEqual(key(.down, "script", nil), .init(focused: "script", expanded: nil))
@@ -209,6 +229,9 @@ final class CreationPanePresentationTests: XCTestCase {
     XCTAssertEqual(key(.right, "script", "script"), .init(focused: "script", expanded: "script"))
     XCTAssertEqual(key(.left, "script", "script"), .init(focused: "script", expanded: nil))
     XCTAssertEqual(key(.left, "script", "fetch"), .init(focused: "script", expanded: "fetch"))
+    // "fetch" is skipped: Space and Right leave whatever is open.
+    XCTAssertEqual(key(.space, "fetch", nil), .init(focused: "fetch", expanded: nil))
+    XCTAssertEqual(key(.right, "fetch", "script"), .init(focused: "fetch", expanded: "script"))
   }
 
   // MARK: Sidebar
