@@ -62,9 +62,8 @@ func Execute() int {
 }
 
 // newService builds a Service for the current invocation. In --json mode it is
-// fully non-interactive: empty projects are pinned, and the interactive
-// prompt/confirm hooks error rather than block. Otherwise --verbose prints each
-// progress step.
+// fully non-interactive: the interactive prompt/confirm hooks error rather than
+// block. Otherwise --verbose prints each progress step.
 func newService() (*workroom.Service, error) {
 	cfg, err := config.New("")
 	if err != nil {
