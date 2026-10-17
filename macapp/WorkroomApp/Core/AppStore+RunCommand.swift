@@ -338,9 +338,8 @@ extension AppStore {
     }
     // Never launch the project command against a worktree that is still being built (issue #167),
     // and never over a create's own dialog (issue #171). Auto-run already waits — it fires from
-    // `ensureInitialTerminal` once the pane mounts, which withholding defers — and a build or dev
-    // server started against half-installed dependencies is the exact failure issue #7's disarm
-    // exists to prevent. Guarded HERE because it's the one place the pane header, the sidebar rows
+    // `ensureInitialTerminal` once the create succeeds (#483) — and a build or dev server started
+    // against half-installed dependencies is the exact failure issue #7's disarm exists to prevent. Guarded HERE because it's the one place the pane header, the sidebar rows
     // and the ⌘R menu item all route through; each of those hides or disables itself on `isRunBlocked`
     // too, so the button and the action agree, but this guard is what makes that safe to rely on.
     guard !isRunBlocked(target.id) else { return }

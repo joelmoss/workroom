@@ -163,24 +163,50 @@ final class CreationFlowTests: XCTestCase {
   /// lost; no_claim=the shell itself (no PTY is spawned)
   func testASuccessfulCreateMountsItsTerminalWithItsAutoRun() async throws {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: true)
+    fake.release("wr")
     let store = makeStore(fake)
     let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
+    defer { store.setRunConfig(.empty, forProject: projectPath) }
 
-    let task = Task { await store.createWorkroom(in: emptyProject) }
-    await waitUntil({ store.creationRunForTarget[id] != nil }, "the create never landed")
-    store.armAutoRun(forWorkroom: id)  // as the landing does when the project has auto-run on
-    fake.release("wr")
-    await task.value
+    await store.createWorkroom(in: emptyProject)
 
     XCTAssertFalse(store.isCreationBlocking(id), "nothing withholds the terminal")
-    guard case .armed = store.runStates[id] else {
-      return XCTFail("the auto-run must still be armed for the mount")
+    guard case .running = store.runStates[id] else {
+      return XCTFail("the armed auto-run must have started")
     }
-    let target = try XCTUnwrap(store.target(for: .workroom(project: projectPath, name: "wr")))
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
-    store.ensureInitialTerminal(for: target)
-    store.setRunConfig(.empty, forProject: projectPath)
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the run, then the shell")
+    let target = try XCTUnwrap(store.target(for: .workroom(project: projectPath, name: "wr")))
+    store.ensureInitialTerminal(for: target)
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the mount opens nothing more")
+  }
+
+  /// Value: protects=an armed auto-run starts when the create succeeds, while its checklist still
+  /// waits for Done, backgrounded beside the shell Done lands on (owner); fails_when=the run waits
+  /// for Done, or Done opens a second run or no shell; no_claim=the run's process (no PTY is spawned)
+  func testAnArmedAutoRunStartsBeforeDone() async throws {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: true)
+    fake.release("wr")
+    let store = makeStore(fake)
+    store.closesFinishedCreations = { false }
+    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
+    defer { store.setRunConfig(.empty, forProject: projectPath) }
+
+    await store.createWorkroom(in: emptyProject)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first, "the checklist waits for Done")
+    XCTAssertTrue(store.isCreationBlocking(id), "the checklist still covers the pane")
+    XCTAssertFalse(store.isRunBlocked(id), "a made workroom can run")
+    guard case .running = store.runStates[id] else {
+      return XCTFail("the armed auto-run must start without waiting for Done")
+    }
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the run, then the shell")
+
+    store.finishCreation(run)
+    let target = try XCTUnwrap(store.target(for: .workroom(project: projectPath, name: "wr")))
+    store.ensureInitialTerminal(for: target)  // as the pane mounting after Done does
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "Done adds no second run or shell")
   }
 
   /// A local create whose worktree fails the first time and succeeds the second.

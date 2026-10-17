@@ -235,7 +235,8 @@ the CLI's NDJSON `step` and `log` events for a local create and by
 `ProvisioningProgress.$reportStep` and `$log` for the others; what it says lives in
 `CreationPanePresentation`, which is unit-tested. On success the checklist stays with Done until
 it is clicked, or with `closeCreationPaneWhenDone` on, for `creationSuccessHold` (3 s); then the
-run is dropped and the terminal mounts; on failure the run stays for its footer (Try Again, Close, Open Anyway or Delete Workroom). `creatingWorkrooms`, the
+run is dropped and the terminal mounts. An armed auto-run starts at success, not then: backgrounded
+beside the shell the terminal opens on. On failure the run stays for its footer (Try Again, Close, Open Anyway or Delete Workroom). `creatingWorkrooms`, the
 delete guard, is released when the create's process ends, not when the run goes. Creates in one
 project may overlap; only a project being deleted blocks one. A provider's setup sheet holds the run
 on its `account` step and Create Workroom carries the same run on (`RemoteSetupWait`). VoiceOver
