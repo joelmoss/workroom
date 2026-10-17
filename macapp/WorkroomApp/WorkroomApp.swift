@@ -532,7 +532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // ⌃⌘S: toggle the Projects sidebar (issue #128). Caught here — not just left to the menu's
       // key-equivalent — so it fires reliably even with a focused TUI (like ⌘1-9 above).
       if flags == [.command, .control], event.charactersIgnoringModifiers?.lowercased() == "s" {
-        Task { @MainActor in Self.shortcutStore(for: window)?.sidebarVisible.toggle() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.toggleSidebar() }
         return nil
       }
       // ⌥⌘S: the OS-standard "Toggle Sidebar" shortcut (Finder, Notes, etc. — AppKit's
@@ -546,13 +546,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // expect ⌥⌘S to mean "toggle the sidebar" regardless of which one, map it onto our real
       // `sidebarVisible` toggle rather than just swallowing it.
       if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "s" {
-        Task { @MainActor in Self.shortcutStore(for: window)?.sidebarVisible.toggle() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.toggleSidebar() }
         return nil
       }
       // ⌥⌘B: secondary "Projects" sidebar toggle, mirroring ⌃⌘S above — caught here (not just left
       // to a menu key-equivalent) so it fires reliably with a focused TUI too (issue #128).
       if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "b" {
-        Task { @MainActor in Self.shortcutStore(for: window)?.sidebarVisible.toggle() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.toggleSidebar() }
         return nil
       }
       return event
@@ -1108,6 +1108,10 @@ struct WorkroomCommands: Commands {
   /// through a dialog — verified: ⌘T behind the Add Project sheet really did open a terminal tab.
   private var modalBlocked: Bool { modalPresented == true }
 
+  /// No projects: the sidebar and inspector have nothing to show, so their View-menu toggles (and
+  /// their key equivalents, which a disabled item drops) are off.
+  private var noProjects: Bool { hasProjects != true }
+
   /// Whether a workroom-scoped command must be disabled because a DETACHED pane's window is key
   /// (issue #172).
   ///
@@ -1295,7 +1299,7 @@ struct WorkroomCommands: Commands {
     CommandGroup(replacing: .sidebar) {
       Toggle("Projects", isOn: storeFlag(\.sidebarVisible))
         .keyboardShortcut("s", modifiers: [.command, .control])
-        .disabled(modalBlocked)
+        .disabled(modalBlocked || noProjects)
     }
 
     CommandGroup(after: .sidebar) {
@@ -1304,7 +1308,7 @@ struct WorkroomCommands: Commands {
       // AND open the inspector; this one just shows/hides whatever section was last active.
       Toggle("Inspector", isOn: $showInspector)
         .keyboardShortcut("b", modifiers: [.command])
-        .disabled(modalBlocked)
+        .disabled(modalBlocked || noProjects)
 
       // View menu: reveal the Changes view. Changes, History and Pull Request share the **Changes**
       // activity-bar pane (a stack), so "showing" Changes means selecting that pane, opening the
@@ -1330,7 +1334,7 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("c", modifiers: [.command, .option])
-      .disabled(modalBlocked)
+      .disabled(modalBlocked || noProjects)
 
       // View menu: reveal the History view (the commit log) — the middle sub-section of the Changes
       // pane, so it collapses in place like its siblings. (⌥⌘Y — ⌥⌘H is macOS "Hide Others".)
@@ -1353,7 +1357,7 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("y", modifiers: [.command, .option])
-      .disabled(modalBlocked)
+      .disabled(modalBlocked || noProjects)
 
       // View menu: reveal the Pull Request view — the last sub-section of the Changes pane, so it
       // selects that pane, opens the inspector, and expands the Pull Request sub-section.
@@ -1376,7 +1380,7 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("p", modifiers: [.command, .option])
-      .disabled(modalBlocked)
+      .disabled(modalBlocked || noProjects)
 
       // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
       // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
@@ -1394,7 +1398,7 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("f", modifiers: [.command, .option])
-      .disabled(modalBlocked)
+      .disabled(modalBlocked || noProjects)
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
       // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.
