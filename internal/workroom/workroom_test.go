@@ -1258,6 +1258,10 @@ func TestDeleteDropsADestroyedRemoteWorkroomAndRunsNothing(t *testing.T) {
 			if names, _ := svc.Config.WorkroomNames(dir); slices.Contains(names, "foo") {
 				t.Fatal("the destroyed workroom's entry survived")
 			}
+			// Value: protects=forgetting a project's last (destroyed remote) workroom keeps the project; fails_when=forgetDestroyedRemote drops the emptied project again; why_new=only the entry's removal was asserted; seam=none; no_claim=none beyond protects
+			if projects, _ := svc.Config.AllProjects(); len(projects) != 1 {
+				t.Fatal("the project was dropped with its last workroom")
+			}
 			if _, err := os.Stat(marker); err == nil {
 				t.Fatal("the teardown script ran for a remote workroom")
 			}
