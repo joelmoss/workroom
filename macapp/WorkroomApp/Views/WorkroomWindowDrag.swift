@@ -27,9 +27,11 @@ enum WorkroomWindowDrag {
         on: destination)
     } else {
       show(nil, on: nil)
+      // The window to come at the size it opens at: the standard size, framed as this window is.
+      let content = NSRect(origin: .zero, size: AppStore.newWindowContentSize)
       DetachedPaneDragPreview.shared.show(
         title: target.title, glyph: target.workroomGlyph, at: screen,
-        size: store.hostWindow?.frame.size)
+        size: store.hostWindow.map { $0.frameRect(forContentRect: content).size } ?? content.size)
     }
   }
 

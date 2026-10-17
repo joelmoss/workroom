@@ -23,8 +23,6 @@ final class WorkroomHandOffs {
     let sid: SidebarID
     /// The new window's top-left, on screen: where the workroom was dropped. Nil from a menu.
     let topLeft: CGPoint?
-    /// The size of the window it leaves.
-    let size: CGSize?
   }
 
   private var pending: [UUID: Request] = [:]
@@ -35,10 +33,8 @@ final class WorkroomHandOffs {
     return id
   }
 
-  /// Where and how big the new window should open, without consuming the request.
-  func placement(for id: UUID) -> (topLeft: CGPoint?, size: CGSize?)? {
-    pending[id].map { ($0.topLeft, $0.size) }
-  }
+  /// The request `id` names, while it still waits for its window.
+  func request(for id: UUID) -> Request? { pending[id] }
 
   /// The new window is up: move the workroom into it.
   func complete(_ id: UUID, into store: AppStore) {
@@ -48,33 +44,32 @@ final class WorkroomHandOffs {
 }
 
 extension AppStore {
-  /// Whether `sid`'s workroom can move to another window: it has terminals here, and no create is
-  /// still setting it up (#444 Q18).
+  /// Whether `sid`'s workroom can move to another window: it has terminals here, no create is still
+  /// setting it up (#444 Q18), and it is not this window's only workroom, which would only leave an
+  /// empty window behind. Every route asks this: the drags and every menu item.
   func canMoveWorkroom(_ sid: SidebarID) -> Bool {
     guard let target = target(for: sid) else { return false }
     return terminals.tabCount(forTargetID: target.id) > 0 && !isCreationBlocking(target.id)
+      && orderedWorkroomTargets().contains { $0.sid != sid }
   }
 
-  /// Whether the menus' "Move to New Window" applies: a window's only workroom would just become the
-  /// same window again (#444 Q26). Dragging that one out still moves the window, as Q11 has it.
-  func canMoveWorkroomToNewWindow(_ sid: SidebarID) -> Bool {
-    canMoveWorkroom(sid) && orderedWorkroomTargets().contains { $0.sid != sid }
-  }
+  /// The size a workroom's new window opens at, whatever window it left: a move is a request for a
+  /// window, not for the old one's dimensions, as a torn-off pane's is (`DetachedPaneWindows`).
+  /// The same size a first window opens at.
+  static let newWindowContentSize = NSSize(width: 1200, height: 780)
 
   /// Move `sid`'s workroom into a new window, its top-left at `topLeft` on screen (the drop point) or
   /// where AppKit places a new window. The window is opened first and takes the workroom when it is
   /// up (`WorkroomHandOffs`).
   func moveWorkroomToNewWindow(_ sid: SidebarID, at topLeft: CGPoint? = nil) {
     guard canMoveWorkroom(sid), let openWindow = WindowRegistry.shared.openWindow else { return }
-    let id = WorkroomHandOffs.shared.request(
-      .init(origin: self, sid: sid, topLeft: topLeft, size: hostWindow?.frame.size))
+    let id = WorkroomHandOffs.shared.request(.init(origin: self, sid: sid, topLeft: topLeft))
     openWindow(WindowSeed(id: UUID(), restore: false, handOff: id))
   }
 
   /// Move `sid`'s workroom from this window into `destination`, at `index` among its workroom tabs (at
   /// the end when nil). Its terminals keep running, unrestarted, with their scrollback; its run
-  /// command, torn-off panes, notifications and host layout go with it (#444). This window closes if
-  /// that was its last workroom (#444 Q11).
+  /// command, torn-off panes, notifications and host layout go with it (#444).
   func moveWorkroom(_ sid: SidebarID, to destination: AppStore, at index: Int? = nil) {
     guard destination !== self, canMoveWorkroom(sid), let target = target(for: sid),
       let handOff = takeWorkroom(sid, target: target)
@@ -82,9 +77,6 @@ extension AppStore {
     handHostLayout(of: target, to: destination)
     destination.adoptWorkroom(handOff, at: index)
     markSessionDirty()
-    guard orderedWorkroomTargets().isEmpty, let window = hostWindow else { return }
-    // Not from inside the drag that started here: the gesture is still unwinding in this window.
-    DispatchQueue.main.async { window.close() }
   }
 
   /// Lift the workroom out of this window. Its run bookkeeping goes first: the `.tabsRemoved` the
@@ -145,20 +137,30 @@ extension AppStore {
   /// Where a workroom dropped at `screenPoint` lands among this window's workroom tabs: the slot under
   /// the cursor over the tab bar, or nil (the end) anywhere else over the window (#444 Q21).
   func incomingWorkroomSlot(at screenPoint: CGPoint) -> Int? {
-    guard let window = hostWindow else { return nil }
-    let point = window.convertPoint(fromScreen: screenPoint)
+    guard let run = workroomTabRun, let window = run.window else { return nil }
+    let row = window.convertToScreen(run.convert(run.bounds, to: nil))
     return Self.workroomTabSlot(
-      at: CGPoint(x: point.x, y: window.frame.height - point.y),
+      at: CGPoint(x: screenPoint.x - row.minX, y: row.maxY - screenPoint.y),
       frames: displayedWorkroomTargets().compactMap { workroomTabFrames[$0.sid] })
   }
 
   /// The pure half of `incomingWorkroomSlot`: `point` and `frames` (the tabs in order) share the
-  /// window's top-left space. Over the tabs' row, the number of tabs left of the cursor; off it, nil.
+  /// tab row's top-left space. Over the row, the number of tabs left of the cursor; off it, nil.
   nonisolated static func workroomTabSlot(at point: CGPoint, frames: [CGRect]) -> Int? {
     guard let top = frames.map(\.minY).min(), let bottom = frames.map(\.maxY).max(),
       (top - 6...bottom + 6).contains(point.y)
     else { return nil }
     return frames.count { $0.midX < point.x }
+  }
+
+  /// Size and place a window opened for a moved workroom: the standard size, its top-left where
+  /// the workroom was dropped. Run as the window is set up and again once it shows, since SwiftUI
+  /// places a new window itself (cascading it off the front one) after the view is in.
+  func placeHandOffWindow(_ window: NSWindow) {
+    window.setContentSize(Self.newWindowContentSize)
+    guard let topLeft = pendingInitialWindowTopLeft else { return window.center() }
+    window.setFrameTopLeftPoint(topLeft)
+    if let safe = Self.frameOnAVisibleScreen(window.frame) { window.setFrame(safe, display: false) }
   }
 
   /// Put `targetID`'s workroom tab at `index` among this window's, or at the end.

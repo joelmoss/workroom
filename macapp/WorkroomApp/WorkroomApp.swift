@@ -189,11 +189,10 @@ struct RootWindow: View {
     // Capture the current window's size ONCE, at this window's creation, so the new window can be
     // sized to match it before it's shown (issue #70). nil for the launch window.
     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
-    // A window opened for a workroom dropped on the desktop opens where it was dropped, at the size
-    // of the window it came from (#444).
-    if let placement = seed.handOff.flatMap(WorkroomHandOffs.shared.placement(for:)) {
-      store.pendingInitialWindowSize = placement.size ?? store.pendingInitialWindowSize
-      store.pendingInitialWindowTopLeft = placement.topLeft
+    // A window opened for a moved workroom opens where it was dropped, at the standard size (#444).
+    if let request = seed.handOff.flatMap(WorkroomHandOffs.shared.request(for:)) {
+      store.opensForHandOff = true
+      store.pendingInitialWindowTopLeft = request.topLeft
     }
     // Only the launch window runs the What's-New auto-check (see RootView). Sibling windows reopened
     // from the saved session also carry `restore: true`, so gating on that would pop the dialog once
@@ -234,6 +233,8 @@ struct RootWindow: View {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else {
           return
         }
+        // Again now it shows: SwiftUI has placed it by now, over where it was set up to go.
+        if store.opensForHandOff, let window = store.hostWindow { store.placeHandOffWindow(window) }
         await store.bootstrap(restore: seed.restore)
         if let handOff = seed.handOff { WorkroomHandOffs.shared.complete(handOff, into: store) }
         // Reopen the windows that were open at the last quit (issue #46). Only the launch window

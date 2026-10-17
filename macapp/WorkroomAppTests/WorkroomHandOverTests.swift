@@ -36,6 +36,14 @@ final class WorkroomHandOverTests: XCTestCase {
     return store
   }
 
+  /// A window with a terminal open in the other workroom, so the one under test is not its only
+  /// workroom, which never moves.
+  private func makeOrigin() -> AppStore {
+    let store = makeStore()
+    _ = store.terminals.addTab(for: target(store, otherSid))
+    return store
+  }
+
   private func target(_ store: AppStore, _ sid: SidebarID? = nil) -> TerminalTarget {
     store.target(for: sid ?? self.sid)!
   }
@@ -45,7 +53,7 @@ final class WorkroomHandOverTests: XCTestCase {
   /// The whole point of a live hand-over: the destination holds the very same tabs and surfaces, in
   /// the same order, split and focus, and the origin holds none of them.
   func testTheSameLiveTabsArriveWithTheirLayout() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     let first = origin.terminals.addTab(for: t)
@@ -75,7 +83,7 @@ final class WorkroomHandOverTests: XCTestCase {
   /// A surface reports to the window that holds it now. Left wired to the origin, a moved
   /// terminal's title (and focus, exits, activity) would go to a window that no longer has it.
   func testAMovedSurfaceReportsToTheDestination() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     let tab = origin.terminals.addTab(for: t)
@@ -87,10 +95,46 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNotNil(tab.surface?.onFocused, "a hand-over never tears the surface down")
   }
 
+  /// Value: protects=a move ends no session, so its programs keep running (Q2); fails_when=the
+  /// hand-off starts ending sessions as a close does; why_new=no test watched the session service
+  /// across a move; seam=none; no_claim=local sessions (a remote pane stands in: its end is the one
+  /// the service reports).
+  func testAMoveEndsNoSessionWhereACloseWould() async throws {
+    var ended: [UUID] = []
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "none here") }, ownership: { _ in .notOwned },
+      endRemote: { session, _ in
+        ended.append(session)
+        return true
+      })
+    let (from, to) = (TerminalSessions(), TerminalSessions())
+    for sessions in [from, to] {
+      sessions.sessionService = service
+      sessions.makeView = { _, cwd, command in
+        GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+      }
+      sessions.recordUnrecognizedTool = { _ in }
+      sessions.recency = SwitcherRecency()
+    }
+    var t = TerminalTarget(id: "remote-\(UUID())", title: "r", path: "/r", isMissing: false)
+    t.remoteHost = UUID()
+    let tab = from.addTab(for: t)
+    let session = try XCTUnwrap(from.sessionID(forTab: tab.id, inTarget: t.id))
+
+    to.adopt(try XCTUnwrap(from.handOff(t)))
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(ended, [], "a move ends no session")
+
+    // The control: closing it does end it, so the check above can see an end.
+    to.closeTab(tab.id, for: t)
+    for _ in 0..<40 where ended.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+    XCTAssertEqual(ended, [session])
+  }
+
   /// Into a window that already shows the workroom, the moved terminals come after its own, and its
   /// own layout stays (Q12).
   func testIntoAWindowShowingTheWorkroomTheTabsJoinItsOwn() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     let moved = origin.terminals.addTab(for: t)
@@ -111,7 +155,7 @@ final class WorkroomHandOverTests: XCTestCase {
 
   /// A live run tab and its bookkeeping move, and its supervisor's exit reaches the new window.
   func testARunningRunCommandMovesAndItsExitReachesTheDestination() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     _ = origin.terminals.addTab(for: t)
@@ -130,7 +174,7 @@ final class WorkroomHandOverTests: XCTestCase {
   /// The supervisor's status file is what drives a run (issue #7), and the origin's poll of it
   /// stops the moment the run leaves. The destination must take it up.
   func testTheDestinationPollsAMovedRunsSupervisor() throws {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     let run = origin.terminals.addRunTab(for: t, command: "sleep 1000", cwd: "/p/a", focus: false)
@@ -161,7 +205,7 @@ final class WorkroomHandOverTests: XCTestCase {
 
   /// Of two run tabs for one workroom, the running one stays and a stopped one closes (Q12).
   func testIntoAWindowWithAStoppedRunTheMovedRunningOneWins() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     let running = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
@@ -176,7 +220,7 @@ final class WorkroomHandOverTests: XCTestCase {
   }
 
   func testAMovedStoppedRunClosesBesideTheDestinationsRunningOne() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     let stopped = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
@@ -193,7 +237,7 @@ final class WorkroomHandOverTests: XCTestCase {
   // MARK: What else moves
 
   func testNotificationsMoveStillUnread() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     let tab = origin.terminals.addTab(for: t)
@@ -207,7 +251,7 @@ final class WorkroomHandOverTests: XCTestCase {
   }
 
   func testAWorkroomInASplitLeavesTheGroupItCameFrom() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     _ = origin.terminals.addTab(for: target(origin))
     _ = origin.terminals.addTab(for: target(origin, otherSid))
@@ -225,7 +269,7 @@ final class WorkroomHandOverTests: XCTestCase {
 
   /// A torn-off pane goes with its workroom and stays torn off, its window now the destination's.
   func testATornOffPaneMovesStillInItsOwnWindow() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
     _ = origin.terminals.addTab(for: t)
@@ -241,38 +285,26 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertTrue(destination.terminals.detachedTabIDs.contains(torn.id))
   }
 
-  /// The window a move empties closes (Q11).
-  func testTheWindowAMoveEmptiesCloses() {
-    let origin = makeStore()
-    let destination = makeStore()
-    let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
-      backing: .buffered, defer: true)
-    window.isReleasedWhenClosed = false
-    origin.hostWindow = window
-    _ = origin.terminals.addTab(for: target(origin))
-    let closed = expectation(forNotification: NSWindow.willCloseNotification, object: window)
-
-    origin.moveWorkroom(sid, to: destination)
-
-    wait(for: [closed], timeout: 2)
-  }
-
   // MARK: When a move applies
 
-  /// The menus' item is off for a window's only workroom: it would just become the same window.
-  func testOnlyAWindowsSecondWorkroomCanMoveToANewWindowFromTheMenu() {
-    let store = makeStore()
-    _ = store.terminals.addTab(for: target(store))
-    XCTAssertTrue(store.canMoveWorkroom(sid))
-    XCTAssertFalse(store.canMoveWorkroomToNewWindow(sid))
+  /// A window's only workroom never moves, by drag or menu: it would leave an empty window behind.
+  /// The second one can, and the first then can too.
+  func testAWindowsOnlyWorkroomDoesNotMove() {
+    let origin = makeStore()
+    let destination = makeStore()
+    let tab = origin.terminals.addTab(for: target(origin))
+    XCTAssertFalse(origin.canMoveWorkroom(sid))
 
-    _ = store.terminals.addTab(for: target(store, otherSid))
-    XCTAssertTrue(store.canMoveWorkroomToNewWindow(sid))
+    origin.moveWorkroom(sid, to: destination)
+    XCTAssertTrue(origin.terminals.containsTab(tab.id), "it stays where it is")
+    XCTAssertFalse(destination.terminals.containsTab(tab.id))
+
+    _ = origin.terminals.addTab(for: target(origin, otherSid))
+    XCTAssertTrue(origin.canMoveWorkroom(sid))
   }
 
   func testAWorkroomWithNoTerminalsHereDoesNotMove() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     XCTAssertFalse(origin.canMoveWorkroom(sid))
 
@@ -284,18 +316,109 @@ final class WorkroomHandOverTests: XCTestCase {
   /// A new window carries only the request's id and pulls the workroom when it is up, so a window
   /// that never appears moves nothing.
   func testAHandOffRequestMovesTheWorkroomOnlyWhenTheWindowCompletesIt() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     let tab = origin.terminals.addTab(for: target(origin))
     let id = WorkroomHandOffs.shared.request(
-      .init(origin: origin, sid: sid, topLeft: CGPoint(x: 10, y: 20), size: nil))
-    XCTAssertEqual(WorkroomHandOffs.shared.placement(for: id)?.topLeft, CGPoint(x: 10, y: 20))
+      .init(origin: origin, sid: sid, topLeft: CGPoint(x: 10, y: 20)))
+    XCTAssertEqual(WorkroomHandOffs.shared.request(for: id)?.topLeft, CGPoint(x: 10, y: 20))
     XCTAssertTrue(origin.terminals.containsTab(tab.id), "nothing moves until the window is up")
 
     WorkroomHandOffs.shared.complete(id, into: destination)
 
     XCTAssertTrue(destination.terminals.containsTab(tab.id))
-    XCTAssertNil(WorkroomHandOffs.shared.placement(for: id), "a request completes once")
+    XCTAssertNil(WorkroomHandOffs.shared.request(for: id), "a request completes once")
+  }
+
+  // MARK: Gaps closed in the coverage audit
+
+  /// Value: protects=a workroom is never moved out from under a create that is still setting it up
+  /// (Q18); fails_when=canMoveWorkroom stops consulting isCreationBlocking; why_new=the other
+  /// guard tests only cover "no terminals" and "only workroom"; seam=none; no_claim=the menu
+  /// item's disabled rendering.
+  func testAWorkroomStillBeingCreatedDoesNotMove() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    let t = target(origin)
+    let tab = origin.terminals.addTab(for: t)
+    origin.creationRunForTarget[t.id] = UUID()
+    defer { origin.creationRunForTarget[t.id] = nil }
+
+    XCTAssertFalse(origin.canMoveWorkroom(sid))
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertTrue(origin.terminals.containsTab(tab.id), "it stays where it is")
+    XCTAssertFalse(destination.terminals.containsTab(tab.id))
+  }
+
+  /// Value: protects=the pane's own right-click "Move to New Window" / "Move Back to Main Window"
+  /// reaching the store and toggling that pane; fails_when=wire() stops setting onToggleWindow, the
+  /// event is not routed, or togglePaneWindow picks the wrong branch; why_new=no test drives the
+  /// toggle at all; seam=none; no_claim=the AppKit menu item's title and shortcut.
+  func testAPanesWindowToggleDetachesThenDocksIt() {
+    let store = makeStore()
+    let t = target(store)
+    _ = store.terminals.addTab(for: t)
+    let pane = store.terminals.addTab(for: t)
+    defer { store.detachedPanes.closeAll() }
+
+    pane.surface?.onToggleWindow?()
+    XCTAssertTrue(store.terminals.detachedTabIDs.contains(pane.id), "first toggle tears it off")
+    XCTAssertNotNil(store.detachedPanes.window(for: pane.id))
+
+    pane.surface?.onToggleWindow?()
+    XCTAssertFalse(store.terminals.detachedTabIDs.contains(pane.id), "second toggle docks it")
+  }
+
+  /// Value: protects=where a dropped workroom's tab lands (Q21); fails_when=placeWorkroomTab
+  /// ignores the index or the nil-means-end rule; why_new=the slot maths is tested but not that
+  /// the destination's tab order honours it; seam=none; no_claim=the drag gap animation.
+  func testAMovedWorkroomsTabLandsAtTheDropSlotOrTheEnd() {
+    // Each destination already shows `sid`, so the moved `otherSid` lands before it only if the
+    // index is honoured, and after it when there is none.
+    let atSlot = makeStore()
+    _ = atSlot.terminals.addTab(for: target(atSlot))
+    let atEnd = makeStore()
+    _ = atEnd.terminals.addTab(for: target(atEnd))
+    let origin = makeOrigin()
+    _ = origin.terminals.addTab(for: target(origin))
+    let origin2 = makeOrigin()
+    _ = origin2.terminals.addTab(for: target(origin2))
+
+    origin.moveWorkroom(otherSid, to: atSlot, at: 0)
+    XCTAssertEqual(atSlot.displayedWorkroomTargets().map(\.sid), [otherSid, sid])
+
+    origin2.moveWorkroom(otherSid, to: atEnd)
+    XCTAssertEqual(atEnd.displayedWorkroomTargets().map(\.sid), [sid, otherSid], "nil: at the end")
+  }
+
+  /// Value: protects=the run toast state and investigate tabs travelling with the workroom, a
+  /// moved investigate tab's exit clearing it in the new window, (flags only travel with a run, the only
+  /// thing they describe); fails_when=takeHandOff/adopt drop a field or
+  /// resumeAdoptedRun stops rewiring investigate tabs; why_new=existing tests cover run state and
+  /// merge rules only, not the toast flags or investigate tabs; seam=none; no_claim=the toast UI.
+  func testToastFlagsAndInvestigateTabsMoveWithTheRun() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    let t = target(origin)
+    _ = origin.terminals.addTab(for: t)
+    let probe = origin.terminals.addTab(for: t)
+    origin.investigateTabs[probe.id] = t.id
+    origin.dismissedRunToasts.insert(t.id)
+    origin.runningToastAutoHidden.insert(t.id)
+    let run = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
+    origin.runStates[t.id] = .running(tab: run.id, interrupted: false)
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertFalse(origin.dismissedRunToasts.contains(t.id))
+    XCTAssertFalse(origin.runningToastAutoHidden.contains(t.id))
+    XCTAssertNil(origin.investigateTabs[probe.id])
+    XCTAssertEqual(destination.investigateTabs[probe.id], t.id)
+    XCTAssertTrue(destination.dismissedRunToasts.contains(t.id))
+    XCTAssertTrue(destination.runningToastAutoHidden.contains(t.id))
+    probe.surface?.onChildExited?(0)
+    XCTAssertNil(destination.investigateTabs[probe.id], "its exit is the destination's to hear")
   }
 
   // MARK: Remote host layout
@@ -304,7 +427,7 @@ final class WorkroomHandOverTests: XCTestCase {
   /// host's copy. Left with the origin, its next save would write the emptied workroom as an empty
   /// layout over the host's.
   func testARemoteWorkroomsHostLayoutKeepingMoves() {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     var t = TerminalTarget(id: "remote-\(UUID())", title: "r", path: "/r", isMissing: false)
     let workroom = UUID()
@@ -328,7 +451,7 @@ final class WorkroomHandOverTests: XCTestCase {
   /// A write already on its way when the workroom moves finishes into the origin; the destination
   /// waits for it and takes the revision it left, rather than writing at a stale one.
   func testAnInFlightHostWriteFinishesBeforeTheDestinationTakesOver() async {
-    let origin = makeStore()
+    let origin = makeOrigin()
     let destination = makeStore()
     var t = TerminalTarget(id: "remote-\(UUID())", title: "r", path: "/r", isMissing: false)
     let workroom = UUID()

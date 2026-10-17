@@ -69,15 +69,21 @@ final class AppStore: ObservableObject {
   /// (issue #70). Set by `RootWindow.init`; applied once in `attachWindow` before the window shows.
   /// nil for the launch window.
   var pendingInitialWindowSize: CGSize?
-  /// Where a new window's top-left goes on screen, for one opened by dropping a workroom on the
-  /// desktop (#444). Applied with `pendingInitialWindowSize`.
+  /// Whether this window opened to take a workroom moved from another (#444), so it takes the
+  /// standard size and the drop point rather than the current window's size (`placeHandOffWindow`).
+  var opensForHandOff = false
+  /// Where that window's top-left goes on screen: where the workroom was dropped. Nil from a menu.
   var pendingInitialWindowTopLeft: CGPoint?
   /// A workroom from another window hovering over this one (#444): where its tab would land among
   /// this window's (nil: at the end) and how wide a gap to open for it.
   var incomingWorkroomDrop: IncomingWorkroomDrop?
-  /// Each workroom tab's frame in this window, top-left origin, for working out where a workroom
-  /// dragged in from another window lands. A measurement, not state: nothing renders from it.
+  /// Each workroom tab's frame within its row (`workroomTabRun`), top-left origin, for working out
+  /// where a workroom dragged in from another window lands. A measurement, not state: nothing
+  /// renders from it.
   @ObservationIgnored var workroomTabFrames: [SidebarID: CGRect] = [:]
+  /// The view behind that row, which says where the row is on screen at the moment of a drop. The
+  /// tab bar lives in a title-bar accessory, so SwiftUI's own frames are not in the window's space.
+  @ObservationIgnored weak var workroomTabRun: NSView?
   private var didApplyInitialSize = false
   /// True only for the window SwiftUI brings up at launch (`WindowSeed.restore`). Set by
   /// `RootWindow.init`. The What's-New auto-check runs only from this window so a relaunch with
@@ -1202,18 +1208,14 @@ final class AppStore: ObservableObject {
         let frame = Self.frameOnAVisibleScreen(restored)
       {
         window.setFrame(frame, display: false)
+      } else if opensForHandOff {
+        placeHandOffWindow(window)
       } else if let size = pendingInitialWindowSize {
         window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
-        if let topLeft = pendingInitialWindowTopLeft {
-          window.setFrameTopLeftPoint(topLeft)
-          if let safe = Self.frameOnAVisibleScreen(window.frame) {
-            window.setFrame(safe, display: false)
-          }
-        }
       } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
         window.setFrame(frame, display: false)
       } else {
-        window.setContentSize(NSSize(width: 1200, height: 780))
+        window.setContentSize(Self.newWindowContentSize)
         window.center()
       }
     }

@@ -58,8 +58,8 @@ func openInSplitMenuItem(store: AppStore, sid: SidebarID) -> some View {
 /// "Move to New Window" (#444): this workroom, its terminals still running, into a window of its
 /// own. Shown wherever the workroom has terminals in this window, so there is something to move;
 /// disabled while a create is still setting it up, and for a window's only workroom, which would
-/// just become the same window again (dragging that one out still moves the window). Shared by
-/// `workroomContextMenu` and `ProjectSidebar`'s row menu.
+/// leave its window empty (`AppStore.canMoveWorkroom`). Shared by `workroomContextMenu` and
+/// `ProjectSidebar`'s row menu.
 @MainActor
 @ViewBuilder
 func moveToNewWindowMenuItem(store: AppStore, sid: SidebarID) -> some View {
@@ -69,13 +69,13 @@ func moveToNewWindowMenuItem(store: AppStore, sid: SidebarID) -> some View {
     } label: {
       Label("Move to New Window", systemImage: "macwindow.badge.plus")
     }
-    .disabled(!store.canMoveWorkroomToNewWindow(sid))
+    .disabled(!store.canMoveWorkroom(sid))
   }
 }
 
 /// A pane's "Move to New Window", or "Move Back to Main Window" once it is in a window of its own
 /// (#444): the same toggle as the pane title bar's button and ⌃⌘O, for the pane the menu is on.
-/// Shared by every pane menu: its tab chip, its title bar's More menu and its sidebar row (the
+/// Shared by every pane menu: its tab chip and its sidebar row (the
 /// terminal's own right-click menu is AppKit's, in `GhosttySurfaceView`).
 @MainActor
 @ViewBuilder
