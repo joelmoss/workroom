@@ -170,6 +170,23 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertEqual(result, .unhealthy(reason: "bad CPU type"))
   }
 
+  /// The probe runs on the main thread inside the session restore, which must finish before any
+  /// pane mounts. Waiting must not run the main queue: a selected workroom's pane mounted mid-wait
+  /// opened a fresh shell, and the restore then skipped that workroom's saved session. The helper
+  /// closes its output first, so the wait for its exit is what this measures, not the read.
+  func testRunningAHelperDoesNotRunTheMainQueueWhileItWaits() throws {
+    XCTAssertTrue(Thread.isMainThread)
+    var ranDuringRun = false
+    DispatchQueue.main.async { ranDuringRun = true }
+
+    let result = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "exec >&- 2>&-; sleep 0.5"],
+      timeout: 5)
+
+    XCTAssertEqual(result.status, 0)
+    XCTAssertFalse(ranDuringRun, "main-queue work ran while the probe waited for its helper")
+  }
+
   /// The version line may grow detail; the contract is its leading token only, so the agent can
   /// say more without needing a matching app release.
   func testVersionParsingToleratesExtraDetail() {

@@ -80,6 +80,12 @@ enum SessionBackendProbe {
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = pipe
+    // Waited on below instead of `waitUntilExit`, which runs the current run loop until the exit.
+    // On the main thread that lets SwiftUI mount a pane in the middle of the session restore this
+    // probe runs inside: a selected workroom's pane then opened a fresh shell, and the restore
+    // skipped that workroom's saved session.
+    let exited = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in exited.signal() }
     try process.run()
 
     // The deadline has to be armed BEFORE the read, not after it. `readDataToEndOfFile` returns
@@ -104,7 +110,7 @@ enum SessionBackendProbe {
     // write while we block on exit. The output here is two short lines, but the ordering is the
     // kind of thing that only bites once the output grows.
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
+    exited.wait()
     watchdog.cancel()
 
     if timedOut.value { throw ProbeError.timedOut(timeout) }
