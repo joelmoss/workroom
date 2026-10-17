@@ -146,11 +146,18 @@ extension AppStore {
 
   /// A finished create: its checklist stays, with Done, until the user closes it (`finishCreation`),
   /// or with "Close automatically when done" on, for `creationSuccessHold` (design D13). Then the
-  /// workroom's terminal mounts (firing an armed auto-run, issue #7).
+  /// workroom's terminal mounts. An armed auto-run (issue #7) doesn't wait for that: it starts now,
+  /// backgrounded beside the shell the terminal will open on (owner).
   private func completeCreationRun(_ run: CreationRun) async {
     run.succeed()
     if let name = run.name {
       Self.announceCreation(CreationPanePresentation.successAnnouncement(name: name))
+      let id = TerminalTarget.workroomID(project: run.project.path, name: name)
+      if case .armed = runStates[id],
+        let target = target(for: .workroom(project: run.project.path, name: name))
+      {
+        ensureInitialTerminal(for: target)
+      }
     }
     guard closesFinishedCreations() else { return }
     try? await Task.sleep(for: creationSuccessHold)
@@ -572,9 +579,11 @@ extension AppStore {
   /// chokepoint (`startRunCommand`) and every Run affordance read, so an offered button and a
   /// refused action can never disagree (issue #171). `creatingWorkrooms` clears when the process
   /// ends, while a failed setup script's run outlives it; a run started there would overwrite the
-  /// armed auto-run.
+  /// armed auto-run. A create that succeeded and only waits for Done blocks nothing: its workroom is
+  /// made, and its auto-run starts then (#483).
   func isRunBlocked(_ targetID: TerminalTarget.ID) -> Bool {
-    creatingWorkrooms.contains(targetID) || isCreationBlocking(targetID)
+    creatingWorkrooms.contains(targetID)
+      || (isCreationBlocking(targetID) && creationRun(forTargetID: targetID)?.outcome != .succeeded)
   }
 
   /// Whether `workroom` has an in-flight create (its setup is running) — the delete affordances
