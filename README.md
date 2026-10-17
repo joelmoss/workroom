@@ -76,6 +76,7 @@ for every project and workroom operation. The CLI also works on its own from a s
   open as many terminals as you like in a draggable tab strip.
 - **Split view** — Open and arrange multiple workrooms and tabs horizontally or vertically, in one or many views. Splits even themselves out as you add and remove panes, so a third pane never lands at a quarter width (turn it off in *Settings ▸ Appearance*).
 - **Persistent Layout** — Layout and terminal persistence across sessions
+- **Move workrooms between windows** — drag a workroom's tab out of the window to give it a window of its own, or onto another Workroom window to join it; its terminals keep running.
 - **Live activity & notifications** — tabs and sidebar rows animate while busy; desktop banners fire
   when a backgrounded terminal needs you.
 - **Custom Run Command** — set a custom command to run in each workroom (e.g. `npm start` or `rails s`).
@@ -163,6 +164,8 @@ straight to the terminal that raised it. A program that reports its status, such
 also shows when it is waiting on you (a permission, a question) or has finished its turn, and
 alerts you once when it starts waiting or finishes in a terminal you are not looking at (the
 toggles are in **Settings ▸ Notifications**). ⇧⌘M goes to the terminal that has waited longest. See [program status](docs/program-status.md).
+
+**Use more than one window.** Drag a workroom's tab, or its title bar, out of the window and it opens in a new window at the drop point. Drop it on another Workroom window to join that window, at the slot under the cursor on its tab bar, or at the end. **Move to New Window** is also in the workroom's right-click menu and sidebar row, and **Move workroom into new window** is in the Window menu. A terminal moves on its own from its tab menu, right-click menu or sidebar row (**Move to New Window**, then **Move Back to Main Window**). A window's only workroom cannot move.
 
 The [persistent app footer](docs/screenshots/window-footer.png) also shows Claude and Codex usage on
 the left, once there is a reading, whether or not an agent is running. With
