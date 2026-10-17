@@ -574,8 +574,9 @@ private struct CodingAgentSettingsPane: View {
         Toggle("Show usage in the pane footer", isOn: $usageInPaneFooter)
           .help("Only while a coding agent runs in that pane.")
           .accessibilityIdentifier("settings.control.usageInPaneFooter")
-        // Only after "Don't Ask Again" in the footer: the one place left to change one's mind.
-        if claudeUsageDeclined, claudeUsageBridge.state == .disabled {
+        // Only after "Don't Ask Again" in the footer: the one place left to change one's mind. Never
+        // while cswap supplies Claude usage, which would ignore the bridge.
+        if claudeUsageDeclined, claudeUsageBridge.state == .disabled, agentUsage.claudeUsesBridge {
           LabeledContent("Claude usage") {
             Button("Enable Claude usage…") { confirmingClaudeUsage = true }
           }
