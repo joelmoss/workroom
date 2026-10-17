@@ -35,3 +35,14 @@ func ClearRepoEnv() {
 		_ = os.Unsetenv(name)
 	}
 }
+
+// SetIdentity gives git a fixed author and committer. A test process calls it from TestMain: the
+// tests point HOME at a temporary directory, so git has no user.email, and every ref it writes then
+// guesses one from the hostname, a lookup that takes seconds on a Mac whose hostname does not
+// resolve at once (5s per git process measured, which made `go test ./cmd` take 12 minutes).
+func SetIdentity() {
+	for _, kind := range []string{"AUTHOR", "COMMITTER"} {
+		_ = os.Setenv("GIT_"+kind+"_NAME", "Workroom Tests")
+		_ = os.Setenv("GIT_"+kind+"_EMAIL", "tests@workroom.invalid")
+	}
+}
