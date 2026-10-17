@@ -334,7 +334,8 @@ func (s *Service) copyIncluded(root, wrPath string) string {
 	if len(inc.Files) == 0 {
 		reason := "No matching files"
 		if len(inc.Symlinks) > 0 {
-			reason = "Only symlinks matched"
+			// Named here, not only in the log: a skipped row's log can't be opened.
+			reason = "Only symlinks matched: " + strings.Join(inc.Symlinks, ", ")
 		}
 		s.step("include", "skipped", reason)
 		return ""
