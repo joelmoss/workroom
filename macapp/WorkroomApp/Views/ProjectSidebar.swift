@@ -445,7 +445,8 @@ struct ProjectSidebar: View {
     let target = workroom.target(inProject: project.path)
     let targetID = target.id
     let unread = notifications.count(target: targetID)
-    // A remote workroom still being made: shown with its create's progress, but nothing to open yet.
+    // A remote workroom still being made: its row opens its creation pane (#483), but has nothing to
+    // drag, label or delete yet.
     let pending = workroom.host != nil && store.isCreatingWorkroom(workroom, in: project)
     let waiting = terminals.blockedTerminalCount(forTargetID: targetID)
     let failed =
@@ -500,13 +501,13 @@ struct ProjectSidebar: View {
       }
     }.frame(height: rowHeight)
       .contentShape(Rectangle())
-      .opacity(pending || isDraggingForSplit(id) ? 0.5 : 1)
-      .onTapGesture { if !pending { selectTarget(id) } }
+      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
+      .onTapGesture { selectTarget(id) }
       // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the List
       // still scrolls vertically; the tap above still selects.
       .simultaneousGesture(rowSplitDrag(id), including: pending ? .none : .all)
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
-      .accessibilityAddTraits(pending ? [] : .isButton)
+      .accessibilityAddTraits(.isButton)
       .accessibilityActions {
         if waiting > 0 {
           Button(ProgramStatusPresentation.showWaitingAction) { showWaiting(in: [targetID]) }
