@@ -50,6 +50,23 @@ final class CreationRunTests: XCTestCase {
     XCTAssertEqual(run(.boxd).outcome, .running)
   }
 
+  /// Value: protects=a local create with no setup script lists no setup row, and gets it back,
+  /// last, if the script runs after all (one only the new worktree has); fails_when=the row shows
+  /// with no script, or a script's start finds no row; no_claim=the file check
+  func testTheSetupScriptsRowIsListedOnlyWhenThereIsOne() {
+    let run = CreationRun(
+      project: project, kind: .local, splitAnchor: nil, previousSelection: nil,
+      hasSetupScript: false)
+    XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree"])
+    run.finish("script", as: .skipped(reason: "No setup script"))
+    XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree"], "a skip doesn't bring it back")
+    run.begin("worktree")
+    run.begin("script")
+    XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree", "script"])
+    XCTAssertEqual(states(run)["worktree"], .done)
+    XCTAssertEqual(states(run)["script"], .running)
+  }
+
   /// Value: protects=begin ends the running step done and skips the pending steps it jumped;
   /// fails_when=the previous step stays running or a jumped step stays pending; no_claim=none
   /// beyond protects

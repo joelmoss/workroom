@@ -45,9 +45,13 @@ final class CreationPaneUITests: XCTestCase {
 
     let pane = element(app, "CreationPane")
     XCTAssertTrue(pane.waitForExistence(timeout: 5), "the create's pane didn't open on the click")
-    for step in ["fetch", "worktree", "script"] {
+    for step in ["fetch", "worktree"] {
       XCTAssertTrue(element(app, "CreationPane.step.\(step)").exists, "\(step) isn't listed")
     }
+    // Without a setup script of the project's own, its row shows once the scripted one runs.
+    XCTAssertTrue(
+      element(app, "CreationPane.step.script").waitForExistence(timeout: 10),
+      "the setup script's row never showed")
     XCTAssertEqual(
       element(app, "CreationPane.step.fetch").label, "Fetch base branch, skipped")
     let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())

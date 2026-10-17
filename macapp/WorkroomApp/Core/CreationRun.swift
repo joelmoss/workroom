@@ -136,9 +136,12 @@ final class CreationRun: ObservableObject, Identifiable {
   @Published var pullFraction: Double?
   private let now: () -> Date
 
+  /// `hasSetupScript` false leaves the setup script's row out of the plan; it comes back if the
+  /// script runs after all (one only the new worktree has).
   init(
     id: UUID = UUID(), project: Project, kind: CreationKind, splitAnchor: SidebarID?,
-    previousSelection: SidebarID?, now: @escaping () -> Date = Date.init
+    previousSelection: SidebarID?, hasSetupScript: Bool = true,
+    now: @escaping () -> Date = Date.init
   ) {
     self.id = id
     self.project = project
@@ -147,7 +150,7 @@ final class CreationRun: ObservableObject, Identifiable {
     self.previousSelection = previousSelection
     self.now = now
     self.startedAt = now()
-    self.steps = kind.plan
+    self.steps = kind.plan.filter { hasSetupScript || $0.id != "script" }
   }
 
   var isRunning: Bool { outcome == .running }
@@ -169,7 +172,7 @@ final class CreationRun: ObservableObject, Identifiable {
   /// `stepID` starts: the step running now ends done, and pending steps before it are skipped. A
   /// step already running keeps running; one waiting on the user starts again from zero.
   func begin(_ stepID: String) {
-    guard let index = steps.firstIndex(where: { $0.id == stepID }),
+    guard let index = steps.firstIndex(where: { $0.id == stepID }) ?? restore(stepID),
       steps[index].state != .running
     else { return }
     if steps[index].state != .waitingForUser, let running = runningIndex, running != index {
@@ -247,6 +250,14 @@ final class CreationRun: ObservableObject, Identifiable {
       if let text = event.text { append(text, to: event.step) }
     default: break
     }
+  }
+
+  /// A step of the plan left out of `steps`, put back at the end: only the setup script's, the
+  /// plan's last, is ever left out.
+  private func restore(_ stepID: String) -> Int? {
+    guard let step = kind.plan.first(where: { $0.id == stepID }) else { return nil }
+    steps.append(step)
+    return steps.count - 1
   }
 
   private var runningIndex: Int? {

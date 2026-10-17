@@ -189,7 +189,6 @@ final class CreationFlowTests: XCTestCase {
     let pane = SidebarID.creation(project: projectPath, id: run.id)
     XCTAssertEqual(run.outcome, .failedBeforeWorkroom(message: "git worktree add failed"))
     XCTAssertEqual(run.steps[1].state, .failed)
-    XCTAssertEqual(run.steps[2].state, .skipped(reason: nil), "the rest never ran")
     XCTAssertEqual(run.steps[1].log.last, "fatal: '\(projectPath)/.workrooms/wr' already exists")
     XCTAssertNil(store.errorMessage, "the pane says it, not an error sheet")
     XCTAssertEqual(store.workroomSplits.first?.tabIDs, [anchor, pane], "the pane stays put")

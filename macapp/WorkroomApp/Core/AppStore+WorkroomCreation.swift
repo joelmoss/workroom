@@ -98,7 +98,8 @@ extension AppStore {
     project: Project, kind: CreationKind, splitAnchor: SidebarID?
   ) -> CreationRun {
     let run = CreationRun(
-      project: project, kind: kind, splitAnchor: splitAnchor, previousSelection: selectedTargetID)
+      project: project, kind: kind, splitAnchor: splitAnchor, previousSelection: selectedTargetID,
+      hasSetupScript: Self.hasSetupScript(project, kind))
     register(run)
     selectedProjectID = project.id
     let pane = SidebarID.creation(project: project.path, id: run.id)
@@ -109,6 +110,14 @@ extension AppStore {
       } ?? false
     if !landedInSplit { selectedTargetID = pane }
     return run
+  }
+
+  /// Whether a local create will run a setup script, as the CLI's `findScript` falls back to the
+  /// project's own `scripts/workroom_setup`. One only the new worktree has puts its row back when it
+  /// runs (`CreationRun.begin`).
+  private static func hasSetupScript(_ project: Project, _ kind: CreationKind) -> Bool {
+    kind == .local
+      && FileManager.default.fileExists(atPath: project.path + "/scripts/workroom_setup")
   }
 
   /// The workroom `run` makes has a name: its pane becomes the workroom's, in place. Its target is
@@ -191,7 +200,8 @@ extension AppStore {
     let project = projects.first { $0.path == run.project.path } ?? run.project
     let retry = CreationRun(
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
-      previousSelection: run.previousSelection)
+      previousSelection: run.previousSelection,
+      hasSetupScript: Self.hasSetupScript(project, run.kind))
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)

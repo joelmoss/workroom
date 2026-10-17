@@ -613,7 +613,10 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       XCTAssertEqual(path, projectPath)
       XCTAssertEqual(store.selectedTarget?.unavailability, .creating, "it resolves to its run")
       XCTAssertEqual(store.creationRuns[id]?.previousSelection, selected, "Close goes back here")
-      XCTAssertEqual(store.creationRuns[id]?.steps.count, 3, "the whole plan, from the first frame")
+      // The project has no scripts/workroom_setup, so no setup script row.
+      XCTAssertEqual(
+        store.creationRuns[id]?.steps.map(\.id), ["fetch", "worktree"],
+        "the whole plan, from the first frame")
 
       fake.release("wr")
       await task.value
