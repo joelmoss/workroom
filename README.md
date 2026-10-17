@@ -182,7 +182,8 @@ scraped from CLI output.
 **Create and delete without touching the command line.** Hit the **+** on a project to spin up a
 new workroom. Its pane opens at once with a checklist of the create's steps, each with its time
 and its log a click away, so you watch the fetch, the worktree and your `scripts/workroom_setup`
-in real time; the terminal opens only once setup is done.
+in real time; the terminal opens when you click **Done**, or by itself a few seconds after setup
+finishes if you turn on **Close automatically when done**.
 Deleting is a hover-to-trash with a confirmation; teardown runs in the background and the row clears
 immediately. (See [Setup and teardown scripts](#setup-and-teardown-scripts).)
 
