@@ -1,6 +1,7 @@
 package workroom
 
 import (
+	"archive/tar"
 	"errors"
 	"fmt"
 	"io"
@@ -68,6 +69,53 @@ func CopyIncluded(root, dest string, files []string) IncludeCopy {
 		res.Bytes += n
 	}
 	return res
+}
+
+// ArchiveIncluded writes files (IncludedFiles' paths) from root to w as a tar, for a remote
+// workroom's host to extract (#367): each a regular member with its mode. A file that can't be
+// read is reported and the rest are still written, as CopyIncluded does. A member name must stay
+// inside the checkout it is extracted into, so one that wouldn't is refused. An error is one that
+// leaves the archive itself unusable.
+func ArchiveIncluded(root string, files []string, w io.Writer) (IncludeCopy, error) {
+	var res IncludeCopy
+	tw := tar.NewWriter(w)
+	for _, f := range files {
+		if !filepath.IsLocal(filepath.FromSlash(f)) {
+			res.Failures = append(res.Failures, fmt.Sprintf("%s: not a path inside the root", f))
+			continue
+		}
+		src, err := os.Open(filepath.Join(root, filepath.FromSlash(f)))
+		if err != nil {
+			res.Failures = append(res.Failures, fmt.Sprintf("%s: %v", f, err))
+			continue
+		}
+		n, err := archiveFile(tw, f, src)
+		_ = src.Close()
+		if err != nil {
+			return res, err
+		}
+		res.Copied = append(res.Copied, f)
+		res.Bytes += n
+	}
+	return res, tw.Close()
+}
+
+// archiveFile writes src to tw as the member name, with src's mode, size and time.
+func archiveFile(tw *tar.Writer, name string, src *os.File) (int64, error) {
+	info, err := src.Stat()
+	if err != nil {
+		return 0, err
+	}
+	header := &tar.Header{
+		Typeflag: tar.TypeReg, Name: name, Mode: int64(info.Mode().Perm()), Size: info.Size(),
+		ModTime: info.ModTime(), Format: tar.FormatPAX,
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		return 0, err
+	}
+	// Exactly the size the header gave: a file that grew since is cut there, and one that shrank
+	// fails the archive rather than writing a short member.
+	return io.CopyN(tw, src, info.Size())
 }
 
 // copyFile copies the regular file from to a new file to, with from's mode, and removes what it

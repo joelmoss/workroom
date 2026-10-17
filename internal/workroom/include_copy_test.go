@@ -1,6 +1,7 @@
 package workroom
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,6 +46,21 @@ func TestCopyIncludedKeepsContentsAndModes(t *testing.T) {
 		if body, _ := os.ReadFile(filepath.Join(dest, path)); string(body) != path {
 			t.Errorf("%s = %q, want %q", path, body, path)
 		}
+	}
+}
+
+// Value: protects=an archive member can never land outside the checkout it is extracted into;
+// fails_when=the name check goes and an absolute or ../ name is written; no_claim=git's own output,
+// which never names such a path (this guards the boundary, not a real input)
+func TestArchiveIncludedRefusesNamesOutsideTheRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ok.env"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	got, err := ArchiveIncluded(root, []string{"../escape", "/etc/passwd", "ok.env"}, &out)
+	if err != nil || !slices.Equal(got.Copied, []string{"ok.env"}) || len(got.Failures) != 2 {
+		t.Fatalf("ArchiveIncluded = %+v, %v, want only ok.env and two refusals", got, err)
 	}
 }
 
