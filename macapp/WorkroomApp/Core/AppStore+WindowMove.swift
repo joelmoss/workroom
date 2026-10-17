@@ -132,7 +132,8 @@ extension AppStore {
     runCommand.adopt(run, for: id)
     notifications.adopt(handOff.notifications)
     adoptLastFinishes(handOff.lastFinishes)
-    resumeAdoptedRun(for: target)
+    // Only for a run that came with it: one this window already ran has its own poll going.
+    if run.state != nil || !run.investigateTabs.isEmpty { resumeAdoptedRun(for: target) }
     if let closing { terminals.closeTab(closing, for: target) }
     placeWorkroomTab(id, at: index, wasAt: wasAt)
     selectedTargetID = handOff.sid

@@ -401,10 +401,18 @@ extension AppStore {
       moveHostLayoutState(of: id, to: destination)
       return
     }
-    destination.hostLayouts.writing[id] = Task { @MainActor [weak self, weak destination] in
+    // Meanwhile the destination keeps the same guard against replacing a layout this Mac never
+    // read, so a quit before the write lands can't mark its copy as the newer one (`flushHostLayouts`
+    // leaves an unanswered workroom unmarked).
+    if hostLayouts.unanswered.contains(id) {
+      destination.hostLayouts.unanswered.insert(id)
+      destination.hostLayouts.unansweredWrite[id] = hostLayouts.unansweredWrite[id]
+    }
+    // This window held strongly until then: closed meanwhile, what the write left would be lost.
+    destination.hostLayouts.writing[id] = Task { @MainActor [self, weak destination] in
       await inFlight.value
       guard let destination else { return }
-      self?.moveHostLayoutState(of: id, to: destination)
+      moveHostLayoutState(of: id, to: destination)
       destination.hostLayouts.writing[id] = nil
       destination.writeHostLayouts()
     }

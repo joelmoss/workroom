@@ -1687,6 +1687,8 @@ final class TerminalSessions: ObservableObject {
   func adopt(_ handOff: TargetHandOff) {
     let target = handOff.target
     let merging = !(tabsByTarget[target.id] ?? [:]).isEmpty
+    // A target keeps at most one preview: with this window's own, a moved one stays open, pinned.
+    let ownPreview = merging && previewTabID(in: target.id) != nil
     for tab in handOff.tabs {
       tabsByTarget[target.id, default: [:]][tab.id] = tab
       orderByTarget[target.id, default: []].append(tab.id)
@@ -1695,6 +1697,9 @@ final class TerminalSessions: ObservableObject {
       if state.sessionID != nil {
         followProgramStatus(on: target.remoteHost.map(HostID.remote) ?? .local)
       }
+    }
+    if ownPreview {
+      for tab in handOff.tabs where tab.isPreview { persist(tab.id, for: target) }
     }
     for id in handOff.detached.keys { detachedTabIDs.insert(id) }
     for (id, agent) in handOff.agent {

@@ -220,7 +220,9 @@ struct RootWindow: View {
           store.attachWindow(window)
         }
       )
-      .onAppear { WindowRegistry.shared.openWindow = { openWindow(value: $0) } }
+      // The action alone: a closure over `openWindow` would hold this view, and with it this
+      // window's store and terminals, for as long as the registry keeps it.
+      .onAppear { [openWindow] in WindowRegistry.shared.openWindow = { openWindow(value: $0) } }
       .task {
         // Not under XCTest: `WorkroomAppTests` hosts this app to get `@testable import Workroom`,
         // which means this real WindowGroup scene renders too — and without this guard, its `.task`
