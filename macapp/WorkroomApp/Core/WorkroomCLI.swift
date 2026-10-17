@@ -151,6 +151,8 @@ protocol WorkroomCLIProtocol: Sendable {
   func createRemote(project: String, hostPath: String, descriptor: Data) async throws
     -> CreateResponse
   func claimProvisioned(from shared: String, provisioner: String) async throws
+  /// Writes the project's included files (#367) to a tar at `output`, for a remote workroom's host.
+  func includeArchive(project: String, output: String) async throws -> IncludeArchive
 }
 
 /// Fakes that never meet a remote workroom need not implement its two calls.
@@ -182,6 +184,10 @@ extension WorkroomCLIProtocol {
   }
 
   func claimProvisioned(from shared: String, provisioner: String) async throws {}
+
+  func includeArchive(project: String, output: String) async throws -> IncludeArchive {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "includeArchive is not faked")
+  }
 
   func setBaseBranch(project: String, branch: String?) async throws {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "setBaseBranch is not faked")
@@ -267,6 +273,14 @@ final class WorkroomCLI: WorkroomCLIProtocol {
         String(decoding: descriptor, as: UTF8.self), "--host-path", hostPath,
       ], timeout: 10)
     return try decode(CreateResponse.self, from: result)
+  }
+
+  /// Writes `project`'s included files (#367) to a tar at `output`. Bounded as a create is: an
+  /// archive that takes longer is a failed copy, which the create reports as a warning.
+  func includeArchive(project: String, output: String) async throws -> IncludeArchive {
+    let result = try await run(
+      ["include-archive", "--json", "--project", project, "--output", output], timeout: 600)
+    return try decode(IncludeArchive.self, from: result)
   }
 
   /// Registers a project. With `create`, the CLI creates and git-initializes the

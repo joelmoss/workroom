@@ -194,6 +194,60 @@ enum RemoteProvisioning {
     }
   }
 
+  // MARK: Included files
+
+  /// Copies the root's included files (#367) into the checkout at `path` on `host`: `archive`
+  /// writes them to a tar at the URL it is given (the CLI's `include-archive`), and the file is
+  /// streamed from disk into tar on the host, which keeps each file's mode (`-p`, as the host's
+  /// user is rarely root) and any file the checkout already has (`-k`). It never throws: a create
+  /// is never undone for a missing `.env`, so every failure is a warning saying why.
+  static func copyIncluded(
+    into path: String, on host: HostID, driver: any HostDriver,
+    archive: @Sendable (URL) async throws -> IncludeArchive
+  ) async -> IncludeResult {
+    let file = FileManager.default.temporaryDirectory
+      .appendingPathComponent("workroom-include-\(UUID().uuidString).tar")
+    defer { try? FileManager.default.removeItem(at: file) }
+    let made: IncludeArchive
+    do { made = try await archive(file) } catch {
+      return .warning(
+        "Could not archive the included files: \(error.localizedDescription)", log: [])
+    }
+    let unread =
+      made.warnings.isEmpty
+      ? nil
+      : "Could not copy \(files(made.warnings.count)): \(made.warnings.joined(separator: "; "))"
+    guard !made.paths.isEmpty else {
+      return unread.map { .warning($0, log: []) } ?? .skipped("No matching files")
+    }
+    let command =
+      "command -v tar >/dev/null 2>&1 || { echo 'tar is not installed on the host'; exit 127; }; "
+      + "tar -x -k -p -f - -C \(PosixShell.quoted(path))"
+    do {
+      let stream = try await driver.exec(command, on: host)
+      let status: Int32
+      let output: String
+      do {
+        (status, output) = try await stream.communicate(contentsOf: file, timeout: 120)
+      } catch {
+        stream.end()
+        throw error
+      }
+      guard status == 0 else {
+        let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .warning("Could not copy the included files to the host: \(said)", log: [])
+      }
+    } catch {
+      return .warning(
+        "Could not copy the included files to the host: \(error.localizedDescription)", log: [])
+    }
+    let size = ByteCountFormatter.string(fromByteCount: made.bytes, countStyle: .file)
+    let log = made.paths.map { "Copied \($0)" } + ["Copied \(files(made.paths.count)) (\(size))"]
+    return unread.map { .warning($0, log: log) } ?? .copied(log: log)
+  }
+
+  private static func files(_ count: Int) -> String { count == 1 ? "1 file" : "\(count) files" }
+
   // MARK: Plumbing
 
   /// One git command on the host, through the agent's exec service: the host's own environment,
@@ -229,4 +283,19 @@ enum RemoteProvisioning {
     }
     return result.stdout
   }
+}
+
+/// What the CLI's `include-archive` wrote (#367): the archived paths, their total size, and each
+/// file it couldn't read, as "path: reason".
+struct IncludeArchive: Decodable, Equatable {
+  var paths: [String]
+  var bytes: Int64
+  var warnings: [String]
+}
+
+/// How copying the root's included files into a workroom ended (#367), with its log.
+enum IncludeResult: Equatable {
+  case copied(log: [String])
+  case skipped(String)
+  case warning(String, log: [String])
 }

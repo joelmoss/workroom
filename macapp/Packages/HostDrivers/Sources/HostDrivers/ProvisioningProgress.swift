@@ -10,6 +10,9 @@ public enum ProvisioningProgress {
   /// checklist (#483).
   public enum Step: String, CaseIterable, Sendable {
     case repository, account, image, machine, boot, setup, connect, clone, checkout
+    /// Copying the root's included files (#367), which the app runs after the checkout; a local
+    /// create's CLI reports the same id.
+    case include
   }
 
   /// Told each `Step` as it starts, for a create's progress on its project row. Set with

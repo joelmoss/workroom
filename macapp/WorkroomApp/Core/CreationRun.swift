@@ -38,6 +38,7 @@ enum CreationKind: Equatable {
       return [
         CreationStep(id: "fetch", title: "Fetch base branch"),
         CreationStep(id: "worktree", title: "Create worktree"),
+        CreationStep(id: Step.include.rawValue, title: "Copy local files"),
         CreationStep(id: "script", title: "Run setup script"),
       ]
     case .container:
@@ -59,7 +60,10 @@ enum CreationKind: Equatable {
         (.connect, "Connect"), (.clone, "Clone repository"), (.checkout, "Check out branch"),
       ]
     }
-    return remote.map { CreationStep(id: $0.0.rawValue, title: $0.1) }
+    // The root's included files (#367), copied in once the branch is out, as on this Mac.
+    return (remote + [(.include, "Copy local files")]).map {
+      CreationStep(id: $0.0.rawValue, title: $0.1)
+    }
   }
 }
 
@@ -138,10 +142,11 @@ final class CreationRun: ObservableObject, Identifiable {
   private let now: () -> Date
 
   /// `hasSetupScript` false leaves the setup script's row out of the plan; it comes back if the
-  /// script runs after all (one only the new worktree has).
+  /// script runs after all (one only the new worktree has). `hasIncludeFile` false, a root with no
+  /// `.worktreeinclude`, leaves out the "Copy local files" row (#367) the same way.
   init(
     id: UUID = UUID(), project: Project, kind: CreationKind, splitAnchor: SidebarID?,
-    previousSelection: SidebarID?, hasSetupScript: Bool = true,
+    previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
     now: @escaping () -> Date = Date.init
   ) {
     self.id = id
@@ -151,7 +156,10 @@ final class CreationRun: ObservableObject, Identifiable {
     self.previousSelection = previousSelection
     self.now = now
     self.startedAt = now()
-    self.steps = kind.plan.filter { hasSetupScript || $0.id != "script" }
+    self.steps = kind.plan.filter {
+      (hasSetupScript || $0.id != "script")
+        && (hasIncludeFile || $0.id != ProvisioningProgress.Step.include.rawValue)
+    }
   }
 
   var isRunning: Bool { outcome == .running }
@@ -253,12 +261,15 @@ final class CreationRun: ObservableObject, Identifiable {
     }
   }
 
-  /// A step of the plan left out of `steps`, put back at the end: only the setup script's, the
-  /// plan's last, is ever left out.
+  /// A step of the plan left out of `steps` (the setup script's or the include step's), put back in
+  /// its place in the plan.
   private func restore(_ stepID: String) -> Int? {
-    guard let step = kind.plan.first(where: { $0.id == stepID }) else { return nil }
-    steps.append(step)
-    return steps.count - 1
+    let plan = kind.plan
+    guard let position = plan.firstIndex(where: { $0.id == stepID }) else { return nil }
+    let later = Set(plan[(position + 1)...].map(\.id))
+    let index = steps.firstIndex { later.contains($0.id) } ?? steps.endIndex
+    steps.insert(plan[position], at: index)
+    return index
   }
 
   private var runningIndex: Int? {

@@ -162,6 +162,13 @@ final class CLIContractTests: XCTestCase {
     XCTAssertEqual(created.project, "/Users/dev/src/app")
   }
 
+  func testIncludeArchive() throws {
+    try assertSuccess("include-archive.json")
+    XCTAssertEqual(
+      try decode(IncludeArchive.self, "include-archive.json"),
+      IncludeArchive(paths: [".env"], bytes: 8, warnings: []))
+  }
+
   func testCreateSetupFailed() throws {
     try assertError("create-setup-failed.json", kind: "SetupScriptFailed")
     // The app still mounts the workroom and shows the setup log up to the failure.

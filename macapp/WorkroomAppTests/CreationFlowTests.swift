@@ -674,6 +674,39 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertTrue(store.creatingWorkrooms.isEmpty)
   }
 
+  /// Value: protects=a root with a `.worktreeinclude` gets its "Copy local files" row after the
+  /// checkout, and a copy that fails ends that row as a warning while the create still lands and
+  /// its host is kept (#367, Q4); fails_when=the copy is skipped, its failure fails the create, or
+  /// the host is destroyed; no_claim=a real archive or host (RemoteIncludeTests covers those)
+  func testARemoteCreateWhoseCopyFailsStillLandsWithAWarning() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    FileManager.default.createFile(
+      atPath: dir.appendingPathComponent(".worktreeinclude").path, contents: Data(".env\n".utf8))
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let driver = FakeDriver()
+    let store = makeStore(RemoteFakeCLI(projectPath: dir.path))
+    let project = Project(path: dir.path, vcs: "git", workrooms: [])
+    store.projects = [project]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    store.remoteCreateServices = services(driver: driver, agent: agent)
+
+    let task = Task { await store.createRemoteWorkroom(in: project, place: .boxd) }
+    await waitUntil({ !store.creationRuns.isEmpty }, "the create never started")
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await task.value
+
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertEqual(run.steps.suffix(2).map(\.id), ["checkout", "include"])
+    guard case .warning(let text) = run.steps.last?.state else {
+      return XCTFail("include ended \(String(describing: run.steps.last?.state))")
+    }
+    XCTAssertTrue(text.contains("includeArchive is not faked"), text)
+    XCTAssertEqual(driver.destroys, 0, "a failed copy took the host down")
+  }
+
   /// Value: protects=AC 11, with boxd not set up the pane opens and waits on its account step under
   /// the sheet, and Create Workroom carries on the same run without re-checking the repository;
   /// fails_when=the sheet replaces the pane, the repository is checked twice, or a second create
