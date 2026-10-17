@@ -40,8 +40,8 @@ enum CreationPanePresentation {
     }
   }
 
-  /// The header's first line (design D5): "New workroom" until the name lands.
-  @MainActor static func title(of run: CreationRun) -> String { run.name ?? "New workroom" }
+  /// The header's first line (design D5): "Creating workroom…" until the name lands.
+  @MainActor static func title(of run: CreationRun) -> String { run.name ?? "Creating workroom…" }
 
   /// The header's second line: "<project> · <destination>", also the provisional row's destination.
   @MainActor static func subtitle(of run: CreationRun) -> String {
