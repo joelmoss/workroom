@@ -426,6 +426,29 @@ final class RemoteIncludeTests: XCTestCase {
     let result = await RemoteProvisioning.copyIncluded(
       into: try checkout().path, on: .local, driver: ShellHost(execFails: true)
     ) { _ in IncludeArchive(paths: [], bytes: 0, warnings: []) }
-    XCTAssertEqual(result, .skipped("No matching files"))
+    XCTAssertEqual(result, .skipped("No matching files", log: []))
+  }
+
+  /// Value: protects=a symlink the include file matched is named as skipped, and when only symlinks
+  /// matched the step says so rather than that nothing did; fails_when=the archive's skipped list is
+  /// dropped or the reason reads "No matching files"; no_claim=the CLI side (cmd tests)
+  func testSkippedSymlinksAreNamed() async throws {
+    let only = await RemoteProvisioning.copyIncluded(
+      into: try checkout().path, on: .local, driver: ShellHost(execFails: true)
+    ) { _ in IncludeArchive(paths: [], bytes: 0, warnings: [], skipped: [".env"]) }
+    XCTAssertEqual(
+      only, .skipped("Only symlinks matched", log: ["Skipped .env: it's a symlink"]))
+
+    let make = try archive(["ok.key": 0o600])
+    let some = await RemoteProvisioning.copyIncluded(
+      into: try checkout().path, on: .local, driver: ShellHost(),
+      archive: { output in
+        var made = try await make(output)
+        made.skipped = [".env"]
+        return made
+      })
+    guard case .copied(let log) = some else { return XCTFail("\(some)") }
+    XCTAssertEqual(log.first, "Skipped .env: it's a symlink")
+    XCTAssertTrue(log.contains("Copied ok.key"), "\(log)")
   }
 }

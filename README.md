@@ -522,7 +522,8 @@ certs/
   and so does git's re-include rule. `!x` can't bring back a file under a directory a pattern already
   included: `secrets/**` followed by `!secrets/skip.json` still copies `skip.json`.
 - Only the root's `.worktreeinclude` counts, whatever branch the workroom starts from.
-- Each file keeps its mode. A file the workroom already has is left alone, and symlinks are skipped.
+- Each file keeps its mode. A file the workroom already has is left alone. Symlinks are never
+  copied: the "Copy local files" step names each one it skipped, so link a symlinked `.env` yourself.
 - Nothing is copied when the file is missing. When a file can't be copied, the create still finishes:
   its "Copy local files" step ends as a warning naming the file.
 

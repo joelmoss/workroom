@@ -17,29 +17,43 @@ import (
 // workroom's branch, so a feature branch can't change which of the root's files are copied.
 const IncludeFile = ".worktreeinclude"
 
-// IncludedFiles is the root's included files, relative, slash-separated and sorted (as
-// vcs.Included returns them): the regular
-// files that match a pattern in the root's include file and that git ignores in the root. A
-// symlink is never one, so nothing outside the root is ever copied. ok is false when the root has
-// no include file.
-func IncludedFiles(root string) (files []string, ok bool, err error) {
+// Included is what a root's include file matches: the files to copy, and the symlinks that matched
+// but are never copied, so a step can say why a symlinked .env didn't arrive. Both are relative,
+// slash-separated and sorted, as vcs.Included returns them.
+type Included struct {
+	Files    []string
+	Symlinks []string
+}
+
+// IncludedFiles is the root's included files: the regular files that match a pattern in the root's
+// include file and that git ignores in the root. A symlink is never one, so nothing outside the root
+// is ever copied; it is reported in Symlinks instead. ok is false when the root has no include file.
+func IncludedFiles(root string) (inc Included, ok bool, err error) {
 	patterns := filepath.Join(root, IncludeFile)
 	if _, err := os.Stat(patterns); errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
+		return inc, false, nil
 	} else if err != nil {
-		return nil, false, err
+		return inc, false, err
 	}
 	matched, err := vcs.Included(root, patterns)
 	if err != nil {
-		return nil, true, err
+		return inc, true, err
 	}
 	for _, f := range matched {
-		if info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(f))); err == nil && info.Mode().IsRegular() {
-			files = append(files, f)
+		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(f)))
+		switch {
+		case err != nil:
+		case info.Mode().IsRegular():
+			inc.Files = append(inc.Files, f)
+		case info.Mode()&fs.ModeSymlink != 0:
+			inc.Symlinks = append(inc.Symlinks, f)
 		}
 	}
-	return files, true, nil
+	return inc, true, nil
 }
+
+// SkippedSymlink is the log line for a symlink the include file matched but that isn't copied.
+func SkippedSymlink(path string) string { return fmt.Sprintf("Skipped %s: it's a symlink", path) }
 
 // IncludeCopy is what copying a root's included files into a workroom did: the files copied and
 // their total size, and each file that couldn't be, as "path: reason".

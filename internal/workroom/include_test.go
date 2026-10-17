@@ -109,8 +109,8 @@ func TestIncludedFilesMatchesAsGitDoes(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("IncludedFiles = %v, %v, %v", got, ok, err)
 			}
-			if !slices.Equal(got, tc.want) {
-				t.Fatalf("IncludedFiles = %q, want %q", got, tc.want)
+			if !slices.Equal(got.Files, tc.want) {
+				t.Fatalf("IncludedFiles = %q, want %q", got.Files, tc.want)
 			}
 		})
 	}
@@ -120,20 +120,21 @@ func TestIncludedFilesMatchesAsGitDoes(t *testing.T) {
 // file reads as an empty one; no_claim=none beyond protects
 func TestIncludedFilesWithoutAnIncludeFile(t *testing.T) {
 	root := includeRoot(t, []string{".env"}, nil, ".env")
-	if got, ok, err := IncludedFiles(root); ok || err != nil || got != nil {
+	if got, ok, err := IncludedFiles(root); ok || err != nil || got.Files != nil || got.Symlinks != nil {
 		t.Fatalf("IncludedFiles = %q, %v, %v, want nothing and not ok", got, ok, err)
 	}
 }
 
-// Value: protects=a symlink in the root is never followed or copied; fails_when=the regular-file
-// check goes, and a link to a secret outside the root is copied; no_claim=none beyond protects
-func TestIncludedFilesSkipsSymlinks(t *testing.T) {
+// Value: protects=a symlink in the root is never followed or copied, and is reported as skipped so
+// a symlinked .env doesn't vanish without a word; fails_when=the regular-file check goes and a link
+// to a secret outside the root is copied, or the skip goes unreported; no_claim=none beyond protects
+func TestIncludedFilesSkipsSymlinksAndSaysSo(t *testing.T) {
 	root := includeRoot(t, []string{".env*"}, []string{".env*"}, ".env")
 	if err := os.Symlink(filepath.Join(root, ".env"), filepath.Join(root, ".env.link")); err != nil {
 		t.Fatal(err)
 	}
 	got, _, err := IncludedFiles(root)
-	if err != nil || !slices.Equal(got, []string{".env"}) {
-		t.Fatalf("IncludedFiles = %q, %v, want [.env]", got, err)
+	if err != nil || !slices.Equal(got.Files, []string{".env"}) || !slices.Equal(got.Symlinks, []string{".env.link"}) {
+		t.Fatalf("IncludedFiles = %q, %v, want files [.env] and symlinks [.env.link]", got, err)
 	}
 }
