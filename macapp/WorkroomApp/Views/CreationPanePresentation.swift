@@ -57,10 +57,11 @@ enum CreationPanePresentation {
   }
 
   /// The header's first line (design D5): "Creating workroom…", then "Creating workroom <name>…"
-  /// once the name lands, and the bare name once the create has ended.
+  /// once the name lands. Once the create has ended it stops saying so: the name, or "New
+  /// workroom" for one that failed before it had one.
   @MainActor static func title(of run: CreationRun) -> String {
-    guard let name = run.name else { return "Creating workroom…" }
-    return run.isRunning ? "Creating workroom \(name)…" : name
+    guard run.isRunning else { return run.name ?? "New workroom" }
+    return run.name.map { "Creating workroom \($0)…" } ?? "Creating workroom…"
   }
 
   /// The header's second line: "<project> · <destination>", also the provisional row's destination.

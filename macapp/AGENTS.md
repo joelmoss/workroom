@@ -228,12 +228,14 @@ selection, as a `.creation(project:id:)` target that becomes the workroom's
 `.workroom(project:name:)` in place once it has a name (`creationRunForTarget` records it before
 the reload that publishes it, so no window mounts a terminal there early). While a run lasts, its
 pane draws `Views/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
-`removeWorkroomSplitMember` refuses a running one. The pane lists the kind's whole plan of steps
-(`CreationKind.plan`), fed by the CLI's NDJSON `step` and `log` events for a local create and by
+`removeWorkroomSplitMember` refuses a running one. The pane lists the kind's plan of steps
+(`CreationKind.plan`; a local create leaves out the setup script's row when the project has no
+`scripts/workroom_setup`, and `CreationRun.begin` puts it back if a script runs anyway), fed by
+the CLI's NDJSON `step` and `log` events for a local create and by
 `ProvisioningProgress.$reportStep` and `$log` for the others; what it says lives in
-`CreationPanePresentation`, which is unit-tested. On success the checklist holds for
-`creationSuccessHold` (0.6 s), then the run is dropped and the terminal mounts; on failure the run
-stays for its footer (Try Again, Close, Open Anyway or Delete Workroom). `creatingWorkrooms`, the
+`CreationPanePresentation`, which is unit-tested. On success the checklist stays with Done until
+it is clicked, or with `closeCreationPaneWhenDone` on, for `creationSuccessHold` (3 s); then the
+run is dropped and the terminal mounts; on failure the run stays for its footer (Try Again, Close, Open Anyway or Delete Workroom). `creatingWorkrooms`, the
 delete guard, is released when the create's process ends, not when the run goes. Creates in one
 project may overlap; only a project being deleted blocks one. A provider's setup sheet holds the run
 on its `account` step and Create Workroom carries the same run on (`RemoteSetupWait`). VoiceOver
