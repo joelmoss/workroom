@@ -1,4 +1,5 @@
 import AgentConnection
+import CryptoKit
 import Darwin
 import HostDrivers
 import WorkroomVCS
@@ -487,6 +488,26 @@ final class HostStreamTests: XCTestCase {
     XCTAssertEqual(status, 0)
     // stdout, then what stderr said.
     XCTAssertTrue(output.hasPrefix("done\n"), output)
+  }
+
+  /// Value: protects=a file fed as stdin arrives byte for byte, streamed from disk in chunks
+  /// (#367's archive push), so the app never holds a large archive in memory; fails_when=the file
+  /// path drops or reorders a chunk, or sends nothing; no_claim=the memory bound itself (a 3 MB file
+  /// stands in for a large one)
+  func testAFileFedAsStdinArrivesWhole() async throws {
+    let file = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hoststream-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: file) }
+    var bytes = Data(count: 3 * 1024 * 1024 + 17)
+    for i in bytes.indices { bytes[i] = UInt8(truncatingIfNeeded: i * 31) }
+    try bytes.write(to: file)
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "shasum -a 256 | cut -d' ' -f1"],
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    let (status, output) = try await stream.communicate(contentsOf: file, timeout: 5)
+    XCTAssertEqual(status, 0)
+    let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    XCTAssertEqual(output.trimmingCharacters(in: .whitespacesAndNewlines), digest)
   }
 
   /// The binary is derived from the socket and run by path from any cwd, so a relative socket is

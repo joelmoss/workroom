@@ -219,6 +219,36 @@ public final class HostStream: @unchecked Sendable {
   ) async throws -> (
     status: Int32, output: String
   ) {
+    try await exchange(input.map(Input.data), timeout: timeout, onOutput: onOutput)
+  }
+
+  /// `communicate` with `file`'s contents as the command's stdin, read from disk a piece at a time
+  /// as the link drains, so a file of any size never sits in memory (#367's archive push). A file
+  /// that can't be opened throws before anything is sent, and leaves the stream to its caller to
+  /// `end`.
+  public func communicate(
+    contentsOf file: URL, timeout: TimeInterval,
+    onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)? = nil
+  ) async throws -> (
+    status: Int32, output: String
+  ) {
+    let handle = try FileHandle(forReadingFrom: file)
+    defer { try? handle.close() }
+    return try await exchange(.file(handle), timeout: timeout, onOutput: onOutput)
+  }
+
+  /// What `communicate` sends as the command's stdin.
+  private enum Input: Sendable {
+    case data(Data)
+    case file(FileHandle)
+  }
+
+  private func exchange(
+    _ input: Input?, timeout: TimeInterval,
+    onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)?
+  ) async throws -> (
+    status: Int32, output: String
+  ) {
     precondition(purpose == .exchange, "communicate needs a stream spawned for an exchange")
     lock.withLock { self.onOutput = onOutput }
     let fd = descriptor
@@ -253,8 +283,9 @@ public final class HostStream: @unchecked Sendable {
     let (printed, exit): (Data, (status: Int32, reason: Process.TerminationReason)?) =
       try await withTaskCancellationHandler {
         try await runBlocking {
-          if let input {
-            input.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+          // Whether all of `data` went: false once the far side stops reading.
+          func send(_ data: Data) -> Bool {
+            data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
               var sent = 0
               while sent < bytes.count {
                 // In pieces, so `heard()` ticks as the link drains: one `send` of the whole 11 MB
@@ -266,11 +297,20 @@ public final class HostStream: @unchecked Sendable {
                 // `EPIPE` (`SO_NOSIGPIPE` is set), not a signal: the far side stopped reading.
                 // What it printed before it did (`cat` failing to open its file, say) is still the
                 // answer, so this goes on to read it rather than throwing.
-                guard count > 0 else { break }
+                guard count > 0 else { return false }
                 sent += count
                 watchdog.heard()
               }
+              return true
             }
+          }
+          switch input {
+          case .data(let data): _ = send(data)
+          case .file(let handle):
+            // A read that fails ends the input early, as a far side that stops reading does: the
+            // command sees a short stdin and says so in its answer.
+            while let piece = try? handle.read(upToCount: 64 * 1024), !piece.isEmpty, send(piece) {}
+          case nil: break
           }
           // EOF on the command's stdin, which is what ends a `cat >` there. A close of its own
           // pair, never a `shutdown` of the one its stdout flows back on (see `Purpose`).
