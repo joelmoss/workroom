@@ -1486,6 +1486,8 @@ final class AppStore: ObservableObject {
     // setup script, so it isn't yet "active" (no terminal), but its chip must still show through setup.
     var active = terminals.activeTargetIDs
     active.formUnion(creationRunForTarget.keys)
+    // A run's two ids resolve to one pane until the reload that publishes its name: one chip.
+    var seen = Set<SidebarID>()
     return Self.orderedActiveTargets(
       persisted: order ?? workroomTabOrder, active: active
     )
@@ -1494,7 +1496,7 @@ final class AppStore: ObservableObject {
       guard
         let sid = Self.sidebarID(forTargetID: tid, in: projects)
           ?? creationRun(forTargetID: tid).map(paneID(of:)),
-        let target = target(for: sid)
+        let target = target(for: sid), seen.insert(sid).inserted
       else { return nil }
       return (sid, target)
     }

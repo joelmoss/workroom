@@ -335,6 +335,20 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       store.orderedWorkroomTargets().map(\.sid), [.creation(project: projectPath, id: run.id)])
   }
 
+  /// Value: protects=a create whose name has landed but not yet reloaded shows one chip, not two
+  /// with one identity; fails_when=both of its ids give a chip; no_claim=the chip's drawing
+  func testANamedCreationBeforeItsReloadAppearsAsOneTab() {
+    let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
+    let run = CreationRun(
+      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil)
+    store.register(run)
+    run.setName("wr")
+    store.creationRunForTarget[TerminalTarget.workroomID(project: projectPath, name: "wr")] = run.id
+
+    XCTAssertEqual(
+      store.orderedWorkroomTargets().map(\.sid), [.creation(project: projectPath, id: run.id)])
+  }
+
   private func seedRun(
     _ store: AppStore, holding name: String, outcome: CreationOutcome = .running
   ) -> CreationRun {
