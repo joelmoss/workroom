@@ -126,9 +126,10 @@ enum CreationPanePresentation {
       Footer(
         reason: "Couldn't create the workroom: \(message)", primary: .tryAgain, secondary: .close)
     case .setupScriptFailed(let message):
+      // The CLI's message opens with its own "setup script failed: " (`errs.ErrSetup`): say it once.
       Footer(
-        reason: "The setup script failed: \(message)", primary: .openAnyway,
-        secondary: .deleteWorkroom)
+        reason: "The setup script failed: \(message.trimmingPrefix("setup script failed: "))",
+        primary: .openAnyway, secondary: .deleteWorkroom)
     case .remoteFailed(let message, leftBehind: true):
       Footer(
         reason: "Couldn't create the workroom, and its machine is still running: \(message)",
