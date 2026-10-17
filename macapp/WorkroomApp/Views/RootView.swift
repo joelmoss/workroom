@@ -110,7 +110,8 @@ struct RootView: View {
 
   private var workroomTabsBar: some View {
     // ALWAYS mounted, even with no tabs: its trailing Open/New buttons are how you get your first
-    // workroom open in a fresh window, so they can't be gated on a tab already existing. (It also
+    // workroom open in a fresh window, so they can't be gated on a tab already existing (only on a
+    // project existing, without which they hide). (It also
     // hosts the provisional "Creating…" chip before any tab resolves — issue #116.) With an empty
     // run the bar is just those two buttons over the draggable title bar.
     WorkroomTabBar(
