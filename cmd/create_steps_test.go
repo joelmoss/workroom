@@ -116,6 +116,73 @@ func TestCreateStepsFailedFetchWarnsAndLogsStderr(t *testing.T) {
 	}
 }
 
+// writeRootFile writes path, relative to the project's root, with body.
+func writeRootFile(t *testing.T, project, path, body string) {
+	t.Helper()
+	full := filepath.Join(project, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Value: protects=the root's included files are in the new workroom before its setup script runs,
+// and the include step and its log sit between worktree and script; fails_when=the copy runs after
+// the script, or the step or its log is missing; no_claim=the remote path
+func TestCreateStepsCopyIncludedFilesBeforeTheSetupScript(t *testing.T) {
+	project := noRemoteProject(t)
+	writeRootFile(t, project, ".gitignore", ".env\n")
+	writeRootFile(t, project, ".env", "SECRET=1")
+	writeRootFile(t, project, ".worktreeinclude", ".env\n")
+	writeSetup(t, project, "#!/bin/sh\ncat .env\n")
+	events := createEvents(t, project)
+	assertSteps(t, events, "fetch:skipped:No remote to fetch from", "worktree:running", "worktree:done",
+		"include:running", "include:done", "script:running", "script:done")
+	var copied, read bool
+	for _, e := range events {
+		copied = copied || (e["type"] == "log" && e["step"] == "include" && e["text"] == "Copied .env")
+		read = read || (e["type"] == "log" && e["step"] == "script" && e["text"] == "SECRET=1")
+	}
+	if !copied || !read {
+		t.Fatalf("include log has Copied .env (%v), setup read the file (%v): %v", copied, read, events)
+	}
+}
+
+// Value: protects=an include file that matches nothing ends the step skipped with its reason;
+// fails_when=it ends done, or the row has no reason; no_claim=none beyond protects
+func TestCreateStepsIncludeFileThatMatchesNothing(t *testing.T) {
+	project := noRemoteProject(t)
+	writeRootFile(t, project, ".worktreeinclude", ".env\n")
+	assertSteps(t, createEvents(t, project), "fetch:skipped:No remote to fetch from",
+		"worktree:running", "worktree:done", "include:running", "include:skipped:No matching files",
+		"script:skipped:No setup script")
+}
+
+// Value: protects=an unreadable included file ends the step as a warning naming it, and the
+// create carries on to the setup script; fails_when=the copy fails the create, or the warning
+// doesn't name the file; no_claim=the warning's exact wording past the file name
+func TestCreateStepsUnreadableIncludedFileWarns(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file")
+	}
+	project := noRemoteProject(t)
+	writeRootFile(t, project, ".gitignore", "*.key\n")
+	writeRootFile(t, project, "master.key", "k")
+	writeRootFile(t, project, ".worktreeinclude", "*.key\n")
+	if err := os.Chmod(filepath.Join(project, "master.key"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(project, "master.key"), 0o644) })
+	writeSetup(t, project, "#!/bin/sh\necho ran\n")
+	got := steps(createEvents(t, project))
+	if len(got) != 7 || !strings.HasPrefix(got[4], "include:warning:") || !strings.Contains(got[4], "master.key") ||
+		got[5] != "script:running" || got[6] != "script:done" {
+		t.Fatalf("steps = %v, want include to warn naming master.key, then the script to run", got)
+	}
+}
+
 // Value: protects=a setup script that exits non-zero ends script as failed with the error as
 // detail, after fetch and worktree; fails_when=script ends done, or the failure has no detail;
 // no_claim=the failure's wording, or the created event the app reads alongside it

@@ -175,6 +175,9 @@ type CreateResult struct {
 	Warning     string `json:"warning,omitempty"`
 	SetupOutput string `json:"-"`
 	HasSetup    bool   `json:"-"`
+	// IncludeWarning is the include step's warning (#367), for the human create; --json callers
+	// read it from the step event.
+	IncludeWarning string `json:"-"`
 }
 
 // CreateNamed generates a unique name, creates the VCS workspace, updates config,
@@ -276,6 +279,11 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		s.OnReady(res)
 	}
 
+	// The root's included files, before the setup script so it can rely on them (#367).
+	if !s.Pretend {
+		res.IncludeWarning = s.copyIncluded(dir, wrPath)
+	}
+
 	// Run setup script. The human terminal passes a log panel via setupOut; --json
 	// mode leaves it nil and routes through ScriptLogWriter (NDJSON on stderr).
 	if setupOut == nil {
@@ -298,6 +306,65 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	}
 
 	return res, nil
+}
+
+// copyIncluded is the create's include step: it copies the root's included files into the new
+// workroom at wrPath, logging each one. Nothing that goes wrong here fails the create: the step
+// ends as a warning and the create carries on, since a missing file is easy to copy by hand. A
+// root with no include file has no step. It returns the step's warning, or "".
+func (s *Service) copyIncluded(root, wrPath string) string {
+	// Announced before the listing, which takes a second or so in a root with a large ignored tree.
+	if _, err := os.Stat(filepath.Join(root, IncludeFile)); err != nil {
+		return ""
+	}
+	s.step("include", "running", "")
+	warn := func(text string) string {
+		s.step("include", "warning", text)
+		return text
+	}
+	files, _, err := IncludedFiles(root)
+	if err != nil {
+		return warn(fmt.Sprintf("Could not list the included files: %v", err))
+	}
+	if len(files) == 0 {
+		s.step("include", "skipped", "No matching files")
+		return ""
+	}
+	res := CopyIncluded(root, wrPath, files)
+	if s.ScriptLogWriter != nil {
+		for _, f := range res.Copied {
+			fmt.Fprintf(s.ScriptLogWriter, "Copied %s\n", f)
+		}
+		fmt.Fprintf(s.ScriptLogWriter, "Copied %s (%s)\n", countFiles(len(res.Copied)), byteSize(res.Bytes))
+	}
+	s.sayStatus("include", fmt.Sprintf("Copied %s from %s", countFiles(len(res.Copied)), IncludeFile))
+	if len(res.Failures) > 0 {
+		return warn(fmt.Sprintf("Could not copy %s: %s", countFiles(len(res.Failures)), strings.Join(res.Failures, "; ")))
+	}
+	s.step("include", "done", "")
+	return ""
+}
+
+func countFiles(n int) string {
+	if n == 1 {
+		return "1 file"
+	}
+	return fmt.Sprintf("%d files", n)
+}
+
+// byteSize is n for a person, in decimal units as Finder shows sizes.
+func byteSize(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d B", n)
+	}
+	value, unit := float64(n)/1000, "KB"
+	for _, next := range []string{"MB", "GB", "TB"} {
+		if value < 1000 {
+			break
+		}
+		value, unit = value/1000, next
+	}
+	return fmt.Sprintf("%.1f %s", value, unit)
 }
 
 // findScript is scripts/<name> from the workroom, whose files it sets up or tears down, else from

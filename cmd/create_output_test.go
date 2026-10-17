@@ -73,6 +73,25 @@ func TestCreateOutput(t *testing.T) {
 	code, out, errOut = humanCreate(t, home, project("verbose", "echo installing\n"), "--verbose")
 	check("verbose", code, out, errOut, 0, "        repo  Detected Git worktree\n       setup  Running /Users/dev/src/verbose/scripts/workroom_setup from \"/Users/dev/workrooms/calm-river\"\n╭─ Setup ───────────────────────────────────────────────────\n│ installing\n╰───────────────────────────────────────────────────────────\n\nWorkroom 'calm-river' created successfully at ~/workrooms/calm-river.\n", "")
 
+	included := project("included", "")
+	writeRootFile(t, included, ".gitignore", "*.key\n")
+	writeRootFile(t, included, ".worktreeinclude", "*.key\n")
+	writeRootFile(t, included, "good.key", "k")
+	code, out, errOut = humanCreate(t, home, included, "--verbose")
+	check("included files, verbose", code, out, errOut, 0, "        repo  Detected Git worktree\n     include  Copied 1 file from .worktreeinclude\nWorkroom 'calm-river' created successfully at ~/workrooms/calm-river.\n", "")
+
+	if os.Geteuid() != 0 {
+		unreadable := project("unreadable", "")
+		writeRootFile(t, unreadable, ".gitignore", "*.key\n")
+		writeRootFile(t, unreadable, ".worktreeinclude", "*.key\n")
+		writeRootFile(t, unreadable, "bad.key", "k")
+		if err := os.Chmod(filepath.Join(unreadable, "bad.key"), 0); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errOut = humanCreate(t, home, unreadable)
+		check("unreadable included file", code, out, errOut, 0, "Could not copy 1 file: bad.key: open /Users/dev/src/unreadable/bad.key: permission denied\nWorkroom 'calm-river' created successfully at ~/workrooms/calm-river.\n", "")
+	}
+
 	saved := color.NoColor
 	color.NoColor = false
 	t.Cleanup(func() { color.NoColor = saved })
