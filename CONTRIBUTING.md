@@ -234,7 +234,7 @@ type Service struct {
     Status          func(status, msg string)                       // progress steps; --verbose prints them
     ScriptOutput    func(title string) (io.Writer, func(ok bool))  // the human teardown log panel
     ScriptLogWriter io.Writer                                      // --json: NDJSON script output on stderr
-    // ... plus test-injection hooks and --json wiring (KeepEmptyProject, OnReady)
+    // ... plus test-injection hooks and --json wiring (OnReady)
 }
 ```
 
