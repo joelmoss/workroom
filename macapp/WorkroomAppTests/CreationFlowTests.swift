@@ -116,6 +116,48 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertFalse(store.isCreationBlocking(id), "Done mounts the terminal")
   }
 
+  /// Value: protects=unticking "Close automatically when done" during the hold keeps the finished
+  /// checklist for Done; fails_when=the run still closes after the box is unticked;
+  /// no_claim=the Defaults key behind the closure
+  func testUntickingCloseDuringTheHoldKeepsTheChecklist() async throws {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: false)
+    fake.release("wr")
+    let store = makeStore(fake)
+    store.creationSuccessHold = .milliseconds(50)
+    var answers = [true, false]
+    store.closesFinishedCreations = { answers.isEmpty ? false : answers.removeFirst() }
+
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
+    XCTAssertEqual(run.outcome, .succeeded)
+    store.finishCreation(run)
+    XCTAssertTrue(store.creationRuns.isEmpty)
+  }
+
+  /// Value: protects=a local create in a project with scripts/workroom_setup lists the setup row from
+  /// the first frame; fails_when=the row is left out though the script exists;
+  /// no_claim=the CLI actually running the script
+  func testALocalCreateWithASetupScriptListsItsRow() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(
+      at: dir.appendingPathComponent("scripts"), withIntermediateDirectories: true)
+    FileManager.default.createFile(
+      atPath: dir.appendingPathComponent("scripts/workroom_setup").path, contents: Data())
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let path = dir.path
+    let fake = GatedFakeCLI(projectPath: path, names: ["wr"], hasSetup: true, gate: .beforeReady)
+    let store = makeStore(fake)
+
+    let task = Task {
+      await store.createWorkroom(in: Project(path: path, vcs: "git", workrooms: []))
+    }
+    await waitUntil({ fake.assignedCount == 1 }, "the create never reached the CLI")
+    XCTAssertEqual(
+      store.creationRuns.values.first?.steps.map(\.id), ["fetch", "worktree", "script"])
+    fake.release("wr")
+    await task.value
+  }
+
   /// Value: protects=AC 7, a successful create mounts its terminal with no click and the auto-run
   /// armed at landing fires as its first tab; fails_when=the run outlives success or the arm is
   /// lost; no_claim=the shell itself (no PTY is spawned)
