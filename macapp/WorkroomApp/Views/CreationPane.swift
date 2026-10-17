@@ -403,8 +403,8 @@ private struct CreationLogView: View {
 }
 
 /// The failure footer (design D3), pinned to the pane's bottom edge: the reason in red on the left,
-/// the buttons on the right. In a narrow pane (D15) the reason takes its own line, up to two, with the
-/// buttons below it.
+/// in full and selectable, the buttons on the right. In a narrow pane (D15) the reason takes its own
+/// lines, with the buttons below it.
 private struct CreationFailureFooter: View {
   let footer: CreationPanePresentation.Footer
   let narrow: Bool
@@ -418,7 +418,7 @@ private struct CreationFailureFooter: View {
       Group {
         if narrow {
           VStack(alignment: .leading, spacing: 10) {
-            reason(lines: 2)
+            reason
             HStack {
               Spacer()
               buttons
@@ -426,7 +426,7 @@ private struct CreationFailureFooter: View {
           }
         } else {
           HStack(spacing: 12) {
-            reason(lines: 1)
+            reason
             Spacer(minLength: 8)
             buttons
           }
@@ -438,13 +438,14 @@ private struct CreationFailureFooter: View {
     .background(theme.tokens.panel)
   }
 
-  private func reason(lines: Int) -> some View {
+  /// Wrapped, never truncated (owner): a reason cut short behind a tooltip hid the part that said
+  /// why.
+  private var reason: some View {
     Text(footer.reason)
       .font(.callout)
       .foregroundStyle(theme.tokens.failure)
-      .lineLimit(lines)
-      .truncationMode(.tail)
-      .help(footer.reason)
+      .fixedSize(horizontal: false, vertical: true)
+      .textSelection(.enabled)
   }
 
   @ViewBuilder private var buttons: some View {
