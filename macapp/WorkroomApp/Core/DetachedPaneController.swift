@@ -68,6 +68,10 @@ final class DetachedPaneFocus: ObservableObject {
 ///                       └──────────┘
 ///      closeTab / reap → undetach → .paneDocked → close(tabID:), i.e. the window
 ///      goes as a CONSEQUENCE of the tab dying
+///
+///   DETACHED ── its workroom moves to another window (#444) ──▶ DETACHED, owned by THAT store:
+///      close(tabID:) here, then the destination's `.paneRestoredDetached` reopens it at the same
+///      frame. The tab never docks and never dies on the way.
 /// ```
 ///
 /// Three asymmetries, all deliberate, all easy to get backwards:

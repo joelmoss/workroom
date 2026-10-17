@@ -55,6 +55,49 @@ func openInSplitMenuItem(store: AppStore, sid: SidebarID) -> some View {
   }
 }
 
+/// "Move to New Window" (#444): this workroom, its terminals still running, into a window of its
+/// own. Shown wherever the workroom has terminals in this window, so there is something to move;
+/// disabled while a create is still setting it up, and for a window's only workroom, which would
+/// just become the same window again (dragging that one out still moves the window). Shared by
+/// `workroomContextMenu` and `ProjectSidebar`'s row menu.
+@MainActor
+@ViewBuilder
+func moveToNewWindowMenuItem(store: AppStore, sid: SidebarID) -> some View {
+  if showsMoveToNewWindow(store: store, sid: sid) {
+    Button {
+      store.moveWorkroomToNewWindow(sid)
+    } label: {
+      Label("Move to New Window", systemImage: "macwindow.badge.plus")
+    }
+    .disabled(!store.canMoveWorkroomToNewWindow(sid))
+  }
+}
+
+/// A pane's "Move to New Window", or "Move Back to Main Window" once it is in a window of its own
+/// (#444): the same toggle as the pane title bar's button and ⌃⌘O, for the pane the menu is on.
+/// Shared by every pane menu: its tab chip, its title bar's More menu and its sidebar row (the
+/// terminal's own right-click menu is AppKit's, in `GhosttySurfaceView`).
+@MainActor
+@ViewBuilder
+func paneWindowMenuItem(
+  store: AppStore, tabID: TerminalTab.ID, targetID: TerminalTarget.ID
+) -> some View {
+  let detached = store.terminals.detachedTabIDs.contains(tabID)
+  Button {
+    store.togglePaneWindow(tabID, targetID: targetID)
+  } label: {
+    Label(
+      detached ? "Move Back to Main Window" : "Move to New Window",
+      systemImage: detached ? "arrow.down.right.and.arrow.up.left" : "macwindow.badge.plus")
+  }
+}
+
+/// Whether `moveToNewWindowMenuItem` renders anything, for the dividers around it.
+@MainActor
+func showsMoveToNewWindow(store: AppStore, sid: SidebarID) -> Bool {
+  store.target(for: sid).map { store.terminals.tabCount(forTargetID: $0.id) > 0 } ?? false
+}
+
 @MainActor
 @ViewBuilder
 func workroomContextMenu(
@@ -80,11 +123,15 @@ func workroomContextMenu(
       Label("Remove from Split", systemImage: "pip.exit")
     }
   }
+  moveToNewWindowMenuItem(store: store, sid: sid)
   // Label + delete only apply to a workroom (roots are never labelled or deletable). Mirrors the
   // sidebar row's context menu (issue #41 + delete).
   if let pair = store.workroomAndProject(for: sid) {
-    // Leading divider only when a top item (Close / Remove from Split / Open (split right)) showed.
-    if closeName != nil || onRemoveFromSplit != nil || canOpenInSplit(store: store, sid: sid) {
+    // Leading divider only when a top item (Close / Remove from Split / Open (split right) / Move to
+    // New Window) showed.
+    if closeName != nil || onRemoveFromSplit != nil || canOpenInSplit(store: store, sid: sid)
+      || showsMoveToNewWindow(store: store, sid: sid)
+    {
       Divider()
     }
     Button {

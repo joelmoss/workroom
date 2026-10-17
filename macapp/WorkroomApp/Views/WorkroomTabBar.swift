@@ -139,7 +139,7 @@ struct WorkroomTabBar: View {
           ? drag.translation
           : TabReorder.gapShift(
             index: index, draggedIndex: draggedIndex, target: dropIndex,
-            amount: draggedWidth + tabSpacing)
+            amount: draggedWidth + tabSpacing) + incomingShift(at: index)
         WorkroomTabChip(
           sid: tab.sid, target: tab.target, isActive: tab.sid == selectedID,
           isHovered: isHovered, isDragging: isDragging,
@@ -164,12 +164,24 @@ struct WorkroomTabBar: View {
                   value.translation.width, draggedID: tab.sid, draggedIndex: index))
               // Dragged into the detail content → preview a drop-into-pane split (the strip stops
               // gapping); otherwise it's a plain reorder.
+              // Out of the window: into another window, or a new one (#444).
+              if isDragOutsideWindow(value.location) {
+                chipPaneDrag = nil
+                WorkroomWindowDrag.update(
+                  store: store, sid: tab.sid, target: tab.target,
+                  width: drag.widths[tab.sid] ?? 0)
+                return
+              }
+              WorkroomWindowDrag.cancel()
               chipPaneDrag = localize(value.location).map {
                 WorkroomPaneDrag(sid: tab.sid, location: $0)
               }
             }
             .onEnded { value in
-              if let drop = dropTarget(value.location) {
+              if isDragOutsideWindow(value.location) {
+                drag.cancel()
+                WorkroomWindowDrag.end(store: store, sid: tab.sid)
+              } else if let drop = dropTarget(value.location) {
                 store.insertWorkroomSplit(
                   tab.sid, beside: drop.sid, edge: drop.edge, destinationRect: drop.rect)
                 drag.cancel()
@@ -195,6 +207,8 @@ struct WorkroomTabBar: View {
         // same id `ForEach` already keys identity on.
         .id(tab.sid)
       }
+      // The HStack's own spacing before it makes up the rest of the gap.
+      if let incomingRoom { Color.clear.frame(width: incomingRoom, height: 1) }
       // A divider sets the trailing controls apart from the last tab — see `showsTrailingDivider` for
       // when it hides. Toggled via OPACITY (not removed) so the controls never shift as hover and
       // selection come and go, which also keeps the measured run width stable across those
@@ -209,6 +223,22 @@ struct WorkroomTabBar: View {
     }
     .background(alignment: .leading) { splitWell(groupOf: groupOf) }
     .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
+    .onPreferenceChange(WorkroomTabFrameKey.self) { store.workroomTabFrames = $0 }
+  }
+
+  /// How far a tab moves aside for a workroom dragged in from another window (#444): every tab at or
+  /// after the slot it would land in.
+  private func incomingShift(at index: Int) -> CGFloat {
+    guard let incoming = store.incomingWorkroomDrop, let slot = incoming.slot, index >= slot
+    else { return 0 }
+    return incoming.width + tabSpacing
+  }
+
+  /// The room a workroom dragged in from another window needs at the end of the run (#444): the
+  /// tabs after its slot slide into it, so they never ride over the trailing controls. Nil while
+  /// nothing hovers, when the run's layout is exactly as without this.
+  private var incomingRoom: CGFloat? {
+    store.incomingWorkroomDrop.map(\.width)
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`. Every tab gets a leading divider
@@ -648,6 +678,8 @@ private struct WorkroomTabChip: View {
       .background {
         GeometryReader { geo in
           Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
+            // Where it sits in the window, for a workroom dragged in from another window (#444).
+            .preference(key: WorkroomTabFrameKey.self, value: [sid: geo.frame(in: .global)])
         }
       }
   }
@@ -680,6 +712,13 @@ private struct WorkroomTabChip: View {
 private struct WorkroomTabWidthKey: PreferenceKey {
   static let defaultValue: [SidebarID: CGFloat] = [:]
   static func reduce(value: inout [SidebarID: CGFloat], nextValue: () -> [SidebarID: CGFloat]) {
+    value.merge(nextValue()) { _, new in new }
+  }
+}
+
+private struct WorkroomTabFrameKey: PreferenceKey {
+  static let defaultValue: [SidebarID: CGRect] = [:]
+  static func reduce(value: inout [SidebarID: CGRect], nextValue: () -> [SidebarID: CGRect]) {
     value.merge(nextValue()) { _, new in new }
   }
 }

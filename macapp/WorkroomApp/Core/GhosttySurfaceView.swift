@@ -151,6 +151,10 @@ final class GhosttySurfaceView: NSView {
   /// selection (issue #3, splits). `becomeFirstResponder` is the single chokepoint for every focus
   /// path, so one hook covers them all. Value-type captures only.
   var onFocused: (() -> Void)?
+  /// The right-click menu's "Move to New Window" / "Move Back to Main Window" for THIS pane (#444).
+  /// A closure rather than the key window's store, which the other menu commands use: a pane in its
+  /// own window has no store of its own to be found by.
+  var onToggleWindow: (() -> Void)?
 
   /// Scrollback find (⌘F): the observable bridge between this surface and its SwiftUI find bar.
   /// libghostty owns the search itself; this carries the needle out and the match counts back (see
@@ -409,6 +413,7 @@ final class GhosttySurfaceView: NSView {
     onCmdClickFile = nil
     resolveCmdHoverFile = nil
     onFocused = nil
+    onToggleWindow = nil
     onEffectiveFocusChange = nil
     onChildExited = nil
     onCloseRequested = nil
@@ -1888,6 +1893,13 @@ final class GhosttySurfaceView: NSView {
     menu.addItem(contextItem("Split Down", #selector(contextSplitDown), "d", [.command, .shift]))
     menu.addItem(contextItem("Split Up", #selector(contextSplitUp)))
     menu.addItem(.separator())
+    if onToggleWindow != nil {
+      menu.addItem(
+        contextItem(
+          window is DetachedPaneWindow ? "Move Back to Main Window" : "Move to New Window",
+          #selector(contextToggleWindow), "o", [.command, .control]))
+      menu.addItem(.separator())
+    }
     menu.addItem(contextItem("Close Terminal", #selector(contextCloseTerminal), "w", .command))
     return menu
   }
@@ -1923,6 +1935,9 @@ final class GhosttySurfaceView: NSView {
   }
   @objc private func contextSplitUp() {
     DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedUp() }
+  }
+  @objc private func contextToggleWindow() {
+    DispatchQueue.main.async { [weak self] in self?.onToggleWindow?() }
   }
 
   @objc func paste(_ sender: Any?) {

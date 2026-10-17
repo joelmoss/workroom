@@ -69,6 +69,15 @@ final class AppStore: ObservableObject {
   /// (issue #70). Set by `RootWindow.init`; applied once in `attachWindow` before the window shows.
   /// nil for the launch window.
   var pendingInitialWindowSize: CGSize?
+  /// Where a new window's top-left goes on screen, for one opened by dropping a workroom on the
+  /// desktop (#444). Applied with `pendingInitialWindowSize`.
+  var pendingInitialWindowTopLeft: CGPoint?
+  /// A workroom from another window hovering over this one (#444): where its tab would land among
+  /// this window's (nil: at the end) and how wide a gap to open for it.
+  var incomingWorkroomDrop: IncomingWorkroomDrop?
+  /// Each workroom tab's frame in this window, top-left origin, for working out where a workroom
+  /// dragged in from another window lands. A measurement, not state: nothing renders from it.
+  @ObservationIgnored var workroomTabFrames: [SidebarID: CGRect] = [:]
   private var didApplyInitialSize = false
   /// True only for the window SwiftUI brings up at launch (`WindowSeed.restore`). Set by
   /// `RootWindow.init`. The What's-New auto-check runs only from this window so a relaunch with
@@ -1063,6 +1072,8 @@ final class AppStore: ObservableObject {
     // Something tried to focus a pane that lives in its own window; its window is the honest answer.
     case .paneRaiseRequested(let tabID):
       raiseDetachedPane(tabID)
+    case .paneWindowToggleRequested(let targetID, let tabID):
+      togglePaneWindow(tabID, targetID: targetID)
     }
   }
 
@@ -1193,6 +1204,12 @@ final class AppStore: ObservableObject {
         window.setFrame(frame, display: false)
       } else if let size = pendingInitialWindowSize {
         window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
+        if let topLeft = pendingInitialWindowTopLeft {
+          window.setFrameTopLeftPoint(topLeft)
+          if let safe = Self.frameOnAVisibleScreen(window.frame) {
+            window.setFrame(safe, display: false)
+          }
+        }
       } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
         window.setFrame(frame, display: false)
       } else {
@@ -1421,6 +1438,18 @@ final class AppStore: ObservableObject {
       let target = store.targetOwning(tabID)
     else { return }
     store.dockPane(tabID, for: target)
+  }
+
+  /// A pane's own "Move to New Window" / "Move Back to Main Window" (#444): the right-click menus
+  /// of its tab, its terminal, its title bar and its sidebar row, all acting on that pane rather than
+  /// the focused one, as the Window menu's item does.
+  func togglePaneWindow(_ tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
+    guard let target = terminalTarget(forID: targetID) else { return }
+    if terminals.detachedTabIDs.contains(tabID) {
+      dockPane(tabID, for: target)
+    } else {
+      terminals.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
+    }
   }
 
   /// Dock a pane and SHOW it — the inverse of detaching, which raises the window it opens.

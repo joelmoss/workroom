@@ -552,6 +552,9 @@ final class TerminalSessions: ObservableObject {
     /// Something tried to focus a detached pane. Its window is the honest answer, so `AppStore` raises
     /// it (see `setFocused`, which refuses the focus write itself).
     case paneRaiseRequested(TerminalTab.ID)
+    /// The terminal's own right-click "Move to New Window" / "Move Back to Main Window" (#444):
+    /// detach this pane, or dock it when it is already in its own window.
+    case paneWindowToggleRequested(TerminalTarget.ID, TerminalTab.ID)
     /// A restored pane was detached when the session was saved, so its window must be rebuilt at the
     /// saved frame. Separate from `.paneDetached` because restore is not a gesture: there is no cursor
     /// to place the window at, and the frame is authoritative.
@@ -1411,14 +1414,7 @@ final class TerminalSessions: ObservableObject {
   /// already exited). Only run tabs wire `onCloseRequested`. Shared by `addRunTab` (append + focus) and
   /// `respawnRunTab` (in-place restart, issue #40).
   private func makeRunTab(for target: TerminalTarget, command: String, cwd: String) -> TerminalTab {
-    let tab = makeTerminalTab(for: target, cwd: cwd, command: command, title: "Run")
-    let targetID = target.id
-    let tabID = tab.id
-    tab.surface?.onCloseRequested = { [weak self] in
-      guard let self, let target = self.target(forID: targetID) else { return }
-      self.closeTab(tabID, for: target)
-    }
-    return tab
+    makeTerminalTab(for: target, cwd: cwd, command: command, title: "Run")
   }
 
   /// Split the focused pane by spawning a new terminal on the trailing side (⌘D right, ⇧⌘D down).
@@ -1629,6 +1625,89 @@ final class TerminalSessions: ObservableObject {
     guard detachedTabIDs.remove(tabID) != nil else { return false }
     onEvent?(.paneDocked(tabID))
     return true
+  }
+
+  // MARK: Hand-over between windows (#444)
+
+  /// One target's live tabs, lifted out of a window's sessions for another window's to adopt. The
+  /// tabs keep their ids and their surfaces, so processes, scrollback and notifications carry
+  /// straight across. Nothing reattaches: a reattach repaints only the newest few MiB of history and
+  /// re-mints tab ids, and a run tab has no session to reattach to.
+  struct TargetHandOff {
+    let target: TerminalTarget
+    /// Every tab, detached panes included, in strip order.
+    let tabs: [TerminalTab]
+    let splits: [TerminalPaneLayout]
+    let focused: TerminalTab.ID?
+    let counter: Int
+    /// The tabs in their own windows, each with its window's frame (`AppStore` fills the frames
+    /// in, since it owns the windows).
+    var detached: [TerminalTab.ID: NSRect]
+  }
+
+  /// Lift `target`'s tabs out of this window WITHOUT ending a session or freeing a surface: the one
+  /// removal that leaves the tabs alive, for another window to `adopt`. Fires `.tabsRemoved`, so this
+  /// window tidies up as it does for a close (history, split membership, selection). Detached
+  /// membership goes silently: `AppStore` closes those windows itself and the destination reopens
+  /// them, which `.paneDocked` would race.
+  func handOff(_ target: TerminalTarget) -> TargetHandOff? {
+    let dict = tabsByTarget[target.id] ?? [:]
+    guard !dict.isEmpty else { return nil }
+    let ids = normalizedTabIDs(forTargetID: target.id).filter { dict[$0] != nil }
+    let handOff = TargetHandOff(
+      target: target, tabs: ids.compactMap { dict[$0] }, splits: splitsByTarget[target.id] ?? [],
+      focused: focusedTabByTarget[target.id], counter: counts[target.id] ?? ids.count,
+      detached: Dictionary(
+        uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }))
+    for id in ids {
+      detachedTabIDs.remove(id)
+      activityPulses[id] = nil
+      hostCwdQueries.removeValue(forKey: id)?.cancel()
+      claudeProfileQueries.removeValue(forKey: id)?.cancel()
+      watchedDone.remove(id)
+      agentManager.tabClosed(id)
+    }
+    // Emptied, not forgotten, as a close of every tab leaves it: `ensureTab` must not read the
+    // workroom as never opened and start a fresh terminal behind the move.
+    tabsByTarget[target.id] = [:]
+    orderByTarget[target.id] = []
+    splitsByTarget[target.id] = nil
+    setFocused(nil, for: target.id, notify: false)
+    paneRects[target.id] = nil
+    paneSpace[target.id] = nil
+    onEvent?(.tabsRemoved(target.id, ids))
+    return handOff
+  }
+
+  /// Take in the tabs another window handed off. Into a target this window shows no tabs for,
+  /// everything comes as it was: order, splits, focus, numbering, detached panes. Into one it
+  /// already shows, they join after its own tabs, its own layout stays, and the moved splits go.
+  func adopt(_ handOff: TargetHandOff) {
+    let target = handOff.target
+    let merging = !(tabsByTarget[target.id] ?? [:]).isEmpty
+    for tab in handOff.tabs {
+      tabsByTarget[target.id, default: [:]][tab.id] = tab
+      orderByTarget[target.id, default: []].append(tab.id)
+      guard case .terminal(let state) = tab.content else { continue }
+      wire(state.view, tab: tab.id, target: target)
+      if state.sessionID != nil {
+        followProgramStatus(on: target.remoteHost.map(HostID.remote) ?? .local)
+      }
+    }
+    for id in handOff.detached.keys { detachedTabIDs.insert(id) }
+    if !merging {
+      splitsByTarget[target.id] = handOff.splits.isEmpty ? nil : handOff.splits
+    }
+    counts[target.id] = max(handOff.counter, counts[target.id] ?? 0)
+    let focus =
+      handOff.focused.flatMap { detachedTabIDs.contains($0) ? nil : $0 }
+      ?? handOff.tabs.first { !detachedTabIDs.contains($0.id) }?.id
+    if let focus { setFocused(focus, for: target.id, notify: false) }
+    for tab in handOff.tabs { refreshProgramStatus(tab: tab.id, target: target.id) }
+    for (id, frame) in handOff.detached {
+      onEvent?(.paneRestoredDetached(target.id, id, frame: frame))
+    }
+    reconcileOcclusion(for: target)
   }
 
   /// Pull a tab out of its group so it's a solo terminal again (drag a chip clear of the group). The
@@ -2307,9 +2386,27 @@ final class TerminalSessions: ObservableObject {
       }
       tab.content = .terminal(state)
     }
+    wire(view, tab: tab.id, target: target)
+    return tab
+  }
 
+  /// Point every callback of `view` at this window's sessions. A surface's callbacks name the
+  /// sessions that own its tab, so this runs once when a tab is made and again when another window
+  /// hands the tab over (issue #444): a moved surface left wired to the window it came from would
+  /// report its title, focus and exits to that window, or to nothing once it closes.
+  private func wire(_ view: GhosttySurfaceView, tab tabID: TerminalTab.ID, target: TerminalTarget) {
     let targetID = target.id
-    let tabID = tab.id
+    // A run tab's own "press any key to close" closes the tab (`AppStore` overrides it for the run
+    // command, whose stop must be graceful).
+    if view.isRunCommandSurface {
+      view.onCloseRequested = { [weak self] in
+        guard let self, let target = self.target(forID: targetID) else { return }
+        self.closeTab(tabID, for: target)
+      }
+    }
+    view.onToggleWindow = { [weak self] in
+      self?.onEvent?(.paneWindowToggleRequested(targetID, tabID))
+    }
     view.onActivity = { [weak self] activity in
       self?.onEvent?(.activity(targetID, tabID, activity))
     }
@@ -2345,7 +2442,7 @@ final class TerminalSessions: ObservableObject {
 
     if target.remoteHost != nil {
       wireRemoteLinks(view, tab: tabID, target: target)
-      return tab
+      return
     }
     let projectPath = target.path
     view.onCmdClickFile = { [weak view] word in
@@ -2357,7 +2454,6 @@ final class TerminalSessions: ObservableObject {
     view.onOpenURL = { [weak view] url in
       TerminalLinkOpener.handleOpenURL(url, cwd: view?.lastKnownCwd ?? projectPath)
     }
-    return tab
   }
 
   // MARK: Program status (#358)

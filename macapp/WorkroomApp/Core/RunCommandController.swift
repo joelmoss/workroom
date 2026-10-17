@@ -156,6 +156,52 @@ final class RunCommandController {
   /// the auto-dismiss timer each tick). Cleared in `clearRunPidFile`.
   var lastRunStatus: [TerminalTarget.ID: String] = [:]
 
+  // MARK: Hand-over between windows (#444)
+
+  /// One target's run bookkeeping, carried with its workroom to another window. The run tab's
+  /// process moves with its surface; this is everything this window knew about it.
+  struct HandOff {
+    var state: RunState?
+    var outcome: RunOutcome?
+    var pidFile: String?
+    var session: pid_t?
+    var lastStatus: String?
+    var toastDismissed = false
+    var toastAutoHidden = false
+    var investigateTabs: [TerminalTab.ID] = []
+  }
+
+  /// Lift `targetID`'s run bookkeeping out of this window. A pending toast dismissal is cancelled:
+  /// it would act on this window's toast, which goes with the workroom.
+  func takeHandOff(for targetID: TerminalTarget.ID) -> HandOff {
+    runToastDismissWork.removeValue(forKey: targetID)?.cancel()
+    let investigate = investigateTabs.filter { $0.value == targetID }.map(\.key)
+    for tab in investigate { investigateTabs[tab] = nil }
+    return HandOff(
+      state: runStates.removeValue(forKey: targetID),
+      outcome: runOutcomes.removeValue(forKey: targetID),
+      pidFile: runPidFiles.removeValue(forKey: targetID),
+      session: runSessions.removeValue(forKey: targetID),
+      lastStatus: lastRunStatus.removeValue(forKey: targetID),
+      toastDismissed: dismissedRunToasts.remove(targetID) != nil,
+      toastAutoHidden: runningToastAutoHidden.remove(targetID) != nil,
+      investigateTabs: investigate)
+  }
+
+  /// The other half of `takeHandOff`, in the window the workroom moved to. A hand-off with no run
+  /// leaves this window's own run for the target as it is.
+  func adopt(_ handOff: HandOff, for targetID: TerminalTarget.ID) {
+    for tab in handOff.investigateTabs { investigateTabs[tab] = targetID }
+    guard let state = handOff.state else { return }
+    runStates[targetID] = state
+    runOutcomes[targetID] = handOff.outcome
+    runPidFiles[targetID] = handOff.pidFile
+    runSessions[targetID] = handOff.session
+    lastRunStatus[targetID] = handOff.lastStatus
+    if handOff.toastDismissed { dismissedRunToasts.insert(targetID) }
+    if handOff.toastAutoHidden { runningToastAutoHidden.insert(targetID) }
+  }
+
   // MARK: Run toast (issue #67) — DERIVED view-model, dismissal, native banner
 
   /// A live run-status toast, DERIVED from `runStates` + `runOutcomes` (no parallel stored array, so it

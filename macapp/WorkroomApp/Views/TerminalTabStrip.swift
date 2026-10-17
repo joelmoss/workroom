@@ -1110,6 +1110,9 @@ extension View {
         }
       }
       Divider()
+      // This pane into a window of its own (#444), as dragging the chip out of the window does.
+      paneWindowMenuItem(store: store, tabID: tab.id, targetID: target.id)
+      Divider()
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)
       } label: {

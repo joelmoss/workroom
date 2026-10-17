@@ -183,6 +183,20 @@ final class NotificationCenterStore: ObservableObject {
 
   func clear() { items.removeAll() }
 
+  /// A workroom moving to another window takes its notifications with it, still unread (#444).
+  func take(target: TerminalTarget.ID) -> [WorkroomNotification] {
+    let moved = items.filter { $0.targetID == target }
+    if !moved.isEmpty { items.removeAll { $0.targetID == target } }
+    return moved
+  }
+
+  /// The other half of `take`, in the window the workroom moved to. Kept in date order, so the
+  /// cap still drops the oldest.
+  func adopt(_ moved: [WorkroomNotification]) {
+    guard !moved.isEmpty else { return }
+    items = Array((items + moved).sorted { $0.date < $1.date }.suffix(cap))
+  }
+
   // MARK: Test seam
 
   /// Replace the history wholesale with a fixed set — the UI-test fixture (`UITestFixture`) and unit

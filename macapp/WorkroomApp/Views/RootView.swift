@@ -524,6 +524,8 @@ struct RootView: View {
           // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
           // member of a workroom-into-workroom split.
           workroomSplitVisible: store.isWorkroomSplitVisible && !store.hasModalPresentation,
+          canMoveWorkroom: store.selectedTargetID.map(store.canMoveWorkroomToNewWindow) == true
+            && !store.hasModalPresentation,
           modalPresented: store.hasModalPresentation))
   }
 
@@ -789,6 +791,7 @@ private struct MenuStateValues: ViewModifier {
   let canSwitchWorkrooms: Bool
   let canOpenInEditor: Bool
   let workroomSplitVisible: Bool
+  let canMoveWorkroom: Bool
   /// Published for the items that have no other boolean to fold it into (see `ModalPresentedKey`).
   /// The booleans above already have it ANDed in at the call site, so they need nothing here.
   let modalPresented: Bool
@@ -813,5 +816,6 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.canSwitchWorkrooms, canSwitchWorkrooms)
       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
       .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
+      .focusedSceneValue(\.canMoveWorkroom, canMoveWorkroom)
   }
 }
