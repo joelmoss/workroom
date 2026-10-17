@@ -1,12 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// The app's error dialog: what went wrong in words a person can act on, and the codes and raw
-/// text behind it under Details, collapsed. Laid out like `VCSFailureSheet`, without its recovery
-/// actions.
+/// The app's error dialog: what went wrong in words a person can act on, a failed script's output
+/// open beneath it, and the codes and raw text behind it under Details, collapsed. Laid out like
+/// `VCSFailureSheet`, without its recovery actions.
 struct ErrorSheet: View {
   let title: String
   let message: String
+  var log: String? = nil
   let details: String?
   let onDismiss: () -> Void
 
@@ -32,18 +33,14 @@ struct ErrorSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
+      if let log {
+        // Pinned to the bottom: a script's last lines are usually where it says what went wrong.
+        textBox(log, maxHeight: 240, id: "error.log")
+          .defaultScrollAnchor(.bottom)
+      }
       if let details {
         DisclosureGroup(isExpanded: $showDetails) {
-          ScrollView {
-            Text(details)
-              .font(.system(.caption, design: .monospaced))
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(8)
-              .accessibilityIdentifier("error.details")
-          }
-          .frame(maxHeight: 160)
-          .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
+          textBox(details, maxHeight: 160, id: "error.details")
         } label: {
           DisclosureLabel(isExpanded: $showDetails) {
             Text("Details").font(.subheadline.weight(.semibold))
@@ -52,14 +49,14 @@ struct ErrorSheet: View {
         .accessibilityIdentifier("error.detailsToggle")
       }
       HStack(spacing: 8) {
-        if details != nil {
+        if details != nil || log != nil {
           Button("Copy") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(
-              [title, message, details].compactMap { $0 }.joined(separator: "\n\n"),
+              [title, message, log, details].compactMap { $0 }.joined(separator: "\n\n"),
               forType: .string)
           }
-          .help("Copy the message and its details to the clipboard")
+          .help("Copy the message, its output and its details to the clipboard")
           .accessibilityIdentifier("error.copy")
         }
         Spacer()
@@ -75,6 +72,19 @@ struct ErrorSheet: View {
     // (see `VCSFailureSheet`).
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("error.sheet")
+  }
+
+  private func textBox(_ text: String, maxHeight: CGFloat, id: String) -> some View {
+    ScrollView {
+      Text(text)
+        .font(.system(.caption, design: .monospaced))
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .accessibilityIdentifier(id)
+    }
+    .frame(maxHeight: maxHeight)
+    .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
   }
 }
 

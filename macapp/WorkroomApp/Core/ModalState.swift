@@ -64,10 +64,14 @@ struct PendingProjectSettings: Identifiable {
 @MainActor
 @Observable
 final class ModalState {
-  /// Setting it drops `errorDetails`, which belongs to whatever error set it: a later message from
-  /// a direct setter must not show an earlier error's codes. `present(_:)` sets it after.
+  /// Setting it drops `errorDetails` and `errorLog`, which belong to whatever error set them: a later
+  /// message from a direct setter must not show an earlier error's codes or output. `present(_:)`
+  /// sets the details after.
   var errorMessage: String? {
-    didSet { errorDetails = nil }
+    didSet {
+      errorDetails = nil
+      errorLog = nil
+    }
   }
   /// Title for the error alert. Nil falls back to the generic title; specific
   /// failures (e.g. teardown) set their own.
@@ -75,6 +79,9 @@ final class ModalState {
   /// The error's codes and raw text, under the error sheet's collapsed Details. Set only by
   /// `present(_:)`, cleared with the message.
   var errorDetails: String?
+  /// A failed script's output, shown open in a scrolling box beneath the message. Set after the
+  /// message, cleared with it.
+  var errorLog: String?
 
   /// Dismisses the error sheet.
   func clearError() {
