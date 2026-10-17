@@ -33,6 +33,10 @@ _Avoid_: Base (alone)
 **Setup script**, **Teardown script**:
 The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a local workroom when it is created and before it is deleted. A remote workroom runs neither.
 
+**Include file**, **Included files**:
+The include file is the root's `.worktreeinclude`, a list of `.gitignore`-style patterns. The included files are the root's gitignored files that match it, such as `.env`, copied into every new workroom, on this Mac or on a host.
+_Avoid_: Shared files, synced files
+
 ## Version control
 
 Owns repositories, changesets, diffs, history, working status, and the commit and pull request actions. Local reads and reads routed through a host's agent answer the same questions.
