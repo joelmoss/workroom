@@ -119,18 +119,6 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     XCTAssertTrue(waitExists(row, before), "\(message) (and back again)")
   }
 
-  /// One launch, ordered. Every step reads its own starting state (the toggles' `Defaults` persist
-  /// across runs), so a flip left by an earlier step can't satisfy a later assertion.
-  ///
-  /// 1. Bugs 2a/2b/3 WITHOUT a focused terminal. These run first, before anything has clicked into
-  ///    a terminal, and each toggles twice so the sidebar ends where it started. ⌃⌘S is our own
-  ///    Projects shortcut; ⌥⌘S is the OS-standard Toggle Sidebar shortcut, which must not open the
-  ///    empty native column (it's aliased onto the same real sidebar toggle); ⌥⌘B is the secondary
-  ///    Projects toggle.
-  /// 2. Bug 1: Changes/Files/History/Pull Request shortcuts reach the menu with a TUI focused.
-  /// 3. Bugs 2a/2b/3 again, WITH a focused terminal (the keystroke must beat the Ghostty surface).
-  /// 4. Bug 4: ⌘B toggles the Inspector as a whole, independent of which section is active. It
-  ///    sets its own known state with ⌥⌘C, so it goes last and needs nothing from earlier steps.
   /// No projects (`-WorkroomUITestNoProjects`): the View menu's sidebar and inspector toggles are
   /// disabled, which also drops their key equivalents (⌃⌘S, ⌘B, ⌥⌘C, ⌥⌘Y, ⌥⌘P, ⌥⌘F). Theme… stays
   /// enabled as the control, so a menu that never opened, or reads every item as disabled, can't pass.
@@ -157,6 +145,18 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
+  /// One launch, ordered. Every step reads its own starting state (the toggles' `Defaults` persist
+  /// across runs), so a flip left by an earlier step can't satisfy a later assertion.
+  ///
+  /// 1. Bugs 2a/2b/3 WITHOUT a focused terminal. These run first, before anything has clicked into
+  ///    a terminal, and each toggles twice so the sidebar ends where it started. ⌃⌘S is our own
+  ///    Projects shortcut; ⌥⌘S is the OS-standard Toggle Sidebar shortcut, which must not open the
+  ///    empty native column (it's aliased onto the same real sidebar toggle); ⌥⌘B is the secondary
+  ///    Projects toggle.
+  /// 2. Bug 1: Changes/Files/History/Pull Request shortcuts reach the menu with a TUI focused.
+  /// 3. Bugs 2a/2b/3 again, WITH a focused terminal (the keystroke must beat the Ghostty surface).
+  /// 4. Bug 4: ⌘B toggles the Inspector as a whole, independent of which section is active. It
+  ///    sets its own known state with ⌥⌘C, so it goes last and needs nothing from earlier steps.
   func testViewMenuShortcutsReachTheAppWithAndWithoutTerminalFocused() {
     let app = launchedApp()
 
