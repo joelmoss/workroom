@@ -56,8 +56,12 @@ enum CreationPanePresentation {
     }
   }
 
-  /// The header's first line (design D5): "Creating workroom…" until the name lands.
-  @MainActor static func title(of run: CreationRun) -> String { run.name ?? "Creating workroom…" }
+  /// The header's first line (design D5): "Creating workroom…", then "Creating workroom <name>…"
+  /// once the name lands, and the bare name once the create has ended.
+  @MainActor static func title(of run: CreationRun) -> String {
+    guard let name = run.name else { return "Creating workroom…" }
+    return run.isRunning ? "Creating workroom \(name)…" : name
+  }
 
   /// The header's second line: "<project> · <destination>", also the provisional row's destination.
   @MainActor static func subtitle(of run: CreationRun) -> String {

@@ -123,8 +123,8 @@ struct CreationPane: View {
     }
   }
 
-  /// Two lines at a fixed height from the first frame (design D5); the name replaces "Creating
-  /// workroom…" in place, and nothing here changes on failure.
+  /// Two lines at a fixed height from the first frame (design D5); the name joins "Creating
+  /// workroom…" in place, and stands alone once the create ends.
   private var header: some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(P.title(of: run))
