@@ -101,7 +101,7 @@ struct ProjectSidebar: View {
         ContentUnavailableView {
           Label("No projects yet", systemImage: "folder.badge.plus")
         } description: {
-          Text("Add a Git project folder to start managing its workrooms.")
+          Text("Add your first project!")
         } actions: {
           Button("Add Project…") { store.requestAddProject = true }
             .buttonStyle(.borderedProminent)

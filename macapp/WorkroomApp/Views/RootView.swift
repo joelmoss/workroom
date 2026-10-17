@@ -721,7 +721,7 @@ struct RootView: View {
         // Zero projects: the sidebar's own empty-state copy (`ProjectSidebar`) — the sidebar itself
         // is hidden in this state (see `splitView`), so this is the only place left to say it.
         if store.projects.isEmpty {
-          Text("Add a Git project folder to start managing its workrooms.")
+          Text("Add your first project!")
         } else {
           Text("Select a project's root, or open (⌘O) or create (⌘N) a workroom to get started.")
         }
