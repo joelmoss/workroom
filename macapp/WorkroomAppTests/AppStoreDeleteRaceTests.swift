@@ -17,6 +17,9 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   var allowDelete = false
   /// When true, the released `delete` throws — modelling a failed teardown (workroom stays on disk).
   var deleteFails = false
+  /// What a failing delete throws, and the script output it streams first.
+  var deleteError: Error = WorkroomCLIError.timedOut
+  var deleteLog: [String] = []
   /// What a released `deleteProject` hands back to move to the Bin.
   var trashPaths: [URL] = []
   private(set) var listCalls = 0
@@ -43,7 +46,10 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
     deleteStarted = true
     // Gate: hold the teardown open until the test releases it, keeping the tombstone live.
     while !allowDelete { await Task.yield() }
-    if deleteFails { throw WorkroomCLIError.timedOut }
+    if deleteFails {
+      for line in deleteLog { onLog?(line) }
+      throw deleteError
+    }
   }
 
   func deleteProject(
@@ -52,7 +58,10 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
     // Gated like `delete`, so the project tombstone stays live across a concurrent reload (#287).
     deleteStarted = true
     while !allowDelete { await Task.yield() }
-    if deleteFails { throw WorkroomCLIError.timedOut }
+    if deleteFails {
+      for line in deleteLog { onLog?(line) }
+      throw deleteError
+    }
     return trashPaths
   }
 }
@@ -224,6 +233,48 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await waitUntil(
       { self.workroomNames(store) == ["a", "b"] }, "failed teardown restores the workroom")
     XCTAssertFalse(store.deletingWorkrooms.contains(targetID("a")), "tombstone cleared on failure")
+  }
+
+  /// A failed teardown keeps the CLI's reason as the message and shows the script's output apart,
+  /// in the sheet's log box: the output alone doesn't say which script failed or how.
+  func testFailedTeardownShowsTheReasonAboveTheScriptOutput() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.deleteFails = true
+    let reason =
+      "teardown script failed: /x/scripts/workroom_teardown returned a non-zero exit code"
+    fake.deleteError = WorkroomCLIError.cli(kind: "TeardownScriptFailed", message: reason)
+    fake.deleteLog = ["dropping myapp_a", "dropdb: database does not exist"]
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteWorkroom(a, in: project([a]))
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    fake.allowDelete = true
+    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
+
+    XCTAssertEqual(store.errorTitle, "Teardown of ‘a’ failed")
+    XCTAssertEqual(store.errorMessage, reason)
+    XCTAssertEqual(store.errorLog, "dropping myapp_a\ndropdb: database does not exist")
+  }
+
+  /// A teardown that printed nothing shows no log box, only the reason.
+  func testSilentFailedTeardownShowsNoLog() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.deleteFails = true
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteWorkroom(a, in: project([a]))
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    fake.allowDelete = true
+    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
+
+    XCTAssertEqual(store.errorMessage, WorkroomCLIError.timedOut.errorDescription)
+    XCTAssertNil(store.errorLog)
   }
 
   // MARK: - Delete withdraws notifications
@@ -448,5 +499,38 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await waitUntil({ self.workroomNames(store) == ["a"] }, "failed delete restores the project")
     XCTAssertTrue(store.deletingProjects.isEmpty, "tombstone cleared on failure")
     XCTAssertNotNil(store.errorTitle, "the failure is surfaced")
+  }
+
+  /// A cascade whose teardown fails keeps the reason as the message and the output in the log box,
+  /// as a single workroom's delete does.
+  func testFailedDeleteProjectShowsTheReasonAboveTheScriptOutput() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.deleteFails = true
+    let reason =
+      "teardown script failed: /x/scripts/workroom_teardown returned a non-zero exit code"
+    fake.deleteError = WorkroomCLIError.cli(kind: "TeardownScriptFailed", message: reason)
+    fake.deleteLog = ["rm: cannot remove 'tmp'"]
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteProject(project([a]), scope: .workrooms)
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    fake.allowDelete = true
+    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
+
+    XCTAssertEqual(store.errorTitle, "Delete of ‘wr-race-project’ failed")
+    XCTAssertEqual(store.errorMessage, reason)
+    XCTAssertEqual(store.errorLog, "rm: cannot remove 'tmp'")
+  }
+
+  /// A later message must not show an earlier failure's output.
+  func testANewErrorMessageDropsTheLog() {
+    let store = makeStore(DeleteRaceFakeCLI())
+    store.errorMessage = "first"
+    store.errorLog = "output"
+    store.errorMessage = "second"
+    XCTAssertNil(store.errorLog)
   }
 }

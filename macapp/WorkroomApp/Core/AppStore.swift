@@ -581,6 +581,10 @@ final class AppStore: ObservableObject {
     get { modals.errorDetails }
     set { modals.errorDetails = newValue }
   }
+  var errorLog: String? {
+    get { modals.errorLog }
+    set { modals.errorLog = newValue }
+  }
   func clearError() { modals.clearError() }
 
   /// Tells the user a closed remote pane's session may still be running on its host (#283), unless
@@ -2497,18 +2501,19 @@ final class AppStore: ObservableObject {
     setResolvedBranchName(nil, for: .workroom(project: project.path, name: workroom.name))
   }
 
-  /// Teardown failed (it ran in the background): pop an alert carrying the captured
-  /// script output so the user can see why.
+  /// Teardown failed (it ran in the background): the error sheet says why (which script, and that it
+  /// exited non-zero), with what the script printed in a scrolling box beneath.
   private func presentTeardownFailure(_ workroom: Workroom, error: Error, log: ScriptLogSession) {
-    let output = log.lines.map(\.text).joined(separator: "\n").trimmingCharacters(
-      in: .whitespacesAndNewlines)
-    guard output.isEmpty else {
-      errorTitle = "Teardown of ‘\(workroom.name)’ failed"
-      errorMessage = output
-      return
-    }
     present(error)
     errorTitle = "Teardown of ‘\(workroom.name)’ failed"
+    errorLog = Self.scriptOutput(log)
+  }
+
+  /// A run's captured script output, or nil when it printed nothing.
+  private static func scriptOutput(_ log: ScriptLogSession?) -> String? {
+    let output = (log?.lines.map(\.text).joined(separator: "\n") ?? "").trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    return output.isEmpty ? nil : output
   }
 
   /// Removes a project from the sidebar immediately, then runs the chosen `scope` in the
@@ -2715,16 +2720,15 @@ final class AppStore: ObservableObject {
     return targetIDs
   }
 
-  /// Project deletion failed in the background: pop an alert carrying any captured cascade
-  /// teardown output. `log` is nil for a config-only delete (no teardown ran), in which case
-  /// the error's own message is shown.
+  /// Project deletion failed in the background: the error sheet says why, with any captured cascade
+  /// teardown output in a scrolling box beneath. `log` is nil for a config-only delete (no teardown
+  /// ran), which shows the error alone.
   private func presentDeleteProjectFailure(
     _ project: Project, error: Error, log: ScriptLogSession?
   ) {
-    let output = (log?.lines.map(\.text).joined(separator: "\n") ?? "").trimmingCharacters(
-      in: .whitespacesAndNewlines)
+    present(error)
     errorTitle = "Delete of ‘\(project.displayName)’ failed"
-    errorMessage = output.isEmpty ? errorText(error) : output
+    errorLog = Self.scriptOutput(log)
   }
 
   func errorText(_ error: Error) -> String {
