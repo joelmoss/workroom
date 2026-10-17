@@ -1,3 +1,4 @@
+import Defaults
 import DesignSystem
 import SwiftUI
 
@@ -41,6 +42,9 @@ struct CreationPane: View {
             perform($0)
           }
           .transition(.move(edge: .bottom))
+        } else if run.outcome == .succeeded {
+          CreationDoneFooter(inset: narrow ? 16 : 32) { store.finishCreation(run) }
+            .transition(.move(edge: .bottom))
         }
       }
       .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: run.outcome)
@@ -51,6 +55,8 @@ struct CreationPane: View {
     .onKeyPress(.return) { answer { $0.primary } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
   }
+
+  private var isDone: Bool { run.outcome == .succeeded }
 
   // MARK: Checklist
 
@@ -166,6 +172,11 @@ struct CreationPane: View {
   // MARK: Actions
 
   private func answer(_ action: (P.Footer) -> P.Action?) -> KeyPress.Result {
+    // Return and Escape both answer Done.
+    if isDone {
+      store.finishCreation(run)
+      return .handled
+    }
     guard let footer = P.footer(for: run.outcome), let chosen = action(footer) else {
       return .ignored
     }
@@ -466,5 +477,35 @@ private struct CreationFailureFooter: View {
   private func button(_ action: CreationPanePresentation.Action) -> some View {
     Button(action.title) { perform(action) }
       .accessibilityIdentifier("CreationPane.\(action.title)")
+  }
+}
+
+/// A finished create's footer: Done on the right, and on the left whether a finished checklist closes
+/// by itself from now on, as Settings › General also says.
+private struct CreationDoneFooter: View {
+  let inset: CGFloat
+  let done: () -> Void
+  @Default(.closeCreationPaneWhenDone) private var closeWhenDone
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Divider()
+      HStack(spacing: 12) {
+        Toggle("Close automatically when done", isOn: $closeWhenDone)
+          .toggleStyle(.checkbox)
+          .font(.callout)
+          .accessibilityIdentifier("CreationPane.closeWhenDone")
+        Spacer(minLength: 8)
+        // The default, answering Return while focus is in this pane (D16).
+        Button("Done", action: done)
+          .buttonStyle(.borderedProminent)
+          .fixedSize()
+          .accessibilityIdentifier("CreationPane.Done")
+      }
+      .padding(.horizontal, inset)
+      .padding(.vertical, 12)
+    }
+    .background(theme.tokens.panel)
   }
 }

@@ -29,6 +29,7 @@ final class CreationFlowTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     store.creationSuccessHold = .zero
+    store.closesFinishedCreations = { true }
     return store
   }
 
@@ -93,6 +94,26 @@ final class CreationFlowTests: XCTestCase {
     await task.value
     XCTAssertTrue(store.creationRuns.isEmpty, "after the hold the run goes")
     XCTAssertFalse(store.isCreationBlocking(id), "and the terminal mounts")
+  }
+
+  /// Value: protects=a finished create's checklist stays, terminal withheld, until Done when it
+  /// doesn't close by itself (the default); fails_when=the run goes on its own, or Done leaves it;
+  /// no_claim=the footer's drawing
+  func testAFinishedCreateWaitsForDone() async throws {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: false)
+    fake.release("wr")
+    let store = makeStore(fake)
+    store.closesFinishedCreations = { false }
+    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertTrue(store.isCreationBlocking(id), "the checklist still covers the pane")
+
+    store.finishCreation(run)
+    XCTAssertTrue(store.creationRuns.isEmpty)
+    XCTAssertFalse(store.isCreationBlocking(id), "Done mounts the terminal")
   }
 
   /// Value: protects=AC 7, a successful create mounts its terminal with no click and the auto-run

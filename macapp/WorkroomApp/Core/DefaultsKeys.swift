@@ -84,6 +84,11 @@ extension Defaults.Keys {
   static let containerCPUs = Key<Int?>("containerCPUs", default: nil, suite: .app)
   static let containerMemory = Key<String?>("containerMemory", default: nil, suite: .app)
 
+  /// Close a finished create's checklist by itself after a few seconds, rather than wait for Done
+  /// (#483). Off by default.
+  static let closeCreationPaneWhenDone = Key<Bool>(
+    "closeCreationPaneWhenDone", default: false, suite: .app)
+
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
 

@@ -242,6 +242,7 @@ private struct NotificationsSettingsPane: View {
 /// lives in the CLI's config (`workroom base set --global`), so a terminal create agrees, and is
 /// saved on Return or when the field loses focus, not per keystroke.
 private struct NewWorkroomsSection: View {
+  @Default(.closeCreationPaneWhenDone) private var closeCreationPaneWhenDone
   @State private var branch = ""
   @State private var saved = ""
   @State private var failure: String?
@@ -259,6 +260,10 @@ private struct NewWorkroomsSection: View {
       if let failure {
         Text(failure).font(.footnote).foregroundStyle(.red)
       }
+      Toggle("Close the checklist when done", isOn: $closeCreationPaneWhenDone)
+        .help(
+          "Close a new workroom's checklist a few seconds after it is ready, instead of waiting "
+            + "for Done.")
     } header: {
       Text("New Workrooms")
     } footer: {

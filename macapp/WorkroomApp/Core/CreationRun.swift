@@ -102,7 +102,8 @@ struct CreationStep: Identifiable, Equatable {
 /// How a create ended, or that it hasn't.
 enum CreationOutcome: Equatable {
   case running
-  /// Done: the finished checklist holds for a moment (`AppStore.creationSuccessHold`), then goes.
+  /// Done: the finished checklist stays until Done, or with "Close automatically when done" on, for
+  /// `AppStore.creationSuccessHold`.
   case succeeded
   /// Cancel on the provider setup sheet: the run goes at once.
   case cancelled
