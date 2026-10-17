@@ -480,10 +480,12 @@ private struct WorkroomTabChip: View {
       .help("\(fullTitle)\n\(target.path)")
       // The workroom's right-click menu, shared with the split group title bar (issue #112). The tab
       // keeps "Close" (whole-workroom close), so `closeName` is non-nil: a root chip shows Close
-      // only, a workroom chip shows the full set — same as before the extraction.
+      // only, a workroom chip shows the full set — same as before the extraction. A create's chip has
+      // no terminals to close while its run lasts (#483): its pane's own actions end it.
       .contextMenu {
         workroomContextMenu(
-          store: store, sid: sid, target: target, closeName: workroomName ?? primaryLabel)
+          store: store, sid: sid, target: target,
+          closeName: store.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel)
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel(
