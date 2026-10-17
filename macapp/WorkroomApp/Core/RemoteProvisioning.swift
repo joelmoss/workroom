@@ -217,11 +217,15 @@ enum RemoteProvisioning {
       made.warnings.isEmpty
       ? nil
       : "Could not copy \(files(made.warnings.count)): \(made.warnings.joined(separator: "; "))"
-    // As the CLI's local step says it (`workroom.SkippedSymlink`).
-    let skipped = (made.skipped ?? []).map { "Skipped \($0): it's a symlink" }
+    // As the CLI's local step says it (`workroom.SkippedSymlink`). The skip reason names them too: a
+    // skipped row's log can't be opened.
+    let symlinks = made.skipped ?? []
+    let skipped = symlinks.map { "Skipped \($0): it's a symlink" }
     guard !made.paths.isEmpty else {
-      return unread.map { .warning($0, log: skipped) }
-        ?? .skipped(skipped.isEmpty ? "No matching files" : "Only symlinks matched", log: skipped)
+      let reason =
+        symlinks.isEmpty
+        ? "No matching files" : "Only symlinks matched: \(symlinks.joined(separator: ", "))"
+      return unread.map { .warning($0, log: skipped) } ?? .skipped(reason, log: skipped)
     }
     let command =
       "command -v tar >/dev/null 2>&1 || { echo 'tar is not installed on the host'; exit 127; }; "

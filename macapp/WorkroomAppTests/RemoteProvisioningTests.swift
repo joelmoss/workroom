@@ -437,7 +437,7 @@ final class RemoteIncludeTests: XCTestCase {
       into: try checkout().path, on: .local, driver: ShellHost(execFails: true)
     ) { _ in IncludeArchive(paths: [], bytes: 0, warnings: [], skipped: [".env"]) }
     XCTAssertEqual(
-      only, .skipped("Only symlinks matched", log: ["Skipped .env: it's a symlink"]))
+      only, .skipped("Only symlinks matched: .env", log: ["Skipped .env: it's a symlink"]))
 
     let make = try archive(["ok.key": 0o600])
     let some = await RemoteProvisioning.copyIncluded(

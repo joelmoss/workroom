@@ -160,9 +160,9 @@ func TestCreateStepsIncludeFileThatMatchesNothing(t *testing.T) {
 		"script:skipped:No setup script")
 }
 
-// Value: protects=a symlinked .env, the only match, is named as skipped and the step says only
-// symlinks matched, not that nothing did; fails_when=the skip is silent or reads "No matching
-// files"; no_claim=the remote path (RemoteIncludeTests)
+// Value: protects=a symlinked .env, the only match, is named as skipped, in the log and in the
+// step's reason (a skipped row's log can't be opened); fails_when=the skip is silent, unnamed, or
+// reads "No matching files"; no_claim=the remote path (RemoteIncludeTests)
 func TestCreateStepsOnlySymlinksMatched(t *testing.T) {
 	project := noRemoteProject(t)
 	writeRootFile(t, project, ".gitignore", ".env\nshared.env\n")
@@ -173,7 +173,7 @@ func TestCreateStepsOnlySymlinksMatched(t *testing.T) {
 	}
 	events := createEvents(t, project)
 	assertSteps(t, events, "fetch:skipped:No remote to fetch from", "worktree:running", "worktree:done",
-		"include:running", "include:skipped:Only symlinks matched", "script:skipped:No setup script")
+		"include:running", "include:skipped:Only symlinks matched: .env", "script:skipped:No setup script")
 	for _, e := range events {
 		if e["type"] == "log" && e["step"] == "include" && e["text"] == "Skipped .env: it's a symlink" {
 			return
