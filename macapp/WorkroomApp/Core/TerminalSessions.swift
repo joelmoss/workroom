@@ -1978,11 +1978,12 @@ final class TerminalSessions: ObservableObject {
     guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: s.view.lastKnownCwd) else {
       return
     }
-    // Read once — `foregroundTool` used to re-derive this internally via a second live PID read, a
-    // TOCTOU gap where the foreground process could differ between the two reads (review finding).
+    // Read once, for the agent and the tool alike: a second live PID read is a TOCTOU gap where the
+    // foreground process could differ between the two reads (review finding).
     let foregroundExecutableName = s.view.foregroundExecutableName
     let detectedAgent =
-      s.view.foregroundAgentBackend ?? CodingAgentTitleRecognition.backend(for: trimmed)
+      CodingAgentProcessRecognition.backend(forProcessName: foregroundExecutableName)
+      ?? CodingAgentTitleRecognition.backend(for: trimmed)
     let detectedTool =
       ToolLogoRegistry.tool(forExecutableName: foregroundExecutableName)
       ?? ToolLogoRegistry.tool(forTitle: trimmed)
