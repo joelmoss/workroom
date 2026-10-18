@@ -171,7 +171,7 @@ The [persistent app footer](docs/screenshots/window-footer.png) also shows Claud
 the left, once there is a reading, whether or not an agent is running. With
 [cswap](https://github.com/realiti4/claude-swap) installed it shows every Claude account it manages;
 without it, Claude usage comes from Claude's status line, which you enable once from the footer.
-Click the usage bars for details. **Settings ▸ Coding agents** hides it, and can also show the
+Click the usage bars for details. **Settings ▸ AI Agents ▸ Usage** hides it, and can also show the
 usage of the coding agent running in a pane in that pane's footer. The footer stays visible when switching
 workrooms or hiding sidebars; undocked terminal windows keep only their pane footer.
 
