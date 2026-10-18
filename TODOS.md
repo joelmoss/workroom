@@ -636,13 +636,12 @@ lost with it.
 
 ### Unify foreground-process detection onto argv0 (macapp) — issue #141 eng-review follow-up, filed 2026-08-17
 
-**What:** `CodingAgentProcessRecognition.backend(forPID:)` (`CodingAgentUsage.swift`, backs the issue #49 inline
-diagnosis badge) and the new `GhosttySurfaceView.foregroundExecutableName` (issue #141 favicon) both
-resolve a live pane's foreground process via `proc_name`. Port the
+**What:** `GhosttySurfaceView.foregroundExecutableName` resolves a live pane's foreground process via
+`proc_name`, and `TerminalSessions.updateTitle` derives both the coding agent (issue #49 inline diagnosis
+badge) and the curated tool (issue #141 favicon) from that one read (#503). Port the
 argv0/`KERN_PROCARGS2` logic of the retired daemon's `SessionPTY.executableName(processID:)` (already
 correct; the original is `git show 9ce6201f^:macapp/WorkroomSession/SessionPTY.swift`, and the Rust
-agent has its own port, `87dcb476`) into a shared app-side helper, and use it from both call sites in
-place of `proc_name`.
+agent has its own port, `87dcb476`) into an app-side helper, and use it in place of `proc_name`.
 
 **Why:** `proc_name` is defeated by any CLI that renames its own process title post-launch — confirmed
 case: Claude Code, whose `p_comm` reads as a version string ("2.1.232"), not "claude". No known live
@@ -652,9 +651,8 @@ favicon registry is one more surface where this could matter if it also self-ren
 side already proves the fix works.
 
 **How to start:** Add a `ProcessArgv0` helper under `WorkroomApp/Core/`, ported from the retired
-`SessionPTY.executableName(processID:)`. Replace `CodingAgentProcessRecognition.backend(forPID:)`'s
-`proc_name`/`MAXPATHLEN` body with a call through the shared helper. Replace
-`GhosttySurfaceView.foregroundExecutableName`'s inlined `proc_name` block the same way.
+`SessionPTY.executableName(processID:)`. Replace `GhosttySurfaceView.foregroundExecutableName`'s inlined
+`proc_name` block with a call through it.
 
 **Depends on:** nothing. Scoped out of the issue #141 PR deliberately (D1, plan-eng-review
 scope-reduction) to keep that PR single-purpose; this session's review confirmed the trade-off

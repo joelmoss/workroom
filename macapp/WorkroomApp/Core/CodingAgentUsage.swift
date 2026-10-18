@@ -187,13 +187,6 @@ enum CodingAgentProcessRecognition {
     default: return nil
     }
   }
-
-  static func backend(forPID pid: pid_t) -> CodingAgentBackend? {
-    guard pid > 1 else { return nil }
-    var name = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-    guard proc_name(pid, &name, UInt32(name.count)) > 0 else { return nil }
-    return backend(forProcessName: String(cString: name))
-  }
 }
 
 enum CodingAgentUsageDecoding {

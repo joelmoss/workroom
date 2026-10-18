@@ -35,22 +35,13 @@ final class GhosttySurfaceView: NSView {
   /// libghostty for the PTY foreground process group.
   var foregroundProcessNameForTesting: String?
 
-  var foregroundAgentBackend: CodingAgentBackend? {
-    if let foregroundProcessNameForTesting {
-      return CodingAgentProcessRecognition.backend(forProcessName: foregroundProcessNameForTesting)
-    }
-    guard let surface else { return nil }
-    let pid = pid_t(ghostty_surface_foreground_pid(surface))
-    return CodingAgentProcessRecognition.backend(forPID: pid)
-  }
-
   /// The basename of the PTY's current foreground process, or nil (no surface, dead pid, name
   /// unresolved). Resolved via `proc_name`, not the argv0-based lookup the daemon's reattach path
   /// uses (that unification is a deferred follow-up, see TODOS.md — no known bug today since
   /// `updateTitle`'s title-fallback safety-nets the curated-tool lookup for the same limitation).
-  /// `TerminalSessions.updateTitle` reads this ONCE and derives both the curated-tool match
-  /// (`ToolLogoRegistry.tool(forExecutableName:)`) and the usage-tracking raw name from the same
-  /// read — a second live PID read here would reopen the TOCTOU gap a review caught and closed.
+  /// `TerminalSessions.updateTitle` reads this ONCE and derives the coding agent, the curated-tool
+  /// match (`ToolLogoRegistry.tool(forExecutableName:)`) and the usage-tracking raw name from the
+  /// same read — a second live PID read would reopen the TOCTOU gap a review caught and closed.
   var foregroundExecutableName: String? {
     if let foregroundProcessNameForTesting { return foregroundProcessNameForTesting }
     guard let surface else { return nil }
