@@ -40,7 +40,10 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate,
     super.init()
     controller = SPUStandardUpdaterController(
       startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
+    // The visual-QA seam holds a check "in flight", so the pill renders dimmed.
+    let checking = UITestFixture.updateChecking
     controller.updater.publisher(for: \.canCheckForUpdates)
+      .map { checking ? false : $0 }
       .assign(to: &$canCheckForUpdates)
 
     // Visual-QA seam: surface a fake pending update so the pill renders without a live Sparkle check.
