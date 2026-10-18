@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo $CLAUDE_FILE_PATHS | grep -q 'go.sum' && echo 'BLOCK: Do not edit go.sum directly. Use go mod tidy.' && exit 1 || true"
+            "command": "grep -Eq '\"file_path\" *: *\"([^\"]*/)?go\\.sum\"' && { echo 'BLOCK: Do not edit go.sum directly. Use go mod tidy.' >&2; exit 2; } || true"
           }
         ]
       },
