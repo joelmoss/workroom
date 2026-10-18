@@ -33,6 +33,27 @@ first, so PR and CI status no longer read a base).
 **Depends on:** nothing for Codaset; the legacy field waits for Nightly users to have launched a build
 with `BaseRetirement`.
 
+### Test a config-only project delete's remote teardown (macapp) — deferred from plan: docs/designs/scripts-on-every-workroom.md
+
+**What:** A test that a config-only project delete with a remote workroom runs that workroom's
+teardown before its machine is destroyed (R2), and keeps a log for it. The behaviour is built
+(`AppStore.deleteProject`'s loop over `remoteWorkrooms`, `remoteTeardown(of:in:log:skip:)`), and
+`RemoteTeardownTests` pins `RemoteWorkrooms.delete`'s side, but nothing pins that the app's
+config-only path reaches it.
+
+**Why:** a config-only delete keeps local worktrees, so a later change could reasonably make it skip
+teardowns everywhere; for a remote workroom that destroys the host without its teardown, which can
+leave the script's external resources running.
+
+**How to start:** `AppStore.deleteProject` builds each workroom's `RemoteWorkrooms.Teardown` with
+`remoteTeardown(of:in:log:skip:)`, whose `run` is always the live `RemoteWorkrooms.runScript`, and
+takes its hosts' environment from `RemoteHosts.Deletion`. Give `AppStore` a seam for the teardown's
+`run` (and a fake `Deletion`), then assert the teardown runs and the log exists for `.configOnly`.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** nothing.
+
 ## P2 — perf, correctness, and the next VCS phase
 
 ### UI tests: session-isolation wiring check, close-the-right-pane (macapp) — UI-test-merge review follow-up

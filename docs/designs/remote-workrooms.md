@@ -1738,9 +1738,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     after a reload that follows the teardown, so a read begun before config dropped the workroom
     can't publish it again. That reload is quiet: a failed `list` is not reported as a failed
     delete. On failure the tombstone lifts first, so the workroom, still in config, reappears.
-  - **Not done.** No teardown script runs on the box: create runs no setup script there, and the
-    box goes anyway. A failure part-way through a project delete leaves the remote workrooms
-    already taken down gone, as the local cascade does.
+  - **Superseded (2026-10-17, ADR 0053).** A remote workroom now runs its setup script at the end of
+    its create and its teardown script before its box goes
+    ([`scripts-on-every-workroom.md`](scripts-on-every-workroom.md)). A failure part-way through a
+    project delete still leaves the remote workrooms already taken down gone, as the local cascade
+    does; Delete Anyway retries what is left.
 - **As built (#253, part 5: gating restore).** The gap #249 left (restore not gated on
   availability, above) is closed in two places.
   - **Reattaching.** After a restore, `PersistentSessionRecovery` reattaches panes to this Mac's
