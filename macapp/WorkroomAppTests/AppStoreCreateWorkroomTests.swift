@@ -1414,6 +1414,60 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true, "an unstamped result still merges")
   }
 
+  /// A probe that found nothing new redraws nothing, yet keeps its clocks (#503). Every status view
+  /// observes the whole `workroomStatuses`, and a fresh `lastChecked` used to make each write look new.
+  /// Value: protects=an unchanged merge notifies no reader while the TTL gate and the read ordering
+  /// still see its clocks; fails_when=a clock compares by time, a write bypasses AppStore's
+  /// whole-value proxy, or the write is skipped and the clocks go stale; no_claim=the redraw time saved
+  func testAnUnchangedLocalStatusMergeNotifiesNoOneButKeepsItsClocks() async {
+    let (proj, root, _) = makeRealProject(workroom: "wr")
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
+    store.projects = [proj]
+    let sid = SidebarID.workroom(project: root, name: "wr")
+    let early = Date()
+    store.workroomStatuses[sid] = WorkroomStatus(
+      dirty: true, lastChecked: .distantPast, localReadAt: early)
+
+    var same = WorkroomStatus.unresolved
+    same.dirty = true
+    same.localReadAt = early.addingTimeInterval(2)
+    var notified = false
+    withObservationTracking {
+      _ = store.workroomStatuses
+    } onChange: {
+      notified = true
+    }
+    store.mergeLocalStatus(same, into: sid)
+    XCTAssertFalse(notified, "a probe that changed nothing on screen must not redraw")
+    XCTAssertEqual(store.workroomStatuses[sid]?.localReadAt, same.localReadAt)
+    XCTAssertGreaterThan(
+      store.workroomStatuses[sid]?.lastChecked ?? .distantPast, .distantPast,
+      "the TTL gate must see this check")
+
+    // The silently stored read still orders: one that read the tree before it is dropped.
+    var stale = WorkroomStatus.unresolved
+    stale.dirty = false
+    stale.localReadAt = early.addingTimeInterval(1)
+    store.mergeLocalStatus(stale, into: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true, "an older read must not win")
+
+    // A first check with nothing else new still redraws: "Checking…" has to clear.
+    store.workroomStatuses[sid] = WorkroomStatus(
+      dirty: true, localReadAt: early.addingTimeInterval(3))
+    notified = false
+    withObservationTracking {
+      _ = store.workroomStatuses
+    } onChange: {
+      notified = true
+    }
+    var firstCheck = WorkroomStatus.unresolved
+    firstCheck.dirty = true
+    firstCheck.localReadAt = early.addingTimeInterval(4)
+    store.mergeLocalStatus(firstCheck, into: sid)
+    XCTAssertTrue(notified, "a clock that appears must redraw")
+  }
+
   /// The resolver stamps the read itself, and the post-create probe goes through that same shared
   /// ordering — it is one of the five lanes, not a special case with its own guard.
   func testThePostCreateProbeMergesThroughTheSharedOrdering() async {
