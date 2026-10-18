@@ -63,6 +63,7 @@ These apply when reviewing a pull request. Raise a finding only when it passes t
 
 - Ground a finding in what the programs and hosts Workroom serves actually send. For program status, `docs/program-status.md` records what Claude Code and Codex report: Claude Code sends one record with no id, and Codex never answers the probe.
 - Treat the findings a PR body lists as reviewed and skipped as decided. Raise one again only when the diff changes the code it names.
+- For a change that does something on a remote workroom's host, check it against every state in `docs/remote-host-states.md` it can meet, and against its plan's local-parity rows when it should behave as a local workroom does.
 
 ## Architecture & Configuration
 
