@@ -408,7 +408,7 @@ fn drain_capped_flagged(
 /// SIGKILLed later. `pid <= 1` is refused outright: `process::descendants` does not special-case
 /// init the way this call site must not — `pid` is always a freshly spawned child's own pid, but a
 /// SIGKILL aimed at init's whole descendant tree is the worst outcome a bug here could have.
-fn descendants(pid: i32) -> Vec<crate::process::Descendant> {
+pub(crate) fn descendants(pid: i32) -> Vec<crate::process::Descendant> {
     if pid <= 1 {
         return Vec::new();
     }
@@ -425,7 +425,7 @@ fn descendants(pid: i32) -> Vec<crate::process::Descendant> {
 /// the process's start time against the one recorded at the snapshot, so a pid whose occupant has
 /// changed reads as not-running and is left alone — the small, unavoidable window native accepts is
 /// only "the pid exited and nothing new has it yet", never "the pid now names someone else".
-fn kill_recorded(descendants: &[crate::process::Descendant]) {
+pub(crate) fn kill_recorded(descendants: &[crate::process::Descendant]) {
     for descendant in descendants.iter().filter(|d| d.is_running()) {
         // SAFETY: `kill` takes no pointers; `is_running` is the pid-reuse guard described above.
         unsafe { libc::kill(descendant.pid, libc::SIGKILL) };
@@ -436,7 +436,7 @@ fn kill_recorded(descendants: &[crate::process::Descendant]) {
 /// cannot be caught, so this is generous for the normal case; it exists for the abnormal one, where
 /// the leader is unkillable (uninterruptible I/O) and the alternative is blocking this thread — and
 /// therefore holding one of the 32 shared `ACTIVE` permits — forever.
-const REAP_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const REAP_GRACE: Duration = Duration::from_secs(2);
 
 /// Test shorthand for `run_exec_with`.
 #[cfg(test)]
