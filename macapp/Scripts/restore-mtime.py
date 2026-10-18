@@ -15,9 +15,9 @@ The walk follows the first parents, with a merge listing what it brought in: a f
 when its change LANDED on the branch being built, which only moves forward along that branch,
 rather than its author's commit time, which a merged branch may have had for weeks.
 
-`--fresh <index file>`: every tracked path whose entry differs between that file and the checkout
-(`git ls-files -s -z` output for both), and every directory above one (a deleted file changes
-only its directory), gets the present time instead. cargo decides "up to date" by mtime
+`--fresh <index file> <dir>`: every tracked path under <dir> whose entry differs between that file
+and the checkout (`git ls-files -s -z` output for both), and every directory above one (a deleted
+file changes only its directory), gets the present time instead. cargo decides "up to date" by mtime
 newer-than the cached artifact, not by content, so a file that differs from what the cache was
 built from but whose landing time is older than that build (a release branch that restored
 master's cache; a master push after one whose run failed and saved nothing) would read as
@@ -25,6 +25,9 @@ unchanged and CI would test the cached build of the old code (measured: a conten
 older mtime is not recompiled). CI saves the index of the checkout each cache was built from
 inside the cached directory. An index rather than a commit: a PR run builds GitHub's merge
 commit, which the next push's checkout no longer has, so a commit could not be diffed against.
+Only under <dir> (CI passes the cargo workspace, vcs): xcodebuild rebuilds a file whose mtime
+differs from the one it built at either way, so a Swift file left at now would be compiled into
+the saved build dir at now and then recompiled by every later run, at its landing time again.
 """
 
 import os
@@ -44,22 +47,28 @@ def index_entries(listing: str) -> dict[str, str]:
 
 
 def main() -> int:
-    fresh_from = None
+    fresh_from = fresh_under = None
     args = sys.argv[1:]
-    if args[:1] == ["--fresh"] and len(args) == 2:
-        fresh_from = args[1]
+    if args[:1] == ["--fresh"] and len(args) == 3:
+        fresh_from, fresh_under = args[1], args[2].rstrip("/") + "/"
     elif args:
-        print("usage: restore-mtime.py [--fresh <git ls-files -s -z output>]", file=sys.stderr)
+        print(
+            "usage: restore-mtime.py [--fresh <git ls-files -s -z output> <dir>]", file=sys.stderr
+        )
         return 2
     root = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
     ).stdout.strip()
-    tracked = set(
+    current = index_entries(
         subprocess.run(
-            ["git", "-C", root, "ls-files", "-z"], capture_output=True, text=True, check=True
-        ).stdout.split("\0")
+            ["git", "-C", root, "ls-files", "-s", "-z"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
     )
-    tracked.discard("")
+    tracked = set(current)
     pending = set(tracked)
     # Newest first; a file's first appearance is its last touch. Each commit prints as a
     # `COMMIT <epoch>` line, a blank line, then one path per line. `--no-renames` so a rename
@@ -117,17 +126,12 @@ def main() -> int:
     if fresh_from is not None:
         with open(fresh_from, encoding="utf-8", newline="") as built_file:
             built = index_entries(built_file.read())
-        current = index_entries(
-            subprocess.run(
-                ["git", "-C", root, "ls-files", "-s", "-z"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                check=True,
-            ).stdout
-        )
         # A moved file is two entries, so the directory it left refreshes too.
-        changed = sorted(p for p in built.keys() | current.keys() if built.get(p) != current.get(p))
+        changed = sorted(
+            p
+            for p in built.keys() | current.keys()
+            if p.startswith(fresh_under) and built.get(p) != current.get(p)
+        )
         now = time.time()
         touched = set()
         for path in changed:
