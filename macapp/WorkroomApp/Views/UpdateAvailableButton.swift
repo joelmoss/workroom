@@ -6,8 +6,8 @@ import SwiftUI
 /// the background (a gentle reminder — see `Updater`). Tapping it runs Sparkle's standard check, which
 /// presents the already-found update's install prompt. Filled with the theme accent so it reads as a
 /// call to action beside the plain icon buttons. It sits at the trailing end of one larger capsule
-/// in a soft accent wash, whose leading part scrolls a note that an update keeps every terminal
-/// running. Renders nothing when no update is pending.
+/// in a soft accent wash, whose leading part scrolls a note saying what an update keeps and what it
+/// stops (`UpdateReassurance`). Renders nothing when no update is pending.
 struct UpdateAvailableButton: View {
   @EnvironmentObject private var updater: Updater
   @State private var hovering = false
