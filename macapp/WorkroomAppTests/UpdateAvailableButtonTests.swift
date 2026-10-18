@@ -79,6 +79,30 @@ final class UpdateAvailableButtonTests: XCTestCase {
     XCTAssertFalse(view.isScrolling)
   }
 
+  // Value: protects=text that overflows gets the second copy, edge fade and fade-clear start, text
+  // that fits has none; fails_when=layout always shows both copies or drops the mask; why_new=only
+  // the animation was tested; seam=none; no_claim=pixel rendering or colours.
+  func testLayoutDuplicatesAndFadesOnlyOverflowingText() throws {
+    let view = MarqueeView(text: "Safe to update: your terminals keep running.", color: .labelColor)
+    let content = try XCTUnwrap(view.layer?.sublayers?.first)
+    let copies = try XCTUnwrap(content.sublayers?.first?.sublayers)
+
+    view.frame = NSRect(x: 0, y: 0, width: 80, height: 20)
+    view.layoutSubtreeIfNeeded()
+    XCTAssertNotNil(content.mask, "overflowing text fades at its edges")
+    XCTAssertFalse(copies[1].isHidden, "the wrap needs a second copy")
+    XCTAssertEqual(copies[0].frame.minX, MarqueeView.fadeWidth, "opening words clear the fade")
+    XCTAssertEqual(
+      copies[1].frame.minX, MarqueeView.fadeWidth + view.textWidth + MarqueeView.gap,
+      "one text and gap behind the first")
+
+    view.frame = NSRect(x: 0, y: 0, width: view.textWidth + 20, height: 20)
+    view.layoutSubtreeIfNeeded()
+    XCTAssertNil(content.mask, "text that fits stands still, unfaded")
+    XCTAssertTrue(copies[1].isHidden)
+    XCTAssertEqual(copies[0].frame.minX, 0)
+  }
+
   func testTheNoteNeverTakesTheClick() {
     let view = MarqueeView(text: "note", color: .labelColor)
     view.frame = NSRect(x: 0, y: 0, width: 80, height: 20)
