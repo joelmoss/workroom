@@ -99,7 +99,7 @@ extension AppStore {
   ) -> CreationRun {
     let run = CreationRun(
       project: project, kind: kind, splitAnchor: splitAnchor, previousSelection: selectedTargetID,
-      hasSetupScript: Self.hasSetupScript(project, kind),
+      hasSetupScript: Self.hasSetupScript(project),
       hasIncludeFile: Self.hasIncludeFile(project))
     register(run)
     selectedProjectID = project.id
@@ -113,12 +113,11 @@ extension AppStore {
     return run
   }
 
-  /// Whether a local create will run a setup script, as the CLI's `findScript` falls back to the
-  /// project's own `scripts/workroom_setup`. One only the new worktree has puts its row back when it
-  /// runs (`CreationRun.begin`).
-  private static func hasSetupScript(_ project: Project, _ kind: CreationKind) -> Bool {
-    kind == .local
-      && FileManager.default.fileExists(atPath: project.path + "/scripts/workroom_setup")
+  /// Whether a create of any kind will run a setup script, as the CLI's `findScript` falls back to
+  /// the project's own `scripts/workroom_setup` (and a remote create copies that one to its host).
+  /// One only the new checkout has puts its row back when it runs (`CreationRun.begin`).
+  private static func hasSetupScript(_ project: Project) -> Bool {
+    FileManager.default.fileExists(atPath: project.path + "/scripts/workroom_setup")
   }
 
   /// Whether the root has an include file (#367), so any kind of create copies its included files:
@@ -223,7 +222,7 @@ extension AppStore {
     let retry = CreationRun(
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
       previousSelection: run.previousSelection,
-      hasSetupScript: Self.hasSetupScript(project, run.kind),
+      hasSetupScript: Self.hasSetupScript(project),
       hasIncludeFile: Self.hasIncludeFile(project))
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
@@ -437,12 +436,22 @@ extension AppStore {
       }
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
+      // Before the setup script: the reload adopts the host, which marks a relayed one so the
+      // script's connect puts git's credentials up for it.
       await reload()
-      releaseCreatingWorkroom(TerminalTarget.workroomID(project: path, name: created.name))
-      await completeCreationRun(run)
+      let id = TerminalTarget.workroomID(project: path, name: created.name)
+      // Still undeletable while the script runs, as a local create's workroom is (issue #116).
+      let setupFailure = await runRemoteSetup(run, created: created, host: host, services: services)
+      releaseCreatingWorkroom(id)
+      if let setupFailure {
+        // As a local create's: the workroom and its host stay, for Open Anyway or Delete.
+        failCreationRun(run, .setupScriptFailed(message: setupFailure))
+      } else {
+        await completeCreationRun(run)
+      }
       if let defaultNotUsed {
         noticeStaleStart(
-          of: TerminalTarget.workroomID(project: path, name: created.name),
+          of: id,
           "The default base branch \(defaultNotUsed) can't be used on a remote machine here, so the "
             + "workroom starts from origin's default branch.")
       }
@@ -522,6 +531,37 @@ extension AppStore {
             key: host.key, driver: host.driver, environment: environment, recorder: recorder)
         }
       }
+    }
+  }
+
+  /// A remote create's "Run setup script" step: the project's setup script on the new host, as a
+  /// local create's CLI runs one. nil when it passed or there is none; otherwise why it failed,
+  /// worded as the CLI's ("setup script failed: ...").
+  private func runRemoteSetup(
+    _ run: CreationRun, created: RemoteWorkrooms.Created, host: RemoteCreateHost,
+    services: RemoteCreateServices
+  ) async -> String? {
+    let step = "script"
+    // One queue for the start and the lines, so a line is never filed before its row began.
+    let onMain: @Sendable (@escaping @MainActor () -> Void) -> Void = { body in
+      DispatchQueue.main.async { MainActor.assumeIsolated(body) }
+    }
+    let request = RemoteWorkrooms.ScriptRequest(
+      script: .setup, workroom: created.name, path: created.instance.path,
+      host: created.instance.host, key: host.key, driver: host.driver,
+      agentBinary: host.environment.agentBinary,
+      rootScript: URL(fileURLWithPath: run.project.path + "/scripts/workroom_setup"),
+      onStart: { onMain { run.begin(step) } },
+      onLine: { line in onMain { run.append(line, to: step) } })
+    let result = await services.script(request)
+    await Self.drainMainQueue()  // the script's last lines, before its row ends
+    switch result {
+    case .absent, .passed: return nil
+    case .failed(let why):
+      // A failure before the script started (the connect, its check, the root's copy) is still
+      // the script's row's, not the checkout's still running before it.
+      run.begin(step)
+      return why
     }
   }
 
@@ -656,6 +696,11 @@ struct RemoteCreateServices {
   var plan: @MainActor (AppStore, Project) async throws -> RemoteCreatePlan
   var setupNeeded: @MainActor (RemoteWorkrooms.Place) async -> (any RemoteSetup)?
   var host: @MainActor (RemoteWorkrooms.Place) async throws -> RemoteCreateHost
+  /// Runs the setup script on the new workroom's host (`RemoteWorkrooms.runScript`). A test's fakes
+  /// have no script unless they say so.
+  var script: @MainActor (RemoteWorkrooms.ScriptRequest) async -> RemoteProvisioning.ScriptRun = {
+    _ in .absent
+  }
 
   static var live: RemoteCreateServices {
     RemoteCreateServices(
@@ -676,7 +721,8 @@ struct RemoteCreateServices {
         let key = try await RemoteHosts.shared.key(for: place)
         let (driver, environment) = try RemoteHosts.shared.environment(key)
         return RemoteCreateHost(key: key, driver: driver, environment: environment)
-      })
+      },
+      script: { request in await RemoteWorkrooms.runScript(request) })
   }
 }
 

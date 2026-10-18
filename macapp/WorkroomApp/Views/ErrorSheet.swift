@@ -9,6 +9,7 @@ struct ErrorSheet: View {
   let message: String
   var log: String? = nil
   let details: String?
+  var action: ErrorAction? = nil
   let onDismiss: () -> Void
 
   @State private var showDetails = false
@@ -60,6 +61,13 @@ struct ErrorSheet: View {
           .accessibilityIdentifier("error.copy")
         }
         Spacer()
+        if let action {
+          Button(action.label, role: .destructive) {
+            onDismiss()
+            action.run()
+          }
+          .accessibilityIdentifier("error.action")
+        }
         Button("OK") { onDismiss() }
           .keyboardShortcut(.defaultAction)
           .accessibilityIdentifier("error.ok")

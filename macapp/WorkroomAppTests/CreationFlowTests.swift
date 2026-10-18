@@ -674,6 +674,119 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertTrue(store.creatingWorkrooms.isEmpty)
   }
 
+  /// What a fake script service was asked, and whether the workroom was still undeletable then.
+  @MainActor
+  private final class ScriptCall {
+    var request: RemoteWorkrooms.ScriptRequest?
+    var undeletable = false
+  }
+
+  /// A project whose root has a setup script, so a create of any kind lists its row.
+  private func projectWithASetupScript() throws -> Project {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(
+      at: dir.appendingPathComponent("scripts"), withIntermediateDirectories: true)
+    FileManager.default.createFile(
+      atPath: dir.appendingPathComponent("scripts/workroom_setup").path,
+      contents: Data("#!/bin/sh\n".utf8))
+    addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+    return Project(path: dir.path, vcs: "git", workrooms: [])
+  }
+
+  /// Value: protects=a remote create runs its setup script on the host after the checkout, under
+  /// the shared "Run setup script" row with its lines, while the workroom is still undeletable
+  /// (C2), and lands when it passes; fails_when=the script is skipped, runs once the workroom can be
+  /// deleted, or its lines miss the row; no_claim=a real host (RemoteScriptTests runs the agent)
+  func testARemoteCreateRunsItsSetupScriptBeforeItCanBeDeleted() async throws {
+    let project = try projectWithASetupScript()
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let store = makeStore(RemoteFakeCLI(projectPath: project.path))
+    store.projects = [project]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let call = ScriptCall()
+    var services = services(driver: FakeDriver(), agent: agent)
+    services.script = { [weak store] request in
+      call.request = request
+      call.undeletable = !(store?.creatingWorkrooms.isEmpty ?? true)
+      request.onStart()
+      request.onLine("installing")
+      return .passed
+    }
+    store.remoteCreateServices = services
+
+    let task = Task { await store.createRemoteWorkroom(in: project, place: .boxd) }
+    await waitUntil({ !store.creationRuns.isEmpty }, "the create never started")
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await task.value
+
+    XCTAssertEqual(run.outcome, .succeeded)
+    let row = try XCTUnwrap(run.steps.first { $0.id == "script" })
+    XCTAssertEqual(row.title, "Run setup script")
+    XCTAssertEqual(row.state, .done)
+    XCTAssertEqual(row.log, ["installing"])
+    let request = try XCTUnwrap(call.request)
+    XCTAssertEqual(request.script, .setup)
+    XCTAssertEqual(request.workroom, "calm-river")
+    XCTAssertEqual(request.rootScript?.path, project.path + "/scripts/workroom_setup")
+    XCTAssertTrue(call.undeletable, "the script ran after the workroom could be deleted")
+    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+  }
+
+  /// Value: protects=a remote setup that fails ends the create as a local one does
+  /// (`.setupScriptFailed`, Open Anyway or Delete), with the workroom and its machine kept;
+  /// fails_when=the machine is destroyed, the record forgotten, or the outcome is a remote failure;
+  /// no_claim=a real host
+  func testARemoteSetupFailureKeepsTheWorkroomAndItsMachine() async throws {
+    let project = try projectWithASetupScript()
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let cli = RemoteFakeCLI(projectPath: project.path)
+    let driver = FakeDriver()
+    let store = makeStore(cli)
+    store.projects = [project]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let why =
+      "setup script failed: /home/boxd/r/scripts/workroom_setup returned a non-zero exit code"
+    var services = services(driver: driver, agent: agent)
+    services.script = { request in
+      request.onStart()
+      return .failed(why)
+    }
+    store.remoteCreateServices = services
+
+    await store.createRemoteWorkroom(in: project, place: .boxd)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.outcome, .setupScriptFailed(message: why))
+    XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .failed)
+    XCTAssertEqual(driver.destroys, 0, "the machine was taken down")
+    XCTAssertFalse(cli.calls.contains("delete calm-river"), "the record was forgotten")
+    XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
+  }
+
+  /// Value: protects=a setup that fails before its script starts (the connect, its check, the
+  /// root's copy) fails the "Run setup script" row, not the checkout before it; fails_when=the
+  /// checkout row is marked failed and the script row skipped; no_claim=which failures those are
+  /// (RemoteScriptTests)
+  func testARemoteSetupThatFailsBeforeItsScriptStartsFailsItsOwnRow() async throws {
+    let project = try projectWithASetupScript()
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let store = makeStore(RemoteFakeCLI(projectPath: project.path))
+    store.projects = [project]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    var services = services(driver: FakeDriver(), agent: agent)
+    services.script = { _ in .failed("setup script failed: couldn't reach the host") }
+    store.remoteCreateServices = services
+
+    await store.createRemoteWorkroom(in: project, place: .boxd)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.steps.first { $0.id == "checkout" }?.state, .done)
+    XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .failed)
+  }
+
   /// Value: protects=a root with a `.worktreeinclude` gets its "Copy local files" row after the
   /// checkout, and a copy that fails ends that row as a warning while the create still lands and
   /// its host is kept (#367, Q4); fails_when=the copy is skipped, its failure fails the create, or

@@ -33,17 +33,20 @@ final class CreationRunTests: XCTestCase {
       run(.local).steps.map(\.title), ["Fetch base branch", "Create worktree", "Run setup script"])
     XCTAssertEqual(
       run(.container(.docker)).steps.map(\.id),
-      ["repository", "image", "machine", "connect", "clone", "checkout"])
+      ["repository", "image", "machine", "connect", "clone", "checkout", "script"])
     XCTAssertEqual(run(.container(.docker)).steps[2].title, "Start container")
     XCTAssertEqual(
       run(.boxd).steps.map(\.title),
       [
         "Check repository", "Check boxd account", "Create machine", "Set up machine", "Connect",
-        "Clone repository", "Check out branch",
+        "Clone repository", "Check out branch", "Run setup script",
       ])
     XCTAssertEqual(
       run(.exeDev).steps.map(\.id),
-      ["repository", "account", "machine", "boot", "setup", "connect", "clone", "checkout"])
+      [
+        "repository", "account", "machine", "boot", "setup", "connect", "clone", "checkout",
+        "script",
+      ])
     XCTAssertEqual(run(.exeDev).steps[1].title, "Check exe.dev account")
     XCTAssertEqual(run(.exeDev).steps[2].title, "Create VM")
     XCTAssertTrue(run(.boxd).steps.allSatisfy { $0.state == .pending })
@@ -80,7 +83,9 @@ final class CreationRunTests: XCTestCase {
     XCTAssertEqual(ids(.local, true), ["fetch", "worktree", "include", "script"])
     XCTAssertEqual(ids(.local, false), ["fetch", "worktree", "script"])
     for kind in [CreationKind.container(.docker), .boxd, .exeDev] {
-      XCTAssertEqual(Array(ids(kind, true).suffix(2)), ["checkout", "include"], "\(kind)")
+      // The setup script's row follows, as on this Mac.
+      XCTAssertEqual(
+        Array(ids(kind, true).suffix(3)), ["checkout", "include", "script"], "\(kind)")
       XCTAssertFalse(ids(kind, false).contains("include"), "\(kind)")
     }
     let run = CreationRun(
@@ -154,7 +159,7 @@ final class CreationRunTests: XCTestCase {
       run.steps.map(\.state),
       [
         .done, .failed, .skipped(reason: nil), .skipped(reason: nil), .skipped(reason: nil),
-        .skipped(reason: nil),
+        .skipped(reason: nil), .skipped(reason: nil),
       ])
     XCTAssertEqual(run.outcome, .remoteFailed(message: "boom", leftBehind: false))
   }

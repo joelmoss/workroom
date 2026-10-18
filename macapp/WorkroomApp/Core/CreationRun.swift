@@ -60,10 +60,11 @@ enum CreationKind: Equatable {
         (.connect, "Connect"), (.clone, "Clone repository"), (.checkout, "Check out branch"),
       ]
     }
-    // The root's included files (#367), copied in once the branch is out, as on this Mac.
+    // The root's included files (#367), copied in once the branch is out, then the setup script,
+    // as on this Mac. The script's row is the local row, under the local create's id.
     return (remote + [(.include, "Copy local files")]).map {
       CreationStep(id: $0.0.rawValue, title: $0.1)
-    }
+    } + [CreationStep(id: "script", title: "Run setup script")]
   }
 }
 

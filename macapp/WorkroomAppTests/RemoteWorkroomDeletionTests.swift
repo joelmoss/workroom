@@ -1,4 +1,7 @@
+import AgentConnection
+import HostDrivers
 import WorkroomDomain
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom
@@ -115,6 +118,8 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     let calls = Calls()
     /// What config lists: a delete's reload publishes it.
     var listed: [Project] = []
+    /// What the next `deleteProject` throws, once, after it is recorded.
+    var deleteProjectError: Error?
     func list(warnings: String, project: String?) async throws -> ListResponse {
       ListResponse(projects: listed, workroomsDir: nil, configPath: nil)
     }
@@ -129,6 +134,10 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
     ) async throws -> [URL] {
       calls.add("delete-project")
+      if let error = deleteProjectError {
+        deleteProjectError = nil
+        throw error
+      }
       return []
     }
     func setHost(project: String, workroom: String?, descriptor: Data?) async throws {
@@ -211,6 +220,45 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertNil(store.errorMessage)
   }
 
+  /// Value: protects=C4, Delete Anyway on a project delete re-runs it as the project is now: a remote
+  /// workroom taken down before the failure is not taken down again; fails_when=the retry reuses the
+  /// project as it was when the delete began; no_claim=a live remote host's teardown (needs a driver)
+  @MainActor
+  func testDeleteAnywayAfterAProjectDeleteDoesNotRedoAGoneRemoteWorkroom() async throws {
+    let cli = RecordingCLI()
+    let store = AppStore(cli: cli)
+    let local = Workroom(name: "l", path: "/proj/l", vcsName: "workroom/l", warnings: [])
+    let project = Project(
+      path: "/proj", vcs: "git",
+      workrooms: [
+        local,
+        Workroom(
+          name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
+          host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID())),
+      ])
+    store.projects = [project]
+    // The CLI's teardown fails after the remote workroom went; the reload no longer lists it.
+    cli.deleteProjectError = WorkroomCLIError.cli(
+      kind: "TeardownScriptFailed", message: "teardown script failed")
+    cli.listed = [Project(path: "/proj", vcs: "git", workrooms: [local])]
+
+    store.deleteProject(project, scope: .workrooms)
+    let deadline = ContinuousClock.now + .seconds(10)
+    while store.errorAction == nil, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let action = try XCTUnwrap(store.errorAction, "no Delete Anyway was offered")
+    store.clearError()
+    action.run()
+    while cli.calls.all.filter({ $0 == "delete-project" }).count < 2, ContinuousClock.now < deadline
+    {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+
+    XCTAssertEqual(
+      cli.calls.all, ["host r destroyed", "delete r", "delete-project", "delete-project"])
+  }
+
   /// One remote workroom's delete records it destroyed, then has the CLI drop it.
   @MainActor
   func testAWorkroomDeleteDropsADestroyedRemoteWorkroom() async {
@@ -291,5 +339,209 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       DeleteProjectSheetModel.remoteWarning(remoteWorkroomCount: 0, hasBase: true),
       "⚠️ Whichever option you choose, this destroys its base machine, with everything on it "
         + "that isn't pushed.")
+  }
+}
+
+/// A remote workroom's teardown script, run on its host before the host goes
+/// (`docs/designs/scripts-on-every-workroom.md`: D3, R1).
+final class RemoteTeardownTests: XCTestCase {
+  private final class Log: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    var all: [String] { lock.withLock { entries } }
+    func add(_ entry: String) { lock.withLock { entries.append(entry) } }
+  }
+
+  private final class Driver: HostTerminalDriver, @unchecked Sendable {
+    let log: Log
+    init(_ log: Log) { self.log = log }
+    var agentSocket: String { "/home/boxd/.workroom/agent.sock" }
+    func create() async throws -> HostID { .remote(UUID()) }
+    func destroy(_ host: HostID) async throws { log.add("destroy") }
+    func openStream(to host: HostID) async throws -> HostStream {
+      throw HostDriverError.provisioning("no stream")
+    }
+    func exec(_ command: String, on host: HostID) async throws -> HostStream {
+      log.add("exec")
+      throw HostDriverError.provisioning("no exec")
+    }
+    func attachCommand(
+      to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+      metadata: [(key: String, value: String)]
+    ) throws -> String { "" }
+    func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool { false }
+    func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool { false }
+  }
+
+  private func recorder(_ log: Log) -> RemoteWorkrooms.Recorder {
+    RemoteWorkrooms.Recorder(
+      reserve: { _, _ in "unused" },
+      record: { _, descriptor in log.add("record \(descriptor.state ?? "serving")") },
+      forget: { log.add("forget \($0)") })
+  }
+
+  private func host(state: String? = nil) -> HostDescriptor {
+    HostDescriptor(
+      state: state, driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+      id: UUID())
+  }
+
+  private func teardown(
+    _ log: Log, skip: Bool = false, result: RemoteProvisioning.ScriptRun
+  ) -> RemoteWorkrooms.Teardown {
+    var teardown = RemoteWorkrooms.Teardown(
+      path: "/home/boxd/r", rootScript: nil, skip: skip, onLine: { _ in })
+    teardown.run = { request in
+      log.add("script \(request.script.rawValue) \(request.workroom) \(request.path)")
+      return result
+    }
+    return teardown
+  }
+
+  private func delete(
+    _ host: HostDescriptor, _ log: Log, teardown: RemoteWorkrooms.Teardown
+  ) async throws {
+    let driver = Driver(log)
+    try await RemoteWorkrooms.delete(
+      "w", host: host,
+      environment: RemoteProvisioning.Environment(driver: driver, agentSocket: driver.agentSocket),
+      recorder: recorder(log), teardown: teardown)
+  }
+
+  /// Value: protects=the teardown runs, in the checkout, before the host is destroyed and the
+  /// record forgotten; fails_when=it runs after, or not at all; no_claim=a real host
+  /// (RemoteScriptTests runs the agent)
+  func testTheTeardownRunsBeforeTheHostGoes() async throws {
+    let log = Log()
+    try await delete(host(), log, teardown: teardown(log, result: .passed))
+    XCTAssertEqual(log.all, ["script teardown w /home/boxd/r", "destroy", "forget w"])
+  }
+
+  /// Value: protects=D3, a failed teardown stops the delete with nothing taken down and its reason
+  /// kept, so deleting again retries; fails_when=the host is destroyed or the record changed;
+  /// no_claim=none beyond protects
+  func testAFailedTeardownTakesNothingDown() async throws {
+    let log = Log()
+    let why =
+      "teardown script failed: /home/boxd/r/scripts/workroom_teardown returned a non-zero exit code"
+    do {
+      try await delete(host(), log, teardown: teardown(log, result: .failed(why)))
+      XCTFail("a failed teardown let the delete go on")
+    } catch RemoteWorkrooms.Failure.teardownScriptFailed(let reason) {
+      XCTAssertEqual(reason, why)
+    }
+    XCTAssertEqual(log.all, ["script teardown w /home/boxd/r"])
+  }
+
+  /// Value: protects=Delete Anyway destroys the host without running the script; fails_when=the
+  /// script runs again or the host stays; no_claim=none beyond protects
+  func testDeleteAnywaySkipsTheScript() async throws {
+    let log = Log()
+    try await delete(host(), log, teardown: teardown(log, skip: true, result: .failed("no")))
+    XCTAssertEqual(log.all, ["destroy", "forget w"])
+  }
+
+  /// Value: protects=a host a create left `creating` or a delete left `failed` is taken down
+  /// without its script, since it may not be whole; fails_when=the script runs there and blocks
+  /// the cleanup; no_claim=none beyond protects
+  func testAHalfMadeHostSkipsTheScript() async throws {
+    let log = Log()
+    try await delete(host(state: "failed"), log, teardown: teardown(log, result: .failed("no")))
+    XCTAssertEqual(log.all, ["destroy", "forget w"])
+  }
+
+  /// Value: protects=R6, which failures offer Delete Anyway: a local or remote teardown failure and
+  /// a timed-out delete do, a failure elsewhere doesn't; fails_when=a case is dropped from or added
+  /// to `isTeardownFailure`, leaving a failed remote teardown with no way out; no_claim=the sheet
+  /// showing the button (AppStoreDeleteRaceTests drive that for the local cases)
+  func testWhichFailuresOfferDeleteAnyway() {
+    XCTAssertTrue(
+      AppStore.isTeardownFailure(
+        WorkroomCLIError.cli(kind: "TeardownScriptFailed", message: "teardown script failed")))
+    XCTAssertTrue(AppStore.isTeardownFailure(WorkroomCLIError.timedOut))
+    XCTAssertTrue(
+      AppStore.isTeardownFailure(
+        RemoteWorkrooms.Failure.teardownScriptFailed("teardown script failed: no route")))
+    XCTAssertFalse(
+      AppStore.isTeardownFailure(WorkroomCLIError.cli(kind: "VCSCommandFailed", message: "git")))
+    XCTAssertFalse(AppStore.isTeardownFailure(RemoteWorkrooms.Failure.signedOut))
+  }
+
+  /// Value: protects=a remote delete's teardown carries the workroom's checkout, the root's copy
+  /// and Delete Anyway's skip; fails_when=`remoteTeardown` drops the skip (Delete Anyway re-runs the
+  /// failing script) or points at the wrong script; no_claim=the delete itself (tests above)
+  func testARemoteDeletesTeardownCarriesItsSkip() {
+    let workroom = Workroom(
+      name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
+      host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID()))
+    let project = Project(path: "/proj", vcs: "git", workrooms: [workroom])
+    for skip in [false, true] {
+      let teardown = AppStore.remoteTeardown(of: workroom, in: project, log: nil, skip: skip)
+      XCTAssertEqual(teardown.skip, skip)
+      XCTAssertEqual(teardown.path, "/home/workroom/r")
+      XCTAssertEqual(teardown.rootScript?.path, "/proj/scripts/workroom_teardown")
+    }
+  }
+
+  /// Value: protects=a descriptor from before the `driver` field (Docker's) still runs its
+  /// teardown, as its host's delete still finds Docker; fails_when=the script fails as an unknown
+  /// driver; no_claim=none beyond protects
+  func testADescriptorWithNoDriverRunsItsTeardownAsDockers() async throws {
+    let log = Log()
+    let legacy = HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())
+    var teardown = teardown(log, result: .passed)
+    let run = teardown.run
+    teardown.run = { request in
+      log.add("key \(request.key == RemoteHosts.DriverKey() ? "docker" : "other")")
+      return await run(request)
+    }
+    try await delete(legacy, log, teardown: teardown)
+    XCTAssertEqual(
+      log.all, ["key docker", "script teardown w /home/boxd/r", "destroy", "forget w"])
+  }
+
+  /// Value: protects=R1, the script connects through the app's `ensureConnected` (which joins a
+  /// connect under way, replaces an older agent and puts a relayed host's credentials up) before
+  /// anything runs, and a failed connect is a failed script; fails_when=the script runs without
+  /// connecting, or a failed connect passes; no_claim=the join, bootstrap and relay themselves
+  /// (RemoteHostsTests and AgentBootstrap's tests)
+  func testTheScriptConnectsFirstAndAFailedConnectIsAFailure() async {
+    let log = Log()
+    let driver = Driver(log)
+    let hosts = RemoteHosts(
+      connectHost: { _ in
+        log.add("connect")
+        throw HostDriverError.provisioning("no route to host")
+      }, startHost: { _ in })
+    let boxd = RemoteHosts.DriverKey.boxd(org: nil, account: nil)
+    let result = await RemoteWorkrooms.runScript(
+      RemoteWorkrooms.ScriptRequest(
+        script: .teardown, workroom: "w", path: "/home/boxd/r", host: .remote(UUID()),
+        key: boxd, driver: driver, agentBinary: "/wr-agent", rootScript: nil, onLine: { _ in }),
+      hosts: hosts)
+    guard case .failed(let why) = result else { return XCTFail("a failed connect passed") }
+    XCTAssertEqual(why, "teardown script failed: couldn't reach the host")
+    XCTAssertEqual(log.all, ["connect"], "the script ran without a connection")
+  }
+
+  /// Value: protects=R1, a stopped container (every Apple one after a reboot) is started before its
+  /// script, as opening its workroom starts it, so a delete from the context menu runs the
+  /// teardown; fails_when=the script connects to the host without starting it; no_claim=the start
+  /// itself (ContainerHostDriver's tests)
+  func testTheScriptStartsAStoppedHostFirst() async {
+    let log = Log()
+    let hosts = RemoteHosts(
+      connectHost: { _ in
+        log.add("connect")
+        throw HostDriverError.provisioning("no route to host")
+      }, startHost: { _ in log.add("start") })
+    let docker = RemoteHosts.DriverKey.container(.docker, context: nil)
+    _ = await RemoteWorkrooms.runScript(
+      RemoteWorkrooms.ScriptRequest(
+        script: .teardown, workroom: "w", path: "/r", host: .remote(UUID()),
+        key: docker, driver: Driver(log), agentBinary: "/wr-agent",
+        rootScript: nil, onLine: { _ in }),
+      hosts: hosts)
+    XCTAssertEqual(log.all, ["start", "connect"])
   }
 }

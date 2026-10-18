@@ -585,6 +585,10 @@ final class AppStore: ObservableObject {
     get { modals.errorLog }
     set { modals.errorLog = newValue }
   }
+  var errorAction: ErrorAction? {
+    get { modals.errorAction }
+    set { modals.errorAction = newValue }
+  }
   func clearError() { modals.clearError() }
 
   /// Tells the user a closed remote pane's session may still be running on its host (#283), unless
@@ -2349,7 +2353,8 @@ final class AppStore: ObservableObject {
   /// workspace removal) in the background. On success the optimistic removal already
   /// matches reality; on failure we reload (so it reappears if it still exists) and
   /// surface the error.
-  func deleteWorkroom(_ workroom: Workroom, in project: Project) {
+  /// `skipTeardown` runs no teardown script: Delete Anyway, after the script failed.
+  func deleteWorkroom(_ workroom: Workroom, in project: Project, skipTeardown: Bool = false) {
     let sid = SidebarID.workroom(project: project.path, name: workroom.name)
     let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
     // Don't delete a workroom whose create is still in flight (issue #116) — its setup script is
@@ -2396,7 +2401,8 @@ final class AppStore: ObservableObject {
     stopRunsAcrossWindows([targetID], stores: stores) { [weak self] in
       Task {
         for store in stores { await store.reapTargetLocally(targetID) }
-        self?.startWorkroomTeardown(workroom, in: project, remote: remote)
+        self?.startWorkroomTeardown(
+          workroom, in: project, remote: remote, skipTeardown: skipTeardown)
       }
     }
   }
@@ -2455,7 +2461,8 @@ final class AppStore: ObservableObject {
   /// its captured output in an alert. Split out of `deleteWorkroom` so the run command can stop first
   /// (issue #7) — the worktree must not be deleted while its dev server still holds the directory.
   private func startWorkroomTeardown(
-    _ workroom: Workroom, in project: Project, remote: RemoteProvisioning.Environment?
+    _ workroom: Workroom, in project: Project, remote: RemoteProvisioning.Environment?,
+    skipTeardown: Bool
   ) {
     let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
     Task {
@@ -2464,9 +2471,13 @@ final class AppStore: ObservableObject {
         if let host = workroom.host {
           try await RemoteWorkrooms.delete(
             workroom.name, host: host, environment: remote,
-            recorder: remoteRecorder(project: project.path))
+            recorder: remoteRecorder(project: project.path),
+            teardown: Self.remoteTeardown(
+              of: workroom, in: project, log: log, skip: skipTeardown))
         } else {
-          try await cli.delete(name: workroom.name, project: project.path) { text in
+          try await cli.delete(
+            name: workroom.name, project: project.path, skipTeardown: skipTeardown
+          ) { text in
             DispatchQueue.main.async { log.append(text) }
           }
         }
@@ -2482,9 +2493,20 @@ final class AppStore: ObservableObject {
         // reload's `apply` doesn't filter it out — it must reappear in the sidebar.
         deletingWorkrooms.remove(targetID)
         await reload()
-        presentTeardownFailure(workroom, error: error, log: log)
+        presentTeardownFailure(workroom, in: project, error: error, log: log)
       }
     }
+  }
+
+  /// A remote workroom's teardown script, run on its host before the host goes, its output into
+  /// `log`: the checkout's copy, else the project root's.
+  nonisolated static func remoteTeardown(
+    of workroom: Workroom, in project: Project, log: ScriptLogSession?, skip: Bool
+  ) -> RemoteWorkrooms.Teardown {
+    RemoteWorkrooms.Teardown(
+      path: workroom.path,
+      rootScript: URL(fileURLWithPath: project.path + "/scripts/workroom_teardown"), skip: skip,
+      onLine: { line in DispatchQueue.main.async { log?.append(line) } })
   }
 
   /// Drops a workroom from the in-memory project list so the sidebar updates instantly. `internal`
@@ -2503,10 +2525,32 @@ final class AppStore: ObservableObject {
 
   /// Teardown failed (it ran in the background): the error sheet says why (which script, and that it
   /// exited non-zero), with what the script printed in a scrolling box beneath.
-  private func presentTeardownFailure(_ workroom: Workroom, error: Error, log: ScriptLogSession) {
+  private func presentTeardownFailure(
+    _ workroom: Workroom, in project: Project, error: Error, log: ScriptLogSession
+  ) {
     present(error)
     errorTitle = "Teardown of ‘\(workroom.name)’ failed"
     errorLog = Self.scriptOutput(log)
+    guard Self.isTeardownFailure(error) else { return }
+    let name = workroom.name
+    let path = project.path
+    errorAction = ErrorAction(label: "Delete Anyway") { [weak self] in
+      // As it is now, after the failure's reload, not as it was when the delete began.
+      guard let self, let project = self.projects.first(where: { $0.path == path }),
+        let workroom = project.workrooms.first(where: { $0.name == name })
+      else { return }
+      self.deleteWorkroom(workroom, in: project, skipTeardown: true)
+    }
+  }
+
+  /// Whether a delete failed in its teardown script, so Delete Anyway (no script) can get it
+  /// through: the script failed or couldn't start, ran out of time, or its host couldn't be reached.
+  /// A failure elsewhere (git, config) would fail the same way without the script.
+  nonisolated static func isTeardownFailure(_ error: Error) -> Bool {
+    if case WorkroomCLIError.cli(let kind, _) = error { return kind == "TeardownScriptFailed" }
+    if case WorkroomCLIError.timedOut = error { return true }
+    if case RemoteWorkrooms.Failure.teardownScriptFailed = error { return true }
+    return false
   }
 
   /// A run's captured script output, or nil when it printed nothing.
@@ -2530,7 +2574,8 @@ final class AppStore: ObservableObject {
   /// project reappears if it still exists) and surface the error. For `.fromDisk`, once the CLI
   /// returns the config is already dropped — a subsequent Trash failure leaves the project removed
   /// and is reported on its own (we do NOT restore it), listing the dirs left behind.
-  func deleteProject(_ project: Project, scope: DeleteProjectScope) {
+  /// `skipTeardown` runs no workroom's teardown script: Delete Anyway, after one failed.
+  func deleteProject(_ project: Project, scope: DeleteProjectScope, skipTeardown: Bool = false) {
     // Refuse while anything is being created in this project (issue #167). `deleteWorkroom` has
     // guarded its own target since issue #116, but nothing guarded the PROJECT — so a project could
     // be torn down (`--from-disk` trashes the project root itself) while a setup script was writing a
@@ -2589,8 +2634,10 @@ final class AppStore: ObservableObject {
       guard let self else { return }
       Task {
         for store in stores { for id in targetIDs { await store.reapTargetLocally(id) } }
+        // Every scope destroys remote workrooms' machines, each after its teardown, so any delete
+        // with one keeps a log; config-only runs no local teardown.
         let log =
-          scope == .configOnly
+          scope == .configOnly && remoteWorkrooms.isEmpty
           ? nil : ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown")
         do {
           // The CLI refuses a project with remote entries in every mode, and `--from-disk` would
@@ -2601,7 +2648,9 @@ final class AppStore: ObservableObject {
             guard let host = workroom.host else { continue }
             try await RemoteWorkrooms.delete(
               workroom.name, host: host, environment: remote?.environment(for: host),
-              recorder: recorder)
+              recorder: recorder,
+              teardown: Self.remoteTeardown(
+                of: workroom, in: project, log: log, skip: skipTeardown))
           }
           // Each base on its own runtime and context (#309). Config keeps the ones still to go, so
           // a failure part-way leaves what is live recorded for the next delete.
@@ -2622,7 +2671,7 @@ final class AppStore: ObservableObject {
           let trashPaths = try await self.cli.deleteProject(
             project.path,
             withWorkrooms: scope == .workrooms,
-            fromDisk: scope == .fromDisk
+            fromDisk: scope == .fromDisk, skipTeardown: skipTeardown
           ) { text in DispatchQueue.main.async { log?.append(text) } }
           if scope == .fromDisk {
             // CLI already ran teardowns + dropped config; move the returned dirs to the Bin.
@@ -2640,7 +2689,7 @@ final class AppStore: ObservableObject {
           // Before the reload, so the project (still in config) reappears.
           self.deletingProjects.remove(project.path)
           await self.reload()
-          self.presentDeleteProjectFailure(project, error: error, log: log)
+          self.presentDeleteProjectFailure(project, scope: scope, error: error, log: log)
         }
       }
     }
@@ -2724,11 +2773,20 @@ final class AppStore: ObservableObject {
   /// teardown output in a scrolling box beneath. `log` is nil for a config-only delete (no teardown
   /// ran), which shows the error alone.
   private func presentDeleteProjectFailure(
-    _ project: Project, error: Error, log: ScriptLogSession?
+    _ project: Project, scope: DeleteProjectScope, error: Error, log: ScriptLogSession?
   ) {
     present(error)
     errorTitle = "Delete of ‘\(project.displayName)’ failed"
     errorLog = Self.scriptOutput(log)
+    guard Self.isTeardownFailure(error) else { return }
+    let path = project.path
+    // Says what it does: every remaining workroom's teardown is skipped, not only the one that
+    // failed, as the CLI's `delete-project --skip-teardown` does.
+    errorAction = ErrorAction(label: "Delete Without Teardowns") { [weak self] in
+      // As it is now: a remote workroom taken down before the failure is gone from it (C4).
+      guard let self, let project = self.projects.first(where: { $0.path == path }) else { return }
+      self.deleteProject(project, scope: scope, skipTeardown: true)
+    }
   }
 
   func errorText(_ error: Error) -> String {

@@ -214,9 +214,14 @@ enum RemoteWorkrooms {
     case boxdNotInstalled
     case baseBranchNotOnOrigin(String)
     case baseBranchOnOtherRemote(String)
+    /// The workroom's teardown script failed on its host, or the host couldn't be reached to run it:
+    /// worded as the CLI words a local one ("teardown script failed: ...").
+    case teardownScriptFailed(String)
 
     var errorDescription: String? {
       switch self {
+      case .teardownScriptFailed(let why):
+        return why
       case .signedOut:
         return "Sign in to GitHub with `gh auth login`: it gives the workroom its GitHub access."
       case .notOnGitHub(let detail):
@@ -459,15 +464,75 @@ enum RemoteWorkrooms {
     return !live.isEmpty
   }
 
-  /// Deletes a remote workroom (#253): takes down what its record says is live (`isLive`), then has
-  /// the CLI drop the entry (`Recorder.forget`). The app's connection to the box goes first; a
-  /// pane's own ssh goes with the box.
+  /// A workroom script to run on its host: setup at the end of a create, teardown before a delete.
+  struct ScriptRequest: Sendable {
+    let script: RemoteProvisioning.Script
+    let workroom: String
+    /// The workroom's checkout on its host.
+    let path: String
+    let host: HostID
+    let key: RemoteHosts.DriverKey
+    let driver: any HostTerminalDriver
+    let agentBinary: String
+    /// The project root's copy, on this Mac, for a checkout without one.
+    let rootScript: URL?
+    var onStart: @Sendable () -> Void = {}
+    let onLine: @Sendable (String) -> Void
+  }
+
+  /// Runs a workroom's script on its host, through the app's own connection to it
+  /// (`RemoteHosts.ensureConnected`, then `connect`): that replaces an agent older than this app's,
+  /// so `run-script` is there, and puts a relayed host's git credentials up for the script, as its
+  /// terminals get them.
+  static func runScript(
+    _ request: ScriptRequest, hosts: RemoteHosts = .shared
+  ) async -> RemoteProvisioning.ScriptRun {
+    do {
+      // Joins a connect already under way (a status read after wake) rather than fail beside it.
+      // The user asked for this host, as opening its workroom does: a stopped container (every
+      // Apple one after a reboot) is started and an asleep boxd box woken.
+      hosts.activate(request.host)
+      try await hosts.ensureConnected(request.host, wake: true)
+    } catch RepositoryRoutingError.unavailable {
+      // The connect's own error is logged there; "Repository service unavailable" means nothing here.
+      return .failed("\(request.script.rawValue) script failed: couldn't reach the host")
+    } catch {
+      return .failed("\(request.script.rawValue) script failed: \(error.localizedDescription)")
+    }
+    return await RemoteProvisioning.runScript(
+      request.script, workroom: request.workroom, at: request.path,
+      hostKind: RemoteProvisioning.hostKind(request.key), rootScript: request.rootScript,
+      agentBinary: request.agentBinary, on: request.host, driver: request.driver,
+      onStart: request.onStart, onLine: request.onLine)
+  }
+
+  /// What a delete runs before the host goes: the workroom's teardown script, as the CLI runs a local
+  /// one first.
+  struct Teardown: Sendable {
+    /// The workroom's checkout on its host.
+    let path: String
+    let rootScript: URL?
+    /// Delete Anyway: the script failed, and the user chose to go on without it.
+    var skip = false
+    let onLine: @Sendable (String) -> Void
+    /// What runs the script: `runScript` in the app, a fake in a test.
+    var run: @Sendable (ScriptRequest) async -> RemoteProvisioning.ScriptRun = { request in
+      await RemoteWorkrooms.runScript(request)
+    }
+  }
+
+  /// Deletes a remote workroom (#253): runs its teardown script on a ready host (`teardown`), takes
+  /// down what its record says is live (`isLive`), then has the CLI drop the entry
+  /// (`Recorder.forget`). The app's connection to the box goes first; a pane's own ssh goes with the
+  /// box.
   ///
-  /// When part of the teardown fails, the entry keeps what is still live, as `failed`, so deleting
-  /// it again finishes the job. `environment` is needed only for a live one.
+  /// A teardown script that fails, or a host that can't be reached to run it, stops the delete with
+  /// nothing taken down (`Failure.teardownScriptFailed`), so deleting again retries. When part of the
+  /// host's own teardown fails, the entry keeps what is still live, as `failed`, so deleting it
+  /// again finishes the job. `environment` is needed only for a live one.
   static func delete(
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
-    recorder: Recorder
+    recorder: Recorder, teardown: Teardown? = nil
   ) async throws {
     // The entry goes, and the host's port forwards with it (#380): one step for both ways out, so
     // a workroom with nothing live to take down keeps nothing made this launch.
@@ -484,6 +549,23 @@ enum RemoteWorkrooms {
     // `checkDeletable` found it live, so it has a box.
     guard let environment, let id = host.id else { throw Failure.signedOut }
     let box = HostID.remote(id)
+    // Only on a ready host: one a create left `creating` or a delete left `failed` may not be whole,
+    // and that delete exists to finish taking it down.
+    if let teardown, !teardown.skip, host.state == nil {
+      // `deletionKey`, as the host's own delete finds its driver: a descriptor from before the
+      // `driver` field is Docker's.
+      guard let driver = environment.driver as? any HostTerminalDriver,
+        let key = try? RemoteHosts.deletionKey(host)
+      else {
+        throw Failure.teardownScriptFailed("teardown script failed: this host's driver is unknown")
+      }
+      let run = await teardown.run(
+        ScriptRequest(
+          script: .teardown, workroom: name, path: teardown.path, host: box, key: key,
+          driver: driver, agentBinary: environment.agentBinary, rootScript: teardown.rootScript,
+          onLine: teardown.onLine))
+      if case .failed(let why) = run { throw Failure.teardownScriptFailed(why) }
+    }
     if let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
       await HostConnectionManager.shared.disconnect(lease)
     }

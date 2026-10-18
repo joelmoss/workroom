@@ -256,6 +256,192 @@ enum RemoteProvisioning {
 
   private static func files(_ count: Int) -> String { count == 1 ? "1 file" : "\(count) files" }
 
+  // MARK: Workroom scripts
+
+  /// A workroom's two scripts, by the word the CLI uses for each (`internal/script`).
+  enum Script: String, Sendable {
+    case setup, teardown
+    var fileName: String { "workroom_\(rawValue)" }
+  }
+
+  /// How running a workroom's script on its host ended.
+  enum ScriptRun: Equatable, Sendable {
+    /// Neither the checkout nor the root has the script.
+    case absent
+    case passed
+    /// Worded as the CLI words a local script's failure: "setup script failed: <why>".
+    case failed(String)
+  }
+
+  /// How long a script may run, as the app gives a local one through the CLI (`WorkroomCLI.create`).
+  static let scriptTimeout: TimeInterval = 600
+
+  /// `WORKROOM_HOST` for a host on `key` (`docs/designs/scripts-on-every-workroom.md`).
+  static func hostKind(_ key: RemoteHosts.DriverKey) -> String {
+    switch key {
+    case .container(let runtime, _): runtime == .docker ? "docker" : "apple"
+    case .boxd: "boxd"
+    case .exeDev: "exedev"
+    }
+  }
+
+  /// Runs `script` for workroom `name` in its checkout at `path` on `host`, through the host agent's
+  /// `run-script`: `onStart` once a script is found, then `onLine` each line it prints as it prints
+  /// it. The checkout's own copy is
+  /// run; with none, the root's (`rootScript`, on this Mac) is copied in with its mode and run, as
+  /// the CLI falls back to the root's copy locally (`findScript`). It never throws.
+  static func runScript(
+    _ script: Script, workroom name: String, at path: String, hostKind: String,
+    rootScript: URL?, agentBinary: String, on host: HostID, driver: any HostDriver,
+    onStart: @Sendable () -> Void = {}, onLine: @escaping @Sendable (String) -> Void,
+    timeout: TimeInterval = scriptTimeout, slack: TimeInterval = 30
+  ) async -> ScriptRun {
+    let q = PosixShell.quoted
+    let failed = { (why: String) in ScriptRun.failed("\(script.rawValue) script failed: \(why)") }
+    var scriptPath = path + "/scripts/" + script.fileName
+    do {
+      let found = try await driver.exec("test -e \(q(scriptPath))", on: host)
+        .communicate(nil, timeout: 30)
+      // `test -e` says 1 for a missing file. Anything else is the host not answering (ssh's 255),
+      // which must never pass for "no script": it would skip a teardown and destroy the host.
+      switch found.status {
+      case 0: break
+      case 1:
+        guard let rootScript, FileManager.default.fileExists(atPath: rootScript.path) else {
+          return .absent
+        }
+        scriptPath = path + "/.git/workroom/" + script.fileName
+        try await upload(rootScript, to: scriptPath, on: host, driver: driver)
+      default:
+        let said = found.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return failed("couldn't check the host for \(scriptPath) (exit \(found.status)): \(said)")
+      }
+      let command =
+        "\(q(agentBinary)) run-script --dir \(q(path)) --timeout \(Int(timeout))"
+        + " --env \(q("WORKROOM_NAME=\(name)")) --env \(q("WORKROOM_PATH=\(path)"))"
+        + " --env \(q("WORKROOM_HOST=\(hostKind)")) -- \(q(scriptPath))"
+      onStart()
+      let said = AgentSaid()
+      let lines = LineSplitter { line in
+        said.note(line)
+        onLine(line)
+      }
+      // Its last line too when the link drops: often the script's own error.
+      defer { lines.finish() }
+      let stream = try await driver.exec(command, on: host)
+      let status: Int32
+      do {
+        // The agent's own wall clock ends the script; these bounds leave room for the connect, the
+        // probe and the kill grace before its report. Silence is a dead link. The whole exchange is
+        // bounded too, as the local CLI call is: a process the script left in the background holds
+        // its output open past the script, and one that keeps printing is never silent.
+        (status, _) = try await withTimeout(seconds: timeout + slack) {
+          try await stream.communicate(
+            nil, timeout: timeout + slack, onOutput: { data, stderr in lines.add(data, stderr) })
+        }
+      } catch is VCSTimeoutError {
+        stream.end()
+        return failed(
+          "\(scriptPath) still held its output open after \(Int(timeout)) s"
+            + " (a process it started in the background, perhaps)")
+      } catch {
+        stream.end()
+        throw error
+      }
+      // 124 and 126 are the agent's only when it said so: a script can exit with either itself
+      // (`timeout 30 ...` does). ssh's own 255 can't be told from a script's, so it says both.
+      switch status {
+      case 0: return .passed
+      case 124 where said.timedOut:
+        return failed("\(scriptPath) timed out after \(Int(timeout)) s")
+      case 126 where said.notStarted: return failed("\(scriptPath) could not be started")
+      case 255:
+        return failed(
+          "\(scriptPath) returned exit code 255, or the connection to the host dropped while it ran"
+        )
+      default: return failed("\(scriptPath) returned a non-zero exit code")
+      }
+    } catch {
+      return failed(error.localizedDescription)
+    }
+  }
+
+  /// Copies `file` to `destination` on `host`, keeping its mode: a root script without its execute
+  /// bit fails to start there, as it does locally.
+  private static func upload(
+    _ file: URL, to destination: String, on host: HostID, driver: any HostDriver
+  ) async throws {
+    let q = PosixShell.quoted
+    let mode =
+      (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions]
+      as? NSNumber)?.intValue ?? 0o644
+    let directory = (destination as NSString).deletingLastPathComponent
+    let command =
+      "mkdir -p \(q(directory)) && cat > \(q(destination))"
+      + " && chmod \(String(mode, radix: 8)) \(q(destination))"
+    let stream = try await driver.exec(command, on: host)
+    let result: (status: Int32, output: String)
+    do {
+      result = try await stream.communicate(contentsOf: file, timeout: 30)
+    } catch {
+      stream.end()
+      throw error
+    }
+    guard result.status == 0 else {
+      throw HostDriverError.provisioning(
+        "copying \(file.lastPathComponent) to the host failed: \(result.output)")
+    }
+  }
+
+  /// What `run-script` itself reported about the script: its own stderr lines, which name it.
+  private final class AgentSaid: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timedOutSeen = false
+    private var notStartedSeen = false
+    var timedOut: Bool { lock.withLock { timedOutSeen } }
+    var notStarted: Bool { lock.withLock { notStartedSeen } }
+
+    func note(_ line: String) {
+      guard line.hasPrefix("wr-agent run-script: ") else { return }
+      lock.withLock {
+        if line.contains(" timed out after ") { timedOutSeen = true }
+        if line.contains(" could not be started: ") { notStartedSeen = true }
+      }
+    }
+  }
+
+  /// Splits a stream's pieces into lines, stdout's and stderr's apart, since a piece can end
+  /// mid-line and the two interleave.
+  private final class LineSplitter: @unchecked Sendable {
+    private let onLine: @Sendable (String) -> Void
+    private let lock = NSLock()
+    private var pending: [Bool: Data] = [:]
+
+    init(_ onLine: @escaping @Sendable (String) -> Void) { self.onLine = onLine }
+
+    func add(_ data: Data, _ stderr: Bool) {
+      let lines: [Data] = lock.withLock {
+        var buffer = pending[stderr, default: Data()] + data
+        var complete: [Data] = []
+        while let newline = buffer.firstIndex(of: 0x0A) {
+          complete.append(buffer[buffer.startIndex..<newline])
+          buffer = buffer[buffer.index(after: newline)...]
+        }
+        pending[stderr] = Data(buffer)
+        return complete
+      }
+      for line in lines { onLine(String(decoding: line, as: UTF8.self)) }
+    }
+
+    func finish() {
+      let rest = lock.withLock {
+        defer { pending = [:] }
+        return pending.values.filter { !$0.isEmpty }
+      }
+      for line in rest { onLine(String(decoding: line, as: UTF8.self)) }
+    }
+  }
+
   // MARK: Plumbing
 
   /// One git command on the host, through the agent's exec service: the host's own environment,
