@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Run by workroom as a setup script. workroom executes us inside the new workroom
-# directory and exposes WORKROOM_NAME, WORKROOM_PATH and WORKROOM_ROOT_PATH, so we
-# take no arguments. See https://github.com/joelmoss/workroom#environment-variables.
+# directory and exposes WORKROOM_NAME, WORKROOM_PATH, WORKROOM_HOST and (except on a
+# remote workroom's host) WORKROOM_ROOT_PATH, so we take no arguments. See https://github.com/joelmoss/workroom#environment-variables.
 
 # Returns 0 iff both paths exist and refer to the same underlying file (same
 # device + inode). Catches the case where one path is a symlink to the other.
@@ -36,13 +36,20 @@ copy_claude_local_settings() {
 
 main() {
   local var
-  for var in WORKROOM_NAME WORKROOM_PATH WORKROOM_ROOT_PATH; do
+  for var in WORKROOM_NAME WORKROOM_PATH; do
     if [[ -z "${!var:-}" ]]; then
       echo "ERROR: $var is not set. This script is meant to be run by workroom." >&2
       echo "See https://github.com/joelmoss/workroom#environment-variables." >&2
       exit 1
     fi
   done
+
+  # A remote workroom's host has no root project, so nothing to copy from (WORKROOM_HOST says where
+  # this runs). See https://github.com/joelmoss/workroom#environment-variables.
+  if [[ -z "${WORKROOM_ROOT_PATH:-}" ]]; then
+    echo "No root project on this host (${WORKROOM_HOST:-unknown}); nothing to copy."
+    return 0
+  fi
 
   if same_file "$WORKROOM_ROOT_PATH" "$WORKROOM_PATH"; then
     echo "ERROR: WORKROOM_ROOT_PATH ('$WORKROOM_ROOT_PATH') resolves to the workspace directory. Aborting to avoid clobbering source files." >&2
