@@ -359,7 +359,17 @@ final class AgentPortForwardingTests: XCTestCase {
         for descriptor in held { Darwin.close(descriptor) }
         setrlimit(RLIMIT_NOFILE, &original)
       }
-      let open = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
+      // Earlier tests' connections close their descriptors late (a deinit on a background queue
+      // once its reads end), and one freed mid-test hands `accept` the descriptor this test
+      // denies it, so the count must hold still before the limit is set from it. Seen on CI once
+      // the connects before each test lost their 2s, which used to be that settling time.
+      var open = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
+      for _ in 0..<50 {
+        try await Task.sleep(for: .milliseconds(100))
+        let now = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
+        if now == open { break }
+        open = now
+      }
       var lowered = original
       lowered.rlim_cur = rlim_t(open + 32)
       // Not merely asserted: without the lowered limit the loop below would fill the host's real one.

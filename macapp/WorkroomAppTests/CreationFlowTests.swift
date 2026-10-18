@@ -657,11 +657,12 @@ final class CreationFlowTests: XCTestCase {
     defer { agent.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.remoteCreateServices = services(driver: FakeDriver(), agent: agent)
+    // The run waits for Done: a create against the fake agent ends within one poll of the
+    // run's start, so watching `creationRuns` for it mid-flight is a race.
+    store.closesFinishedCreations = { false }
 
-    let task = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
-    await waitUntil({ !store.creationRuns.isEmpty }, "the create never started")
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await task.value
+    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
 
     XCTAssertEqual(run.outcome, .succeeded)
     XCTAssertEqual(
@@ -670,6 +671,7 @@ final class CreationFlowTests: XCTestCase {
         .done, .done, .skipped(reason: nil), .skipped(reason: nil), .done, .done, .done,
       ])
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-river"))
+    store.finishCreation(run)
     XCTAssertTrue(store.creationRuns.isEmpty)
     XCTAssertTrue(store.creatingWorkrooms.isEmpty)
   }
@@ -714,11 +716,11 @@ final class CreationFlowTests: XCTestCase {
       return .passed
     }
     store.remoteCreateServices = services
+    // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.
+    store.closesFinishedCreations = { false }
 
-    let task = Task { await store.createRemoteWorkroom(in: project, place: .boxd) }
-    await waitUntil({ !store.creationRuns.isEmpty }, "the create never started")
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await task.value
+    await store.createRemoteWorkroom(in: project, place: .boxd)
+    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
 
     XCTAssertEqual(run.outcome, .succeeded)
     let row = try XCTUnwrap(run.steps.first { $0.id == "script" })
@@ -805,11 +807,11 @@ final class CreationFlowTests: XCTestCase {
     store.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     store.remoteCreateServices = services(driver: driver, agent: agent)
+    // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.
+    store.closesFinishedCreations = { false }
 
-    let task = Task { await store.createRemoteWorkroom(in: project, place: .boxd) }
-    await waitUntil({ !store.creationRuns.isEmpty }, "the create never started")
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await task.value
+    await store.createRemoteWorkroom(in: project, place: .boxd)
+    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
 
     XCTAssertEqual(run.outcome, .succeeded)
     XCTAssertEqual(run.steps.suffix(2).map(\.id), ["checkout", "include"])

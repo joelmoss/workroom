@@ -283,13 +283,19 @@ impl Sink {
 /// One live watch. Dropping it stops the OS watcher, which drops the channel sender the watcher's
 /// handler owns, which ends the coalescer thread — no explicit stop flag to race.
 struct Subscription {
-    _watcher: notify::RecommendedWatcher,
+    /// `None` only under `stubbed()`: a bookkeeping-only subscription with no OS watcher behind it.
+    _watcher: Option<notify::RecommendedWatcher>,
 }
 
 /// Every watch one connection holds, torn down with it.
 pub struct Subscriptions {
     sink: Sink,
     active: Mutex<HashMap<u64, Subscription>>,
+    /// Unit tests of the bookkeeping (ids, the cap) with no OS watcher per subscription: on this
+    /// Mac one FSEvents watch costs 0.7-2.4s to create (measured, notify 8.2), so a test reaching
+    /// `MAX_SUBSCRIPTIONS` over real watchers took 48s.
+    #[cfg(test)]
+    stubbed: bool,
 }
 
 impl Subscriptions {
@@ -297,6 +303,20 @@ impl Subscriptions {
         Self {
             sink: Sink { writer, closer },
             active: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            stubbed: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn stubbed() -> Self {
+        Self {
+            sink: Sink {
+                writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+                closer: Arc::new(|| {}),
+            },
+            active: Mutex::new(HashMap::new()),
+            stubbed: true,
         }
     }
 
@@ -317,6 +337,11 @@ impl Subscriptions {
                 "{} is not a directory",
                 root.display()
             )));
+        }
+        #[cfg(test)]
+        if self.stubbed {
+            active.insert(id, Subscription { _watcher: None });
+            return Ok(());
         }
         let (sender, receiver) = mpsc::sync_channel(INGRESS_CAPACITY);
         let dropped = Arc::new(AtomicBool::new(false));
@@ -345,7 +370,12 @@ impl Subscriptions {
         let sink = self.sink.clone();
         let root = root.to_owned();
         std::thread::spawn(move || run(id, &root, &receiver, &dropped, &sink));
-        active.insert(id, Subscription { _watcher: watcher });
+        active.insert(
+            id,
+            Subscription {
+                _watcher: Some(watcher),
+            },
+        );
         Ok(())
     }
 
@@ -656,5 +686,34 @@ mod tests {
             again,
             "a repeated path costs nothing"
         );
+    }
+
+    /// The bookkeeping alone, with no OS watcher per id (see `Subscriptions::stubbed`): the wire
+    /// test in `tests/file_service.rs` proves the same shapes over a real connection with a few
+    /// subscriptions, and this one reaches the cap.
+    #[test]
+    fn subscription_ids_are_unique_and_the_count_is_capped() {
+        let root = std::env::temp_dir();
+        let subscriptions = Subscriptions::stubbed();
+        subscriptions.subscribe(1, &root).unwrap();
+        assert!(matches!(
+            subscriptions.subscribe(1, &root),
+            Err(FileError::Unsupported(detail)) if detail.contains("already in use")
+        ));
+        for id in 2..=MAX_SUBSCRIPTIONS as u64 {
+            subscriptions.subscribe(id, &root).unwrap();
+        }
+        let over = MAX_SUBSCRIPTIONS as u64 + 1;
+        assert!(matches!(
+            subscriptions.subscribe(over, &root),
+            Err(FileError::Busy(_))
+        ));
+        // Freeing one makes room again.
+        subscriptions.unsubscribe(2);
+        subscriptions.subscribe(over, &root).unwrap();
+        assert!(matches!(
+            subscriptions.subscribe(over, &root),
+            Err(FileError::Unsupported(_))
+        ));
     }
 }

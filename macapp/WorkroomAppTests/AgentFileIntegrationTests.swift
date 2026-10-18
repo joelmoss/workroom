@@ -241,7 +241,7 @@ final class AgentFileIntegrationTests: XCTestCase {
   /// connection's whole life; it must be an explicit failure (and retire the connection so the next
   /// acquisition probes again).
   func testAV3AgentThatNeverAnswersTheFileProbeIsAFailureNotAnOldAgent() async throws {
-    let fake = try FakeAgent(version: 3)
+    let fake = try FakeAgent(version: 3, files: false)
     fakes.append(fake)
     let connection = try await AgentVCSConnection.connect(
       host: .local, socketPath: fake.socketPath)
@@ -820,6 +820,9 @@ final class FakeAgent: @unchecked Sendable {
   /// answers a request and closes, while the client's write half is still open. That distinction
   /// is load-bearing on macOS — see `testStoppingAForwardDrainsTheResponseAlreadyReceived`.
   private let forwardEpilogueOnData: Bool
+  /// Answer the File-service `capabilities` probe `connect()` sends to a protocol-3+ peer. Off, the
+  /// probe waits out its whole handshake timeout (2s), which only the tests of that case want.
+  private let files: Bool
 
   init(
     version: UInt16, forward: Bool = false, forwardRefusal: String? = nil,
@@ -827,9 +830,10 @@ final class FakeAgent: @unchecked Sendable {
     forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false,
     capabilities: String = #"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#,
     stallAfterCapabilities: Bool = false, execResult: String? = nil,
-    programStatusResult: String? = nil
+    programStatusResult: String? = nil, files: Bool = true
   ) throws {
     self.programStatusResult = programStatusResult
+    self.files = files
     self.capabilities = Data(capabilities.utf8)
     self.execResult = execResult.map { #"{"version":1,"result":\#($0)}"# }
     self.stallAfterCapabilities = stallAfterCapabilities
@@ -912,11 +916,16 @@ final class FakeAgent: @unchecked Sendable {
             payload: Data([1]) + Data(#"{"version":1,"result":\#(programStatusResult)}"#.utf8))
           continue
         }
-        guard bytes[0] == 2 else { continue }
+        let isFileProbe = bytes[0] == 3 && files && request.contains("capabilities")
+        guard bytes[0] == 2 || isFileProbe else { continue }
         let isCapabilities = request.contains("capabilities")
         if !isCapabilities { lock.withLock { execs.append(request) } }
         let body: Data
-        if isCapabilities {
+        if isFileProbe {
+          body = Data(
+            #"{"version":1,"result":{"version":1,"max_read_bytes":1048576,"max_subscriptions":64}}"#
+              .utf8)
+        } else if isCapabilities {
           body = capabilities
         } else if let execResult {
           body = Data(execResult.utf8)
