@@ -52,7 +52,7 @@ struct CodingAgentUsageSegment: View {
     segment
       .alert("Enable Claude usage?", isPresented: $confirmingClaudeUsage) {
         Button("Cancel", role: .cancel) {}
-        // Declines for good: the footer stops offering it; Settings › Coding agents still can.
+        // Declines for good: the footer stops offering it; Settings ▸ AI Agents ▸ Usage still can.
         Button("Don’t Ask Again") { Defaults[.claudeUsageDeclined] = true }
         Button("Enable") {
           do {
