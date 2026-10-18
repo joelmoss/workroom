@@ -84,7 +84,10 @@ second, rarer double close, so reopen this if the kill comes back. **Traps.**
   even for one class. The same build without it runs. Cause unknown.
 - To find what ran before a CI crash: `gh run download <run> -n xcresult-ci`, then
   `xcrun xcresulttool export diagnostics`. The diagnostics' `scheduling.log` lists each worker pid's
-  classes in order, and its `.logarchive` holds ReportCrash's `EXC_GUARD` line.
+  classes in order, and its `.logarchive` holds ReportCrash's `EXC_GUARD` line. Since 2026-10-18 a
+  local `make app-test` passes `-collect-test-diagnostics never` (`APP_TEST_DIAGNOSTICS` in the
+  Makefile), so its bundle has the `scheduling.log` but no `.logarchive`; rerun with
+  `make app-test APP_TEST_DIAGNOSTICS=` to get one. CI and nightly pass that, so theirs keep it.
 - The system log is full of unrelated `EXC_GUARD`s: menu-bar apps, and WebKit's GPU and Networking
   helpers once per run. Those are `type=0x1` (Mach port). A descriptor guard is `GUARD_TYPE_FD`, `0x2`;
   filter for the test host's process.

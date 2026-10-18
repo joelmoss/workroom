@@ -614,9 +614,13 @@ jobs:
       # As an xcodebuild build setting, not a step `env:`: the build service that runs the script
       # phases does not get this step's environment (run 39133476315 showed none of it), while
       # every build setting is exported to them.
+      #
+      # APP_TEST_DIAGNOSTICS= keeps xcodebuild's diagnostics (~10.5s) that `make app-test` skips
+      # locally: a failure's uploaded xcresult needs the system log archive, which holds
+      # ReportCrash's EXC_GUARD line for a test host that crashed (#350).
       - name: Test
         run: >-
-          make app-test
+          make app-test APP_TEST_DIAGNOSTICS=
           APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM= WR_AGENT_BUILD=1"
 
       # What the cargo cache was built from, saved with it by the last step: the Restore source
