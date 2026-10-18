@@ -21,22 +21,6 @@ import XCTest
 @MainActor
 final class SwitcherThemeSweepTests: XCTestCase {
 
-  /// Every bundled theme, parsed. Read from the app bundle's own `ghostty/themes` — deliberately NOT
-  /// through `ThemeService.themeDirectories()`, whose first entry is `~/.config/ghostty/themes`: a user
-  /// override there would make this test's result depend on the machine running it.
-  private func bundledThemes() throws -> [ThemePreview] {
-    let root = try XCTUnwrap(
-      Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes"),
-      "the app bundle must carry its themes — the terminal can't start without them")
-    let names = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
-    let themes = names.compactMap {
-      ThemeCatalog.parseThemeFile(atPath: root.path + "/" + $0, name: $0)
-    }
-    XCTAssertGreaterThan(
-      themes.count, 100, "the bundled set is 116 themes; a near-empty sweep is a bug")
-    return themes
-  }
-
   /// Text roles. The guarantee is *two-tiered* by design (D14): a card keeps its Liquid Glass while its
   /// text clears `opaqueFillFloor`, and drops to an opaque fill below that. So the invariant asserted here
   /// is the floor, not the 4.5:1 target — a theme landing in the 4.0–4.5 band deliberately keeps the
@@ -173,5 +157,23 @@ final class SwitcherThemeSweepTests: XCTestCase {
         ThemeTokens.contrastRatio(tokens.nsFg, tokens.nsPanel), ProgramStatusPalette.target - 0.01,
         "\(theme.name): the stale clock disappears on its disk")
     }
+  }
+}
+
+extension XCTestCase {
+  /// Every bundled theme, parsed. Read from the app bundle's own `ghostty/themes` — deliberately NOT
+  /// through `ThemeService.themeDirectories()`, whose first entry is `~/.config/ghostty/themes`: a user
+  /// override there would make this test's result depend on the machine running it.
+  func bundledThemes() throws -> [ThemePreview] {
+    let root = try XCTUnwrap(
+      Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes"),
+      "the app bundle must carry its themes — the terminal can't start without them")
+    let names = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+    let themes = names.compactMap {
+      ThemeCatalog.parseThemeFile(atPath: root.path + "/" + $0, name: $0)
+    }
+    XCTAssertGreaterThan(
+      themes.count, 100, "the bundled set is 116 themes; a near-empty sweep is a bug")
+    return themes
   }
 }

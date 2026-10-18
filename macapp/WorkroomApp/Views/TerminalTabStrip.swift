@@ -797,10 +797,8 @@ private struct SweepHighlight: NSViewRepresentable {
 }
 
 /// A capsule-clipped view whose gradient sublayer sweeps left→right forever while its window is key
-/// and on screen. Sweeping in a window the user isn't looking at buys nothing, and even a
-/// compositor-side animation keeps the render server awake, so the animation is removed the moment
-/// the window resigns key or is occluded and re-added when it returns.
-final class SweepView: NSView {
+/// and on screen (`KeyWindowAnimationView`).
+final class SweepView: KeyWindowAnimationView {
   static let duration: TimeInterval = 1.1
   static let animationKey = "sweep"
 
@@ -810,8 +808,6 @@ final class SweepView: NSView {
   private let gradient = CAGradientLayer()
   /// The width the running animation was built for; a layout at the same width leaves it alone.
   private var sweptWidth: CGFloat = 0
-  // Main-thread only; `nonisolated(unsafe)` so `deinit` can remove them.
-  nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
 
   init(color: NSColor) {
     self.color = color
@@ -825,10 +821,6 @@ final class SweepView: NSView {
   }
 
   @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) unused") }
-
-  deinit {
-    for o in windowObservers { NotificationCenter.default.removeObserver(o) }
-  }
 
   // Never the event target: the chip's tap and drag-reorder gestures own the strip this overlay
   // paints, as they did when it was a plain SwiftUI capsule.
@@ -863,25 +855,7 @@ final class SweepView: NSView {
     syncAnimation()
   }
 
-  override func viewDidMoveToWindow() {
-    super.viewDidMoveToWindow()
-    for o in windowObservers { NotificationCenter.default.removeObserver(o) }
-    windowObservers = []
-    guard let window else { return }
-    let center = NotificationCenter.default
-    for name in [
-      NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
-      NSWindow.didChangeOcclusionStateNotification,
-    ] {
-      windowObservers.append(
-        center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-          MainActor.assumeIsolated { self?.syncAnimation() }
-        })
-    }
-    syncAnimation()
-  }
-
-  private func syncAnimation() {
+  override func syncAnimation() {
     let running = Self.shouldSweep(
       isKey: window?.isKeyWindow == true,
       isVisible: window?.occlusionState.contains(.visible) == true, width: bounds.width)
