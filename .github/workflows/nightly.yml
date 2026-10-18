@@ -248,9 +248,11 @@ jobs:
       - name: Test (Swift packages)
         run: make app-package-test
 
+      # APP_TEST_DIAGNOSTICS= keeps the diagnostics `make app-test` skips locally, as in ci.yml: the
+      # uploaded xcresult below needs the system log archive to name a crashed test host (#350).
       - name: Test (artifact gate)
         run: >-
-          make app-test
+          make app-test APP_TEST_DIAGNOSTICS=
           APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
 
       # Parallel xcodebuild prints NO assertion text — just a `Failing tests:` list — so a red run
