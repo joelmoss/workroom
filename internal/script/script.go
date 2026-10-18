@@ -23,6 +23,7 @@ import (
 //	WORKROOM_PATH        absolute path to the workroom directory
 //	WORKROOM_ROOT_PATH   absolute path to the root project the workroom belongs to
 //	WORKROOM_PARENT_DIR  deprecated alias for WORKROOM_ROOT_PATH (kept for existing scripts)
+//	WORKROOM_HOST        where the script runs: always "local" here
 //
 // On failure the returned error embeds the captured output only when stream is nil; when a
 // stream was provided the output has already been shown, so the error stays concise to avoid
@@ -47,6 +48,8 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 		"WORKROOM_ROOT_PATH="+rootPath,
 		// Deprecated: superseded by WORKROOM_ROOT_PATH; kept so existing scripts keep working.
 		"WORKROOM_PARENT_DIR="+rootPath,
+		// Where the script runs; a remote workroom's host sets its own kind instead.
+		"WORKROOM_HOST=local",
 	)
 
 	var buf bytes.Buffer
@@ -57,8 +60,14 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	cmd.Stdout = sink
 	cmd.Stderr = sink
 
+	sentinel := errs.ErrSetup
+	if scriptType != "setup" {
+		sentinel = errs.ErrTeardown
+	}
+	// A script that can't start (no execute bit, a missing interpreter) is the script's failure too,
+	// so it reports as one (exit 5), not as an internal error.
 	if err := cmd.Start(); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %s could not be started: %v", sentinel, scriptPath, err)
 	}
 	// Take the script's whole process group down with us when we're terminated. `Setpgid` above only
 	// makes the tree killable; nothing kills it unless we ask, and the default SIGTERM disposition
@@ -91,10 +100,6 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	output := buf.String()
 
 	if err != nil {
-		sentinel := errs.ErrSetup
-		if scriptType != "setup" {
-			sentinel = errs.ErrTeardown
-		}
 		if stream != nil {
 			return output, fmt.Errorf("%w: %s returned a non-zero exit code", sentinel, scriptPath)
 		}

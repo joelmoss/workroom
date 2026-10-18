@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	confirmFlag   string
-	deleteProject string
+	confirmFlag        string
+	deleteProject      string
+	deleteSkipTeardown bool
 )
 
 var deleteCmd = &cobra.Command{
@@ -28,6 +29,7 @@ var deleteCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		svc.SkipTeardown = deleteSkipTeardown
 		dir, err := resolveProject(deleteProject)
 		if err != nil {
 			return err
@@ -115,5 +117,6 @@ func printDeleteResult(w io.Writer, res workroom.DeleteResult) {
 func init() {
 	deleteCmd.Flags().StringVar(&confirmFlag, "confirm", "", "Skip confirmation if value matches the workroom name (required in --json mode)")
 	deleteCmd.Flags().StringVar(&deleteProject, "project", "", "Project directory the workroom belongs to (defaults to the current directory)")
+	deleteCmd.Flags().BoolVar(&deleteSkipTeardown, "skip-teardown", false, "Delete without running the teardown script (after it failed)")
 	rootCmd.AddCommand(deleteCmd)
 }
