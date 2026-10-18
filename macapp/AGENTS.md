@@ -322,6 +322,10 @@ or a remote workroom silently turns local. What the app relies on:
 - Session restore is gated on availability (#253): `PersistentSessionRecovery` reattaches only
   targets `AppStore.reattachesLocally` accepts, and an unreachable remote workroom's saved session
   is held in `deferredTargetSessions` until its first pane opens.
+- Doing something on a host (a connect, an exec, a script, a delete): read
+  `docs/remote-host-states.md` first. It lists the states a host can be in (stopped, asleep, gone,
+  connecting, an older agent), the call that reaches it in each (`activate`, then
+  `ensureConnected(wake: true)` for what the user asked for), and what an exit status means over ssh.
 
 ## Working rules for the session/VCS layers
 
