@@ -518,8 +518,10 @@ and every PR against either:
   `RUSTDOCFLAGS="-D warnings"`, and `cargo test` for the whole `vcs/` Rust workspace, on a pinned
   toolchain. `make vcs-lint` runs the same format, lint and doc checks locally, plus the
   `agent-terminal-state` job's clippy pass and a `terminal-state` doc check CI does not run.
+- **`app-packages` job** (`xcode-27`): sets up Xcode 27.1 and runs `make app-package-test`, the local
+  Swift packages' own `swift test` suites, beside `app` rather than ahead of its build.
 - **`app` job** (`xcode-27`): sets up Xcode 27.1 + Go, `brew install xcodegen`, runs `make app-lint`
-  (swift-format `--strict`), `make app-package-test` and `make app-test` with **ad-hoc signing** flags (hosted runners have
+  (swift-format `--strict`) and `make app-test` with **ad-hoc signing** flags (hosted runners have
   no signing cert), e.g.:
 
   ```
