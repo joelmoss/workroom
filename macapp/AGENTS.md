@@ -397,6 +397,8 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
 
 ## Gotchas
 
+- **Before proposing a perf guard that skips unchanged work**, or checking what a `ghostty_surface_*`
+  call does, read `docs/macapp-perf-facts.md`: Observation and libghostty already skip some of it.
 - **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomVCS`, `WorkroomWire`,
   `WorkroomSystem`, `AgentConnection`, `HostDrivers`, `DesignSystem`, `SyntaxHighlighting`), each in
   Swift 6 language mode with its own tests, run by `make app-package-test` rather than
