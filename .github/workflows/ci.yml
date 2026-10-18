@@ -362,7 +362,7 @@ jobs:
   # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app host,
   # so `make app-test` never sees them. Their own job, beside `app` rather than a step of it: the
   # step took 8 of that job's 21 minutes (measured 2026-10-18) and needs nothing the app build
-  # makes. A cold SyntaxHighlighting run fetches its 34 tree-sitter grammar repos (~4 min) and
+  # makes. A cold SyntaxHighlighting run fetches its 16 tree-sitter repos (~4 min) and
   # compiles them (~1 min; its 1.5GB .build is too big to cache), and the target retries each
   # package's resolve.
   app-packages:
@@ -535,8 +535,8 @@ jobs:
       # each master push saves (~150MB) and every later run restores the newest build for the same
       # compiler and dependency set through the prefix. The fallback stops at that set, which is
       # what the dep objects depend on: a change to it rebuilds them in full, as it always has. The
-      # `xcbuild-v5` leaves behind dirs saved with checkout-time mtimes (v1, v4), authors' commit
-      # times (v2) or under the save-once key (v3).
+      # `v5` leaves behind every dir saved under an older key, whose objects were built against
+      # checkout-time or author-time mtimes.
       - name: Xcode version (cache key input)
         id: xcode
         run: |
@@ -562,20 +562,20 @@ jobs:
       # 2026-10-18; locally, touching the sources without changing them costs 602 Swift compile
       # tasks, 44s against 16s for a no-op). Landing times are the same on every runner.
       #
-      # Except what differs from the checkout the cargo cache was built from, which stays at now:
-      # cargo reuses a cached artifact whenever the source's mtime is older than it, content
-      # unseen, and a cache is saved once per key and read by every later run, including a
-      # release branch's and a master push after one whose run failed. The step after the tests
-      # records that checkout's index (path, mode and blob of every file) in the cached directory.
-      # An index, not a commit: a PR run builds GitHub's merge commit, which the next push's
-      # checkout does not have. No record means no cargo cache was restored (every app-agent-8
-      # entry carries one), so there is nothing stale to guard and landing times alone are safe.
-      # Landing times are stamped either way: the Xcode build dir saved by this run is built
-      # against them, and leaving checkout times there made every later run recompile the app.
+      # Except what under vcs/ differs from the checkout the cargo cache was built from, which
+      # stays at now: cargo reuses a cached artifact whenever the source's mtime is older than it,
+      # content unseen, and a cache is read by runs it was not built for: a PR's, a release
+      # branch's, a master push after one whose run failed. The step after the tests records that
+      # checkout's index (path, mode and blob of every file) in the cached directory. An index, not
+      # a commit: a PR run builds GitHub's merge commit, which the next push's checkout does not
+      # have. No record means no cargo cache was restored (every app-agent-8 entry carries one), so
+      # there is nothing stale to guard and landing times alone are safe. Only vcs/, cargo's inputs:
+      # the Xcode build dir this run saves is built against these mtimes, and a Swift file left at
+      # now would be recompiled by every later run, which gives it its landing time again.
       - name: Restore source mtimes
         run: |
           if [ -f vcs/.built-from/index ]; then
-            python3 macapp/Scripts/restore-mtime.py --fresh vcs/.built-from/index
+            python3 macapp/Scripts/restore-mtime.py --fresh vcs/.built-from/index vcs
           else
             python3 macapp/Scripts/restore-mtime.py
           fi
@@ -651,10 +651,13 @@ jobs:
       # `apple_bash_is_not_left_in_posix_mode` cover the Apple `/bin/bash` skip, which exists only
       # on macOS. These filters are an allowlist: a new macOS-only test must be added here.
       # CARGO_INCREMENTAL=0: incremental state would only bloat the cached target/ (rust-cache,
-      # which cached it before, set the same for the whole job).
+      # which cached it before, set the same for the whole job). WR_AGENT_BUILD as on the Test
+      # step, or build.rs reruns for every commit and the debug crate rebuilds each run; none of
+      # these tests reads the build number (only the hand-off tests do, on Linux).
       - name: Test (agent descriptor inheritance, macOS)
         env:
           CARGO_INCREMENTAL: "0"
+          WR_AGENT_BUILD: "1"
         run: |
           cargo test --manifest-path vcs/Cargo.toml -p wr-agent --lib -- pty::tests process::tests shell::tests
           cargo test --manifest-path vcs/Cargo.toml -p wr-agent --test attach_falls_back_to_a_shell -- --exact \

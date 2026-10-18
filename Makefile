@@ -220,21 +220,18 @@ red-proof: ## Prove a unit test goes red without a line: FILE= PATTERN= [REPLACE
 # build check against <1s of tests in most of them, which serially added up to ~90s. Each package's
 # output goes to a log printed when it ends, so the runs don't interleave.
 app-package-test: ## Run the local Swift packages' tests (swift test, no app host or GUI lock)
-	@logs="$$(mktemp -d "$${TMPDIR:-/tmp}/app-package-test.XXXXXX")"; \
+	@logs="$$(mktemp -d "$${TMPDIR:-/tmp}/app-package-test.XXXXXX")"; pids=; \
 	for pkg in macapp/Packages/*/; do \
-	  name="$$(basename "$$pkg")"; \
 	  { attempt=1; \
 	    until swift package resolve --package-path "$$pkg"; do \
 	      if [ "$$attempt" -ge 3 ]; then echo "SPM resolve of $$pkg failed 3 times" >&2; exit 1; fi; \
 	      echo "SPM resolve of $$pkg failed; retrying in 15s" >&2; attempt=$$((attempt + 1)); sleep 15; \
 	    done; \
 	    echo "swift test --package-path $$pkg"; swift test --package-path "$$pkg"; \
-	    echo "$$?" > "$$logs/$$name.rc"; } > "$$logs/$$name" 2>&1 & \
+	  } > "$$logs/$$(basename "$$pkg")" 2>&1 & pids="$$pids $$!"; \
 	done; \
-	wait; \
-	rc=0; for pkg in macapp/Packages/*/; do \
-	  name="$$(basename "$$pkg")"; cat "$$logs/$$name"; \
-	  [ -f "$$logs/$$name.rc" ] && [ "$$(cat "$$logs/$$name.rc")" -eq 0 ] || rc=1; \
+	rc=0; set -- $$pids; for pkg in macapp/Packages/*/; do \
+	  wait "$$1" || rc=1; shift; cat "$$logs/$$(basename "$$pkg")"; \
 	done; rm -rf "$$logs"; exit $$rc
 
 app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queues behind other runs)
