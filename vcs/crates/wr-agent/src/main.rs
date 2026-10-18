@@ -45,6 +45,11 @@ fn usage() -> &'static str {
         have a local container workroom ask the Mac for git's credentials through <port> on this
         box's loopback, reading the relay's secret from stdin, and make `wr-agent credential`
         git's helper for https://github.com
+  wr-agent run-script --dir <dir> --timeout <secs> [--env NAME=VALUE]... -- <script>
+        run a remote workroom's setup or teardown script in <dir>, with the login shell's
+        environment and each NAME=VALUE, streaming its output. Exits with the script's status,
+        124 when <secs> ran out, 126 when it could not start; the whole tree is killed on a
+        timeout or a SIGTERM, SIGHUP or SIGINT
   wr-agent protocol
         print the protocol version this build speaks
 "
@@ -76,6 +81,7 @@ fn main() -> ExitCode {
         Some("program-status") => cli::program_status::run_program_status(&args),
         Some("hand-off") => cli::hand_off::run_hand_off(&args),
         Some("credential") => cli::credential::run_credential(&args),
+        Some("run-script") => cli::run_script::run_run_script(&args),
         Some("handoff-check") => cli::hand_off::run_handoff_check(&args),
         _ => {
             eprint!("{}", usage());
