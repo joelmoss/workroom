@@ -30,7 +30,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .notifications: return "Notifications"
     case .appearance: return "Appearance"
     case .terminal: return "Terminal"
-    case .agent: return "Agent"
+    case .agent: return "AI Agents"
     case .about: return "About"
     }
   }
