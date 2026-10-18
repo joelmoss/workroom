@@ -69,29 +69,21 @@ vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and
 # filter, e.g. `make vcs-test VCS_TEST_FLAGS="-p wr-agent --test attach_survives_detach"`.
 VCS_TEST_FLAGS ?=
 
-# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), and wr-agent
+# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), then wr-agent
 # with terminal-state (`agent-terminal-state`). WR_AGENT_HAS_TERMINAL_STATE makes the repaint and
 # scrollback tests run instead of skipping. The second run needs Zig, which build-ghostty-vt.sh
 # gets from mise.
 #
-# The two run at once, as CI's jobs do: serially they took ~5 minutes, each ~2.5. The feature build
-# gets its own target dir (one extra full build the first time, cached after), or the two would
-# serialise on cargo's build lock and the feature flip would rebuild wr-agent in place every time.
-# Each run's output goes to a log printed when it ends, so the two don't interleave.
-vcs-test: ## Test the Rust workspace and wr-agent with terminal-state, concurrently, as CI does (VCS_TEST_FLAGS=)
+# The feature build gets its own target dir (one extra full build the first time, cached after):
+# in the shared one the feature flip rebuilt wr-agent in place on every run, 286s against 109s
+# (measured 2026-10-18). Not concurrently, as CI's two jobs run: on one machine the doubled load
+# failed tests that wait a fixed time for a shell or checker (2 of 6 runs, 0 of 3 serially).
+vcs-test: ## Test the Rust workspace, then wr-agent with terminal-state, as CI does (VCS_TEST_FLAGS=)
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
-	logs="$$(mktemp -d "$${TMPDIR:-/tmp}/vcs-test.XXXXXX")"; \
-	{ cargo test --manifest-path vcs/Cargo.toml $(VCS_TEST_FLAGS) > "$$logs/workspace" 2>&1; \
-	  echo "$$?" > "$$logs/workspace.rc"; } & \
-	{ CARGO_TARGET_DIR=vcs/target/terminal-state WR_AGENT_HAS_TERMINAL_STATE=1 \
-	  cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state $(VCS_TEST_FLAGS) \
-	  > "$$logs/terminal-state" 2>&1; echo "$$?" > "$$logs/terminal-state.rc"; } & \
-	wait; \
-	rc=0; for run in workspace terminal-state; do \
-	  echo "== cargo test ($$run)"; cat "$$logs/$$run"; \
-	  [ "$$(cat "$$logs/$$run.rc")" -eq 0 ] || rc=1; \
-	done; rm -rf "$$logs"; exit $$rc
+	cargo test --manifest-path vcs/Cargo.toml $(VCS_TEST_FLAGS) && \
+	CARGO_TARGET_DIR=vcs/target/terminal-state WR_AGENT_HAS_TERMINAL_STATE=1 \
+	  cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state $(VCS_TEST_FLAGS)
 
 # --- macOS app (macapp/) ---
 

@@ -27,7 +27,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting. `make app-check` runs both, in that order.
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
-- `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace and, at the same time, `wr-agent` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Each run's output prints when it ends. Narrow both with `VCS_TEST_FLAGS="-p wr-agent --test <name>"`. No `PATH` changes needed.
+- `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `wr-agent` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p wr-agent --test <name>"`. No `PATH` changes needed.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.96.1.
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
 
