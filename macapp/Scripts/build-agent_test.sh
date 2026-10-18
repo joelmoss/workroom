@@ -50,15 +50,17 @@ done
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/build-agent_test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# The real crate, but a throwaway CARGO_TARGET_DIR so the test neither pollutes nor is polluted by
-# the developer's build tree. The agent includes the VCS backends, so this is a full Cargo build.
+# The real crate, but its own CARGO_TARGET_DIR, kept apart from cargo's default so the test neither
+# pollutes nor is polluted by the developer's build tree. The agent includes the VCS backends, so
+# the first build is a full Cargo build.
 #
-# BUILD_AGENT_TEST_TARGET_DIR swaps in a kept directory, for CI alone: its runner is discarded after
-# the job, so nothing is polluted, and restoring that directory from the Actions cache halves the
-# test (8m03s to 4m22s on macos-15). It must not be `vcs/target`: build-agent.sh copying from that
-# default path instead of CARGO_TARGET_DIR is a bug this test catches only while the two differ.
+# BUILD_AGENT_TEST_TARGET_DIR swaps in a kept directory. CI restores it from the Actions cache, which
+# halves the test (8m03s to 4m22s on macos-15); locally it defaults to one under vcs/target, which
+# cargo owns and git ignores, so a rerun rebuilds nothing (73s to a few seconds). It must not be
+# `vcs/target` ITSELF: build-agent.sh copying from that default path instead of CARGO_TARGET_DIR
+# is a bug this test catches only while the two differ.
 REPO="$(cd "$DIR/../.." && pwd)"
-export CARGO_TARGET_DIR="${BUILD_AGENT_TEST_TARGET_DIR:-$WORK/cargo-target}"
+export CARGO_TARGET_DIR="${BUILD_AGENT_TEST_TARGET_DIR:-$REPO/vcs/target/build-agent-test}"
 
 # run_agent <case-name> <ARCHS value> [CONFIGURATION] -> sets $OUT to the built helper path, $RC to
 # the exit code. CONFIGURATION defaults to unset, which the script treats as Debug.

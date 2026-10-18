@@ -69,15 +69,29 @@ vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and
 # filter, e.g. `make vcs-test VCS_TEST_FLAGS="-p wr-agent --test attach_survives_detach"`.
 VCS_TEST_FLAGS ?=
 
-# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), then wr-agent
+# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), and wr-agent
 # with terminal-state (`agent-terminal-state`). WR_AGENT_HAS_TERMINAL_STATE makes the repaint and
 # scrollback tests run instead of skipping. The second run needs Zig, which build-ghostty-vt.sh
 # gets from mise.
-vcs-test: ## Test the Rust workspace, then wr-agent with terminal-state, as CI does (VCS_TEST_FLAGS=)
+#
+# The two run at once, as CI's jobs do: serially they took ~5 minutes, each ~2.5. The feature build
+# gets its own target dir (one extra full build the first time, cached after), or the two would
+# serialise on cargo's build lock and the feature flip would rebuild wr-agent in place every time.
+# Each run's output goes to a log printed when it ends, so the two don't interleave.
+vcs-test: ## Test the Rust workspace and wr-agent with terminal-state, concurrently, as CI does (VCS_TEST_FLAGS=)
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
-	cargo test --manifest-path vcs/Cargo.toml $(VCS_TEST_FLAGS) && \
-	WR_AGENT_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state $(VCS_TEST_FLAGS)
+	logs="$$(mktemp -d "$${TMPDIR:-/tmp}/vcs-test.XXXXXX")"; \
+	{ cargo test --manifest-path vcs/Cargo.toml $(VCS_TEST_FLAGS) > "$$logs/workspace" 2>&1; \
+	  echo "$$?" > "$$logs/workspace.rc"; } & \
+	{ CARGO_TARGET_DIR=vcs/target/terminal-state WR_AGENT_HAS_TERMINAL_STATE=1 \
+	  cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state $(VCS_TEST_FLAGS) \
+	  > "$$logs/terminal-state" 2>&1; echo "$$?" > "$$logs/terminal-state.rc"; } & \
+	wait; \
+	rc=0; for run in workspace terminal-state; do \
+	  echo "== cargo test ($$run)"; cat "$$logs/$$run"; \
+	  [ "$$(cat "$$logs/$$run.rc")" -eq 0 ] || rc=1; \
+	done; rm -rf "$$logs"; exit $$rc
 
 # --- macOS app (macapp/) ---
 
@@ -131,11 +145,20 @@ APP_SIGN_FLAGS ?=
 # This and APP_UITEST_FLAGS reach only the TEST step (`test-without-building`); an option that
 # changes what gets built, such as `-enableCodeCoverage YES`, has to reach the build step too, and
 # APP_SIGN_FLAGS is what reaches it.
-APP_TEST_FLAGS ?= -parallel-testing-enabled YES
+#
+# One worker per core: left to itself xcodebuild started 7 on a 10-core Mac, and the run's wall
+# time is the heaviest worker's share of the classes plus the fixed launch cost, not the longest
+# class. With 10 workers (and APP_TEST_DIAGNOSTICS below) the test phase went 83s -> 42s, measured
+# 2026-10-18 on 3365 tests. `hw.ncpu` so a smaller CI runner is not oversubscribed.
+APP_TEST_FLAGS ?= -parallel-testing-enabled YES -parallel-testing-worker-count $(shell sysctl -n hw.ncpu)
 # A unit test that hangs fails after 5 minutes, naming itself, rather than holding the run (and CI's
 # `app` job) until something kills it, with no clue which test it was. Apart from APP_TEST_FLAGS so a
 # serial `APP_TEST_FLAGS=` run keeps it.
 APP_TEST_TIMEOUTS ?= -test-timeouts-enabled YES -default-test-execution-time-allowance 300
+# After the last test, testmanagerd spends ~10.5s (measured) collecting a system log archive into
+# the result bundle (256 MB unpacked for a 26-test run), whatever the outcome; the test host itself
+# exits within 20ms. The unit tests are diagnosed from the bundle's own records, so skip it.
+APP_TEST_DIAGNOSTICS ?= -collect-test-diagnostics never
 
 # Extra xcodebuild options for app-uitest. Skips the 3 most expensive/flaky cases by default (each
 # does a real quit+relaunch or a hard timing budget), since XCUITest never runs in CI and a routine
@@ -181,7 +204,7 @@ app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	  touch DerivedData/.WorkroomApp.test-stamp && { \
 	  $(call gui_lock,shared,app-test) \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) $(APP_TEST_TIMEOUTS) \
-	    test-without-building; \
+	    $(APP_TEST_DIAGNOSTICS) test-without-building; \
 	  $(call test_summary,WorkroomApp); }
 
 # Proves a unit test covers a line (macapp/Scripts/red-proof.sh): breaks FILE by replacing PATTERN,
@@ -201,15 +224,26 @@ red-proof: ## Prove a unit test goes red without a line: FILE= PATTERN= [REPLACE
 # times: SyntaxHighlighting clones 16 grammars, and a github.com blip would otherwise fail a release
 # gate. SwiftPM's build service cannot write under Claude Code's command sandbox, so run it with
 # the sandbox off there.
+# The packages test concurrently: `swift test` spends 7-15s per package on SPM's own startup and
+# build check against <1s of tests in most of them, which serially added up to ~90s. Each package's
+# output goes to a log printed when it ends, so the runs don't interleave.
 app-package-test: ## Run the local Swift packages' tests (swift test, no app host or GUI lock)
-	@set -e; for pkg in macapp/Packages/*/; do \
-	  attempt=1; \
-	  until swift package resolve --package-path "$$pkg"; do \
-	    if [ "$$attempt" -ge 3 ]; then echo "SPM resolve of $$pkg failed 3 times" >&2; exit 1; fi; \
-	    echo "SPM resolve of $$pkg failed; retrying in 15s" >&2; attempt=$$((attempt + 1)); sleep 15; \
-	  done; \
-	  echo "swift test --package-path $$pkg"; swift test --package-path "$$pkg"; \
-	done
+	@logs="$$(mktemp -d "$${TMPDIR:-/tmp}/app-package-test.XXXXXX")"; \
+	for pkg in macapp/Packages/*/; do \
+	  name="$$(basename "$$pkg")"; \
+	  { attempt=1; \
+	    until swift package resolve --package-path "$$pkg"; do \
+	      if [ "$$attempt" -ge 3 ]; then echo "SPM resolve of $$pkg failed 3 times" >&2; exit 1; fi; \
+	      echo "SPM resolve of $$pkg failed; retrying in 15s" >&2; attempt=$$((attempt + 1)); sleep 15; \
+	    done; \
+	    echo "swift test --package-path $$pkg"; swift test --package-path "$$pkg"; \
+	    echo "$$?" > "$$logs/$$name.rc"; } > "$$logs/$$name" 2>&1 & \
+	done; \
+	wait; \
+	rc=0; for pkg in macapp/Packages/*/; do \
+	  name="$$(basename "$$pkg")"; cat "$$logs/$$name"; \
+	  [ -f "$$logs/$$name.rc" ] && [ "$$(cat "$$logs/$$name.rc")" -eq 0 ] || rc=1; \
+	done; rm -rf "$$logs"; exit $$rc
 
 app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queues behind other runs)
 	cd macapp && xcodegen generate && \

@@ -393,9 +393,11 @@ fn an_unwatched_subscription_goes_quiet_and_other_subscriptions_are_unaffected()
     );
 }
 
+/// The cap itself is a unit test in `watch.rs` (`subscription_ids_are_unique_and_the_count_is_capped`
+/// there): reaching it over real watchers cost ~1s each on macOS, 48s for the one test.
 #[test]
-fn subscription_ids_are_unique_and_the_count_is_capped() {
-    let root = scratch("cap");
+fn subscription_ids_are_unique_and_an_unwatch_frees_one() {
+    let root = scratch("ids");
     let mut client = Client::connect();
     assert!(client.watch(1, &root)["result"].is_object());
     assert!(
@@ -404,13 +406,10 @@ fn subscription_ids_are_unique_and_the_count_is_capped() {
             .unwrap()
             .contains("already in use")
     );
-    for id in 2..=64 {
-        assert!(client.watch(id, &root)["result"].is_object(), "{id}");
-    }
-    assert!(client.watch(65, &root)["error"]["Busy"].is_string());
-    // Freeing one makes room again.
+    assert!(client.watch(2, &root)["result"].is_object());
+    // Freeing one makes its id usable again.
     client.request(&json!({"version": 1, "method": "unwatch", "subscription": 2}));
-    assert!(client.watch(65, &root)["result"].is_object());
+    assert!(client.watch(2, &root)["result"].is_object());
 }
 
 #[test]
