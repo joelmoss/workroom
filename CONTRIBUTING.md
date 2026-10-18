@@ -521,8 +521,9 @@ and every PR against either:
 - **`app-packages` job** (`xcode-27`): sets up Xcode 27.1 and runs `make app-package-test`, the local
   Swift packages' own `swift test` suites, beside `app` rather than ahead of its build.
 - **`app` job** (`xcode-27`): sets up Xcode 27.1 + Go, `brew install xcodegen`, runs `make app-lint`
-  (swift-format `--strict`) and `make app-test` with **ad-hoc signing** flags (hosted runners have
-  no signing cert), e.g.:
+  (swift-format `--strict`), restores the sources' mtimes to their landing times (`macapp/Scripts/restore-mtime.py`,
+  so the cached build dir rebuilds only what changed since the checkout it was built from), then
+  `make app-test` with **ad-hoc signing** flags (hosted runners have no signing cert), e.g.:
 
   ```
   CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=

@@ -32,15 +32,19 @@ fn build_number() {
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
     };
-    // Rebuilt when the checkout moves: HEAD for a branch switch, its log for a commit.
-    if let Some(dir) = git(&["rev-parse", "--absolute-git-dir"]) {
-        println!("cargo:rerun-if-changed={dir}/HEAD");
-        println!("cargo:rerun-if-changed={dir}/logs/HEAD");
-    }
     let number = std::env::var("WR_AGENT_BUILD")
         .ok()
         .filter(|value| value.parse::<u64>().is_ok())
-        .or_else(|| git(&["log", "-1", "--format=%ct"]).filter(|v| v.parse::<u64>().is_ok()))
+        .or_else(|| {
+            // Rebuilt when the checkout moves: HEAD for a branch switch, its log for a commit.
+            // Only when git is the source: with the number given, every checkout stamping these
+            // files anew (CI's does) reran this script, and so rebuilt the crate, for nothing.
+            if let Some(dir) = git(&["rev-parse", "--absolute-git-dir"]) {
+                println!("cargo:rerun-if-changed={dir}/HEAD");
+                println!("cargo:rerun-if-changed={dir}/logs/HEAD");
+            }
+            git(&["log", "-1", "--format=%ct"]).filter(|v| v.parse::<u64>().is_ok())
+        })
         .unwrap_or_else(|| "0".to_string());
     println!("cargo:rustc-env=WR_AGENT_BUILD={number}");
 }

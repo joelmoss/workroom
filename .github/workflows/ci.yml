@@ -388,9 +388,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The whole history, for restore-mtime.py below: it needs each file's last commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       # Xcode 16+ bundles swift-format (used by `make app-lint`) and builds for macOS 14+.
       # Pinned to the Xcode the app is developed with; xcode-27 is the only runner image that has it.
@@ -449,13 +451,43 @@ jobs:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
-      # Xcode builds the bundled wr-agent (Scripts/build-agent.sh). v2 avoids old entries saved
-      # without the agent build.
-      - name: Cache cargo (agent)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Xcode builds the bundled wr-agent (Scripts/build-agent.sh) on the stable toolchain, the
+      # macOS tests below build it again in debug, and all of it is cached here, the workspace's
+      # own artifacts included: without them wr-agent was rebuilt in release for all three targets
+      # on every run, 38s + 1m41 + 1m44 one after another (measured 2026-10-18, run 39115663007).
+      # Cargo's fingerprints then find it up to date on a run that touched nothing under vcs/, and
+      # rebuild what a commit did touch. That needs the build script's inputs stable too:
+      # WR_AGENT_BUILD on the Test step below. vcs/.built-from is the index of the checkout the
+      # artifacts were built from, written after the tests (see the Restore source mtimes step).
+      #
+      # Restore and save are split, and the key ends in the commit, so each master push saves the
+      # build it just made and every later run, a PR's included, restores the newest one through
+      # the prefix: a key without the commit is saved once and then read for weeks, and every
+      # commit since that save rebuilds on every run. Only master pushes save (the last step of
+      # this job), so a PR never fills the cache with builds no one else can read. The fallback
+      # crosses Cargo.lock changes (cargo rebuilds what moved) but not a toolchain change, after
+      # which nothing in target/ is reusable; it also bounds how far target/ can grow with stale
+      # dependency versions, since nothing here prunes them. `app-agent-8`, no `v` before the
+      # number: the ship pregate's secret scanner reads that spelling as entropy.
+      - name: Rust toolchain (cache key input)
+        id: rust
+        run: echo "version=$(rustc +stable -V | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      # `path` must stay identical to the save step's: it is part of the cache's version.
+      - name: Restore cargo cache (agent)
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          workspaces: vcs
-          key: app-agent-v2
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            vcs/target
+            vcs/.built-from
+          key: app-agent-8-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('vcs/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            app-agent-8-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('vcs/Cargo.lock') }}-
+            app-agent-8-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-
 
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
@@ -487,27 +519,59 @@ jobs:
 
       # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
       # Sentry, Sparkle, swift-syntax — is ~60% of the build's work and none of it changes between
-      # runs. Caching the build dir lets xcodebuild's incremental check reuse those objects; only our
-      # own sources rebuild (checkout gives them fresh mtimes, while the restored dep checkouts keep
-      # their original ones, so the dependency objects stay up to date).
+      # runs. Caching the build dir lets xcodebuild's incremental check reuse those objects, and with
+      # the sources' mtimes restored to their landing times (the step below) our own objects too:
+      # only what commits since the save touched, and its dependents, rebuilds. (The restored dep
+      # checkouts keep their original mtimes, so the dependency objects were always up to date.)
       #
-      # Deliberately NO run-id suffix or restore-keys: the key is exactly what the dep objects depend
-      # on (compiler + the dependency set), so the first run saves and every later run hits without
-      # paying to re-upload ~500MB each time. actions/cache is post-if success(), so a failed build's
-      # dir is never saved.
+      # Restore and save are split, and the key ends in the commit, as for the cargo cache above:
+      # each master push saves (~150MB) and every later run restores the newest build for the same
+      # compiler and dependency set through the prefix. The fallback stops at that set, which is
+      # what the dep objects depend on: a change to it rebuilds them in full, as it always has. The
+      # `xcbuild-v5` leaves behind dirs saved with checkout-time mtimes (v1, v4), authors' commit
+      # times (v2) or under the save-once key (v3).
       - name: Xcode version (cache key input)
         id: xcode
         run: |
           # e.g. "Xcode 26.0" + "Build version 17A324" → "26.0-17A324".
           echo "version=$(xcodebuild -version | awk 'NR==1{v=$2} NR==2{b=$NF} END{print v "-" b}')" >> "$GITHUB_OUTPUT"
 
-      - name: Cache Xcode build dir
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Xcode build dir
+        id: xcbuild
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: macapp/DerivedData/Build
           key: >-
-            xcbuild-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
-            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+            xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{
+            github.sha }}
+          restore-keys: >-
+            xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
+
+      # xcodebuild's incremental check keys on mtimes, and a checkout stamps every file with now, so
+      # against the restored build dir above every one of our own sources read as changed and the
+      # app and test targets recompiled in full on every run (~5 min of this job, measured
+      # 2026-10-18; locally, touching the sources without changing them costs 602 Swift compile
+      # tasks, 44s against 16s for a no-op). Landing times are the same on every runner.
+      #
+      # Except what differs from the checkout the cargo cache was built from, which stays at now:
+      # cargo reuses a cached artifact whenever the source's mtime is older than it, content
+      # unseen, and a cache is saved once per key and read by every later run, including a
+      # release branch's and a master push after one whose run failed. The step after the tests
+      # records that checkout's index (path, mode and blob of every file) in the cached directory.
+      # An index, not a commit: a PR run builds GitHub's merge commit, which the next push's
+      # checkout does not have. No record means no cargo cache was restored (every app-agent-8
+      # entry carries one), so there is nothing stale to guard and landing times alone are safe.
+      # Landing times are stamped either way: the Xcode build dir saved by this run is built
+      # against them, and leaving checkout times there made every later run recompile the app.
+      - name: Restore source mtimes
+        run: |
+          if [ -f vcs/.built-from/index ]; then
+            python3 macapp/Scripts/restore-mtime.py --fresh vcs/.built-from/index
+          else
+            python3 macapp/Scripts/restore-mtime.py
+          fi
 
       # Resolve up front with retries so a transient github.com blip mid-clone can't fail the whole
       # run (it did: swift-syntax clone hit "Couldn't connect to server"). The subsequent app-test
@@ -534,10 +598,24 @@ jobs:
       # Hosted runners have no signing cert / dev team: ad-hoc sign, clear the team, manual
       # style so xcodebuild won't provision against Apple's servers. Lets the non-sandboxed
       # app build and the unit tests launch their host app. (`make app-test` also builds.)
+      #
+      # WR_AGENT_BUILD: the agent's build number, normally the commit's own time, read by its
+      # build.rs from .git/HEAD; a constant here so that script's inputs don't change with every
+      # commit, which rebuilt wr-agent for all three targets on every run (~3 min, measured
+      # 2026-10-18) however warm the cargo cache. Nothing in these tests reads the built agent's
+      # number (AgentBootstrapTests parses fixture strings), and no host ever sees a CI build.
+      # As an xcodebuild build setting, not a step `env:`: the build service that runs the script
+      # phases does not get this step's environment (run 39133476315 showed none of it), while
+      # every build setting is exported to them.
       - name: Test
         run: >-
           make app-test
-          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
+          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM= WR_AGENT_BUILD=1"
+
+      # What the cargo cache was built from, saved with it by the last step: the Restore source
+      # mtimes step diffs the next checkout against it.
+      - name: Record the checkout the agent cache was built from
+        run: mkdir -p vcs/.built-from && git ls-files -s -z > vcs/.built-from/index
 
       # Parallel xcodebuild prints NO assertion text — just a `Failing tests:` list — so a red run
       # here says WHICH test failed and nothing about why. The message only exists in the xcresult,
@@ -565,7 +643,11 @@ jobs:
       # macOS process table, which Linux reads from /proc instead (#430). `shell::tests` and
       # `apple_bash_is_not_left_in_posix_mode` cover the Apple `/bin/bash` skip, which exists only
       # on macOS. These filters are an allowlist: a new macOS-only test must be added here.
+      # CARGO_INCREMENTAL=0: incremental state would only bloat the cached target/ (rust-cache,
+      # which cached it before, set the same for the whole job).
       - name: Test (agent descriptor inheritance, macOS)
+        env:
+          CARGO_INCREMENTAL: "0"
         run: |
           cargo test --manifest-path vcs/Cargo.toml -p wr-agent --lib -- pty::tests process::tests shell::tests
           cargo test --manifest-path vcs/Cargo.toml -p wr-agent --test attach_falls_back_to_a_shell -- --exact \
@@ -574,6 +656,28 @@ jobs:
             a_stale_socket_stays_stale_while_children_are_spawned \
             a_relay_with_no_agent_fails_fast_and_says_so
           cargo test --manifest-path vcs/Cargo.toml -p wr-agent --test exception_ports
+
+      # Last, so only a green job saves; master pushes only (see the restore steps). Under the key
+      # the restore computed, as Package.resolved and Cargo.lock may be rewritten by the build. An
+      # exact hit is a rerun of a commit already saved, and a key cannot be saved twice.
+      - name: Save Xcode build dir
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.xcbuild.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: macapp/DerivedData/Build
+          key: ${{ steps.xcbuild.outputs.cache-primary-key }}
+
+      - name: Save cargo cache (agent)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            vcs/target
+            vcs/.built-from
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # The script tests run beside `app` rather than at the end of it: they were 920-1060s of a ~2400s
   # job and need none of its Xcode build, so on a separate runner the two chains overlap and the
@@ -617,8 +721,8 @@ jobs:
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       # The target directory build-agent_test.sh builds into (BUILD_AGENT_TEST_TARGET_DIR on the test
-      # step below); without one the test compiles from scratch in a throwaway directory. Not
-      # `vcs/target`, for the reason the test gives. The key changed with the directory: an exact hit
+      # step below); without one the test compiles from scratch in vcs/target/build-agent-test. Not
+      # `vcs/target` itself, for the reason the test gives. The key changed with the directory: an exact hit
       # on the old entry would never save the new one.
       - name: Cache cargo (agent)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
