@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "gofmt -w $CLAUDE_FILE_PATHS 2>/dev/null || true"
+            "command": "f=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\", {}).get(\"file_path\", \"\"))' 2>/dev/null); case \"$f\" in *.go) gofmt -w \"$f\" 2>/dev/null ;; esac; exit 0"
           }
         ]
       }
