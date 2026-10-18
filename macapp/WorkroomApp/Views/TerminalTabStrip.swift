@@ -764,43 +764,150 @@ private struct TabWidthKey: PreferenceKey {
 /// accent track with a brighter highlight that sweeps across it, conveying indeterminate progress.
 /// Under Reduce Motion the sweep is dropped for a static, fuller-opacity track.
 /// Reused by `WorkroomTabBar`'s chips so a busy workroom tab shows the same flowing underline.
+///
+/// The sweep is a Core Animation gradient (`SweepView`), not a SwiftUI animation. A `repeatForever`
+/// offset here forced a full hosting-view layout on every display frame for as long as any pane was
+/// running — with a coding agent in a pane, all day: a 10 s `sample` of the idle app put ~7 s of
+/// its main thread in that render, 25–40% CPU, and Reduce Motion took it to ~3%. The compositor
+/// runs a `CABasicAnimation` on its own, so the main thread gets no per-frame work at all.
 struct RunningUnderline: View {
   /// The program reported OSC 9;4 ERROR: same sweep, in the failure colour.
   var failed = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var sweeping = false
   private let theme = ThemeService.shared
   private var color: Color { failed ? theme.tokens.failure : theme.tokens.accent }
 
   var body: some View {
-    GeometryReader { geo in
-      let width = geo.size.width
-      let highlight = max(20, width * 0.4)
-      Capsule()
-        .fill(color.opacity(reduceMotion ? 0.7 : 0.25))
-        .overlay(alignment: .leading) {
-          if !reduceMotion {
-            Capsule()
-              .fill(
-                LinearGradient(
-                  colors: [.clear, color, .clear],
-                  startPoint: .leading, endPoint: .trailing)
-              )
-              .frame(width: highlight)
-              // Travel the highlight from just off the leading edge to just off the trailing edge.
-              .offset(x: sweeping ? width : -highlight)
-          }
-        }
-        .clipShape(Capsule())
-    }
-    .frame(height: 2)
-    .onAppear {
-      guard !reduceMotion else { return }
-      withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
-        sweeping = true
+    Capsule()
+      .fill(color.opacity(reduceMotion ? 0.7 : 0.25))
+      .overlay {
+        if !reduceMotion { SweepHighlight(color: NSColor(color)) }
       }
-    }
+      .frame(height: 2)
   }
+}
+
+/// The highlight that travels along a `RunningUnderline`, as a layer the compositor animates.
+private struct SweepHighlight: NSViewRepresentable {
+  var color: NSColor
+
+  func makeNSView(context: Context) -> SweepView { SweepView(color: color) }
+
+  func updateNSView(_ view: SweepView, context: Context) { view.color = color }
+}
+
+/// A capsule-clipped view whose gradient sublayer sweeps left→right forever while its window is key
+/// and on screen. Sweeping in a window the user isn't looking at buys nothing, and even a
+/// compositor-side animation keeps the render server awake, so the animation is removed the moment
+/// the window resigns key or is occluded and re-added when it returns.
+final class SweepView: NSView {
+  static let duration: TimeInterval = 1.1
+  static let animationKey = "sweep"
+
+  var color: NSColor {
+    didSet { if color != oldValue { gradient.colors = Self.stops(color) } }
+  }
+  private let gradient = CAGradientLayer()
+  /// The width the running animation was built for; a layout at the same width leaves it alone.
+  private var sweptWidth: CGFloat = 0
+  // Main-thread only; `nonisolated(unsafe)` so `deinit` can remove them.
+  nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
+
+  init(color: NSColor) {
+    self.color = color
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.masksToBounds = true
+    gradient.startPoint = CGPoint(x: 0, y: 0.5)
+    gradient.endPoint = CGPoint(x: 1, y: 0.5)
+    gradient.colors = Self.stops(color)
+    layer?.addSublayer(gradient)
+  }
+
+  @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) unused") }
+
+  deinit {
+    for o in windowObservers { NotificationCenter.default.removeObserver(o) }
+  }
+
+  // Never the event target: the chip's tap and drag-reorder gestures own the strip this overlay
+  // paints, as they did when it was a plain SwiftUI capsule.
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  private static func stops(_ color: NSColor) -> [CGColor] {
+    [color.withAlphaComponent(0).cgColor, color.cgColor, color.withAlphaComponent(0).cgColor]
+  }
+
+  /// Whether the sweep should run: only in a key, visible window, and only once there is a width
+  /// to travel. Pure so a test can pin the gate without a real key window.
+  nonisolated static func shouldSweep(isKey: Bool, isVisible: Bool, width: CGFloat) -> Bool {
+    isKey && isVisible && width > 0
+  }
+
+  override func layout() {
+    super.layout()
+    layer?.cornerRadius = bounds.height / 2
+    // Same geometry as the SwiftUI sweep it replaced: a highlight 40% of the track (20pt minimum)
+    // travelling from just off the leading edge to just off the trailing edge.
+    let highlight = max(20, bounds.width * 0.4)
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    gradient.frame = CGRect(x: -highlight, y: 0, width: highlight, height: bounds.height)
+    CATransaction.commit()
+    // The travel distance is baked into the animation, so a change of width rebuilds it; any other
+    // layout pass leaves the highlight mid-travel.
+    if bounds.width != sweptWidth {
+      sweptWidth = bounds.width
+      gradient.removeAnimation(forKey: Self.animationKey)
+    }
+    syncAnimation()
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    for o in windowObservers { NotificationCenter.default.removeObserver(o) }
+    windowObservers = []
+    guard let window else { return }
+    let center = NotificationCenter.default
+    for name in [
+      NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+      NSWindow.didChangeOcclusionStateNotification,
+    ] {
+      windowObservers.append(
+        center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+          MainActor.assumeIsolated { self?.syncAnimation() }
+        })
+    }
+    syncAnimation()
+  }
+
+  private func syncAnimation() {
+    let running = Self.shouldSweep(
+      isKey: window?.isKeyWindow == true,
+      isVisible: window?.occlusionState.contains(.visible) == true, width: bounds.width)
+    setSweeping(running)
+  }
+
+  /// Add or remove the sweep. Idempotent: an animation already in flight is left alone, so a
+  /// notification that changes nothing never restarts the highlight mid-travel.
+  func setSweeping(_ running: Bool) {
+    if !running {
+      gradient.removeAnimation(forKey: Self.animationKey)
+      return
+    }
+    guard gradient.animation(forKey: Self.animationKey) == nil else { return }
+    let highlight = gradient.bounds.width
+    let sweep = CABasicAnimation(keyPath: "transform.translation.x")
+    sweep.fromValue = 0
+    sweep.toValue = bounds.width + highlight
+    sweep.duration = Self.duration
+    sweep.repeatCount = .infinity
+    sweep.timingFunction = CAMediaTimingFunction(name: .linear)
+    gradient.add(sweep, forKey: Self.animationKey)
+  }
+
+  /// Test seam: whether the sweep animation is currently attached.
+  var isSweeping: Bool { gradient.animation(forKey: Self.animationKey) != nil }
 }
 
 /// A tab's close button, overlaid on the title's right edge. Its own hover paints a subtle
