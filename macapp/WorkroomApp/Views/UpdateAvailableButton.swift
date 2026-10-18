@@ -101,12 +101,14 @@ struct UpdateAvailableButton: View {
   }
 }
 
-/// The note inside the Update capsule that updating loses nothing: the local agent keeps every
-/// session and hands them to the new build (`AgentHandOff`), so terminals and their programs carry
-/// on. The pill's type size, scrolling slowly so the whole sentence fits a small slot. Under Reduce
-/// Motion a short form stands still instead.
+/// The note inside the Update capsule saying what an update keeps: the local agent keeps every
+/// workroom terminal's session and hands it to the new build (`AgentHandOff`). Run commands are
+/// stopped on quit and the Quick Terminal has no session, so the note names both. The pill's type
+/// size, scrolling slowly so the whole sentence fits a small slot. Under Reduce Motion a short form
+/// stands still instead.
 private struct UpdateReassurance: View {
-  static let message = "Safe to update: your terminals and the programs in them keep running."
+  static let message =
+    "Safe to update: workroom terminals keep running. Run commands and the Quick Terminal stop."
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
