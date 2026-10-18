@@ -20,6 +20,8 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   /// What a failing delete throws, and the script output it streams first.
   var deleteError: Error = WorkroomCLIError.timedOut
   var deleteLog: [String] = []
+  /// Each delete's `skipTeardown`, in order, workroom and project deletes alike.
+  private(set) var skips: [Bool] = []
   /// What a released `deleteProject` hands back to move to the Bin.
   var trashPaths: [URL] = []
   private(set) var listCalls = 0
@@ -43,6 +45,18 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   }
 
   func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {
+    skips.append(false)
+    try await gatedDelete(onLog)
+  }
+
+  func delete(
+    name: String, project: String, skipTeardown: Bool, onLog: (@Sendable (String) -> Void)?
+  ) async throws {
+    skips.append(skipTeardown)
+    try await gatedDelete(onLog)
+  }
+
+  private func gatedDelete(_ onLog: ((String) -> Void)?) async throws {
     deleteStarted = true
     // Gate: hold the teardown open until the test releases it, keeping the tombstone live.
     while !allowDelete { await Task.yield() }
@@ -55,6 +69,19 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
   ) async throws -> [URL] {
+    skips.append(false)
+    return try await gatedDeleteProject(onLog)
+  }
+
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, skipTeardown: Bool,
+    onLog: (@Sendable (String) -> Void)?
+  ) async throws -> [URL] {
+    skips.append(skipTeardown)
+    return try await gatedDeleteProject(onLog)
+  }
+
+  private func gatedDeleteProject(_ onLog: ((String) -> Void)?) async throws -> [URL] {
     // Gated like `delete`, so the project tombstone stays live across a concurrent reload (#287).
     deleteStarted = true
     while !allowDelete { await Task.yield() }
@@ -275,6 +302,55 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     XCTAssertEqual(store.errorMessage, WorkroomCLIError.timedOut.errorDescription)
     XCTAssertNil(store.errorLog)
+    XCTAssertEqual(store.errorAction?.label, "Delete Anyway", "a teardown that ran out of time")
+  }
+
+  private static let teardownFailed = WorkroomCLIError.cli(
+    kind: "TeardownScriptFailed",
+    message: "teardown script failed: /x/scripts/workroom_teardown returned a non-zero exit code")
+
+  /// Value: protects=D3, a failed teardown offers Delete Anyway, which deletes the workroom as it is
+  /// now with the script skipped; fails_when=no action, or the retry runs the script again;
+  /// no_claim=the CLI's flag itself (cmd and workroom tests cover it)
+  func testATeardownFailureOffersDeleteAnywayWhichSkipsTheScript() async throws {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.deleteFails = true
+    fake.deleteError = Self.teardownFailed
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteWorkroom(a, in: project([a]))
+    fake.allowDelete = true
+    await waitUntil({ store.errorAction != nil }, "no Delete Anyway was offered")
+    XCTAssertEqual(store.errorAction?.label, "Delete Anyway")
+
+    fake.deleteFails = false
+    fake.listResult = [project([])]
+    let action = try XCTUnwrap(store.errorAction)
+    store.clearError()
+    action.run()
+    await waitUntil({ fake.skips == [false, true] }, "Delete Anyway didn't skip the script")
+    await waitUntil({ self.workroomNames(store).isEmpty }, "the workroom wasn't deleted")
+  }
+
+  /// Value: protects=R6, a delete that failed outside its script offers no Delete Anyway, which
+  /// would fail the same way; fails_when=the button shows for a git failure; no_claim=none beyond
+  /// protects
+  func testAFailureOutsideTheScriptOffersNoDeleteAnyway() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.deleteFails = true
+    fake.deleteError = WorkroomCLIError.cli(kind: "VCSCommandFailed", message: "git said no")
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteWorkroom(a, in: project([a]))
+    fake.allowDelete = true
+    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
+    XCTAssertNil(store.errorAction)
   }
 
   // MARK: - Delete withdraws notifications
@@ -503,7 +579,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
   /// A cascade whose teardown fails keeps the reason as the message and the output in the log box,
   /// as a single workroom's delete does.
-  func testFailedDeleteProjectShowsTheReasonAboveTheScriptOutput() async {
+  func testFailedDeleteProjectShowsTheReasonAboveTheScriptOutput() async throws {
     let a = workroom("a")
     let fake = DeleteRaceFakeCLI()
     fake.listResult = [project([a])]
@@ -523,6 +599,17 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertEqual(store.errorTitle, "Delete of ‘wr-race-project’ failed")
     XCTAssertEqual(store.errorMessage, reason)
     XCTAssertEqual(store.errorLog, "rm: cannot remove 'tmp'")
+
+    // Delete Anyway reruns the same scope with every teardown skipped.
+    fake.deleteFails = false
+    fake.listResult = []
+    let action = try XCTUnwrap(store.errorAction)
+    // A project's says it skips every remaining teardown, not only the failed one.
+    XCTAssertEqual(action.label, "Delete Without Teardowns")
+    store.clearError()
+    action.run()
+    await waitUntil({ fake.skips == [false, true] }, "Delete Anyway didn't skip the teardowns")
+    await waitUntil({ store.projects.isEmpty }, "the project wasn't deleted")
   }
 
   /// A later message must not show an earlier failure's output.

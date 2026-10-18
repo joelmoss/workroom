@@ -58,6 +58,12 @@ struct PendingProjectSettings: Identifiable {
   var id: String { project.id }
 }
 
+/// A way past an error, offered on its sheet: a label and what it does.
+struct ErrorAction {
+  let label: String
+  let run: @MainActor () -> Void
+}
+
 /// One window's modal presentations: the error sheet, the command-palette dialogs, the confirmations
 /// and the store-level sheets, and `hasModalPresentation` over all of them. Owned by `AppStore` as
 /// `modals`; the store forwards each member, so views and tests still read them through the store.
@@ -71,6 +77,7 @@ final class ModalState {
     didSet {
       errorDetails = nil
       errorLog = nil
+      errorAction = nil
     }
   }
   /// Title for the error alert. Nil falls back to the generic title; specific
@@ -82,6 +89,9 @@ final class ModalState {
   /// A failed script's output, shown open in a scrolling box beneath the message. Set after the
   /// message, cleared with it.
   var errorLog: String?
+  /// A way past the error the sheet offers beside OK (Delete Anyway, after a failed teardown). Set
+  /// after the message, cleared with it.
+  var errorAction: ErrorAction?
 
   /// Dismisses the error sheet.
   func clearError() {

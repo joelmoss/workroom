@@ -25,6 +25,21 @@ final class RemoteProvisioningTests: XCTestCase {
   }
 }
 
+/// `WORKROOM_HOST`, the word a script branches on to know where it runs.
+final class RemoteProvisioningHostKindTests: XCTestCase {
+  /// Value: protects=the documented WORKROOM_HOST word for each kind of host (docker, apple, boxd,
+  /// exedev); fails_when=a kind's word changes or two kinds swap; why_new=tests pass a literal
+  /// hostKind; seam=none; no_claim=the word reaching a script
+  func testEachKindOfHostHasItsDocumentedWord() {
+    XCTAssertEqual(RemoteProvisioning.hostKind(.init(runtime: .docker)), "docker")
+    XCTAssertEqual(
+      RemoteProvisioning.hostKind(.init(runtime: .docker, context: "colima")), "docker")
+    XCTAssertEqual(RemoteProvisioning.hostKind(.init(runtime: .apple)), "apple")
+    XCTAssertEqual(RemoteProvisioning.hostKind(.boxd(org: nil, account: nil)), "boxd")
+    XCTAssertEqual(RemoteProvisioning.hostKind(.exeDev(account: nil)), "exedev")
+  }
+}
+
 /// Which credentials a workroom's clone takes: a local container's, the Mac's own GitHub token
 /// through the relay (#309); a remote provider's, whatever the provider gave its host.
 final class RemoteProvisioningCredentialsTests: XCTestCase {
@@ -450,5 +465,202 @@ final class RemoteIncludeTests: XCTestCase {
     guard case .copied(let log) = some else { return XCTFail("\(some)") }
     XCTAssertEqual(log.first, "Skipped .env: it's a symlink")
     XCTAssertTrue(log.contains("Copied ok.key"), "\(log)")
+  }
+}
+
+/// A workroom's setup and teardown scripts on a remote host (`RemoteProvisioning.runScript`): the
+/// "host" is this Mac's shell, and the agent is this build's own, so `run-script` really runs.
+final class RemoteScriptTests: XCTestCase {
+  private struct ShellHost: HostDriver {
+    var execFails = false
+    /// The status the host's `test -e` gives instead of its own: ssh's 255 for a dropped link.
+    var checkExits: Int32?
+    func create() async throws -> HostID { .local }
+    func destroy(_ host: HostID) async throws {}
+    func openStream(to host: HostID) async throws -> HostStream {
+      throw HostDriverError.notImplemented("stream")
+    }
+    func exec(_ command: String, on host: HostID) async throws -> HostStream {
+      if execFails { throw HostDriverError.provisioning("the host is gone") }
+      let line =
+        command.hasPrefix("test -e ") && checkExits != nil
+        ? "echo 'Connection closed by remote host' >&2; exit \(checkExits ?? 0)" : command
+      return try HostStream.spawn(
+        URL(fileURLWithPath: "/bin/sh"), ["-c", line], environment: [:],
+        handshakeTimeout: 5, purpose: .exchange)
+    }
+  }
+
+  private final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [String] = []
+    private var started = 0
+    var lines: [String] { lock.withLock { all } }
+    var starts: Int { lock.withLock { started } }
+    func add(_ line: String) { lock.withLock { all.append(line) } }
+    func start() { lock.withLock { started += 1 } }
+  }
+
+  private static let contract = URL(fileURLWithPath: String(describing: #filePath))
+    .deletingLastPathComponent()  // WorkroomAppTests
+    .deletingLastPathComponent()  // macapp
+    .deletingLastPathComponent()  // repository root
+    .appendingPathComponent("testdata/script-env")
+
+  private var scratch: URL!
+  private var agent: String!
+
+  override func setUpWithError() throws {
+    agent = try XCTUnwrap(PersistentSessionPaths.binaryURL(for: .rustAgent), "no wr-agent").path
+    // Real paths: the script compares `pwd -P` with them, and /var is a symlink on macOS.
+    let made = FileManager.default.temporaryDirectory
+      .appendingPathComponent("remote-script-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+      at: made.appendingPathComponent("checkout/scripts"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: made.appendingPathComponent("root/scripts"), withIntermediateDirectories: true)
+    // `realpath`, not `resolvingSymlinksInPath`, which turns /private/var back into /var.
+    let resolved = try XCTUnwrap(realpath(made.path, nil))
+    defer { free(resolved) }
+    scratch = URL(fileURLWithPath: String(cString: resolved))
+  }
+
+  override func tearDownWithError() throws {
+    try? FileManager.default.removeItem(at: scratch)
+  }
+
+  private var checkout: String { scratch.appendingPathComponent("checkout").path }
+
+  @discardableResult
+  private func write(_ body: String, to path: String, mode: Int = 0o755) throws -> URL {
+    let url = scratch.appendingPathComponent(path)
+    try Data(body.utf8).write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+    return url
+  }
+
+  private var rootScript: URL { scratch.appendingPathComponent("root/scripts/workroom_setup") }
+
+  private func run(
+    _ script: RemoteProvisioning.Script = .setup, driver: ShellHost = ShellHost(),
+    lines: Lines = Lines()
+  ) async -> RemoteProvisioning.ScriptRun {
+    await RemoteProvisioning.runScript(
+      script, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
+      agentBinary: agent, on: .local, driver: driver, onStart: { lines.start() },
+      onLine: { lines.add($0) })
+  }
+
+  /// Value: protects=the remote contract a script sees (cwd, WORKROOM_* set as the app sets them,
+  /// no root path, no probe flag), checked against the fixture the Go and Rust tests share;
+  /// fails_when=the app passes a different variable or value; no_claim=a Linux host's shell (the
+  /// host is this Mac's)
+  func testTheCheckoutsScriptSeesTheRemoteContract() async throws {
+    try FileManager.default.copyItem(
+      at: Self.contract.appendingPathComponent("workroom_script"),
+      to: scratch.appendingPathComponent("checkout/scripts/workroom_setup"))
+    let lines = Lines()
+    let result = await run(lines: lines)
+    XCTAssertEqual(result, .passed)
+    XCTAssertEqual(lines.starts, 1)
+    let want = try String(
+      contentsOf: Self.contract.appendingPathComponent("remote.txt"), encoding: .utf8
+    ).replacingOccurrences(of: "{DIR}", with: checkout)
+    XCTAssertEqual(lines.lines, want.split(separator: "\n").map(String.init))
+  }
+
+  /// Value: protects=the root's copy runs when the checkout has none, copied with its mode (C3);
+  /// fails_when=the fallback is missing or the upload forces +x; no_claim=none beyond protects
+  func testTheRootsCopyRunsWhenTheCheckoutHasNone() async throws {
+    try write("#!/bin/sh\necho from the root\n", to: "root/scripts/workroom_setup")
+    let lines = Lines()
+    let result = await run(lines: lines)
+    XCTAssertEqual(result, .passed)
+    XCTAssertEqual(lines.lines, ["from the root"])
+    let copy = checkout + "/.git/workroom/workroom_setup"
+    let mode = try FileManager.default.attributesOfItem(atPath: copy)[.posixPermissions]
+    XCTAssertEqual((mode as? NSNumber)?.intValue, 0o755)
+
+    try write("#!/bin/sh\necho never\n", to: "root/scripts/workroom_setup", mode: 0o644)
+    guard case .failed(let why) = await run() else { return XCTFail("a non-executable copy ran") }
+    XCTAssertEqual(why, "setup script failed: \(copy) could not be started")
+  }
+
+  /// Value: protects=no script anywhere runs nothing and starts no row; fails_when=the row starts
+  /// or a failure is reported; no_claim=none beyond protects
+  func testNoScriptAnywhereIsAbsent() async {
+    let lines = Lines()
+    let result = await run(.teardown, lines: lines)
+    XCTAssertEqual(result, .absent)
+    XCTAssertEqual(lines.starts, 0)
+  }
+
+  /// Value: protects=a failing script and an unreachable host are failures worded as the CLI's;
+  /// fails_when=either passes or loses its reason; no_claim=none beyond protects
+  func testFailuresAreWordedAsTheCLIs() async throws {
+    try write("#!/bin/sh\necho dropping\nexit 3\n", to: "checkout/scripts/workroom_teardown")
+    let lines = Lines()
+    guard case .failed(let why) = await run(.teardown, lines: lines) else {
+      return XCTFail("a failing script passed")
+    }
+    XCTAssertEqual(
+      why,
+      "teardown script failed: \(checkout)/scripts/workroom_teardown returned a non-zero exit code")
+    XCTAssertEqual(lines.lines, ["dropping"])
+
+    guard case .failed(let gone) = await run(.teardown, driver: ShellHost(execFails: true)) else {
+      return XCTFail("an unreachable host passed")
+    }
+    XCTAssertTrue(gone.hasPrefix("teardown script failed: "), gone)
+    XCTAssertTrue(gone.contains("the host is gone"), gone)
+  }
+
+  /// Value: protects=a host that can't answer whether the script exists (ssh's 255) fails the
+  /// teardown instead of reading as "no script", which would destroy the host without it;
+  /// fails_when=any non-zero check reads as absent; no_claim=a real ssh drop (a fake exit stands in)
+  func testAHostThatCannotBeCheckedFailsRatherThanSkipping() async throws {
+    try write("#!/bin/sh\nexit 0\n", to: "checkout/scripts/workroom_teardown")
+    let lines = Lines()
+    let result = await run(.teardown, driver: ShellHost(checkExits: 255), lines: lines)
+    guard case .failed(let why) = result else { return XCTFail("\(result)") }
+    XCTAssertTrue(why.contains("couldn't check the host"), why)
+    XCTAssertTrue(why.contains("exit 255"), why)
+    XCTAssertEqual(lines.starts, 0, "the script ran")
+  }
+
+  /// Value: protects=a script's own 124, 126 and 255 are worded as its exit, not as the agent's
+  /// timeout or a script that couldn't start, while 255 also names a dropped link; fails_when=the
+  /// app reads a status alone as the agent's report; no_claim=a real timeout (the Rust and fixture
+  /// tests cover that)
+  func testAScriptsOwnExitIsNotTakenForTheAgentsReport() async throws {
+    let path = "\(checkout)/scripts/workroom_setup"
+    for (code, want) in [
+      (124, "\(path) returned a non-zero exit code"),
+      (126, "\(path) returned a non-zero exit code"),
+      (255, "\(path) returned exit code 255, or the connection to the host dropped while it ran"),
+    ] {
+      try write("#!/bin/sh\nexit \(code)\n", to: "checkout/scripts/workroom_setup")
+      let result = await run()
+      XCTAssertEqual(result, .failed("setup script failed: \(want)"), "exit \(code)")
+    }
+  }
+
+  /// Value: protects=a script that leaves a process printing in the background, holding its output
+  /// open, fails once its time is up, as the local CLI call's timeout ends one; fails_when=the
+  /// exchange waits for the output to close, which never happens; no_claim=a silent link (the
+  /// silence bound, HostStream's tests)
+  func testABackgroundedPrinterCannotHoldTheScriptOpen() async throws {
+    try write(
+      "#!/bin/sh\n(while :; do echo tick; sleep 0.2; done) &\nexit 0\n",
+      to: "checkout/scripts/workroom_setup")
+    let result = await RemoteProvisioning.runScript(
+      .setup, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
+      agentBinary: agent, on: .local, driver: ShellHost(), onLine: { _ in }, timeout: 1, slack: 2)
+    let path = "\(checkout)/scripts/workroom_setup"
+    XCTAssertEqual(
+      result,
+      .failed(
+        "setup script failed: \(path) still held its output open after 1 s"
+          + " (a process it started in the background, perhaps)"))
   }
 }

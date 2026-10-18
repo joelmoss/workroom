@@ -413,6 +413,85 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       modes.split(separator: "\n").prefix(3), ["600 .env", "664 config/shared.yml", "kept"])
   }
 
+  /// Value: protects=a remote workroom's script on a real Linux host: the host user's login
+  /// environment (bash -lic reading ~/.profile), the remote contract (testdata/script-env), the
+  /// 126 path, and `run-script`'s wall clock ending a tree with a `setsid` escaper (/proc-based
+  /// `descendants`); fails_when=the Linux agent probes or kills differently from the macOS one the
+  /// unit tests drive; no_claim=boxd's and exe.dev's own images and users (Debian here), and a
+  /// hangup when the Mac side ends
+  func testAWorkroomScriptRunsOnALinuxHostAsTheContractSays() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = await environment(fixture, driver: driver)
+    let instance = try await provision(environment, branch: "wr-script")
+    await instance.connection.close()
+    cleanups.append { try? await driver.destroy(instance.host) }
+
+    let contract = URL(fileURLWithPath: String(describing: #filePath))
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("testdata/script-env")
+    let script = try Data(contentsOf: contract.appendingPathComponent("workroom_script"))
+    let setup = "\(Self.path)/scripts/workroom_setup"
+    let (written, said) = try await driver.exec(
+      "mkdir -p \(Self.path)/scripts && cat > \(setup) && chmod 755 \(setup)"
+        + " && echo 'export FROM_PROFILE=yes' >> ~/.profile"
+        + " && printf '#!/bin/sh\\necho \"profile=$FROM_PROFILE\"\\n' > \(Self.path)/scripts/workroom_teardown"
+        + " && chmod 755 \(Self.path)/scripts/workroom_teardown",
+      on: instance.host
+    ).communicate(script, timeout: 30)
+    XCTAssertEqual(written, 0, said)
+
+    let lines = Lines()
+    let result = await RemoteProvisioning.runScript(
+      .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
+      agentBinary: environment.agentBinary, on: instance.host, driver: driver,
+      onLine: { lines.add($0) })
+    XCTAssertEqual(result, .passed)
+    let want = try String(
+      contentsOf: contract.appendingPathComponent("remote.txt"), encoding: .utf8
+    ).replacingOccurrences(of: "{DIR}", with: Self.path)
+    XCTAssertEqual(lines.all, want.split(separator: "\n").map(String.init))
+
+    // The login shell's profile reaches the script, as a terminal's shell gets it.
+    let profile = Lines()
+    let teardown = await RemoteProvisioning.runScript(
+      .teardown, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
+      agentBinary: environment.agentBinary, on: instance.host, driver: driver,
+      onLine: { profile.add($0) })
+    XCTAssertEqual(teardown, .passed)
+    XCTAssertEqual(profile.all, ["profile=yes"])
+
+    // A script without its execute bit can't start: the script's failure, as locally.
+    _ = try await onHost(driver, instance.host, "chmod 644 \(setup)")
+    let unstarted = await RemoteProvisioning.runScript(
+      .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
+      agentBinary: environment.agentBinary, on: instance.host, driver: driver, onLine: { _ in })
+    XCTAssertEqual(unstarted, .failed("setup script failed: \(setup) could not be started"))
+
+    // The wall clock ends the whole tree, a grandchild that left its process group included.
+    let (status, output) = try await onHost(
+      driver, instance.host,
+      "printf '#!/bin/sh\\nsetsid sleep 60 &\\necho $! > /tmp/escaper\\nsleep 60\\n' > /tmp/slow"
+        + " && chmod 755 /tmp/slow"
+        + " && { \(environment.agentBinary) run-script --dir /tmp --timeout 1 -- /tmp/slow; echo \"exit=$?\"; }"
+        + " && sleep 1 && if kill -0 \"$(cat /tmp/escaper)\" 2>/dev/null; then echo alive; else echo gone; fi"
+    )
+    XCTAssertEqual(status, 0, output)
+    XCTAssertTrue(output.contains("exit=124"), output)
+    // The output is stdout, then stderr (`run-script`'s own "timed out" line).
+    XCTAssertTrue(output.contains("gone"), output)
+    XCTAssertFalse(output.contains("alive"), output)
+    XCTAssertTrue(output.contains("timed out after 1 s"), output)
+  }
+
+  private final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    var all: [String] { lock.withLock { lines } }
+    func add(_ line: String) { lock.withLock { lines.append(line) } }
+  }
+
   // MARK: Workrooms
 
   @MainActor

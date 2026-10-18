@@ -2218,9 +2218,9 @@ final class RemoteHostsTests: XCTestCase {
     let pane = SidebarID.creation(project: "/proj", id: run.id)
     run.begin("repository")
     run.begin("machine")
-    XCTAssertEqual(store.createStep(for: pane), .init(fraction: 2.0 / 7, label: "Create machine"))
+    XCTAssertEqual(store.createStep(for: pane), .init(fraction: 2.0 / 8, label: "Create machine"))
     run.begin("clone")
-    XCTAssertEqual(store.createStep(for: pane)?.fraction, 5.0 / 7)
+    XCTAssertEqual(store.createStep(for: pane)?.fraction, 5.0 / 8)
     XCTAssertNil(store.createStep(for: .workroom(project: "/proj", name: "other")))
   }
 

@@ -142,8 +142,17 @@ protocol WorkroomCLIProtocol: Sendable {
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
   func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws
+  /// `delete`, with `skipTeardown` running no teardown script: Delete Anyway, after it failed.
+  func delete(
+    name: String, project: String, skipTeardown: Bool, onLog: (@Sendable (String) -> Void)?
+  ) async throws
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: (@Sendable (String) -> Void)?
+  ) async throws -> [URL]
+  /// `deleteProject`, with `skipTeardown` running no workroom's teardown script.
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, skipTeardown: Bool,
+    onLog: (@Sendable (String) -> Void)?
   ) async throws -> [URL]
   func setHost(project: String, workroom: String?, descriptor: Data?) async throws
   /// Sets the branch a project's new workrooms start from; nil clears it.
@@ -157,6 +166,20 @@ protocol WorkroomCLIProtocol: Sendable {
 
 /// Fakes that never meet a remote workroom need not implement its two calls.
 extension WorkroomCLIProtocol {
+  /// Fakes that never see Delete Anyway need not implement it: it is a plain delete there.
+  func delete(
+    name: String, project: String, skipTeardown: Bool, onLog: (@Sendable (String) -> Void)?
+  ) async throws {
+    try await delete(name: name, project: project, onLog: onLog)
+  }
+
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, skipTeardown: Bool,
+    onLog: (@Sendable (String) -> Void)?
+  ) async throws -> [URL] {
+    try await deleteProject(path, withWorkrooms: withWorkrooms, fromDisk: fromDisk, onLog: onLog)
+  }
+
   /// Fakes that report no steps need not implement it: their log lines and "created" become events.
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
@@ -332,11 +355,16 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)? = nil)
     async throws
   {
+    try await delete(name: name, project: project, skipTeardown: false, onLog: onLog)
+  }
+
+  func delete(
+    name: String, project: String, skipTeardown: Bool, onLog: (@Sendable (String) -> Void)?
+  ) async throws {
     await ShellEnvironment.refresh()  // a teardown script may run inside this call
-    let result = try await run(
-      ["delete", name, "--json", "--project", project, "--confirm", name], timeout: 600,
-      userInitiated: true
-    ) { event in
+    var args = ["delete", name, "--json", "--project", project, "--confirm", name]
+    if skipTeardown { args.append("--skip-teardown") }
+    let result = try await run(args, timeout: 600, userInitiated: true) { event in
       if event.type == "log", let text = event.text { onLog?(text) }
     }
     try throwIfError(result)
@@ -364,9 +392,19 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: (@Sendable (String) -> Void)? = nil
   ) async throws -> [URL] {
+    try await deleteProject(
+      path, withWorkrooms: withWorkrooms, fromDisk: fromDisk, skipTeardown: false, onLog: onLog)
+  }
+
+  @discardableResult
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, skipTeardown: Bool,
+    onLog: (@Sendable (String) -> Void)?
+  ) async throws -> [URL] {
     var args = ["delete-project", path, "--json", "--confirm", path]
     if withWorkrooms { args.append("--with-workrooms") }
     if fromDisk { args.append("--from-disk") }
+    if skipTeardown { args.append("--skip-teardown") }
     let runsScripts = Self.deleteProjectRunsScripts(
       withWorkrooms: withWorkrooms, fromDisk: fromDisk)
     if runsScripts { await ShellEnvironment.refresh() }
