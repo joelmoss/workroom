@@ -237,6 +237,27 @@ public struct CICheck: Equatable, Sendable, Identifiable {
   }
 }
 
+/// A status clock that compares by whether it is set, never by its time (#503).
+///
+/// Only the sweep's TTL gates and `mergeLocalStatus`'s read ordering read a clock's value; views ask
+/// only whether one is set (the Changes panel's "Checking…", the PR panel's loaded markers). So a
+/// probe that changed nothing on screen yields an equal status, and the `@Observable` store stores an
+/// equal value without notifying: the fresh clocks are kept and nothing redraws. That needs every
+/// status write to be a whole-value set, as `AppStore.workroomStatuses`'s proxy makes it; an in-place
+/// subscript write on the store itself would notify regardless.
+@propertyWrapper
+public struct PresenceEquatable<Value: Sendable>: Equatable, Sendable {
+  public var wrappedValue: Value?
+
+  public init(wrappedValue: Value?) {
+    self.wrappedValue = wrappedValue
+  }
+
+  public static func == (lhs: Self, rhs: Self) -> Bool {
+    (lhs.wrappedValue == nil) == (rhs.wrappedValue == nil)
+  }
+}
+
 /// A point-in-time snapshot of one workroom's VCS + CI status, resolved app-side.
 ///
 /// `dirty == nil` means **unknown** (a probe failed) — never rendered as clean. `clean` is
@@ -244,7 +265,8 @@ public struct CICheck: Equatable, Sendable, Identifiable {
 /// (capped) working-tree change list used by the detail panel. `ci` is filled by a separate,
 /// slower second-stage probe so a wedged `gh` never blocks the dirty dot. `branchForCI` is the
 /// git branch name (used to look up CI) when resolvable. PR fields are intentionally reserved
-/// for Phase 2 so this snapshot *extends* rather than gets replaced.
+/// for Phase 2 so this snapshot *extends* rather than gets replaced. Its five clocks compare by
+/// presence (`PresenceEquatable`); every other field by value.
 public struct WorkroomStatus: Equatable, Sendable {
   public var dirty: Bool?
   public var conflicted: Bool = false
@@ -270,7 +292,7 @@ public struct WorkroomStatus: Equatable, Sendable {
   /// non-empty ⇒ the checks to list. `checksCheckedAt` is the loaded marker that disambiguates `nil`
   /// from `[]`. Cleared whenever the PR's identity changes or the PR goes away (see `applyPRStatus`).
   public var checks: [CICheck]?
-  public var lastChecked: Date?
+  @PresenceEquatable public var lastChecked: Date?
   /// When the local read behind these values FINISHED, stamped by
   /// `WorkroomStatusResolver.resolve(location:)`. Five independent lanes probe local status (see
   /// `AppStore+WorkroomStatus`), none ordered against the others, so a slow probe can merge after a
@@ -278,15 +300,15 @@ public struct WorkroomStatus: Equatable, Sendable {
   /// records the landing, not the read. This is what `mergeLocalStatus` compares to refuse a result
   /// stamped earlier than the one it already holds. Local-probe fields only; the CI/PR stages keep
   /// their own clocks above.
-  public var localReadAt: Date?
+  @PresenceEquatable public var localReadAt: Date?
   /// When CI was last probed — separate from `lastChecked` because CI has a much longer TTL
   /// (the local git probe refreshes often; the network `gh` call should not).
-  public var ciCheckedAt: Date?
+  @PresenceEquatable public var ciCheckedAt: Date?
   /// When the PR was last probed — its own TTL/backoff, like `ciCheckedAt`.
-  public var prCheckedAt: Date?
+  @PresenceEquatable public var prCheckedAt: Date?
   /// When the PR's checks were last probed. The loaded marker for `checks`: `nil` ⇒ not yet probed
   /// (panel uses the run-list aggregate fallback); set ⇒ `checks` (possibly `[]`) is authoritative.
-  public var checksCheckedAt: Date?
+  @PresenceEquatable public var checksCheckedAt: Date?
 
   /// Not yet probed (first render before the sweep resolves it).
   public static let unresolved = WorkroomStatus()
