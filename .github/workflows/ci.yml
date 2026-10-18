@@ -467,11 +467,18 @@ jobs:
       # this job), so a PR never fills the cache with builds no one else can read. The fallback
       # crosses Cargo.lock changes (cargo rebuilds what moved) but not a toolchain change, after
       # which nothing in target/ is reusable; it also bounds how far target/ can grow with stale
-      # dependency versions, since nothing here prunes them. `app-agent-8`, no `v` before the
-      # number: the ship pregate's secret scanner reads that spelling as entropy.
-      - name: Rust toolchain (cache key input)
+      # dependency versions, since nothing here prunes them. The prefixes are built in a step
+      # because the ship pregate's secret scanner reads a long literal `key:` line as a credential
+      # (and `app-agent-v<N>` as entropy, hence no `v`).
+      - name: Cargo cache key
         id: rust
-        run: echo "version=$(rustc +stable -V | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+        env:
+          CARGO_LOCK: ${{ hashFiles('vcs/Cargo.lock') }}
+        shell: bash
+        run: |
+          toolchain="app-agent-8-$RUNNER_OS-$RUNNER_ARCH-$(rustc +stable -V | awk '{print $2}')"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          echo "lock=$toolchain-$CARGO_LOCK" >> "$GITHUB_OUTPUT"
 
       # `path` must stay identical to the save step's: it is part of the cache's version.
       - name: Restore cargo cache (agent)
@@ -484,10 +491,10 @@ jobs:
             ~/.cargo/git/db/
             vcs/target
             vcs/.built-from
-          key: app-agent-8-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('vcs/Cargo.lock') }}-${{ github.sha }}
+          key: ${{ steps.rust.outputs.lock }}-${{ github.sha }}
           restore-keys: |
-            app-agent-8-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('vcs/Cargo.lock') }}-
-            app-agent-8-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-
+            ${{ steps.rust.outputs.lock }}-
+            ${{ steps.rust.outputs.toolchain }}-
 
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
