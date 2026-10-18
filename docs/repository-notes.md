@@ -78,6 +78,8 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
 - `--json` — Emit one machine-readable JSON envelope on stdout (errors included); non-interactive.
   How the macOS app drives the CLI; streams setup/teardown as NDJSON log events on stderr.
 - `--confirm NAME` — Skip delete confirmation (delete subcommand only)
+- `--skip-teardown` — Delete without running the teardown script (`delete` and `delete-project`); the
+  app's Delete Anyway after a failed teardown
 
 ## Sentry
 

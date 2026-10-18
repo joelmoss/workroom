@@ -188,7 +188,9 @@ and its log a click away, so you watch the fetch, the worktree and your `scripts
 in real time; the terminal opens when you click **Done**, or by itself a few seconds after setup
 finishes if you turn on **Close automatically when done**.
 Deleting is a hover-to-trash with a confirmation; teardown runs in the background and the row clears
-immediately. (See [Setup and teardown scripts](#setup-and-teardown-scripts).)
+immediately. If the teardown script fails, the workroom comes back with the script's output and a
+**Delete Anyway** button that deletes it without the script. (See [Setup and teardown
+scripts](#setup-and-teardown-scripts).)
 
 **Jump in with the keyboard.** `⌘1`–`⌘9` focus terminals left-to-right, `⌘T` opens a new one, and
 `⌘W` closes the active one (with an optional confirm). `⌘N` creates a workroom and `⌘O` opens an
@@ -400,6 +402,7 @@ workroom version
 - `--json` — Emit a single machine-readable JSON object on stdout (see
   [the `--json` contract](#the---json-machine-contract)). Used by the macOS app.
 - `--confirm NAME` — (delete only) Skip confirmation when `NAME` matches the workroom being deleted.
+- `--skip-teardown` — (delete only) Delete without running the teardown script, after it failed.
 
 ### The `--json` machine contract
 
@@ -501,6 +504,9 @@ Non-interactive callers can branch on the process exit code:
 
 Both the macOS app **and** the CLI automatically run user-defined scripts during create and delete
 operations — the app drives the same engine, so the same hooks work no matter how you use Workroom.
+They run on every kind of workroom: on this Mac, and on a remote workroom's host (boxd, exe.dev, a
+Docker or Apple container), where they behave the same way except where a section below says
+otherwise.
 
 ### Gitignored files (`.worktreeinclude`)
 
@@ -540,7 +546,11 @@ newer commit than your root checkout, so the script that runs can be newer than 
 runs **inside the new workroom** right after creation, and after its [gitignored
 files](#gitignored-files-worktreeinclude) are copied in: a good place to install dependencies. (In
 the macOS app, its output streams into the new workroom's creation checklist, under "Run setup
-script", as it runs.) A remote workroom runs no setup script.
+script", as it runs.)
+
+On a remote workroom the script runs **on its host**, inside the clone: the clone's own copy, or, when
+the clone has none, the root's copy, copied to the host with its mode. Its output streams into the
+same "Run setup script" row.
 
 ```bash
 #!/usr/bin/env bash
@@ -555,7 +565,8 @@ createdb "myapp_${WORKROOM_NAME}"
 
 > A setup failure is **not** transactional: the workroom directory and config entry already exist
 > by the time setup runs. The CLI reports the failure (exit code 5); the macOS app surfaces the
-> error and offers to delete the half-created workroom.
+> error and offers **Open Anyway** or **Delete**. A remote workroom's machine is kept, and keeps
+> running, until you choose. A script that can't start (no `chmod +x`) fails the same way.
 
 ### Teardown script
 
@@ -571,6 +582,16 @@ set -euo pipefail
 # Drop the per-workroom database that setup created.
 dropdb "myapp_${WORKROOM_NAME}" 2>/dev/null || true
 ```
+
+On a remote workroom the teardown runs on its host before the machine is destroyed, in every kind of
+delete, including removing its project from Workroom only (which destroys remote machines too). A
+machine a create or an earlier delete left half-made is destroyed without it.
+
+If the teardown fails, can't start, runs out of time, or the remote host can't be reached, the delete
+**stops** and nothing is removed, so you can fix the script and delete again. The macOS app shows why,
+with the script's output, and offers **Delete Anyway**, which deletes without the script; the CLI's
+equivalent is `workroom delete <name> --skip-teardown`. On a project delete the button is **Delete
+Without Teardowns**: it skips every remaining workroom's teardown, not only the one that failed.
 
 ### Environment variables
 
@@ -606,6 +627,23 @@ everything the system knows about. You lose the dotfile extras, not the basics.
 | `WORKROOM_PATH` | Absolute path to the workroom directory (also the script's working directory). |
 | `WORKROOM_ROOT_PATH` | Absolute path to the root project the workroom belongs to. Since scripts run inside the workroom, this lets you reference files back in the original project. |
 | `WORKROOM_PARENT_DIR` | _Deprecated_ alias for `WORKROOM_ROOT_PATH`, still set for existing scripts. Prefer `WORKROOM_ROOT_PATH`. |
+| `WORKROOM_HOST` | Where the script runs: `local`, or a remote workroom's host kind, `boxd`, `exedev`, `docker` or `apple`. |
+
+On a remote workroom's host:
+
+- `WORKROOM_ROOT_PATH` and `WORKROOM_PARENT_DIR` are **not set**: there is no root project on the
+  host. Bring what a script copies from the root with [`.worktreeinclude`](#gitignored-files-worktreeinclude)
+  instead, and guard what still needs the root:
+  ```bash
+  if [ -n "${WORKROOM_ROOT_PATH:-}" ]; then
+    cp "$WORKROOM_ROOT_PATH/.env" .env
+  fi
+  ```
+  With `set -u`, an unguarded `$WORKROOM_ROOT_PATH` fails the script, and so the create.
+- The environment is the **host user's** login shell's, read the same way (with
+  `WORKROOM_SHELL_PROBE=1` while it is read), never your Mac's: your Mac's secrets stay on your Mac.
+- A Docker or Apple container's git asks your Mac for GitHub credentials while the script runs, as
+  its terminals do; boxd and exe.dev hosts use their own GitHub access.
 
 This repo ships its own `scripts/workroom_setup` as a working example: it guards against the root
 and workroom paths resolving to the same inode (which would clobber source) and copies
@@ -622,7 +660,7 @@ Workroom has no required environment for normal use. The relevant variables:
 | `WORKROOM_INSTALL_PATH` | `install.sh` | Override the CLI install directory (default `~/.local/bin`). |
 | `VERSION` | `install.sh` / `install.ps1` | Install a specific CLI version instead of the latest. |
 | `EDITOR` | `workroom create` | If set (and not `--no-editor`/`--json`), Workroom offers to open the new workroom in it. |
-| `WORKROOM_NAME`, `WORKROOM_PATH`, `WORKROOM_ROOT_PATH` | setup/teardown scripts | See [Environment variables](#environment-variables). Set by Workroom, not by you. |
+| `WORKROOM_NAME`, `WORKROOM_PATH`, `WORKROOM_ROOT_PATH`, `WORKROOM_HOST` | setup/teardown scripts | See [Environment variables](#environment-variables). Set by Workroom, not by you. |
 
 **Config file:** `~/.config/workroom/config.json`. Two keys are for you to
 set. `workrooms_dir` is where workrooms are created (default `~/workrooms`, a leading `~` works).

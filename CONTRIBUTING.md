@@ -301,7 +301,9 @@ failed" and offer cleanup.
 1. **Guard + validate** the name against `^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$`.
 2. **Confirm** (interactively, or via a matching `--confirm <name>` value).
 3. **Run teardown:** if `scripts/workroom_teardown` exists in the workroom, else in the root project,
-   run it inside the workroom (streaming).
+   run it inside the workroom (streaming). A teardown that fails, or can't be started, stops the
+   delete there (exit 5, `TeardownScriptFailed`), leaving the workroom and its config entry.
+   `--skip-teardown` (`Service.SkipTeardown`, the app's Delete Anyway) skips the script and says so.
 4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
    **The branch is intentionally left intact.**
 5. **Update config:** remove the workroom entry. The project stays registered even with no
