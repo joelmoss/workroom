@@ -34,7 +34,7 @@ make red-proof FILE=… PATTERN=… TEST=<Class>[/<method>]
 make app-package-test # swift test in each macapp/Packages package — no app host, no GUI lock
 make app-uitest     # XCUITest — needs the GUI session to itself; queues behind other workrooms
 make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
-make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock, test summary, red proof)
+make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock, test summary, red proof, restore mtime)
 make app-scripts-lint # shellcheck over macapp/Scripts/*.sh
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-lsp        # write buildServer.json so SourceKit-LSP sees packages and sibling files;

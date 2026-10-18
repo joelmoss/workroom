@@ -265,7 +265,7 @@ remote-host-image-test: ## Build the `workroom-host` image, without its tag, and
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol, exe.dev git setup, test summary, red proof)
+app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol, exe.dev git setup, test summary, red proof, restore mtime)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-agent_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
@@ -277,6 +277,7 @@ app-test-scripts: ## Run the script tests (build-helper/build-agent archs, chann
 	sh macapp/Scripts/stop-dev-app_test.sh
 	sh macapp/Scripts/test-summary_test.sh
 	sh macapp/Scripts/red-proof_test.sh
+	sh macapp/Scripts/restore-mtime_test.sh
 	python3 macapp/Scripts/gui-lock_test.py
 
 app-scripts-lint: ## Lint macapp/Scripts/*.sh with shellcheck (needs shellcheck on PATH)
