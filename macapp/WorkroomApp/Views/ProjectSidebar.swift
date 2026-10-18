@@ -470,8 +470,9 @@ struct ProjectSidebar: View {
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
       // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
       // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
-      // fixes the slot's size and the smaller spinner can't shift the row.
-      ZStack {
+      // fixes the slot's size and the smaller spinner can't shift the row. Trailing, so the spinner
+      // lines up with the root row's, which has no slot.
+      ZStack(alignment: .trailing) {
         // A create's progress, for every kind, while its run lasts (#483).
         if let run = store.creationRun(for: id) {
           CreateStepCircle(run: run)
