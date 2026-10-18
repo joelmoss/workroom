@@ -548,52 +548,58 @@ private struct CodingAgentSettingsPane: View {
     Form {
       // Inline terminal agent (issue #49): always on — a failed command is diagnosed by the local
       // CLI and a fix suggested in the pane's status bar (+ a ✦ badge on the tab).
-      Picker("Diagnose with", selection: $agentBackend) {
-        Text("Auto (Claude, else Codex)").tag("auto")
-        Text("Claude").tag("claude")
-        Text("Codex").tag("codex")
+      Section {
+        Picker("Diagnose with", selection: $agentBackend) {
+          Text("Auto (Claude, else Codex)").tag("auto")
+          Text("Claude").tag("claude")
+          Text("Codex").tag("codex")
+        }
+        .help("Which local CLI diagnoses a failed command.")
+
+        Toggle("Diagnose automatically", isOn: $agentAutoDiagnose)
+          .help("Run the diagnosis as soon as a command fails, instead of waiting for a click.")
+          .accessibilityIdentifier("settings.control.autoDiagnose")
+
+        VStack(alignment: .leading, spacing: 4) {
+          Toggle("Redact obvious secrets before sending", isOn: $agentRedactSecrets)
+            .help("Mask obvious secrets in the command output before sending it to the agent.")
+
+          Text(
+            "A failed command's text and output are sent to the local "
+              + "\(agentBackend == "codex" ? "codex" : "claude") CLI for a suggested fix. "
+              + "Secret redaction is best-effort, not a guarantee — Codex is used only for the "
+              + "interactive “Investigate” action, never the automatic diagnosis."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
       }
-      .help("Which local CLI diagnoses a failed command.")
 
-      Toggle("Diagnose automatically", isOn: $agentAutoDiagnose)
-        .help("Run the diagnosis as soon as a command fails, instead of waiting for a click.")
-        .accessibilityIdentifier("settings.control.autoDiagnose")
-
-      VStack(alignment: .leading, spacing: 4) {
-        Toggle("Redact obvious secrets before sending", isOn: $agentRedactSecrets)
-          .help("Mask obvious secrets in the command output before sending it to the agent.")
-
-        Text(
-          "A failed command's text and output are sent to the local "
-            + "\(agentBackend == "codex" ? "codex" : "claude") CLI for a suggested fix. "
-            + "Secret redaction is best-effort, not a guarantee — Codex is used only for the "
-            + "interactive “Investigate” action, never the automatic diagnosis."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      }
-
-      VStack(alignment: .leading, spacing: 4) {
-        Toggle("Show usage in the window footer", isOn: $usageInWindowFooter)
+      Section {
+        Toggle("Show in the window footer", isOn: $usageInWindowFooter)
           .accessibilityIdentifier("settings.control.usageInWindowFooter")
-        Toggle("Show usage in the pane footer", isOn: $usageInPaneFooter)
+        Toggle("Show in the pane footer", isOn: $usageInPaneFooter)
           .help("Only while a coding agent runs in that pane.")
           .accessibilityIdentifier("settings.control.usageInPaneFooter")
         // Only after "Don't Ask Again" in the footer: the one place left to change one's mind. Never
         // while cswap supplies Claude usage, which would ignore the bridge.
         if claudeUsageDeclined, claudeUsageBridge.state == .disabled, agentUsage.claudeUsesBridge {
           LabeledContent("Claude usage") {
-            Button("Enable Claude usage…") { confirmingClaudeUsage = true }
+            Button("Enable…") { confirmingClaudeUsage = true }
           }
         }
-
-        Text(
-          "Claude usage comes from cswap when it is installed, one reading per account; otherwise "
-            + "from Claude's status line, once you enable it from the footer. Codex usage comes "
-            + "from the Codex app server, or its local session files."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      } header: {
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Usage")
+          Text(
+            "Claude usage comes from cswap when it is installed, one reading per account; otherwise "
+              + "from Claude's status line, once you enable it from the footer. Codex usage comes "
+              + "from the Codex app server, or its local session files."
+          )
+          .font(.caption)
+          .fontWeight(.regular)
+          .foregroundStyle(.secondary)
+        }
       }
     }
     .formStyle(.grouped)

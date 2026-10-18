@@ -86,9 +86,9 @@ final class SettingsSidebarUITests: XCTestCase {
     pane(app, "terminal").click()
     XCTAssertTrue(waitExists(control(app, "copyOnSelect"), true), "Terminal shows its controls")
 
-    // Agent → "Diagnose automatically".
+    // AI Agents → "Diagnose automatically".
     pane(app, "agent").click()
-    XCTAssertTrue(waitExists(control(app, "autoDiagnose"), true), "Agent shows its controls")
+    XCTAssertTrue(waitExists(control(app, "autoDiagnose"), true), "AI Agents shows its controls")
 
     // About → the "Check for Updates…" button; Agent's control is gone (detail swapped). Also
     // covers the rest of the About pane (issue #91) here rather than in a separate test/launch:
