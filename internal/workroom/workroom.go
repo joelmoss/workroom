@@ -39,6 +39,9 @@ type Service struct {
 	// Status, when set, receives a progress step as it happens: a short status word and what was
 	// done, e.g. ("setup", "Running <script> from <dir>"). --verbose prints them.
 	Status func(status, msg string)
+	// SkipTeardown deletes without running the teardown script: a GUI's Delete Anyway, after the
+	// script failed. Everything else a delete does still runs.
+	SkipTeardown bool
 	// ScriptLogWriter, when set, receives setup/teardown script output as it runs.
 	// It is the --json mode sink (an NDJSON event stream on stderr) and takes the
 	// place of the human terminal log panel. The captured output is still returned,
@@ -756,7 +759,7 @@ func (s *Service) InteractiveDelete(dir string, report func(DeleteResult)) (Pick
 // RunTeardown runs the teardown script for a workroom. It resolves the workroom
 // directory via the config WorkroomsDir, streams output to ScriptLogWriter (the
 // NDJSON sink in --json mode) or else ScriptOutput (the human log panel), and
-// respects Pretend mode.
+// respects Pretend mode and SkipTeardown.
 // Returns the script error if the script fails; returns nil when the script is absent.
 // deleteByName runs it first, so its remote refusal covers every delete.
 func (s *Service) RunTeardown(dir, name string) error {
@@ -768,7 +771,9 @@ func (s *Service) RunTeardown(dir, name string) error {
 		return err
 	}
 
-	if teardownScript, ok := findScript("workroom_teardown", wrPath, dir); ok {
+	if teardownScript, ok := findScript("workroom_teardown", wrPath, dir); ok && s.SkipTeardown {
+		s.sayStatus("teardown", fmt.Sprintf("Skipping %s, as asked", teardownScript))
+	} else if ok {
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
 		if !s.Pretend {
 			stream := s.ScriptLogWriter

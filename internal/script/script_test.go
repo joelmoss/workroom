@@ -134,7 +134,8 @@ func TestRunSetsEnvVars(t *testing.T) {
 			"echo \"NAME=$WORKROOM_NAME\"\n"+
 			"echo \"PATH=$WORKROOM_PATH\"\n"+
 			"echo \"ROOT=$WORKROOM_ROOT_PATH\"\n"+
-			"echo \"PARENT=$WORKROOM_PARENT_DIR\"\n"), 0o755)
+			"echo \"PARENT=$WORKROOM_PARENT_DIR\"\n"+
+			"echo \"HOST=$WORKROOM_HOST\"\n"), 0o755)
 
 	output, err := Run("setup", scriptPath, dir, "my-workroom", "/parent/dir", nil)
 	if err != nil {
@@ -145,9 +146,61 @@ func TestRunSetsEnvVars(t *testing.T) {
 		"PATH=" + dir, // WORKROOM_PATH is the workroom directory the script runs in
 		"ROOT=/parent/dir",
 		"PARENT=/parent/dir", // deprecated alias still set for backward compatibility
+		"HOST=local",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected %q in script output, got %q", want, output)
 		}
+	}
+}
+
+// The setup and teardown contract a local workroom's script sees: testdata/script-env's fixture,
+// whose expected output for a remote workroom (remote.txt) the agent's run-script tests check.
+func TestRunMatchesTheScriptContract(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := filepath.Join(fixturesDir(), "..", "script-env")
+	want, err := os.ReadFile(filepath.Join(contract, "local.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := Run("setup", filepath.Join(contract, "workroom_script"), dir, "contract", "/the/root", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := strings.NewReplacer("{DIR}", dir, "{ROOT}", "/the/root").Replace(string(want))
+	if output != expected {
+		t.Fatalf("the script saw\n%s\nwant\n%s", output, expected)
+	}
+}
+
+// A script that can't start (here, no execute bit) fails as the script, setup or teardown alike, so
+// the CLI reports it as SetupScriptFailed/TeardownScriptFailed (exit 5), not an internal error.
+func TestRunScriptThatCannotStartIsTheScriptsFailure(t *testing.T) {
+	for _, tc := range []struct {
+		scriptType string
+		sentinel   error
+	}{
+		{"setup", errs.ErrSetup},
+		{"teardown", errs.ErrTeardown},
+	} {
+		t.Run(tc.scriptType, func(t *testing.T) {
+			dir := t.TempDir()
+			scriptPath := filepath.Join(dir, "workroom_"+tc.scriptType)
+			if err := os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho hi\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := Run(tc.scriptType, scriptPath, dir, "my-workroom", "/parent", nil)
+			if !errors.Is(err, tc.sentinel) {
+				t.Fatalf("expected %v, got %v", tc.sentinel, err)
+			}
+			if !strings.Contains(err.Error(), scriptPath) {
+				t.Fatalf("expected the script's path in %q", err)
+			}
+		})
 	}
 }

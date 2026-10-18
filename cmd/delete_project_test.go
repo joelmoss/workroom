@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -278,56 +279,72 @@ func TestDeleteProjectFromDisk(t *testing.T) {
 
 // TestDeleteProjectFromDiskTeardownFailureKeepsConfig verifies that a failing teardown
 // script aborts the operation and leaves the project in config (retryable).
-func TestDeleteProjectFromDiskTeardownFailureKeepsConfig(t *testing.T) {
-	fake := &fakeVCS{}
-	svc, cfg := newTestSvc(t, fake)
-	proj := t.TempDir()
-	canon, _ := config.CanonicalPath(proj)
+// A failing teardown keeps the project in config so a retry can finish; --skip-teardown (the
+// app's Delete Anyway) runs no script and drops it.
+func TestDeleteProjectFromDiskTeardownFailure(t *testing.T) {
+	for _, skip := range []bool{false, true} {
+		t.Run(fmt.Sprintf("skip=%v", skip), func(t *testing.T) {
+			fake := &fakeVCS{}
+			svc, cfg := newTestSvc(t, fake)
+			proj := t.TempDir()
+			canon, _ := config.CanonicalPath(proj)
 
-	// Write a failing teardown script into the project directory.
-	scriptsDir := filepath.Join(proj, "scripts")
-	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	teardownScript := filepath.Join(scriptsDir, "workroom_teardown")
-	if err := os.WriteFile(teardownScript, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+			// Write a failing teardown script into the project directory.
+			scriptsDir := filepath.Join(proj, "scripts")
+			if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			teardownScript := filepath.Join(scriptsDir, "workroom_teardown")
+			if err := os.WriteFile(teardownScript, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 
-	// We need a workroom whose path resolves under the configured WorkroomsDir so
-	// RunTeardown can locate it. Use a real temp dir as the workroom path.
-	wrPath := t.TempDir()
-	if err := cfg.AddWorkroom(canon, "alpha", wrPath, "git"); err != nil {
-		t.Fatal(err)
-	}
+			// We need a workroom whose path resolves under the configured WorkroomsDir so
+			// RunTeardown can locate it. Use a real temp dir as the workroom path.
+			wrPath := t.TempDir()
+			if err := cfg.AddWorkroom(canon, "alpha", wrPath, "git"); err != nil {
+				t.Fatal(err)
+			}
 
-	// Override WorkroomsDir so workroomPath("alpha") returns wrPath.
-	// WorkroomsDir is derived from config; inject via cfg.SetWorkroomsDir.
-	// Instead, we set the workrooms_dir in config to the parent of wrPath so
-	// filepath.Join(workroomsDir, "alpha") == wrPath.
-	wrParent := filepath.Dir(wrPath)
-	wrName := filepath.Base(wrPath)
-	// We need the workroom name to match the dir name; use the base of the temp path.
-	// Re-register with the real name.
-	if err := cfg.RemoveProject(canon); err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.SetWorkroomsDir(wrParent); err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.AddWorkroom(canon, wrName, filepath.Join(wrParent, wrName), "git"); err != nil {
-		t.Fatal(err)
-	}
+			// Override WorkroomsDir so workroomPath("alpha") returns wrPath.
+			// WorkroomsDir is derived from config; inject via cfg.SetWorkroomsDir.
+			// Instead, we set the workrooms_dir in config to the parent of wrPath so
+			// filepath.Join(workroomsDir, "alpha") == wrPath.
+			wrParent := filepath.Dir(wrPath)
+			wrName := filepath.Base(wrPath)
+			// We need the workroom name to match the dir name; use the base of the temp path.
+			// Re-register with the real name.
+			if err := cfg.RemoveProject(canon); err != nil {
+				t.Fatal(err)
+			}
+			if err := cfg.SetWorkroomsDir(wrParent); err != nil {
+				t.Fatal(err)
+			}
+			if err := cfg.AddWorkroom(canon, wrName, filepath.Join(wrParent, wrName), "git"); err != nil {
+				t.Fatal(err)
+			}
 
-	err := runDeleteProject(svc, true, canon, false, true, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("expected error from failing teardown script")
-	}
-
-	// Project must remain in config.
-	data, _ := cfg.Read()
-	if _, ok := data[canon]; !ok {
-		t.Fatal("project was removed from config despite teardown failure — should be retryable")
+			svc.SkipTeardown = skip
+			err := runDeleteProject(svc, true, canon, false, true, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
+			data, _ := cfg.Read()
+			_, kept := data[canon]
+			if !skip {
+				if err == nil {
+					t.Fatal("expected error from failing teardown script")
+				}
+				if !kept {
+					t.Fatal("project was removed from config despite teardown failure — should be retryable")
+				}
+				return
+			}
+			// --skip-teardown (Delete Anyway) gets past the failing script and drops the project.
+			if err != nil {
+				t.Fatalf("unexpected error with --skip-teardown: %v", err)
+			}
+			if kept {
+				t.Fatal("project still in config after a delete with --skip-teardown")
+			}
+		})
 	}
 }
 

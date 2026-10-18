@@ -13,6 +13,7 @@ var (
 	deleteProjectConfirm  string
 	deleteProjectWithWR   bool
 	deleteProjectFromDisk bool
+	deleteProjectSkipTD   bool
 )
 
 // deleteProjectCmd is an internal, app-only command: it removes a project from the
@@ -44,6 +45,7 @@ var deleteProjectCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		svc.SkipTeardown = deleteProjectSkipTD
 		return runDeleteProject(svc, jsonOutput, deleteProjectConfirm, deleteProjectWithWR, deleteProjectFromDisk, args, os.Stdout, os.Stderr)
 	},
 }
@@ -84,5 +86,6 @@ func init() {
 	deleteProjectCmd.Flags().StringVar(&deleteProjectConfirm, "confirm", "", "Required in --json mode; must match the project path")
 	deleteProjectCmd.Flags().BoolVar(&deleteProjectWithWR, "with-workrooms", false, "Also tear down every workroom (worktree dirs + files; branches kept)")
 	deleteProjectCmd.Flags().BoolVar(&deleteProjectFromDisk, "from-disk", false, "App-only: runs teardowns, drops config, returns trash_paths; the caller (macOS app) moves those dirs to the Trash")
+	deleteProjectCmd.Flags().BoolVar(&deleteProjectSkipTD, "skip-teardown", false, "With --with-workrooms or --from-disk: run no workroom's teardown script (after one failed)")
 	rootCmd.AddCommand(deleteProjectCmd)
 }

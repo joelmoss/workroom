@@ -888,6 +888,43 @@ func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 	}
 }
 
+// SkipTeardown (Delete Anyway, after the script failed) deletes without running the script, and
+// does everything else a delete does: the workroom leaves config.
+func TestDeleteWithSkipTeardownRunsNoScript(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	workroomsDir := filepath.Join(dir, "workrooms")
+	wrPath := filepath.Join(workroomsDir, "foo")
+	os.MkdirAll(wrPath, 0o755)
+
+	scriptsDir := filepath.Join(dir, "scripts")
+	os.MkdirAll(scriptsDir, 0o755)
+	ran := filepath.Join(dir, "teardown-ran")
+	os.WriteFile(filepath.Join(scriptsDir, "workroom_teardown"),
+		[]byte("#!/usr/bin/env bash\ntouch "+ran+"\nexit 1\n"), 0o755)
+
+	git := &vcs.Git{Executor: &mockExecutor{output: gitWorktrees(dir, wrPath)}}
+	svc, _, _ := newTestService(t, git)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
+	svc.SkipTeardown = true
+
+	if _, err := svc.Delete(dir, "foo", "foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(ran); !os.IsNotExist(err) {
+		t.Fatal("the teardown script ran")
+	}
+	names, err := svc.Config.WorkroomNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("expected the workroom gone from config, got %v", names)
+	}
+}
+
 // In --json mode a ScriptLogWriter is supplied (the NDJSON stderr stream). The
 // teardown output must flow there live, and the returned error stays concise since
 // the output has already been streamed rather than being folded into the envelope.
