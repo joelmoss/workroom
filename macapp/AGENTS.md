@@ -28,7 +28,9 @@ make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_
                     # for a CI artifact's bundle run `sh macapp/Scripts/test-summary.sh <x.xcresult>` (sandbox off)
 make red-proof FILE=… PATTERN=… TEST=<Class>[/<method>]
                     # the way to prove a test goes red: breaks the line, runs the test, and
-                    # restores FILE however the run ends (Scripts/red-proof.sh); sandbox off
+                    # restores FILE however the run ends (Scripts/red-proof.sh); sandbox off.
+                    # Break only the effect the assertion checks, not its setup: a break that
+                    # also silences the setup goes red whether or not the assertion can fail
 make app-package-test # swift test in each macapp/Packages package — no app host, no GUI lock
 make app-uitest     # XCUITest — needs the GUI session to itself; queues behind other workrooms
 make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
