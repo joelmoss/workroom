@@ -359,6 +359,29 @@ jobs:
       - name: workroom-host image (arm64)
         run: vcs/scripts/ssh-fixture/host-image-test.sh
 
+  # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app host,
+  # so `make app-test` never sees them. Their own job, beside `app` rather than a step of it: the
+  # step took 8 of that job's 21 minutes (measured 2026-10-18) and needs nothing the app build
+  # makes. A cold SyntaxHighlighting run fetches its 34 tree-sitter grammar repos (~4 min) and
+  # compiles them (~1 min; its 1.5GB .build is too big to cache), and the target retries each
+  # package's resolve.
+  app-packages:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "27.1"
+
+      - name: Test (Swift packages)
+        run: make app-package-test
+
   app:
     runs-on: xcode-27
     timeout-minutes: 60
@@ -390,13 +413,6 @@ jobs:
 
       - name: Lint (swift-format --strict)
         run: make app-lint
-
-      # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app
-      # host, so `make app-test` never sees them. A cold SyntaxHighlighting run clones and compiles
-      # its 16 tree-sitter grammars (~1.5 min; its 1.5GB .build is too big to cache), and the target
-      # retries each package's resolve.
-      - name: Test (Swift packages)
-        run: make app-package-test
 
       # The app bundles `wr-agent`, and the bundled build links libghostty-vt so a reattaching
       # pane can be repainted — see macapp/Scripts/build-agent.sh. That needs a Zig toolchain on
