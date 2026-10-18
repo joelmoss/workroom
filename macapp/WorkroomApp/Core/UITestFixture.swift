@@ -534,6 +534,12 @@ enum UITestFixture {
     flag("WorkroomUITestUpdateDownloading")
   }
 
+  /// When set (`-WorkroomUITestUpdateChecking 1`), `Updater` holds a check in flight so the pill
+  /// renders its dimmed look for visual QA without a live Sparkle check.
+  static var updateChecking: Bool {
+    flag("WorkroomUITestUpdateChecking")
+  }
+
   /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService.checkOnLaunch` returns `whatsNewNotes`
   /// so the What's-New dialog renders for visual QA without hitting GitHub.
   static var forceWhatsNew: Bool {
