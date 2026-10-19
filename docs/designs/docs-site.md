@@ -1,7 +1,8 @@
 # Workroom documentation site
 
-Status: planned (2026-10-19). Every decision below was made by the owner in a grilling session
-(Q1–Q32). Nothing is built yet.
+Status: built (2026-10-20) in workroom PR #512 and Codaset PR #58, not yet merged or deployed.
+Every decision below was made by the owner in a grilling session (Q1–Q32); "As built" notes record
+where the build differs.
 
 Workroom has no user documentation beyond `README.md`. This plan builds a full docs site, served by
 the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this repo.
@@ -143,14 +144,16 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   - The same code runs in both, and only the path changes.
 - **D18. Live reload works in development only.** Codaset watches the docs folder, pushes a reload
   over Action Cable, and morphs the page with idiomorph so the scroll position stays put.
-  - **As built:** the page polls `/workroom/docs/digest` every second instead of using Action Cable,
-    then morphs with idiomorph. Codaset's cable connection rejects visitors who aren't signed in,
-    the docs are public, and opening the cable to anonymous connections would widen the sync
-    channels' surface for a development convenience.
+  - **As built:** no live reload. The owner dropped it as not needed (2026-10-20). Development reads
+    the folder fresh on every request, so refreshing the page shows a saved edit.
 - **D19. `make docs-preview` previews any worktree.** It runs Codaset's `bin/dev` with
   `WORKROOM_DOCS_PATH` set to the current worktree's `docs-site/`. It finds Codaset at
   `$CODASET_PATH`, which defaults to `~/dev/codaset`, and fails with a clear message if Codaset is
   missing. There is no standalone previewer in this repo, because a second renderer would drift.
+  - **As built:** it serves at `https://workroom-docs.localhost/workroom/docs`, with its own Caddy
+    name (`RAILS_CADDY_DEV_DOMAIN=workroom-docs`) and pidfile. With the defaults, `bin/dev` repoints
+    `codaset.localhost` to its new port, then exits because Codaset's own server holds the pidfile,
+    which leaves that server unreachable.
 - **D20. Testing has three layers.**
   - **(a) This repo's CI** runs a Go test over `docs-site/`. It checks that every link and `#anchor`
     resolves, that every page is in the nav and every nav entry has a page, that front matter is
@@ -227,7 +230,7 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   - **This repo:** this design doc first, then `docs-site/` with all content, `nav.yml`, the Go checks,
     the cobra doc generator, `make docs-preview`, the Help menu, the AGENTS.md rule and PR template,
     the dispatch workflow and the trimmed README.
-  - **Codaset:** the renderer, search, `.md` and `llms.txt`, live reload, the fixture and real-docs
+  - **Codaset:** the renderer, search, `.md` and `llms.txt`, the fixture and real-docs
     tests, the `pre_build_script`, and the CI `deploy` and `repository_dispatch` jobs.
 
   This repo's PR merges first, since it does nothing without a renderer. The Codaset PR merges and
@@ -235,6 +238,16 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   capture session.
 - **D31. This file is the record.** It is the first commit of this repo's PR, and both PRs are built
   from it.
+
+## Not done yet
+
+- **D14, the README trim**, waits for a follow-up PR once the Codaset side is live. Trimming it first
+  would point readers at a site that doesn't exist yet.
+- **D26, links from error messages to Troubleshooting**, is a follow-up.
+- **D15, screenshots**, need a capture session the owner approves.
+- **D5, checking every page in the app**: [docs-site-launch-checks.md](docs-site-launch-checks.md)
+  lists what to check, page by page, and the contradictions with the older docs found while
+  drafting.
 
 ## Not doing
 
@@ -257,6 +270,9 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   whether app env vars are present then. Hatchbox's docs don't say. D29 is designed to need neither,
   but check it on the first deploy.
 - Whether Hatchbox auto-deploy on push is on for Codaset today. It can't be seen from either repo.
+- Whether Hatchbox builds a new release when asked to deploy the commit it already runs. A
+  `workroom-docs` dispatch deploys Codaset's unchanged master, so if Hatchbox skips a deploy of the
+  same commit, docs-only changes never publish. Check it on the first docs-only change.
 - Codaset's CI tests the docs at `client_payload.sha`, but Hatchbox pulls master's `docs-site/` when it
   builds. If a second docs change merges in between, the deploy ships docs that only this repo's CI
   has checked. The window is a few minutes and the cost is one page not checked by Codaset's own
