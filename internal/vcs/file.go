@@ -14,10 +14,11 @@ import (
 var ErrLinkOutside = errors.New("the file is a symlink outside the repository")
 
 // FileAt is path's contents in commit rev ("" is HEAD) as a checkout of it writes them, with the
-// repository's filters and line-ending conversion applied, and whether rev has it (#363). A
-// symlink is followed within the commit, as running the checkout's file follows it; one that
-// leaves the repository is ErrLinkOutside. A rev that names no commit, as HEAD in a repository
-// with none, has no file.
+// repository's filters and line-ending conversion applied, and whether rev has it as a file (#363).
+// A symlink anywhere along the path (the file itself, or a linked directory such as scripts/) is
+// followed within the commit, as running the checkout's file follows it; one that leaves the
+// repository is ErrLinkOutside. A rev that names no commit, as HEAD in a repository with none, has
+// no file, and neither has a path that is a directory or a submodule.
 func FileAt(dir, rev, path string) ([]byte, bool, error) {
 	if rev == "" {
 		rev = "HEAD"
@@ -25,33 +26,63 @@ func FileAt(dir, rev, path string) ([]byte, bool, error) {
 	if _, err := gitOutput(dir, nil, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); err != nil {
 		return nil, false, nil
 	}
-	// A chain of links is followed only so far: git refuses a longer one on checkout too.
-	for range 8 {
-		listed, err := gitOutput(dir, nil, "ls-tree", "-z", rev, "--", path)
-		if err != nil {
-			return nil, false, err
+	// A chain of links is followed only so far, as the system follows one only so far.
+	for hops := 0; hops <= 8; {
+		parts := strings.Split(path, "/")
+		linked := false
+		for i := range parts {
+			prefix := strings.Join(parts[:i+1], "/")
+			mode, err := treeMode(dir, rev, prefix)
+			if err != nil {
+				return nil, false, err
+			}
+			switch {
+			case mode == "":
+				return nil, false, nil
+			case mode == "120000":
+				target, err := gitOutput(dir, nil, "cat-file", "blob", rev+":"+prefix)
+				if err != nil {
+					return nil, false, err
+				}
+				if pathpkg.IsAbs(string(target)) {
+					return nil, false, ErrLinkOutside
+				}
+				next := pathpkg.Join(append([]string{pathpkg.Dir(prefix), string(target)}, parts[i+1:]...)...)
+				if next == ".." || strings.HasPrefix(next, "../") {
+					return nil, false, ErrLinkOutside
+				}
+				path, linked = next, true
+				hops++
+			case i < len(parts)-1 && mode != "040000":
+				return nil, false, nil
+			case i == len(parts)-1 && mode != "100644" && mode != "100755":
+				return nil, false, nil
+			}
+			if linked {
+				break
+			}
 		}
-		if len(bytes.TrimSpace(listed)) == 0 {
-			return nil, false, nil
-		}
-		if !bytes.HasPrefix(listed, []byte("120000 ")) {
+		if !linked {
 			out, err := gitOutput(dir, nil, "cat-file", "--filters", rev+":"+path)
 			if err != nil {
 				return nil, false, err
 			}
 			return out, true, nil
 		}
-		target, err := gitOutput(dir, nil, "cat-file", "blob", rev+":"+path)
-		if err != nil {
-			return nil, false, err
-		}
-		next := pathpkg.Join(pathpkg.Dir(path), string(target))
-		if pathpkg.IsAbs(string(target)) || next == ".." || strings.HasPrefix(next, "../") {
-			return nil, false, ErrLinkOutside
-		}
-		path = next
 	}
 	return nil, false, fmt.Errorf("%s: too many levels of symbolic links", path)
+}
+
+// treeMode is the mode of path in commit rev, such as 100755, 120000 (a symlink) or 040000 (a
+// directory), or "" when rev has nothing there.
+func treeMode(dir, rev, path string) (string, error) {
+	// Without a trailing slash, a directory is listed as its own entry, not its contents.
+	listed, err := gitOutput(dir, nil, "ls-tree", "-z", rev, "--", path)
+	if err != nil {
+		return "", err
+	}
+	mode, _, _ := strings.Cut(string(bytes.TrimSpace(listed)), " ")
+	return mode, nil
 }
 
 // Ignored reports whether git ignores path, relative to dir, in dir's checkout: an untracked file

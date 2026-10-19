@@ -321,7 +321,7 @@ enum RemoteProvisioning {
           return .absent
         }
         // Judged as read here, and those same bytes are what goes up.
-        let text = try Data(contentsOf: rootScript)
+        let text = try readRootScript(rootScript)
         let judged = try await judge(text)
         guard judged.trusted else { return .notTrusted(judged) }
         scriptPath = path + "/.git/workroom/" + script.fileName
@@ -385,7 +385,12 @@ enum RemoteProvisioning {
     _ path: String, on host: HostID, driver: any HostDriver
   ) async throws -> Data {
     let bytes = DataBox()
-    let stream = try await driver.exec("cat \(PosixShell.quoted(path))", on: host)
+    // A regular file only, and no more of it than a script may be: one that links to /dev/zero
+    // would otherwise stream into this app's memory without end.
+    let q = PosixShell.quoted(path)
+    let stream = try await driver.exec(
+      "[ -f \(q) ] || { echo 'not a regular file' >&2; exit 3; }; head -c \(maxScriptBytes + 1) \(q)",
+      on: host)
     let result: (status: Int32, output: String)
     do {
       result = try await stream.communicate(
@@ -397,7 +402,29 @@ enum RemoteProvisioning {
     guard result.status == 0 else {
       throw HostDriverError.provisioning("reading \(path) on the host failed: \(result.output)")
     }
+    guard bytes.data.count <= maxScriptBytes else {
+      throw HostDriverError.provisioning(
+        "\(path) on the host is larger than \(maxScriptBytes) bytes")
+    }
     return bytes.data
+  }
+
+  /// The largest script judged, as the CLI's `MaxScriptBytes`: a script is a short program.
+  static let maxScriptBytes = 1 << 20
+
+  /// The root's copy of a script, on this Mac: a regular file, following a link, no larger than a
+  /// script may be, so a link to a device is never read without end.
+  static func readRootScript(_ url: URL) throws -> Data {
+    let values = try url.resolvingSymlinksInPath().resourceValues(forKeys: [
+      .isRegularFileKey, .fileSizeKey,
+    ])
+    guard values.isRegularFile == true else {
+      throw HostDriverError.provisioning("\(url.path) is not a regular file")
+    }
+    guard (values.fileSize ?? 0) <= maxScriptBytes else {
+      throw HostDriverError.provisioning("\(url.path) is larger than \(maxScriptBytes) bytes")
+    }
+    return try Data(contentsOf: url)
   }
 
   /// Bytes a stream's output callback collects.

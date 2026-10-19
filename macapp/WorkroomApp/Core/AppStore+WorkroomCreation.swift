@@ -210,10 +210,7 @@ extension AppStore {
       return
     }
     do {
-      // shortcut: the CLI hands the bytes over as JSON text, so a script that is not UTF-8 comes
-      // back changed and is refused again; approve such a script with `workroom trust`.
-      try await cli.trustScript(
-        script.name, text: Data(script.text.utf8), project: run.project.path)
+      try await cli.trustScript(script.name, text: script.approvalBytes, project: run.project.path)
     } catch {
       failCreationRun(run, .failedBeforeWorkroom(message: errorText(error)))
       return

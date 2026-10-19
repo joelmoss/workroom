@@ -609,6 +609,21 @@ final class RemoteScriptTests: XCTestCase {
       "the root's copy went up")
   }
 
+  /// Value: protects=a checkout script that is a link to a device (/dev/zero) fails without being
+  /// read into memory, and is never judged or run; fails_when=the host's copy is read without
+  /// bound; no_claim=a large regular file (bounded the same way, not exercised)
+  func testADeviceScriptOnTheHostFailsUnread() async throws {
+    try FileManager.default.createSymbolicLink(
+      atPath: checkout + "/scripts/workroom_setup", withDestinationPath: "/dev/zero")
+    let mac = Approving("#!/bin/sh\n")
+
+    let result = await run(judge: mac.judge)
+
+    guard case .failed(let why) = result else { return XCTFail("\(result)") }
+    XCTAssertTrue(why.contains("not a regular file"), why)
+    XCTAssertEqual(mac.judged, [], "a device was judged")
+  }
+
   /// Value: protects=a judge that can't answer (the CLI failing) fails the script rather than
   /// letting it run; fails_when=an error is taken for approval; no_claim=none
   func testAJudgeThatFailsStopsTheScript() async throws {

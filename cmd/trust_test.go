@@ -309,6 +309,72 @@ func TestTrustStatusJudgesTheBaseItIsGiven(t *testing.T) {
 	}
 }
 
+// Value: protects=a gitignored root setup script that is a symlink is not exempt, since what it
+// points to may be tracked and changed by a pull; fails_when=the exemption follows the link and a
+// pulled change runs unapproved; why_new=found by Codex's adversarial review; seam=none;
+// no_claim=none beyond protects
+func TestAnIgnoredSymlinkedRootScriptIsNotExempt(t *testing.T) {
+	home := contractHomeDir(t)
+	project := gitRepo(t, filepath.Join(home, "src", "app"))
+	commitScript(t, project, "shared.sh", "echo shared\n")
+	if err := os.Symlink("shared.sh", filepath.Join(project, "scripts", "workroom_setup")); err != nil {
+		t.Fatal(err)
+	}
+	writeRootFile(t, project, ".gitignore", "scripts/workroom_setup\n")
+
+	r := runCLI(t, "create", "--json", "--no-editor", "--project", project)
+	if env := decodeUntrusted(t, r.stdout); r.code != 3 || env.Script.Origin != "root" {
+		t.Fatalf("exit %d %s, want the linked root copy refused", r.code, r.stdout)
+	}
+}
+
+// Value: protects=a script file that is not a regular file (a link to /dev/zero) is refused
+// without being read; fails_when=the judge reads it without end; why_new=found by Codex's review;
+// seam=none; no_claim=the app's bounded read on a host (RemoteScriptTests)
+func TestADeviceScriptIsRefusedUnread(t *testing.T) {
+	home := contractHomeDir(t)
+	project := gitRepo(t, filepath.Join(home, "src", "app"))
+	if err := os.MkdirAll(filepath.Join(project, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/dev/zero", filepath.Join(project, "scripts", "workroom_setup")); err != nil {
+		t.Fatal(err)
+	}
+	r := runCLI(t, "create", "--json", "--no-editor", "--project", project)
+	if r.code != 3 || !strings.Contains(string(r.stdout), "not a regular file") {
+		t.Fatalf("exit %d %s", r.code, r.stdout)
+	}
+}
+
+// Value: protects=bytes that change while the terminal prompt is open are not run on the strength
+// of the approval given for what was shown; fails_when=the file is executed by path after
+// recording the digest of the earlier bytes; why_new=found by Codex's adversarial review;
+// seam=none; no_claim=a change in the instant between the last hash and exec
+func TestAScriptChangedWhileThePromptIsOpenIsRefused(t *testing.T) {
+	home := contractHomeDir(t)
+	project := projectWithWorkroom(t, home)
+	marker := filepath.Join(home, "ran")
+	writeScriptFile(t, project, "workroom_teardown", "#!/bin/sh\necho shown\n")
+	saved, savedTerm := askConfirm, stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	askConfirm = func(string) (bool, error) {
+		writeScriptFile(t, project, "workroom_teardown", "#!/bin/sh\ntouch "+marker+"\n")
+		return true, nil
+	}
+	t.Cleanup(func() { askConfirm, stdinIsTerminal = saved, savedTerm })
+
+	r := runCLI(t, "delete", contractName, "--project", project, "--confirm", contractName)
+	if r.code != 3 {
+		t.Fatalf("exit %d %s %s", r.code, r.stdout, r.stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the replaced script ran")
+	}
+	if _, err := os.Stat(filepath.Join(home, "workrooms", contractName)); err != nil {
+		t.Fatalf("the workroom went: %v", err)
+	}
+}
+
 // A root copy git ignores runs without approval and reports exempt; an untracked one that is not
 // ignored needs approval.
 func TestAGitignoredRootScriptIsExempt(t *testing.T) {

@@ -2575,8 +2575,7 @@ final class AppStore: ObservableObject {
     errorApproval = ErrorAction(label: "Approve and Run") { [weak self] in
       Task {
         do {
-          // shortcut: as `approveSetupScript`, a script that is not UTF-8 is refused again.
-          try await cli.trustScript(script.name, text: Data(script.text.utf8), project: path)
+          try await cli.trustScript(script.name, text: script.approvalBytes, project: path)
           deleteAgain(false)
         } catch {
           self?.present(error)
