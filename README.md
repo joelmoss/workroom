@@ -546,7 +546,9 @@ workroom trust status   # exit 0 when every script is approved or ignored, 1 whe
 workroom untrust        # forget this project's approvals
 ```
 
-`trust` and `trust status` fetch and resolve the base branch as a create does, so they judge the
+In a terminal, `trust` shows each script and asks. Without one (in a script, or with `--json`) it
+approves every script it finds without showing it, so read them first. `trust` and `trust status`
+fetch and resolve the base branch as a create does, so they judge the
 setup script the next create would run. Approvals are kept per project, as a SHA-256 for each script,
 in this Mac's config (`trusted_scripts`); they never leave it. Removing a project from Workroom
 forgets them.
