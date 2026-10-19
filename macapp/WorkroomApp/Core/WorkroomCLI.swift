@@ -11,6 +11,8 @@ enum WorkroomCLIError: LocalizedError {
   case cli(kind: String, message: String)
   /// Non-zero exit without a decodable JSON error envelope.
   case nonzero(code: Int32, stderr: String)
+  /// `ScriptNotTrusted`: the CLI refused to run `script`, which this Mac has not approved (#363).
+  case scriptNotTrusted(ScriptTrust, message: String)
 
   var errorDescription: String? {
     switch self {
@@ -20,7 +22,7 @@ enum WorkroomCLIError: LocalizedError {
       return "The workroom command timed out."
     case .decodeFailed(let raw):
       return "Could not parse the workroom response: \(raw.prefix(200))"
-    case .cli(_, let message):
+    case .cli(_, let message), .scriptNotTrusted(_, let message):
       return message
     case .nonzero(let code, let stderr):
       return stderr.isEmpty ? "workroom exited with code \(code)." : stderr
@@ -29,8 +31,40 @@ enum WorkroomCLIError: LocalizedError {
 
   /// The stable machine `error.kind` when available (for UI branching).
   var kind: String? {
-    if case .cli(let kind, _) = self { return kind }
+    switch self {
+    case .cli(let kind, _): kind
+    case .scriptNotTrusted: "ScriptNotTrusted"
+    default: nil
+    }
+  }
+
+  /// The error an error envelope carries, or nil for a success.
+  init?(envelope: Envelope) {
+    guard let body = envelope.error else { return nil }
+    if body.kind == "ScriptNotTrusted", let script = envelope.script {
+      self = .scriptNotTrusted(script, message: body.message)
+    } else {
+      self = .cli(kind: body.kind, message: body.message)
+    }
+  }
+
+  /// The refused script, for a `ScriptNotTrusted` error.
+  static func untrustedScript(_ error: any Error) -> ScriptTrust? {
+    if case WorkroomCLIError.scriptNotTrusted(let script, _) = error { return script }
     return nil
+  }
+}
+
+extension ScriptTrust {
+  /// Where its bytes came from, for a person, as the CLI words it (`Script.OriginLabel`). The app
+  /// hands over only a remote workroom's copies.
+  var originLabel: String {
+    switch origin {
+    case "base": "from the base commit"
+    case "workroom": "in the workroom"
+    case "stdin": "for the remote workroom"
+    default: "in the project's root"
+    }
   }
 }
 
@@ -162,6 +196,14 @@ protocol WorkroomCLIProtocol: Sendable {
   func claimProvisioned(from shared: String, provisioner: String) async throws
   /// Writes the project's included files (#367) to a tar at `output`, for a remote workroom's host.
   func includeArchive(project: String, output: String) async throws -> IncludeArchive
+  /// The scripts `project` would run next, judged against this Mac's approvals (#363), at the base
+  /// a create fetches.
+  func trustStatus(project: String) async throws -> TrustStatus
+  /// Judges `text` as `project`'s script `name` (`workroom_setup`, `workroom_teardown`): a host's
+  /// copy, which the CLI can't read itself.
+  func judgeScript(_ name: String, text: Data, project: String) async throws -> ScriptTrust
+  /// Approves `text` as `project`'s script `name`: the bytes the user was shown.
+  func trustScript(_ name: String, text: Data, project: String) async throws
 }
 
 /// Fakes that never meet a remote workroom need not implement its two calls.
@@ -214,6 +256,18 @@ extension WorkroomCLIProtocol {
 
   func setBaseBranch(project: String, branch: String?) async throws {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "setBaseBranch is not faked")
+  }
+
+  func trustStatus(project: String) async throws -> TrustStatus {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "trustStatus is not faked")
+  }
+
+  func judgeScript(_ name: String, text: Data, project: String) async throws -> ScriptTrust {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "judgeScript is not faked")
+  }
+
+  func trustScript(_ name: String, text: Data, project: String) async throws {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "trustScript is not faked")
   }
 }
 
@@ -304,6 +358,42 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     let result = try await run(
       ["include-archive", "--json", "--project", project, "--output", output], timeout: 600)
     return try decode(IncludeArchive.self, from: result)
+  }
+
+  /// `trust status`, which fetches the project's base as a create does, so it gets a create's
+  /// environment and bound.
+  func trustStatus(project: String) async throws -> TrustStatus {
+    await ShellEnvironment.refresh()
+    let result = try await run(
+      ["trust", "status", "--json", "--project", project], timeout: 120, userInitiated: true)
+    return try decodeTrust(TrustStatus.self, from: result)
+  }
+
+  func judgeScript(_ name: String, text: Data, project: String) async throws -> ScriptTrust {
+    let result = try await run(
+      ["trust", "status", "--json", "--project", project, "--stdin", name], timeout: 15,
+      stdin: text)
+    guard let script = try decodeTrust(TrustStatus.self, from: result).scripts.first else {
+      throw WorkroomCLIError.decodeFailed(raw: String(decoding: result.stdout, as: UTF8.self))
+    }
+    return script
+  }
+
+  func trustScript(_ name: String, text: Data, project: String) async throws {
+    try throwIfError(
+      try await run(
+        ["trust", "--json", "--project", project, "--stdin", name], timeout: 15, stdin: text))
+  }
+
+  /// `trust status`'s answer: exit 1 is "not every script is approved", with the same payload as
+  /// exit 0's.
+  private func decodeTrust<T: Decodable>(_ type: T.Type, from result: CLIResult) throws -> T {
+    if result.exitCode == 1, !result.timedOut, !result.signaled,
+      let answer = try? JSONDecoder().decode(type, from: result.stdout)
+    {
+      return answer
+    }
+    return try decode(type, from: result)
   }
 
   /// Registers a project. With `create`, the CLI creates and git-initializes the
@@ -460,9 +550,9 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     if result.timedOut || result.signaled { throw WorkroomCLIError.timedOut }
     if result.exitCode == 0 { return }
     if let env = try? JSONDecoder().decode(Envelope.self, from: result.stdout),
-      let body = env.error
+      let error = WorkroomCLIError(envelope: env)
     {
-      throw WorkroomCLIError.cli(kind: body.kind, message: body.message)
+      throw error
     }
     throw WorkroomCLIError.nonzero(code: result.exitCode, stderr: result.stderr)
   }
@@ -478,8 +568,11 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   /// setup/teardown scripts get the full probed environment, so those scripts see the shell they
   /// were written against. Everything else (`list`, `add-project`) takes PATH only — a cheap,
   /// frequent read has no reason to carry the user's whole environment.
+  ///
+  /// `stdin` is written to the child's input and closed; without it the child reads the null
+  /// device, never the app's own stdin.
   private func run(
-    _ args: [String], timeout: TimeInterval, userInitiated: Bool = false,
+    _ args: [String], timeout: TimeInterval, userInitiated: Bool = false, stdin: Data? = nil,
     onEvent: ((StreamEvent) -> Void)? = nil
   ) async throws -> CLIResult {
     let url = try Self.bundledBinaryURL()
@@ -505,6 +598,8 @@ final class WorkroomCLI: WorkroomCLIProtocol {
       let errPipe = Pipe()
       proc.standardOutput = outPipe
       proc.standardError = errPipe
+      let inPipe: Pipe? = stdin == nil ? nil : Pipe()
+      proc.standardInput = inPipe ?? FileHandle.nullDevice
 
       let state = RunState()
       let collector = StderrCollector(onEvent: onEvent)
@@ -558,8 +653,18 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
       do {
         try proc.run()
+        if let inPipe, let stdin {
+          DispatchQueue.global().async {
+            let handle = inPipe.fileHandleForWriting
+            // A child gone before it reads would otherwise raise SIGPIPE, which ends the app.
+            _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+            try? handle.write(contentsOf: stdin)
+            try? handle.close()
+          }
+        }
       } catch {
         errPipe.fileHandleForReading.readabilityHandler = nil
+        try? inPipe?.fileHandleForWriting.close()
         continuation.resume(throwing: error)
       }
     }

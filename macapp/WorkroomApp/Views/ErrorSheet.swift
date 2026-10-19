@@ -10,6 +10,9 @@ struct ErrorSheet: View {
   var log: String? = nil
   let details: String?
   var action: ErrorAction? = nil
+  /// Approve and Run (#363): `log` is then the script to read first, shown from its top, and OK
+  /// reads Cancel. Never the default button: it runs code.
+  var approval: ErrorAction? = nil
   let onDismiss: () -> Void
 
   @State private var showDetails = false
@@ -37,7 +40,7 @@ struct ErrorSheet: View {
       if let log {
         // Pinned to the bottom: a script's last lines are usually where it says what went wrong.
         textBox(log, maxHeight: 240, id: "error.log")
-          .defaultScrollAnchor(.bottom)
+          .defaultScrollAnchor(approval == nil ? .bottom : .top)
       }
       if let details {
         DisclosureGroup(isExpanded: $showDetails) {
@@ -68,7 +71,14 @@ struct ErrorSheet: View {
           }
           .accessibilityIdentifier("error.action")
         }
-        Button("OK") { onDismiss() }
+        if let approval {
+          Button(approval.label) {
+            onDismiss()
+            approval.run()
+          }
+          .accessibilityIdentifier("error.approve")
+        }
+        Button(approval == nil ? "OK" : "Cancel") { onDismiss() }
           .keyboardShortcut(.defaultAction)
           .accessibilityIdentifier("error.ok")
       }

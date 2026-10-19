@@ -78,6 +78,7 @@ final class ModalState {
       errorDetails = nil
       errorLog = nil
       errorAction = nil
+      errorApproval = nil
     }
   }
   /// Title for the error alert. Nil falls back to the generic title; specific
@@ -92,6 +93,9 @@ final class ModalState {
   /// A way past the error the sheet offers beside OK (Delete Anyway, after a failed teardown). Set
   /// after the message, cleared with it.
   var errorAction: ErrorAction?
+  /// Approve and Run, for a script this Mac has not approved, whose text is `errorLog` (#363). With
+  /// it the sheet's OK reads Cancel. Set after the message, cleared with it.
+  var errorApproval: ErrorAction?
 
   /// Dismisses the error sheet.
   func clearError() {

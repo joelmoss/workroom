@@ -446,7 +446,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let result = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
       agentBinary: environment.agentBinary, on: instance.host, driver: driver,
-      onLine: { lines.add($0) })
+      judge: RemoteScriptTests.approveAll, onLine: { lines.add($0) })
     XCTAssertEqual(result, .passed)
     let want = try String(
       contentsOf: contract.appendingPathComponent("remote.txt"), encoding: .utf8
@@ -458,7 +458,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let teardown = await RemoteProvisioning.runScript(
       .teardown, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
       agentBinary: environment.agentBinary, on: instance.host, driver: driver,
-      onLine: { profile.add($0) })
+      judge: RemoteScriptTests.approveAll, onLine: { profile.add($0) })
     XCTAssertEqual(teardown, .passed)
     XCTAssertEqual(profile.all, ["profile=yes"])
 
@@ -466,7 +466,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     _ = try await onHost(driver, instance.host, "chmod 644 \(setup)")
     let unstarted = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
-      agentBinary: environment.agentBinary, on: instance.host, driver: driver, onLine: { _ in })
+      agentBinary: environment.agentBinary, on: instance.host, driver: driver,
+      judge: RemoteScriptTests.approveAll, onLine: { _ in })
     XCTAssertEqual(unstarted, .failed("setup script failed: \(setup) could not be started"))
 
     // The wall clock ends the whole tree, a grandchild that left its process group included.

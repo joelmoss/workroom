@@ -1,5 +1,6 @@
 import AgentConnection
 import HostDrivers
+import WorkroomDomain
 import WorkroomVCS
 import XCTest
 
@@ -543,12 +544,81 @@ final class RemoteScriptTests: XCTestCase {
 
   private func run(
     _ script: RemoteProvisioning.Script = .setup, driver: ShellHost = ShellHost(),
-    lines: Lines = Lines()
+    lines: Lines = Lines(), judge: @escaping RemoteProvisioning.ScriptJudge = approveAll
   ) async -> RemoteProvisioning.ScriptRun {
     await RemoteProvisioning.runScript(
       script, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
-      agentBinary: agent, on: .local, driver: driver, onStart: { lines.start() },
+      agentBinary: agent, on: .local, driver: driver, judge: judge, onStart: { lines.start() },
       onLine: { lines.add($0) })
+  }
+
+  /// A Mac that has approved every script.
+  static let approveAll: RemoteProvisioning.ScriptJudge = { text in judged(text, trusted: true) }
+
+  static func judged(_ text: Data, trusted: Bool) -> ScriptTrust {
+    ScriptTrust(
+      name: "workroom_setup", origin: "stdin", sha256: "",
+      text: String(decoding: text, as: UTF8.self),
+      trusted: trusted, exempt: false)
+  }
+
+  /// A Mac that has approved `approved` alone, recording each judgement.
+  private final class Approving: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [Data] = []
+    let approved: Data
+    init(_ approved: String) { self.approved = Data(approved.utf8) }
+    var judged: [Data] { lock.withLock { seen } }
+    var judge: RemoteProvisioning.ScriptJudge {
+      { text in
+        self.lock.withLock { self.seen.append(text) }
+        return RemoteScriptTests.judged(text, trusted: text == self.approved)
+      }
+    }
+  }
+
+  /// Value: protects=the checkout's copy is judged by its bytes on the host and, when this Mac has
+  /// not approved them, never runs (#363): bytes that differ from the approved ones at the moment
+  /// they would run are refused; fails_when=the script runs unjudged, or the bytes judged are not
+  /// the host's; no_claim=the CLI's judgement itself (the Go tests)
+  func testAnUnapprovedCheckoutScriptNeverRuns() async throws {
+    let marker = scratch.appendingPathComponent("ran").path
+    let body = "#!/bin/sh\ntouch \(marker)\n"
+    try write(body, to: "checkout/scripts/workroom_setup")
+    let mac = Approving("#!/bin/sh\necho the approved one\n")
+
+    let result = await run(judge: mac.judge)
+
+    XCTAssertEqual(result, .notTrusted(Self.judged(Data(body.utf8), trusted: false)))
+    XCTAssertEqual(mac.judged, [Data(body.utf8)])
+    XCTAssertFalse(FileManager.default.fileExists(atPath: marker), "the script ran")
+  }
+
+  /// Value: protects=the root's copy is judged before it is copied up, and an unapproved one is
+  /// neither copied nor run; fails_when=it is uploaded or run first; no_claim=the approved copy's
+  /// run (testTheRootsCopyRunsWhenTheCheckoutHasNone)
+  func testAnUnapprovedRootScriptIsNeitherCopiedNorRun() async throws {
+    try write("#!/bin/sh\nexit 0\n", to: "root/scripts/workroom_setup")
+    let mac = Approving("#!/bin/sh\necho the approved one\n")
+
+    let result = await run(judge: mac.judge)
+
+    guard case .notTrusted = result else { return XCTFail("\(result)") }
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: checkout + "/.git/workroom/workroom_setup"),
+      "the root's copy went up")
+  }
+
+  /// Value: protects=a judge that can't answer (the CLI failing) fails the script rather than
+  /// letting it run; fails_when=an error is taken for approval; no_claim=none
+  func testAJudgeThatFailsStopsTheScript() async throws {
+    let marker = scratch.appendingPathComponent("ran").path
+    try write("#!/bin/sh\ntouch \(marker)\n", to: "checkout/scripts/workroom_setup")
+
+    let result = await run(judge: { _ in throw WorkroomCLIError.timedOut })
+
+    guard case .failed = result else { return XCTFail("\(result)") }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: marker), "the script ran")
   }
 
   /// Value: protects=the remote contract a script sees (cwd, WORKROOM_* set as the app sets them,
@@ -655,7 +725,8 @@ final class RemoteScriptTests: XCTestCase {
       to: "checkout/scripts/workroom_setup")
     let result = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
-      agentBinary: agent, on: .local, driver: ShellHost(), onLine: { _ in }, timeout: 1, slack: 2)
+      agentBinary: agent, on: .local, driver: ShellHost(), judge: Self.approveAll,
+      onLine: { _ in }, timeout: 1, slack: 2)
     let path = "\(checkout)/scripts/workroom_setup"
     XCTAssertEqual(
       result,

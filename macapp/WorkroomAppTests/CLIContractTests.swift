@@ -95,6 +95,26 @@ final class CLIContractTests: XCTestCase {
     XCTAssertNil(list.projects[1].baseBranch)
   }
 
+  /// #363: a create refused for its setup script carries the script, which the app shows before
+  /// approving it; trust status lists each script the same way.
+  func testScriptNotTrusted() throws {
+    try assertError("create-script-not-trusted.json", kind: "ScriptNotTrusted")
+    let error = try XCTUnwrap(
+      WorkroomCLIError(envelope: decode(Envelope.self, "create-script-not-trusted.json")))
+    let script = try XCTUnwrap(WorkroomCLIError.untrustedScript(error))
+    XCTAssertEqual(script.name, "workroom_setup")
+    XCTAssertEqual(script.origin, "root")
+    XCTAssertEqual(script.text, "#!/bin/sh\necho installing\n")
+    XCTAssertEqual(script.sha256.count, 64)
+    XCTAssertFalse(script.trusted)
+    XCTAssertFalse(script.exempt)
+
+    try assertSuccess("trust-status.json")
+    let status = try decode(TrustStatus.self, "trust-status.json")
+    XCTAssertFalse(status.trusted)
+    XCTAssertEqual(status.scripts, [script])
+  }
+
   func testCreate() throws {
     try assertSuccess("create.json")
     let created = try decode(CreateResponse.self, "create.json")
