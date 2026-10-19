@@ -64,7 +64,9 @@ extension HostServiceConnection {
     throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
   }
 
-  func ping() async throws {}
+  func ping() async throws {
+    throw HostConnectionError.serviceUnavailable("Host cannot be pinged.")
+  }
 
   func layouts() throws -> AgentLayoutService {
     throw VCSError.backendVersion("Host has no layout service.")

@@ -197,7 +197,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     agents.append(agent)
     let connection = try await AgentVCSConnection.connect(
       host: .local, socketPath: agent.socketPath)
-    try await withTimeout(seconds: 2) { try await connection.ping() }
+    try await withTimeout(seconds: RemoteHosts.answerDeadline) { try await connection.ping() }
     await connection.close()
   }
 
@@ -216,7 +216,9 @@ final class AgentVCSIntegrationTests: XCTestCase {
       XCTFail("a host that sent nothing answered the ping")
     } catch is VCSTimeoutError {}
 
-    let ping = Task { try await withTimeout(seconds: 2) { try await connection.ping() } }
+    let ping = Task {
+      try await withTimeout(seconds: RemoteHosts.answerDeadline) { try await connection.ping() }
+    }
     // Control on stream 0 is never a reply: it stands in for bytes of another reply arriving.
     for _ in 0..<10 {
       fake.push(service: 0, stream: 0, payload: Data([0]))
