@@ -135,7 +135,7 @@ final class SwitcherThemeSweepTests: XCTestCase {
 
   /// Program status (#358): the waiting hand and the finished check each clear the WCAG non-text
   /// floor on every surface they sit on — a sidebar row, the rail and an idle tab (`panel`), a
-  /// selected sidebar row, and the active tab (`bg`).
+  /// selected sidebar row, a selected Changes or History row, and the active tab (`bg`).
   ///
   /// The stale mark is a clock in `fg` on its own `panel` disk (`ProgramStatusGlyph`), so it is
   /// measured against that disk. The plan's first choice, a hairline ring in `fgMuted`, failed this
@@ -148,8 +148,9 @@ final class SwitcherThemeSweepTests: XCTestCase {
     for theme in try bundledThemes() {
       let tokens = ThemeTokens(preview: theme)
       let surfaces = zip(
-        ["row/rail/tab", "selected row", "active tab"],
-        ThemeTokens.statusGrounds(bg: tokens.nsBg, panel: tokens.nsPanel, fg: tokens.nsFg))
+        ["row/rail/tab", "selected sidebar row", "selected Changes row", "active tab"],
+        ThemeTokens.statusGrounds(
+          bg: tokens.nsBg, panel: tokens.nsPanel, fg: tokens.nsFg, accent: tokens.nsAccent))
       let roles = [
         ("warning", tokens.nsWarning), ("success", tokens.nsSuccess),
         ("failure", tokens.nsFailure), ("conflict", tokens.nsConflict),
