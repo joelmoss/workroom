@@ -1315,6 +1315,17 @@ struct WorkroomCommands: Commands {
       }
     }
 
+    // Help menu: the docs site, and the shortcuts sheet again where people look for help. Replaces
+    // macOS's default "Workroom Help", which needs a Help Book the app doesn't ship.
+    CommandGroup(replacing: .help) {
+      Button("Workroom Documentation") {
+        NSWorkspace.shared.open(URL(string: "https://codaset.dev/workroom/docs")!)
+      }
+      Button("Keyboard Shortcuts…") {
+        NotificationCenter.default.post(name: .showKeyboardShortcuts, object: nil)
+      }
+    }
+
     // Sit the quit-confirmation toggle just above Quit (default on): `.appVisibility` is the
     // Hide/Show All group, the last thing before Quit, so `after:` lands between it and Quit. A
     // divider separates it from that group; mirrored by the Settings checkbox.
