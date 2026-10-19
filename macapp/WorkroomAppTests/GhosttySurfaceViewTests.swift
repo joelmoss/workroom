@@ -416,6 +416,23 @@ final class RemotePaneReconnectTests: XCTestCase {
     XCTAssertNil(view.pendingReconnect)
   }
 
+  // Value: protects=a pane restored at launch whose host was unreachable keeping the retry
+  // notice's promise when a Ctrl-C kills one of its retries; fails_when=only a link that was up in
+  // this run keeps trying again; why_new=a #507 review found restored sessions' retries left out;
+  // seam=none
+  /// A pane restored at launch is a session the host already has, though its link was never up in
+  /// this run: a Ctrl-C that kills one of the app's retries leaves it trying, as the notice on
+  /// screen promised.
+  func testARestoredPanesRetryKilledBeforeSshConnectsKeepsTrying() throws {
+    let view = try remotePane(log: "", status: "255\n")
+    view.persistentSessionIsRestored = true  // as launch restore marks it
+    view.reattachPersistentSession()  // its first attach, which just failed, began now
+    view.handleChildExited(exitCode: 0)
+    try XCTUnwrap(view.pendingReconnect).perform()
+    try exitBeforeSshRecords(view)
+    XCTAssertNotNil(view.pendingReconnect, "a restored pane's killed retry was left stopped")
+  }
+
   // Value: protects=a remote pane reattaching after its host restarts; fails_when=the reconnect is
   // gated on the pane's exit status again, which macOS `login` always reports as 0;
   // why_new=the old test passed 255 straight in, which no real pane ever sees (#392); seam=none
@@ -463,11 +480,13 @@ final class RemotePaneReconnectTests: XCTestCase {
   }
 
   // Value: protects=a new remote pane opened offline (or before its agent is installed) getting a
-  // working shell once its host answers; fails_when=every reconnect is marked restored again, so
-  // its retry carries `--no-create` and the never-created session reads as ended; why_new=the
-  // reconnect only started firing with #392, which exposed it (Codex review); seam=none
+  // working shell once its host answers, and a Ctrl-C still stopping its retries; fails_when=every
+  // reconnect is marked restored again, so its retry carries `--no-create` and the never-created
+  // session reads as ended, or a new pane's killed retry keeps trying too (#507);
+  // why_new=the reconnect only started firing with #392, which exposed it (Codex review); seam=none
   /// A pane whose first attach never came up retries as a fresh attach: it has no session on the
   /// host yet, and a restored attach (`--no-create`) would show it ended instead of creating it.
+  /// Its link was never up, so a Ctrl-C that kills the retry stops it, as it stops any ssh.
   func testAPaneThatNeverConnectedRetriesAsAFreshAttach() throws {
     let view = try remotePane(log: "", status: "255\n")
     view.reattachPersistentSession()  // the attach that just failed began now
@@ -476,6 +495,8 @@ final class RemotePaneReconnectTests: XCTestCase {
     spin(1.5)
     XCTAssertNil(view.pendingReconnect, "the reconnect did not run")
     XCTAssertFalse(view.persistentSessionIsRestored)
+    try exitBeforeSshRecords(view)
+    XCTAssertNil(view.pendingReconnect, "a Ctrl-C did not stop a link that was never up")
   }
 
   func testClosingThePaneCancelsAReconnectThatIsWaiting() throws {
