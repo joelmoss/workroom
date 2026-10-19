@@ -168,6 +168,12 @@ final class CreationRun: ObservableObject, Identifiable {
 
   var isRunning: Bool { outcome == .running }
 
+  /// Stopped on its setup script, waiting for Approve (#363): not running, and not failed either.
+  var awaitsApproval: Bool {
+    if case .scriptNotTrusted = outcome { return true }
+    return false
+  }
+
   /// The step running now, or waiting on the user.
   var runningStep: CreationStep? {
     steps.first { $0.state == .running || $0.state == .waitingForUser }

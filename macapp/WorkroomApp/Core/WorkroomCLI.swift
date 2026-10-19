@@ -66,6 +66,26 @@ extension ScriptTrust {
     default: "in the project's root"
     }
   }
+
+  /// `text` as a person must read it before approving it, as the CLI's prompt shows it
+  /// (`visibleText`): a control or invisible character (an escape, a carriage return, a bidi
+  /// override, a zero-width space) is written out as `\u{…}`, so the script can't hide or reorder
+  /// what it runs. Newlines and tabs stay.
+  var visibleText: String {
+    var shown = ""
+    for scalar in text.unicodeScalars {
+      if scalar == "\n" || scalar == "\t" {
+        shown.unicodeScalars.append(scalar)
+      } else if scalar.properties.generalCategory == .control
+        || scalar.properties.generalCategory == .format
+      {
+        shown += "\\u{" + String(format: "%04x", scalar.value) + "}"
+      } else {
+        shown.unicodeScalars.append(scalar)
+      }
+    }
+    return shown
+  }
 }
 
 private struct CLIResult {

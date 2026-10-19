@@ -906,6 +906,6 @@ extension AppStore.CreateStep {
     let progress = run.progress
     self.init(
       fraction: progress.fraction, label: progress.label,
-      failed: !run.isRunning && run.outcome != .succeeded)
+      failed: !run.isRunning && run.outcome != .succeeded && !run.awaitsApproval)
   }
 }

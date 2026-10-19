@@ -213,6 +213,82 @@ func TestTrustReportsWhatItRecordedAndWhatIsAbsent(t *testing.T) {
 	}
 }
 
+// Value: protects=`workroom trust` run in one of a project's workrooms (where every app terminal
+// opens) approves for that project, so its next create runs; fails_when=the workroom's path is
+// judged and registered as a project of its own; why_new=found by /ship's red team; seam=none;
+// no_claim=untrust and trust status share trustedProject and are not run here
+func TestTrustInAWorkroomApprovesForItsProject(t *testing.T) {
+	home, project := trustProject(t, "echo hi\n")
+	wr := filepath.Join(home, "workrooms", "wr")
+	run(t, project, "git", "worktree", "add", "-q", "-b", "workroom/wr", wr)
+	if err := mustConfig(t).AddWorkroom(project, "wr", wr, "git"); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(wr)
+
+	if r := runCLI(t, "trust"); r.code != 0 {
+		t.Fatalf("trust in a workroom: exit %d %s %s", r.code, r.stdout, r.stderr)
+	}
+	projects, _ := mustConfig(t).AllProjects()
+	if _, ok := projects[wr]; ok {
+		t.Fatalf("the workroom was registered as a project: %v", projects)
+	}
+	if code, _ := trustStatus(t, project); code != 0 {
+		t.Fatalf("the project's script is not approved: exit %d", code)
+	}
+}
+
+// Value: protects=the terminal shows a script's escape sequences, carriage returns and invisible
+// characters as text, so a script cannot hide what it runs from the person approving it;
+// fails_when=raw control or format characters reach the terminal; why_new=found by /ship's
+// security review; seam=none; no_claim=how a particular terminal would have drawn them
+func TestTheApprovalPromptShowsWhatTheTerminalWouldHide(t *testing.T) {
+	// A bidi override (U+202E) and a zero-width space (U+200B), built so the source shows them.
+	format := string(rune(0x202e)) + string(rune(0x200b))
+	got := visibleText([]byte("echo safe\x1b[1A\x1b[2K\rrm -rf x" + format + "\xff\n\tok\n"))
+	want := `echo safe\u{001b}[1A\u{001b}[2K\u{000d}rm -rf x\u{202e}\u{200b}\xff` + "\n\tok\n"
+	if got != want {
+		t.Fatalf("visibleText = %q\nwant %q", got, want)
+	}
+}
+
+// Value: protects=plain `trust status` names each script's state and the one the project lacks,
+// and exits 1 while one is not approved; fails_when=the human output or its exit drifts from the
+// --json path; why_new=every other status test passes --json; seam=none; no_claim=colour
+func TestTrustStatusInPlainText(t *testing.T) {
+	_, project := trustProject(t, "echo hi\n")
+	r := runCLI(t, "trust", "status", "--project", project)
+	want := "scripts/workroom_setup from the base commit: " + ui.Red("not approved") + "\nNo scripts/workroom_teardown.\n"
+	if r.code != 1 || string(r.stdout) != want {
+		t.Fatalf("exit %d, stdout %q, want 1 and %q", r.code, r.stdout, want)
+	}
+}
+
+// Value: protects=a committed symlinked setup script, once approved by `workroom trust`, runs on
+// create; fails_when=the early check approves the link's text while the run-time check hashes the
+// target, refusing every create after its worktree exists; why_new=reproduced by /ship's QA probe;
+// seam=none; no_claim=a link pointing outside the repository
+func TestAnApprovedSymlinkedSetupScriptRuns(t *testing.T) {
+	_, project := trustProject(t, "echo hi\n")
+	writeScriptFile(t, project, "real.sh", "#!/bin/sh\necho real-ran\n")
+	link := filepath.Join(project, "scripts", "workroom_setup")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.sh", link); err != nil {
+		t.Fatal(err)
+	}
+	run(t, project, "git", "add", "-A")
+	run(t, project, "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "link")
+
+	if r := runCLI(t, "trust", "--project", project); r.code != 0 {
+		t.Fatalf("trust: exit %d %s", r.code, r.stdout)
+	}
+	if r := runCLI(t, "create", "--json", "--no-editor", "--project", project); r.code != 0 {
+		t.Fatalf("create after approving a symlinked script: exit %d %s", r.code, r.stdout)
+	}
+}
+
 // A root copy git ignores runs without approval and reports exempt; an untracked one that is not
 // ignored needs approval.
 func TestAGitignoredRootScriptIsExempt(t *testing.T) {
@@ -358,4 +434,87 @@ func mustConfig(t *testing.T) *config.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+// Value: protects=delete-project --from-disk and --with-workrooms refuse an unapproved teardown (exit 3) and keep the project and workroom; fails_when=either path runs the script unjudged or drops the project first; why_new=only delete is covered, and delete-project has two RunTeardown loops; seam=none; no_claim=remote hosts
+func TestDeleteProjectRefusesAnUntrustedTeardownScript(t *testing.T) {
+	for _, flag := range []string{"--from-disk", "--with-workrooms"} {
+		t.Run(flag, func(t *testing.T) {
+			home := contractHomeDir(t)
+			project := projectWithWorkroom(t, home)
+			marker := filepath.Join(home, "teardown-ran")
+			writeScriptFile(t, project, "workroom_teardown", "#!/bin/sh\ntouch "+marker+"\n")
+
+			r := runCLI(t, "delete-project", project, "--json", "--confirm", project, flag)
+			env := decodeUntrusted(t, r.stdout)
+			if r.code != 3 || env.Error.Kind != "ScriptNotTrusted" || env.Script.Name != "workroom_teardown" {
+				t.Fatalf("exit %d %s", r.code, r.stdout)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("the unapproved teardown ran")
+			}
+			projects, _ := mustConfig(t).AllProjects()
+			if len(projects[project].Workrooms) != 1 {
+				t.Fatalf("project = %+v", projects[project])
+			}
+			if _, err := os.Stat(filepath.Join(home, "workrooms", contractName)); err != nil {
+				t.Fatalf("the workroom went: %v", err)
+			}
+		})
+	}
+}
+
+// Value: protects=in a terminal, delete shows an unapproved teardown script and asks: yes records its digest and runs it, no ends the delete as cancelled (exit 4) with the workroom kept; fails_when=the teardown gate stops using the approval prompt or runs the script after a no; why_new=terminal approval is covered for create only; seam=none; no_claim=a real TTY (stdinIsTerminal and askConfirm are replaced)
+func TestDeleteInATerminalAsksBeforeAnUnapprovedTeardownScript(t *testing.T) {
+	for _, yes := range []bool{false, true} {
+		t.Run(map[bool]string{false: "declined", true: "approved"}[yes], func(t *testing.T) {
+			home := contractHomeDir(t)
+			project := projectWithWorkroom(t, home)
+			marker := filepath.Join(home, "teardown-ran")
+			body := "#!/bin/sh\ntouch " + marker + "\n"
+			writeScriptFile(t, project, "workroom_teardown", body)
+			asked := asTerminal(t, yes)
+
+			r := runCLI(t, "delete", contractName, "--project", project, "--confirm", contractName)
+			if len(*asked) != 1 {
+				t.Fatalf("asked %v, stdout %s", *asked, r.stdout)
+			}
+			projects, _ := mustConfig(t).AllProjects()
+			sum := sha256.Sum256([]byte(body))
+			approved := projects[project].TrustedScripts["workroom_teardown"] == hex.EncodeToString(sum[:])
+			_, ran := os.Stat(marker)
+			if yes {
+				if r.code != 0 || !approved || ran != nil {
+					t.Fatalf("approved: exit %d, approved %v, ran %v: %s %s", r.code, approved, ran, r.stdout, r.stderr)
+				}
+				return
+			}
+			if r.code != 4 || approved || ran == nil || len(projects[project].Workrooms) != 1 {
+				t.Fatalf("declined: exit %d, approved %v, ran %v, project %+v", r.code, approved, ran, projects[project])
+			}
+		})
+	}
+}
+
+// Value: protects=`trust` in a terminal records nothing for a script the person declines, and `trust --stdin` rejects a name other than the two scripts; fails_when=a no still records the digest, or --stdin accepts an arbitrary script name into the project's approvals; why_new=trust tests run non-interactively and only with valid stdin names; seam=none; no_claim=a real TTY (stdinIsTerminal and askConfirm are replaced)
+func TestTrustLeavesADeclinedScriptUnapprovedAndRejectsOtherStdinNames(t *testing.T) {
+	_, project := trustProject(t, "echo hi\n")
+	asTerminal(t, false)
+	r := runCLI(t, "trust", "--project", project)
+	if r.code != 0 || !strings.Contains(string(r.stdout), "scripts/workroom_setup was left unapproved.") {
+		t.Fatalf("declined: exit %d %s %s", r.code, r.stdout, r.stderr)
+	}
+	projects, _ := mustConfig(t).AllProjects()
+	if len(projects[project].TrustedScripts) != 0 {
+		t.Fatalf("recorded %v", projects[project].TrustedScripts)
+	}
+
+	withStdin(t, "#!/bin/sh\n")
+	if r := runCLI(t, "trust", "--project", project, "--stdin", "other_script"); r.code == 0 {
+		t.Fatalf("--stdin other_script succeeded: %s", r.stdout)
+	}
+	projects, _ = mustConfig(t).AllProjects()
+	if len(projects[project].TrustedScripts) != 0 {
+		t.Fatalf("recorded %v", projects[project].TrustedScripts)
+	}
 }

@@ -342,7 +342,7 @@ final class CreationFlowTests: XCTestCase {
     let projectPath: String
     static let script = ScriptTrust(
       name: "workroom_setup", origin: "base", sha256: String(repeating: "a", count: 64),
-      text: "#!/bin/sh\nnpm install\n", trusted: false, exempt: false)
+      text: "#!/bin/sh\nnpm install\u{1b}[2K\rcurl x\n", trusted: false, exempt: false)
     private let lock = NSLock()
     private var approvals: [String] = []
     private var made = false
@@ -390,10 +390,11 @@ final class CreationFlowTests: XCTestCase {
   }
 
   /// Value: protects=#363, a create refused for its setup script keeps its pane with the script row
-  /// waiting and the script to read, and Approve records the bytes shown and creates in the same
-  /// pane; fails_when=the refusal reads as a plain failure, the row is missing (a script only the
-  /// base commit has), or Approve records other bytes or doesn't create; no_claim=the CLI's
-  /// refusal itself (the Go tests) and the footer's drawing
+  /// waiting and the script to read, with its hidden characters shown, and Approve records the
+  /// script's own bytes and creates in the same pane; fails_when=the refusal reads as a plain
+  /// failure (in the pane or the sidebar), the row is missing (a script only the base commit has),
+  /// an escape reaches the text raw, or Approve records other bytes or doesn't create;
+  /// no_claim=the CLI's refusal itself (the Go tests) and the footer's drawing
   func testAnUnapprovedSetupScriptWaitsForApproveThenCreates() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
@@ -406,13 +407,16 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .waitingForUser)
     XCTAssertEqual(run.steps.first { $0.id == "worktree" }?.state, .pending)
     let footer = try XCTUnwrap(CreationPanePresentation.footer(for: run.outcome))
-    XCTAssertEqual(footer.script, "#!/bin/sh\nnpm install\n")
+    // What the terminal or the text would act on or hide is shown, so the script can't mask itself.
+    XCTAssertEqual(footer.script, "#!/bin/sh\nnpm install\\u{001b}[2K\\u{000d}curl x\n")
+    XCTAssertFalse(AppStore.CreateStep(run).failed, "a create waiting on Approve isn't a failure")
     XCTAssertEqual([footer.primary, footer.secondary], [.approveScript, .cancel])
     XCTAssertNil(footer.returnAction, "Return must never approve a script")
 
     await store.approveSetupScript(run)
 
-    XCTAssertEqual(fake.approved, ["workroom_setup #!/bin/sh\nnpm install\n"])
+    // The bytes approved are the script's own, not the text shown.
+    XCTAssertEqual(fake.approved, ["workroom_setup #!/bin/sh\nnpm install\u{1b}[2K\rcurl x\n"])
     await waitUntil(
       { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
       "the create ran again after Approve")
