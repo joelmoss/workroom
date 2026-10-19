@@ -19,9 +19,43 @@ public enum LoopbackSocket {
   /// reset. A deep queue is also a long line: an owner must not serve it one slow client at a time
   /// (`LoopbackListener.callback` reads them all at once).
   public static func listen(port: UInt16 = 0) -> (descriptor: Int32, port: UInt16)? {
+    listen(port: port, reuseAddress: false)
+  }
+
+  /// `listen(port:)` for a fixed port, which also takes one that only finished connections hold.
+  /// A connection this side closed first sits in `TIME_WAIT` on the port for about 30 s, measured,
+  /// and refuses a plain bind: quitting with a browser's connection open through a forward, then
+  /// relaunching, would otherwise move the forward to another port. `SO_REUSEADDR` alone won't do:
+  /// it also lets the bind in over another process's `0.0.0.0` or `[::]` listener (measured), whose
+  /// connections to 127.0.0.1 it would then take. So it is used only when nothing answers on the
+  /// port: a listener accepts a connection, and `TIME_WAIT` refuses one.
+  public static func listen(reclaiming port: UInt16) -> (descriptor: Int32, port: UInt16)? {
+    if let made = listen(port: port, reuseAddress: false) { return made }
+    guard errno == EADDRINUSE else { return nil }
+    if let probe = connect(port: port, timeout: 0.5) {
+      close(probe)
+      errno = EADDRINUSE
+      return nil
+    }
+    // Only a refusal says nothing listens; a timeout may be a listener that is just slow.
+    guard errno == ECONNREFUSED else {
+      errno = EADDRINUSE
+      return nil
+    }
+    return listen(port: port, reuseAddress: true)
+  }
+
+  private static func listen(port: UInt16, reuseAddress: Bool) -> (
+    descriptor: Int32, port: UInt16
+  )? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+    if reuseAddress {
+      var enabled: Int32 = 1
+      setsockopt(
+        descriptor, SOL_SOCKET, SO_REUSEADDR, &enabled, socklen_t(MemoryLayout<Int32>.size))
+    }
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     address.sin_family = sa_family_t(AF_INET)

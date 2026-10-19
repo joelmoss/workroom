@@ -1247,6 +1247,56 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(model.forwards.first?.localPort, port)
   }
 
+  /// A port only finished connections hold keeps its number: a forward this side closed first (the
+  /// app quitting with a browser's connection open) leaves it in `TIME_WAIT`, which refuses a plain
+  /// bind for about 30 s, and the relaunch's forward must still get it.
+  func testAForwardReclaimsItsNumberFromConnectionsInTimeWait() async throws {
+    let made = try XCTUnwrap(LoopbackSocket.listen())
+    let client = try TCPClient(port: made.port)
+    let accepted = Darwin.accept(made.descriptor, nil, nil)
+    XCTAssertGreaterThanOrEqual(accepted, 0)
+    // This side's FIN first, then the peer's: this side's end waits in TIME_WAIT on the port.
+    Darwin.close(accepted)
+    XCTAssertEqual(try client.read(1, timeout: 2), Data(), "the close did not reach the client")
+    client.close()
+    Darwin.close(made.descriptor)
+    XCTAssertNil(LoopbackSocket.listen(port: made.port), "no TIME_WAIT: the fixture proves nothing")
+
+    let model = try await model(lease: lease(), sameLocalPort: true)
+    model.draft = String(made.port)
+    await model.add()
+    XCTAssertNil(model.message)
+    XCTAssertEqual(model.forwards.first?.localPort, made.port)
+  }
+
+  /// Reclaiming a port from `TIME_WAIT` never takes it from a live listener on every address, which
+  /// `SO_REUSEADDR` alone would allow: the Mac's own server keeps its port and the forward moves.
+  func testAForwardNeverTakesAPortFromAWildcardListener() async throws {
+    let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+    XCTAssertGreaterThanOrEqual(descriptor, 0)
+    addTeardownBlock { Darwin.close(descriptor) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_addr.s_addr = INADDR_ANY
+    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let bound = withUnsafeMutablePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.bind(descriptor, $0, length) == 0 && Darwin.listen(descriptor, 4) == 0
+          && getsockname(descriptor, $0, &length) == 0
+      }
+    }
+    XCTAssertTrue(bound, "no 0.0.0.0 listener")
+    let port = UInt16(bigEndian: address.sin_port)
+
+    let model = try await model(lease: lease(), sameLocalPort: true)
+    model.draft = String(port)
+    await model.add()
+    XCTAssertNil(model.message)
+    let entry = try XCTUnwrap(model.forwards.first)
+    XCTAssertNotEqual(entry.localPort, port, "the forward took the Mac server's port")
+  }
+
   /// A port this Mac holds moves to another, on 127.0.0.1 or only on `::1` (where a bind on
   /// 127.0.0.1 succeeds, and a browser asking for `localhost` would reach the Mac's own server).
   func testAForwardMovesToAnotherPortWhenThisMacHoldsItsNumber() async throws {
@@ -1343,15 +1393,23 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(model.forwards.map(\.remotePort), [3000, 5173])
   }
 
-  /// A read that fails (the host not up yet) is tried again on the next call; no file at all, or
-  /// one that isn't JSON, is an answer and is not.
-  func testAFailedReadIsTriedAgainAndAnAnswerIsNot() async throws {
+  /// A read the host's connection fails (Docker not running yet at launch) runs again by itself
+  /// once the host connects, with the workroom still selected and nothing else asking; no file at
+  /// all, one that isn't JSON, or one the host refuses is an answer, said where it is one, and is
+  /// not tried again.
+  func testAFailedReadIsTriedAgainWhenTheHostConnectsAndAnAnswerIsNot() async throws {
     let model = try await model(lease: lease())
-    await model.forwardDeclared { throw RepositoryRoutingError.unavailable(.remote(UUID())) }
-    XCTAssertFalse(model.declared)
+    let reads = Counter()
+    await model.forwardDeclared {
+      reads.bump()
+      if reads.count == 1 { throw RepositoryRoutingError.unavailable(.remote(UUID())) }
+      return (".devcontainer.json", Data(#"{"forwardPorts": [5173]}"#.utf8))
+    }
     XCTAssertNil(model.message)
-    await model.forwardDeclared { (".devcontainer.json", Data(#"{"forwardPorts": [5173]}"#.utf8)) }
+    // The model's stream holds a `connected` snapshot: the host is up again.
+    await settle("the failed read was not run again") { model.declared }
     XCTAssertEqual(model.forwards.map(\.remotePort), [5173])
+    XCTAssertEqual(reads.count, 2)
 
     let none = try await self.model(lease: lease())
     await none.forwardDeclared { nil }
@@ -1364,10 +1422,15 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertTrue(
       broken.message?.hasPrefix("Couldn't read .devcontainer.json: ") == true,
       broken.message ?? "no message")
+
+    let refused = try await self.model(lease: lease())
+    await refused.forwardDeclared { throw FileServiceError.tooLarge }
+    XCTAssertTrue(refused.declared)
+    XCTAssertEqual(refused.message, "Couldn't read the dev container file: File too large.")
   }
 
-  /// A host that goes away mid-way leaves the rest for the next call, not lost.
-  func testAForwardThatFailsMidWayIsLeftForTheNextCall() async throws {
+  /// A host that goes away mid-way leaves the rest for when it is back, not lost.
+  func testAForwardThatFailsMidWayIsLeftForWhenTheHostIsBack() async throws {
     let first = lease()
     let fails = Counter()
     let held = try await service(on: first)
@@ -1382,10 +1445,8 @@ final class PortForwardingModelTests: XCTestCase {
       (".devcontainer.json", Data(#"{"forwardPorts": [5173]}"#.utf8))
     }
     await model.forwardDeclared(read: read)
-    XCTAssertFalse(model.declared)
-    XCTAssertEqual(model.message, "This workroom's host is not connected.")
-    await model.forwardDeclared(read: read)
-    XCTAssertTrue(model.declared)
+    XCTAssertEqual(model.forwards, [], "nothing was forwarded through the failed connection")
+    await settle("the cut-short pass was not run again") { model.declared }
     XCTAssertEqual(model.forwards.map(\.remotePort), [5173])
     XCTAssertNil(model.message)
   }
