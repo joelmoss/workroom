@@ -201,6 +201,31 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  // Value: protects=a healthy host whose ping reply queues behind a large reply on a slow link is
+  // not dropped after a wake; fails_when=only the ping's own reply counts as an answer, or a silent
+  // host reads as answering; why_new=the real agent always answers at once; seam=none
+  /// Anything arriving from the host answers the ping: a link still delivering something else is
+  /// alive. A host that sends nothing leaves it unanswered.
+  func testAPingCountsAnyDataFromTheHostAsAnAnswer() async throws {
+    let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
+    defer { fake.stop() }
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
+    do {
+      try await withTimeout(seconds: 0.3) { try await connection.ping() }
+      XCTFail("a host that sent nothing answered the ping")
+    } catch is VCSTimeoutError {}
+
+    let ping = Task { try await withTimeout(seconds: 2) { try await connection.ping() } }
+    // Control on stream 0 is never a reply: it stands in for bytes of another reply arriving.
+    for _ in 0..<10 {
+      fake.push(service: 0, stream: 0, payload: Data([0]))
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    try await ping.value
+    await connection.close()
+  }
+
   /// Closing a remote pane ends its session over the service connection (#283): the agent
   /// acknowledges the kill and no longer holds the session. A session it never held is
   /// acknowledged too, so a second close succeeds, and the connection's other services keep working.

@@ -293,16 +293,17 @@ actor HostConnectionManager {
 
   /// Whether `host`'s link answers a ping within `seconds`, asked after a wake or a network change
   /// (`RemoteLinkMonitor`). One that doesn't is dropped: ssh would take about a minute to notice it
-  /// is dead. A host with no link can't be asked, and is false. Any reply counts as an answer, an
-  /// error included; only silence, or the link ending meanwhile, does not.
+  /// is dead. A host with no link can't be asked, and is false. A ping that throws got no answer:
+  /// silence, a link that failed under it, or one never sent. An agent's error reply is still a
+  /// reply, which `ping` returns rather than throws.
   func dropUnlessAnswering(_ host: HostID, within seconds: TimeInterval) async -> Bool {
     guard let (lease, connection) = try? connected(host) else { return false }
     do {
       try await withTimeout(seconds: seconds) { try await connection.ping() }
-    } catch is VCSTimeoutError {
+    } catch {
       disconnect(lease)
       return false
-    } catch {}
+    }
     return slots[host]?.lease == lease && slots[host]?.status == .connected
   }
 

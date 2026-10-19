@@ -7,11 +7,21 @@ import WorkroomVCS
 /// here, not in the AgentConnection package with the transport, because those types are the app's.
 extension AgentVCSConnection: HostServiceConnection {
   /// The VCS `capabilities` request, which connecting asked already: the agent answers it with a
-  /// constant from a thread of its own, under no session lock, so a repaint can't hold it up. The
-  /// caller bounds the wait: a short request timeout would also shorten the stall bound that fails
-  /// the whole connection when a large send is slow (`request`).
+  /// constant from a thread of its own, under no session lock, so a repaint can't hold it up. Any
+  /// bytes arriving meanwhile answer too: on a slow link the reply can queue behind a large one
+  /// still coming in, which proves the link alive. The caller bounds the wait: a short request
+  /// timeout would also shorten the stall bound that fails the whole connection when a large send
+  /// is slow (`request`).
   func ping() async throws {
-    _ = try await request(AgentVCSRequest(method: "capabilities"))
+    let before = bytesReceived
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      group.addTask { _ = try await self.request(AgentVCSRequest(method: "capabilities")) }
+      group.addTask {
+        while self.bytesReceived == before { try await Task.sleep(for: .milliseconds(50)) }
+      }
+      try await group.next()
+      group.cancelAll()
+    }
   }
 
   func reader(context: RepositoryContext) throws -> VCSProviding {

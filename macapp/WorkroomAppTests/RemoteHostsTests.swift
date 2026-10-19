@@ -207,6 +207,42 @@ final class RemoteHostsTests: XCTestCase {
     sessions.forgetRemoteSession(session)
   }
 
+  // Value: protects=a wake or network change asks the boxd and exe.dev hosts only, and a host it
+  // can't ask counts as silent; fails_when=the provider filter is dropped (a container's loopback
+  // link is asked too) or a host with no link reads as answering; why_new=new behaviour;
+  // seam=none
+  /// `RemoteLinkMonitor`'s question goes to a recorded provider host, not a container's, and one
+  /// with no link to ask is among those that didn't answer.
+  func testOnlyAProviderHostIsAskedAfterANetworkChange() async {
+    let boxd = UUID()
+    let container = UUID()
+    func workroom(_ name: String, _ host: HostDescriptor) -> Workroom {
+      Workroom(
+        name: name, path: "/home/w/\(name)", vcsName: "workroom/\(name)", warnings: [], host: host)
+    }
+    let remote = RemoteHosts()
+    remote.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [
+            workroom(
+              "b",
+              HostDescriptor(
+                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: boxd, account: "usr_1")),
+            workroom(
+              "c",
+              HostDescriptor(
+                driver: RemoteWorkrooms.Runtime.docker.rawValue,
+                provisioner: RemoteWorkrooms.provisioner, id: container)),
+          ])
+      ], sweep: false)
+
+    let unanswering = await remote.unansweringProviderHosts()
+    XCTAssertEqual(unanswering, [.remote(boxd)])
+  }
+
   /// A click reaches a boxd host a background read would leave alone (#356): closing a pane (to
   /// end its session there) wakes a box that is asleep, where a status read is refused.
   @MainActor

@@ -763,6 +763,9 @@ final class RemoteHosts: @unchecked Sendable {
   /// timeout. ponytail: a fixed window, so a Reload inside it fails fast too; upgrade path: let a
   /// read the user asked for bypass it.
   static let retryAfter: Duration = .seconds(30)
+  /// How long a host's agent has to answer after a wake or a network change before its links are
+  /// replaced (`unansweringProviderHosts`).
+  static let answerDeadline: TimeInterval = 2
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
 
@@ -1289,13 +1292,11 @@ final class RemoteHosts: @unchecked Sendable {
     return presence
   }
 
-  /// Whether `host`'s runtime is missing from this Mac, so nothing can be running on it: the
-  /// runtime config records it on, or with none recorded, every runtime.
-  ///
   /// The Mac woke or changed networks (`RemoteLinkMonitor`): the provider hosts whose links may be
-  /// dead, all asked at once. Each is one whose service link didn't answer within 2 s, now dropped,
-  /// or one with no link to ask. Its panes attach again, and a pane's attach reconnects the link
-  /// (`PersistentSessionService.attachCommand`). A container's link is loopback and is not asked.
+  /// dead, all asked at once. Each is one whose service link didn't answer within `answerDeadline`,
+  /// now dropped, or one with no link to ask. Its panes attach again, and a pane's attach reconnects
+  /// the link (`PersistentSessionService.attachCommand`). A container's link is loopback and is not
+  /// asked.
   func unansweringProviderHosts() async -> Set<HostID> {
     let hosts = lock.withLock {
       keys.filter { $0.value.isRemoteProvider }.map { HostID.remote($0.key) }
@@ -1303,7 +1304,11 @@ final class RemoteHosts: @unchecked Sendable {
     return await withTaskGroup(of: (HostID, Bool).self) { group in
       for host in hosts {
         group.addTask {
-          (host, await HostConnectionManager.shared.dropUnlessAnswering(host, within: 2))
+          (
+            host,
+            await HostConnectionManager.shared.dropUnlessAnswering(
+              host, within: Self.answerDeadline)
+          )
         }
       }
       var unanswering: Set<HostID> = []
@@ -1312,6 +1317,9 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// Whether `host`'s runtime is missing from this Mac, so nothing can be running on it: the
+  /// runtime config records it on, or with none recorded, every runtime.
+  ///
   /// Never for a remote provider's host (boxd, #356): it runs there whether or not this Mac has the
   /// provider's CLI, and its panes reach it over ssh without one.
   func runtimeIsMissing(for host: HostID) -> Bool {

@@ -34,6 +34,9 @@ public final class AgentVCSConnection: @unchecked Sendable {
   private var sendStarted: ContinuousClock.Instant?
   /// Counts sends, so a request send's own stall watchdog knows whether it is still that send.
   private var sendCount: UInt64 = 0
+  /// Bytes read from the host so far: anything arriving proves the link is alive.
+  private var received: UInt64 = 0
+  public var bytesReceived: UInt64 { lock.withLock { received } }
   /// Live watch subscriptions, keyed by the client-chosen id the agent echoes in every event. Read by
   /// `receive()` for each event and cleared by `fail()`, so both hold `lock`.
   private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
@@ -856,6 +859,7 @@ public final class AgentVCSConnection: @unchecked Sendable {
         }
         if count < 0 && errno == EINTR { continue }
         guard count > 0 else { throw HostConnectionError.connectionLost }
+        lock.withLock { received += UInt64(count) }
         buffer.append(contentsOf: chunk.prefix(count))
       }
     } catch { fail(error) }
