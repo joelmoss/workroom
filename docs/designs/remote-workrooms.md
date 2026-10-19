@@ -1150,7 +1150,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the screen. While ssh connects the pane says it is waiting for the host, and `LocalCommand`
     erases that once ssh is in (`RemoteReconnectBackoff`, `ContainerHostDriver.attachWrapper`). A
     session that itself exited 255 is reported as 254 by the remote attach, so it never reads as
-    a dropped link.
+    a dropped link. An attach that recorded no status at all was killed before ssh exited, as by a
+    Ctrl-C typed while ssh was still connecting. When the app's own reconnect started that attach
+    for a restored session, the pane keeps trying anyway, since the user most likely meant to stop
+    the program they had been typing to (#507). A new pane's attach, and any attach the app's
+    reconnect did not start, stay stopped (`LastAttach`: `.lostLink`, `.unrecorded`, `.finished`).
   - *Closing a remote pane ends its session on the host (#283).* With no container runtime on the
     Mac there is no host for it to be running on, so that close is reported as ended. The app
     connects to the host if need be and sends the agent's `Kill` on the service connection's Control
