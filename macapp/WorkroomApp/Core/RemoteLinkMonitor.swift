@@ -61,25 +61,17 @@ final class RemoteLinkMonitor {
     reasons.append(reason)
     pending?.cancel()
     pending = nil
-    guard case .fire(let delay, let scope) = action else { return }
-    let item = DispatchWorkItem { [weak self] in self?.fire(scope) }
+    guard case .fire(let delay) = action else { return }
+    let item = DispatchWorkItem { [weak self] in self?.fire() }
     pending = item
     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
   }
 
-  private func fire(_ scope: RemoteLinkTrigger.Scope) {
+  private func fire() {
     pending = nil
     trigger.fired()
     let why = reasons.joined(separator: ", then ")
     reasons = []
-    let post = { (stale: Set<HostID>) in
-      NotificationCenter.default.post(
-        name: Self.linksStale, object: self, userInfo: [Self.staleHostsKey: stale])
-    }
-    guard scope == .all else {
-      Self.logger.notice("remote links: \(why, privacy: .public); reattaching waiting panes")
-      return post([])
-    }
     Self.logger.notice("remote links: \(why, privacy: .public); asking each host")
     askAgain = true
     guard !asking else { return }
@@ -96,18 +88,19 @@ final class RemoteLinkMonitor {
       Self.logger.notice(
         "remote links: \(stale.count) host(s) gave no answer within \(RemoteHosts.answerDeadline) s or had no link, reattaching their panes and waiting ones"
       )
-      post(stale)
+      NotificationCenter.default.post(
+        name: Self.linksStale, object: self, userInfo: [Self.staleHostsKey: stale])
     }
   }
 }
 
 /// When the Mac's network moved enough that a remote link may be dead (`RemoteLinkMonitor`).
 ///
-/// A wake asks every host (`.all`), at the next path update (`settle`) or after `wakeWait` without
-/// one. A path that comes up on another interface or gateway asks every host too. One that comes
-/// back as it was reattaches only the panes waiting out their backoff, since a live link has most
-/// likely outlasted the blip. A path that goes down holds any fire, which an attach with no network would
-/// only back off from, and what the fire owed is kept for when it is back.
+/// A wake asks every host, at the next path update (`settle`) or after `wakeWait` without one. So
+/// does a path that comes up on another interface or gateway, and one that comes back after going
+/// down: two networks can share an interface and a gateway (a router's default address), and a host
+/// that answers keeps its links anyway. A path that goes down holds any fire, which an attach with
+/// no network would only back off from, and what is owed is kept for when it is back.
 struct RemoteLinkTrigger {
   struct Path: Equatable {
     var satisfied: Bool
@@ -116,12 +109,10 @@ struct RemoteLinkTrigger {
     var gateways: Set<String>
   }
 
-  enum Scope: Equatable { case all, waiting }
-
   enum Action: Equatable {
     case none
     case hold
-    case fire(after: TimeInterval, scope: Scope)
+    case fire(after: TimeInterval)
   }
 
   static let settle: TimeInterval = 0.5
@@ -129,12 +120,12 @@ struct RemoteLinkTrigger {
 
   private var lastUp: Path?
   private var down = false
-  /// What the next fire must cover, kept across a hold until it fires.
-  private var owed: Scope?
+  /// A fire is due, kept across a hold until it fires.
+  private var owed = false
 
   mutating func woke() -> Action {
-    owed = .all
-    return down ? .hold : .fire(after: Self.wakeWait, scope: .all)
+    owed = true
+    return down ? .hold : .fire(after: Self.wakeWait)
   }
 
   mutating func pathChanged(to path: Path) -> Action {
@@ -146,19 +137,13 @@ struct RemoteLinkTrigger {
       down = false
       lastUp = path
     }
-    var scope = owed
     // The first answer is the network the links were made on.
-    if let lastUp, lastUp.interface != path.interface || lastUp.gateways != path.gateways {
-      scope = .all
-    } else if down {
-      scope = scope ?? .waiting
-    }
-    guard let scope else { return .none }
-    owed = scope
-    return .fire(after: Self.settle, scope: scope)
+    let moved = lastUp.map { $0.interface != path.interface || $0.gateways != path.gateways }
+    if moved == true || down { owed = true }
+    return owed ? .fire(after: Self.settle) : .none
   }
 
-  mutating func fired() { owed = nil }
+  mutating func fired() { owed = false }
 }
 
 extension RemoteLinkTrigger.Path {
