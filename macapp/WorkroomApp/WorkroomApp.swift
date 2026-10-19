@@ -363,6 +363,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if !AppEnvironment.current.isTestProcess {
       // Hand an older running agent to the bundled one (#230), before panes are likely to attach.
       MainActor.assumeIsolated { AgentHandOff.start() }
+      // Remote panes reattach on wake and network changes, not a minute later.
+      MainActor.assumeIsolated { RemoteLinkMonitor.shared.start() }
     }
 
     // Build the switcher rail's panel now, ordered out, and connect it to the session controller

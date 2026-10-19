@@ -273,9 +273,11 @@ public enum SSHTransport {
   /// - **What a pane types is only ever the user's.** A pane's ssh has a terminal, and ssh reads
   ///   `~.` and friends from one as its own commands (`~.` disconnects, `~^Z` suspends ssh and
   ///   freezes the pane), so `EscapeChar none`.
-  /// - **A dead link is noticed.** `ServerAliveInterval` ends ssh after about 45s of silence from a
-  ///   host that stopped answering, which ends the stream and so the connection. It is what bounds
-  ///   a link that dies with nothing to send (#228).
+  /// - **A dead link is noticed.** `ServerAliveInterval` ends ssh after 45 to 60 s of silence from
+  ///   a host that stopped answering (57 s measured on the ssh fixture), which ends the stream and
+  ///   so the connection. It is what bounds a link that dies with nothing to send (#228). On a wake
+  ///   or a network change the app doesn't wait for it: `RemoteLinkMonitor` asks each host, and
+  ///   replaces the links of those that don't answer.
   public static func writeConfiguration(for host: Host, in directory: URL) throws -> URL {
     for (name, value) in [
       ("address", host.address), ("user", host.user), ("identity file", host.identityFile),

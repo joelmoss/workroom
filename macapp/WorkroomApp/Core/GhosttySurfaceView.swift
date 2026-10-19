@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import GhosttyKit
 import SwiftUI
+import WorkroomVCS
 import WorkroomWire
 import os
 
@@ -167,6 +168,9 @@ final class GhosttySurfaceView: NSView {
   // Workroom windows or the Quick Terminal, and app activate/deactivate (see `syncFocusToKeyWindow`);
   // and screen changes (see `syncDisplayID`).
   nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
+  /// `RemoteLinkMonitor`'s, for the view's lifetime: a hidden tab or a detached pane keeps its ssh
+  /// while it is in no window.
+  nonisolated(unsafe) private var remoteLinkObserver: NSObjectProtocol?
 
   // IME / marked-text state.
   private var markedText = ""
@@ -263,6 +267,12 @@ final class GhosttySurfaceView: NSView {
       // responder is left on the now-removed search field (→ the window), and the next keystroke
       // wouldn't reach the shell until you clicked the pane.
       if action == .end { self.window?.makeFirstResponder(self) }
+    }
+    remoteLinkObserver = NotificationCenter.default.addObserver(
+      forName: RemoteLinkMonitor.linksStale, object: nil, queue: .main
+    ) { [weak self] note in
+      let stale = note.userInfo?[RemoteLinkMonitor.staleHostsKey] as? Set<HostID> ?? []
+      MainActor.assumeIsolated { self?.reattachAfterNetworkChange(staleHosts: stale) }
     }
   }
 
@@ -418,6 +428,10 @@ final class GhosttySurfaceView: NSView {
     }
     for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
     windowObservers = []
+    if let remoteLinkObserver {
+      NotificationCenter.default.removeObserver(remoteLinkObserver)
+      self.remoteLinkObserver = nil
+    }
     destroySurface()
     removeFromSuperview()
   }
@@ -426,6 +440,7 @@ final class GhosttySurfaceView: NSView {
     progressTimeoutTimer?.invalidate()
     accessibilityPollTimer?.invalidate()
     if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+    if let remoteLinkObserver { NotificationCenter.default.removeObserver(remoteLinkObserver) }
     for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
@@ -539,6 +554,31 @@ final class GhosttySurfaceView: NSView {
     }
     pendingReconnect = reconnect
     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: reconnect)
+  }
+
+  /// The Mac woke or changed networks (`RemoteLinkMonitor`): attach again now rather than wait up
+  /// to a minute for ssh's keepalive to notice a dead link, or out a backoff of up to 30 s. A pane
+  /// that stopped (refused for good, or its session ended) stays stopped. A pane whose ssh still
+  /// runs attaches again only when its host didn't answer (`staleHosts`), since one that did most
+  /// likely still carries it. A container's link is loopback, which no network change breaks.
+  func reattachAfterNetworkChange(staleHosts: Set<HostID>) {
+    guard let session = persistentSessionID, !isTornDown,
+      PersistentSessionService.shared.remoteLinkCrossesNetwork(session)
+    else { return }
+    if let pendingReconnect {
+      remoteReconnects = RemoteReconnectBackoff()
+      // Its own work item, which knows whether the link had been up (`reconnectIfTheLinkDropped`).
+      pendingReconnect.perform()
+      return
+    }
+    guard hasLiveProcess, let host = PersistentSessionService.shared.remoteHost(of: session),
+      staleHosts.contains(host)
+    else { return }
+    remoteReconnects = RemoteReconnectBackoff()
+    if Date().timeIntervalSince(lastAttachAt) > RemoteReconnectBackoff.ceiling {
+      persistentSessionIsRestored = true
+    }
+    reattachPersistentSession()
   }
 
   func reattachPersistentSession() {

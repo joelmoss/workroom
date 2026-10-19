@@ -1,5 +1,6 @@
 import AppKit
 import HostDrivers
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom
@@ -312,18 +313,25 @@ final class RemoteReconnectBackoffTests: XCTestCase {
 final class RemotePaneReconnectTests: XCTestCase {
   /// A pane for a session on a host whose last attach left `log` behind, and `status` as the
   /// attach wrapper's record of ssh's exit status (none when nil).
-  private func remotePane(log: String, status: String? = nil) throws -> GhosttySurfaceView {
+  /// `provider`: on an exe.dev host, whose ssh leaves the Mac, rather than a container's loopback.
+  private func remotePane(
+    log: String, status: String? = nil, provider: Bool = false
+  ) throws -> GhosttySurfaceView {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-reconnect-\(UUID().uuidString.prefix(8))")
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     let host = UUID()
     let session = UUID()
-    let driver = ContainerHostDriver(
-      hosts: [
-        host: .init(
-          address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
-          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
-      ], directory: directory)
+    let driver: any HostTerminalDriver =
+      provider
+      ? ExeDevHostDriver(
+        configuration: .init(account: nil, sshAgent: "/agent.sock"), directory: directory)
+      : ContainerHostDriver(
+        hosts: [
+          host: .init(
+            address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
+            hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+        ], directory: directory)
     let hostDirectory = directory.appendingPathComponent(host.uuidString)
     try FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)
     try log.write(
@@ -432,6 +440,122 @@ final class RemotePaneReconnectTests: XCTestCase {
     local.persistentSessionID = UUID()
     local.handleChildExited(exitCode: 255)
     XCTAssertNil(local.pendingReconnect)
+  }
+
+  private func postLinksStale(_ stale: Set<HostID> = []) {
+    NotificationCenter.default.post(
+      name: RemoteLinkMonitor.linksStale, object: nil,
+      userInfo: [RemoteLinkMonitor.staleHostsKey: stale])
+    spin(0.05)
+  }
+
+  // Value: protects=a remote pane coming back within a second of the Mac waking or changing
+  // networks, not after ssh's ~57 s keepalive or a 30 s backoff; fails_when=the pane stops
+  // observing the monitor, runs its waiting reconnect without the restored mark, or treats a
+  // container's loopback link as one a network change breaks; why_new=new behaviour; seam=none
+  /// A pane waiting out its backoff attaches at once, as the restored pane its reconnect would
+  /// have made. A container's pane is left to its backoff: its ssh never leaves the Mac.
+  func testAWaitingPaneAttachesAtOnceWhenTheNetworkChanges() throws {
+    let provider = try remotePane(log: "", status: "255\n", provider: true)
+    provider.handleChildExited(exitCode: 0)
+    let container = try remotePane(log: "", status: "255\n")
+    container.handleChildExited(exitCode: 0)
+    let waiting = try XCTUnwrap(container.pendingReconnect)
+    XCTAssertNotNil(provider.pendingReconnect)
+
+    postLinksStale()
+    XCTAssertNil(provider.pendingReconnect, "the waiting reconnect did not run")
+    XCTAssertTrue(provider.persistentSessionIsRestored)
+    XCTAssertTrue(container.pendingReconnect === waiting)
+    XCTAssertFalse(container.persistentSessionIsRestored)
+  }
+
+  // Value: protects=a live link whose host still answers keeping its screen after a wake, and one
+  // whose host went silent reattaching; fails_when=every live pane blinks on every wake again, or
+  // a pane stays on a link its host no longer answers on; why_new=new behaviour;
+  // seam=liveProcessOverrideForTesting (non-test caller: hasLiveProcess's libghostty read)
+  /// A pane whose ssh still runs attaches again only when its own host didn't answer.
+  func testALivePaneAttachesAgainOnlyWhenItsHostDidNotAnswer() throws {
+    let view = try remotePane(log: "", provider: true)
+    view.liveProcessOverrideForTesting = true
+    let session = try XCTUnwrap(view.persistentSessionID)
+    let host = try XCTUnwrap(PersistentSessionService.shared.remoteHost(of: session))
+    postLinksStale([.remote(UUID())])
+    XCTAssertFalse(
+      view.persistentSessionIsRestored, "a live link was replaced though its host answered")
+    postLinksStale([host])
+    XCTAssertTrue(
+      view.persistentSessionIsRestored, "a live link was kept though its host was silent")
+  }
+}
+
+// Value: protects=remote links replaced when the Mac wakes or moves network, and only then;
+// fails_when=a Docker or VPN interface that isn't preferred, or a repeat update, replaces every
+// link, or a wake or network move is lost to a path that went down meanwhile; why_new=new
+// behaviour; seam=none
+/// When the network moved enough that a remote link may be dead (`RemoteLinkTrigger`).
+final class RemoteLinkTriggerTests: XCTestCase {
+  private let wifi = RemoteLinkTrigger.Path(
+    satisfied: true, interface: "en0", gateways: ["192.168.1.1:0"])
+  private let down = RemoteLinkTrigger.Path(satisfied: false, interface: nil, gateways: [])
+
+  func testTheNetworkTheLinksWereMadeOnReplacesNothing() {
+    var trigger = RemoteLinkTrigger()
+    XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
+    XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
+  }
+
+  func testAnotherInterfaceOrGatewayReplacesEveryLink() {
+    var trigger = RemoteLinkTrigger()
+    _ = trigger.pathChanged(to: wifi)
+    var ethernet = wifi
+    ethernet.interface = "en7"
+    XCTAssertEqual(
+      trigger.pathChanged(to: ethernet), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+    trigger.fired()
+    var otherWiFi = ethernet
+    otherWiFi.gateways = ["10.0.0.1:0"]
+    XCTAssertEqual(
+      trigger.pathChanged(to: otherWiFi), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+  }
+
+  func testTheSameNetworkBackAfterABlipReplacesOnlyWaitingPanes() {
+    var trigger = RemoteLinkTrigger()
+    _ = trigger.pathChanged(to: wifi)
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+    XCTAssertEqual(
+      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .waiting))
+  }
+
+  /// A wake fires after `wakeWait`, or at the next path update; once fired, the network it woke
+  /// on replaces nothing more.
+  func testAWakeReplacesEveryLinkOnce() {
+    var trigger = RemoteLinkTrigger()
+    _ = trigger.pathChanged(to: wifi)
+    XCTAssertEqual(trigger.woke(), .fire(after: RemoteLinkTrigger.wakeWait, scope: .all))
+    XCTAssertEqual(
+      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+    trigger.fired()
+    XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
+  }
+
+  /// What was owed survives a path that went down before it fired: a wake with no network yet, or
+  /// a move to another network that blipped, still replaces every link once the network is back.
+  func testAFireHeldByANetworkThatWentDownStillReplacesEveryLink() {
+    var trigger = RemoteLinkTrigger()
+    _ = trigger.pathChanged(to: wifi)
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+    XCTAssertEqual(trigger.woke(), .hold)
+    XCTAssertEqual(
+      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+    trigger.fired()
+
+    var ethernet = wifi
+    ethernet.interface = "en7"
+    _ = trigger.pathChanged(to: ethernet)
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+    XCTAssertEqual(
+      trigger.pathChanged(to: ethernet), .fire(after: RemoteLinkTrigger.settle, scope: .all))
   }
 }
 

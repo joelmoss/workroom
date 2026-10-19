@@ -6,6 +6,14 @@ import WorkroomVCS
 /// writes, the disk facts the write classifier uses, files, layouts and port forwarding. They live
 /// here, not in the AgentConnection package with the transport, because those types are the app's.
 extension AgentVCSConnection: HostServiceConnection {
+  /// The VCS `capabilities` request, which connecting asked already: the agent answers it with a
+  /// constant from a thread of its own, under no session lock, so a repaint can't hold it up. The
+  /// caller bounds the wait: a short request timeout would also shorten the stall bound that fails
+  /// the whole connection when a large send is slow (`request`).
+  func ping() async throws {
+    _ = try await request(AgentVCSRequest(method: "capabilities"))
+  }
+
   func reader(context: RepositoryContext) throws -> VCSProviding {
     guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
     guard !isClosed else { throw HostConnectionError.connectionLost }

@@ -1,5 +1,6 @@
 import AgentConnection
 import Foundation
+import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire
 
@@ -26,6 +27,8 @@ protocol HostServiceConnection: Sendable {
   func endSession(_ session: UUID) async throws -> Bool
   /// Every terminal session the host's agent holds, with what the app said about each (#255).
   func sessions() async throws -> [SessionDescriptor]
+  /// Returns once the agent answers anything, the cheapest question it has (`dropUnlessAnswering`).
+  func ping() async throws
   /// Each remote workroom's pane layout, kept on its host (#255). Throws `VCSError.backendVersion`
   /// when the peer predates the service.
   func layouts() throws -> AgentLayoutService
@@ -60,6 +63,8 @@ extension HostServiceConnection {
   func sessions() async throws -> [SessionDescriptor] {
     throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
   }
+
+  func ping() async throws {}
 
   func layouts() throws -> AgentLayoutService {
     throw VCSError.backendVersion("Host has no layout service.")
@@ -284,6 +289,21 @@ actor HostConnectionManager {
   /// acquires through `LocalAgentVCS` or `RemoteWorkrooms` first.
   func programStatus(host: HostID) throws -> any HostServiceConnection {
     try connected(host).1
+  }
+
+  /// Whether `host`'s link answers a ping within `seconds`, asked after a wake or a network change
+  /// (`RemoteLinkMonitor`). One that doesn't is dropped: ssh would take about a minute to notice it
+  /// is dead. A host with no link can't be asked, and is false. Any reply counts as an answer, an
+  /// error included; only silence, or the link ending meanwhile, does not.
+  func dropUnlessAnswering(_ host: HostID, within seconds: TimeInterval) async -> Bool {
+    guard let (lease, connection) = try? connected(host) else { return false }
+    do {
+      try await withTimeout(seconds: seconds) { try await connection.ping() }
+    } catch is VCSTimeoutError {
+      disconnect(lease)
+      return false
+    } catch {}
+    return slots[host]?.lease == lease && slots[host]?.status == .connected
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

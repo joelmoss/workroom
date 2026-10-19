@@ -194,6 +194,33 @@ final class HostConnectionManagerTests: XCTestCase {
     await manager.disconnect(lease)
   }
 
+  // Value: protects=after a wake, a host whose link still answers keeps it and its panes, and one
+  // that went silent is dropped within the 2 s rather than ssh's minute; fails_when=a silent link
+  // is kept, an answering one dropped, or a host with no link reads as answering; why_new=new
+  // behaviour; seam=none
+  func testOnlyALinkThatDoesNotAnswerIsDropped() async throws {
+    let manager = HostConnectionManager()
+    let unconnected = HostID.remote(UUID())
+    let answered = await manager.dropUnlessAnswering(unconnected, within: 0.2)
+    XCTAssertFalse(answered, "a host with no link read as answering")
+
+    let host = HostID.remote(UUID())
+    let lease = try await manager.connect(host: host) { ConnectionFixture() }
+    let kept = await manager.dropUnlessAnswering(host, within: 0.2)
+    XCTAssertTrue(kept)
+    let up = await manager.snapshot(for: host)
+    XCTAssertEqual(up.lease, lease, "an answering link was replaced")
+    XCTAssertEqual(up.status, .connected)
+
+    let silent = ConnectionFixture(silent: true)
+    _ = try await manager.connect(host: host) { silent }
+    let dropped = await manager.dropUnlessAnswering(host, within: 0.2)
+    XCTAssertFalse(dropped)
+    let down = await manager.snapshot(for: host)
+    XCTAssertEqual(down.status, .disconnected, "a silent link was kept")
+    try await silent.closed.arrived()
+  }
+
   func testSupersededHandshakeClosesLateConnection() async throws {
     let manager = HostConnectionManager()
     let host = HostID.remote(UUID())
@@ -412,14 +439,22 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
   let marker: String
   let readerContext: RepositoryContext?
   let delayStatus: Bool
+  /// A link that went dead without the transport noticing: a ping is never answered.
+  let silent: Bool
+  let silence = ConnectionSignal()
 
   init(
-    marker: String = "fixture", readerContext: RepositoryContext? = nil, delayStatus: Bool = false
+    marker: String = "fixture", readerContext: RepositoryContext? = nil, delayStatus: Bool = false,
+    silent: Bool = false
   ) {
     self.marker = marker
     self.readerContext = readerContext
     self.delayStatus = delayStatus
+    self.silent = silent
     (disconnection, loss) = AsyncStream<Void>.makeStream()
+  }
+  func ping() async throws {
+    if silent { await silence.wait() }
   }
   func reader(context: RepositoryContext) throws -> VCSProviding {
     ConnectionReader(context: readerContext ?? context, marker: marker, connection: self)
