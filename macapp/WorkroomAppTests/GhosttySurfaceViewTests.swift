@@ -494,96 +494,66 @@ final class RemotePaneReconnectTests: XCTestCase {
   }
 }
 
-// Value: protects=remote links replaced when the Mac wakes or moves network, and only then;
-// fails_when=a Docker or VPN interface that isn't preferred, or a repeat update, replaces every
-// link, or a wake or network move is lost to a path that went down meanwhile; why_new=new
+// Value: protects=hosts are asked when the Mac wakes or its network moves or comes back, and only
+// then; fails_when=a Docker or VPN interface that isn't preferred, or a repeat update, asks every
+// host, or a wake, a network move or a return to a same-looking network is missed; why_new=new
 // behaviour; seam=none
 /// When the network moved enough that a remote link may be dead (`RemoteLinkTrigger`).
 final class RemoteLinkTriggerTests: XCTestCase {
   private let wifi = RemoteLinkTrigger.Path(
     satisfied: true, interface: "en0", gateways: ["192.168.1.1:0"])
   private let down = RemoteLinkTrigger.Path(satisfied: false, interface: nil, gateways: [])
+  private let settle = RemoteLinkTrigger.Action.fire(after: RemoteLinkTrigger.settle)
 
-  func testTheNetworkTheLinksWereMadeOnReplacesNothing() {
+  func testTheNetworkTheLinksWereMadeOnAsksNothing() {
     var trigger = RemoteLinkTrigger()
     XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
     XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
   }
 
-  func testAnotherInterfaceOrGatewayReplacesEveryLink() {
+  func testAnotherInterfaceOrGatewayAsksEveryHost() {
     var trigger = RemoteLinkTrigger()
     _ = trigger.pathChanged(to: wifi)
     var ethernet = wifi
     ethernet.interface = "en7"
-    XCTAssertEqual(
-      trigger.pathChanged(to: ethernet), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+    XCTAssertEqual(trigger.pathChanged(to: ethernet), settle)
     trigger.fired()
     var otherWiFi = ethernet
     otherWiFi.gateways = ["10.0.0.1:0"]
-    XCTAssertEqual(
-      trigger.pathChanged(to: otherWiFi), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+    XCTAssertEqual(trigger.pathChanged(to: otherWiFi), settle)
   }
 
-  func testTheSameNetworkBackAfterABlipReplacesOnlyWaitingPanes() {
+  /// A network back after going down asks every host, even one that looks the same: two networks
+  /// can share an interface and a router's default address.
+  func testANetworkBackAfterGoingDownAsksEveryHost() {
     var trigger = RemoteLinkTrigger()
     _ = trigger.pathChanged(to: wifi)
     XCTAssertEqual(trigger.pathChanged(to: down), .hold)
-    XCTAssertEqual(
-      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .waiting))
-  }
-
-  /// A wake fires after `wakeWait`, or at the next path update; once fired, the network it woke
-  /// on replaces nothing more.
-  func testAWakeReplacesEveryLinkOnce() {
-    var trigger = RemoteLinkTrigger()
-    _ = trigger.pathChanged(to: wifi)
-    XCTAssertEqual(trigger.woke(), .fire(after: RemoteLinkTrigger.wakeWait, scope: .all))
-    XCTAssertEqual(
-      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+    XCTAssertEqual(trigger.pathChanged(to: wifi), settle)
     trigger.fired()
     XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
   }
 
-  /// A second wake before the first fired still fires every link, after `wakeWait`; a path that
-  /// stays down keeps holding.
-  func testRepeatedWakesAndDownPathsKeepTheirAnswer() {
+  /// A wake fires after `wakeWait`, or at the next path update; once fired, the network it woke
+  /// on asks nothing more. A second wake before the first fired still fires.
+  func testAWakeAsksEveryHostOnce() {
     var trigger = RemoteLinkTrigger()
     _ = trigger.pathChanged(to: wifi)
-    _ = trigger.woke()
-    XCTAssertEqual(trigger.woke(), .fire(after: RemoteLinkTrigger.wakeWait, scope: .all))
-    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
-    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
-  }
-
-  /// A fire that lands while the path is down has paid what was owed: the network back as it was
-  /// then reattaches only the panes left waiting by that fire.
-  func testAFireThatLandsWhileDownLeavesOnlyWaitingPanesForTheReturn() {
-    var trigger = RemoteLinkTrigger()
-    _ = trigger.pathChanged(to: wifi)
-    _ = trigger.woke()
-    _ = trigger.pathChanged(to: down)
+    XCTAssertEqual(trigger.woke(), .fire(after: RemoteLinkTrigger.wakeWait))
+    XCTAssertEqual(trigger.woke(), .fire(after: RemoteLinkTrigger.wakeWait))
+    XCTAssertEqual(trigger.pathChanged(to: wifi), settle)
     trigger.fired()
-    XCTAssertEqual(
-      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .waiting))
+    XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
   }
 
-  /// What was owed survives a path that went down before it fired: a wake with no network yet, or
-  /// a move to another network that blipped, still replaces every link once the network is back.
-  func testAFireHeldByANetworkThatWentDownStillReplacesEveryLink() {
+  /// A wake with no network yet holds, and fires once the network is back.
+  func testAWakeHeldByANetworkThatIsDownFiresWhenItIsBack() {
     var trigger = RemoteLinkTrigger()
     _ = trigger.pathChanged(to: wifi)
     XCTAssertEqual(trigger.pathChanged(to: down), .hold)
     XCTAssertEqual(trigger.woke(), .hold)
-    XCTAssertEqual(
-      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .all))
-    trigger.fired()
-
-    var ethernet = wifi
-    ethernet.interface = "en7"
-    _ = trigger.pathChanged(to: ethernet)
-    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
-    XCTAssertEqual(
-      trigger.pathChanged(to: ethernet), .fire(after: RemoteLinkTrigger.settle, scope: .all))
+    XCTAssertEqual(trigger.pathChanged(to: wifi), settle)
   }
 }
 
