@@ -24,6 +24,11 @@ final class RemoteLinkMonitor {
   private var pending: DispatchWorkItem?
   /// The events since the last fire, for its log line: which wake, VPN or tethered phone it was.
   private var reasons: [String] = []
+  /// Hosts are being asked. A fire meanwhile asks again before the answers are posted, so panes
+  /// attach once: a second check posted on its own would find the link the first one dropped, and
+  /// end the ssh its panes had just started.
+  private var asking = false
+  private var askAgain = false
   private var wakeObserver: NSObjectProtocol?
 
   func start() {
@@ -75,12 +80,21 @@ final class RemoteLinkMonitor {
       Self.logger.notice("remote links: \(why, privacy: .public); reattaching waiting panes")
       return post([])
     }
+    Self.logger.notice("remote links: \(why, privacy: .public); asking each host")
+    askAgain = true
+    guard !asking else { return }
+    asking = true
     // The answers first: a host that didn't answer has its link dropped, and a pane's attach then
     // reconnects it (`attachCommand`), which it would find still up, and lose, the other way round.
     Task {
-      let stale = await RemoteHosts.shared.unansweringProviderHosts()
+      var stale: Set<HostID> = []
+      while askAgain {
+        askAgain = false
+        stale.formUnion(await RemoteHosts.shared.unansweringProviderHosts())
+      }
+      asking = false
       Self.logger.notice(
-        "remote links: \(why, privacy: .public); \(stale.count) host(s) didn't answer within 2 s, reattaching their panes and waiting ones"
+        "remote links: \(stale.count) host(s) gave no answer within \(RemoteHosts.answerDeadline) s or had no link, reattaching their panes and waiting ones"
       )
       post(stale)
     }

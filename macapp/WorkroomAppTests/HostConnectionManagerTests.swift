@@ -219,6 +219,15 @@ final class HostConnectionManagerTests: XCTestCase {
     let down = await manager.snapshot(for: host)
     XCTAssertEqual(down.status, .disconnected, "a silent link was kept")
     try await silent.closed.arrived()
+
+    // A ping that fails got no answer: the link failed under it, or it was never sent.
+    let failing = ConnectionFixture(pingFails: true)
+    _ = try await manager.connect(host: host) { failing }
+    let answeredByFailing = await manager.dropUnlessAnswering(host, within: 0.2)
+    XCTAssertFalse(answeredByFailing, "a ping that failed read as an answer")
+    let failed = await manager.snapshot(for: host)
+    XCTAssertEqual(failed.status, .disconnected, "a link whose ping failed was kept")
+    try await failing.closed.arrived()
   }
 
   func testSupersededHandshakeClosesLateConnection() async throws {
@@ -441,12 +450,15 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
   let delayStatus: Bool
   /// A link that went dead without the transport noticing: a ping is never answered.
   let silent: Bool
+  /// A link that fails under a ping, as one that ends mid-ping does.
+  let pingFails: Bool
   let silence = ConnectionSignal()
 
   init(
     marker: String = "fixture", readerContext: RepositoryContext? = nil, delayStatus: Bool = false,
-    silent: Bool = false
+    silent: Bool = false, pingFails: Bool = false
   ) {
+    self.pingFails = pingFails
     self.marker = marker
     self.readerContext = readerContext
     self.delayStatus = delayStatus
@@ -455,6 +467,7 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
   }
   func ping() async throws {
     if silent { await silence.wait() }
+    if pingFails { throw HostConnectionError.connectionLost }
   }
   func reader(context: RepositoryContext) throws -> VCSProviding {
     ConnectionReader(context: readerContext ?? context, marker: marker, connection: self)

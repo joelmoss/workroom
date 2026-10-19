@@ -483,9 +483,14 @@ final class RemotePaneReconnectTests: XCTestCase {
     postLinksStale([.remote(UUID())])
     XCTAssertFalse(
       view.persistentSessionIsRestored, "a live link was replaced though its host answered")
-    postLinksStale([host])
+    // A pane that stopped (no live ssh, nothing waiting) stays stopped, whatever its host did.
+    let stopped = try remotePane(log: "", provider: true)
+    let stoppedHost = try XCTUnwrap(
+      PersistentSessionService.shared.remoteHost(of: XCTUnwrap(stopped.persistentSessionID)))
+    postLinksStale([host, stoppedHost])
     XCTAssertTrue(
       view.persistentSessionIsRestored, "a live link was kept though its host was silent")
+    XCTAssertFalse(stopped.persistentSessionIsRestored, "a stopped pane was attached again")
   }
 }
 
@@ -537,6 +542,29 @@ final class RemoteLinkTriggerTests: XCTestCase {
       trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .all))
     trigger.fired()
     XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
+  }
+
+  /// A second wake before the first fired still fires every link, after `wakeWait`; a path that
+  /// stays down keeps holding.
+  func testRepeatedWakesAndDownPathsKeepTheirAnswer() {
+    var trigger = RemoteLinkTrigger()
+    _ = trigger.pathChanged(to: wifi)
+    _ = trigger.woke()
+    XCTAssertEqual(trigger.woke(), .fire(after: RemoteLinkTrigger.wakeWait, scope: .all))
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+  }
+
+  /// A fire that lands while the path is down has paid what was owed: the network back as it was
+  /// then reattaches only the panes left waiting by that fire.
+  func testAFireThatLandsWhileDownLeavesOnlyWaitingPanesForTheReturn() {
+    var trigger = RemoteLinkTrigger()
+    _ = trigger.pathChanged(to: wifi)
+    _ = trigger.woke()
+    _ = trigger.pathChanged(to: down)
+    trigger.fired()
+    XCTAssertEqual(
+      trigger.pathChanged(to: wifi), .fire(after: RemoteLinkTrigger.settle, scope: .waiting))
   }
 
   /// What was owed survives a path that went down before it fired: a wake with no network yet, or
