@@ -33,6 +33,10 @@ _Avoid_: Base (alone)
 **Setup script**, **Teardown script**:
 The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted, on every kind of workroom: the Go CLI runs them locally, the app runs them on a remote workroom's host through `wr-agent run-script`. A failed teardown stops the delete; **Delete Anyway** deletes without it.
 
+**Trusted script**:
+A setup or teardown script whose exact contents this Mac has approved, recorded per project. Workroom runs no other script, except a root copy that git ignores, which never arrives by a pull. A changed script needs approving again.
+_Avoid_: allowed script, whitelisted script
+
 **Include file**, **Included files**:
 The include file is the root's `.worktreeinclude`, a list of `.gitignore`-style patterns. The included files are the root's gitignored files that match it, such as `.env`, copied into every new workroom, on this Mac or on a host.
 _Avoid_: Shared files, synced files
