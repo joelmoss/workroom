@@ -455,7 +455,8 @@ The `fetch` and `worktree` logs hold each `$ git …` command line and its outpu
 **Commands available in `--json` mode:** `create`, `list` (with `--warnings none|fast|full`),
 `delete` (requires `--confirm <name>`), `version`, plus two hidden, app-only commands — `add-project`
 (register an empty project) and `delete-project` (drop a project; `--with-workrooms` cascades the
-teardown). The schema is versioned (`schema_version: 1`); breaking changes bump it.
+teardown). `trust`, `trust status` and `untrust` also run in `--json` mode (see
+[Approving scripts](#approving-scripts)). The schema is versioned (`schema_version: 1`); breaking changes bump it.
 
 `base set` and `base clear` also run in `--json` mode. They print `{"project": …, "base_branch": …}`,
 or `{"global": true, "base_branch": …}` with `--global`.
@@ -488,7 +489,7 @@ whose host its provider destroyed gets `HostDestroyed` instead.
 | `RemoteProjectUnsupported` | `add-project` was given a remote path (`host:path`, `ssh://…`) |
 | `RemoteWorkroomUnsupported` | `delete` / `delete-project` on a remote workroom (not yet supported) |
 | `BaseBranchNotFound` | A base branch exists neither on its remote nor locally, or the fetch that checks the remote failed |
-| `ScriptNotTrusted` | A setup or teardown script this Mac has not [approved](#approving-scripts); the envelope's `script` carries its `name`, `origin`, `sha256` and `text` |
+| `ScriptNotTrusted` | A setup or teardown script this Mac has not [approved](#approving-scripts); the envelope's `script` carries its `name`, `origin`, `sha256`, `text` (to show), `bytes` (the exact contents in base64, to approve), `trusted` and `exempt` |
 | `InternalError` | Anything else |
 
 #### Exit codes
@@ -536,12 +537,15 @@ runs, so bytes that change in between are refused too.
 
 A root copy that **git ignores** needs no approval: it can't arrive by a pull. An untracked file git
 doesn't ignore still needs one, and so does an ignored symlink, whose target a pull may change.
+Only a regular file of at most 1 MiB is read to judge a script; anything else (a link to a device, a
+huge file) is refused as not approved.
 
 An approval covers the script's own contents only. Anything it runs in turn (`bin/setup`,
 `npm install` and the `package.json` it reads, a file it sources) is repository code no approval
 covers, so a script is only as reviewed as what it calls.
 
-Approve ahead of time, or check, from the project's root (or with `--project DIR`):
+Approve ahead of time, or check, from the project's root, from inside one of its workrooms (approvals
+belong to the project, never to a workroom's path), or with `--project DIR`:
 
 ```bash
 workroom trust          # show each script a create or delete would run next, and approve it
@@ -555,7 +559,13 @@ approves every script it finds without showing it, so read them first. `trust` a
 fetch and resolve the base branch as a create does, so they judge the
 setup script the next create would run. Approvals are kept per project, as a SHA-256 for each script,
 in this Mac's config (`trusted_scripts`); they never leave it. Removing a project from Workroom
-forgets them.
+forgets them. `trust` and `trust status` also take two hidden flags for the macOS app: `--stdin
+<workroom_setup|workroom_teardown>` judges the contents read from stdin (a remote host's copy) in
+place of the project's file, and `--base <branch>` judges the setup script at that branch.
+
+A teardown script a delete finds in the workroom itself can't be approved with `workroom trust`,
+which judges the base commit's and the root's copies. The refusal then says to run the same command
+in a terminal, where the delete shows the workroom's script and asks.
 
 ### Gitignored files (`.worktreeinclude`)
 
