@@ -14,10 +14,9 @@ struct ProgramStatusGlyph: View {
   private let theme = ThemeService.shared
 
   var body: some View {
-    let palette = ProgramStatusPalette.current
     Image(systemName: mark == .blocked ? "hand.raised.fill" : "checkmark.circle.fill")
       .font(.system(size: size))
-      .foregroundStyle(mark == .blocked ? palette.attention : palette.done)
+      .foregroundStyle(mark == .blocked ? theme.tokens.warning : theme.tokens.success)
       .overlay(alignment: .bottomTrailing) {
         if stale {
           Image(systemName: "clock.fill")

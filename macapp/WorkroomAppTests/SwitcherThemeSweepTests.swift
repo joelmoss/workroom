@@ -140,21 +140,29 @@ final class SwitcherThemeSweepTests: XCTestCase {
   /// The stale mark is a clock in `fg` on its own `panel` disk (`ProgramStatusGlyph`), so it is
   /// measured against that disk. The plan's first choice, a hairline ring in `fgMuted`, failed this
   /// floor on 25 bundled themes (TokyoNight Day 2.23:1, iTerm2 Solarized Light 2.09:1).
-  func testEveryBundledThemeKeepsTheProgramStatusGlyphsVisible() throws {
+  ///
+  /// Covers every traffic-light token, not just the two glyphs: they are the app's only status
+  /// colours (usage bars, change badges, PR and CI states), and as each theme defines them 70 fell
+  /// under 3:1 across 35 bundled families.
+  func testEveryBundledThemeKeepsTheStatusColoursVisible() throws {
     for theme in try bundledThemes() {
       let tokens = ThemeTokens(preview: theme)
-      let palette = ProgramStatusPalette(tokens: tokens)
       let surfaces = zip(
-        ["row/rail/tab", "selected row", "active tab"], ProgramStatusPalette.backgrounds(tokens))
+        ["row/rail/tab", "selected row", "active tab"],
+        ThemeTokens.statusGrounds(bg: tokens.nsBg, panel: tokens.nsPanel, fg: tokens.nsFg))
+      let roles = [
+        ("warning", tokens.nsWarning), ("success", tokens.nsSuccess),
+        ("failure", tokens.nsFailure), ("conflict", tokens.nsConflict),
+      ]
       for (surface, background) in surfaces {
-        for (role, color) in [("attention", palette.nsAttention), ("done", palette.nsDone)] {
+        for (role, color) in roles {
           XCTAssertGreaterThanOrEqual(
-            ThemeTokens.contrastRatio(color, background), ProgramStatusPalette.target - 0.01,
-            "\(theme.name): the \(role) disappears on the \(surface)")
+            ThemeTokens.contrastRatio(color, background), 3 - 0.01,
+            "\(theme.name): \(role) disappears on the \(surface)")
         }
       }
       XCTAssertGreaterThanOrEqual(
-        ThemeTokens.contrastRatio(tokens.nsFg, tokens.nsPanel), ProgramStatusPalette.target - 0.01,
+        ThemeTokens.contrastRatio(tokens.nsFg, tokens.nsPanel), 3 - 0.01,
         "\(theme.name): the stale clock disappears on its disk")
     }
   }

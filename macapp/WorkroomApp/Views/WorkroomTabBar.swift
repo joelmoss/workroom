@@ -550,7 +550,7 @@ private struct WorkroomTabChip: View {
       if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
-          .foregroundStyle(.orange)
+          .foregroundStyle(theme.tokens.warning)
           .help(reason.title)
       }
       // The project name and (for a workroom) its own name, separated by a slash — one shared, smaller
@@ -597,7 +597,7 @@ private struct WorkroomTabChip: View {
         if runRunning {
           Image(systemName: "play.circle.fill")
             .font(.system(size: 10))
-            .foregroundStyle(Color.green)
+            .foregroundStyle(theme.tokens.success)
             .help("Run command running")
             .accessibilityLabel("run running")
         } else if store.runFailed(for: target.id) {
@@ -651,7 +651,7 @@ private struct WorkroomTabChip: View {
       .overlay(alignment: .bottom) {
         Group {
           if terminals.needsAttention(forTargetID: target.id) {
-            StatusUnderline(color: ProgramStatusPalette.current.attention)
+            StatusUnderline(color: theme.tokens.warning)
           } else if terminals.hasProgramError(forTargetID: target.id) {
             StatusUnderline(color: theme.tokens.failure)
           } else if terminals.isRunning(forTargetID: target.id) {

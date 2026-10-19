@@ -544,7 +544,7 @@ private struct TerminalTabChip: View {
   /// command sweeps.
   @ViewBuilder private var underline: some View {
     switch tab.indicator {
-    case .blocked: StatusUnderline(color: ProgramStatusPalette.current.attention)
+    case .blocked: StatusUnderline(color: theme.tokens.warning)
     case .error: StatusUnderline(color: theme.tokens.failure)
     case .running(let failed): RunningUnderline(failed: failed)
     case .done, .none: EmptyView()
