@@ -52,6 +52,11 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
 - **D6. Codaset renders Markdown itself.** It uses `commonmarker` for Markdown and `rouge` for code
   highlighting on the server. One `DocsController` and one Phlex layout serve every page. In
   production each page is cached by content hash. No highlighting JS ships.
+  - **As built:** `WorkroomDocsController`, `Layouts::Docs` and the `WorkroomDocs` model. Outside
+    development each page is rendered once and kept for the life of the process, because the docs
+    can't change without a deploy, so there is no content-hash cache. Rouge highlights each code
+    block in a Nokogiri pass into classes coloured from Codaset's tokens. Commonmarker's own
+    highlighter is off, because it writes inline styles that the CSP refuses.
 - **D7. Search uses MiniSearch in the browser.** The JSON index is built from the same Markdown and
   covers titles, headings and body text, with typo tolerance. ⌘K and `/` open the search box. A
   result jumps straight to the heading it matched.
@@ -138,6 +143,10 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   - The same code runs in both, and only the path changes.
 - **D18. Live reload works in development only.** Codaset watches the docs folder, pushes a reload
   over Action Cable, and morphs the page with idiomorph so the scroll position stays put.
+  - **As built:** the page polls `/workroom/docs/digest` every second instead of using Action Cable,
+    then morphs with idiomorph. Codaset's cable connection rejects visitors who aren't signed in,
+    the docs are public, and opening the cable to anonymous connections would widen the sync
+    channels' surface for a development convenience.
 - **D19. `make docs-preview` previews any worktree.** It runs Codaset's `bin/dev` with
   `WORKROOM_DOCS_PATH` set to the current worktree's `docs-site/`. It finds Codaset at
   `$CODASET_PATH`, which defaults to `~/dev/codaset`, and fails with a clear message if Codaset is
@@ -185,7 +194,9 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
 ### Deploy
 
 - **D29. Hatchbox pulls the docs at build time.** Codaset's Hatchbox `pre_build_script` runs a
-  shallow, sparse clone of this repo's master `docs-site/` into `$RELEASE_DIR/vendor/workroom-docs`.
+  sparse clone of this repo's master `docs-site/` into `$RELEASE_DIR/vendor/workroom-docs`, using
+  `--filter=blob:none --sparse` rather than `--depth 1`. A shallow clone would lose the history that
+  D13's "Last updated" date comes from.
   `WORKROOM_DOCS_PATH` defaults to that folder in production, so the build needs no environment
   variable.
 - **D32. Every Codaset deploy goes through Codaset's CI.**
@@ -196,9 +207,15 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   2. Codaset's `ci.yml` also starts on a `repository_dispatch` event of type `workroom-docs`. That
      run pulls this repo's master `docs-site/` and runs the full suite, including a test that renders
      every real docs page and builds the search index. It deploys only if all of that passes.
-  3. This repo gains a workflow that uses `workflow_run`. It fires only after master CI succeeds and
-     only if `docs-site/` changed. It sends that dispatch using `CODASET_DISPATCH_TOKEN`, a
-     fine-grained token limited to the Codaset repo.
+  3. This repo sends that dispatch only after master CI succeeds. As built, it sends it on every
+     green master push, not only when `docs-site/` changed (owner, 2026-10-20): a docs change whose
+     own run went red would otherwise wait for the next docs change to publish. It sends it
+     using `CODASET_DISPATCH_TOKEN`, a fine-grained token limited to the Codaset repo. As built, it
+     is a `docs-deploy` job at the end of `ci.yml` rather than a `workflow_run` workflow. CI is one
+     workflow, and a job that `needs` every other job is the same gate without `workflow_run`'s
+     pitfalls: it runs the default branch's copy of the file, has no path filter, and needs its own
+     success check. The dispatch carries the commit as `client_payload.sha`. Until the token is set,
+     the job warns and skips.
   4. The owner turns off Hatchbox's automatic deploy on push for Codaset, so CI is the only way to
      deploy.
 
@@ -240,3 +257,8 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   whether app env vars are present then. Hatchbox's docs don't say. D29 is designed to need neither,
   but check it on the first deploy.
 - Whether Hatchbox auto-deploy on push is on for Codaset today. It can't be seen from either repo.
+- Codaset's CI tests the docs at `client_payload.sha`, but Hatchbox pulls master's `docs-site/` when it
+  builds. If a second docs change merges in between, the deploy ships docs that only this repo's CI
+  has checked. The window is a few minutes and the cost is one page not checked by Codaset's own
+  tests. Pulling `client_payload.sha` in the build would need the SHA passed through Hatchbox, so it
+  is left for now.
