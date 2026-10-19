@@ -13,9 +13,11 @@ import WorkroomVCS
 // is persisted across launches: a forward restored at launch would promise a socket the design
 // cannot keep.
 //
-// **The local port is ephemeral.** Forwarding port N binds whatever loopback port the kernel hands
-// out, never N — so forwarding the local box's own port 5173 cannot collide with the dev server
-// already sitting on it. The bound port is what the UI shows and what the user connects to.
+// **The local port is the same number when it is free.** The Ports panel forwards N to N on this
+// Mac when nothing here holds N, as the dev container spec's `forwardPorts` expects, and to an
+// ephemeral port otherwise. It was always ephemeral while the panel also served this Mac's own
+// agent, where N was by definition taken; only container workrooms have the panel now. The bound
+// port is what the UI shows and what the user connects to.
 //
 // **The listener is reachable by every process and every user account on this Mac.** `127.0.0.1`
 // is not uid-scoped, so a forward grants all of them unauthenticated access to the target — the
@@ -31,12 +33,14 @@ struct AgentForwardService: Sendable {
   /// agent's box. `openTimeout` is how long one accepted connection waits for the agent's REPLY;
   /// `sendTimeout` and `drainTimeout` bound a local client that stops reading (see `PortForward`).
   /// `sendTimeout` also bounds how long an OPEN may sit unsent behind a stalled connection writer.
+  /// `localPort` and `requireLocalPort` choose the port on this Mac (`PortForward.init`).
   ///
   /// `reconnect`, when given, makes the forward outlive this connection (#380): a connection
   /// accepted once it has ended waits for `reconnect` to give it a new one, and the forward keeps
   /// that one from then on. Without it, the forward carries only while this connection lives.
   func listen(
-    remotePort: UInt16, openTimeout: TimeInterval = PortForward.openTimeout,
+    remotePort: UInt16, localPort: UInt16 = 0, requireLocalPort: Bool = false,
+    openTimeout: TimeInterval = PortForward.openTimeout,
     sendTimeout: TimeInterval = PortForward.sendTimeout,
     drainTimeout: TimeInterval = PortForward.drainTimeout,
     reconnect: PortForward.Reconnect? = nil,
@@ -45,7 +49,8 @@ struct AgentForwardService: Sendable {
     try PortForward(
       remotePort: remotePort, connection: connection,
       timeouts: .init(open: openTimeout, send: sendTimeout, drain: drainTimeout),
-      reconnect: reconnect, onEvent: onEvent)
+      localPort: localPort, requireLocalPort: requireLocalPort, reconnect: reconnect,
+      onEvent: onEvent)
   }
 
   /// The other direction: listen on `remotePort` on the agent's box (0 for any free port) and carry
@@ -186,8 +191,18 @@ final class PortForward: @unchecked Sendable {
   /// A new connection to the forward's host, or nil when there is none to be had.
   typealias Reconnect = @Sendable () async -> AgentVCSConnection?
 
+  /// The local port a forward that must keep its port number can't have: something on this Mac
+  /// holds it (a dev server of its own, most often).
+  struct LocalPortTaken: LocalizedError, Equatable {
+    let port: UInt16
+    var errorDescription: String? {
+      "Port \(port) is in use on this Mac, and the dev container requires the same port."
+    }
+  }
+
   let remotePort: UInt16
-  /// The ephemeral port the kernel bound. This is the address the user connects to.
+  /// The port bound on this Mac: the one asked for when it was free, else an ephemeral one. This is
+  /// the address the user connects to.
   let localPort: UInt16
   private let listener: Int32
   /// The connection streams are opened on. Replaced only through `reconnect`.
@@ -211,8 +226,13 @@ final class PortForward: @unchecked Sendable {
   private let accepts = DispatchQueue(label: "workroom.agent.forward.listen")
   private let source: DispatchSourceRead
 
+  /// `localPort` 0 binds an ephemeral port. Any other is tried first, and when something on this
+  /// Mac holds it the forward takes an ephemeral port instead, or throws `LocalPortTaken` when
+  /// `requireLocalPort` (the dev container spec's `requireLocalPort`, whose default is the same
+  /// fallback).
   init(
     remotePort: UInt16, connection: AgentVCSConnection, timeouts: Timeouts,
+    localPort preferred: UInt16 = 0, requireLocalPort: Bool = false,
     reconnect: Reconnect? = nil, onEvent: @escaping @Sendable (Event) -> Void
   ) throws {
     self.remotePort = remotePort
@@ -222,7 +242,12 @@ final class PortForward: @unchecked Sendable {
     self.onEvent = onEvent
     // Loopback, so nothing off this Mac can reach a forward: the agent's own allowlist is
     // loopback-only and this is its mirror.
-    guard let (listener, port) = LoopbackSocket.listen() else {
+    var made: (descriptor: Int32, port: UInt16)?
+    if preferred != 0, !LoopbackSocket.heldOnIPv6Loopback(port: preferred) {
+      made = LoopbackSocket.listen(port: preferred)
+    }
+    if made == nil, preferred != 0, requireLocalPort { throw LocalPortTaken(port: preferred) }
+    guard let (listener, port) = made ?? LoopbackSocket.listen() else {
       throw HostConnectionError.serviceUnavailable(
         "Could not listen on a loopback port: \(String(cString: strerror(errno)))")
     }
@@ -937,17 +962,18 @@ private final class ForwardedConnection: @unchecked Sendable {
   }
 }
 
-/// The forwards the user has asked for on one host, and the listeners serving them.
+/// The forwards on one container workroom's host: the ones its dev container declares
+/// (`forwardDeclared`) and the ones the user adds, and the listeners serving them.
 ///
-/// One model per HOST (`model(for:)`), not per workroom: a forward runs on the host's agent
-/// connection, so two workrooms on one host see the same list. A remote workroom is its own host
-/// (#254), so in practice each remote workroom has its own list and every local one shares this
-/// Mac's.
+/// One model per HOST (`model(for:)`); a container workroom is its own host (#254), so each has its
+/// own list. A remote provider's workroom has none: boxd and exe.dev publish a machine's ports
+/// themselves (`boxd machine proxy`, `ssh exe.dev share port`), and a workroom on this Mac reaches
+/// its ports directly.
 @MainActor
 final class PortForwardingModel: ObservableObject {
   /// Each host's model, made on first use and kept for the launch: its listeners must outlive the
-  /// Ports panel showing another workroom and coming back. This Mac's agent takes its forwards
-  /// with its connection (`watch()`); a remote host's outlive it (`Transport.reconnect`, #380).
+  /// Ports panel showing another workroom and coming back, and a host's connection
+  /// (`Transport.reconnect`, #380).
   static var models: [HostID: PortForwardingModel] = [:]
 
   /// A deleted host's forwards go with it: their listeners stop, and nothing reconnects a host that
@@ -967,8 +993,7 @@ final class PortForwardingModel: ObservableObject {
   /// How the model reaches the agent, so a test can hand it a scripted agent and a connection
   /// stream it controls.
   struct Transport {
-    /// The service and the lease of the connection it runs on. Never spawns an agent or connects a
-    /// host; the reasoning is on `LocalAgentVCS.forwarding()`, the decision point.
+    /// The service and the lease of the connection it runs on. Never connects a host (`on`).
     var forwarding: @Sendable () async throws -> (HostConnectionManager.Lease, AgentForwardService)
     var updates: @Sendable () async -> AsyncStream<HostConnectionManager.Snapshot>
     /// The connected lease right now, or nil. What `add()` reconciles against: the watch's last
@@ -980,31 +1005,26 @@ final class PortForwardingModel: ObservableObject {
 
     static func live(_ host: HostID) -> Transport {
       var transport = on(host, manager: .shared)
-      if host == .local { transport.forwarding = { try await LocalAgentVCS.shared.forwarding() } }
       transport.reconnect = reconnecting(host, manager: .shared)
       return transport
     }
 
-    /// For a remote host, the reconnect a forward runs when it is used after the host's connection
-    /// ended (#380): the user is at the forward, as a click is the user at a workroom, so a box
-    /// asleep is woken. It never starts a stopped container: `ensureConnected` starts only a host
-    /// whose workroom was opened, so the reconnect fails and the row says why. Nil for this Mac's
-    /// agent, whose forwards go with its connection.
+    /// The reconnect a forward runs when it is used after the host's connection ended (#380): the
+    /// user is at the forward, as a click is the user at a workroom. It never starts a stopped
+    /// container: `ensureConnected` starts only a host whose workroom was opened, so the reconnect
+    /// fails and the row says why.
     static func reconnecting(_ host: HostID, manager: HostConnectionManager)
-      -> PortForward.Reconnect?
+      -> PortForward.Reconnect
     {
-      guard case .remote = host else { return nil }
-      return {
+      {
         try? await RemoteHosts.shared.ensureConnected(host, wake: true)
         return try? await manager.forwarding(host: host).1.connection
       }
     }
 
-    /// `host`'s connection in `manager`. A remote host's connection is made by selecting its
-    /// workroom (`RemoteHosts.ensureConnected`, through the inspector's reads), so a forward asks
-    /// for the one there is and never makes one: the local reasoning in
-    /// `LocalAgentVCS.forwarding()` holds for a host too, and connecting one could start a
-    /// container the user stopped.
+    /// `host`'s connection in `manager`. A host's connection is made by selecting its workroom
+    /// (`RemoteHosts.ensureConnected`, through the inspector's reads), so a forward asks for the
+    /// one there is and never makes one: connecting could start a container the user stopped.
     static func on(_ host: HostID, manager: HostConnectionManager) -> Transport {
       Transport(
         forwarding: { try await manager.forwarding(host: host) },
@@ -1020,6 +1040,8 @@ final class PortForwardingModel: ObservableObject {
     let id: UUID
     let remotePort: UInt16
     let localPort: UInt16
+    /// The dev container's `portsAttributes` label for the port, if it gives one.
+    var label: String? = nil
     /// The connection this forward's streams run on. The agent closes every socket a departing
     /// connection opened, so a forward outlives its lease as a listener that accepts connections it
     /// can never carry — which is why a lease that is no longer the connected one drops the row,
@@ -1047,17 +1069,24 @@ final class PortForwardingModel: ObservableObject {
 
   let host: HostID
   private let transport: Transport
+  /// Whether a forward tries its port's own number on this Mac first (`PortForward.init`). Off in
+  /// tests, which would otherwise hold real port numbers on the Mac running them.
+  private let sameLocalPort: Bool
   private var listeners: [UUID: PortForward] = [:]
   private var watching = false
   private var adding = false
+  /// `forwardDeclared` is running, or has forwarded what the dev container declares.
+  private var declaring = false
+  private(set) var declared = false
   /// The `Entry.sequence` the next row gets.
   private var nextSequence = 0
   /// How many snapshots the watch has consumed, for the tests.
   private(set) var snapshotsSeen = 0
 
-  init(host: HostID = .local, transport: Transport) {
+  init(host: HostID = .local, transport: Transport, sameLocalPort: Bool = true) {
     self.host = host
     self.transport = transport
+    self.sameLocalPort = sameLocalPort
   }
 
   /// Add a forward for `draft`. The listener binds before the entry appears, so a row is only ever
@@ -1074,40 +1103,86 @@ final class PortForwardingModel: ObservableObject {
       return
     }
     do {
-      let (lease, service) = try await transport.forwarding()
-      let reconnect = transport.reconnect
-      let id = UUID()
-      let forward = try service.listen(remotePort: remote, reconnect: reconnect) {
-        [weak self] event in
-        Task { @MainActor in self?.record(event, for: id) }
-      }
-      listeners[id] = forward
-      forwards.append(
-        Entry(
-          id: id, remotePort: remote, localPort: forward.localPort, lease: lease,
-          reconnects: reconnect != nil, sequence: nextSequence))
-      nextSequence += 1
+      try await forward(.init(port: remote))
       draft = ""
-      watch()
-      // `add()` suspended while the service was acquired, and a watch that consumed a disconnect in
-      // that window had nothing to drop then and may see no further snapshot to drop it by. So ask
-      // the manager, not the watch's last snapshot: that one can still name the disconnect when
-      // `forwarding` has already answered on the reconnected lease, and would drop a valid row.
-      let current = await transport.current()
-      drop { !$0.reconnects && $0.lease != current }
     } catch {
       message = Self.describe(error)
     }
   }
 
-  /// The two expected refusals in the words of this row, and never a raw enum case for the rest:
+  /// Forward the ports the workroom's dev container declares (`DevContainerPorts`), once a launch:
+  /// `read` gives its `devcontainer.json`, or nil when it has none. A port already forwarded is
+  /// left as it is. A read that fails (the host not up yet) is tried again on the next call; one
+  /// that succeeds is not repeated, so a declared forward the user removes stays removed.
+  func forwardDeclared(read: () async throws -> (path: String, data: Data)?) async {
+    guard !declaring, !declared else { return }
+    declaring = true
+    defer { declaring = false }
+    let file: (path: String, data: Data)?
+    do {
+      file = try await read()
+    } catch {
+      return
+    }
+    guard let file else {
+      declared = true
+      return
+    }
+    let ports: [DevContainerPorts.Port]
+    do {
+      ports = try DevContainerPorts.parse(file.data)
+    } catch {
+      declared = true
+      message = "Couldn't read \(file.path): \(error.localizedDescription)"
+      return
+    }
+    var failures: [String] = []
+    for port in ports where !forwards.contains(where: { $0.remotePort == port.port }) {
+      do {
+        try await forward(port)
+      } catch let taken as PortForward.LocalPortTaken {
+        failures.append(taken.errorDescription ?? "")
+      } catch {
+        // The host went away mid-way: what is left is forwarded on the next call.
+        message = Self.describe(error)
+        return
+      }
+    }
+    declared = true
+    message = failures.isEmpty ? nil : failures.joined(separator: "\n")
+  }
+
+  private func forward(_ port: DevContainerPorts.Port) async throws {
+    let (lease, service) = try await transport.forwarding()
+    let reconnect = transport.reconnect
+    let id = UUID()
+    let forward = try service.listen(
+      remotePort: port.port, localPort: sameLocalPort ? port.port : 0,
+      requireLocalPort: port.requireLocalPort, reconnect: reconnect
+    ) { [weak self] event in
+      Task { @MainActor in self?.record(event, for: id) }
+    }
+    listeners[id] = forward
+    forwards.append(
+      Entry(
+        id: id, remotePort: port.port, localPort: forward.localPort, label: port.label,
+        lease: lease, reconnects: reconnect != nil, sequence: nextSequence))
+    nextSequence += 1
+    watch()
+    // `forward` suspended while the service was acquired, and a watch that consumed a disconnect in
+    // that window had nothing to drop then and may see no further snapshot to drop it by. So ask
+    // the manager, not the watch's last snapshot: that one can still name the disconnect when
+    // `forwarding` has already answered on the reconnected lease, and would drop a valid row.
+    let current = await transport.current()
+    drop { !$0.reconnects && $0.lease != current }
+  }
+
+  /// The expected refusals in the words of this row, and never a raw enum case for the rest:
   /// `VCSError` is not `LocalizedError`, so interpolating it prints its Swift case.
   static func describe(_ error: Error) -> String {
     switch error {
-    case RepositoryRoutingError.unavailable(.remote):
-      return "This workroom's host is not connected."
     case RepositoryRoutingError.unavailable:
-      return "No agent is running on this Mac. Open a workroom to start one."
+      return "This workroom's host is not connected."
     case VCSError.backendVersion(let detail):
       return detail
     default:

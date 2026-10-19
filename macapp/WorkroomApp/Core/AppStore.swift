@@ -172,6 +172,7 @@ final class AppStore: ObservableObject {
       let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
       RemoteHosts.shared.select(selected, in: ObjectIdentifier(self))
       if let selected { RemoteHosts.shared.activate(selected) }
+      forwardDeclaredPorts()
       focusHistoryIfShown()
       focusRemoteStateIfShown()
       // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
@@ -414,6 +415,23 @@ final class AppStore: ObservableObject {
   private func focusHistoryIfShown() {
     guard inspectorIsVisible, historySectionShown else { return }
     commitHistory.focus(target: inspectorTarget)
+  }
+
+  /// Forward the ports the selected container workroom's dev container declares, once a launch
+  /// (`PortForwardingModel.forwardDeclared`). On selection, not when the Ports panel shows: opening
+  /// the workroom is when its dev server is wanted, whatever the inspector is showing. The read
+  /// connects the host, as every inspector read does, and selecting it has already started it.
+  private func forwardDeclaredPorts() {
+    guard let workroom = selectedWorkroom, workroom.isContainer, let id = workroom.reachableHost,
+      let location = try? RepositoryLocation.remote(host: id, path: workroom.path)
+    else { return }
+    let model = PortForwardingModel.model(for: .remote(id))
+    guard !model.declared else { return }
+    Task {
+      await model.forwardDeclared {
+        try await DevContainerPorts.read(RepositoryRouter.shared.files(for: location))
+      }
+    }
   }
 
   /// Whether the VCS toolbar is on screen. It sits above the section stack rather than inside a
@@ -2051,6 +2069,7 @@ final class AppStore: ObservableObject {
     if resolved == nil, let host = selectedWorkroom?.reachableHost {
       RemoteHosts.shared.select(.remote(host), in: ObjectIdentifier(self))
       RemoteHosts.shared.activate(.remote(host))
+      forwardDeclaredPorts()
     }
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))

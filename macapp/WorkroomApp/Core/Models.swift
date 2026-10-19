@@ -176,6 +176,9 @@ extension Workroom {
     }
   }
 
+  /// Whether its host is a Docker or Apple container on this Mac, not a remote provider's machine.
+  var isContainer: Bool { host.flatMap(RemoteHosts.DriverKey.init)?.runtime != nil }
+
   /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only one this
   /// build owns (`RemoteWorkrooms.ownsHost`): another build's container takes its key.
   var reachableHost: UUID? {

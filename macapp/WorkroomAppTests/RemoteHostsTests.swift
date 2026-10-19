@@ -753,6 +753,21 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(host(nil, nil).kindDescription, "Remote workroom")
   }
 
+  /// Only a container on this Mac is a container workroom, which alone gets the Ports panel: a
+  /// remote provider publishes its machines' ports itself, and a local workroom needs none.
+  func testOnlyAContainersWorkroomIsAContainer() {
+    let workroom = { (driver: String?) in
+      Workroom(
+        name: "w", path: "/home/workroom/w", vcsName: "workroom/w", warnings: [],
+        host: driver.map { HostDescriptor(driver: $0, id: UUID()) })
+    }
+    XCTAssertTrue(workroom("container").isContainer)
+    XCTAssertTrue(workroom("apple-container").isContainer)
+    XCTAssertFalse(workroom("boxd").isContainer)
+    XCTAssertFalse(workroom(RemoteWorkrooms.exeDevDriver).isContainer)
+    XCTAssertFalse(workroom(nil).isContainer)
+  }
+
   /// The New Workroom menu says why its entries are off while a delete is taking the project
   /// (#309). REWRITTEN (#483, R3): a create in flight no longer holds the project.
   /// Value: protects=the menu's reason; fails_when=a running create is still given as a reason,

@@ -1,5 +1,6 @@
 import AgentConnection
 import Darwin
+import WorkroomSystem
 import WorkroomVCS
 import XCTest
 
@@ -688,7 +689,7 @@ final class PortForwardingModelTests: XCTestCase {
       nil,
     refusal: String? = nil, refusals: Int = .max,
     current override: (@Sendable () async -> HostConnectionManager.Lease?)? = nil,
-    reconnect: PortForward.Reconnect? = nil
+    reconnect: PortForward.Reconnect? = nil, sameLocalPort: Bool = false
   ) async throws -> PortForwardingModel {
     let agent = try FakeAgent(
       version: 5, forward: true, forwardRefusal: refusal, forwardRefusals: refusals)
@@ -707,7 +708,8 @@ final class PortForwardingModelTests: XCTestCase {
         forwarding: forwarding ?? { (lease, service) },
         updates: { stream },
         current: override ?? { current.get() },
-        reconnect: reconnect))
+        reconnect: reconnect),
+      sameLocalPort: sameLocalPort)
     models.append(model)
     return model
   }
@@ -842,14 +844,6 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(try client.read(1), Data("x".utf8), "not carried on the new connection")
     XCTAssertEqual(reconnects.count, 1)
     await made.close()
-  }
-
-  /// Which hosts' forwards outlive their connection (#380): every remote host's, a container's
-  /// included, since any connection can drop; never this Mac's.
-  func testEveryRemoteHostsForwardsReconnectAndThisMacsDoNot() {
-    let manager = HostConnectionManager()
-    XCTAssertNil(PortForwardingModel.Transport.reconnecting(.local, manager: manager))
-    XCTAssertNotNil(PortForwardingModel.Transport.reconnecting(.remote(UUID()), manager: manager))
   }
 
   // Value: protects=a forward waiting on a reconnect holds at most ForwardSlot.maxPerConnection clients, and stop
@@ -1130,16 +1124,9 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(PortForwardingModel.describe(Bare()), "Bare()")
   }
 
-  /// The commonest refusal — no agent — is said in this row's words, and a `VCSError` is never
-  /// shown as its Swift case.
+  /// The commonest refusal — the host not connected — is said in this row's words, and a
+  /// `VCSError` is never shown as its Swift case.
   func testAddFailuresAreDescribedForTheRow() async throws {
-    let unavailable = try await model(
-      lease: lease(), forwarding: { throw RepositoryRoutingError.unavailable(.local) })
-    unavailable.draft = "5173"
-    await unavailable.add()
-    XCTAssertEqual(
-      unavailable.message, "No agent is running on this Mac. Open a workroom to start one.")
-
     let old = try await model(
       lease: lease(),
       forwarding: { throw VCSError.backendVersion("Agent does not support port forwarding.") })
@@ -1147,7 +1134,6 @@ final class PortForwardingModelTests: XCTestCase {
     await old.add()
     XCTAssertEqual(old.message, "Agent does not support port forwarding.")
 
-    // A remote workroom's host is not "this Mac" (#254).
     let remote = try await model(
       lease: lease(), forwarding: { throw RepositoryRoutingError.unavailable(.remote(UUID())) })
     remote.draft = "5173"
@@ -1159,10 +1145,12 @@ final class PortForwardingModelTests: XCTestCase {
   /// forwards where it left them, and two hosts never share a list (#254).
   func testEachHostHasItsOwnModelForTheLaunch() {
     let host = HostID.remote(UUID())
+    let other = HostID.remote(UUID())
     XCTAssertTrue(PortForwardingModel.model(for: host) === PortForwardingModel.model(for: host))
-    XCTAssertTrue(PortForwardingModel.model(for: .local) === PortForwardingModel.model(for: .local))
-    XCTAssertFalse(PortForwardingModel.model(for: host) === PortForwardingModel.model(for: .local))
+    XCTAssertFalse(PortForwardingModel.model(for: host) === PortForwardingModel.model(for: other))
     XCTAssertEqual(PortForwardingModel.model(for: host).host, host)
+    PortForwardingModel.models[host] = nil
+    PortForwardingModel.models[other] = nil
   }
 
   /// A remote host's transport reads that host's connection in the manager and never another's.
@@ -1210,6 +1198,160 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(try opened.read(1), Data("x".utf8))
     opened.close()
     await settle("the open never cleared the row") { model.forwards.first?.failure == nil }
+  }
+
+  // MARK: Local port and declared forwards
+
+  /// A port number nothing on this Mac holds right now.
+  private func freePort() throws -> UInt16 {
+    let made = try XCTUnwrap(LoopbackSocket.listen())
+    Darwin.close(made.descriptor)
+    return made.port
+  }
+
+  /// A listener on this Mac holding a port, as a dev server of its own would; closed at tearDown.
+  private func hold(ipv6 v6: Bool = false) throws -> UInt16 {
+    if !v6 {
+      let made = try XCTUnwrap(LoopbackSocket.listen())
+      addTeardownBlock { Darwin.close(made.descriptor) }
+      return made.port
+    }
+    let descriptor = socket(AF_INET6, SOCK_STREAM, 0)
+    XCTAssertGreaterThanOrEqual(descriptor, 0)
+    addTeardownBlock { Darwin.close(descriptor) }
+    var address = sockaddr_in6()
+    address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+    address.sin6_family = sa_family_t(AF_INET6)
+    address.sin6_addr = in6addr_loopback
+    var length = socklen_t(MemoryLayout<sockaddr_in6>.size)
+    let bound = withUnsafeMutablePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.bind(descriptor, $0, length) == 0 && Darwin.listen(descriptor, 1) == 0
+          && getsockname(descriptor, $0, &length) == 0
+      }
+    }
+    XCTAssertTrue(bound, "no ::1 listener")
+    return UInt16(bigEndian: address.sin6_port)
+  }
+
+  /// The dev container convention: port N is reachable at N on this Mac when nothing here holds it.
+  func testAForwardTakesItsOwnPortNumberWhenItIsFree() async throws {
+    let port = try freePort()
+    let model = try await model(lease: lease(), sameLocalPort: true)
+    model.draft = String(port)
+    await model.add()
+    XCTAssertNil(model.message)
+    XCTAssertEqual(model.forwards.first?.localPort, port)
+  }
+
+  /// A port this Mac holds moves to another, on 127.0.0.1 or only on `::1` (where a bind on
+  /// 127.0.0.1 succeeds, and a browser asking for `localhost` would reach the Mac's own server).
+  func testAForwardMovesToAnotherPortWhenThisMacHoldsItsNumber() async throws {
+    for v6 in [false, true] {
+      let port = try hold(ipv6: v6)
+      XCTAssertEqual(LoopbackSocket.heldOnIPv6Loopback(port: port), v6)
+      let model = try await model(lease: lease(), sameLocalPort: true)
+      model.draft = String(port)
+      await model.add()
+      XCTAssertNil(model.message, "ipv6 \(v6)")
+      let entry = try XCTUnwrap(model.forwards.first, "ipv6 \(v6)")
+      XCTAssertNotEqual(entry.localPort, port, "ipv6 \(v6)")
+      let client = try TCPClient(port: entry.localPort)
+      try client.write(Data("x".utf8))
+      XCTAssertEqual(try client.read(1), Data("x".utf8), "ipv6 \(v6)")
+      client.close()
+    }
+  }
+
+  /// What the dev container declares is forwarded, each port at its own number with its label; a
+  /// port that `requireLocalPort`s a number this Mac holds is refused and said, and the rest still
+  /// forwarded.
+  func testDeclaredPortsAreForwardedWithTheirLabels() async throws {
+    let web = try freePort()
+    let api = try freePort()
+    let taken = try hold()
+    let model = try await model(lease: lease(), sameLocalPort: true)
+    let file = """
+      {
+        "forwardPorts": [\(web), \(taken), \(api)],
+        "portsAttributes": {
+          "\(web)": { "label": "Web" },
+          "\(taken)": { "label": "Taken", "requireLocalPort": true },
+        },
+      }
+      """
+    await model.forwardDeclared { (".devcontainer/devcontainer.json", Data(file.utf8)) }
+    XCTAssertTrue(model.declared)
+    XCTAssertEqual(model.forwards.map(\.remotePort), [web, api])
+    XCTAssertEqual(model.forwards.map(\.localPort), [web, api])
+    XCTAssertEqual(model.forwards.map(\.label), ["Web", nil])
+    XCTAssertEqual(
+      model.message,
+      "Port \(taken) is in use on this Mac, and the dev container requires the same port.")
+  }
+
+  /// Forwarded once a launch: a second call reads nothing, and a declared port already forwarded
+  /// (the user added it first) is not forwarded twice.
+  func testDeclaredPortsAreForwardedOnceAndNeverTwice() async throws {
+    let model = try await model(lease: lease())
+    model.draft = "3000"
+    await model.add()
+    let reads = Counter()
+    let read = { () -> (path: String, data: Data)? in
+      reads.bump()
+      return (".devcontainer.json", Data(#"{"forwardPorts": [3000, 5173]}"#.utf8))
+    }
+    await model.forwardDeclared(read: read)
+    await model.forwardDeclared(read: read)
+    XCTAssertEqual(reads.count, 1, "the file was read again")
+    XCTAssertEqual(model.forwards.map(\.remotePort), [3000, 5173])
+  }
+
+  /// A read that fails (the host not up yet) is tried again on the next call; no file at all, or
+  /// one that isn't JSON, is an answer and is not.
+  func testAFailedReadIsTriedAgainAndAnAnswerIsNot() async throws {
+    let model = try await model(lease: lease())
+    await model.forwardDeclared { throw RepositoryRoutingError.unavailable(.remote(UUID())) }
+    XCTAssertFalse(model.declared)
+    XCTAssertNil(model.message)
+    await model.forwardDeclared { (".devcontainer.json", Data(#"{"forwardPorts": [5173]}"#.utf8)) }
+    XCTAssertEqual(model.forwards.map(\.remotePort), [5173])
+
+    let none = try await self.model(lease: lease())
+    await none.forwardDeclared { nil }
+    XCTAssertTrue(none.declared)
+    XCTAssertTrue(none.forwards.isEmpty)
+
+    let broken = try await self.model(lease: lease())
+    await broken.forwardDeclared { (".devcontainer.json", Data("{".utf8)) }
+    XCTAssertTrue(broken.declared)
+    XCTAssertTrue(
+      broken.message?.hasPrefix("Couldn't read .devcontainer.json: ") == true,
+      broken.message ?? "no message")
+  }
+
+  /// A host that goes away mid-way leaves the rest for the next call, not lost.
+  func testAForwardThatFailsMidWayIsLeftForTheNextCall() async throws {
+    let first = lease()
+    let fails = Counter()
+    let held = try await service(on: first)
+    let model = try await model(
+      lease: first,
+      forwarding: {
+        fails.bump()
+        if fails.count == 1 { throw RepositoryRoutingError.unavailable(.remote(UUID())) }
+        return held
+      })
+    let read = { () -> (path: String, data: Data)? in
+      (".devcontainer.json", Data(#"{"forwardPorts": [5173]}"#.utf8))
+    }
+    await model.forwardDeclared(read: read)
+    XCTAssertFalse(model.declared)
+    XCTAssertEqual(model.message, "This workroom's host is not connected.")
+    await model.forwardDeclared(read: read)
+    XCTAssertTrue(model.declared)
+    XCTAssertEqual(model.forwards.map(\.remotePort), [5173])
+    XCTAssertNil(model.message)
   }
 }
 
