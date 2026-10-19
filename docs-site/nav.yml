@@ -1,0 +1,36 @@
+- title: CLI reference
+  pages:
+    - title: workroom
+      page: cli/workroom
+    - title: workroom create
+      page: cli/workroom-create
+    - title: workroom list
+      page: cli/workroom-list
+    - title: workroom delete
+      page: cli/workroom-delete
+    - title: workroom base
+      page: cli/workroom-base
+    - title: workroom base set
+      page: cli/workroom-base-set
+    - title: workroom base clear
+      page: cli/workroom-base-clear
+    - title: workroom trust
+      page: cli/workroom-trust
+    - title: workroom trust status
+      page: cli/workroom-trust-status
+    - title: workroom untrust
+      page: cli/workroom-untrust
+    - title: workroom update
+      page: cli/workroom-update
+    - title: workroom version
+      page: cli/workroom-version
+    - title: workroom completion
+      page: cli/workroom-completion
+    - title: workroom completion bash
+      page: cli/workroom-completion-bash
+    - title: workroom completion fish
+      page: cli/workroom-completion-fish
+    - title: workroom completion powershell
+      page: cli/workroom-completion-powershell
+    - title: workroom completion zsh
+      page: cli/workroom-completion-zsh
