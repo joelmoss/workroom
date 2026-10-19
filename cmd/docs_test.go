@@ -22,6 +22,11 @@ const cliDocsDir = "../docs-site/pages/cli"
 // drift from the CLI.
 func TestCLIDocs(t *testing.T) {
 	want := cliDocs(t)
+	for command := range cliNightly {
+		if _, ok := want[cliDocsName(command)]; !ok {
+			t.Errorf("cliNightly names %q, which is not a public command", command)
+		}
+	}
 
 	if *updateContracts {
 		old, _ := filepath.Glob(filepath.Join(cliDocsDir, "*.md"))
@@ -95,15 +100,20 @@ func cliDocs(t *testing.T) map[string]string {
 	return pages
 }
 
-// cliDocsPage adds front matter and fits cobra's Markdown to docs-site/README.md: the title comes
-// from front matter, so cobra's own "## workroom create" heading goes, every code block names its
-// language, and prose can't be read as raw HTML.
+// cliDocsPage adds front matter and fits cobra's Markdown to docs-site/README.md: the title and the
+// lede come from front matter, so cobra's own "## workroom create" heading and the Short line under
+// it go, its "###" sections become the page's "##" sections ("SEE ALSO" as "See also"), every code
+// block names its language, and prose can't be read as raw HTML.
 func cliDocsPage(c *cobra.Command, body string) string {
+	_, body, _ = strings.Cut(body, "\n\n")
 	_, body, _ = strings.Cut(body, "\n\n")
 	var out strings.Builder
 	out.WriteString("---\n")
 	out.WriteString("title: " + c.CommandPath() + "\n")
 	out.WriteString("description: " + strings.TrimSuffix(c.Short, ".") + ".\n")
+	if cliNightly[c.CommandPath()] {
+		out.WriteString("nightly: true\n")
+	}
 	out.WriteString("---\n\n")
 	out.WriteString("<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->\n\n")
 	open := false
@@ -115,10 +125,24 @@ func cliDocsPage(c *cobra.Command, body string) string {
 			open = !open
 		} else if !open {
 			line = strings.ReplaceAll(line, "<", "&lt;") // help text like <remote>/<branch> isn't HTML
+			if rest, ok := strings.CutPrefix(line, "### "); ok {
+				line = "## " + strings.Replace(rest, "SEE ALSO", "See also", 1)
+			}
 		}
 		out.WriteString(line)
 	}
 	return strings.TrimRight(out.String(), "\n") + "\n"
+}
+
+// cliNightly names the commands no stable release has yet, whose pages carry the Nightly badge. Cutting
+// a stable release that includes one removes it here (the curate-release skill's docs step).
+var cliNightly = map[string]bool{
+	"workroom base":         true,
+	"workroom base set":     true,
+	"workroom base clear":   true,
+	"workroom trust":        true,
+	"workroom trust status": true,
+	"workroom untrust":      true,
 }
 
 // cliDocsLink turns cobra's link to another command's page (workroom_create.md) into the docs site's

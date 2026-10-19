@@ -5,21 +5,19 @@ description: Generate the autocompletion script for the specified shell.
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
 
-Generate the autocompletion script for the specified shell
-
-### Synopsis
+## Synopsis
 
 Generate the autocompletion script for workroom for the specified shell.
 See each sub-command's help for details on how to use the generated script.
 
 
-### Options
+## Options
 
 ```text
   -h, --help   help for completion
 ```
 
-### Options inherited from parent commands
+## Options inherited from parent commands
 
 ```text
       --json      Emit machine-readable JSON (exactly one object on stdout)
@@ -27,7 +25,7 @@ See each sub-command's help for details on how to use the generated script.
   -v, --verbose   Print detailed and verbose output
 ```
 
-### SEE ALSO
+## See also
 
 * [workroom](workroom.md)	 - Manage development workrooms
 * [workroom completion bash](workroom-completion-bash.md)	 - Generate the autocompletion script for bash

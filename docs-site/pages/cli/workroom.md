@@ -5,13 +5,11 @@ description: Manage development workrooms.
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
 
-Manage development workrooms
-
-### Synopsis
+## Synopsis
 
 Create and manage local development workrooms using Git worktrees.
 
-### Options
+## Options
 
 ```text
   -h, --help      help for workroom
@@ -20,7 +18,7 @@ Create and manage local development workrooms using Git worktrees.
   -v, --verbose   Print detailed and verbose output
 ```
 
-### SEE ALSO
+## See also
 
 * [workroom base](workroom-base.md)	 - Set or clear the branch new workrooms start from
 * [workroom completion](workroom-completion.md)	 - Generate the autocompletion script for the specified shell

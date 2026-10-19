@@ -1,4 +1,75 @@
-- title: CLI reference
+- title: Get started
+  pages:
+    - title: Introduction
+      page: get-started/introduction
+    - title: Install
+      page: get-started/install
+    - title: Your first workroom
+      page: get-started/your-first-workroom
+
+- title: Guides
+  pages:
+    - title: Prepare a project
+      page: guides/prepare-a-project
+    - title: Run agents in parallel
+      page: guides/run-agents-in-parallel
+    - title: Review and ship
+      page: guides/review-and-ship
+    - title: Work on a remote host
+      page: guides/work-on-a-remote-host
+    - title: Coming from tmux or git worktree
+      page: guides/coming-from-tmux-or-git-worktree
+
+- title: The app
+  pages:
+    - title: Projects
+      page: app/projects
+    - title: Workrooms
+      page: app/workrooms
+    - title: Terminals and tabs
+      page: app/terminals-and-tabs
+    - title: Splits and windows
+      page: app/splits-and-windows
+    - title: Inspector
+      page: app/inspector
+    - title: Details and ports
+      page: app/details-and-ports
+    - title: Notifications
+      page: app/notifications
+    - title: Coding agents
+      page: app/coding-agents
+    - title: Settings
+      page: app/settings
+    - title: Updates and channels
+      page: app/updates-and-channels
+
+- title: Remote workrooms
+  pages:
+    - title: Overview and host kinds
+      page: remote/overview
+    - title: boxd
+      page: remote/boxd
+    - title: exe.dev
+      page: remote/exe-dev
+    - title: Containers
+      page: remote/containers
+    - title: Port forwarding
+      page: remote/port-forwarding
+    - title: Reconnecting after sleep or restart
+      page: remote/reconnecting
+
+- title: Reference
+  pages:
+    - title: JSON output and exit codes
+      page: reference/json-output
+    - title: config.json
+      page: reference/config-json
+    - title: Environment variables
+      page: reference/environment-variables
+    - title: Keyboard shortcuts
+      page: reference/keyboard-shortcuts
+
+- title: CLI
   pages:
     - title: workroom
       page: cli/workroom
@@ -34,3 +105,10 @@
       page: cli/workroom-completion-powershell
     - title: workroom completion zsh
       page: cli/workroom-completion-zsh
+
+- title: Help
+  pages:
+    - title: Troubleshooting
+      page: help/troubleshooting
+    - title: Release notes
+      page: help/release-notes

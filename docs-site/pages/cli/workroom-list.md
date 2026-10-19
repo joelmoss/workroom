@@ -5,13 +5,11 @@ description: List all workrooms for the current project.
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
 
-List all workrooms for the current project
-
 ```text
 workroom list [flags]
 ```
 
-### Options
+## Options
 
 ```text
   -h, --help              help for list
@@ -19,7 +17,7 @@ workroom list [flags]
       --warnings string   Warning detail for --json: none, fast, or full (default "fast")
 ```
 
-### Options inherited from parent commands
+## Options inherited from parent commands
 
 ```text
       --json      Emit machine-readable JSON (exactly one object on stdout)
@@ -27,6 +25,6 @@ workroom list [flags]
   -v, --verbose   Print detailed and verbose output
 ```
 
-### SEE ALSO
+## See also
 
 * [workroom](workroom.md)	 - Manage development workrooms

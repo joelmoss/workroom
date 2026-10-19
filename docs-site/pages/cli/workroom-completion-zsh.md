@@ -5,9 +5,7 @@ description: Generate the autocompletion script for zsh.
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
 
-Generate the autocompletion script for zsh
-
-### Synopsis
+## Synopsis
 
 Generate the autocompletion script for the zsh shell.
 
@@ -37,14 +35,14 @@ You will need to start a new shell for this setup to take effect.
 workroom completion zsh [flags]
 ```
 
-### Options
+## Options
 
 ```text
   -h, --help              help for zsh
       --no-descriptions   disable completion descriptions
 ```
 
-### Options inherited from parent commands
+## Options inherited from parent commands
 
 ```text
       --json      Emit machine-readable JSON (exactly one object on stdout)
@@ -52,6 +50,6 @@ workroom completion zsh [flags]
   -v, --verbose   Print detailed and verbose output
 ```
 
-### SEE ALSO
+## See also
 
 * [workroom completion](workroom-completion.md)	 - Generate the autocompletion script for the specified shell
