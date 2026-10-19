@@ -329,8 +329,8 @@ struct RightInspector: View {
         if files > 0 { ChangedFileCountBadge(count: files) }
         if let countsHelp {
           HStack(spacing: 5) {
-            if ins > 0 { Text("+\(ins)").foregroundStyle(ThemeService.shared.tokens.diffAddFg) }
-            if del > 0 { Text("-\(del)").foregroundStyle(ThemeService.shared.tokens.diffRemoveFg) }
+            if ins > 0 { Text("+\(ins)").foregroundStyle(ThemeService.shared.tokens.success) }
+            if del > 0 { Text("-\(del)").foregroundStyle(ThemeService.shared.tokens.failure) }
           }
           .help(countsHelp)
         }
