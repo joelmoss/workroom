@@ -157,7 +157,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(banner, "SSH-2.0-")
   }
 
-  /// The Ports panel's model on a remote workroom's host (#254, the last of #208): a port added
+  /// The Ports list's model on a remote workroom's host (#254, the last of #208): a port added
   /// there is the HOST's port, and a client on this Mac reaches the process listening on it. The
   /// fixture's sshd is that process; it speaks first, so the banner proves the bytes came from the
   /// host and not from anything on this Mac.
