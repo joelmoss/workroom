@@ -244,7 +244,7 @@ final class PortForward: @unchecked Sendable {
     // loopback-only and this is its mirror.
     var made: (descriptor: Int32, port: UInt16)?
     if preferred != 0, !LoopbackSocket.heldOnIPv6Loopback(port: preferred) {
-      made = LoopbackSocket.listen(port: preferred)
+      made = LoopbackSocket.listen(reclaiming: preferred)
     }
     if made == nil, preferred != 0, requireLocalPort { throw LocalPortTaken(port: preferred) }
     guard let (listener, port) = made ?? LoopbackSocket.listen() else {
@@ -1078,6 +1078,8 @@ final class PortForwardingModel: ObservableObject {
   /// `forwardDeclared` is running, or has forwarded what the dev container declares.
   private var declaring = false
   private(set) var declared = false
+  /// A `forwardDeclared` pass the host's connection cut short, run again when it connects.
+  private var pendingDeclaredRead: DeclaredRead?
   /// The `Entry.sequence` the next row gets.
   private var nextSequence = 0
   /// How many snapshots the watch has consumed, for the tests.
@@ -1112,16 +1114,23 @@ final class PortForwardingModel: ObservableObject {
 
   /// Forward the ports the workroom's dev container declares (`DevContainerPorts`), once a launch:
   /// `read` gives its `devcontainer.json`, or nil when it has none. A port already forwarded is
-  /// left as it is. A read that fails (the host not up yet) is tried again on the next call; one
-  /// that succeeds is not repeated, so a declared forward the user removes stays removed.
-  func forwardDeclared(read: () async throws -> (path: String, data: Data)?) async {
+  /// left as it is. A pass the host's connection cuts short (the container not started yet, Docker
+  /// not running) runs again once the host connects (`watch`), as well as on the next call; one
+  /// that finishes is not repeated, so a declared forward the user removes stays removed. A file
+  /// the host refuses or that is too large says so, and is not tried again.
+  func forwardDeclared(read: @escaping DeclaredRead) async {
     guard !declaring, !declared else { return }
     declaring = true
     defer { declaring = false }
     let file: (path: String, data: Data)?
     do {
       file = try await read()
+    } catch let failure as FileServiceError {
+      declared = true
+      message = "Couldn't read the dev container file: \(failure.localizedDescription)"
+      return
     } catch {
+      retryWhenConnected(read)
       return
     }
     guard let file else {
@@ -1151,13 +1160,24 @@ final class PortForwardingModel: ObservableObject {
       } catch let taken as PortForward.LocalPortTaken {
         failures.append(taken.errorDescription ?? "")
       } catch {
-        // The host went away mid-way: what is left is forwarded on the next call.
+        // The host went away mid-way: what is left is forwarded once it is back.
         message = Self.describe(error)
+        retryWhenConnected(read)
         return
       }
     }
     declared = true
     message = failures.isEmpty ? nil : failures.joined(separator: "\n")
+  }
+
+  /// What `forwardDeclared` reads the dev container file with.
+  typealias DeclaredRead = @MainActor () async throws -> (path: String, data: Data)?
+
+  /// Keeps an unfinished `forwardDeclared` pass for the watch to run again when the host connects:
+  /// nothing else asks while the workroom stays selected.
+  private func retryWhenConnected(_ read: @escaping DeclaredRead) {
+    pendingDeclaredRead = read
+    watch()
   }
 
   private func forward(_ port: DevContainerPorts.Port) async throws {
@@ -1238,6 +1258,10 @@ final class PortForwardingModel: ObservableObject {
         snapshotsSeen += 1
         connected = live != nil
         drop { $0.sequence < horizon && !$0.reconnects && $0.lease != live }
+        if connected, let read = pendingDeclaredRead {
+          pendingDeclaredRead = nil
+          Task { await self.forwardDeclared(read: read) }
+        }
       }
     }
   }
