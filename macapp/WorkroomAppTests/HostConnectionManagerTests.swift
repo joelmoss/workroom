@@ -230,6 +230,32 @@ final class HostConnectionManagerTests: XCTestCase {
     try await failing.closed.arrived()
   }
 
+  // Value: protects=panes a wake check just reattached are not reattached again by a second check
+  // while their attach is reconnecting the host; fails_when=a connecting host reads as silent, or
+  // the check cancels the connect under way; why_new=new behaviour; seam=none
+  func testAConnectingHostCountsAsAnsweringAndKeepsItsConnect() async throws {
+    let manager = HostConnectionManager()
+    let host = HostID.remote(UUID())
+    let started = ConnectionSignal()
+    let release = ConnectionSignal()
+    let pending = Task {
+      try await manager.connect(host: host) {
+        await started.open()
+        await release.wait()
+        return ConnectionFixture()
+      }
+    }
+    try await started.arrived()
+    let answered = await manager.dropUnlessAnswering(host, within: 0.2)
+    XCTAssertTrue(answered, "a host that is connecting read as silent")
+    await release.open()
+    let lease = try await withTimeout(seconds: 2) { try await pending.value }
+    let state = await manager.snapshot(for: host)
+    XCTAssertEqual(state.lease, lease, "the check cancelled the connect under way")
+    XCTAssertEqual(state.status, .connected)
+    await manager.disconnect(lease)
+  }
+
   func testSupersededHandshakeClosesLateConnection() async throws {
     let manager = HostConnectionManager()
     let host = HostID.remote(UUID())
