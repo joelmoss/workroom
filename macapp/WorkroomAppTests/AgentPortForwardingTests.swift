@@ -1284,6 +1284,8 @@ final class EchoServer: @unchecked Sendable {
   let listener: Int32
   private let lock = NSLock()
   private var stopped = false
+  private let source: DispatchSourceRead
+  private let closed = DispatchSemaphore(value: 0)
 
   init() throws {
     let listener = socket(AF_INET, SOCK_STREAM, 0)
@@ -1300,7 +1302,9 @@ final class EchoServer: @unchecked Sendable {
         bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
       }
     }
-    guard bound == 0, Darwin.listen(listener, 8) == 0 else {
+    guard bound == 0, Darwin.listen(listener, 8) == 0,
+      fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK) == 0
+    else {
       Darwin.close(listener)
       throw NSError(domain: "EchoServer", code: Int(errno))
     }
@@ -1311,10 +1315,21 @@ final class EchoServer: @unchecked Sendable {
     }
     self.port = UInt16(bigEndian: actual.sin_port)
     self.listener = listener
-    DispatchQueue.global().async {
+    // A read source, as `PortForward` does it, not a blocking `accept` on a thread of its own. A
+    // test that stops the server at once could close the listener before that thread reached
+    // `accept`, which then accepted on whatever reused the number: the next test's FakeAgent, whose
+    // client got its own hello and request echoed back ("Invalid agent chunk", Nightly 2026-10-19).
+    // The cancel handler runs after any accept in flight, so the number is closed once nothing can
+    // reach it.
+    // At the QoS of the test thread that waits in `stop()` for its cancel handler.
+    let accepts = DispatchQueue(label: "EchoServer.accept", qos: .userInteractive)
+    source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: accepts)
+    source.setEventHandler {
       while true {
         let client = accept(listener, nil, nil)
         guard client >= 0 else { return }
+        // An accepted socket inherits the listener's `O_NONBLOCK`; the echo below blocks.
+        _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
         DispatchQueue.global().async {
           var buffer = [UInt8](repeating: 0, count: 64 * 1024)
           while true {
@@ -1338,6 +1353,12 @@ final class EchoServer: @unchecked Sendable {
         }
       }
     }
+    let closed = self.closed
+    source.setCancelHandler {
+      Darwin.close(listener)
+      closed.signal()
+    }
+    source.activate()
   }
 
   /// Idempotent, like `TCPClient.close()`. A test that stops its server by hand is stopped again by
@@ -1352,7 +1373,10 @@ final class EchoServer: @unchecked Sendable {
       return false
     }
     guard !already else { return }
-    Darwin.close(listener)
+    source.cancel()
+    // Waited for: callers rely on the port and the number being free once this returns (the
+    // dead-port test, and the reuse check in the double-stop test).
+    _ = closed.wait(timeout: .now() + 5)
   }
 }
 
