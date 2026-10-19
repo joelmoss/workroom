@@ -14,6 +14,11 @@ something on a host: a connect, an exec, a script, a delete.
   asleep boxd box asleep, reports a gone one, and after a failure refuses the host for `retryAfter`
   (30 s). A host selected in any window, or one the user opened (`activate`), is connected as if
   the user had asked, so a box on screen doesn't keep reading as asleep after the Mac wakes.
+- **After a wake or a network change** (`RemoteLinkMonitor`): each boxd or exe.dev host's agent is
+  pinged over its service connection (the VCS `capabilities` request, which no repaint holds up). One that doesn't answer within 2 s has the
+  connection dropped and its remote panes attach again, rather than wait the minute ssh's keepalive
+  takes to notice a dead link; a pane's attach reconnects the host. One that answers keeps its links.
+  A container's link is loopback and is left alone.
 - `RemoteHosts.connect(host, driver:)` is the bootstrap step inside `ensureConnected`. Called on its
   own it starts nothing, and it fails while another connect to the host is under way:
   `HostConnectionManager.connectIfDisconnected` throws `.unavailable` for a `.connecting` host.

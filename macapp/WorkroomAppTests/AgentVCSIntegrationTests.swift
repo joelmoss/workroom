@@ -188,6 +188,19 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  // Value: protects=the wake check reaching a real agent, so a healthy host isn't dropped after
+  // every wake; fails_when=the ping asks something the agent doesn't answer, or answers slowly;
+  // why_new=the manager's test pings a fixture; seam=none
+  /// The check `RemoteLinkMonitor` makes after a wake: the agent answers well inside its 2 s.
+  func testTheServiceConnectionAnswersAPing() async throws {
+    let agent = try AgentHarness.start(environment: environment)
+    agents.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    try await withTimeout(seconds: 2) { try await connection.ping() }
+    await connection.close()
+  }
+
   /// Closing a remote pane ends its session over the service connection (#283): the agent
   /// acknowledges the kill and no longer holds the session. A session it never held is
   /// acknowledged too, so a second close succeeds, and the connection's other services keep working.
