@@ -650,7 +650,7 @@ final class CreationFlowTests: XCTestCase {
     let hosts = Counter()
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     var services = services(driver: FakeDriver(), agent: nil, hosts: hosts)
-    services.untrustedSetup = { _, _ in UntrustedSetupCLI.script }
+    services.untrustedSetup = { _, _, _ in UntrustedSetupCLI.script }
     store.remoteCreateServices = services
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)

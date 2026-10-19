@@ -149,11 +149,21 @@ func (s *Service) RootScript(dir, name string) (Script, bool, error) {
 // run, at the base it resolves and fetches as a create does, and the root's teardown copy. A
 // script that is nowhere is left out. A base that cannot be resolved is an error.
 func (s *Service) ProjectScripts(dir string) ([]Script, error) {
-	if err := s.detectVCS(dir); err != nil {
-		return nil, err
-	}
 	base, global, err := s.base(dir)
 	if err != nil {
+		return nil, err
+	}
+	return s.projectScripts(dir, base, global)
+}
+
+// ProjectScriptsFrom is ProjectScripts with new workrooms starting from base ("" is origin's
+// default branch) rather than the project's: what a remote create checks out, which may differ.
+func (s *Service) ProjectScriptsFrom(dir, base string) ([]Script, error) {
+	return s.projectScripts(dir, base, false)
+}
+
+func (s *Service) projectScripts(dir, base string, global bool) ([]Script, error) {
+	if err := s.detectVCS(dir); err != nil {
 		return nil, err
 	}
 	start, _, err := s.VCS.StartPoint(dir, base, global, vcs.Progress{})

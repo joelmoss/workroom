@@ -24,6 +24,10 @@ var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 var (
 	trustProjectDir string
 	trustStdin      string
+	// trustBase, with trustBaseSet, is the branch to judge the setup script at in place of the
+	// project's base: a remote create's, which starts from origin's branch ("" is its default).
+	trustBase    string
+	trustBaseSet bool
 )
 
 // trustCmd approves a project's setup and teardown scripts by their exact bytes (#363).
@@ -164,6 +168,9 @@ func judgedScripts() (*workroom.Service, string, []workroom.Script, error) {
 	}
 	if trustStdin == "" {
 		scripts, err := svc.ProjectScripts(dir)
+		if trustBaseSet {
+			scripts, err = svc.ProjectScriptsFrom(dir, trustBase)
+		}
 		return svc, dir, scripts, err
 	}
 	if trustStdin != workroom.SetupScript && trustStdin != workroom.TeardownScript {
@@ -220,6 +227,9 @@ func init() {
 	for _, c := range []*cobra.Command{trustCmd, trustStatusCmd} {
 		c.Flags().StringVar(&trustStdin, "stdin", "", "Judge this script's contents, read from stdin, in place of the project's file (used by the desktop app)")
 		_ = c.Flags().MarkHidden("stdin")
+		c.Flags().StringVar(&trustBase, "base", "", "Judge the setup script at this branch, on origin unless it names a remote (\"\" is origin's default), in place of the project's base (used by the desktop app)")
+		_ = c.Flags().MarkHidden("base")
+		c.PreRun = func(cmd *cobra.Command, _ []string) { trustBaseSet = cmd.Flags().Changed("base") }
 	}
 	trustCmd.AddCommand(trustStatusCmd)
 	rootCmd.AddCommand(trustCmd, untrustCmd)

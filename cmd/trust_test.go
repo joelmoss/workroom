@@ -289,6 +289,26 @@ func TestAnApprovedSymlinkedSetupScriptRuns(t *testing.T) {
 	}
 }
 
+// Value: protects=`trust status --base` judges the setup script at the branch a remote create
+// checks out, not the project's own base; fails_when=--base is ignored and the project's base is
+// judged (an approval that the host then refuses, after a paid machine is made); why_new=found by
+// Codex on PR #510; seam=none; no_claim=a real origin (a local branch stands in for it)
+func TestTrustStatusJudgesTheBaseItIsGiven(t *testing.T) {
+	_, project := trustProject(t, "echo main\n")
+	run(t, project, "git", "checkout", "-q", "-b", "other")
+	commitScript(t, project, "workroom_setup", "echo other\n")
+	if err := mustConfig(t).SetBaseBranch(project, "other"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, env := trustStatus(t, project); len(env.Scripts) != 1 || env.Scripts[0].SHA256 != digest("echo other\n") {
+		t.Fatalf("project's base: %+v", env)
+	}
+	if _, env := trustStatus(t, project, "--base", "main"); len(env.Scripts) != 1 || env.Scripts[0].SHA256 != digest("echo main\n") {
+		t.Fatalf("--base main: %+v", env)
+	}
+}
+
 // A root copy git ignores runs without approval and reports exempt; an untracked one that is not
 // ignored needs approval.
 func TestAGitignoredRootScriptIsExempt(t *testing.T) {
