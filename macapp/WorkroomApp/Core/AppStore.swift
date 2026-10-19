@@ -418,7 +418,7 @@ final class AppStore: ObservableObject {
   }
 
   /// Forward the ports the selected container workroom's dev container declares, once a launch
-  /// (`PortForwardingModel.forwardDeclared`). On selection, not when the Ports panel shows: opening
+  /// (`PortForwardingModel.forwardDeclared`). On selection, not when the Ports list shows: opening
   /// the workroom is when its dev server is wanted, whatever the inspector is showing. The read
   /// connects the host, as every inspector read does, and selecting it has already started it.
   private func forwardDeclaredPorts() {

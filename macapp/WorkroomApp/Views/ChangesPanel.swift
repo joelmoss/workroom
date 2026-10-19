@@ -111,8 +111,8 @@ struct RightInspector: View {
     canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
   }
 
-  /// The live collapse value for a sub-section. A solo pane (Files or Workroom, which stack only
-  /// themselves) never collapses, so it reports expanded and its header shows no chevron.
+  /// The live collapse value for a sub-section. A solo pane (Files, which stacks only itself) never
+  /// collapses, so it reports expanded and its header shows no chevron.
   private func collapsedValue(for sub: InspectorSectionKind) -> Bool {
     switch sub {
     case .changes: return store.changesSectionCollapsed

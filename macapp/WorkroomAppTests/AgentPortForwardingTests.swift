@@ -1146,11 +1146,14 @@ final class PortForwardingModelTests: XCTestCase {
   func testEachHostHasItsOwnModelForTheLaunch() {
     let host = HostID.remote(UUID())
     let other = HostID.remote(UUID())
+    // In a teardown block, so a failed assertion can't leave them in the shared table.
+    addTeardownBlock { @MainActor in
+      PortForwardingModel.models[host] = nil
+      PortForwardingModel.models[other] = nil
+    }
     XCTAssertTrue(PortForwardingModel.model(for: host) === PortForwardingModel.model(for: host))
     XCTAssertFalse(PortForwardingModel.model(for: host) === PortForwardingModel.model(for: other))
     XCTAssertEqual(PortForwardingModel.model(for: host).host, host)
-    PortForwardingModel.models[host] = nil
-    PortForwardingModel.models[other] = nil
   }
 
   /// A remote host's transport reads that host's connection in the manager and never another's.
@@ -1288,6 +1291,39 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(
       model.message,
       "Port \(taken) is in use on this Mac, and the dev container requires the same port.")
+  }
+
+  /// `requireLocalPort` refuses a port held only on `::1` too, which a bind on 127.0.0.1 doesn't
+  /// see: a Node dev server on `localhost` holds just that, and a browser asking for `localhost`
+  /// would reach it rather than the container.
+  func testRequireLocalPortRefusesAPortHeldOnlyOnIPv6Loopback() async throws {
+    let taken = try hold(ipv6: true)
+    let model = try await model(lease: lease(), sameLocalPort: true)
+    let file = """
+      {"forwardPorts": [\(taken)], "portsAttributes": {"\(taken)": {"requireLocalPort": true}}}
+      """
+    await model.forwardDeclared { (".devcontainer.json", Data(file.utf8)) }
+    XCTAssertTrue(model.forwards.isEmpty, "the Mac's ::1 listener was shadowed")
+    XCTAssertEqual(
+      model.message,
+      "Port \(taken) is in use on this Mac, and the dev container requires the same port.")
+  }
+
+  /// A file declaring more ports than `maxForwards` has only the first of them forwarded, and says
+  /// so: each forward holds a descriptor for the launch, which a hostile or generated list must not
+  /// exhaust for the terminals and connections that share the app's limit.
+  func testDeclaredPortsPastTheCapAreNotForwarded() async throws {
+    let model = try await model(lease: lease())
+    let declared = (0..<DevContainerPorts.maxForwards + 8).map { 20000 + $0 }
+    let file = #"{"forwardPorts": \#(declared)}"#
+    await model.forwardDeclared { (".devcontainer.json", Data(file.utf8)) }
+    XCTAssertEqual(
+      model.forwards.map { Int($0.remotePort) },
+      Array(declared.prefix(DevContainerPorts.maxForwards)))
+    XCTAssertEqual(
+      model.message,
+      ".devcontainer.json declares \(declared.count) ports; only the first "
+        + "\(DevContainerPorts.maxForwards) are forwarded.")
   }
 
   /// Forwarded once a launch: a second call reads nothing, and a declared port already forwarded

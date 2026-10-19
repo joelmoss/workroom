@@ -30,6 +30,10 @@ enum DevContainerPorts {
   /// Far past any real file, which is a page of JSON.
   static let maxBytes = 256 * 1024
 
+  /// The most ports one file has forwarded (`PortForwardingModel.forwardDeclared`). A real dev
+  /// container declares a handful; each forward holds a listening descriptor for the launch.
+  static let maxForwards = 32
+
   /// The first of `paths` that `files` has, and its bytes, or nil when it has none.
   static func read(_ files: FileProviding) async throws -> (path: String, data: Data)? {
     for path in paths {

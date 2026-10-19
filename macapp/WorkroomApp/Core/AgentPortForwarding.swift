@@ -13,16 +13,16 @@ import WorkroomVCS
 // is persisted across launches: a forward restored at launch would promise a socket the design
 // cannot keep.
 //
-// **The local port is the same number when it is free.** The Ports panel forwards N to N on this
-// Mac when nothing here holds N, as the dev container spec's `forwardPorts` expects, and to an
-// ephemeral port otherwise. It was always ephemeral while the panel also served this Mac's own
-// agent, where N was by definition taken; only container workrooms have the panel now. The bound
-// port is what the UI shows and what the user connects to.
+// **The local port is the same number when it is free.** A forward of N listens on N on this Mac
+// when nothing here holds N, as the dev container spec's `forwardPorts` expects, and on an
+// ephemeral port otherwise. It was always ephemeral while the Ports list also served this Mac's own
+// agent, where N was by definition taken; only container workrooms have the list now (the Details
+// pane). The bound port is what the UI shows and what the user connects to.
 //
 // **The listener is reachable by every process and every user account on this Mac.** `127.0.0.1`
 // is not uid-scoped, so a forward grants all of them unauthenticated access to the target — the
-// same property `ssh -L` ships with. Zero amplification while the agent is this same box; at Phase
-// 3 it becomes a real boundary, recorded in `docs/designs/remote-workrooms.md`.
+// same property `ssh -L` ships with. The target is always a container now, so this is a real
+// boundary, recorded in `docs/designs/remote-workrooms.md`.
 
 /// The port-forwarding service on one host's connection. Concrete rather than behind a protocol:
 /// only a wr-agent has one, and a second implementer would be a second agent.
@@ -972,7 +972,7 @@ private final class ForwardedConnection: @unchecked Sendable {
 @MainActor
 final class PortForwardingModel: ObservableObject {
   /// Each host's model, made on first use and kept for the launch: its listeners must outlive the
-  /// Ports panel showing another workroom and coming back, and a host's connection
+  /// Details pane showing another workroom and coming back, and a host's connection
   /// (`Transport.reconnect`, #380).
   static var models: [HostID: PortForwardingModel] = [:]
 
@@ -1137,7 +1137,15 @@ final class PortForwardingModel: ObservableObject {
       return
     }
     var failures: [String] = []
-    for port in ports where !forwards.contains(where: { $0.remotePort == port.port }) {
+    // Each forward holds a descriptor for the launch, so a file listing hundreds of ports must not
+    // take the app's (terminals, ssh and agent connections share the same limit).
+    if ports.count > DevContainerPorts.maxForwards {
+      failures.append(
+        "\(file.path) declares \(ports.count) ports; only the first "
+          + "\(DevContainerPorts.maxForwards) are forwarded.")
+    }
+    for port in ports.prefix(DevContainerPorts.maxForwards)
+    where !forwards.contains(where: { $0.remotePort == port.port }) {
       do {
         try await forward(port)
       } catch let taken as PortForward.LocalPortTaken {
