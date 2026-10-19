@@ -123,7 +123,8 @@ enum CreationPanePresentation {
       case .tryAgain: "Try Again"
       case .close: "Close"
       case .openAnyway: "Open Anyway"
-      case .deleteWorkroom: "Delete Workroom"
+      // An ellipsis: it opens the delete confirmation rather than deleting.
+      case .deleteWorkroom: "Delete Workroom…"
       }
     }
   }

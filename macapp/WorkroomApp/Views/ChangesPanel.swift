@@ -26,13 +26,23 @@ struct RightInspector: View {
     // slice out — and write back — the entries for the sub-sections actually shown, by `storeIndex`.
     let subs = store.activeInspectorSection.subSections
     VStack(spacing: 0) {
+      // Above everything, in every pane: which workroom all of this is about.
+      InspectorWorkroomHeader()
+      Divider()
       // The VCS toolbar sits ABOVE the section stack, not inside a section, so it survives a collapsed
       // Changes section. Only for the Changes activity section: branch/remote state is what that section
       // is about, and showing it over the Files tree would jump the layout on every activity-bar click.
       if store.activeInspectorSection == .changes {
         VCSToolbar(model: store.remoteState)
       }
-      inspectorSplit(subs: subs)
+      if subs.isEmpty {
+        // Details: drawn whole, under the workroom header that already names what it is about, so
+        // a section header of its own would only repeat it.
+        ScrollView { DetailsPanel() }
+          .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      } else {
+        inspectorSplit(subs: subs)
+      }
     }
     // Bound to the STORE, not a local `@State`: the gate that raises this lives in
     // `AppStore.performRemoteAction` so the Source Control menu's ⌥⇧⌘P goes through it too. When the
@@ -101,8 +111,8 @@ struct RightInspector: View {
     canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
   }
 
-  /// The live collapse value for a sub-section. A solo pane (Files, which stacks only itself) never
-  /// collapses, so it reports expanded and its header shows no chevron.
+  /// The live collapse value for a sub-section. A solo pane (Files or Workroom, which stack only
+  /// themselves) never collapses, so it reports expanded and its header shows no chevron.
   private func collapsedValue(for sub: InspectorSectionKind) -> Bool {
     switch sub {
     case .changes: return store.changesSectionCollapsed
@@ -386,90 +396,6 @@ private struct ChangedFileCountBadge: View {
   }
 }
 
-/// Ports forwarded from a host's agent to this Mac (issues #208, #254).
-///
-/// Per HOST, not per workroom — two local workrooms share this Mac's list, which is why it sits
-/// above the change list rather than inside the workroom-dependent part of it; a remote workroom is
-/// its own host and shows its own. Nothing is persisted across launches: the agent closes every
-/// forwarded socket when the client detaches, so a list restored at launch would name addresses
-/// that no longer answer.
-private struct PortsSection: View {
-  @ObservedObject var model: PortForwardingModel
-  private let theme = ThemeService.shared
-
-  private var machine: String { model.host == .local ? "this Mac" : "this workroom's host" }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
-        Text("Ports").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-        Spacer(minLength: 0)
-        // `.plain`, as every field embedded in a bar or panel here is; `.roundedBorder` is the
-        // sheets' style.
-        TextField("Port", text: $model.draft)
-          .textFieldStyle(.plain)
-          .font(.system(.caption, design: .monospaced))
-          .frame(width: 48)
-          .onSubmit { Task { await model.add() } }
-          .accessibilityIdentifier("ports.field")
-        InspectorHeaderButton(systemImage: "plus", help: "Forward a port from \(machine)") {
-          Task { await model.add() }
-        }
-        .accessibilityIdentifier("ports.add")
-      }
-      if !model.connected {
-        // Said here rather than discovered from `+`: the controls are useless without an agent. A
-        // forward kept across the lost connection reconnects when it is used (#380).
-        Text(
-          model.forwards.contains(where: \.reconnects)
-            ? "Not connected. A forward reconnects when it is used."
-            : "No agent is connected."
-        )
-        .font(.caption2).foregroundStyle(.secondary)
-      }
-      if let message = model.message {
-        Text(message).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
-      }
-      ForEach(model.forwards) { forward in
-        row(forward)
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    // Keyed by host: the section is the same view across workrooms, and each host's model is
-    // watched from the first time it is shown.
-    .task(id: model.host) { model.watch() }
-  }
-
-  @ViewBuilder
-  private func row(_ forward: PortForwardingModel.Entry) -> some View {
-    let address = "127.0.0.1:\(forward.localPort)"
-    VStack(alignment: .leading, spacing: 1) {
-      HStack(spacing: 6) {
-        Text("\(String(forward.remotePort)) → \(address)")
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(theme.tokens.fgMuted)
-          .textSelection(.enabled)
-        Spacer(minLength: 0)
-        InspectorHeaderButton(systemImage: "doc.on.doc", help: "Copy \(address)") {
-          NSPasteboard.general.clearContents()
-          NSPasteboard.general.setString(address, forType: .string)
-        }
-        InspectorHeaderButton(
-          systemImage: "xmark", help: "Stop forwarding port \(String(forward.remotePort))",
-          destructive: true
-        ) {
-          model.remove(forward.id)
-        }
-      }
-      if let failure = forward.failure {
-        Text(failure).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
-      }
-    }
-    .accessibilityIdentifier("ports.row.\(forward.remotePort)")
-  }
-}
-
 /// The Pull Request section header's number badge (issue #77): a capsule "#N" link that opens the PR
 /// in the browser, tinted by PR state (red when checks fail). A standalone view so it can carry its
 /// own `@State` hover, which the `@ViewBuilder` accessory can't — the capsule fill deepens on hover.
@@ -715,12 +641,14 @@ struct ChangedFileRow: View, Equatable {
 
 /// A compact section-header action button matching the sidebar row-button convention: an SF
 /// Symbol with a subtle rounded hover fill. `destructive` tints red on hover (like the row
-/// delete button); neutral uses a faint primary fill (like the new-workroom button).
+/// delete button); neutral uses a faint primary fill (like the new-workroom button). `compact` is
+/// the smaller form for an action inside a body row (a copy button beside a value), not a header.
 struct InspectorHeaderButton: View {
   let systemImage: String
   let help: String
   var destructive: Bool = false
   var disabled: Bool = false
+  var compact: Bool = false
   let action: () -> Void
   @State private var hovering = false
   private let theme = ThemeService.shared
@@ -728,9 +656,9 @@ struct InspectorHeaderButton: View {
   var body: some View {
     Button(action: action) {
       Image(systemName: systemImage)
-        .font(.system(size: 11))
+        .font(.system(size: compact ? 9 : 11))
         .foregroundStyle(destructive && hovering ? Color.red : theme.tokens.fgMuted)
-        .inspectorHeaderButtonChrome(hovering: hovering, destructive: destructive)
+        .inspectorHeaderButtonChrome(hovering: hovering, destructive: destructive, compact: compact)
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
@@ -747,18 +675,18 @@ extension View {
   /// identical across the differently-shaped glyphs (the wide ellipsis vs. the narrow refresh/trash),
   /// centred in a larger **fixed** click target so all three match exactly. `contentShape` makes the
   /// whole target clickable/hoverable, not just the glyph.
-  fileprivate func inspectorHeaderButtonChrome(hovering: Bool, destructive: Bool = false)
-    -> some View
-  {
+  fileprivate func inspectorHeaderButtonChrome(
+    hovering: Bool, destructive: Bool = false, compact: Bool = false
+  ) -> some View {
     self
-      .frame(width: 22, height: 22)
+      .frame(width: compact ? 16 : 22, height: compact ? 16 : 22)
       .background(
-        RoundedRectangle(cornerRadius: 5)
+        RoundedRectangle(cornerRadius: compact ? 4 : 5)
           .fill(
             (destructive ? Color.red : ThemeService.shared.tokens.hover)
               .opacity(hovering ? (destructive ? 0.18 : 1) : 0))
       )
-      .frame(width: 28, height: 26)
+      .frame(width: compact ? 20 : 28, height: compact ? 18 : 26)
       .contentShape(Rectangle())
   }
 }
@@ -767,7 +695,7 @@ extension View {
 /// trigger is a SwiftUI button (a `.borderlessButton` menu is AppKit-backed and never reports
 /// hover). It mirrors `InspectorHeaderButton`: a centred glyph, the same rounded hover fill, and the
 /// same comfortable click target so all three header buttons match.
-private struct InspectorMenuButtonStyle: ButtonStyle {
+struct InspectorMenuButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     HoverFill(configuration: configuration)
   }
@@ -802,29 +730,14 @@ struct ChangesPanel: View {
   private let renderCap = 200
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      // Per host, so it must not vanish when no workroom is selected; see `PortsSection`.
-      if let host = portsHost {
-        PortsSection(model: .model(for: host))
-        Divider()
-      }
-      Group {
-        if let sid = store.inspectorTargetID, sid.isStatusable {
-          content(for: sid)
-        } else {
-          inspectorMessage("Select a workroom to see its changes.")
-        }
+    Group {
+      if let sid = store.inspectorTargetID, sid.isStatusable {
+        content(for: sid)
+      } else {
+        inspectorMessage("Select a workroom to see its changes.")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  /// The host whose ports the section forwards: a remote workroom's own host (#254), else this
-  /// Mac's. Nil for a remote workroom this app can't reach, whose ports this Mac's list would only
-  /// misname.
-  private var portsHost: HostID? {
-    guard let workroom = store.selectedWorkroom, workroom.isRemote else { return .local }
-    return workroom.reachableHost.map(HostID.remote)
   }
 
   @ViewBuilder

@@ -4086,6 +4086,28 @@ service milestones below so each layer can be reviewed and landed independently.
      and the provider hostname that "come back to a running preview URL" needs, which no amount of
      client-side forwarding can supply.
 
+     *Amended 2026-10-19: container workrooms only, declared by `devcontainer.json`.* The Ports
+     list moved out of the Changes pane, which is about the repository, into a new inspector pane
+     for the workroom itself (`ActivitySection.details`, `DetailsPanel`: where it runs, and its
+     ports), and shows only for a Docker or Apple container workroom. A workroom on this Mac reaches
+     its ports directly, and boxd (`boxd machine proxy`) and exe.dev (`share port`) publish a
+     machine's ports themselves, with the provider hostname the paragraph above says forwarding
+     can't supply; `LocalAgentVCS.forwarding()` went with this Mac's list. A container has no such
+     thing (it publishes only ssh), so its ports come from the Development Containers spec: the
+     workroom's `.devcontainer/devcontainer.json` (else `.devcontainer.json`) is read when the
+     workroom is selected, once a launch, and each number in `forwardPorts` is forwarded, with
+     `portsAttributes`' `label` and `requireLocalPort` for a single port. Over this tunnel, as VS
+     Code does it, not `docker run --publish`: publishing is fixed when the container is made and
+     would need a recreate per change, and the tunnel reaches a server bound to the container's
+     loopback, which a published port does not. The reference `@devcontainers/cli` implements no
+     `forwardPorts` at all (issue 186 there), so the tool decides. With the panel serving only
+     other boxes, the *ephemeral* local port is reversed: a forward takes its own number when
+     nothing on this Mac holds it, on `127.0.0.1` or `::1` (`LoopbackSocket.heldOnIPv6Loopback`:
+     a `::1`-only listener doesn't block a v4 bind, and a browser asks `localhost` on `::1`
+     first), and an ephemeral one otherwise, or refuses under `requireLocalPort`. `Service::Forward`
+     itself is unchanged: `open` serves these, and `listen`/`accept` the credential relay. Related:
+     #308, where `devcontainer.json` is one option for the container's own toolchain.
+
      **Terminal-state durability: the in-memory half is already done, and it shipped with Phase 1**
      (the shadow terminal, `wr-agent/src/terminal.rs`). "The scenarios already proven for local
      sessions" are detach, client crash and app restart. Each of them leaves the agent alive, and

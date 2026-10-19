@@ -185,7 +185,7 @@ final class CreationPanePresentationTests: XCTestCase {
         primary: .deleteWorkroom, secondary: .close))
     XCTAssertEqual(
       [P.Action.tryAgain, .close, .openAnyway, .deleteWorkroom].map(\.title),
-      ["Try Again", "Close", "Open Anyway", "Delete Workroom"])
+      ["Try Again", "Close", "Open Anyway", "Delete Workroom…"])
   }
 
   /// Value: protects=D16, Escape answers only where Close is shown; fails_when=Escape triggers

@@ -57,6 +57,7 @@ for every project and workroom operation. The CLI also works on its own from a s
   - [CLI Usage](#cli-usage)
   - [The `--json` machine contract](#the---json-machine-contract)
 - [Setup and teardown scripts](#setup-and-teardown-scripts)
+- [Ports in container workrooms](#ports-in-container-workrooms)
 - [Configuration & Environment Variables](#configuration--environment-variables)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -180,7 +181,9 @@ directly — a **History** log of commits, a **changeset detail** tab (message, 
 and per-file diffs in unified or side-by-side), and a live **Changes** view of the working copy.
 A **Pull Request** panel lets you create and track PRs, and a **file explorer** browses the tree
 with language detection and syntax highlighting. It's read structurally from Git (libgit2) — not
-scraped from CLI output.
+scraped from CLI output. A **Details** pane shows where the selected workroom runs and, for a
+container workroom, its forwarded ports (see [Ports in container
+workrooms](#ports-in-container-workrooms)).
 
 **Create and delete without touching the command line.** Hit the **+** on a project to spin up a
 new workroom. Its pane opens at once with a checklist of the create's steps, each with its time
@@ -648,6 +651,42 @@ On a remote workroom's host:
 This repo ships its own `scripts/workroom_setup` as a working example: it guards against the root
 and workroom paths resolving to the same inode (which would clobber source) and copies
 `.claude/settings.local.json` into the new workroom.
+
+---
+
+## Ports in container workrooms
+
+A dev server running in a Docker or Apple container workroom listens inside the container, where
+your Mac's browser can't reach it. Workroom forwards its ports to `127.0.0.1` on your Mac, and the
+**Ports** list in the inspector's **Details** pane (`⌥⌘I`) shows each one.
+
+Declare the ports in the repository's dev container file, `.devcontainer/devcontainer.json` (or
+`.devcontainer.json`), the same file VS Code, Codespaces and DevPod read:
+
+```jsonc
+{
+  "forwardPorts": [5173, 3000],
+  "portsAttributes": {
+    "5173": { "label": "Web" },
+    "3000": { "label": "API", "requireLocalPort": true }
+  }
+}
+```
+
+- The ports are forwarded when you open the workroom, once per launch, from the workroom's own
+  copy of the file. A port you stop forwarding stays stopped until the app relaunches.
+- Each port keeps its number on your Mac when that number is free, so 5173 is
+  `http://localhost:5173`. When something on your Mac already uses it, the port gets a free number
+  instead, and the Ports list shows which. With `"requireLocalPort": true` the port isn't forwarded
+  at all then, and the list says why.
+- Only these fields are read: numbers in `forwardPorts`, and `label` and `requireLocalPort` for a
+  single port in `portsAttributes`. A `"host:port"` entry, port ranges and patterns, `appPort`, and
+  the container definition itself (`image`, `build`, `features`) are ignored: a container workroom
+  runs Workroom's own image.
+- To forward a port the file doesn't list, type it into the Ports list and press **+**.
+- Workrooms on boxd and exe.dev have no Ports list: publish a machine's port with
+  `boxd machine proxy add` (public on the internet) or `ssh exe.dev share port` (private to you by
+  default). A workroom on your Mac needs none.
 
 ---
 

@@ -1431,6 +1431,21 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("f", modifiers: [.command, .option])
       .disabled(modalBlocked || noProjects)
 
+      // View menu: reveal the Details view (where the selected workroom runs, and its ports), a
+      // single-section pane like Files, revealed the same way.
+      Toggle(
+        "Details",
+        isOn: Binding(
+          get: { showInspector && store?.activeInspectorSection == .details },
+          set: { on in
+            store?.activeInspectorSection = .details
+            showInspector = on
+            store?.inspectorToggles += 1
+          })
+      )
+      .keyboardShortcut("i", modifiers: [.command, .option])
+      .disabled(modalBlocked || noProjects)
+
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
       // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.
       Divider()
