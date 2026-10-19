@@ -546,7 +546,7 @@ final class GhosttySurfaceView: NSView {
         attachedFor: attachedFor,
         refused: PersistentSessionService.shared.remoteHostRefusedLastAttach(session))
     else { return }
-    let wasUp = attachedFor > RemoteReconnectBackoff.ceiling
+    let wasUp = linkWasUp
     let reconnect = DispatchWorkItem { [weak self] in
       guard let self, !self.isTornDown, self.persistentSessionID == session else { return }
       if wasUp { self.persistentSessionIsRestored = true }
@@ -575,9 +575,7 @@ final class GhosttySurfaceView: NSView {
       staleHosts.contains(host)
     else { return }
     remoteReconnects = RemoteReconnectBackoff()
-    if Date().timeIntervalSince(lastAttachAt) > RemoteReconnectBackoff.ceiling {
-      persistentSessionIsRestored = true
-    }
+    if linkWasUp { persistentSessionIsRestored = true }
     reattachPersistentSession()
   }
 
@@ -1018,6 +1016,11 @@ final class GhosttySurfaceView: NSView {
   /// When this pane last attached, to tell a link that dropped after a while (start the backoff
   /// again) from one that never came up (keep backing off).
   private var lastAttachAt = Date.distantPast
+  /// Whether the last attach was up long enough to count as a link that was up, so attaching again
+  /// is a restored pane's (`reconnectIfTheLinkDropped`).
+  private var linkWasUp: Bool {
+    Date().timeIntervalSince(lastAttachAt) > RemoteReconnectBackoff.ceiling
+  }
   /// The reconnect waiting out its delay, cancelled by any other reattach so the pane does not
   /// attach twice, and by closing the pane.
   private(set) var pendingReconnect: DispatchWorkItem?
