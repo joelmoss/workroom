@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -64,8 +65,13 @@ func (sc Script) OriginLabel() string {
 type UntrustedScriptError struct{ Script Script }
 
 func (e *UntrustedScriptError) Error() string {
-	return fmt.Sprintf("%v: scripts/%s %s is new, or changed since it was approved. Review and approve it with `workroom trust`",
-		errs.ErrScriptNotTrusted, e.Script.Name, e.Script.OriginLabel())
+	// `workroom trust` judges the base commit's and the root's copies, never a workroom's own.
+	how := "Review and approve it with `workroom trust`"
+	if e.Script.Origin == OriginWorkroom {
+		how = "Run the same command in a terminal to review and approve it"
+	}
+	return fmt.Sprintf("%v: scripts/%s %s is new, or changed since it was approved. %s",
+		errs.ErrScriptNotTrusted, e.Script.Name, e.Script.OriginLabel(), how)
 }
 
 func (e *UntrustedScriptError) Unwrap() error { return errs.ErrScriptNotTrusted }
@@ -85,12 +91,17 @@ func (s *Service) JudgeScript(dir, name, origin, path string, text []byte) (Scri
 	return sc, nil
 }
 
-// ignoredRootCopy reports whether the root's scripts/<name> is gitignored and holds the bytes
-// whose SHA-256 is digest. A workroom's copy can hold them too: the include step copies ignored
-// files into a new workroom before its setup script runs.
+// ignoredRootCopy reports whether the root's scripts/<name> is a gitignored regular file holding the
+// bytes whose SHA-256 is digest. A workroom's copy can hold them too: the include step copies
+// ignored files into a new workroom before its setup script runs. An ignored symlink is not exempt:
+// what it points to may be tracked, and a pull can change it.
 func ignoredRootCopy(dir, name, digest string) bool {
 	rel := filepath.Join("scripts", name)
-	text, err := os.ReadFile(filepath.Join(dir, rel))
+	path := filepath.Join(dir, rel)
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	text, err := readScript(path)
 	if err != nil {
 		return false
 	}
@@ -98,9 +109,39 @@ func ignoredRootCopy(dir, name, digest string) bool {
 	return hex.EncodeToString(sum[:]) == digest && vcs.Ignored(dir, rel)
 }
 
+// MaxScriptBytes is the largest script Workroom will read to judge: a setup or teardown script is a
+// short program, and one that is a link to a device (/dev/zero) or a huge file must not be read
+// without end.
+const MaxScriptBytes = 1 << 20
+
+// readScript is the regular file at path, following a symlink, refusing anything else or anything
+// over MaxScriptBytes.
+func readScript(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s is not a regular file", ErrScriptNotTrusted, path)
+	}
+	if info.Size() > MaxScriptBytes {
+		return nil, fmt.Errorf("%w: %s is larger than %d bytes", ErrScriptNotTrusted, path, MaxScriptBytes)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	text, err := io.ReadAll(io.LimitReader(f, MaxScriptBytes+1))
+	if err == nil && len(text) > MaxScriptBytes {
+		return nil, fmt.Errorf("%w: %s is larger than %d bytes", ErrScriptNotTrusted, path, MaxScriptBytes)
+	}
+	return text, err
+}
+
 // fileScript judges the script file at path, or reports false when there is none.
 func (s *Service) fileScript(dir, name, origin, path string) (Script, bool, error) {
-	text, err := os.ReadFile(path)
+	text, err := readScript(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Script{}, false, nil
 	}
@@ -200,10 +241,22 @@ func (s *Service) gateSetup(dir, start string) error {
 // gateFound is gate for the file findScript found, about to run in the workroom at wrPath.
 func (s *Service) gateFound(dir, name, wrPath, path string) error {
 	sc, ok, err := s.foundScript(dir, name, wrPath, path)
+	if err != nil || !ok || sc.Trusted {
+		return err
+	}
+	if err := s.gate(dir, sc); err != nil {
+		return err
+	}
+	// The person read the file while it sat on disk, as long as the prompt stayed open: the bytes
+	// that now run must still be the ones they approved.
+	now, ok, err := s.foundScript(dir, name, wrPath, path)
 	if err != nil || !ok {
 		return err
 	}
-	return s.gate(dir, sc)
+	if now.SHA256 != sc.SHA256 {
+		return &UntrustedScriptError{Script: now}
+	}
+	return nil
 }
 
 // gate lets a trusted script through. An untrusted one goes to ApproveScriptFn when there is one,

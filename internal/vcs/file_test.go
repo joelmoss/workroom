@@ -79,4 +79,16 @@ func TestFileAtFollowsASymlinkWithinTheCommit(t *testing.T) {
 	if _, _, err := FileAt(dir, "", "scripts/outside"); !errors.Is(err, ErrLinkOutside) {
 		t.Fatalf("a link out of the repository: %v, want ErrLinkOutside", err)
 	}
+	// A linked directory along the path is followed too, and a directory is no file.
+	if err := os.Symlink("scripts", filepath.Join(dir, "bin")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "bin")
+	git(t, dir, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "dir link")
+	if text, ok, err := FileAt(dir, "", "bin/workroom_setup"); err != nil || !ok || string(text) != "#!/bin/sh\necho real\n" {
+		t.Fatalf("through a linked directory: %q %v %v", text, ok, err)
+	}
+	if _, ok, err := FileAt(dir, "", "scripts"); err != nil || ok {
+		t.Fatalf("a directory: %v %v, want no file", ok, err)
+	}
 }

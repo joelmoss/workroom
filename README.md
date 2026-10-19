@@ -535,7 +535,11 @@ script that would run: the workroom's copy, else the root's. The file is hashed 
 runs, so bytes that change in between are refused too.
 
 A root copy that **git ignores** needs no approval: it can't arrive by a pull. An untracked file git
-doesn't ignore still needs one.
+doesn't ignore still needs one, and so does an ignored symlink, whose target a pull may change.
+
+An approval covers the script's own contents only. Anything it runs in turn (`bin/setup`,
+`npm install` and the `package.json` it reads, a file it sources) is repository code no approval
+covers, so a script is only as reviewed as what it calls.
 
 Approve ahead of time, or check, from the project's root (or with `--project DIR`):
 

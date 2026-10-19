@@ -262,22 +262,30 @@ public struct ScriptTrust: Codable, Sendable, Equatable {
   /// `base` (the base commit), `root`, `workroom` or `stdin`.
   public let origin: String
   public let sha256: String
+  /// What to show. JSON can't carry bytes that aren't UTF-8, so for those it differs from `bytes`.
   public let text: String
+  /// The exact bytes, which an approval records (base64 in the contract).
+  public let bytes: Data?
   /// Approved, or `exempt`.
   public let trusted: Bool
   /// The root's copy, which git ignores, so it needs no approval.
   public let exempt: Bool
 
   public init(
-    name: String, origin: String, sha256: String, text: String, trusted: Bool, exempt: Bool
+    name: String, origin: String, sha256: String, text: String, bytes: Data? = nil, trusted: Bool,
+    exempt: Bool
   ) {
     self.name = name
     self.origin = origin
     self.sha256 = sha256
     self.text = text
+    self.bytes = bytes
     self.trusted = trusted
     self.exempt = exempt
   }
+
+  /// The bytes to approve: exactly those judged, or the text when the CLI sent none.
+  public var approvalBytes: Data { bytes ?? Data(text.utf8) }
 }
 
 /// `trust status`: whether every script a project would run next is approved, and each one.

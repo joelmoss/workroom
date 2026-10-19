@@ -106,6 +106,9 @@ final class CLIContractTests: XCTestCase {
     XCTAssertEqual(script.origin, "root")
     XCTAssertEqual(script.text, "#!/bin/sh\necho installing\n")
     XCTAssertEqual(script.sha256.count, 64)
+    // The exact bytes travel too (base64), so an approval records what was judged.
+    XCTAssertEqual(script.bytes, Data("#!/bin/sh\necho installing\n".utf8))
+    XCTAssertEqual(script.approvalBytes, script.bytes)
     XCTAssertFalse(script.trusted)
     XCTAssertFalse(script.exempt)
 

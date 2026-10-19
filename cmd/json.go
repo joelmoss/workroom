@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,11 +11,12 @@ import (
 	"github.com/joelmoss/workroom/internal/workroom"
 )
 
-// scriptJSON is a judged script as the --json contract carries it.
+// scriptJSON is a judged script as the --json contract carries it: `text` to show, which JSON
+// makes lossy for bytes that are not UTF-8, and `bytes`, the exact bytes in base64, to approve.
 func scriptJSON(sc workroom.Script) map[string]any {
 	return map[string]any{
 		"name": sc.Name, "origin": sc.Origin, "sha256": sc.SHA256, "text": string(sc.Text),
-		"trusted": sc.Trusted, "exempt": sc.Exempt,
+		"bytes": base64.StdEncoding.EncodeToString(sc.Text), "trusted": sc.Trusted, "exempt": sc.Exempt,
 	}
 }
 

@@ -167,10 +167,11 @@ func judgedScripts() (*workroom.Service, string, []workroom.Script, error) {
 		return nil, "", nil, err
 	}
 	if trustStdin == "" {
-		scripts, err := svc.ProjectScripts(dir)
 		if trustBaseSet {
-			scripts, err = svc.ProjectScriptsFrom(dir, trustBase)
+			scripts, err := svc.ProjectScriptsFrom(dir, trustBase)
+			return svc, dir, scripts, err
 		}
+		scripts, err := svc.ProjectScripts(dir)
 		return svc, dir, scripts, err
 	}
 	if trustStdin != workroom.SetupScript && trustStdin != workroom.TeardownScript {
