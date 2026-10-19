@@ -67,18 +67,6 @@ actor LocalAgentVCS {
     }
   }
 
-  /// The local box's port-forwarding service (issue #208), with the lease of the connection it runs
-  /// on. Never connects or spawns an agent: adding a forward is a deliberate user action, so
-  /// spawning would be defensible, but a forward only carries while a client is attached — so the
-  /// honest answer to "no agent is running" is that there is nothing to forward through yet, not a
-  /// whole agent started on a port's behalf.
-  func forwarding() async throws -> (HostConnectionManager.Lease, AgentForwardService) {
-    guard await manager.snapshot(for: .local).status == .connected else {
-      throw RepositoryRoutingError.unavailable(.local)
-    }
-    return try await manager.forwarding(host: .local)
-  }
-
   /// The local agent's connection for program status (#358), connecting (and starting the agent)
   /// as a VCS read does: a daemon-backed pane means the agent is running anyway.
   func programStatus() async throws -> any HostServiceConnection {

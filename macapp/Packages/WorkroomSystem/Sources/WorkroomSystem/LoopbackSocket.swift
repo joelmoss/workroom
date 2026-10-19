@@ -1,12 +1,13 @@
 import Darwin
 import Foundation
 
-/// An ephemeral TCP listener on 127.0.0.1, close-on-exec: nothing off this Mac can reach it, and no
-/// process this app spawns inherits it. Shared by the port forwards, the credential relay and the
-/// container port probe.
+/// A TCP listener on 127.0.0.1, close-on-exec: nothing off this Mac can reach it, and no process
+/// this app spawns inherits it. Shared by the port forwards, the credential relay and the container
+/// port probe.
 public enum LoopbackSocket {
   /// The listening descriptor and the port it was given, or nil with `errno` set (nothing left
-  /// open).
+  /// open). `port` 0 takes an ephemeral port; any other is that port or nothing (`EADDRINUSE` when
+  /// another listener holds it).
   ///
   /// The accept queue is always `SOMAXCONN` (128; the `kern.ipc.somaxconn` sysctl caps what takes
   /// effect). Connections wait there while the owner's accept loop is behind, and on loopback macOS
@@ -17,14 +18,14 @@ public enum LoopbackSocket {
   /// process and no owner's slot: each owner still caps what it takes. A burst past the cap is still
   /// reset. A deep queue is also a long line: an owner must not serve it one slow client at a time
   /// (`LoopbackListener.callback` reads them all at once).
-  public static func listen() -> (descriptor: Int32, port: UInt16)? {
+  public static func listen(port: UInt16 = 0) -> (descriptor: Int32, port: UInt16)? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = 0
+    address.sin_port = port.bigEndian
     address.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
     var length = socklen_t(MemoryLayout<sockaddr_in>.size)
     let bound = withUnsafeMutablePointer(to: &address) {
@@ -40,6 +41,27 @@ public enum LoopbackSocket {
       return nil
     }
     return (descriptor, UInt16(bigEndian: address.sin_port))
+  }
+
+  /// Whether a listener holds `port` on `::1`. A bind on 127.0.0.1 doesn't see one there (measured:
+  /// it is refused for a v4 or dual-stack listener, and not for a `::1`-only one, which is what
+  /// Node gives a dev server bound to `localhost`), and a browser asking for `localhost` tries
+  /// `::1` first, so it would reach that listener rather than ours.
+  public static func heldOnIPv6Loopback(port: UInt16) -> Bool {
+    let descriptor = socket(AF_INET6, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { return false }
+    defer { close(descriptor) }
+    var address = sockaddr_in6()
+    address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+    address.sin6_family = sa_family_t(AF_INET6)
+    address.sin6_port = port.bigEndian
+    address.sin6_addr = in6addr_loopback
+    let bound = withUnsafePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) == 0
+      }
+    }
+    return !bound && errno == EADDRINUSE
   }
 
   /// A blocking TCP connection to `127.0.0.1:<port>`, close-on-exec and `SO_NOSIGPIPE`, or nil

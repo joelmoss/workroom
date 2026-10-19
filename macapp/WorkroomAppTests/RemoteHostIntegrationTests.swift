@@ -168,7 +168,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let host = HostID.remote(id)
     let manager = HostConnectionManager()
     _ = try await manager.connect(host: host) { connection }
-    let model = PortForwardingModel(host: host, transport: .on(host, manager: manager))
+    // Not port 22's own number: that would hold this Mac's ssh port while the test runs.
+    let model = PortForwardingModel(
+      host: host, transport: .on(host, manager: manager), sameLocalPort: false)
     model.draft = "22"
     await model.add()
     XCTAssertNil(model.message)
