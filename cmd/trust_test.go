@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
+	"github.com/joelmoss/workroom/internal/ui"
 )
 
 // commitScript writes scripts/<name> in project with body and commits it, so the base commit
@@ -199,6 +200,16 @@ func TestTrustApprovesUntilTheScriptChanges(t *testing.T) {
 	}
 	if code, _ := trustStatus(t, project); code != 1 {
 		t.Fatalf("after untrust: exit %d", code)
+	}
+}
+
+// trust names each script it recorded, and each one the project has none of.
+func TestTrustReportsWhatItRecordedAndWhatIsAbsent(t *testing.T) {
+	_, project := trustProject(t, "echo hi\n")
+	r := runCLI(t, "trust", "--project", project)
+	want := ui.Green("Approved scripts/workroom_setup from the base commit.") + "\nNo scripts/workroom_teardown.\n"
+	if r.code != 0 || string(r.stdout) != want {
+		t.Fatalf("exit %d, stdout %q, want %q", r.code, r.stdout, want)
 	}
 }
 

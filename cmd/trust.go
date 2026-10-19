@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/joelmoss/workroom/internal/ui"
@@ -67,9 +68,7 @@ var trustCmd = &cobra.Command{
 		if jsonOutput {
 			return writeJSONSuccess(os.Stdout, "trust", map[string]any{"scripts": scriptsJSON(scripts)})
 		}
-		if len(scripts) == 0 {
-			lines = append(lines, "This project has no setup or teardown script.")
-		}
+		lines = append(lines, absentScripts(scripts)...)
 		fmt.Println(strings.Join(lines, "\n"))
 		return nil
 	},
@@ -106,8 +105,8 @@ var trustStatusCmd = &cobra.Command{
 				}
 				fmt.Printf("scripts/%s %s: %s\n", sc.Name, sc.OriginLabel(), state)
 			}
-			if len(scripts) == 0 {
-				fmt.Println("This project has no setup or teardown script.")
+			for _, line := range absentScripts(scripts) {
+				fmt.Println(line)
 			}
 		}
 		if !trusted {
@@ -166,6 +165,20 @@ func judgedScripts() (*workroom.Service, string, []workroom.Script, error) {
 	}
 	sc, err := svc.JudgeScript(dir, trustStdin, workroom.OriginStdin, "", text)
 	return svc, dir, []workroom.Script{sc}, err
+}
+
+// absentScripts says which of the project's scripts it has none of, unless --stdin named one.
+func absentScripts(scripts []workroom.Script) []string {
+	if trustStdin != "" {
+		return nil
+	}
+	var lines []string
+	for _, name := range []string{workroom.SetupScript, workroom.TeardownScript} {
+		if !slices.ContainsFunc(scripts, func(sc workroom.Script) bool { return sc.Name == name }) {
+			lines = append(lines, fmt.Sprintf("No scripts/%s.", name))
+		}
+	}
+	return lines
 }
 
 func scriptsJSON(scripts []workroom.Script) []map[string]any {
