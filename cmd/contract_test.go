@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"io"
@@ -119,14 +121,42 @@ func gitRepo(t *testing.T, dir string) string {
 	return dir
 }
 
-// writeProjectScript writes scripts/<name> in project with body.
+// writeProjectScript writes scripts/<name> in project with body, approved to run (#363).
 func writeProjectScript(t *testing.T, project, name, body string) {
+	t.Helper()
+	writeScriptFile(t, project, name, "#!/bin/sh\n"+body)
+	approveForTest(t, project, name, "#!/bin/sh\n"+body)
+}
+
+// writeScriptFile writes scripts/<name> in project with text, approving nothing.
+func writeScriptFile(t *testing.T, project, name, text string) {
 	t.Helper()
 	dir := filepath.Join(project, "scripts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// approveForTest records text as project's approved script name, registering the project, as a
+// user's yes to the CLI's question does.
+func approveForTest(t *testing.T, project, name, text string) {
+	t.Helper()
+	cfg, err := config.New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(text))
+	canon, err := config.CanonicalPath(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddProject(canon, "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetTrustedScript(canon, name, hex.EncodeToString(sum[:])); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -264,6 +294,26 @@ func TestContractCreateSetupFailed(t *testing.T) {
 	name := createdName(t, run.stdout)
 	checkContract(t, "create-setup-failed.json", run.stdout, home, name, contractName)
 	checkContract(t, "create-setup-failed-events.ndjson", run.stderr, home, name, contractName)
+}
+
+// A create whose setup script this Mac has not approved is refused with the script, so the app can
+// show it and ask (#363); trust status reports it the same way.
+func TestContractScriptNotTrusted(t *testing.T) {
+	home := contractHomeDir(t)
+	project := gitRepo(t, filepath.Join(home, "src", "app"))
+	writeScriptFile(t, project, "workroom_setup", "#!/bin/sh\necho installing\n")
+
+	r := runCLI(t, "create", "--json", "--no-editor", "--project", project)
+	if r.code != 3 {
+		t.Fatalf("create: exit %d, %s", r.code, r.stdout)
+	}
+	checkContract(t, "create-script-not-trusted.json", r.stdout, home)
+
+	r = runCLI(t, "trust", "status", "--json", "--project", project)
+	if r.code != 1 {
+		t.Fatalf("trust status: exit %d, %s", r.code, r.stdout)
+	}
+	checkContract(t, "trust-status.json", r.stdout, home)
 }
 
 // A create whose fetch fails warns that its start may be out of date, in the envelope and in the

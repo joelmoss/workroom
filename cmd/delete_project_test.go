@@ -31,6 +31,9 @@ func (f *fakeVCS) Type() vcs.Type                                               
 func (f *fakeVCS) Label() string                                                    { return "Git" }
 func (f *fakeVCS) Create(_, _, _, _ string, _ bool, _ vcs.Progress) (string, error) { return "", nil }
 func (f *fakeVCS) ListWorkrooms(_ string) ([]string, error)                         { return f.list, nil }
+func (f *fakeVCS) StartPoint(string, string, bool, vcs.Progress) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeVCS) Delete(_, vcsName, _ string) (string, error) {
 	f.deleteCalls = append(f.deleteCalls, vcsName)
 	if f.onDelete != nil {
@@ -54,6 +57,8 @@ func newTestSvc(t *testing.T, v vcs.VCS) (*workroom.Service, *config.Config) {
 	return &workroom.Service{
 		Config: cfg,
 		VCS:    v,
+		// A user who approves every script: these tests are about what a delete does with one.
+		ApproveScriptFn: func(workroom.Script) (bool, error) { return true, nil },
 	}, cfg
 }
 

@@ -2,11 +2,21 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"maps"
 
 	"github.com/joelmoss/workroom/internal/errs"
+	"github.com/joelmoss/workroom/internal/workroom"
 )
+
+// scriptJSON is a judged script as the --json contract carries it.
+func scriptJSON(sc workroom.Script) map[string]any {
+	return map[string]any{
+		"name": sc.Name, "origin": sc.Origin, "sha256": sc.SHA256, "text": string(sc.Text),
+		"trusted": sc.Trusted, "exempt": sc.Exempt,
+	}
+}
 
 // schemaVersion is the version of the --json contract. Bump only on breaking changes. A new field
 // or a new warning kind is additive (the app's decoders ignore unknown keys), so list's "host"
@@ -54,6 +64,10 @@ func writeJSONError(w io.Writer, command string, err error) {
 	}
 	if command != "" {
 		obj["command"] = command
+	}
+	// The refused script, so a GUI can show it and ask (#363).
+	if untrusted := (*workroom.UntrustedScriptError)(nil); errors.As(err, &untrusted) {
+		obj["script"] = scriptJSON(untrusted.Script)
 	}
 	maps.Copy(obj, jsonErrorExtra)
 	enc := json.NewEncoder(w)

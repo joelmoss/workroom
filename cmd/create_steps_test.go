@@ -48,15 +48,11 @@ func noRemoteProject(t *testing.T) string {
 	return project
 }
 
+// writeSetup writes the root's setup script, approved to run.
 func writeSetup(t *testing.T, project, body string) {
 	t.Helper()
-	scripts := filepath.Join(project, "scripts")
-	if err := os.MkdirAll(scripts, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scripts, "workroom_setup"), []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeScriptFile(t, project, "workroom_setup", body)
+	approveForTest(t, project, "workroom_setup", body)
 }
 
 func assertSteps(t *testing.T, events []map[string]any, want ...string) {

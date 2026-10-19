@@ -61,6 +61,9 @@ type Service struct {
 	// state: running, done, warning, skipped or failed. detail is the warning text, the skip
 	// reason or the failure message.
 	OnStep func(id, state, detail string)
+	// ApproveScriptFn, when set, is shown a setup or teardown script this Mac has not approved and
+	// answers whether to approve and run it (#363). Unset, such a script is refused.
+	ApproveScriptFn func(Script) (bool, error)
 }
 
 func (s *Service) sayStatus(status, msg string) {
@@ -229,7 +232,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	// Create VCS workspace
 	var warning string
 	if !s.Pretend {
-		projects, err := s.Config.AllProjects()
+		base, global, err := s.base(dir)
 		if err != nil {
 			return res, err
 		}
@@ -240,17 +243,14 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		if err := os.MkdirAll(wrDir, 0o755); err != nil {
 			return res, err
 		}
-		// The project's own base wins; else the global one; else origin's default branch.
-		base := projects[dir].BaseBranch
-		global := base == ""
-		if global {
-			base = s.Config.BaseBranch()
-		}
-		// An app-wide default must not block a project it doesn't fit (`upstream/main` in a
-		// repository with no upstream), so it may fall back; a project's own base is an explicit
-		// choice and still fails.
-		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global, vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep})
-		if errors.Is(err, ErrBaseBranchNotFound) {
+		// The setup script is judged before anything exists, so a refusal leaves nothing behind.
+		var gateErr error
+		progress := vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep, BeforeWorktree: func(start string) error {
+			gateErr = s.gateSetup(dir, start)
+			return gateErr
+		}}
+		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global, progress)
+		if gateErr != nil || errors.Is(err, ErrBaseBranchNotFound) {
 			return res, err
 		}
 		if err != nil {
@@ -294,6 +294,11 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		s.sayStatus("setup", fmt.Sprintf("Running %s from %q", setupScript, wrPath))
 		if !s.Pretend {
 			s.step("script", "running", "")
+			// Again on the file about to run: it is what runs, whatever the early check read.
+			if err := s.gateFound(dir, SetupScript, wrPath, setupScript); err != nil {
+				s.step("script", "failed", err.Error())
+				return res, err
+			}
 			out, scriptErr := script.Run("setup", setupScript, wrPath, name, dir, setupOut)
 			res.SetupOutput = out
 			if scriptErr != nil {
@@ -307,6 +312,22 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	}
 
 	return res, nil
+}
+
+// base is the branch a new workroom of project dir starts from: the project's own, else the
+// global one (global is then true), else "" for origin's default branch. An app-wide default must
+// not block a project it doesn't fit (`upstream/main` in a repository with no upstream), so it may
+// fall back; a project's own base is an explicit choice and still fails.
+func (s *Service) base(dir string) (base string, global bool, err error) {
+	projects, err := s.Config.AllProjects()
+	if err != nil {
+		return "", false, err
+	}
+	base = projects[dir].BaseBranch
+	if base == "" {
+		return s.Config.BaseBranch(), true, nil
+	}
+	return base, false, nil
 }
 
 // copyIncluded is the create's include step: it copies the root's included files into the new
@@ -776,6 +797,9 @@ func (s *Service) RunTeardown(dir, name string) error {
 	} else if ok {
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
 		if !s.Pretend {
+			if err := s.gateFound(dir, TeardownScript, wrPath, teardownScript); err != nil {
+				return err
+			}
 			stream := s.ScriptLogWriter
 			var done func(ok bool)
 			if stream == nil && s.ScriptOutput != nil {

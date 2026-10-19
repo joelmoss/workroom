@@ -68,7 +68,10 @@ type Project struct {
 	// BaseBranch is the branch new workrooms start from, origin's copy first; "" means origin's
 	// default branch.
 	BaseBranch string
-	Workrooms  map[string]Workroom
+	// TrustedScripts is the approved SHA-256 (hex) of each script by name, such as workroom_setup:
+	// the exact bytes this Mac has agreed to run (#363). A value of the wrong type is left out.
+	TrustedScripts map[string]string
+	Workrooms      map[string]Workroom
 }
 
 // RemoteWorkroomNames returns the names of the project's remote workrooms, sorted.
@@ -89,7 +92,13 @@ func (p Project) RemoteWorkroomNames() []string {
 func decodeProject(raw map[string]any) Project {
 	vcs, _ := raw["vcs"].(string)
 	base, _ := raw["base_branch"].(string)
-	project := Project{VCS: vcs, Host: raw["host"], BaseBranch: base, Workrooms: map[string]Workroom{}}
+	project := Project{VCS: vcs, Host: raw["host"], BaseBranch: base, TrustedScripts: map[string]string{}, Workrooms: map[string]Workroom{}}
+	trusted, _ := raw["trusted_scripts"].(map[string]any)
+	for name, v := range trusted {
+		if digest, ok := v.(string); ok {
+			project.TrustedScripts[name] = digest
+		}
+	}
 	wrMap, ok := raw["workrooms"].(map[string]any)
 	if !ok {
 		return project
@@ -397,6 +406,37 @@ func (c *Config) SetBaseBranch(parentPath, branch string) error {
 			delete(entry, "base_branch")
 		} else {
 			entry["base_branch"] = branch
+		}
+		return c.Write(data)
+	})
+}
+
+// SetTrustedScript records digest, a hex SHA-256, as the approved bytes of the project's script
+// name (#363), replacing any earlier one. "" forgets it. The project must already be registered.
+func (c *Config) SetTrustedScript(parentPath, name, digest string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		entry, ok := data[parentPath].(map[string]any)
+		if !ok || isReserved(parentPath) {
+			return fmt.Errorf("%w: %s", errs.ErrProjectNotFound, parentPath)
+		}
+		// A value of the wrong type approves nothing, so it is replaced.
+		trusted, ok := entry["trusted_scripts"].(map[string]any)
+		if !ok {
+			trusted = map[string]any{}
+		}
+		if digest == "" {
+			delete(trusted, name)
+		} else {
+			trusted[name] = digest
+		}
+		if len(trusted) == 0 {
+			delete(entry, "trusted_scripts")
+		} else {
+			entry["trusted_scripts"] = trusted
 		}
 		return c.Write(data)
 	})
