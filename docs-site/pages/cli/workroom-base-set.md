@@ -1,0 +1,32 @@
+---
+title: workroom base set
+description: Start new workrooms from BRANCH.
+---
+
+<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+
+Start new workrooms from BRANCH
+
+```text
+workroom base set BRANCH [flags]
+```
+
+### Options
+
+```text
+      --global           The default for every project that names no base branch
+  -h, --help             help for set
+      --project string   Project directory (defaults to the current directory)
+```
+
+### Options inherited from parent commands
+
+```text
+      --json      Emit machine-readable JSON (exactly one object on stdout)
+  -p, --pretend   Run through the command without making changes (dry run)
+  -v, --verbose   Print detailed and verbose output
+```
+
+### SEE ALSO
+
+* [workroom base](workroom-base.md)	 - Set or clear the branch new workrooms start from
