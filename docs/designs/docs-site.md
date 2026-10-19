@@ -101,6 +101,10 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   Nightly badge. There is no generic ssh host driver; `HostDrivers` has boxd, exe.dev and container
   only. It gets a page when it ships.
 
+  - **As built:** the command pages are a "CLI" group of their own, after Reference. `nav.yml` has
+    only flat groups, and 17 unlabelled commands under Reference were hard to find (owner,
+    2026-10-20).
+
 ### Content pipeline
 
 - **D10 and D27.** D10 was a Docker-build clone, and D27 established that Codaset is deployed with

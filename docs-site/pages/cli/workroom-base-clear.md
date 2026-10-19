@@ -1,17 +1,16 @@
 ---
 title: workroom base clear
 description: Start new workrooms from the global base, else origin's default branch.
+nightly: true
 ---
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
-
-Start new workrooms from the global base, else origin's default branch
 
 ```text
 workroom base clear [flags]
 ```
 
-### Options
+## Options
 
 ```text
       --global           The default for every project that names no base branch
@@ -19,7 +18,7 @@ workroom base clear [flags]
       --project string   Project directory (defaults to the current directory)
 ```
 
-### Options inherited from parent commands
+## Options inherited from parent commands
 
 ```text
       --json      Emit machine-readable JSON (exactly one object on stdout)
@@ -27,6 +26,6 @@ workroom base clear [flags]
   -v, --verbose   Print detailed and verbose output
 ```
 
-### SEE ALSO
+## See also
 
 * [workroom base](workroom-base.md)	 - Set or clear the branch new workrooms start from

@@ -57,7 +57,11 @@ var (
 	linkPattern    = regexp.MustCompile(`(!?)\[([^\]]*)\]\(([^)\s]*)(?:\s+"[^"]*")?\)`)
 	refLinkPattern = regexp.MustCompile(`\]\[[^\]]*\]`)
 	htmlTag        = regexp.MustCompile(`</?([A-Za-z][A-Za-z0-9-]*)[^>]*>`)
-	setextPattern  = regexp.MustCompile(`^\s{0,3}(=+|-{2,})\s*$`)
+	// CommonMark's autolinks: <scheme:…> or <name@host>, with no spaces. Anything else in angle
+	// brackets is raw HTML, `<img src="https://…">` included.
+	autolinkTag   = regexp.MustCompile(`^<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>$`)
+	setextPattern = regexp.MustCompile(`^\s{0,3}(=+|-{2,})\s*$`)
+	imageTypes    = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true}
 )
 
 // TestDocsSite checks every page and the nav, reporting every problem rather than the first.
@@ -81,6 +85,12 @@ func check(t *testing.T, dir string) []string {
 		}
 		rel, _ := filepath.Rel(pagesDir, p)
 		rel = filepath.ToSlash(rel)
+		if rel != "." && strings.HasPrefix(d.Name(), ".") { // .DS_Store, editor and tool folders: never pages
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			if rel != "." && !namePattern.MatchString(d.Name()) {
 				report("pages/%s: folder names use lowercase letters, digits and hyphens only", rel)
@@ -182,10 +192,15 @@ func check(t *testing.T, dir string) []string {
 			}
 			resolved := path.Join(pageDir, file)
 			if l.image {
+				// Codaset serves only these types, and never a symlink (WorkroomDocs::Site).
 				if !strings.HasPrefix(resolved, "images/") {
 					report("%s: images live in images/", where)
-				} else if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(resolved))); err != nil {
+				} else if !imageTypes[strings.ToLower(path.Ext(resolved))] {
+					report("%s: images are .png, .jpg, .jpeg, .gif or .webp", where)
+				} else if info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(resolved))); err != nil {
 					report("%s: no such image", where)
+				} else if info.Mode()&os.ModeSymlink != 0 {
+					report("%s: an image can't be a symlink", where)
 				}
 				continue
 			}
@@ -262,16 +277,21 @@ func parsePage(name string, src []byte, report func(string, ...any)) *page {
 			report("line %d: use inline links, not reference-style [text][ref] links", i+first)
 		}
 		for _, m := range htmlTag.FindAllStringSubmatch(outside, -1) {
-			autolink := strings.Contains(m[0], "://") || strings.Contains(m[0], "@")
-			if !autolink && !strings.EqualFold(m[1], "kbd") {
+			if !autolinkTag.MatchString(m[0]) && !strings.EqualFold(m[1], "kbd") {
 				report("line %d: <%s> is not allowed; <kbd> is the only raw HTML", i+first, m[1])
 			}
+		}
+		if strings.Contains(outside, "</kbd><kbd>") {
+			report("line %d: write a key combination as one <kbd>, such as <kbd>⌘D</kbd>", i+first)
 		}
 		for _, m := range linkPattern.FindAllStringSubmatch(outside, -1) {
 			pg.links = append(pg.links, link{image: m[1] == "!", text: m[2], target: m[3]})
 		}
 
 		h := headingPattern.FindStringSubmatch(line)
+		if strings.Contains(outside, "{nightly}") && (h == nil || !strings.HasSuffix(h[2], " {nightly}")) {
+			report("line %d: {nightly} goes only at the end of a heading; write \"Nightly only.\" in prose", i+first)
+		}
 		if h == nil {
 			continue
 		}
@@ -345,8 +365,14 @@ func TestCheckFindsBreakage(t *testing.T) {
 	write("nav.yml", "- title: Guides\n  pages:\n    - title: A\n      page: guides/a\n    - title: Gone\n      page: guides/gone\n")
 	write("pages/index.md", "---\ntitle: Home\ndescription: The home.\n---\n\nSee [A](guides/a.md#missing).\n")
 	write("pages/guides/a.md", "---\ntitle: A\n---\n\n# Title again\n\n## Same\n\n## Same\n\n"+
-		"[ok](#same-1) [bad](#nope) [page](b.md) ![](../../images/x.png) <div>\n\n```\ncode\n```\n")
-	write("pages/guides/b.md", "---\ntitle: B\ndescription: B.\nweight: 3\n---\n\nText.\n")
+		"[ok](#same-1) [bad](#nope) [page](b.md) ![](../../images/x.png) <div>\n\n```\ncode\n```\n\n"+
+		"Press <kbd>⌘</kbd><kbd>D</kbd>.\n\n<img src=\"https://x.example/a.png\"> <https://ok.example/> <me@ok.example>\n\n"+
+		"![icon](../../images/icon.svg) ![shot](../../images/link.png)\n")
+	write("images/real.png", "x")
+	if err := os.Symlink("real.png", filepath.Join(dir, "images", "link.png")); err != nil {
+		t.Fatal(err)
+	}
+	write("pages/guides/b.md", "---\ntitle: B\ndescription: B.\nweight: 3\n---\n\nText. {nightly}\n\n## Fine {nightly}\n")
 	write("pages/guides/Bad_Name.md", "---\ntitle: X\ndescription: X.\n---\n")
 
 	got := strings.Join(check(t, dir), "\n")
@@ -359,14 +385,22 @@ func TestCheckFindsBreakage(t *testing.T) {
 		`pages/guides/a.md: link "../../images/x.png": no such image`,
 		"pages/guides/a.md: line 11: <div> is not allowed",
 		"pages/guides/a.md: line 13: name the code block's language",
+		"pages/guides/a.md: line 17: write a key combination as one <kbd>",
+		"pages/guides/a.md: line 19: <img> is not allowed",
+		`pages/guides/a.md: link "../../images/icon.svg": images are .png, .jpg, .jpeg, .gif or .webp`,
+		`pages/guides/a.md: link "../../images/link.png": an image can't be a symlink`,
 		"pages/guides/b.md: front matter: yaml: unmarshal errors",
 		"pages/guides/b.md: not listed in nav.yml",
+		"pages/guides/b.md: line 7: {nightly} goes only at the end of a heading",
 		"pages/guides/Bad_Name.md: file names use lowercase letters",
 		`nav.yml: "guides/gone" has no page at pages/guides/gone.md`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing problem %q in:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "line 19: <https>") || strings.Contains(got, "line 19: <me@") {
+		t.Errorf("an autolink was reported as raw HTML:\n%s", got)
 	}
 	if strings.Contains(got, "#same-1") {
 		t.Errorf("a duplicate heading's -1 anchor was reported missing:\n%s", got)

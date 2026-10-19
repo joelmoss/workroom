@@ -5,9 +5,7 @@ description: Delete an existing workroom.
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
 
-Delete an existing workroom
-
-### Synopsis
+## Synopsis
 
 Delete an existing workroom. When run without a name, shows an interactive multi-select menu.
 
@@ -15,7 +13,7 @@ Delete an existing workroom. When run without a name, shows an interactive multi
 workroom delete [NAME] [flags]
 ```
 
-### Options
+## Options
 
 ```text
       --confirm string   Skip confirmation if value matches the workroom name (required in --json mode)
@@ -24,7 +22,7 @@ workroom delete [NAME] [flags]
       --skip-teardown    Delete without running the teardown script (after it failed)
 ```
 
-### Options inherited from parent commands
+## Options inherited from parent commands
 
 ```text
       --json      Emit machine-readable JSON (exactly one object on stdout)
@@ -32,6 +30,6 @@ workroom delete [NAME] [flags]
   -v, --verbose   Print detailed and verbose output
 ```
 
-### SEE ALSO
+## See also
 
 * [workroom](workroom.md)	 - Manage development workrooms

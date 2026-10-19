@@ -5,9 +5,7 @@ description: Update workroom to the latest version.
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
 
-Update workroom to the latest version
-
-### Synopsis
+## Synopsis
 
 Check for and install the latest version of workroom from GitHub Releases.
 
@@ -23,7 +21,7 @@ side-by-side install (a `workroom-nightly` binary); see the install script's WOR
 workroom update [flags]
 ```
 
-### Options
+## Options
 
 ```text
       --channel string   Release channel: stable or pre (remembered for next time)
@@ -31,7 +29,7 @@ workroom update [flags]
   -h, --help             help for update
 ```
 
-### Options inherited from parent commands
+## Options inherited from parent commands
 
 ```text
       --json      Emit machine-readable JSON (exactly one object on stdout)
@@ -39,6 +37,6 @@ workroom update [flags]
   -v, --verbose   Print detailed and verbose output
 ```
 
-### SEE ALSO
+## See also
 
 * [workroom](workroom.md)	 - Manage development workrooms

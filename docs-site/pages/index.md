@@ -1,9 +1,10 @@
 ---
 title: Workroom documentation
-description: Learn how to run every task in its own workroom, with its own terminals, branch and diffs.
+description: Learn to run every task in its own workroom, with its own branch, terminals and diffs, on your Mac or on a host of its own.
 ---
 
-Workroom gives every task its own workroom: a git worktree on its own branch, with its own terminals,
-history and diffs.
+Workroom is a Mac app for working on many tasks at once. Each task gets its own workroom, with its own
+branch, terminals and diffs, so your coding agents, dev servers and tests never get in each other's way.
 
-- [The `workroom` command](cli/workroom.md)
+New here? [Install Workroom](get-started/install.md), then follow
+[Your first workroom](get-started/your-first-workroom.md) from adding a project to a merged pull request.
