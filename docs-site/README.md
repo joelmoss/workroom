@@ -9,7 +9,7 @@ This file is the format contract. Codaset's renderer and this repo's check
 ## Preview and check
 
 - `make docs-preview` runs Codaset's dev server against this checkout's `docs-site/`, at
-  `https://workroom-docs.localhost/workroom/docs`. A page reloads itself when you save a file. It needs a
+  `https://workroom-docs.localhost/workroom/docs`. Refresh the page to see a saved edit. It needs a
   Codaset checkout at `$CODASET_PATH`, which defaults to `~/dev/codaset`, and runs beside Codaset's own
   dev server.
 - `make docs-check` runs the checks below. CI runs them too.
@@ -106,7 +106,7 @@ padding. `macapp/WorkroomAppTests/KeyboardShortcutsDocsTests.swift` fails when a
 
 The pages under `pages/cli/` are generated from the CLI's cobra commands. Don't edit them by hand; run
 `make docs-cli` instead. There is one page per public command, named after its command path, so
-`workroom create` is `cli/workroom-create.md`. `nav.yml` lists each one under Reference, and the test in
+`workroom create` is `cli/workroom-create.md`. `nav.yml` lists each one in the CLI group, and the test in
 `cmd/docs_test.go` fails when they are stale.
 
 ## Search, `.md` and `llms.txt`

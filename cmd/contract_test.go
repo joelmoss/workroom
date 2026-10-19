@@ -28,7 +28,7 @@ import (
 //
 // The goldens cover each command whose payload the app decodes into its own type. Commands the app
 // reads only as a bare Envelope (host, base, claim-provisioned) have their own tests.
-var updateContracts = flag.Bool("update", false, "rewrite testdata/contracts from the CLI's output")
+var updateContracts = flag.Bool("update", false, "rewrite testdata/contracts and docs-site/pages/cli from the CLI")
 
 // contractHome stands in for the temporary HOME every path in a golden sits under.
 const contractHome = "/Users/dev"
