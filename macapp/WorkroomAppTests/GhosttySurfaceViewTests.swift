@@ -547,6 +547,21 @@ final class RemoteLinkTriggerTests: XCTestCase {
     XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
   }
 
+  /// What is owed survives the network dropping again before the fire, a second wake while it is
+  /// down, and a fire that lands while it is down: the return still asks every host, once.
+  func testWhatIsOwedSurvivesTheNetworkDroppingAgain() {
+    var trigger = RemoteLinkTrigger()
+    _ = trigger.pathChanged(to: wifi)
+    _ = trigger.woke()
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+    XCTAssertEqual(trigger.woke(), .hold)
+    XCTAssertEqual(trigger.pathChanged(to: down), .hold)
+    trigger.fired()
+    XCTAssertEqual(trigger.pathChanged(to: wifi), settle)
+    trigger.fired()
+    XCTAssertEqual(trigger.pathChanged(to: wifi), RemoteLinkTrigger.Action.none)
+  }
+
   /// A wake with no network yet holds, and fires once the network is back.
   func testAWakeHeldByANetworkThatIsDownFiresWhenItIsBack() {
     var trigger = RemoteLinkTrigger()
