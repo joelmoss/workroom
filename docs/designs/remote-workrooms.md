@@ -1886,7 +1886,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Ports.** `PortForwardingModel` is one model per host (`model(for:)`), kept for the launch,
     and the inspector's Ports section shows the selected workroom's host. A remote workroom the
     app can't reach shows no Ports section, rather than the Mac's list. A forward never connects a
-    host; selecting the workroom does. This closed #208's last criterion.
+    host; selecting the workroom does. This closed #208's last criterion. (Superseded 2026-10-19:
+    only a container workroom has a Ports list, in the Details pane; see the amendment under
+    "The app half is implemented too (#208)".)
   - **Idle state (superseded by #380).** A remote workroom's sidebar row carries the wakefulness badge, backed by one
     `WakefulnessModel` per remote host (`model(forHost:)`). It polls only while the row is shown
     and never connects the host. Its "Keep awake" click does connect it first
@@ -2142,7 +2144,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     reconnects the host (waking a box) and is carried on the new one, the browser waiting meanwhile.
     It never starts a container the user stopped: `ensureConnected` starts only a host whose
     workroom was opened, so that reconnect fails, refuses the connection and says why on the row.
-    This Mac's agent keeps the old rule: a forward goes with its connection.
+    This Mac's agent keeps the old rule: a forward goes with its connection. (This Mac's own
+    forwards went on 2026-10-19; see the amendment under "The app half is implemented too
+    (#208)".)
   - **Removed.** The awake ceiling (OQ22) everywhere: `Ceiling`, `keep`, `settings`, the kept
     `<socket>.settings` file (left on old boxes, unread), `--awake-ceiling`,
     `--awake-prompt-timeout`, `--ask-at-awake-ceiling` and their variables (an old agent's flags on

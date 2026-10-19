@@ -753,7 +753,7 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(host(nil, nil).kindDescription, "Remote workroom")
   }
 
-  /// Only a container on this Mac is a container workroom, which alone gets the Ports panel: a
+  /// Only a container on this Mac is a container workroom, which alone gets the Ports list: a
   /// remote provider publishes its machines' ports itself, and a local workroom needs none.
   func testOnlyAContainersWorkroomIsAContainer() {
     let workroom = { (driver: String?) in

@@ -676,6 +676,10 @@ Declare the ports in the repository's dev container file, `.devcontainer/devcont
 - The ports are forwarded when you open the workroom, once per launch, from the workroom's own
   copy of the file. A port you stop forwarding stays stopped until the app relaunches. At most
   32 ports are forwarded from one file; the Ports list says when the file declares more.
+- A forward that keeps its number holds that port on your Mac until you stop forwarding it or
+  quit Workroom, even after you switch to another workroom. A server you start on your Mac later
+  on the same port (the project's own dev server, Postgres) then can't take it, or is shadowed by
+  the forward. Stop the forward in the Ports list first.
 - Each port keeps its number on your Mac when that number is free, so 5173 is
   `http://localhost:5173`. When something on your Mac already uses it, the port gets a free number
   instead, and the Ports list shows which. With `"requireLocalPort": true` the port isn't forwarded

@@ -1141,7 +1141,7 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(remote.message, "This workroom's host is not connected.")
   }
 
-  /// One model per host, kept: the Ports section going to another workroom and back finds its
+  /// One model per host, kept: the Details pane going to another workroom and back finds its
   /// forwards where it left them, and two hosts never share a list (#254).
   func testEachHostHasItsOwnModelForTheLaunch() {
     let host = HostID.remote(UUID())
