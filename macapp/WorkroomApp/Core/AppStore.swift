@@ -607,6 +607,10 @@ final class AppStore: ObservableObject {
     get { modals.errorAction }
     set { modals.errorAction = newValue }
   }
+  var errorApproval: ErrorAction? {
+    get { modals.errorApproval }
+    set { modals.errorApproval = newValue }
+  }
   func clearError() { modals.clearError() }
 
   /// Tells the user a closed remote pane's session may still be running on its host (#283), unless
@@ -2492,7 +2496,7 @@ final class AppStore: ObservableObject {
             workroom.name, host: host, environment: remote,
             recorder: remoteRecorder(project: project.path),
             teardown: Self.remoteTeardown(
-              of: workroom, in: project, log: log, skip: skipTeardown))
+              of: workroom, in: project, log: log, skip: skipTeardown, cli: cli))
         } else {
           try await cli.delete(
             name: workroom.name, project: project.path, skipTeardown: skipTeardown
@@ -2520,11 +2524,13 @@ final class AppStore: ObservableObject {
   /// A remote workroom's teardown script, run on its host before the host goes, its output into
   /// `log`: the checkout's copy, else the project root's.
   nonisolated static func remoteTeardown(
-    of workroom: Workroom, in project: Project, log: ScriptLogSession?, skip: Bool
+    of workroom: Workroom, in project: Project, log: ScriptLogSession?, skip: Bool,
+    cli: any WorkroomCLIProtocol
   ) -> RemoteWorkrooms.Teardown {
     RemoteWorkrooms.Teardown(
       path: workroom.path,
       rootScript: URL(fileURLWithPath: project.path + "/scripts/workroom_teardown"), skip: skip,
+      judge: judge(.teardown, in: project.path, cli: cli),
       onLine: { line in DispatchQueue.main.async { log?.append(line) } })
   }
 
@@ -2553,23 +2559,48 @@ final class AppStore: ObservableObject {
     guard Self.isTeardownFailure(error) else { return }
     let name = workroom.name
     let path = project.path
-    errorAction = ErrorAction(label: "Delete Anyway") { [weak self] in
-      // As it is now, after the failure's reload, not as it was when the delete began.
+    // As it is now, after the failure's reload, not as it was when the delete began.
+    let deleteAgain = { [weak self] (skipTeardown: Bool) in
       guard let self, let project = self.projects.first(where: { $0.path == path }),
         let workroom = project.workrooms.first(where: { $0.name == name })
       else { return }
-      self.deleteWorkroom(workroom, in: project, skipTeardown: true)
+      self.deleteWorkroom(workroom, in: project, skipTeardown: skipTeardown)
+    }
+    errorAction = ErrorAction(label: "Delete Anyway") { deleteAgain(true) }
+    guard let script = Self.untrustedTeardown(error) else { return }
+    // The script never ran, so it printed nothing: its text is what to read before approving it.
+    errorTitle = "Approve the teardown script of ‘\(workroom.name)’?"
+    errorLog = script.text
+    let cli = self.cli
+    errorApproval = ErrorAction(label: "Approve and Run") { [weak self] in
+      Task {
+        do {
+          // shortcut: as `approveSetupScript`, a script that is not UTF-8 is refused again.
+          try await cli.trustScript(script.name, text: Data(script.text.utf8), project: path)
+          deleteAgain(false)
+        } catch {
+          self?.present(error)
+          self?.errorTitle = "Couldn't approve the teardown script"
+        }
+      }
     }
   }
 
+  /// The teardown script a delete refused, when this Mac has not approved it (#363).
+  nonisolated static func untrustedTeardown(_ error: Error) -> ScriptTrust? {
+    if case RemoteWorkrooms.Failure.teardownScriptNotTrusted(let script) = error { return script }
+    return WorkroomCLIError.untrustedScript(error)
+  }
+
   /// Whether a delete failed in its teardown script, so Delete Anyway (no script) can get it
-  /// through: the script failed or couldn't start, ran out of time, or its host couldn't be reached.
-  /// A failure elsewhere (git, config) would fail the same way without the script.
+  /// through: the script failed or couldn't start, ran out of time, its host couldn't be reached,
+  /// or this Mac has not approved it. A failure elsewhere (git, config) would fail the same way
+  /// without the script.
   nonisolated static func isTeardownFailure(_ error: Error) -> Bool {
     if case WorkroomCLIError.cli(let kind, _) = error { return kind == "TeardownScriptFailed" }
     if case WorkroomCLIError.timedOut = error { return true }
     if case RemoteWorkrooms.Failure.teardownScriptFailed = error { return true }
-    return false
+    return untrustedTeardown(error) != nil
   }
 
   /// A run's captured script output, or nil when it printed nothing.
@@ -2669,7 +2700,7 @@ final class AppStore: ObservableObject {
               workroom.name, host: host, environment: remote?.environment(for: host),
               recorder: recorder,
               teardown: Self.remoteTeardown(
-                of: workroom, in: project, log: log, skip: skipTeardown))
+                of: workroom, in: project, log: log, skip: skipTeardown, cli: self.cli))
           }
           // Each base on its own runtime and context (#309). Config keeps the ones still to go, so
           // a failure part-way leaves what is live recorded for the next delete.

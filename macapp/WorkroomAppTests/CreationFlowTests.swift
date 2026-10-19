@@ -337,6 +337,87 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(heard.count, 2)
   }
 
+  /// A local create the CLI refuses for its setup script (#363) until that script is approved.
+  private final class UntrustedSetupCLI: WorkroomCLIProtocol, @unchecked Sendable {
+    let projectPath: String
+    static let script = ScriptTrust(
+      name: "workroom_setup", origin: "base", sha256: String(repeating: "a", count: 64),
+      text: "#!/bin/sh\nnpm install\n", trusted: false, exempt: false)
+    private let lock = NSLock()
+    private var approvals: [String] = []
+    private var made = false
+    init(projectPath: String) { self.projectPath = projectPath }
+    var approved: [String] { lock.withLock { approvals } }
+
+    func list(warnings: String, project: String?) async throws -> ListResponse {
+      let names = lock.withLock { made } ? ["anchor", "wr"] : ["anchor"]
+      return ListResponse(
+        projects: [
+          Project(
+            path: projectPath, vcs: "git",
+            workrooms: names.map {
+              Workroom(
+                name: $0, path: "\(projectPath)/.workrooms/\($0)", vcsName: "git", warnings: [])
+            })
+        ], workroomsDir: nil, configPath: nil)
+    }
+    func addProject(_ path: String, create: Bool) async throws -> String { path }
+    func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
+      -> CreateResponse
+    {
+      onEvent(CreateEvents.step("fetch", "skipped", "No remote to fetch from"))
+      guard !approved.isEmpty else {
+        throw WorkroomCLIError.scriptNotTrusted(Self.script, message: "script is not trusted")
+      }
+      let path = "\(projectPath)/.workrooms/wr"
+      onEvent(CreateEvents.step("worktree", "running"))
+      onEvent(CreateEvents.step("worktree", "done"))
+      lock.withLock { made = true }
+      onEvent(CreateEvents.created(name: "wr", path: path, setup: false))
+      onEvent(CreateEvents.step("script", "skipped", "No setup script"))
+      return CreateResponse(name: "wr", path: path, vcs: "git", project: project)
+    }
+    func trustScript(_ name: String, text: Data, project: String) async throws {
+      lock.withLock { approvals.append("\(name) \(String(decoding: text, as: UTF8.self))") }
+    }
+    func create(
+      project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
+    ) async throws -> CreateResponse { throw WorkroomCLIError.timedOut }
+    func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {}
+    func deleteProject(
+      _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+    ) async throws -> [URL] { [] }
+  }
+
+  /// Value: protects=#363, a create refused for its setup script keeps its pane with the script row
+  /// waiting and the script to read, and Approve records the bytes shown and creates in the same
+  /// pane; fails_when=the refusal reads as a plain failure, the row is missing (a script only the
+  /// base commit has), or Approve records other bytes or doesn't create; no_claim=the CLI's
+  /// refusal itself (the Go tests) and the footer's drawing
+  func testAnUnapprovedSetupScriptWaitsForApproveThenCreates() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+
+    await store.createWorkroom(in: emptyProject)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
+    XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .waitingForUser)
+    XCTAssertEqual(run.steps.first { $0.id == "worktree" }?.state, .pending)
+    let footer = try XCTUnwrap(CreationPanePresentation.footer(for: run.outcome))
+    XCTAssertEqual(footer.script, "#!/bin/sh\nnpm install\n")
+    XCTAssertEqual([footer.primary, footer.secondary], [.approveScript, .cancel])
+    XCTAssertNil(footer.returnAction, "Return must never approve a script")
+
+    await store.approveSetupScript(run)
+
+    XCTAssertEqual(fake.approved, ["workroom_setup #!/bin/sh\nnpm install\n"])
+    await waitUntil(
+      { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
+      "the create ran again after Approve")
+  }
+
   /// Value: protects=a double-click on Try Again starts one create, not two (for a remote create, a
   /// second paid machine); fails_when=the second click starts its own create; no_claim=the button
   func testTryAgainTwiceOnOneFailureStartsOneCreate() async throws {
@@ -556,6 +637,24 @@ final class CreationFlowTests: XCTestCase {
     store.projects = [project(["anchor"])]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     return store
+  }
+
+  /// Value: protects=#363, a remote create whose setup script this Mac has not approved stops before
+  /// any machine is made, waiting on Approve; fails_when=a host is asked for (a paid machine) or
+  /// the refusal reads as a failure; no_claim=`trust status` itself (the Go tests)
+  func testAnUnapprovedSetupScriptStopsARemoteCreateBeforeAnyMachine() async throws {
+    let hosts = Counter()
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: FakeDriver(), agent: nil, hosts: hosts)
+    services.untrustedSetup = { _, _ in UntrustedSetupCLI.script }
+    store.remoteCreateServices = services
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
+    XCTAssertEqual(hosts.count, 0, "a machine was asked for")
+    XCTAssertEqual(run.steps.first { $0.id == "repository" }?.state, .done)
   }
 
   /// Value: protects=a repository the provider refuses fails the repository row, not the account

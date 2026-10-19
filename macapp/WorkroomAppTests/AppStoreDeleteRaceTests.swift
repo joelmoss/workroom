@@ -81,6 +81,13 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
     return try await gatedDeleteProject(onLog)
   }
 
+  /// Each script approved (#363), as "<name> <text>".
+  private(set) var approvals: [String] = []
+
+  func trustScript(_ name: String, text: Data, project: String) async throws {
+    approvals.append("\(name) \(String(decoding: text, as: UTF8.self))")
+  }
+
   private func gatedDeleteProject(_ onLog: ((String) -> Void)?) async throws -> [URL] {
     // Gated like `delete`, so the project tombstone stays live across a concurrent reload (#287).
     deleteStarted = true
@@ -332,6 +339,40 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     store.clearError()
     action.run()
     await waitUntil({ fake.skips == [false, true] }, "Delete Anyway didn't skip the script")
+    await waitUntil({ self.workroomNames(store).isEmpty }, "the workroom wasn't deleted")
+  }
+
+  /// Value: protects=#363, a teardown this Mac has not approved offers Approve and Run beside Delete
+  /// Anyway, shows the script to read, and Approve and Run records the bytes shown then deletes with
+  /// the script; fails_when=no approval is offered, the script isn't shown, or the delete skips the
+  /// script or never runs again; no_claim=the sheet's drawing (UI tests)
+  func testAnUnapprovedTeardownOffersApproveAndRun() async throws {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.deleteFails = true
+    let script = ScriptTrust(
+      name: "workroom_teardown", origin: "workroom", sha256: String(repeating: "b", count: 64),
+      text: "#!/bin/sh\ndropdb a\n", trusted: false, exempt: false)
+    fake.deleteError = WorkroomCLIError.scriptNotTrusted(script, message: "script is not trusted")
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteWorkroom(a, in: project([a]))
+    fake.allowDelete = true
+    await waitUntil({ store.errorApproval != nil }, "no Approve and Run was offered")
+    XCTAssertEqual(store.errorApproval?.label, "Approve and Run")
+    XCTAssertEqual(store.errorAction?.label, "Delete Anyway")
+    XCTAssertEqual(store.errorLog, "#!/bin/sh\ndropdb a\n")
+
+    fake.deleteFails = false
+    fake.listResult = [project([])]
+    let approve = try XCTUnwrap(store.errorApproval)
+    store.clearError()
+    approve.run()
+    await waitUntil(
+      { fake.skips == [false, false] }, "Approve and Run didn't delete with the script")
+    XCTAssertEqual(fake.approvals, ["workroom_teardown #!/bin/sh\ndropdb a\n"])
     await waitUntil({ self.workroomNames(store).isEmpty }, "the workroom wasn't deleted")
   }
 

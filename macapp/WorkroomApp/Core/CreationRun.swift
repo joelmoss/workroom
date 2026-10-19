@@ -118,6 +118,9 @@ enum CreationOutcome: Equatable {
   case setupScriptFailed(message: String)
   /// A remote create that failed; `leftBehind` when its machine could not be taken down.
   case remoteFailed(message: String, leftBehind: Bool)
+  /// Stopped before anything was made: this Mac has not approved the setup script (#363). Approve
+  /// records it and starts the create again.
+  case scriptNotTrusted(ScriptTrust)
 }
 
 /// One create's progress (#483): the plan of steps it shows from the first frame, each step's state,
@@ -231,6 +234,17 @@ final class CreationRun: ObservableObject, Identifiable {
     }
     skipPending(before: steps.endIndex)
     self.outcome = outcome
+  }
+
+  /// The setup script needs approving before anything is made (#363): the step running now ends
+  /// done, the script's row (put back if the plan left it out) waits on the user, and the steps in
+  /// between stay pending, since Approve runs them.
+  func awaitApproval(of script: ScriptTrust) {
+    if let running = runningIndex { end(running, as: .done) }
+    if let index = steps.firstIndex(where: { $0.id == "script" }) ?? restore("script") {
+      steps[index].state = .waitingForUser
+    }
+    outcome = .scriptNotTrusted(script)
   }
 
   /// The create finished: the running step ends done and every step still pending is skipped.

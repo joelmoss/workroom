@@ -217,11 +217,16 @@ enum RemoteWorkrooms {
     /// The workroom's teardown script failed on its host, or the host couldn't be reached to run it:
     /// worded as the CLI words a local one ("teardown script failed: ...").
     case teardownScriptFailed(String)
+    /// The host's teardown script is not one this Mac has approved, so it did not run (#363).
+    case teardownScriptNotTrusted(ScriptTrust)
 
     var errorDescription: String? {
       switch self {
       case .teardownScriptFailed(let why):
         return why
+      case .teardownScriptNotTrusted(let script):
+        return "scripts/\(script.name) \(script.originLabel) is new, or changed since it was "
+          + "approved on this Mac, so it did not run."
       case .signedOut:
         return "Sign in to GitHub with `gh auth login`: it gives the workroom its GitHub access."
       case .notOnGitHub(let detail):
@@ -476,6 +481,8 @@ enum RemoteWorkrooms {
     let agentBinary: String
     /// The project root's copy, on this Mac, for a checkout without one.
     let rootScript: URL?
+    /// Judges the bytes that would run (#363).
+    let judge: RemoteProvisioning.ScriptJudge
     var onStart: @Sendable () -> Void = {}
     let onLine: @Sendable (String) -> Void
   }
@@ -503,7 +510,7 @@ enum RemoteWorkrooms {
       request.script, workroom: request.workroom, at: request.path,
       hostKind: RemoteProvisioning.hostKind(request.key), rootScript: request.rootScript,
       agentBinary: request.agentBinary, on: request.host, driver: request.driver,
-      onStart: request.onStart, onLine: request.onLine)
+      judge: request.judge, onStart: request.onStart, onLine: request.onLine)
   }
 
   /// What a delete runs before the host goes: the workroom's teardown script, as the CLI runs a local
@@ -514,6 +521,8 @@ enum RemoteWorkrooms {
     let rootScript: URL?
     /// Delete Anyway: the script failed, and the user chose to go on without it.
     var skip = false
+    /// Judges the bytes that would run (#363).
+    let judge: RemoteProvisioning.ScriptJudge
     let onLine: @Sendable (String) -> Void
     /// What runs the script: `runScript` in the app, a fake in a test.
     var run: @Sendable (ScriptRequest) async -> RemoteProvisioning.ScriptRun = { request in
@@ -563,8 +572,12 @@ enum RemoteWorkrooms {
         ScriptRequest(
           script: .teardown, workroom: name, path: teardown.path, host: box, key: key,
           driver: driver, agentBinary: environment.agentBinary, rootScript: teardown.rootScript,
-          onLine: teardown.onLine))
-      if case .failed(let why) = run { throw Failure.teardownScriptFailed(why) }
+          judge: teardown.judge, onLine: teardown.onLine))
+      switch run {
+      case .failed(let why): throw Failure.teardownScriptFailed(why)
+      case .notTrusted(let script): throw Failure.teardownScriptNotTrusted(script)
+      case .absent, .passed: break
+      }
     }
     if let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
       await HostConnectionManager.shared.disconnect(lease)

@@ -117,6 +117,10 @@ enum CreationPanePresentation {
   /// A failure footer's button.
   enum Action: Equatable {
     case tryAgain, close, openAnyway, deleteWorkroom
+    /// Approve the setup script shown and create again (#363).
+    case approveScript
+    /// Close, worded for a create that made nothing and is waiting on the user.
+    case cancel
 
     var title: String {
       switch self {
@@ -125,6 +129,8 @@ enum CreationPanePresentation {
       case .openAnyway: "Open Anyway"
       // An ellipsis: it opens the delete confirmation rather than deleting.
       case .deleteWorkroom: "Delete Workroom…"
+      case .approveScript: "Approve"
+      case .cancel: "Cancel"
       }
     }
   }
@@ -135,8 +141,13 @@ enum CreationPanePresentation {
     let reason: String
     let primary: Action
     let secondary: Action
-    /// What Escape answers: Close, where it is shown (D16).
-    var escapeAction: Action? { secondary == .close ? .close : nil }
+    /// A script to read before approving it, shown under the reason.
+    var script: String? = nil
+    /// What Escape answers: Close or Cancel, where it is shown (D16).
+    var escapeAction: Action? { [.close, .cancel].contains(secondary) ? secondary : nil }
+    /// What Return answers: the primary, except Approve, which runs code and so is never a keypress
+    /// away.
+    var returnAction: Action? { primary == .approveScript ? nil : primary }
   }
 
   /// The footer a run's outcome shows, or nil while it runs or once it has ended well.
@@ -156,6 +167,11 @@ enum CreationPanePresentation {
       Footer(
         reason: "Couldn't create the workroom, and its machine is still running: \(message)",
         primary: .deleteWorkroom, secondary: .close)
+    case .scriptNotTrusted(let script):
+      Footer(
+        reason: "scripts/\(script.name) \(script.originLabel) is new, or changed since it was "
+          + "approved on this Mac. Read it, then approve it to run it.",
+        primary: .approveScript, secondary: .cancel, script: script.text)
     }
   }
 

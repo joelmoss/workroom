@@ -52,7 +52,7 @@ struct CreationPane: View {
     .background(theme.tokens.panel)
     // Return and Escape reach the footer only while focus is inside this pane (D16): another pane's
     // failed create never answers them, as a window-wide `.keyboardShortcut` would.
-    .onKeyPress(.return) { answer { $0.primary } }
+    .onKeyPress(.return) { answer { $0.returnAction } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
   }
 
@@ -187,7 +187,8 @@ struct CreationPane: View {
   private func perform(_ action: P.Action) {
     switch action {
     case .tryAgain: Task { await store.retryCreation(run) }
-    case .close: store.closeCreation(run)
+    case .approveScript: Task { await store.approveSetupScript(run) }
+    case .close, .cancel: store.closeCreation(run)
     case .openAnyway: store.openCreatedWorkroomAnyway(run)
     case .deleteWorkroom: deleteWorkroom()
     }
@@ -462,23 +463,39 @@ private struct CreationFailureFooter: View {
   /// pushes the buttons out of the pane.
   private var reason: some View {
     ScrollView {
-      Text(footer.reason)
-        .font(.callout)
-        .foregroundStyle(theme.tokens.failure)
-        .fixedSize(horizontal: false, vertical: true)
-        .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onGeometryChange(for: CGFloat.self) {
-          $0.size.height
-        } action: {
-          reasonHeight = $0
+      VStack(alignment: .leading, spacing: 8) {
+        Text(footer.reason)
+          .font(.callout)
+          .foregroundStyle(theme.tokens.failure)
+          .fixedSize(horizontal: false, vertical: true)
+        // A script to approve (#363), as it would run.
+        if let script = footer.script {
+          Text(script)
+            .font(.system(.caption, design: .monospaced))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
+            .accessibilityIdentifier("CreationPane.script")
         }
+      }
+      .textSelection(.enabled)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .onGeometryChange(for: CGFloat.self) {
+        $0.size.height
+      } action: {
+        reasonHeight = $0
+      }
     }
     .scrollBounceBehavior(.basedOnSize)
-    .frame(height: min(reasonHeight, Self.maxReasonHeight))
+    .frame(
+      height: min(
+        reasonHeight, footer.script == nil ? Self.maxReasonHeight : Self.maxScriptHeight))
   }
 
   private static let maxReasonHeight: CGFloat = 120
+  /// Room to read a script before approving it; a longer one scrolls.
+  private static let maxScriptHeight: CGFloat = 240
 
   @ViewBuilder private var buttons: some View {
     HStack(spacing: 8) {

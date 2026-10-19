@@ -1,6 +1,7 @@
 import AgentConnection
 import Foundation
 import HostDrivers
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 
@@ -271,7 +272,12 @@ enum RemoteProvisioning {
     case passed
     /// Worded as the CLI words a local script's failure: "setup script failed: <why>".
     case failed(String)
+    /// Not run: this Mac has not approved the bytes that would have run (#363).
+    case notTrusted(ScriptTrust)
   }
+
+  /// Judges a script's bytes against this Mac's approvals: the CLI's `trust status --stdin`.
+  typealias ScriptJudge = @Sendable (Data) async throws -> ScriptTrust
 
   /// How long a script may run, as the app gives a local one through the CLI (`WorkroomCLI.create`).
   static let scriptTimeout: TimeInterval = 600
@@ -289,10 +295,12 @@ enum RemoteProvisioning {
   /// `run-script`: `onStart` once a script is found, then `onLine` each line it prints as it prints
   /// it. The checkout's own copy is
   /// run; with none, the root's (`rootScript`, on this Mac) is copied in with its mode and run, as
-  /// the CLI falls back to the root's copy locally (`findScript`). It never throws.
+  /// the CLI falls back to the root's copy locally (`findScript`). Either way the bytes that would
+  /// run go to `judge` first, and ones this Mac has not approved never run (#363). It never throws.
   static func runScript(
     _ script: Script, workroom name: String, at path: String, hostKind: String,
     rootScript: URL?, agentBinary: String, on host: HostID, driver: any HostDriver,
+    judge: ScriptJudge,
     onStart: @Sendable () -> Void = {}, onLine: @escaping @Sendable (String) -> Void,
     timeout: TimeInterval = scriptTimeout, slack: TimeInterval = 30
   ) async -> ScriptRun {
@@ -305,13 +313,19 @@ enum RemoteProvisioning {
       // `test -e` says 1 for a missing file. Anything else is the host not answering (ssh's 255),
       // which must never pass for "no script": it would skip a teardown and destroy the host.
       switch found.status {
-      case 0: break
+      case 0:
+        let judged = try await judge(try await read(scriptPath, on: host, driver: driver))
+        guard judged.trusted else { return .notTrusted(judged) }
       case 1:
         guard let rootScript, FileManager.default.fileExists(atPath: rootScript.path) else {
           return .absent
         }
+        // Judged as read here, and those same bytes are what goes up.
+        let text = try Data(contentsOf: rootScript)
+        let judged = try await judge(text)
+        guard judged.trusted else { return .notTrusted(judged) }
         scriptPath = path + "/.git/workroom/" + script.fileName
-        try await upload(rootScript, to: scriptPath, on: host, driver: driver)
+        try await upload(text, from: rootScript, to: scriptPath, on: host, driver: driver)
       default:
         let said = found.output.trimmingCharacters(in: .whitespacesAndNewlines)
         return failed("couldn't check the host for \(scriptPath) (exit \(found.status)): \(said)")
@@ -366,10 +380,38 @@ enum RemoteProvisioning {
     }
   }
 
-  /// Copies `file` to `destination` on `host`, keeping its mode: a root script without its execute
-  /// bit fails to start there, as it does locally.
+  /// A file on `host`, byte for byte.
+  private static func read(
+    _ path: String, on host: HostID, driver: any HostDriver
+  ) async throws -> Data {
+    let bytes = DataBox()
+    let stream = try await driver.exec("cat \(PosixShell.quoted(path))", on: host)
+    let result: (status: Int32, output: String)
+    do {
+      result = try await stream.communicate(
+        nil, timeout: 30, onOutput: { data, stderr in if !stderr { bytes.append(data) } })
+    } catch {
+      stream.end()
+      throw error
+    }
+    guard result.status == 0 else {
+      throw HostDriverError.provisioning("reading \(path) on the host failed: \(result.output)")
+    }
+    return bytes.data
+  }
+
+  /// Bytes a stream's output callback collects.
+  private final class DataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var collected = Data()
+    var data: Data { lock.withLock { collected } }
+    func append(_ more: Data) { lock.withLock { collected.append(more) } }
+  }
+
+  /// Copies `text`, read from `file`, to `destination` on `host`, keeping the file's mode: a root
+  /// script without its execute bit fails to start there, as it does locally.
   private static func upload(
-    _ file: URL, to destination: String, on host: HostID, driver: any HostDriver
+    _ text: Data, from file: URL, to destination: String, on host: HostID, driver: any HostDriver
   ) async throws {
     let q = PosixShell.quoted
     let mode =
@@ -382,7 +424,7 @@ enum RemoteProvisioning {
     let stream = try await driver.exec(command, on: host)
     let result: (status: Int32, output: String)
     do {
-      result = try await stream.communicate(contentsOf: file, timeout: 30)
+      result = try await stream.communicate(text, timeout: 30)
     } catch {
       stream.end()
       throw error

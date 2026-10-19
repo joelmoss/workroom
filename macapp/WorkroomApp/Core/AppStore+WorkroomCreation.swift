@@ -194,7 +194,32 @@ extension AppStore {
       ])
   }
 
+  /// The setup script needs approving before anything is made (#363): its row waits, the pane
+  /// shows the script with Approve, and VoiceOver hears it once.
+  private func refuseCreation(_ run: CreationRun, _ script: ScriptTrust) {
+    run.awaitApproval(of: script)
+    Self.announceCreation("scripts/\(script.name) needs approving")
+  }
+
   // MARK: Failure actions
+
+  /// Approve on a create its setup script stopped: the bytes shown are recorded as approved and the
+  /// create starts again, in the same pane.
+  func approveSetupScript(_ run: CreationRun) async {
+    guard creationRuns[run.id] === run, case .scriptNotTrusted(let script) = run.outcome else {
+      return
+    }
+    do {
+      // shortcut: the CLI hands the bytes over as JSON text, so a script that is not UTF-8 comes
+      // back changed and is refused again; approve such a script with `workroom trust`.
+      try await cli.trustScript(
+        script.name, text: Data(script.text.utf8), project: run.project.path)
+    } catch {
+      failCreationRun(run, .failedBeforeWorkroom(message: errorText(error)))
+      return
+    }
+    await retryCreation(run)
+  }
 
   /// Close on a failed create, or Cancel on its provider setup: the pane goes. A split collapses to
   /// its sibling; a pane on its own gives way to what was selected before, if it still exists.
@@ -310,6 +335,8 @@ extension AppStore {
         failCreationRun(run, .setupScriptFailed(message: errorText(error)))
         // Offline, the fetch and a networked setup script fail together: say both.
         if let text = warning.value { noticeStaleStart(of: id, text) }
+      } else if let script = WorkroomCLIError.untrustedScript(error) {
+        refuseCreation(run, script)
       } else {
         failCreationRun(run, .failedBeforeWorkroom(message: errorText(error)))
       }
@@ -415,6 +442,11 @@ extension AppStore {
       run.begin("repository")
       let plan = try await services.plan(self, run.project)
       defaultNotUsed = plan.defaultNotUsed
+      // Before any machine is made, so a script this Mac won't run never costs a paid host (#363).
+      if let script = try await services.untrustedSetup(self, run.project) {
+        refuseCreation(run, script)
+        return
+      }
       // After the project's own checks, so nobody signs up or picks a plan for a project the
       // provider can't take.
       if run.steps.contains(where: { $0.id == "account" }) {
@@ -551,6 +583,7 @@ extension AppStore {
       host: created.instance.host, key: host.key, driver: host.driver,
       agentBinary: host.environment.agentBinary,
       rootScript: URL(fileURLWithPath: run.project.path + "/scripts/workroom_setup"),
+      judge: Self.judge(.setup, in: run.project.path, cli: cli),
       onStart: { onMain { run.begin(step) } },
       onLine: { line in onMain { run.append(line, to: step) } })
     let result = await services.script(request)
@@ -562,7 +595,20 @@ extension AppStore {
       // the script's row's, not the checkout's still running before it.
       run.begin(step)
       return why
+    case .notTrusted(let script):
+      // The check before the machine passed, so the host's checkout holds other bytes than the
+      // ones approved: a base that moved since, perhaps.
+      run.begin(step)
+      return "setup script failed: scripts/\(script.name) on the host is not the one approved on "
+        + "this Mac, so it did not run"
     }
+  }
+
+  /// A remote workroom's `script` judged by the CLI against `project`'s approvals (#363).
+  nonisolated static func judge(
+    _ script: RemoteProvisioning.Script, in project: String, cli: any WorkroomCLIProtocol
+  ) -> RemoteProvisioning.ScriptJudge {
+    { text in try await cli.judgeScript(script.fileName, text: text, project: project) }
   }
 
   /// A remote create's "Copy local files" step (#367): the root's included files, into the host's
@@ -701,6 +747,9 @@ struct RemoteCreateServices {
   var script: @MainActor (RemoteWorkrooms.ScriptRequest) async -> RemoteProvisioning.ScriptRun = {
     _ in .absent
   }
+  /// The setup script a create would run, when this Mac has not approved it (#363): the CLI's
+  /// `trust status`, at the base it fetches. A test's fakes approve every script unless they say.
+  var untrustedSetup: @MainActor (AppStore, Project) async throws -> ScriptTrust? = { _, _ in nil }
 
   static var live: RemoteCreateServices {
     RemoteCreateServices(
@@ -722,7 +771,12 @@ struct RemoteCreateServices {
         let (driver, environment) = try RemoteHosts.shared.environment(key)
         return RemoteCreateHost(key: key, driver: driver, environment: environment)
       },
-      script: { request in await RemoteWorkrooms.runScript(request) })
+      script: { request in await RemoteWorkrooms.runScript(request) },
+      untrustedSetup: { store, project in
+        try await store.cli.trustStatus(project: project.path).scripts.first {
+          $0.name == RemoteProvisioning.Script.setup.fileName && !$0.trusted
+        }
+      })
   }
 }
 

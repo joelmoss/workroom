@@ -390,7 +390,8 @@ final class RemoteTeardownTests: XCTestCase {
     _ log: Log, skip: Bool = false, result: RemoteProvisioning.ScriptRun
   ) -> RemoteWorkrooms.Teardown {
     var teardown = RemoteWorkrooms.Teardown(
-      path: "/home/boxd/r", rootScript: nil, skip: skip, onLine: { _ in })
+      path: "/home/boxd/r", rootScript: nil, skip: skip, judge: RemoteScriptTests.approveAll,
+      onLine: { _ in })
     teardown.run = { request in
       log.add("script \(request.script.rawValue) \(request.workroom) \(request.path)")
       return result
@@ -433,6 +434,21 @@ final class RemoteTeardownTests: XCTestCase {
     XCTAssertEqual(log.all, ["script teardown w /home/boxd/r"])
   }
 
+  /// Value: protects=#363, a teardown this Mac has not approved stops the delete with nothing taken
+  /// down, carrying the script for the sheet to show; fails_when=the host goes anyway, or the
+  /// script is lost; no_claim=the judgement on the host (RemoteScriptTests)
+  func testAnUnapprovedTeardownTakesNothingDown() async throws {
+    let log = Log()
+    let script = RemoteScriptTests.judged(Data("#!/bin/sh\n".utf8), trusted: false)
+    do {
+      try await delete(host(), log, teardown: teardown(log, result: .notTrusted(script)))
+      XCTFail("an unapproved teardown let the delete go on")
+    } catch RemoteWorkrooms.Failure.teardownScriptNotTrusted(let refused) {
+      XCTAssertEqual(refused, script)
+    }
+    XCTAssertEqual(log.all, ["script teardown w /home/boxd/r"])
+  }
+
   /// Value: protects=Delete Anyway destroys the host without running the script; fails_when=the
   /// script runs again or the host stays; no_claim=none beyond protects
   func testDeleteAnywaySkipsTheScript() async throws {
@@ -462,6 +478,11 @@ final class RemoteTeardownTests: XCTestCase {
     XCTAssertTrue(
       AppStore.isTeardownFailure(
         RemoteWorkrooms.Failure.teardownScriptFailed("teardown script failed: no route")))
+    let script = RemoteScriptTests.judged(Data(), trusted: false)
+    XCTAssertTrue(
+      AppStore.isTeardownFailure(WorkroomCLIError.scriptNotTrusted(script, message: "not trusted")))
+    XCTAssertTrue(
+      AppStore.isTeardownFailure(RemoteWorkrooms.Failure.teardownScriptNotTrusted(script)))
     XCTAssertFalse(
       AppStore.isTeardownFailure(WorkroomCLIError.cli(kind: "VCSCommandFailed", message: "git")))
     XCTAssertFalse(AppStore.isTeardownFailure(RemoteWorkrooms.Failure.signedOut))
@@ -476,7 +497,8 @@ final class RemoteTeardownTests: XCTestCase {
       host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID()))
     let project = Project(path: "/proj", vcs: "git", workrooms: [workroom])
     for skip in [false, true] {
-      let teardown = AppStore.remoteTeardown(of: workroom, in: project, log: nil, skip: skip)
+      let teardown = AppStore.remoteTeardown(
+        of: workroom, in: project, log: nil, skip: skip, cli: WorkroomCLI.shared)
       XCTAssertEqual(teardown.skip, skip)
       XCTAssertEqual(teardown.path, "/home/workroom/r")
       XCTAssertEqual(teardown.rootScript?.path, "/proj/scripts/workroom_teardown")
@@ -517,7 +539,8 @@ final class RemoteTeardownTests: XCTestCase {
     let result = await RemoteWorkrooms.runScript(
       RemoteWorkrooms.ScriptRequest(
         script: .teardown, workroom: "w", path: "/home/boxd/r", host: .remote(UUID()),
-        key: boxd, driver: driver, agentBinary: "/wr-agent", rootScript: nil, onLine: { _ in }),
+        key: boxd, driver: driver, agentBinary: "/wr-agent", rootScript: nil,
+        judge: RemoteScriptTests.approveAll, onLine: { _ in }),
       hosts: hosts)
     guard case .failed(let why) = result else { return XCTFail("a failed connect passed") }
     XCTAssertEqual(why, "teardown script failed: couldn't reach the host")
@@ -540,7 +563,7 @@ final class RemoteTeardownTests: XCTestCase {
       RemoteWorkrooms.ScriptRequest(
         script: .teardown, workroom: "w", path: "/r", host: .remote(UUID()),
         key: docker, driver: Driver(log), agentBinary: "/wr-agent",
-        rootScript: nil, onLine: { _ in }),
+        rootScript: nil, judge: RemoteScriptTests.approveAll, onLine: { _ in }),
       hosts: hosts)
     XCTAssertEqual(log.all, ["start", "connect"])
   }

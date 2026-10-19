@@ -238,16 +238,56 @@ public struct Envelope: Codable, Sendable {
   public let ok: Bool
   public let schemaVersion: Int?
   public let error: CLIErrorBody?
+  /// The script a `ScriptNotTrusted` error refused (#363).
+  public let script: ScriptTrust?
 
-  public init(ok: Bool, schemaVersion: Int?, error: CLIErrorBody?) {
+  public init(ok: Bool, schemaVersion: Int?, error: CLIErrorBody?, script: ScriptTrust? = nil) {
     self.ok = ok
     self.schemaVersion = schemaVersion
     self.error = error
+    self.script = script
   }
 
   enum CodingKeys: String, CodingKey {
-    case ok, error
+    case ok, error, script
     case schemaVersion = "schema_version"
+  }
+}
+
+/// A setup or teardown script as the CLI judged it against this Mac's approvals (#363): its bytes
+/// as `text`, where they came from, and whether Workroom may run them.
+public struct ScriptTrust: Codable, Sendable, Equatable {
+  /// `workroom_setup` or `workroom_teardown`.
+  public let name: String
+  /// `base` (the base commit), `root`, `workroom` or `stdin`.
+  public let origin: String
+  public let sha256: String
+  public let text: String
+  /// Approved, or `exempt`.
+  public let trusted: Bool
+  /// The root's copy, which git ignores, so it needs no approval.
+  public let exempt: Bool
+
+  public init(
+    name: String, origin: String, sha256: String, text: String, trusted: Bool, exempt: Bool
+  ) {
+    self.name = name
+    self.origin = origin
+    self.sha256 = sha256
+    self.text = text
+    self.trusted = trusted
+    self.exempt = exempt
+  }
+}
+
+/// `trust status`: whether every script a project would run next is approved, and each one.
+public struct TrustStatus: Codable, Sendable {
+  public let trusted: Bool
+  public let scripts: [ScriptTrust]
+
+  public init(trusted: Bool, scripts: [ScriptTrust]) {
+    self.trusted = trusted
+    self.scripts = scripts
   }
 }
 
