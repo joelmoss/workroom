@@ -21,6 +21,9 @@ const (
 type Progress struct {
 	Log  io.Writer
 	Step func(id, state, detail string)
+	// BeforeWorktree, when set, is called with the start point once it is resolved and before
+	// the workspace exists ("" is HEAD); an error it returns ends the create there.
+	BeforeWorktree func(start string) error
 }
 
 func (p Progress) step(id, state, detail string) {
@@ -37,6 +40,9 @@ type VCS interface {
 	// for the user, or "". fallback marks base as the app-wide default, which gives way to
 	// origin's default branch in a project it doesn't fit.
 	Create(dir, vcsName, path, base string, fallback bool, progress Progress) (string, error)
+	// StartPoint resolves, fetching first, where Create would start from base, without making
+	// anything: the ref ("" is HEAD) and a warning for the user, or "".
+	StartPoint(dir, base string, fallback bool, progress Progress) (start, warning string, err error)
 	Delete(dir, vcsName, path string) (string, error)
 	// ListWorkrooms is the sole membership primitive: a caller that needs an existence check
 	// lists once and does an in-memory lookup, rather than the interface exposing a second

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -53,13 +52,7 @@ func TestCreateJSONCarriesTheFetchWarning(t *testing.T) {
 		t.Fatalf("create: exit %d, %v; want a fetch warning", code, envelope)
 	}
 
-	scripts := filepath.Join(project, "scripts")
-	if err := os.MkdirAll(scripts, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scripts, "workroom_setup"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeSetup(t, project, "#!/bin/sh\nexit 1\n")
 	code, envelope = runHostCLI(t, "create", "--json", "--no-editor", "--project", project)
 	created, _ := envelope["created"].(map[string]any)
 	if warning, _ := created["warning"].(string); code == 0 || !strings.Contains(warning, "Could not fetch origin") {

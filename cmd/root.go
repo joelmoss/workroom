@@ -53,12 +53,33 @@ func Execute() int {
 	if err == nil {
 		return 0
 	}
+	code := errs.ExitCode(err)
+	if status := (exitStatus{}); errors.As(err, &status) {
+		if status.err == nil {
+			return status.code
+		}
+		code, err = status.code, status.err
+	}
 	if jsonOutput {
 		writeJSONError(os.Stdout, currentCommand, err)
 	} else {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 	}
-	return errs.ExitCode(err)
+	return code
+}
+
+// exitStatus ends a command with its own exit code, as `trust status` answers with one. With
+// err, err is reported as any error is; without, the command has written its result already.
+type exitStatus struct {
+	code int
+	err  error
+}
+
+func (e exitStatus) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return fmt.Sprintf("exit status %d", e.code)
 }
 
 // newService builds a Service for the current invocation. In --json mode it is
@@ -73,7 +94,11 @@ func newService() (*workroom.Service, error) {
 		Config:    cfg,
 		Pretend:   pretend,
 		PromptFn:  ui.MultiSelect,
-		ConfirmFn: ui.Confirm,
+		ConfirmFn: askConfirm,
+	}
+	// Only a person at a terminal can read a script and approve it; anything else is refused.
+	if !jsonOutput && stdinIsTerminal() {
+		svc.ApproveScriptFn = func(sc workroom.Script) (bool, error) { return approveScript(os.Stdout, sc) }
 	}
 	if verbose && !jsonOutput {
 		svc.Status = func(status, msg string) {

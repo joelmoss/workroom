@@ -17,4 +17,5 @@ var (
 	ErrVCSCommand          = errs.ErrVCSCommand
 	ErrBaseBranchNotFound  = errs.ErrBaseBranchNotFound
 	ErrRemoteWorkroom      = errs.ErrRemoteWorkroom
+	ErrScriptNotTrusted    = errs.ErrScriptNotTrusted
 )

@@ -24,11 +24,14 @@ func (g *Git) Label() string { return "Git worktree" }
 // startPoint). `--no-track`: a workroom's branch has no upstream until published. The returned
 // string is a warning for the user, non-empty when the start point may not be what they expect.
 func (g *Git) Create(dir, vcsName, path, base string, fallback bool, progress Progress) (string, error) {
-	fs := &fetchStep{progress: progress}
-	start, warning, err := g.startPoint(dir, base, fallback, fs)
-	fs.finish(warning, err)
+	start, warning, err := g.StartPoint(dir, base, fallback, progress)
 	if err != nil {
 		return "", err
+	}
+	if progress.BeforeWorktree != nil {
+		if err := progress.BeforeWorktree(start); err != nil {
+			return "", err
+		}
 	}
 	progress.step("worktree", "running", "")
 	args := []string{"worktree", "add", "-b", vcsName, path}
@@ -41,6 +44,14 @@ func (g *Git) Create(dir, vcsName, path, base string, fallback bool, progress Pr
 	}
 	progress.step("worktree", "done", "")
 	return warning, nil
+}
+
+// StartPoint is startPoint with its fetch reported as the create's fetch step.
+func (g *Git) StartPoint(dir, base string, fallback bool, progress Progress) (string, string, error) {
+	fs := &fetchStep{progress: progress}
+	start, warning, err := g.startPoint(dir, base, fallback, fs)
+	fs.finish(warning, err)
+	return start, warning, err
 }
 
 // run is git in dir; with a log it writes "$ git <args>" and then the combined output there.

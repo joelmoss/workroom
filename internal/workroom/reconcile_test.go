@@ -26,6 +26,9 @@ func (f *fakeVCS) Label() string  { return string(f.typ) }
 func (f *fakeVCS) Create(dir, vcsName, path, base string, fallback bool, _ vcs.Progress) (string, error) {
 	return "", nil
 }
+func (f *fakeVCS) StartPoint(string, string, bool, vcs.Progress) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeVCS) Delete(dir, vcsName, path string) (string, error) {
 	return "", nil
 }

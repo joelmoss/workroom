@@ -66,6 +66,9 @@ func newTestService(t *testing.T, v vcs.VCS) (*Service, *bytes.Buffer, *config.C
 		ScriptOutput: func(string) (io.Writer, func(bool)) {
 			return &buf, func(bool) {}
 		},
+		// A user who approves every script, for the tests of what scripts do (trust_test.go
+		// covers the approval itself).
+		ApproveScriptFn: func(Script) (bool, error) { return true, nil },
 	}
 	return svc, &buf, cfg
 }
