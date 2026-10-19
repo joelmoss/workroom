@@ -70,6 +70,9 @@ var trustCmd = &cobra.Command{
 				// The app hands over bytes for a project it has registered; one gone meanwhile is
 				// refused rather than registered again.
 				record = func(dir string, sc workroom.Script) error {
+					if svc.Pretend {
+						return nil
+					}
 					return svc.Config.SetTrustedScript(dir, sc.Name, sc.SHA256)
 				}
 			}

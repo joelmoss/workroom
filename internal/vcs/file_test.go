@@ -50,6 +50,35 @@ func TestFileAtAndIgnored(t *testing.T) {
 	}
 }
 
+// Value: protects=FileAt converts with the commit's own .gitattributes, as a checkout of it does,
+// not the root checkout's; fails_when=a branch that changed its line endings is judged by the
+// root's rules and its approval never matches the file that runs; why_new=found by Codex on PR
+// #510; seam=none; no_claim=a git older than 2.40 (falls back to the root's attributes)
+func TestFileAtUsesTheCommitsOwnAttributes(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	write := func(rel, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitattributes", "scripts/s text eol=lf\n")
+	write("scripts/s", "a\nb\n")
+	git(t, dir, "add", ".")
+	git(t, dir, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "lf")
+	// The root's checkout has moved on to other rules than the commit judged.
+	write(".gitattributes", "scripts/s text eol=crlf\n")
+
+	text, ok, err := FileAt(dir, "", "scripts/s")
+	if err != nil || !ok || string(text) != "a\nb\n" {
+		t.Fatalf("FileAt = %q %v %v, want the commit's LF bytes", text, ok, err)
+	}
+}
+
 // Value: protects=a committed symlinked script is read as the file it points to, as running the
 // checkout's copy reads it, and one pointing outside the repository is ErrLinkOutside; fails_when=
 // FileAt returns the link's own text (an approval that never matches the file that runs);

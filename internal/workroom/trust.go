@@ -284,6 +284,9 @@ func (s *Service) gate(dir string, sc Script) error {
 
 // Trust records sc's bytes as approved for project dir, registering the project if it is not yet.
 func (s *Service) Trust(dir string, sc Script) error {
+	if s.Pretend {
+		return nil
+	}
 	if err := s.Config.AddProject(dir, string(vcs.TypeGit)); err != nil {
 		return err
 	}
@@ -292,6 +295,9 @@ func (s *Service) Trust(dir string, sc Script) error {
 
 // Untrust forgets every approval of project dir's scripts.
 func (s *Service) Untrust(dir string) error {
+	if s.Pretend {
+		return nil
+	}
 	for _, name := range []string{SetupScript, TeardownScript} {
 		if err := s.Config.SetTrustedScript(dir, name, ""); err != nil {
 			return err

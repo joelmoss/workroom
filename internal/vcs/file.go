@@ -63,7 +63,7 @@ func FileAt(dir, rev, path string) ([]byte, bool, error) {
 			}
 		}
 		if !linked {
-			out, err := gitOutput(dir, nil, "cat-file", "--filters", rev+":"+path)
+			out, err := filteredBlob(dir, rev, path)
 			if err != nil {
 				return nil, false, err
 			}
@@ -71,6 +71,17 @@ func FileAt(dir, rev, path string) ([]byte, bool, error) {
 		}
 	}
 	return nil, false, fmt.Errorf("%s: too many levels of symbolic links", path)
+}
+
+// filteredBlob is path in rev converted by rev's own .gitattributes (--attr-source), as a checkout
+// of rev converts it: the root's attributes can differ, as when a branch changes its line endings.
+// A git older than 2.40 has no --attr-source and falls back to the root's attributes.
+func filteredBlob(dir, rev, path string) ([]byte, error) {
+	out, err := gitOutput(dir, nil, "--attr-source="+rev, "cat-file", "--filters", rev+":"+path)
+	if err != nil && strings.Contains(err.Error(), "unknown option") {
+		return gitOutput(dir, nil, "cat-file", "--filters", rev+":"+path)
+	}
+	return out, err
 }
 
 // treeMode is the mode of path in commit rev, such as 100755, 120000 (a symlink) or 040000 (a
