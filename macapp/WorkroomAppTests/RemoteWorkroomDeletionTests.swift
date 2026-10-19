@@ -483,6 +483,10 @@ final class RemoteTeardownTests: XCTestCase {
       AppStore.isTeardownFailure(WorkroomCLIError.scriptNotTrusted(script, message: "not trusted")))
     XCTAssertTrue(
       AppStore.isTeardownFailure(RemoteWorkrooms.Failure.teardownScriptNotTrusted(script)))
+    // A teardown Workroom won't read (a device, over 1 MiB) comes without its script.
+    XCTAssertTrue(
+      AppStore.isTeardownFailure(
+        WorkroomCLIError.cli(kind: "ScriptNotTrusted", message: "not a regular file")))
     XCTAssertFalse(
       AppStore.isTeardownFailure(WorkroomCLIError.cli(kind: "VCSCommandFailed", message: "git")))
     XCTAssertFalse(AppStore.isTeardownFailure(RemoteWorkrooms.Failure.signedOut))

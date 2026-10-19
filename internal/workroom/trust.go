@@ -175,6 +175,10 @@ func (s *Service) SetupScriptAt(dir, start string) (Script, bool, error) {
 		return Script{}, false, fmt.Errorf("%w: %v", ErrVCSCommand, err)
 	}
 	if ok {
+		// As readScript refuses it later, before a worktree or a host exists rather than after.
+		if len(text) > MaxScriptBytes {
+			return Script{}, false, fmt.Errorf("%w: scripts/%s in the base commit is larger than %d bytes", ErrScriptNotTrusted, SetupScript, MaxScriptBytes)
+		}
 		sc, err := s.JudgeScript(dir, SetupScript, OriginBase, "", text)
 		return sc, true, err
 	}
