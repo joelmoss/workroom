@@ -78,7 +78,7 @@ struct WorkroomLabelSheet: View {
             systemImage: "exclamationmark.triangle.fill"
           )
           .font(.caption)
-          .foregroundStyle(.orange)
+          .foregroundStyle(ThemeService.shared.tokens.warning)
         }
       }
 

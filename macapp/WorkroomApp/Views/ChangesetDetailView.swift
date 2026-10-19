@@ -337,7 +337,7 @@ struct ChangesetDetailView: View {
     return HStack(alignment: .firstTextBaseline, spacing: 6) {
       Text(Self.badge(file.kind))
         .font(.system(.caption2, design: .monospaced).weight(.bold))
-        .foregroundStyle(Self.badgeColor(file.kind))
+        .foregroundStyle(ChangeBadge.color(Self.change(file.kind), theme.tokens))
         .frame(width: 14)
       VStack(alignment: .leading, spacing: 1) {
         // File name on top, the full relative path dimmed beneath it — so a row reads even when the
@@ -466,17 +466,6 @@ struct ChangesetDetailView: View {
     case .copied: return "C"
     case .conflicted: return "!"
     case .other: return "•"
-    }
-  }
-
-  private static func badgeColor(_ kind: VCSChangeKind) -> Color {
-    switch kind {
-    case .added: return .green
-    case .modified: return .yellow
-    case .deleted: return .red
-    case .renamed, .copied: return .blue
-    case .conflicted: return .orange
-    case .other: return .secondary
     }
   }
 

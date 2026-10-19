@@ -8,12 +8,8 @@ import WorkroomVCS
 /// Lives here rather than inline on the row view so it can be unit-tested — the mapping is exactly
 /// the kind of seven-case switch that silently drifts. It drifted once already: `.conflicted` used
 /// to render as `"C"` in `diffRemoveFg`, i.e. deletion's colour, so a file needing resolution read
-/// as a removal. `"!"` + `tokens.conflict` matches what `DiffViewer` and `ChangesetDetailView`
-/// already show for a conflict.
-///
-/// Those two views still carry their own hardcoded palettes (`.green`/`.yellow`/`.red`/`.orange`);
-/// folding them onto this mapping is a tracked follow-up (it restyles every kind in both views, so
-/// it wants its own visual pass) — see TODOS.md.
+/// as a removal. `DiffViewer` and `ChangesetDetailView` colour their badges from here too, so all
+/// three views agree.
 enum ChangeBadge {
   /// The one-character badge. `!` for a conflict (not `C`): it reads as "needs attention" and lines
   /// up with the other two views.
@@ -32,8 +28,8 @@ enum ChangeBadge {
   /// The badge colour, resolved from the active theme's tokens.
   static func color(_ change: ChangedFile.Change, _ tokens: ThemeTokens) -> Color {
     switch change {
-    case .added: return tokens.diffAddFg
-    case .deleted: return tokens.diffRemoveFg
+    case .added: return tokens.success
+    case .deleted: return tokens.failure
     case .conflicted: return tokens.conflict
     case .modified, .renamed: return tokens.warning
     case .untracked, .other: return tokens.fgMuted

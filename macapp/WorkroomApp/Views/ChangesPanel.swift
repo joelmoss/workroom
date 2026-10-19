@@ -226,7 +226,7 @@ struct RightInspector: View {
       // Failing checks only recolor an *open* PR — a merged (purple) / closed (red) badge shouldn't
       // be repainted by stale check history.
       let failing = pr.state == .open && PRPresentation.isFailing(status)
-      let tint: Color = failing ? .red : badge.semantic.color
+      let tint: Color = failing ? ThemeService.shared.tokens.failure : badge.semantic.color
       let failSuffix = failing ? ", checks failing" : ""
       PRNumberBadge(
         number: pr.number, tint: tint, url: URL(string: pr.url),
@@ -324,13 +324,13 @@ struct RightInspector: View {
       HStack(spacing: 5) {
         if s.conflicted {
           Image(systemName: "exclamationmark.triangle.fill")
-            .font(.system(size: 9)).foregroundStyle(Color.red)
+            .font(.system(size: 9)).foregroundStyle(ThemeService.shared.tokens.failure)
         }
         if files > 0 { ChangedFileCountBadge(count: files) }
         if let countsHelp {
           HStack(spacing: 5) {
-            if ins > 0 { Text("+\(ins)").foregroundStyle(.green) }
-            if del > 0 { Text("-\(del)").foregroundStyle(.red) }
+            if ins > 0 { Text("+\(ins)").foregroundStyle(ThemeService.shared.tokens.diffAddFg) }
+            if del > 0 { Text("-\(del)").foregroundStyle(ThemeService.shared.tokens.diffRemoveFg) }
           }
           .help(countsHelp)
         }
@@ -657,7 +657,7 @@ struct InspectorHeaderButton: View {
     Button(action: action) {
       Image(systemName: systemImage)
         .font(.system(size: compact ? 9 : 11))
-        .foregroundStyle(destructive && hovering ? Color.red : theme.tokens.fgMuted)
+        .foregroundStyle(destructive && hovering ? theme.tokens.failure : theme.tokens.fgMuted)
         .inspectorHeaderButtonChrome(hovering: hovering, destructive: destructive, compact: compact)
     }
     .buttonStyle(.plain)
@@ -683,7 +683,7 @@ extension View {
       .background(
         RoundedRectangle(cornerRadius: compact ? 4 : 5)
           .fill(
-            (destructive ? Color.red : ThemeService.shared.tokens.hover)
+            (destructive ? ThemeService.shared.tokens.failure : ThemeService.shared.tokens.hover)
               .opacity(hovering ? (destructive ? 0.18 : 1) : 0))
       )
       .frame(width: compact ? 20 : 28, height: compact ? 18 : 26)

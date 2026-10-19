@@ -488,25 +488,6 @@ rewrite touches the whole diff UI (regression surface).
 
 **Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
 
-### Three independent change-badge palettes (macapp) — conflict-status follow-up
-
-**What:** the same change-kind badge is coloured by three separate mappings: `ChangeBadge`
-(`Core/ChangeBadge.swift`, theme tokens — extracted from `ChangesPanel` when the conflict badge was
-fixed), `ChangesetDetailView.badgeColor` (hardcoded `.green`/`.yellow`/`.red`/`.orange`), and
-`DiffViewer.changeColor` (same hardcoded set).
-
-**Why:** this split is *why* the conflict badge diverged in the first place — the panel had no orange
-to reach for, so `.conflicted` borrowed deletion's red and a conflict read as a removal. Two of the
-three mappings also ignore the active theme entirely.
-
-**How to start:** have `ChangesetDetailView` and `DiffViewer` adopt `ChangeBadge.letter`/`.color` (and
-the `tokens.conflict` colour) instead of their own switches. Note this restyles *every* kind in both
-views, so it wants a deliberate visual pass rather than a drive-by change.
-
-**Depends on:** `ChangeBadge` (shipped). Touches `ChangesetDetailView.swift`, `DiffViewer.swift`.
-
-**Priority:** P3 (consistency + theme correctness; no functional bug).
-
 ## P3 — Terminal, panes, and focus
 
 ### Hand-off by snapshot when both agents share an engine sha (wr-agent) — #462/#463 follow-up

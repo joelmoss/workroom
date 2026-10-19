@@ -57,7 +57,8 @@ struct TerminalCodingAgentBanner: View {
     case .ready:
       Image(systemName: "sparkles").foregroundStyle(.tint)
     case .failure:
-      Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+      Image(systemName: "exclamationmark.triangle.fill")
+        .foregroundStyle(ThemeService.shared.tokens.warning)
     case .awaiting:
       Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
     case .remote:
@@ -69,7 +70,7 @@ struct TerminalCodingAgentBanner: View {
     HStack(spacing: 6) {
       if model.fixIsDestructive {
         Image(systemName: "exclamationmark.octagon.fill")
-          .foregroundStyle(.red)
+          .foregroundStyle(ThemeService.shared.tokens.failure)
           .help("This command is destructive — review it carefully before running.")
       }
       Text(fix)
@@ -136,7 +137,7 @@ struct TerminalCodingAgentBanner: View {
   private var borderColor: Color {
     switch model.style {
     case .ready: return .accentColor.opacity(0.4)
-    case .failure: return .orange.opacity(0.4)
+    case .failure: return ThemeService.shared.tokens.warning.opacity(0.4)
     default: return Color.primary.opacity(0.12)
     }
   }

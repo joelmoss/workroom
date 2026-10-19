@@ -540,7 +540,7 @@ private struct WorkroomPaneTitleBar: View {
       if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
-          .foregroundStyle(.orange)
+          .foregroundStyle(theme.tokens.warning)
           .help(reason.title)
       }
       // `project / workroom`, same format and size as `WorkroomTabChip`. Full-strength on the focused

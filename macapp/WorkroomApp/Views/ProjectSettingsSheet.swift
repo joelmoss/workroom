@@ -34,7 +34,7 @@ struct ProjectSettingsSheet: View {
               "No run command is defined yet — you can't run this workroom until you set one.",
               systemImage: "exclamationmark.triangle.fill"
             )
-            .foregroundStyle(.orange)
+            .foregroundStyle(ThemeService.shared.tokens.warning)
             // Stable identifier so the XCUITest doesn't match on the exact warning string
             // (fragile: an em dash, wording that may change) — added after outside-voice review
             // flagged the risk.

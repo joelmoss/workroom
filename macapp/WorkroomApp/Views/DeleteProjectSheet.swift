@@ -129,7 +129,7 @@ struct DeleteProjectSheet: View {
       HStack(alignment: .top, spacing: 12) {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 30))
-          .foregroundStyle(.orange)
+          .foregroundStyle(ThemeService.shared.tokens.warning)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 4) {
           Text("Delete project “\(project.displayName)”?")
@@ -147,14 +147,14 @@ struct DeleteProjectSheet: View {
       if let investigateWarning {
         Text(investigateWarning)
           .font(.callout.weight(.semibold))
-          .foregroundStyle(.orange)
+          .foregroundStyle(ThemeService.shared.tokens.warning)
           .accessibilityIdentifier("deleteProject.investigateWarning")
       }
 
       if let remoteWarning {
         Text(remoteWarning)
           .font(.callout.weight(.semibold))
-          .foregroundStyle(.orange)
+          .foregroundStyle(ThemeService.shared.tokens.warning)
           .accessibilityIdentifier("deleteProject.remoteWarning")
       }
 

@@ -73,7 +73,7 @@ private struct WaitingRow: View {
     let title = place ?? "Terminal"
     Button(action: onOpen) {
       HStack(alignment: .top, spacing: 8) {
-        Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
+        Image(systemName: "hand.raised.fill").foregroundStyle(ThemeService.shared.tokens.warning)
         VStack(alignment: .leading, spacing: 2) {
           Text(title).font(.callout).lineLimit(1)
           Text(kind).font(.caption).foregroundStyle(.secondary).lineLimit(1)

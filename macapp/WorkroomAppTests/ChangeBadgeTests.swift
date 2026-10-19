@@ -60,11 +60,11 @@ final class ChangeBadgeTests: XCTestCase {
     XCTAssertEqual(ChangeBadge.word(.other), "changed")
   }
 
-  /// Added/deleted/modified take the theme's diff + warning tokens.
+  /// Added/deleted/modified take the theme's traffic-light tokens.
   func testColorsComeFromTheThemeTokens() {
     let t = tokens()
-    XCTAssertEqual(rgb(ChangeBadge.color(.added, t)), rgb(t.diffAddFg))
-    XCTAssertEqual(rgb(ChangeBadge.color(.deleted, t)), rgb(t.diffRemoveFg))
+    XCTAssertEqual(rgb(ChangeBadge.color(.added, t)), rgb(t.success))
+    XCTAssertEqual(rgb(ChangeBadge.color(.deleted, t)), rgb(t.failure))
     XCTAssertEqual(rgb(ChangeBadge.color(.modified, t)), rgb(t.warning))
     XCTAssertEqual(rgb(ChangeBadge.color(.renamed, t)), rgb(t.warning))
     XCTAssertEqual(rgb(ChangeBadge.color(.untracked, t)), rgb(t.fgMuted))

@@ -123,7 +123,7 @@ struct SetupProblem: View {
   var body: some View {
     Label(text, systemImage: "exclamationmark.triangle.fill")
       .font(.callout)
-      .foregroundStyle(.orange)
+      .foregroundStyle(ThemeService.shared.tokens.warning)
       .fixedSize(horizontal: false, vertical: true)
   }
 }

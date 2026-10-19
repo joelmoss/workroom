@@ -58,7 +58,7 @@ struct VCSFailureSheet: View {
     HStack(alignment: .top, spacing: 12) {
       Image(systemName: "exclamationmark.triangle.fill")
         .font(.system(size: 30))
-        .foregroundStyle(.orange)
+        .foregroundStyle(ThemeService.shared.tokens.warning)
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 2) {
         Text(dialog.title)
