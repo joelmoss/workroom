@@ -10,6 +10,7 @@ Workroom is a native macOS app. The Go CLI at the repository root is the app's e
 - `cmd/` contains the CLI's Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`. The Go module root is the repository root (`go.mod`, `main.go`).
 - `vcs/` is the Rust workspace for the `wr-agent` daemon (terminal sessions, VCS and File services) and its git read crates.
 - `docs/` contains supporting documentation.
+- `docs-site/` is the user documentation, served by Codaset at `codaset.dev/workroom/docs`. Its format contract is `docs-site/README.md`; `make docs-check` checks it.
 
 ## Build, Test, and Development Commands
 
@@ -44,6 +45,8 @@ Edit source files with your agent's file-editing tool, not with shell rewrites s
 Go uses `testing` with `*_test.go` files and `Test…` functions. Swift uses XCTest/XCUITest with `*Tests.swift` files and `test…` methods. Run relevant tests and linters before submitting; cover changed behavior and regressions. Use temporary repositories for VCS tests. Declare app preference keys with `suite: .app` to preserve test isolation.
 
 ## Commit & Pull Request Guidelines
+
+A PR that changes what users see or do (the app, the CLI, a config key, a script variable) updates `docs-site/` in the same PR. A feature no stable release has yet is marked Nightly there (`docs-site/README.md`). After changing a CLI command or flag, run `make docs-cli`.
 
 Use concise, descriptive commits. History commonly uses `fix(macapp): …`, `refactor(macapp): …`, and `docs(…): …`; plain imperative subjects also occur. PRs should explain behavior changes, link issues (`Fixes #177`), report validation and skipped checks, and include screenshots for visible UI changes.
 
