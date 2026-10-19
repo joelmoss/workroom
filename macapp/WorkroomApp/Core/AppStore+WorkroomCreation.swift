@@ -443,7 +443,7 @@ extension AppStore {
       let plan = try await services.plan(self, run.project)
       defaultNotUsed = plan.defaultNotUsed
       // Before any machine is made, so a script this Mac won't run never costs a paid host (#363).
-      if let script = try await services.untrustedSetup(self, run.project) {
+      if let script = try await services.untrustedSetup(self, run.project, plan) {
         refuseCreation(run, script)
         return
       }
@@ -748,8 +748,12 @@ struct RemoteCreateServices {
     _ in .absent
   }
   /// The setup script a create would run, when this Mac has not approved it (#363): the CLI's
-  /// `trust status`, at the base it fetches. A test's fakes approve every script unless they say.
-  var untrustedSetup: @MainActor (AppStore, Project) async throws -> ScriptTrust? = { _, _ in nil }
+  /// `trust status`, at the origin branch the plan checks out. A test's fakes approve every script
+  /// unless they say.
+  var untrustedSetup:
+    @MainActor (AppStore, Project, RemoteCreatePlan) async throws -> ScriptTrust? = { _, _, _ in
+      nil
+    }
 
   static var live: RemoteCreateServices {
     RemoteCreateServices(
@@ -772,8 +776,10 @@ struct RemoteCreateServices {
         return RemoteCreateHost(key: key, driver: driver, environment: environment)
       },
       script: { request in await RemoteWorkrooms.runScript(request) },
-      untrustedSetup: { store, project in
-        try await store.cli.trustStatus(project: project.path).scripts.first {
+      untrustedSetup: { store, project, plan in
+        // origin named, so a branch like `release/1.0` is never read as a remote's.
+        let base = plan.startBranch.map { "origin/\($0)" } ?? ""
+        return try await store.cli.trustStatus(project: project.path, base: base).scripts.first {
           $0.name == RemoteProvisioning.Script.setup.fileName && !$0.trusted
         }
       })
