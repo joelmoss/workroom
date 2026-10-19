@@ -100,7 +100,8 @@ final class ChangeBadgeTests: XCTestCase {
   func testConflictColorFallsBackWithoutAPalette() {
     let t = ThemeTokens(preview: nil)
     XCTAssertEqual(rgb(ChangeBadge.color(.conflicted, t)), rgb(t.conflict))
-    XCTAssertNotEqual(rgb(ChangeBadge.color(.conflicted, t)), rgb(t.diffRemoveFg))
+    XCTAssertNotEqual(rgb(ChangeBadge.color(.conflicted, t)), rgb(ChangeBadge.color(.deleted, t)))
+    XCTAssertNotEqual(rgb(ChangeBadge.color(.conflicted, t)), rgb(ChangeBadge.color(.modified, t)))
   }
 
   // Value: protects=the VCS status dot and the PR state/reviewer/check glyphs each take their own

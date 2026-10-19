@@ -494,7 +494,7 @@ private struct TerminalTabChip: View {
   /// glyph (octagon vs play) and the colour, so it survives red/green colourblindness (#79).
   private func runIconSpec(_ state: RunState) -> (glyph: String, color: Color, label: String) {
     switch state {
-    case .running: return ("play.circle.fill", .green, "running")
+    case .running: return ("play.circle.fill", theme.tokens.success, "running")
     case .stopped: return ("play.circle.fill", theme.tokens.fgMuted, "stopped")
     case .failed: return ("xmark.octagon.fill", theme.tokens.failure, "failed")
     }
