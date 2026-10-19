@@ -1506,15 +1506,15 @@ final class GhosttySurfaceView: NSView {
     if flags == [.command, .shift, .option] {
       return key == "f" || key == "p"
     }
-    // ⌥⌘C = Changes, ⌥⌘F = Files, ⌥⌘Y = History, ⌥⌘P = Pull Request panel toggles; ⌥⌘S = the
+    // ⌥⌘I = Details, ⌥⌘C = Changes, ⌥⌘F = Files, ⌥⌘Y = History, ⌥⌘P = Pull Request panel toggles; ⌥⌘S = the
     // OS-standard Toggle Sidebar shortcut, caught (and aliased to Projects) by the AppDelegate
     // monitor — reserved here too, defensively, like ⌘1-9 above (issue #128). ⌥⌘B is the secondary
     // Projects sidebar toggle, same treatment.
     if flags == [.command, .option] {
       // n/o = New/Open Workroom (split right) (issue #163) — File-menu key equivalents, so they
       // must be reserved here or a focused TUI swallows them before the menu ever sees the key.
-      return key == "r" || key == "c" || key == "f" || key == "y" || key == "p" || key == "s"
-        || key == "b" || key == "n" || key == "o"
+      return key == "r" || key == "i" || key == "c" || key == "f" || key == "y" || key == "p"
+        || key == "s" || key == "b" || key == "n" || key == "o"
     }
     // ⌃⌘S = Projects sidebar toggle (issue #128); ⌃⌘O = Move pane into new window (issue #172) — a
     // Window-menu key equivalent, so it must be reserved here or a focused TUI swallows it before the

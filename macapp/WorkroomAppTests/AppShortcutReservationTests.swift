@@ -58,7 +58,8 @@ final class AppShortcutReservationTests: XCTestCase {
   }
 
   func testExistingOptionCommandShortcutsStayReserved() {
-    for key in ["r", "c", "f", "y", "p", "s", "b", "n", "o"] {
+    // ⌥⌘I = Details: a focused TUI would otherwise swallow it.
+    for key in ["r", "i", "c", "f", "y", "p", "s", "b", "n", "o"] {
       XCTAssertTrue(reserved(key, [.command, .option]), "⌥⌘\(key.uppercased())")
     }
   }
