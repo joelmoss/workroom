@@ -4106,9 +4106,13 @@ service milestones below so each layer can be reviewed and landed independently.
      loopback, which a published port does not. The reference `@devcontainers/cli` implements no
      `forwardPorts` at all (issue 186 there), so the tool decides. With the panel serving only
      other boxes, the *ephemeral* local port is reversed: a forward takes its own number when
-     nothing on this Mac holds it, on `127.0.0.1` or `::1` (`LoopbackSocket.heldOnIPv6Loopback`:
-     a `::1`-only listener doesn't block a v4 bind, and a browser asks `localhost` on `::1`
-     first), and an ephemeral one otherwise, or refuses under `requireLocalPort`. `Service::Forward`
+     nothing on this Mac holds it, on `127.0.0.1` or `::1`, and an ephemeral one otherwise, or
+     refuses under `requireLocalPort`. It listens on both addresses (owner, 2026-10-19), so the
+     `localhost:N` the Ports list shows reaches the container whichever a browser tries first
+     (`::1`), and a Mac server started later on `::1` fails instead of taking it. A port held only
+     by connections in `TIME_WAIT` (a relaunch with a browser connection open) is reclaimed with
+     `SO_REUSEADDR`, but only when nothing answers a connect on it: the option alone binds over
+     another process's wildcard listener (`LoopbackSocket.listen(reclaiming:)`). `Service::Forward`
      itself is unchanged: `open` serves these, and `listen`/`accept` the credential relay. Related:
      #308, where `devcontainer.json` is one option for the container's own toolchain.
 

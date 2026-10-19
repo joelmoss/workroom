@@ -152,8 +152,8 @@ private struct ForwardReply: Decodable {
   }
 }
 
-/// One listener on `127.0.0.1`, forwarding every connection accepted on it to one port on the
-/// agent's box over its own multiplex stream.
+/// One port on this Mac's loopback, listened on at `127.0.0.1` and `::1`, forwarding every
+/// connection accepted on it to one port on the agent's box over its own multiplex stream.
 final class PortForward: @unchecked Sendable {
   /// What a forward reports about the connections through it. `opened` clears an earlier failure:
   /// a dev server that was not running when the page first loaded is a fact about then, not about
@@ -202,9 +202,10 @@ final class PortForward: @unchecked Sendable {
 
   let remotePort: UInt16
   /// The port bound on this Mac: the one asked for when it was free, else an ephemeral one. This is
-  /// the address the user connects to.
+  /// the address the user connects to, as `localhost:<port>`: it is bound on 127.0.0.1 and on `::1`,
+  /// which a browser asking for `localhost` tries first, so no server the Mac starts later on `::1`
+  /// can take `localhost` from the forward while it lives.
   let localPort: UInt16
-  private let listener: Int32
   /// The connection streams are opened on. Replaced only through `reconnect`.
   private var connection: AgentVCSConnection
   private let reconnect: Reconnect?
@@ -224,7 +225,8 @@ final class PortForward: @unchecked Sendable {
   /// the discipline `ForwardedConnection` keeps for its socket, and it costs no app-wide pool
   /// worker per listener.
   private let accepts = DispatchQueue(label: "workroom.agent.forward.listen")
-  private let source: DispatchSourceRead
+  /// One per listening address, each closing its own descriptor when cancelled.
+  private var sources: [DispatchSourceRead] = []
 
   /// `localPort` 0 binds an ephemeral port. Any other is tried first, and when something on this
   /// Mac holds it the forward takes an ephemeral port instead, or throws `LocalPortTaken` when
@@ -242,25 +244,47 @@ final class PortForward: @unchecked Sendable {
     self.onEvent = onEvent
     // Loopback, so nothing off this Mac can reach a forward: the agent's own allowlist is
     // loopback-only and this is its mirror.
-    var made: (descriptor: Int32, port: UInt16)?
-    if preferred != 0, !LoopbackSocket.heldOnIPv6Loopback(port: preferred) {
-      made = LoopbackSocket.listen(reclaiming: preferred)
+    var listeners: [Int32] = []
+    var port: UInt16 = 0
+    // The asked-for number only when both addresses can have it: one the Mac holds on either is
+    // taken, as `localhost` would reach whichever the browser tries first.
+    if preferred != 0, !LoopbackSocket.answers(port: preferred, ipv6: true),
+      let v4 = LoopbackSocket.listen(reclaiming: preferred)
+    {
+      if let v6 = LoopbackSocket.listen(reclaiming: preferred, ipv6: true) {
+        listeners = [v4.descriptor, v6.descriptor]
+        port = preferred
+      } else {
+        Darwin.close(v4.descriptor)
+      }
     }
-    if made == nil, preferred != 0, requireLocalPort { throw LocalPortTaken(port: preferred) }
-    guard let (listener, port) = made ?? LoopbackSocket.listen() else {
-      throw HostConnectionError.serviceUnavailable(
-        "Could not listen on a loopback port: \(String(cString: strerror(errno)))")
+    if listeners.isEmpty, preferred != 0, requireLocalPort {
+      throw LocalPortTaken(port: preferred)
     }
-    guard fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK) == 0 else {
-      Darwin.close(listener)
+    if listeners.isEmpty {
+      guard let v4 = LoopbackSocket.listen() else {
+        throw HostConnectionError.serviceUnavailable(
+          "Could not listen on a loopback port: \(String(cString: strerror(errno)))")
+      }
+      port = v4.port
+      // shortcut: an ephemeral port another process holds on `::1` is forwarded on 127.0.0.1 only;
+      // a browser refused on `::1` falls back to it. Upgrade if a random port's `::1` ever matters.
+      listeners =
+        [v4.descriptor] + (LoopbackSocket.listenIPv6(port: port).map { [$0.descriptor] } ?? [])
+    }
+    for listener in listeners
+    where fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK) != 0 {
+      for listener in listeners { Darwin.close(listener) }
       throw HostConnectionError.serviceUnavailable("Could not make the loopback port non-blocking.")
     }
     self.localPort = port
-    self.listener = listener
-    source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: accepts)
-    source.setEventHandler { [weak self] in self?.acceptPending() }
-    source.setCancelHandler { Darwin.close(listener) }
-    source.activate()
+    sources = listeners.map { listener in
+      let source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: accepts)
+      source.setEventHandler { [weak self] in self?.acceptPending(on: listener) }
+      source.setCancelHandler { Darwin.close(listener) }
+      source.activate()
+      return source
+    }
   }
 
   deinit { stop() }
@@ -286,14 +310,14 @@ final class PortForward: @unchecked Sendable {
     }
     guard let taken else { return }
     let connections = taken.live.values.map(\.connection)
-    source.cancel()
+    for source in sources { source.cancel() }
     for connection in connections { connection.finish(tellAgent: true) }
     for client in taken.waiting { Darwin.close(client) }
   }
 
   /// Everything the backlog holds, on the accept queue. A non-blocking `accept` ends with
   /// `EWOULDBLOCK` when it is empty, which is the normal end of one firing, not an error.
-  private func acceptPending() {
+  private func acceptPending(on listener: Int32) {
     while true {
       if lock.withLock({ stopped }) { return }
       let client = accept(listener, nil, nil)
