@@ -58,6 +58,8 @@
       "macapp/Tests/pregate/rust_gate_test.py",
       "macapp/Tests/pregate/scripts_gate_test.py"
     ],
+    "go.mod": ["cmd/main_test.go"],
+    "go.sum": ["cmd/main_test.go"],
     "cmd/**": ["cmd/main_test.go"],
     "internal/channel/**": ["internal/channel/channel_test.go"],
     "internal/config/**": ["internal/config/canonicalpath_test.go"],
