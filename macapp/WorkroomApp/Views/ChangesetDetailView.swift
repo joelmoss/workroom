@@ -268,8 +268,8 @@ struct ChangesetDetailView: View {
   @ViewBuilder private func diffStat(_ changeset: VCSChangeset) -> some View {
     if let insertions = changeset.insertions, let deletions = changeset.deletions {
       HStack(spacing: 5) {
-        Text("+\(insertions)").foregroundStyle(theme.tokens.diffAddFg)
-        Text("−\(deletions)").foregroundStyle(theme.tokens.diffRemoveFg)
+        Text("+\(insertions)").foregroundStyle(theme.tokens.success)
+        Text("−\(deletions)").foregroundStyle(theme.tokens.failure)
       }
       .font(.system(.caption, design: .monospaced))
       // Combine the +/- into one element with a spoken label. No a11y identifier: the header's

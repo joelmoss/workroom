@@ -332,10 +332,10 @@ struct DiffViewer: View {
         if let stats = loadedStats {
           HStack(spacing: 6) {
             if stats.additions > 0 {
-              Text("+\(stats.additions)").foregroundStyle(theme.tokens.diffAddFg)
+              Text("+\(stats.additions)").foregroundStyle(theme.tokens.success)
             }
             if stats.removals > 0 {
-              Text("−\(stats.removals)").foregroundStyle(theme.tokens.diffRemoveFg)
+              Text("−\(stats.removals)").foregroundStyle(theme.tokens.failure)
             }
             if stats.additions == 0 && stats.removals == 0 {
               Text("0").foregroundStyle(.secondary)
