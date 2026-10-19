@@ -321,9 +321,9 @@ struct DiffViewer: View {
       // Info cluster — combined into one a11y element with the path as its tooltip, kept separate
       // from the interactive switch (so the switch keeps its own per-segment tooltips + VoiceOver).
       HStack(spacing: 8) {
-        Text(Self.changeLetter(descriptor.change))
+        Text(ChangeBadge.letter(descriptor.change))
           .font(.system(.caption2, design: .monospaced).weight(.bold))
-          .foregroundStyle(Self.changeColor(descriptor.change))
+          .foregroundStyle(ChangeBadge.color(descriptor.change, theme.tokens))
           .frame(width: 14)
         headerPathText
           .font(.system(.caption, design: .monospaced))
@@ -360,30 +360,6 @@ struct DiffViewer: View {
   private var headerPathText: Text {
     let name = (descriptor.path as NSString).lastPathComponent
     return panePathText(prefix: String(descriptor.path.dropLast(name.count)), name: name)
-  }
-
-  /// Single-letter change symbol, matching the changeset file-list badges.
-  private static func changeLetter(_ change: ChangedFile.Change) -> String {
-    switch change {
-    case .added: return "A"
-    case .modified: return "M"
-    case .deleted: return "D"
-    case .renamed: return "R"
-    case .conflicted: return "!"
-    case .untracked: return "?"
-    case .other: return "\u{2022}"
-    }
-  }
-
-  private static func changeColor(_ change: ChangedFile.Change) -> Color {
-    switch change {
-    case .added: return .green
-    case .deleted: return .red
-    case .modified: return .yellow
-    case .renamed: return .blue
-    case .conflicted: return .orange
-    case .untracked, .other: return .secondary
-    }
   }
 
   private func resolveRepositoryDiff() async -> DiffResult {

@@ -211,7 +211,7 @@ struct CommitSheet: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(alignment: .top, spacing: 8) {
         Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(.orange).accessibilityHidden(true)
+          .foregroundStyle(ThemeService.shared.tokens.warning).accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 4) {
           Text(
             paths.count == 1
@@ -235,7 +235,9 @@ struct CommitSheet: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(10)
-    .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.08)))
+    .background(
+      RoundedRectangle(cornerRadius: 6).fill(ThemeService.shared.tokens.warning.opacity(0.08))
+    )
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("commit.stagedLoss")
   }
@@ -582,7 +584,7 @@ private struct CommitFailureNotice: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .top, spacing: 8) {
         Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(.orange)
+          .foregroundStyle(ThemeService.shared.tokens.warning)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 4) {
           Text(dialog.title).font(.subheadline.weight(.semibold))
@@ -615,7 +617,9 @@ private struct CommitFailureNotice: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(10)
-    .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.08)))
+    .background(
+      RoundedRectangle(cornerRadius: 6).fill(ThemeService.shared.tokens.warning.opacity(0.08))
+    )
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("commit.failure")
   }

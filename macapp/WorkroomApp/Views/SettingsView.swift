@@ -258,7 +258,7 @@ private struct NewWorkroomsSection: View {
         .onDisappear(perform: save)
         .accessibilityIdentifier("settings.control.baseBranch")
       if let failure {
-        Text(failure).font(.footnote).foregroundStyle(.red)
+        Text(failure).font(.footnote).foregroundStyle(ThemeService.shared.tokens.failure)
       }
       Toggle("Close the checklist automatically when done", isOn: $closeCreationPaneWhenDone)
         .help(

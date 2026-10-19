@@ -118,7 +118,7 @@ struct CodingAgentUsageDetailView: View {
 ///   reasoning that the footer's inline text carried the severity instead. Issue #168 deleted that
 ///   text, so the fill is now the only place a deficit is visible — and both surfaces read the same
 ///   rule from `QuotaBar.fill(for:_:)`, so a window can't be amber in the footer and plain in the
-///   popover.
+///   popover. On pace is `success`, not `accent`: the bar uses the app's one traffic-light scheme.
 /// - **The track is `border` (fg @ 0.12), not `surface` (fg @ 0.08).** `surface` on the footer's
 ///   `panel` ground is fainter than a hairline divider and barely above `hover`'s deliberate wash,
 ///   which at compact height read as no track at all — leaving a fill you couldn't see the extent of.
@@ -161,7 +161,7 @@ struct QuotaBar: View {
   /// rows so the two cannot disagree about the same window.
   static func fill(for severity: PaceSeverity, _ tokens: ThemeTokens) -> Color {
     switch severity {
-    case .onPace: return tokens.accent
+    case .onPace: return tokens.success
     case .warning: return tokens.warning
     case .critical: return tokens.failure
     }

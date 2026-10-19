@@ -391,7 +391,7 @@ struct ProjectSidebar: View {
       UnreadDot(count: notifications.count(target: target.id))
       if target.isMissing {
         Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(.yellow)
+          .foregroundStyle(ThemeService.shared.tokens.warning)
           .help("Project folder not found")
       }
       // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
@@ -464,7 +464,7 @@ struct ProjectSidebar: View {
       UnreadDot(count: unread)
       ForEach(workroom.warnings, id: \.kind) { warning in
         Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(.yellow)
+          .foregroundStyle(ThemeService.shared.tokens.warning)
           .help(warning.message)
       }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
@@ -935,14 +935,17 @@ private struct RowRunButton: View {
     let running = store.isRunCommandRunning(for: target.id)
     // The action's color: red to stop (like delete), green to start. Drives the hover icon tint AND
     // the rounded hover background, matching the row's other buttons (new-workroom / delete).
-    let tint: Color = running ? .red : .green
+    let tokens = ThemeService.shared.tokens
+    let tint = running ? tokens.failure : tokens.success
     Button {
       store.toggleRunCommand(for: target)
     } label: {
       Image(systemName: running ? "stop.circle.fill" : "play.circle.fill")
         .font(.system(size: 12))
         .foregroundStyle(
-          running ? (hovering ? .red : .green) : (hovering ? .green : Color.secondary)
+          running
+            ? (hovering ? tokens.failure : tokens.success)
+            : (hovering ? tokens.success : Color.secondary)
         )
         .padding(4)
         .background(
@@ -1000,11 +1003,11 @@ private struct DeleteRowButton: View {
     Button(action: action) {
       Image(systemName: "trash")
         .font(.system(size: 11))
-        .foregroundStyle(hovering ? Color.red : .secondary)
+        .foregroundStyle(hovering ? ThemeService.shared.tokens.failure : .secondary)
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(Color.red.opacity(hovering ? 0.18 : 0))
+            .fill(ThemeService.shared.tokens.failure.opacity(hovering ? 0.18 : 0))
         )
     }
     .buttonStyle(.plain)

@@ -9,10 +9,10 @@ extension VCSStatusPresentation.Semantic {
     let tokens = ThemeService.shared.tokens
     switch self {
     case .dirty: return tokens.warning
-    case .conflict: return tokens.diffRemoveFg
+    case .conflict: return tokens.failure
     case .unknown: return tokens.fgMuted
-    case .ciPass: return tokens.diffAddFg
-    case .ciFail: return tokens.diffRemoveFg
+    case .ciPass: return tokens.success
+    case .ciFail: return tokens.failure
     case .ciRunning: return tokens.warning
     case .neutral: return tokens.fgMuted
     }

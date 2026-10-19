@@ -83,7 +83,8 @@ struct PullRequestPanel: View {
     let copy = Self.ghWarningCopy(for: status)
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
-        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+        Image(systemName: "exclamationmark.triangle.fill")
+          .foregroundStyle(ThemeService.shared.tokens.warning)
           .accessibilityHidden(true)
         Text(copy.title)
           .fontWeight(.medium)
@@ -416,25 +417,27 @@ private struct MergeButton: View {
 
 extension PRPresentation.Semantic {
   /// Semantic → SwiftUI color for the PR state badge. Mirrors GitHub: open green, merged purple,
-  /// closed red, draft a quiet gray.
-  var color: Color {
+  /// closed red, draft a quiet gray. Green and red are the theme's traffic-light tokens.
+  @MainActor var color: Color {
+    let tokens = ThemeService.shared.tokens
     switch self {
-    case .open: return .green
+    case .open: return tokens.success
     case .draft: return .secondary
     case .merged: return .purple
-    case .closed: return .red
+    case .closed: return tokens.failure
     }
   }
 }
 
 extension PRPresentation.ReviewSemantic {
   /// Semantic → SwiftUI color for a per-reviewer row glyph. Mirrors GitHub: approved green,
-  /// changes-requested red, pending amber; commented/dismissed stay quiet (the glyph carries it).
-  var color: Color {
+  /// changes-requested red, pending yellow; commented/dismissed stay quiet (the glyph carries it).
+  @MainActor var color: Color {
+    let tokens = ThemeService.shared.tokens
     switch self {
-    case .approved: return .green
-    case .changesRequested: return .red
-    case .requested: return .orange
+    case .approved: return tokens.success
+    case .changesRequested: return tokens.failure
+    case .requested: return tokens.warning
     case .commented: return .secondary
     case .dismissed: return .secondary
     }
@@ -443,13 +446,14 @@ extension PRPresentation.ReviewSemantic {
 
 extension PRPresentation.CheckSemantic {
   /// Semantic → SwiftUI color for a per-check row glyph. Mirrors GitHub: passing green, failing red,
-  /// pending amber; skipped/cancelled stay quiet (the glyph carries it). Plain colors (like the
-  /// reviewer rows), so the two row kinds read consistently.
-  var color: Color {
+  /// pending yellow; skipped/cancelled stay quiet (the glyph carries it). The same traffic-light
+  /// tokens as the reviewer rows, so the two row kinds read consistently.
+  @MainActor var color: Color {
+    let tokens = ThemeService.shared.tokens
     switch self {
-    case .passing: return .green
-    case .failing: return .red
-    case .pending: return .orange
+    case .passing: return tokens.success
+    case .failing: return tokens.failure
+    case .pending: return tokens.warning
     case .skipped: return .secondary
     case .cancelled: return .secondary
     }

@@ -25,7 +25,7 @@ struct ScriptLogContent: View {
       if let message = session.failureMessage {
         Text("— \(message)")
           .font(.callout)
-          .foregroundStyle(.red)
+          .foregroundStyle(ThemeService.shared.tokens.failure)
           .lineLimit(1)
           .truncationMode(.tail)
       }
@@ -49,7 +49,7 @@ struct ScriptLogContent: View {
     if !session.isFinished {
       ProgressView().controlSize(.small)
     } else if session.failureMessage != nil {
-      Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+      Image(systemName: "xmark.octagon.fill").foregroundStyle(ThemeService.shared.tokens.failure)
     } else {
       Image(systemName: "checkmark.circle.fill").foregroundStyle(
         ThemeService.shared.tokens.success)

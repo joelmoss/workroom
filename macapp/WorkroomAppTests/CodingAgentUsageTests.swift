@@ -102,7 +102,7 @@ final class CodingAgentUsageTests: XCTestCase {
   /// `ChangeBadgeTests`, which exists because a colour switch drifted once before.
   @MainActor func testQuotaBarFillMapsEachSeverityToItsOwnToken() {
     let tokens = ThemeService.shared.tokens
-    XCTAssertEqual(QuotaBar.fill(for: .onPace, tokens), tokens.accent)
+    XCTAssertEqual(QuotaBar.fill(for: .onPace, tokens), tokens.success)
     XCTAssertEqual(QuotaBar.fill(for: .warning, tokens), tokens.warning)
     XCTAssertEqual(QuotaBar.fill(for: .critical, tokens), tokens.failure)
   }
