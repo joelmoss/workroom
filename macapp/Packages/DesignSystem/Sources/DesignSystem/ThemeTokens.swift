@@ -43,19 +43,24 @@ public struct ThemeTokens {
   public let nsAccent: NSColor
   public let accentSoft: Color  // accent @ 0.10 — selection wash
   public let accentForeground: Color  // black/white for legibility on the accent
-  public let warning: Color  // palette[3] (yellow)
+  // The traffic-light trio below (warning, failure, success, plus conflict) is every status colour in
+  // the app, each made readable on `statusGrounds`.
+  public let warning: Color  // palette[3] (yellow), else palette[11], else system yellow
   // NSColor form of `warning`, for a contrast check (see `nsDiffAddFg` for why never `NSColor(_:)`).
   public let nsWarning: NSColor
   // palette[1] (red) — run-command failure (icon + toast); a distinct token from `warning`.
   public let failure: Color
+  public let nsFailure: NSColor
   // palette[2] (green) — a finished step's tick; plain system green is hard to make out on some themes.
   public let success: Color
+  public let nsSuccess: NSColor
   // A VCS conflict needs its OWN token: `warning` is already the modified/renamed colour and
-  // `diffRemoveFg` is deletion's, so reusing either makes "needs resolving" read as "changed" or
+  // `failure` is deletion's, so reusing either makes "needs resolving" read as "changed" or
   // "removed" (the state the Changes panel used to conflate). Orange — the hue
   // `DiffViewer`/`ChangesetDetailView` already use for conflicts — has no ANSI slot, so it's mixed
   // from the palette's red + yellow to stay theme-derived like every other token.
   public let conflict: Color
+  public let nsConflict: NSColor
 
   // Diff / VCS semantics (palette green/red/cyan).
   public let diffAddFg: Color
@@ -141,20 +146,33 @@ public struct ThemeTokens {
     nsAccent = accentColor
     accentSoft = Color(nsColor: accentColor.withAlphaComponent(0.10))
     accentForeground = Color(nsColor: Self.contrastingForeground(for: accentColor))
-    nsWarning = p(3) ?? .systemYellow
+    // The traffic-light colours are the theme's own, walked toward fg until each clears 3:1 on every
+    // themed surface: as defined, 70 of them across 35 bundled families were under it, mostly
+    // yellows on light themes.
+    let statusGrounds = Self.statusGrounds(bg: bgColor, panel: panelColor, fg: fgColor)
+    func status(_ color: NSColor) -> NSColor {
+      Self.legible(color, on: statusGrounds, towards: fgColor)
+    }
+    // Some themes put a non-yellow in slot 3 (Night Owl's is lime, next to its green "added"), which
+    // makes a warning read as fine; their bright yellow (slot 11) usually is one.
+    let yellow = [p(3), p(11)].compactMap { $0 }.first(where: Self.isWarningHue) ?? .systemYellow
+    nsWarning = status(yellow)
     warning = Color(nsColor: nsWarning)
     // ANSI colour 1 is red — the run-failure signal (chip + workroom dot + toast all share it). Same
     // palette slot as `diffRemoveFg`'s red, but a distinct semantic token so the two can't drift.
-    failure = Color(nsColor: p(1) ?? .systemRed)
-    success = Color(nsColor: p(2) ?? .systemGreen)
+    nsFailure = status(p(1) ?? .systemRed)
+    failure = Color(nsColor: nsFailure)
+    nsSuccess = status(p(2) ?? .systemGreen)
+    success = Color(nsColor: nsSuccess)
     // Orange = the palette's red blended halfway toward its yellow (no ANSI orange exists); falls
     // back to the system orange when a theme defines no palette.
     let conflictColor: NSColor = {
-      guard let red = p(1)?.usingColorSpace(.sRGB), let yellow = p(3)?.usingColorSpace(.sRGB)
+      guard let red = p(1)?.usingColorSpace(.sRGB), let yellow = yellow.usingColorSpace(.sRGB)
       else { return .systemOrange }
       return red.blended(withFraction: 0.5, of: yellow) ?? .systemOrange
     }()
-    conflict = Color(nsColor: conflictColor)
+    nsConflict = status(conflictColor)
+    conflict = Color(nsColor: nsConflict)
 
     let addColor = p(2) ?? .systemGreen
     let removeColor = p(1) ?? .systemRed
@@ -242,6 +260,41 @@ public struct ThemeTokens {
   public static func perceivedBrightness(of color: NSColor) -> CGFloat {
     guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
     return 0.2126 * srgb.redComponent + 0.7152 * srgb.greenComponent + 0.0722 * srgb.blueComponent
+  }
+
+  /// The themed surfaces a status colour sits on: a sidebar row, the rail, an idle tab and the
+  /// footer (`panel`), a selected row (`surface` over `panel`) and the active tab (`bg`).
+  public static func statusGrounds(bg: NSColor, panel: NSColor, fg: NSColor) -> [NSColor] {
+    let panel = panel.usingColorSpace(.sRGB) ?? panel
+    let fg = fg.usingColorSpace(.sRGB) ?? fg
+    return [panel, panel.blended(withFraction: 0.08, of: fg) ?? panel, bg]
+  }
+
+  /// `color` blended toward `fg` in 10% steps until it clears 3:1 on every ground. A colour that
+  /// already does comes back as-is, so a dynamic system fallback keeps following the appearance.
+  public static func legible(_ color: NSColor, on grounds: [NSColor], towards fg: NSColor)
+    -> NSColor
+  {
+    guard let start = color.usingColorSpace(.sRGB), let fg = fg.usingColorSpace(.sRGB),
+      grounds.contains(where: { contrastRatio(start, $0) < 3 })
+    else {
+      return color
+    }
+    var current = start
+    var fraction: CGFloat = 0
+    while grounds.contains(where: { contrastRatio(current, $0) < 3 }), fraction < 1 {
+      fraction += 0.1
+      current = start.blended(withFraction: fraction, of: fg) ?? start
+    }
+    return current
+  }
+
+  /// Whether a colour reads as a warning: orange through yellow (10°–70°) with real saturation.
+  /// Orange stays in because a dozen bundled themes (Zenbones, Xcode Light, Iceberg) deliberately use
+  /// it in slot 3; lime (Night Owl, 84°), red and grey are out.
+  public static func isWarningHue(_ color: NSColor) -> Bool {
+    guard let srgb = color.usingColorSpace(.sRGB) else { return false }
+    return (10...70).contains(srgb.hueComponent * 360) && srgb.saturationComponent >= 0.25
   }
 
   /// Black or white on a fill — whichever actually measures better against it.

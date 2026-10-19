@@ -56,6 +56,44 @@ final class ThemeTokensTests: XCTestCase {
     assertRGB(t.warning, "#ffff00")  // palette[3]
   }
 
+  /// Night Owl's slot 3 is lime, so an over-pace usage bar looked fine; its slot 11 is a real yellow.
+  func testWarningSkipsNonYellowSlotThree() {
+    func warning(_ slot3: String, _ slot11: String, bg: String, fg: String) -> Color {
+      var pal = Array(repeating: "#808080", count: 16)
+      pal[3] = slot3
+      pal[11] = slot11
+      return ThemeTokens(preview: preview(bg: bg, fg: fg, palette: pal)).warning
+    }
+    // Night Owl: lime → bright yellow.
+    assertRGB(warning("#addb67", "#ffeb95", bg: "#011627", fg: "#d6deeb"), "#ffeb95")
+    // Zenbones Light: orange is kept.
+    assertRGB(warning("#944927", "#803d1c", bg: "#f0edec", fg: "#2c363c"), "#944927")
+    // Sequoia Monochrome Dark: grey → system yellow.
+    let system = NSColor.systemYellow.usingColorSpace(.sRGB)!
+    let got = rgb(warning("#d3d5de", "#d3d5de", bg: "#011627", fg: "#d6deeb"))
+    XCTAssertEqual(got.0, system.redComponent, accuracy: 0.01)
+    XCTAssertEqual(got.1, system.greenComponent, accuracy: 0.01)
+    XCTAssertEqual(got.2, system.blueComponent, accuracy: 0.01)
+  }
+
+  /// Atom One Light's yellow is 1.9:1 on its own background; the token is walked toward fg until it
+  /// clears 3:1 on every status ground, and a colour already past 3:1 is left alone.
+  func testStatusColoursAreMadeReadable() {
+    var pal = Array(repeating: "#808080", count: 16)
+    pal[1] = "#e45649"
+    pal[2] = "#50a14f"
+    pal[3] = "#d2b67c"
+    pal[11] = "#d2b67c"
+    let t = ThemeTokens(preview: preview(bg: "#f9f9f9", fg: "#2a2c33", palette: pal))
+    let grounds = ThemeTokens.statusGrounds(bg: t.nsBg, panel: t.nsPanel, fg: t.nsFg)
+    for color in [t.nsWarning, t.nsSuccess, t.nsFailure, t.nsConflict] {
+      for ground in grounds {
+        XCTAssertGreaterThanOrEqual(ThemeTokens.contrastRatio(color, ground), 3 - 0.01)
+      }
+    }
+    XCTAssertNotEqual(rgb(t.warning).0, ns("#d2b67c").usingColorSpace(.sRGB)!.redComponent)
+  }
+
   func testColorSchemeFromBackgroundLuminance() {
     XCTAssertEqual(
       ThemeTokens(preview: full(bg: "#fbfbfd", fg: "#1d1d1f", accent4: "#1e7fa8")).colorScheme,
