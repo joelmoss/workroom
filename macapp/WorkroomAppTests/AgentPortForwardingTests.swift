@@ -1247,6 +1247,37 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertEqual(model.forwards.first?.localPort, port)
   }
 
+  /// `localhost:N`, which the Ports list shows, reaches the container on `::1` too, where a browser
+  /// tries first, and a server the Mac starts later on `::1:N` can't take it from the forward.
+  func testAForwardAnswersLocalhostOnIPv6AndKeepsItFromALaterServer() async throws {
+    let port = try freePort()
+    let model = try await model(lease: lease(), sameLocalPort: true)
+    model.draft = String(port)
+    await model.add()
+    XCTAssertEqual(model.forwards.first?.localPort, port)
+    XCTAssertNil(
+      LoopbackSocket.listenIPv6(port: port), "a later ::1 server took the forward's port")
+
+    let client = socket(AF_INET6, SOCK_STREAM, 0)
+    XCTAssertGreaterThanOrEqual(client, 0)
+    defer { Darwin.close(client) }
+    var address = sockaddr_in6()
+    address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+    address.sin6_family = sa_family_t(AF_INET6)
+    address.sin6_port = port.bigEndian
+    address.sin6_addr = in6addr_loopback
+    let connected = withUnsafePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) == 0
+      }
+    }
+    XCTAssertTrue(connected, "nothing answers localhost on ::1")
+    XCTAssertEqual(Darwin.write(client, "x", 1), 1)
+    var byte: UInt8 = 0
+    XCTAssertEqual(Darwin.read(client, &byte, 1), 1, "the ::1 connection was not carried")
+    XCTAssertEqual(byte, UInt8(ascii: "x"))
+  }
+
   /// A port only finished connections hold keeps its number: a forward this side closed first (the
   /// app quitting with a browser's connection open) leaves it in `TIME_WAIT`, which refuses a plain
   /// bind for about 30 s, and the relaunch's forward must still get it.
@@ -1302,7 +1333,7 @@ final class PortForwardingModelTests: XCTestCase {
   func testAForwardMovesToAnotherPortWhenThisMacHoldsItsNumber() async throws {
     for v6 in [false, true] {
       let port = try hold(ipv6: v6)
-      XCTAssertEqual(LoopbackSocket.heldOnIPv6Loopback(port: port), v6)
+      XCTAssertEqual(LoopbackSocket.answers(port: port, ipv6: true), v6)
       let model = try await model(lease: lease(), sameLocalPort: true)
       model.draft = String(port)
       await model.add()

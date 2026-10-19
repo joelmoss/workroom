@@ -19,50 +19,95 @@ public enum LoopbackSocket {
   /// reset. A deep queue is also a long line: an owner must not serve it one slow client at a time
   /// (`LoopbackListener.callback` reads them all at once).
   public static func listen(port: UInt16 = 0) -> (descriptor: Int32, port: UInt16)? {
-    listen(port: port, reuseAddress: false)
+    bindListener(port: port, ipv6: false, reuseAddress: false)
   }
 
-  /// `listen(port:)` for a fixed port, which also takes one that only finished connections hold.
-  /// A connection this side closed first sits in `TIME_WAIT` on the port for about 30 s, measured,
-  /// and refuses a plain bind: quitting with a browser's connection open through a forward, then
-  /// relaunching, would otherwise move the forward to another port. `SO_REUSEADDR` alone won't do:
-  /// it also lets the bind in over another process's `0.0.0.0` or `[::]` listener (measured), whose
-  /// connections to 127.0.0.1 it would then take. So it is used only when nothing answers on the
-  /// port: a listener accepts a connection, and `TIME_WAIT` refuses one.
-  public static func listen(reclaiming port: UInt16) -> (descriptor: Int32, port: UInt16)? {
-    if let made = listen(port: port, reuseAddress: false) { return made }
-    guard errno == EADDRINUSE else { return nil }
-    if let probe = connect(port: port, timeout: 0.5) {
-      close(probe)
-      errno = EADDRINUSE
-      return nil
-    }
-    // Only a refusal says nothing listens; a timeout may be a listener that is just slow.
-    guard errno == ECONNREFUSED else {
-      errno = EADDRINUSE
-      return nil
-    }
-    return listen(port: port, reuseAddress: true)
+  /// `listen(port:)` on `::1` instead (IPv6 only), for a listener that must also answer what a
+  /// browser asking for `localhost` tries first.
+  public static func listenIPv6(port: UInt16) -> (descriptor: Int32, port: UInt16)? {
+    bindListener(port: port, ipv6: true, reuseAddress: false)
   }
 
-  private static func listen(port: UInt16, reuseAddress: Bool) -> (
+  /// `listen(port:)` (or `listenIPv6(port:)`) for a fixed port, which also takes one that only
+  /// finished connections hold. A connection this side closed first sits in `TIME_WAIT` on the port
+  /// for about 30 s, measured, and refuses a plain bind: quitting with a browser's connection open
+  /// through a forward, then relaunching, would otherwise move the forward to another port.
+  /// `SO_REUSEADDR` alone won't do: it also lets the bind in over another process's `0.0.0.0` or
+  /// `[::]` listener (measured), whose connections it would then take. So it is used only when
+  /// nothing answers on the port (`answers`).
+  public static func listen(reclaiming port: UInt16, ipv6: Bool = false) -> (
     descriptor: Int32, port: UInt16
   )? {
-    let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+    if let made = bindListener(port: port, ipv6: ipv6, reuseAddress: false) { return made }
+    guard errno == EADDRINUSE else { return nil }
+    guard !answers(port: port, ipv6: ipv6) else {
+      errno = EADDRINUSE
+      return nil
+    }
+    return bindListener(port: port, ipv6: ipv6, reuseAddress: true)
+  }
+
+  /// Whether something accepts a connection to `port` on 127.0.0.1, or on `::1` with `ipv6`: a
+  /// listener there, whatever address it bound (a v4, v6 or dual-stack wildcard included). Only a
+  /// refusal says nothing listens; connections in `TIME_WAIT` refuse. A loopback connect is answered
+  /// at once, accepted, refused, or reset when the listener's queue is full, which counts as one.
+  public static func answers(port: UInt16, ipv6: Bool) -> Bool {
+    let descriptor = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { return false }
+    defer { close(descriptor) }
+    var noSignal: Int32 = 1
+    setsockopt(
+      descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+    var storage = loopbackAddress(port: port, ipv6: ipv6)
+    let connected = withUnsafePointer(to: &storage) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.connect(descriptor, $0, socklen_t($0.pointee.sa_len)) == 0
+      }
+    }
+    return connected || errno != ECONNREFUSED
+  }
+
+  private static func loopbackAddress(port: UInt16, ipv6: Bool) -> sockaddr_storage {
+    var storage = sockaddr_storage()
+    withUnsafeMutablePointer(to: &storage) { pointer in
+      if ipv6 {
+        pointer.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) {
+          $0.pointee.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+          $0.pointee.sin6_family = sa_family_t(AF_INET6)
+          $0.pointee.sin6_port = port.bigEndian
+          $0.pointee.sin6_addr = in6addr_loopback
+        }
+      } else {
+        pointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+          $0.pointee.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+          $0.pointee.sin_family = sa_family_t(AF_INET)
+          $0.pointee.sin_port = port.bigEndian
+          $0.pointee.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
+        }
+      }
+    }
+    return storage
+  }
+
+  private static func bindListener(port: UInt16, ipv6: Bool, reuseAddress: Bool) -> (
+    descriptor: Int32, port: UInt16
+  )? {
+    let descriptor = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+    var enabled: Int32 = 1
     if reuseAddress {
-      var enabled: Int32 = 1
       setsockopt(
         descriptor, SOL_SOCKET, SO_REUSEADDR, &enabled, socklen_t(MemoryLayout<Int32>.size))
     }
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = port.bigEndian
-    address.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
-    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let bound = withUnsafeMutablePointer(to: &address) {
+    // `::1` only: never a dual-stack socket, which would also take IPv4 traffic.
+    if ipv6 {
+      setsockopt(
+        descriptor, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, socklen_t(MemoryLayout<Int32>.size))
+    }
+    var storage = loopbackAddress(port: port, ipv6: ipv6)
+    var length = socklen_t(storage.ss_len)
+    let bound = withUnsafeMutablePointer(to: &storage) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
         bind(descriptor, $0, length) == 0 && Darwin.listen(descriptor, SOMAXCONN) == 0
           && getsockname(descriptor, $0, &length) == 0
@@ -74,28 +119,10 @@ public enum LoopbackSocket {
       errno = saved
       return nil
     }
-    return (descriptor, UInt16(bigEndian: address.sin_port))
-  }
-
-  /// Whether a listener holds `port` on `::1`. A bind on 127.0.0.1 doesn't see one there (measured:
-  /// it is refused for a v4 or dual-stack listener, and not for a `::1`-only one, which is what
-  /// Node gives a dev server bound to `localhost`), and a browser asking for `localhost` tries
-  /// `::1` first, so it would reach that listener rather than ours.
-  public static func heldOnIPv6Loopback(port: UInt16) -> Bool {
-    let descriptor = socket(AF_INET6, SOCK_STREAM, 0)
-    guard descriptor >= 0 else { return false }
-    defer { close(descriptor) }
-    var address = sockaddr_in6()
-    address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
-    address.sin6_family = sa_family_t(AF_INET6)
-    address.sin6_port = port.bigEndian
-    address.sin6_addr = in6addr_loopback
-    let bound = withUnsafePointer(to: &address) {
-      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-        bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) == 0
-      }
+    let bigEndianPort = withUnsafePointer(to: &storage) {
+      $0.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_port }
     }
-    return !bound && errno == EADDRINUSE
+    return (descriptor, UInt16(bigEndian: bigEndianPort))
   }
 
   /// A blocking TCP connection to `127.0.0.1:<port>`, close-on-exec and `SO_NOSIGPIPE`, or nil
