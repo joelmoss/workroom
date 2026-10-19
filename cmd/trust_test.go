@@ -362,6 +362,28 @@ func TestAnOversizeBaseSetupScriptIsRefusedBeforeAnythingExists(t *testing.T) {
 	}
 }
 
+// Value: protects=--pretend changes no approval: `trust` records none and `untrust` forgets none;
+// fails_when=a dry run approves scripts that then run unasked; why_new=found by Codex on PR
+// #510; seam=none; no_claim=none beyond protects
+func TestTrustAndUntrustChangeNothingWithPretend(t *testing.T) {
+	_, project := trustProject(t, "echo hi\n")
+	if r := runCLI(t, "trust", "--pretend", "--json", "--project", project); r.code != 0 {
+		t.Fatalf("trust --pretend: exit %d %s", r.code, r.stdout)
+	}
+	if code, _ := trustStatus(t, project); code != 1 {
+		t.Fatalf("trust --pretend approved the script: status exit %d", code)
+	}
+	if r := runCLI(t, "trust", "--project", project); r.code != 0 {
+		t.Fatal(r.code)
+	}
+	if r := runCLI(t, "untrust", "--pretend", "--project", project); r.code != 0 {
+		t.Fatalf("untrust --pretend: exit %d %s", r.code, r.stdout)
+	}
+	if code, _ := trustStatus(t, project); code != 0 {
+		t.Fatalf("untrust --pretend forgot the approval: status exit %d", code)
+	}
+}
+
 // Value: protects=bytes that change while the terminal prompt is open are not run on the strength
 // of the approval given for what was shown; fails_when=the file is executed by path after
 // recording the digest of the earlier bytes; why_new=found by Codex's adversarial review;
