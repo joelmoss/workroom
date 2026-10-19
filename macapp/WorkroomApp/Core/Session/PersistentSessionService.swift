@@ -534,11 +534,11 @@ final class PersistentSessionService {
     return remote.driver.hostRefusedLastAttach(of: sessionID, on: remote.host)
   }
 
-  /// Whether a remote session's last attach lost its link (ssh's 255), which a pane answers by
-  /// attaching again (#241, #392).
-  func remoteLastAttachLostLink(_ sessionID: UUID) -> Bool {
-    guard let remote = remoteSessions[sessionID] else { return false }
-    return remote.driver.lastAttachLostLink(of: sessionID, on: remote.host)
+  /// How a remote session's last attach ended: a lost link (ssh's 255) is what a pane answers by
+  /// attaching again (#241, #392). `.finished` for a session that is not remote.
+  func remoteLastAttach(_ sessionID: UUID) -> LastAttach {
+    guard let remote = remoteSessions[sessionID] else { return .finished }
+    return remote.driver.lastAttach(of: sessionID, on: remote.host)
   }
 
   /// `pane`, when given, is the pane whose ssh will run the command: it counts as attached to the

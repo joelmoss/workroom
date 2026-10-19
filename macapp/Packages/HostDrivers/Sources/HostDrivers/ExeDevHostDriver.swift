@@ -854,8 +854,8 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     return SSHTransport.refusedLastAttach(of: session, in: hostDirectory(id))
   }
 
-  public func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
-    guard case .remote(let id) = host else { return false }
-    return SSHTransport.lostLinkLastAttach(of: session, in: hostDirectory(id))
+  public func lastAttach(of session: UUID, on host: HostID) -> LastAttach {
+    guard case .remote(let id) = host else { return .finished }
+    return SSHTransport.lastAttach(of: session, in: hostDirectory(id))
   }
 }

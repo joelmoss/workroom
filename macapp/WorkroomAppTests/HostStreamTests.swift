@@ -234,7 +234,7 @@ final class HostStreamTests: XCTestCase {
       encoding: .utf8)
     XCTAssertTrue(log.contains("Connection refused"), log)
     XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
-    XCTAssertTrue(driver.lastAttachLostLink(of: session, on: .remote(id)))
+    XCTAssertEqual(driver.lastAttach(of: session, on: .remote(id)), .lostLink)
   }
 
   // Value: protects=the record a remote pane's reconnect reads ssh's status from; fails_when=the
@@ -249,7 +249,7 @@ final class HostStreamTests: XCTestCase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let session = UUID()
     let log = SSHTransport.attachLog(session, in: directory).path
-    for (code, lostLink) in [(255, true), (3, false)] {
+    for (code, lastAttach) in [(255, LastAttach.lostLink), (3, .finished)] {
       let run = try SessionBackendProbe.run(
         URL(fileURLWithPath: "/bin/sh"),
         arguments: [
@@ -258,8 +258,50 @@ final class HostStreamTests: XCTestCase {
         ], timeout: 15)
       XCTAssertEqual(run.status, Int32(code), run.output)
       XCTAssertEqual(
-        SSHTransport.lostLinkLastAttach(of: session, in: directory), lostLink, "\(code)")
+        SSHTransport.lastAttach(of: session, in: directory), lastAttach, "\(code)")
     }
+  }
+
+  // Value: protects=the record a pane's reconnect reads a Ctrl-C in its first second from;
+  // fails_when=the wrapper leaves the last attach's status in place, or a killed wrapper writes
+  // one; why_new=#507 reads a missing status as the app's reconnect killed before ssh exited;
+  // seam=none
+  /// A Ctrl-C typed while ssh is still connecting kills the wrapper with it, as it kills any ssh,
+  /// and nothing is recorded: not this attach's status, and no longer the last attach's.
+  func testACtrlCWhileConnectingRecordsNoStatus() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let session = UUID()
+    let log = SSHTransport.attachLog(session, in: directory).path
+    try "255\n".write(
+      to: SSHTransport.attachStatus(session, in: directory), atomically: true, encoding: .utf8)
+    let connecting = directory.appendingPathComponent("connecting").path
+    // `script` runs the wrapper on a pty of its own, as a pane does, and copies its input there:
+    // the Ctrl-C reaches the wrapper and its stand-in for a connecting ssh through the line
+    // discipline, as a key typed in the pane does.
+    let attach = Process()
+    attach.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+    attach.arguments = [
+      "-q", "/dev/null", "/bin/sh", "-c", SSHTransport.attachWrapper, "workroom-attach", log,
+      "/bin/sh", "-c", "touch \"$0\"; sleep 10", connecting,
+    ]
+    let input = Pipe()
+    attach.standardInput = input
+    attach.standardOutput = FileHandle.nullDevice
+    try attach.run()
+    defer { if attach.isRunning { attach.terminate() } }
+    let deadline = Date().addingTimeInterval(5)
+    while !FileManager.default.fileExists(atPath: connecting), Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: connecting), "ssh's stand-in never ran")
+    input.fileHandleForWriting.write(Data([0x03]))
+    let exited = Date().addingTimeInterval(5)
+    while attach.isRunning, Date() < exited { Thread.sleep(forTimeInterval: 0.02) }
+    XCTAssertFalse(attach.isRunning, "the Ctrl-C did not end the attach")
+    XCTAssertEqual(SSHTransport.lastAttach(of: session, in: directory), .unrecorded)
   }
 
   // Value: protects=the reason a pane shows when its host refuses for good, which it stops

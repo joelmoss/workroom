@@ -129,9 +129,22 @@ public protocol HostTerminalDriver: HostDriver {
   /// a pane deciding whether to keep trying: a host that is rebooting comes back, one that
   /// answers with another host key does not (#241).
   func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool
-  /// Whether the last attach of `session` ended with ssh's own failure (255), read from what the
-  /// attach wrapper recorded: the pane's exit status is `login`'s, always 0 (#392).
-  func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool
+  /// How the last attach of `session` ended, read from what the attach wrapper recorded: the
+  /// pane's exit status is `login`'s, always 0 (#392). `.finished` on a host with no attach of its
+  /// own.
+  func lastAttach(of session: UUID, on host: HostID) -> LastAttach
+}
+
+/// How a pane's last attach ended, as the attach wrapper recorded ssh's exit status.
+public enum LastAttach: Equatable, Sendable {
+  /// ssh's own failure, 255: the link dropped or never came up, as after laptop sleep, a network
+  /// change or the host restarting.
+  case lostLink
+  /// No status: the wrapper removes the last attach's before ssh starts, so it was killed before
+  /// ssh exited, as by a Ctrl-C typed while ssh was still connecting (#507).
+  case unrecorded
+  /// Any other status: ssh exited on its own, as when the session ended.
+  case finished
 }
 
 extension HostTerminalDriver {
