@@ -149,7 +149,8 @@ public struct ThemeTokens {
     // The traffic-light colours are the theme's own, walked toward fg until each clears 3:1 on every
     // themed surface: as defined, 70 of them across 35 bundled families were under it, mostly
     // yellows on light themes.
-    let statusGrounds = Self.statusGrounds(bg: bgColor, panel: panelColor, fg: fgColor)
+    let statusGrounds = Self.statusGrounds(
+      bg: bgColor, panel: panelColor, fg: fgColor, accent: accentColor)
     func status(_ color: NSColor) -> NSColor {
       Self.legible(color, on: statusGrounds, towards: fgColor)
     }
@@ -263,11 +264,18 @@ public struct ThemeTokens {
   }
 
   /// The themed surfaces a status colour sits on: a sidebar row, the rail, an idle tab and the
-  /// footer (`panel`), a selected row (`surface` over `panel`) and the active tab (`bg`).
-  public static func statusGrounds(bg: NSColor, panel: NSColor, fg: NSColor) -> [NSColor] {
+  /// footer (`panel`), a selected sidebar row (`surface` over `panel`), a selected Changes or
+  /// History row (`rowSelection`, where the change badges are read) and the active tab (`bg`).
+  public static func statusGrounds(bg: NSColor, panel: NSColor, fg: NSColor, accent: NSColor)
+    -> [NSColor]
+  {
     let panel = panel.usingColorSpace(.sRGB) ?? panel
     let fg = fg.usingColorSpace(.sRGB) ?? fg
-    return [panel, panel.blended(withFraction: 0.08, of: fg) ?? panel, bg]
+    let accent = accent.usingColorSpace(.sRGB) ?? accent
+    return [
+      panel, panel.blended(withFraction: 0.08, of: fg) ?? panel,
+      panel.blended(withFraction: 0.22, of: accent) ?? panel, bg,
+    ]
   }
 
   /// `color` blended toward `fg` in 10% steps until it clears 3:1 on every ground. A colour that

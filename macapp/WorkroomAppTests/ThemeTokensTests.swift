@@ -85,13 +85,55 @@ final class ThemeTokensTests: XCTestCase {
     pal[3] = "#d2b67c"
     pal[11] = "#d2b67c"
     let t = ThemeTokens(preview: preview(bg: "#f9f9f9", fg: "#2a2c33", palette: pal))
-    let grounds = ThemeTokens.statusGrounds(bg: t.nsBg, panel: t.nsPanel, fg: t.nsFg)
+    let grounds = ThemeTokens.statusGrounds(
+      bg: t.nsBg, panel: t.nsPanel, fg: t.nsFg, accent: t.nsAccent)
     for color in [t.nsWarning, t.nsSuccess, t.nsFailure, t.nsConflict] {
       for ground in grounds {
         XCTAssertGreaterThanOrEqual(ThemeTokens.contrastRatio(color, ground), 3 - 0.01)
       }
     }
     XCTAssertNotEqual(rgb(t.warning).0, ns("#d2b67c").usingColorSpace(.sRGB)!.redComponent)
+  }
+
+  // Value: protects=a warning slot is accepted only for orange..yellow hues (10-70 deg) with
+  // saturation >= 0.25; fails_when=a bound moves (lime or red slips in as the warning, or a real
+  // orange/yellow is rejected for the system fallback); why_new=the existing test pins three whole
+  // colours, not the edges; seam=none; no_claim=says nothing about how the chosen slot is then
+  // made legible.
+  func testIsWarningHueBounds() {
+    func c(_ hueDegrees: CGFloat, _ saturation: CGFloat = 0.8) -> NSColor {
+      return NSColor(hue: hueDegrees / 360, saturation: saturation, brightness: 0.9, alpha: 1)
+    }
+    XCTAssertTrue(ThemeTokens.isWarningHue(c(11)))
+    XCTAssertTrue(ThemeTokens.isWarningHue(c(69)))
+    XCTAssertFalse(ThemeTokens.isWarningHue(c(5)), "red")
+    XCTAssertFalse(ThemeTokens.isWarningHue(c(75)), "lime")
+    XCTAssertTrue(ThemeTokens.isWarningHue(c(45, 0.26)))
+    XCTAssertFalse(ThemeTokens.isWarningHue(c(45, 0.24)), "washed-out grey")
+  }
+
+  // Value: protects=legible leaves an already-readable colour untouched, walks a faint one toward
+  // fg until it clears 3:1 on EVERY ground, and stops when fg itself is the limit; fails_when=only
+  // the first ground is checked, a passing colour is altered, or the loop no longer terminates;
+  // why_new=the sweep tests only assert the end result for bundled themes; seam=none; no_claim=the
+  // dynamic-colour early return (DesignSystemTests' system-green fallback pins that).
+  func testLegibleReturnsPassingColourUnchangedAndWalksFaintOnes() {
+    let white = NSColor.white
+    let black = NSColor.black
+    let pass = ns("#333333")
+    XCTAssertEqual(ThemeTokens.legible(pass, on: [white], towards: black), pass)
+
+    let faint = ns("#d2b67c")
+    let grounds = [white, ns("#eeeeee")]
+    let walked = ThemeTokens.legible(faint, on: grounds, towards: black)
+    XCTAssertNotEqual(walked, faint)
+    for ground in grounds {
+      XCTAssertGreaterThanOrEqual(ThemeTokens.contrastRatio(walked, ground), 3 - 0.01)
+    }
+
+    // Unreachable (fg is the same as the ground): terminates, having walked all the way to fg.
+    let stuck = ThemeTokens.legible(faint, on: [white], towards: white)
+    XCTAssertEqual(stuck.usingColorSpace(.sRGB)!.redComponent, 1, accuracy: 0.01)
   }
 
   func testColorSchemeFromBackgroundLuminance() {
