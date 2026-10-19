@@ -2596,7 +2596,10 @@ final class AppStore: ObservableObject {
   /// or this Mac has not approved it. A failure elsewhere (git, config) would fail the same way
   /// without the script.
   nonisolated static func isTeardownFailure(_ error: Error) -> Bool {
-    if case WorkroomCLIError.cli(let kind, _) = error { return kind == "TeardownScriptFailed" }
+    // ScriptNotTrusted without its script: one Workroom won't read (a device, over 1 MiB).
+    if case WorkroomCLIError.cli(let kind, _) = error {
+      return kind == "TeardownScriptFailed" || kind == "ScriptNotTrusted"
+    }
     if case WorkroomCLIError.timedOut = error { return true }
     if case RemoteWorkrooms.Failure.teardownScriptFailed = error { return true }
     return untrustedTeardown(error) != nil

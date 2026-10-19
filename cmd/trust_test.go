@@ -346,6 +346,22 @@ func TestADeviceScriptIsRefusedUnread(t *testing.T) {
 	}
 }
 
+// Value: protects=a committed setup script larger than a script may be is refused before anything
+// exists, as the check before it runs would refuse it after; fails_when=the early check approves
+// it and the create fails with its workroom (or a paid host) made; why_new=found by Codex and the
+// delta review; seam=none; no_claim=none beyond protects
+func TestAnOversizeBaseSetupScriptIsRefusedBeforeAnythingExists(t *testing.T) {
+	home, project := trustProject(t, "echo hi\n")
+	commitScript(t, project, "workroom_setup", strings.Repeat("#", 1<<20)+"\n")
+	r := runCLI(t, "create", "--json", "--no-editor", "--project", project)
+	if r.code != 3 || !strings.Contains(string(r.stdout), "larger than") {
+		t.Fatalf("exit %d %.300s", r.code, r.stdout)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(home, "workrooms")); len(entries) != 0 {
+		t.Fatalf("workrooms dir has %v", entries)
+	}
+}
+
 // Value: protects=bytes that change while the terminal prompt is open are not run on the strength
 // of the approval given for what was shown; fails_when=the file is executed by path after
 // recording the digest of the earlier bytes; why_new=found by Codex's adversarial review;
