@@ -6,6 +6,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/joelmoss/workroom/internal/ui"
 	"github.com/joelmoss/workroom/internal/workroom"
@@ -59,7 +61,15 @@ var trustCmd = &cobra.Command{
 					continue
 				}
 			}
-			if err := svc.Trust(dir, sc); err != nil {
+			record := svc.Trust
+			if trustStdin != "" {
+				// The app hands over bytes for a project it has registered; one gone meanwhile is
+				// refused rather than registered again.
+				record = func(dir string, sc workroom.Script) error {
+					return svc.Config.SetTrustedScript(dir, sc.Name, sc.SHA256)
+				}
+			}
+			if err := record(dir, sc); err != nil {
 				return err
 			}
 			scripts[i].Trusted = true
@@ -126,7 +136,7 @@ var untrustCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		dir, err := resolveProject(trustProjectDir)
+		dir, err := trustedProject(svc)
 		if err != nil {
 			return err
 		}
@@ -148,7 +158,7 @@ func judgedScripts() (*workroom.Service, string, []workroom.Script, error) {
 	if err != nil {
 		return nil, "", nil, err
 	}
-	dir, err := resolveProject(trustProjectDir)
+	dir, err := trustedProject(svc)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -165,6 +175,20 @@ func judgedScripts() (*workroom.Service, string, []workroom.Script, error) {
 	}
 	sc, err := svc.JudgeScript(dir, trustStdin, workroom.OriginStdin, "", text)
 	return svc, dir, []workroom.Script{sc}, err
+}
+
+// trustedProject is the project the trust commands act on: --project or the current directory,
+// or, inside one of its workrooms (where every terminal pane opens), that workroom's project.
+// Approvals are the project's, so a workroom's path must never take them.
+func trustedProject(svc *workroom.Service) (string, error) {
+	dir, err := resolveProject(trustProjectDir)
+	if err != nil {
+		return "", err
+	}
+	if project, _, found := svc.Config.FindCurrentProject(dir); found {
+		return project, nil
+	}
+	return dir, nil
 }
 
 // absentScripts says which of the project's scripts it has none of, unless --stdin named one.
@@ -206,7 +230,30 @@ func init() {
 func approveScript(out io.Writer, sc workroom.Script) (bool, error) {
 	fmt.Fprintln(out, ui.Yellow(fmt.Sprintf("scripts/%s %s has not been approved on this Mac.", sc.Name, sc.OriginLabel())))
 	panel := ui.NewLogPanel(out, "scripts/"+sc.Name)
-	_, _ = panel.Write(sc.Text)
+	_, _ = io.WriteString(panel, visibleText(sc.Text))
 	panel.Close(true)
 	return askConfirm(fmt.Sprintf("Approve scripts/%s and run it?", sc.Name))
+}
+
+// visibleText is text as a person must read it before approving it: every character the terminal
+// would act on or hide (escape sequences, a carriage return that overwrites a line, bidi overrides,
+// zero-width characters, bytes that are not UTF-8) is written out as an escape, so the script
+// cannot show one thing and run another. Newlines and tabs stay.
+func visibleText(text []byte) string {
+	var b strings.Builder
+	for len(text) > 0 {
+		r, size := utf8.DecodeRune(text)
+		switch {
+		case r == utf8.RuneError && size <= 1:
+			fmt.Fprintf(&b, `\x%02x`, text[0])
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			fmt.Fprintf(&b, `\u{%04x}`, r)
+		default:
+			b.WriteRune(r)
+		}
+		text = text[size:]
+	}
+	return b.String()
 }

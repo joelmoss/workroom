@@ -2570,7 +2570,7 @@ final class AppStore: ObservableObject {
     guard let script = Self.untrustedTeardown(error) else { return }
     // The script never ran, so it printed nothing: its text is what to read before approving it.
     errorTitle = "Approve the teardown script of ‘\(workroom.name)’?"
-    errorLog = script.text
+    errorLog = script.visibleText
     let cli = self.cli
     errorApproval = ErrorAction(label: "Approve and Run") { [weak self] in
       Task {

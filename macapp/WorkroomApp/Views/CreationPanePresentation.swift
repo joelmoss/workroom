@@ -171,7 +171,7 @@ enum CreationPanePresentation {
       Footer(
         reason: "scripts/\(script.name) \(script.originLabel) is new, or changed since it was "
           + "approved on this Mac. Read it, then approve it to run it.",
-        primary: .approveScript, secondary: .cancel, script: script.text)
+        primary: .approveScript, secondary: .cancel, script: script.visibleText)
     }
   }
 

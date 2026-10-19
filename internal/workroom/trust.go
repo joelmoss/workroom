@@ -125,6 +125,11 @@ func (s *Service) foundScript(dir, name, wrPath, path string) (Script, bool, err
 // has one.
 func (s *Service) SetupScriptAt(dir, start string) (Script, bool, error) {
 	text, ok, err := vcs.FileAt(dir, start, "scripts/"+SetupScript)
+	if errors.Is(err, vcs.ErrLinkOutside) {
+		// Its bytes can't be known until the checkout exists: the check just before it runs judges
+		// them.
+		return Script{}, false, nil
+	}
 	if err != nil {
 		return Script{}, false, fmt.Errorf("%w: %v", ErrVCSCommand, err)
 	}
