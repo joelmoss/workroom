@@ -126,8 +126,8 @@ class ProviderParityTestCase: XCTestCase {
     func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
       driver.hostRefusedLastAttach(of: session, on: host)
     }
-    func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
-      driver.lastAttachLostLink(of: session, on: host)
+    func lastAttach(of session: UUID, on host: HostID) -> LastAttach {
+      driver.lastAttach(of: session, on: host)
     }
 
     func create() async throws -> HostID {

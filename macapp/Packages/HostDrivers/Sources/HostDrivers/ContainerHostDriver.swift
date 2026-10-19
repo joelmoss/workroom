@@ -787,9 +787,9 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
       of: session, in: directory.appendingPathComponent(id.uuidString))
   }
 
-  public func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
-    guard case .remote(let id) = host else { return false }
-    return SSHTransport.lostLinkLastAttach(
+  public func lastAttach(of session: UUID, on host: HostID) -> LastAttach {
+    guard case .remote(let id) = host else { return .finished }
+    return SSHTransport.lastAttach(
       of: session, in: directory.appendingPathComponent(id.uuidString))
   }
 }

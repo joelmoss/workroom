@@ -164,11 +164,13 @@ public enum SSHTransport {
     hostDirectory.appendingPathComponent("attach-\(session.uuidString).status")
   }
 
-  /// Whether the last attach of `session` ended with ssh's own failure, 255: the link dropped or
-  /// never came up, as after laptop sleep, a network change or the host restarting.
-  public static func lostLinkLastAttach(of session: UUID, in hostDirectory: URL) -> Bool {
-    (try? String(contentsOf: attachStatus(session, in: hostDirectory), encoding: .utf8))?
-      .trimmingCharacters(in: .whitespacesAndNewlines) == "255"
+  /// How the last attach of `session` ended, from the status the attach wrapper recorded.
+  public static func lastAttach(of session: UUID, in hostDirectory: URL) -> LastAttach {
+    guard
+      let status = try? String(
+        contentsOf: attachStatus(session, in: hostDirectory), encoding: .utf8)
+    else { return .unrecorded }
+    return status.trimmingCharacters(in: .whitespacesAndNewlines) == "255" ? .lostLink : .finished
   }
 
   /// Whether the last attach of `session`, whose log is in `hostDirectory`, was refused.

@@ -537,11 +537,17 @@ final class GhosttySurfaceView: NSView {
   /// never connected (opened offline, or before the bootstrap installed the agent) has no session
   /// on the host yet: reattaching it with `--no-create` would show it ended instead of creating
   /// it. Up means longer than the backoff's ceiling, which already reads that as a link that was up.
+  ///
+  /// An attach that recorded no status was killed before ssh exited, as by a Ctrl-C typed while
+  /// ssh was still connecting. Ctrl-C does there what it does to any ssh. On the app's own
+  /// reconnect of a link that was up, the pane keeps trying, since what the user meant to stop was
+  /// most likely the program they had been typing to (#507). Any other attach stays stopped.
   private func reconnectIfTheLinkDropped() {
     let attachedFor = Date().timeIntervalSince(lastAttachAt)
     guard let session = persistentSessionID, !isTornDown,
       PersistentSessionService.shared.isRemote(session),
-      PersistentSessionService.shared.remoteLastAttachLostLink(session),
+      case let ended = PersistentSessionService.shared.remoteLastAttach(session),
+      ended == .lostLink || (ended == .unrecorded && reconnectingALinkThatWasUp),
       let delay = remoteReconnects.next(
         attachedFor: attachedFor,
         refused: PersistentSessionService.shared.remoteHostRefusedLastAttach(session))
@@ -549,8 +555,11 @@ final class GhosttySurfaceView: NSView {
     let wasUp = linkWasUp
     let reconnect = DispatchWorkItem { [weak self] in
       guard let self, !self.isTornDown, self.persistentSessionID == session else { return }
-      if wasUp { self.persistentSessionIsRestored = true }
-      self.reattachPersistentSession()
+      if wasUp {
+        self.persistentSessionIsRestored = true
+        self.reconnectingALinkThatWasUp = true
+      }
+      self.reattachPersistentSession(reconnecting: true)
     }
     pendingReconnect = reconnect
     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: reconnect)
@@ -575,12 +584,18 @@ final class GhosttySurfaceView: NSView {
       staleHosts.contains(host)
     else { return }
     remoteReconnects = RemoteReconnectBackoff()
-    if linkWasUp { persistentSessionIsRestored = true }
-    reattachPersistentSession()
+    if linkWasUp {
+      persistentSessionIsRestored = true
+      reconnectingALinkThatWasUp = true
+    }
+    reattachPersistentSession(reconnecting: true)
   }
 
-  func reattachPersistentSession() {
+  /// `reconnecting`: the app's own reconnect, which keeps `reconnectingALinkThatWasUp`; any other
+  /// attach clears it.
+  func reattachPersistentSession(reconnecting: Bool = false) {
     guard persistentSessionID != nil, !isTornDown else { return }
+    if !reconnecting { reconnectingALinkThatWasUp = false }
     pendingReconnect?.cancel()
     pendingReconnect = nil
     lastAttachAt = Date()
@@ -1021,6 +1036,9 @@ final class GhosttySurfaceView: NSView {
   private var linkWasUp: Bool {
     Date().timeIntervalSince(lastAttachAt) > RemoteReconnectBackoff.ceiling
   }
+  /// Whether the current attach is the app's own reconnect of a link that was up, including its
+  /// retries, so one killed before ssh exits keeps trying (#507).
+  private var reconnectingALinkThatWasUp = false
   /// The reconnect waiting out its delay, cancelled by any other reattach so the pane does not
   /// attach twice, and by closing the pane.
   private(set) var pendingReconnect: DispatchWorkItem?

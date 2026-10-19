@@ -334,6 +334,7 @@ final class RemotePaneReconnectTests: XCTestCase {
         ], directory: directory)
     let hostDirectory = directory.appendingPathComponent(host.uuidString)
     try FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)
+    statusFiles[session] = SSHTransport.attachStatus(session, in: hostDirectory)
     try log.write(
       to: SSHTransport.attachLog(session, in: hostDirectory), atomically: true,
       encoding: .utf8)
@@ -352,6 +353,67 @@ final class RemotePaneReconnectTests: XCTestCase {
 
   private func spin(_ seconds: TimeInterval) {
     RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+  }
+
+  /// Each `remotePane`'s record of ssh's status, by session.
+  private var statusFiles: [UUID: URL] = [:]
+
+  /// The pane's attach ends with no status recorded: its wrapper removed the last one and was
+  /// killed before ssh exited, as by a Ctrl-C typed while ssh was still connecting (#507).
+  private func exitBeforeSshRecords(_ view: GhosttySurfaceView) throws {
+    let status = try XCTUnwrap(statusFiles[XCTUnwrap(view.persistentSessionID)])
+    try? FileManager.default.removeItem(at: status)
+    view.handleChildExited(exitCode: 0)
+  }
+
+  // Value: protects=a remote pane the app is reconnecting coming back after a Ctrl-C lands in the
+  // second before its ssh connects; fails_when=a missing status on the app's own reconnect reads
+  // as a finished attach again; why_new=#507, which #506's reattach on wake made easy to hit;
+  // seam=none
+  /// A Ctrl-C typed while the app's own reconnect is still connecting kills it, as it would kill
+  /// any ssh, before the wrapper records a status (#507). The pane reads that as the lost link it
+  /// was reconnecting and keeps trying, again and again if the next attempts are killed too, after
+  /// a backoff or a network change alike.
+  func testAReconnectKilledBeforeSshConnectsKeepsTrying() throws {
+    let view = try remotePane(log: "", status: "255\n")
+    view.handleChildExited(exitCode: 0)
+    try XCTUnwrap(view.pendingReconnect).perform()
+    for attempt in 1...2 {
+      try exitBeforeSshRecords(view)
+      let retry = try XCTUnwrap(view.pendingReconnect, "attempt \(attempt) was left stopped")
+      retry.perform()
+    }
+    XCTAssertTrue(view.persistentSessionIsRestored)
+    // A status the reconnect did record is its answer: a session that ended there stays ended.
+    try "0\n".write(
+      to: XCTUnwrap(statusFiles[XCTUnwrap(view.persistentSessionID)]), atomically: true,
+      encoding: .utf8)
+    view.handleChildExited(exitCode: 0)
+    XCTAssertNil(view.pendingReconnect, "a reconnect that ended its session was tried again")
+
+    let live = try remotePane(log: "", provider: true)
+    live.liveProcessOverrideForTesting = true
+    let host = try XCTUnwrap(
+      PersistentSessionService.shared.remoteHost(of: XCTUnwrap(live.persistentSessionID)))
+    postLinksStale([host])
+    XCTAssertTrue(live.persistentSessionIsRestored, "the network change did not reattach")
+    try exitBeforeSshRecords(live)
+    XCTAssertNotNil(live.pendingReconnect, "a reattach after a network change was left stopped")
+  }
+
+  // Value: protects=Ctrl-C stopping an attach the user started, as it stops any ssh;
+  // fails_when=every missing status reads as a lost link, or the app's reconnect outlives an
+  // attach the user chose; why_new=#507 reads a missing status as lost only on the app's own
+  // reconnect; seam=none
+  /// An attach the user chose (from the detached-sessions list) that a Ctrl-C kills stays stopped,
+  /// even on a pane the app was reconnecting a moment before.
+  func testAnAttachTheUserChoseStaysStoppedWhenKilled() throws {
+    let view = try remotePane(log: "", status: "255\n")
+    view.handleChildExited(exitCode: 0)
+    try XCTUnwrap(view.pendingReconnect).perform()
+    view.reattachPersistentSession()
+    try exitBeforeSshRecords(view)
+    XCTAssertNil(view.pendingReconnect)
   }
 
   // Value: protects=a remote pane reattaching after its host restarts; fails_when=the reconnect is
