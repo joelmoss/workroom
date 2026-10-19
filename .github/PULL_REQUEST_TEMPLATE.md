@@ -25,4 +25,5 @@
 
 - [ ] The `--json` contract has no breaking change, or `schema_version` in `cmd/json.go` is bumped.
 - [ ] Tests cover the changed behavior and any regression it fixes.
+- [ ] `docs-site/` is updated for any change users see, or none is needed.
 - [ ] The title follows the repo's commit style, such as `fix(macapp): …`, `refactor(macapp): …` or `docs(…): …`.

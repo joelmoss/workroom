@@ -8,6 +8,8 @@ notes** — replace GoReleaser's raw commit list with a succinct, themed summary
 `v2.0.0-beta.1` (a headline, a one-line framing, and grouped bullets). The commit list is what
 the git log is for.
 
+**After a stable release, clear its Nightly badges in the docs.** `docs-site/` marks features no stable release has yet: `nightly: true` in a page's front matter, ` {nightly}` at the end of a heading, and `cliNightly` in `cmd/docs_test.go` for CLI pages (format: `docs-site/README.md`). For each feature the new stable tag includes, remove its marker, run `make docs-cli` and `make docs-check`, and open a docs PR. Leave the markers on features still only on master.
+
 **Never hard-wrap paragraph or bullet text at a fixed column.** Write each paragraph and each
 bullet as one unbroken line, however long. The in-app "What's New" viewer renders a literal `\n`
 as a line break instead of reflowing it, so a source line wrapped at ~90 cols shows up as a
