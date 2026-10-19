@@ -35,7 +35,7 @@ final class ActivitySectionTests: XCTestCase {
   }
 
   func testAllCasesOrderMatchesBarOrder() {
-    XCTAssertEqual(ActivitySection.allCases, [.changes, .files])
+    XCTAssertEqual(ActivitySection.allCases, [.details, .changes, .files])
   }
 
   func testEveryCaseHasNonEmptyLabelSystemImageAndShortcut() {
@@ -48,14 +48,11 @@ final class ActivitySectionTests: XCTestCase {
 
   /// The pane composition: Changes stacks Changes + History + Pull Request, in that display order
   /// (History sits between the two — the whole point of it no longer being a bar section of its own);
-  /// Files is solo. Every listed sub-section must be non-empty (a pane with no sub-sections would
-  /// render blank).
+  /// Files is solo. Details has none: `RightInspector` draws it whole, with no section header.
   func testSubSectionsMapping() {
     XCTAssertEqual(ActivitySection.changes.subSections, [.changes, .history, .pullRequest])
     XCTAssertEqual(ActivitySection.files.subSections, [.files])
-    for section in ActivitySection.allCases {
-      XCTAssertFalse(section.subSections.isEmpty, "\(section) pane has no sub-sections")
-    }
+    XCTAssertEqual(ActivitySection.details.subSections, [])
   }
 
   /// History is not a bar section any more — a `Defaults` value left behind by a build where it was

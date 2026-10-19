@@ -237,11 +237,12 @@ private struct WorkroomPaneLeaf: View {
     // 0.10 over a `panel` that is itself only 5.5% off the theme background moves luminance by a
     // couple of percent, which was too faint to pick the focused member out of a split at a glance.
     //
-    // The fill/shadow read `highlighted`, NOT `focused`: the accent means "this member, not that
-    // one", so a solo pane — always the focused one, since the no-split layout is `.leaf(selected)` —
-    // wears the neutral resting card instead. The fill layer stays unconditionally MOUNTED (only its
-    // value swaps); the treatment, not the mounting, is what's split-only.
-    .background(WorkroomPaneCardBackground(highlighted: highlighted))
+    // The fill reads `focused`: the accent marks the selected workroom wherever it shows (its project
+    // sidebar row and the right sidebar's header wear the same fill), so a solo pane, always the
+    // focused one since the no-split layout is `.leaf(selected)`, wears it too, and in a split only
+    // the focused member does. The shadow still reads `highlighted`, a split-only "this member, not
+    // that one" cue. The fill layer stays unconditionally MOUNTED (only its value swaps).
+    .background(WorkroomPaneCardBackground(highlighted: focused))
     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     // Mounted AFTER the clip (so the frame isn't clipped away) and BEFORE the shadow: `strokeBorder`
     // insets by half its width, so the stroke sits inside the card and the shadow's silhouette — and
@@ -378,8 +379,10 @@ private struct WorkroomPaneLeaf: View {
 /// and as a child it absorbs those activation re-renders itself, keeping them off `WorkroomPaneLeaf`
 /// and the libghostty surface it hosts.
 ///
-/// Takes `highlighted`, not `focused` — see `WorkroomPaneCardBorder.isHighlighted`.
-private struct WorkroomPaneCardBackground: View {
+/// The card passes `focused`, so the selected workroom's pane is accented, solo or split.
+/// Highlighted, it also marks the selected workroom elsewhere: the right sidebar's header
+/// (`InspectorWorkroomHeader`) and the project sidebar's selected row.
+struct WorkroomPaneCardBackground: View {
   let highlighted: Bool
   @Environment(\.controlActiveState) private var activeState
   private let theme = ThemeService.shared

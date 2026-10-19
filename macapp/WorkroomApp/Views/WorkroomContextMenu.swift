@@ -134,27 +134,42 @@ func workroomContextMenu(
     {
       Divider()
     }
-    Button {
-      store.pendingWorkroomLabel = PendingWorkroomLabel(
-        workroom: pair.workroom, project: pair.project)
-    } label: {
-      Label(pair.workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
-    }
-    if pair.workroom.label != nil {
-      Button {
-        store.removeWorkroomLabel(pair.workroom, in: pair.project)
-      } label: {
-        Label("Remove Label", systemImage: "pencil.slash")
-      }
-    }
+    workroomLabelMenuItems(store: store, workroom: pair.workroom, project: pair.project)
     Divider()
-    Button(role: .destructive) {
-      store.pendingDeletion = PendingWorkroomDeletion(
-        workroom: pair.workroom, project: pair.project)
-    } label: {
-      Label("Delete Workroom…", systemImage: "trash")
-    }
-    // Can't delete a workroom while its setup is still running against the worktree (issue #116).
-    .disabled(store.isCreatingWorkroom(pair.workroom, in: pair.project))
+    deleteWorkroomMenuItem(store: store, workroom: pair.workroom, project: pair.project)
   }
+}
+
+/// "Set Label…" ("Edit Label…" once it has one) and, when labelled, "Remove Label" (issue #41). A
+/// label is a display-only alias: the workroom name and its branch are unchanged. Shared by every
+/// workroom menu.
+@MainActor
+@ViewBuilder
+func workroomLabelMenuItems(store: AppStore, workroom: Workroom, project: Project) -> some View {
+  Button {
+    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
+  } label: {
+    Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
+  }
+  if workroom.label != nil {
+    Button {
+      store.removeWorkroomLabel(workroom, in: project)
+    } label: {
+      Label("Remove Label", systemImage: "pencil.slash")
+    }
+  }
+}
+
+/// Delete, through `RootView`'s confirmation, so its title ends in an ellipsis: Apple's convention for
+/// a command that asks something before it acts. Shared by every workroom menu.
+@MainActor
+@ViewBuilder
+func deleteWorkroomMenuItem(store: AppStore, workroom: Workroom, project: Project) -> some View {
+  Button(role: .destructive) {
+    store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+  } label: {
+    Label("Delete Workroom…", systemImage: "trash")
+  }
+  // Can't delete a workroom while its setup is still running against the worktree (issue #116).
+  .disabled(store.isCreatingWorkroom(workroom, in: project))
 }

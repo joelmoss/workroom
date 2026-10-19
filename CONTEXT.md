@@ -113,7 +113,7 @@ The GitHub access a remote provider gives its own hosts (boxd's git integration,
 How a local container workroom's git asks this Mac's own `gh` for GitHub credentials, over the app's connection.
 
 **Port forward**:
-A loopback port on a host made reachable on this Mac for as long as the app is attached.
+A loopback port on a container workroom's host made reachable on this Mac for as long as the app is attached: the ports its `devcontainer.json` declares, and any the user adds. boxd and exe.dev publish ports themselves, so their workrooms have none.
 
 ## Agent connection
 

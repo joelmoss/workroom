@@ -530,38 +530,9 @@ struct ProjectSidebar: View {
           if canOpenInSplit(store: store, sid: id) || showsMoveToNewWindow(store: store, sid: id) {
             Divider()
           }
-          // To find its machine in the provider's dashboard.
-          if let machine = workroom.host?.machineName {
-            Button {
-              NSPasteboard.general.clearContents()
-              NSPasteboard.general.setString(machine, forType: .string)
-            } label: {
-              Label("Copy Machine Name", systemImage: "doc.on.doc")
-            }
-            Divider()
-          }
-          // Set/edit the display label, and remove it when one is set (issue #41). A label is a
-          // display-only alias — the workroom name and its branch are unchanged.
-          Button {
-            store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
-          } label: {
-            Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
-          }
-          if workroom.label != nil {
-            Button {
-              store.removeWorkroomLabel(workroom, in: project)
-            } label: {
-              Label("Remove Label", systemImage: "pencil.slash")
-            }
-          }
+          workroomLabelMenuItems(store: store, workroom: workroom, project: project)
           Divider()
-          Button(role: .destructive) {
-            store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
-          } label: {
-            Label("Delete \(workroom.displayName)", systemImage: "trash")
-          }
-          // Can't delete a workroom while its setup is still running against the worktree (issue #116).
-          .disabled(store.isCreatingWorkroom(workroom, in: project))
+          deleteWorkroomMenuItem(store: store, workroom: workroom, project: project)
         }
       }
   }
@@ -764,12 +735,20 @@ struct ProjectSidebar: View {
   }
 
   /// Row highlight drawn at the row-background level so hover and selection share the
-  /// same (smaller, inset) geometry. Selected rows get a stronger fill; hovered rows a
-  /// subtle one. Drawn ourselves so we control the size rather than the full-row system
-  /// selection highlight.
+  /// same (smaller, inset) geometry. The selected row wears the focused workroom card's fill, as
+  /// the right sidebar's header does (`InspectorWorkroomHeader`), so the row, the pane and the
+  /// header read as one workroom; hovered rows a subtle one. Drawn ourselves so we control the size
+  /// rather than the full-row system selection highlight.
   @ViewBuilder
   private func rowHighlight(_ id: SidebarID, selected: Bool) -> some View {
-    RowHighlight(selected: selected, hovered: hovered == id, horizontalPadding: 8)
+    if selected {
+      WorkroomPaneCardBackground(highlighted: true)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 1)
+    } else {
+      RowHighlight(selected: false, hovered: hovered == id, horizontalPadding: 8)
+    }
   }
 
   /// Row highlight for a terminal row (issue #30) — same geometry as `rowHighlight` but keyed on the
@@ -1030,8 +1009,10 @@ private struct DeleteRowButton: View {
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help("Delete \(name)")
-    .accessibilityLabel("Delete \(name)")
+    // An ellipsis, as it asks before it deletes (`RootView`'s confirmation). The tooltip matches the
+    // menus' item; VoiceOver keeps the name, as it reads the button away from its row.
+    .help("Delete Workroom…")
+    .accessibilityLabel("Delete \(name)…")
     .opacity(visible ? 1 : 0)
     .allowsHitTesting(visible)
   }

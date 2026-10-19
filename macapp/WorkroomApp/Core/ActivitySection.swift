@@ -15,6 +15,9 @@ import Defaults
 enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
   Defaults.PreferRawRepresentable
 {
+  /// The selected workroom's details, not its repository's: where it runs, and its ports. First, as
+  /// the workroom is what the other panes are about.
+  case details
   case changes
   case files
 
@@ -25,6 +28,7 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
     switch self {
     case .changes: return "Changes"
     case .files: return "Files"
+    case .details: return "Details"
     }
   }
 
@@ -33,6 +37,7 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
     switch self {
     case .changes: return "arrow.triangle.branch"
     case .files: return "folder"
+    case .details: return "info.circle"
     }
   }
 
@@ -43,6 +48,9 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
     switch self {
     case .changes: return [.changes, .history, .pullRequest]
     case .files: return [.files]
+    // None: Details is drawn whole, with no section header under the sidebar's own workroom header
+    // (`RightInspector`), so it has no slot in the stored layout either.
+    case .details: return []
     }
   }
 
@@ -51,13 +59,14 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
     switch self {
     case .changes: return "⌥⌘C"
     case .files: return "⌥⌘F"
+    case .details: return "⌥⌘I"
     }
   }
 }
 
 extension InspectorSectionKind {
   /// This sub-section's index in the canonical `allCases` order (changes = 0, files = 1,
-  /// pullRequest = 2, history = 3). The collapse flags + size-weights are stored as full 4-vectors in
+  /// pullRequest = 2, history = 3). The collapse flags + size-weights are stored as full vectors in
   /// that order (`InspectorPaneState`), so a pane slices out — and writes back — the entries for the
   /// sub-sections it actually shows by this index.
   var storeIndex: Int { InspectorSectionKind.allCases.firstIndex(of: self) ?? 0 }
