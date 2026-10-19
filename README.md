@@ -297,6 +297,9 @@ warning. The macOS app shows the warning as a notification on the new workroom. 
 Alias: `workroom c`. Flags: `--project <dir>` (operate on a directory other than the cwd),
 `--no-editor` (suppress the post-create "open in `$EDITOR`?" prompt).
 
+A setup script runs only once this Mac has approved it; a new or changed one is shown first and you
+are asked (see [Approving scripts](#approving-scripts)).
+
 #### Choose the branch new workrooms start from
 
 ```bash
@@ -485,6 +488,7 @@ whose host its provider destroyed gets `HostDestroyed` instead.
 | `RemoteProjectUnsupported` | `add-project` was given a remote path (`host:path`, `ssh://…`) |
 | `RemoteWorkroomUnsupported` | `delete` / `delete-project` on a remote workroom (not yet supported) |
 | `BaseBranchNotFound` | A base branch exists neither on its remote nor locally, or the fetch that checks the remote failed |
+| `ScriptNotTrusted` | A setup or teardown script this Mac has not [approved](#approving-scripts); the envelope's `script` carries its `name`, `origin`, `sha256` and `text` |
 | `InternalError` | Anything else |
 
 #### Exit codes
@@ -510,6 +514,42 @@ operations — the app drives the same engine, so the same hooks work no matter 
 They run on every kind of workroom: on this Mac, and on a remote workroom's host (boxd, exe.dev, a
 Docker or Apple container), where they behave the same way except where a section below says
 otherwise.
+
+### Approving scripts
+
+A setup or teardown script is code from the repository, so Workroom runs one only after this Mac has
+approved its **exact contents**. The first create or delete that would run an unapproved script, or
+one that changed since you approved it (by a `git pull`, say), stops before it does anything and
+shows you the script:
+
+- In a terminal, `workroom create` and `workroom delete` print the script and ask. Yes records the
+  approval and carries on; no cancels with nothing made or removed (exit code 4).
+- In the macOS app, the creation pane's "Run setup script" row waits with the script shown and
+  **Approve** / **Cancel**; Approve records it and creates again. A delete's sheet offers **Approve
+  and Run**, **Delete Anyway** and **Cancel**. A remote create checks before any machine is made.
+- Without a terminal, and with `--json`, the command refuses with `ScriptNotTrusted` (exit code 3).
+
+For a create, the setup script judged is the one the new workroom will hold: the base commit's
+`scripts/workroom_setup`, after the fetch, else the root's copy. For a delete, it is the teardown
+script that would run: the workroom's copy, else the root's. The file is hashed again just before it
+runs, so bytes that change in between are refused too.
+
+A root copy that **git ignores** needs no approval: it can't arrive by a pull. An untracked file git
+doesn't ignore still needs one.
+
+Approve ahead of time, or check, from the project's root (or with `--project DIR`):
+
+```bash
+workroom trust          # show each script a create or delete would run next, and approve it
+workroom trust status   # exit 0 when every script is approved or ignored, 1 when one is not,
+                        # 2 when it can't tell (the base branch can't be resolved)
+workroom untrust        # forget this project's approvals
+```
+
+`trust` and `trust status` fetch and resolve the base branch as a create does, so they judge the
+setup script the next create would run. Approvals are kept per project, as a SHA-256 for each script,
+in this Mac's config (`trusted_scripts`); they never leave it. Removing a project from Workroom
+forgets them.
 
 ### Gitignored files (`.worktreeinclude`)
 
@@ -590,8 +630,8 @@ On a remote workroom the teardown runs on its host before the machine is destroy
 delete, including removing its project from Workroom only (which destroys remote machines too). A
 machine a create or an earlier delete left half-made is destroyed without it.
 
-If the teardown fails, can't start, runs out of time, or the remote host can't be reached, the delete
-**stops** and nothing is removed, so you can fix the script and delete again. The macOS app shows why,
+If the teardown fails, can't start, runs out of time, isn't [approved](#approving-scripts) on this
+Mac, or the remote host can't be reached, the delete **stops** and nothing is removed, so you can fix the script and delete again. The macOS app shows why,
 with the script's output, and offers **Delete Anyway**, which deletes without the script; the CLI's
 equivalent is `workroom delete <name> --skip-teardown`. On a project delete the button is **Delete
 Without Teardowns**: it skips every remaining workroom's teardown, not only the one that failed.
@@ -612,8 +652,9 @@ workroom is created or deleted, so a tool you installed a minute ago is already 
 Two things worth knowing:
 
 - **Your environment includes your secrets.** A setup script is code from the repository, and it
-  runs with everything your shell exports. That's the same trust you extend by running the script
-  at all, but it's worth being deliberate about for repositories you haven't read.
+  runs with everything your shell exports. That is why Workroom shows you each script and runs it
+  only once you [approve](#approving-scripts) it: read it before you do, above all in a repository
+  you haven't read.
 - **`WORKROOM_SHELL_PROBE=1`** is set while the app is reading your environment. Guard slow or
   interactive blocks in your `.zshrc` with it if shell startup is expensive:
   ```bash
@@ -725,6 +766,12 @@ one explicitly.
 **Created the workroom but setup failed** — creation isn't transactional, so the workroom exists. Fix
 your `scripts/workroom_setup`, then `workroom delete <name>` and recreate (the CLI exits with code 5
 on setup failure; the app offers to delete the half-created workroom).
+
+**"script is not trusted on this Mac"** — the setup or teardown script is new, or changed since you
+approved it. Read it, then approve it: answer yes when `workroom create` or `delete` asks in a
+terminal, or run `workroom trust` in the project (see [Approving scripts](#approving-scripts)). A
+`--json` or scripted call can't ask, so it exits with code 3. `workroom trust status` exits 2 when
+the base branch can't be resolved; fix the base branch first.
 
 **`workroom update` says it can't update** — you're on a `dev` build (built without version ldflags).
 Install from a release, via `make cli-install` with a tag, or `go install …@latest`.

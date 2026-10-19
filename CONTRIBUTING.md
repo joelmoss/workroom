@@ -280,6 +280,12 @@ renders each `DeleteResult`.
    `log` events for the app's creation checklist. `fetch` owns the start point: it ends `skipped`
    with no remote, `warning` with the warning above, and `failed` when the base is found nowhere;
    `worktree` covers `git worktree add`.
+   Between the two, `vcs.Progress.BeforeWorktree` hands the start point to the **trust check**
+   (#363, ADR 0054): `Service.SetupScriptAt` reads the base commit's `scripts/workroom_setup` with
+   `git cat-file --filters` (else the root's copy) and `gate` lets it through when its SHA-256 is the
+   project's `trusted_scripts` entry, or the root's copy is gitignored. Otherwise `ApproveScriptFn`
+   (a terminal's y/n) is asked, and without one the create ends with `ScriptNotTrusted` (exit 3)
+   before anything exists.
 6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,
    with the VCS type.
 7. **Signal readiness:** fire `OnReady` (the `created` event: the app gives the creation pane it
@@ -288,7 +294,8 @@ renders each `DeleteResult`.
 8. **Run setup:** if `scripts/workroom_setup` exists in the new workroom, else in the root project,
    `script.Run("setup", …)` executes it inside the new workroom with the
    [environment variables](README.md#environment-variables), streaming combined
-   stdout/stderr live, as the `script` step (`skipped` when there is no script).
+   stdout/stderr live, as the `script` step (`skipped` when there is no script). The file is hashed
+   and gated again first, where it is, so bytes that changed since step 5 never run.
 
 Creation is **not transactional**: if setup fails, the workspace and config entry already exist, so
 the returned `CreateResult` is populated even on error — callers can report "created, but setup
@@ -304,6 +311,10 @@ failed" and offer cleanup.
    run it inside the workroom (streaming). A teardown that fails, or can't be started, stops the
    delete there (exit 5, `TeardownScriptFailed`), leaving the workroom and its config entry.
    `--skip-teardown` (`Service.SkipTeardown`, the app's Delete Anyway) skips the script and says so.
+   Before it runs, the file is gated as setup is (#363): an unapproved one stops the delete with
+   nothing removed (`ScriptNotTrusted`, exit 3) unless a terminal approves it. On a remote workroom
+   the app reads the host's copy and asks the CLI to judge it (`trust status --stdin`) before
+   `wr-agent run-script`, for setup and teardown alike.
 4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
    **The branch is intentionally left intact.**
 5. **Update config:** remove the workroom entry. The project stays registered even with no
