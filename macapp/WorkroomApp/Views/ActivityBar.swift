@@ -85,7 +85,7 @@ private struct ActivityBarButton: View {
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: section.systemImage)
+      section.image
         .font(.system(size: 18, weight: .regular))
         .foregroundStyle(active ? theme.tokens.fg : theme.tokens.fgMuted)
         .frame(width: 44, height: 40)

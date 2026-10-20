@@ -1,4 +1,5 @@
 import Defaults
+import SwiftUI
 
 /// A top-level section in the right **activity bar** (the vertical icon rail pinned to the window's
 /// trailing edge). Each case is one large icon; clicking it shows that section's **pane** in the
@@ -32,12 +33,13 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
     }
   }
 
-  /// SF Symbol for the bar icon.
-  var systemImage: String {
+  /// The bar icon: an SF Symbol, except Details, which is about the workroom and so takes the
+  /// Workroom mark. `MenuBarIcon` is that mark drawn for 18pt, the size the symbols are set at.
+  var image: Image {
     switch self {
-    case .changes: return "arrow.triangle.branch"
-    case .files: return "folder"
-    case .details: return "info.circle"
+    case .changes: return Image(systemName: "arrow.triangle.branch")
+    case .files: return Image(systemName: "folder")
+    case .details: return Image("MenuBarIcon")
     }
   }
 

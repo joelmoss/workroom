@@ -12,7 +12,7 @@ Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top
 
 ## What it shows
 
-- **Running on** shows **This Mac**, or the kind of host a remote workroom runs on. A project's root shows a house icon.
+- **Running on** shows **This Mac**, or the kind of host a remote workroom runs on. On boxd or exe.dev, click the provider's name to open the machine's page on its dashboard in your browser.
 - **Machine Name** appears for a remote workroom that has one. Click its copy button to copy it.
 - **Path** is the workroom's folder. For a workroom on a host it reads **Path on its host**, and names the folder on that host. Click the copy button beside it to copy the path.
 

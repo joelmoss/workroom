@@ -21,7 +21,7 @@ The inspector follows the workroom you are in.
 
 ### Workroom header {nightly}
 
-The inspector shows the project and workroom name above its panes. The **Workroom actions** menu beside the name has **Move to New Window**, the label items and **Delete Workroom…**. See [Workrooms](workrooms.md).
+The inspector shows the project and workroom name above its panes, led by the icon the sidebar shows for the workroom, or a house for a project's root. The **Workroom actions** menu beside the name has **Move to New Window**, the label items and **Delete Workroom…**. See [Workrooms](workrooms.md).
 
 ## Changes
 
