@@ -35,16 +35,24 @@ Each is a claim the code supports but can't prove on its own. Look, and fix the 
 
 ### Menus and placement
 
-- The **Update** button and its scrolling note at the trailing end of the title bar (needs a Release or Nightly build that is behind; Debug builds don't check).
+- **Update button (2026-10-20).** No installed build was behind (Nightly 1920 and stable 2.1.0 are both their feeds' latest), so the Dev app was relaunched with `-WorkroomUITestUpdateAvailable 1`, which fakes a 9.9.9 update. The accent **Update** pill sits at the trailing end of the title bar, left of the theme buttons; the note beside it scrolls "Safe to update: workroom terminals keep running. Run commands and the Quick Terminal stop.", as `app/updates-and-channels.md` quotes; its tooltip reads "Update to 9.9.9 — click to install". Still by hand, on the next Nightly that is behind: clicking it opens Sparkle's prompt, and the pill reads **Updating…** while it downloads.
 
 ### Behaviour
 
-- After a failed teardown, "nothing is removed": the row comes back, but the workroom's terminals were already closed before the teardown ran. Check what's left and reword if needed.
+Checked 2026-10-20:
+
+- **Failed teardown.** `deleteWorkroom` stops the run command and reaps the terminals (ending their sessions) before the script runs, so a failed teardown brings the row back with its folder and branch (or its host) but no terminals. `app/workrooms.md` and `remote/overview.md` now say so instead of "nothing is removed". The workroom's label is also dropped by the optimistic removal and not restored; left as is, since the user is deleting it.
+- **⌃⌘-arrows at a split's edge** never reached the program: libghostty's macOS defaults bind ⌃⌘-arrows to `resize_split`, which Workroom ignores (measured with a raw key reader in kitty mode: only the modifier events arrived). Owner chose wrap-around: at the edge, focus moves to the farthest overlapping pane the other way (`PaneTreeLayout.adjacentPane`, with tests, red-proofed). `app/splits-and-windows.md` says so. Seen in the rebuilt Dev app: in a two-pane split, ⌃⌘→ from the right pane focuses the left one, ⌃⌘← from the left focuses the right, and ⌃⌘↑ leaves focus where it is.
+- **Popped-out pane:** moved, quit and relaunched; it reopened at the same place.
+- **Waiting alert:** a 7501 `blocked` report in a background workroom showed "Terminal 9 in emoji needs you" in the app, and the menu bar item counted 1.
+- **Warning triangle:** drawn in the theme's `warning` token (its yellow, else bright yellow, else system yellow), so "yellow" stands.
+
+Still open, by hand:
+
 - The quick switcher while held: the rail after about 250 ms, Tab and the arrows step, Esc cancels, release or click commits. (Synthetic input can't hold <kbd>⌥</kbd> while pressing Tab.)
-- The <kbd>⌥§</kbd> Quick Terminal hotkey. A synthetic <kbd>⌥§</kbd> did nothing, but Workroom Nightly was running too and the key may not exist on the layout used; try it by hand.
-- Dragging tabs to reorder them (a synthetic drag showed the reorder gap but the tab went back on drop; try it by hand before calling it a bug); dragging a sidebar workroom onto a pane edge shows a band and lands on that side; dragging a pane title bar or tab past the window edge makes it a window at the drop point; a popped-out pane reopens in the same place after a relaunch; <kbd>⌃⌘</kbd>-arrows pass through to a TUI at a split's edge.
-- The yellow warning triangle on a project (its colour comes from the theme).
-- The Dock badge, and a real macOS banner and clicking it.
+- The <kbd>⌥§</kbd> Quick Terminal hotkey. A synthetic <kbd>⌥§</kbd> did nothing, but Workroom Nightly was running too and the key may not exist on the layout used.
+- Dragging tabs to reorder them (a synthetic drag showed the reorder gap but the tab went back on drop); dragging a sidebar workroom onto a pane edge shows a band and lands on that side; dragging a pane title bar or tab past the window edge makes it a window at the drop point.
+- The Dock badge (drawn into the tile's view, so `lsappinfo` can't read it), and a real macOS banner and clicking it. The Dock and Notification Centre can't be seen or clicked through computer use.
 
 ### Outside Workroom
 
@@ -61,8 +69,16 @@ Still open:
 
 ### Remote workrooms
 
-- boxd and exe.dev setup sheets: the sheet covers the window while the pane row reads **Waiting for you**; ticks update live as you sign in; **Stop** stops a boxd sign-in; exe.dev's **Choose a Plan** and **Connect GitHub** website flows and **Check Again** picking them up.
-- `ssh exe.dev share port` and whether a shared port is private by default.
-- Containers: a container stops when the Mac sleeps and comes back when you open the workroom; image download progress on **Pull host image**; the failure messages when Docker or Apple's container system is stopped; Docker Desktop, OrbStack and Colima all work.
-- Port forwarding: the same local port number comes back after a relaunch; a browser reaches a real dev server.
-- Reconnecting: <kbd>⌃C</kbd> on a restored pane while the network is off; programs on a boxd or exe.dev host end when the host restarts; panes don't blink on wake when the host answers, and the retry notice looks as the page shows.
+Checked 2026-10-20:
+
+- **Publishing a port.** exe.dev's docs: `ssh exe.dev share port <vm> <port>` changes the port its proxy serves and keeps the visibility, private by default; `share set-public` makes it public. Its proxy also serves ports 3000 to 9999 privately at `https://<vm>.exe.xyz:<port>/` with no command, so `remote/port-forwarding.md` now says so and gives the arguments. boxd's `boxd machine proxy --help` reads "Publish machine ports on the public internet", as the page says.
+- **Runtime stopped.** Apple's `container` 1.5.0 with its service stopped prints "XPC connection error" and `container system start`, which Workroom reads as the runtime being down, so the page's message is right. Docker 29.8.1 prints "failed to connect to the docker API" for a stopped daemon and "permission denied while trying to connect to the docker API" for a socket it can't open. Workroom only knew the older "Docker daemon" wording, so a create with Docker stopped said "couldn't download the workroom host image. Check your network connection", and an unopenable socket said the registry refused the image. Fixed in 117b3b029 (`ContainerHostDriver.runtimeDown`, with `RuntimeDownTests`).
+- **Port numbers after a relaunch.** `AgentPortForwarding` tries the declared number first and only takes another when the Mac holds it, which matches the page. Not seen in the running app.
+- **Sleep.** Dropped (owner, 2026-10-20): the docs no longer say how a container behaves when the Mac sleeps or restarts, only that Workroom creates it, starts it when you open its workroom, and stops and removes it on delete (`ContainerHostDriver` runs `start` and `rm --force`/`delete --force`, never `stop`).
+
+Still open, by hand:
+
+- **Setup sheets.** These need a signed-out boxd or a new exe.dev account. Check that the sheet covers the window while the pane row reads **Waiting for you**, that the ticks update live as you sign in, and that **Stop** stops a boxd sign-in. On exe.dev, check the **Choose a Plan** and **Connect GitHub** flows on the website, and that **Check Again** picks them up.
+- **Container live checks.** Image download progress on **Pull host image** (needs the image removed, which the running container holds). The new Docker message with Docker Desktop really quit. OrbStack and Colima (neither is installed here).
+- **Port forwarding live.** A browser reaches a real dev server in a container workroom, and the same local port comes back after a relaunch.
+- **Reconnecting.** <kbd>⌃C</kbd> on a restored pane while the network is off. Programs on a boxd or exe.dev host end when the host restarts (a paid machine). Panes don't blink on wake when the host answers. The retry notice looks as the page shows.

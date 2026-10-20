@@ -111,7 +111,7 @@ The row leaves the sidebar at once. Workroom runs your project's `scripts/workro
 
 ### When the teardown fails
 
-If the teardown script fails or can't start, the delete stops and nothing is removed. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again. If the script has not been approved on this Mac, the sheet is titled **Approve the teardown script of ‘name’?** instead and shows the script.
+If the teardown script fails or can't start, the delete stops. The workroom comes back in the sidebar with its folder and branch, but its terminals were closed before the script ran, so open new ones if you keep it. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again. If the script has not been approved on this Mac, the sheet is titled **Approve the teardown script of ‘name’?** instead and shows the script.
 
 ### Delete Anyway {nightly}
 

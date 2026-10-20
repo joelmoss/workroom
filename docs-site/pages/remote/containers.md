@@ -47,9 +47,9 @@ Apple's runtime gives each container a VM of its own, and its default is too sma
 - A server you run in the container listens inside it, where your browser cannot reach it. Workroom forwards ports to `localhost` for you. See [Port forwarding](port-forwarding.md).
 - Your setup and teardown scripts run in the container, with `WORKROOM_HOST` set to `docker` or `apple`. See [Remote workrooms](overview.md#setup-and-teardown-scripts).
 
-## When your Mac sleeps
+## Starting and stopping
 
-A container stops when your Mac sleeps or restarts, unlike a cloud host. Workroom starts it again when you open its workroom. With Apple's runtime, every container is stopped after a restart, so each one starts when you open its workroom.
+Workroom creates the container, starts it when you open its workroom and it isn't running, and stops and removes it when you delete the workroom.
 
 Terminals in a container workroom reattach after the container comes back. See [Reconnecting](reconnecting.md).
 
