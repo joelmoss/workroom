@@ -46,14 +46,15 @@ final class MarkdownRenderPipelineTests: XCTestCase {
 
   // MARK: - Helpers
 
-  /// Render `markdown` through the bundled pipeline and return the resulting rendered text.
+  /// Render `markdown` through the bundled pipeline and return the resulting rendered text, once the
+  /// whole document is in the page (a long one opened into an empty page goes in a slice at a time).
   private func renderedText(_ markdown: String) async throws -> String {
-    let json = try XCTUnwrap(String(data: try JSONEncoder().encode(markdown), encoding: .utf8))
-    // Trailing expression on purpose: `__render` returns undefined, and the async
-    // `evaluateJavaScript` throws `javaScriptResultTypeIsUnsupported` on an undefined result.
-    _ = try await webView.evaluateJavaScript("window.__render(\(json)); 'ok'")
-    let text = try await webView.evaluateJavaScript(
-      "document.getElementById('content').textContent")
+    let text = try await webView.callAsyncJavaScript(
+      """
+      window.__render(source);
+      await window.__renderComplete;
+      return document.getElementById('content').textContent;
+      """, arguments: ["source": markdown], contentWorld: .page)
     return try XCTUnwrap(text as? String)
   }
 
@@ -300,6 +301,43 @@ final class MarkdownRenderPipelineTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(100))
     }
     XCTAssertEqual(fill, "rgb(0, 0, 0)")
+  }
+
+  // MARK: - Progressive first render
+
+  /// 400 sections of ~60 characters: well past the first slice.
+  private static let longDocument =
+    (1...400).map { "## Section \($0)\n\nBody text for section \($0), long enough to count.\n" }
+    .joined(separator: "\n")
+
+  // Value: protects=a long file opened into an empty page shows its head at once and still ends up
+  // whole; fails_when=slicing stops (head waits for the whole) or a later slice is lost;
+  // why_new=progressive rendering is new; seam=__renderComplete; no_claim=paint timing.
+  func testALongDocumentOpenedIntoAnEmptyPageArrivesHeadFirstThenWhole() async throws {
+    let counts = try await webView.callAsyncJavaScript(
+      """
+      window.__render(source);
+      const first = document.querySelectorAll('#content h2').length;
+      await window.__renderComplete;
+      return [first, document.querySelectorAll('#content h2').length];
+      """, arguments: ["source": Self.longDocument], contentWorld: .page)
+    let headings = try XCTUnwrap(counts as? [Int])
+    XCTAssertGreaterThan(headings[0], 0, "the head of the document was not put in straight away")
+    XCTAssertLessThan(headings[0], 400, "the long document was not sliced")
+    XCTAssertEqual(headings[1], 400, "a later slice never arrived")
+  }
+
+  // Value: protects=a re-render of an open file replaces it in one go, so the reader's scroll
+  // position never meets a half-built page; fails_when=re-renders slice too; why_new=progressive
+  // rendering is new; seam=none; no_claim=scroll restoration.
+  func testAReRenderReplacesTheDocumentInOneGo() async throws {
+    _ = try await renderedText("# Open file\n")
+    let count = try await webView.callAsyncJavaScript(
+      """
+      window.__render(source);
+      return document.querySelectorAll('#content h2').length;
+      """, arguments: ["source": Self.longDocument], contentWorld: .page)
+    XCTAssertEqual(count as? Int, 400)
   }
 
   // MARK: - Whole-document sanity
