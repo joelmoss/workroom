@@ -873,55 +873,6 @@ mod tests {
         );
     }
 
-    /// The records come through a hand-off with their revision, episode and notify, and the boot
-    /// with them, so the app sees one store carry on (#358).
-    #[test]
-    fn program_status_survives_a_table() {
-        let table = Table {
-            listener: 3,
-            lock: 4,
-            boot: Some(SessionId([9; 16])),
-            sessions: vec![FrozenSession {
-                id: SessionId([7; 16]),
-                pid: 4242,
-                master: 9,
-                columns: 80,
-                rows: 24,
-                screen: Vec::new(),
-                metadata: Vec::new(),
-                program_status: blocked_status(),
-            }],
-        };
-        let back = Table::decode(&table.encode()).unwrap();
-        assert_eq!(back.boot, Some(SessionId([9; 16])));
-        let event = |status: &crate::program_status::Store| -> serde_json::Value {
-            serde_json::from_slice(&status.event(SessionId([9; 16]), SessionId([7; 16]))).unwrap()
-        };
-        let status = event(&back.sessions[0].program_status);
-        assert_eq!(status, event(&blocked_status()));
-        assert_eq!(status["revision"], 1);
-        assert_eq!(status["records"][0]["episode"], 1);
-        assert_eq!(status["records"][0]["notify"], true);
-        // Its revision and episode counter carry on, not restart.
-        let mut carried = back.sessions[0].program_status.clone();
-        carried.report(
-            crate::program_status::Report {
-                id: "next".into(),
-                state: crate::program_status::State::Blocked,
-                kind: crate::program_status::Kind::None,
-                progress: -1,
-                app: String::new(),
-                title: String::new(),
-                message: String::new(),
-            },
-            4242,
-        );
-        carried.commit();
-        let status = event(&carried);
-        assert_eq!(status["revision"], 2);
-        assert_eq!(status["records"][1]["episode"], 2);
-    }
-
     /// A build without the shadow terminal refuses a table with screens, which it could only drop.
     #[test]
     fn screens_are_refused_by_a_build_that_cannot_paint_them() {

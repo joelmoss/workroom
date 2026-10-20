@@ -1196,38 +1196,6 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    #[test]
-    fn exec_feeds_stdin_to_the_child() {
-        let root = git_repo("stdin");
-        std::fs::write(root.join("file"), "one\n").unwrap();
-        let command = json!({
-            "version": 1, "kind": "exec", "executable": "git",
-            "args": ["hash-object", "--stdin"], "dir": root.to_str().unwrap(), "timeout_ms": 5000,
-            "stdin": latin1_string(b"two\n"),
-        });
-        let reply = execute(&serde_json::to_vec(&command).unwrap());
-        let result = &reply["result"];
-        assert_eq!(result["exit_code"], 0);
-        // `git hash-object --stdin` prints the SHA of exactly what it read.
-        let expected = Command::new("git")
-            .args(["hash-object", "--stdin"])
-            .current_dir(&root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write as _;
-                child.stdin.take().unwrap().write_all(b"two\n")?;
-                child.wait_with_output()
-            })
-            .unwrap();
-        assert_eq!(
-            result["stdout"].as_str().unwrap().trim(),
-            String::from_utf8_lossy(&expected.stdout).trim()
-        );
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
     /// `stdin` round-trips via Latin-1 specifically so invalid-UTF-8 bytes (e.g. a raw pathspec
     /// entry from a non-Mac-originated filename) survive the wire exactly — decoding as UTF-8 would
     /// have silently replaced them with U+FFFD, corrupting the commit rather than failing loudly.

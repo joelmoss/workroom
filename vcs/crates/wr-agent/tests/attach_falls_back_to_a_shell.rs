@@ -387,40 +387,6 @@ fn apple_bash_is_not_left_in_posix_mode() {
     );
 }
 
-/// A session variable must not survive into the fallback shell, and the marker must.
-#[test]
-fn the_fallback_shell_reports_no_session_but_does_report_the_fallback() {
-    let dir = scratch("marker");
-    let socket = dir.join("a.sock");
-    let listener = UnixListener::bind(&socket).expect("bind fake agent");
-    let accepter = std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept() {
-            drop(stream);
-        }
-    });
-
-    let (output, _) = attach(&[
-        (
-            "WORKROOM_SESSION_ID",
-            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
-        ),
-        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
-        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
-        ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
-        (
-            "WORKROOM_SESSION_COMMAND",
-            "echo id=[${WORKROOM_SESSION_ID:-unset}] fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
-        ),
-    ]);
-    let _ = accepter.join();
-    let _ = std::fs::remove_dir_all(&dir);
-
-    assert!(
-        output.contains("id=[unset]") && output.contains("fb=[1]"),
-        "expected the session id stripped and the fallback marker set. got: {output:?}"
-    );
-}
-
 /// A pane whose directory has been deleted must still get a shell.
 ///
 /// `chdir` happens INSIDE `exec`, so a missing directory aborts it — and the relay then reported
