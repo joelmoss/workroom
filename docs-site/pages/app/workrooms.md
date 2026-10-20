@@ -40,7 +40,7 @@ Each row shows how long its step took. Click a row, or press <kbd>Space</kbd> on
 
 When every step is done, click **Done** to open the terminal. Turn on **Close automatically when done** at the bottom left of the pane, and the pane closes itself a few seconds after the workroom is ready. The same switch is in **Settings ▸ General** as **Close the checklist automatically when done**.
 
-If a step fails, the pane shows the reason and two buttons:
+If a step fails, the pane shows the reason under that step's row, with two buttons below it:
 
 | Failure | Buttons |
 | --- | --- |
