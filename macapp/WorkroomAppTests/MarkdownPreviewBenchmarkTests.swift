@@ -60,10 +60,10 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
       ("large", Self.document(bytes: 370_000)),
     ]
 
-    // The first web view in this process pays for spawning WebContent; every later one may get a
-    // process WebKit already warmed. Measured once, before anything else creates a web view.
+    // The first preview in this process: whatever WebContent spawn and template load the app hasn't
+    // done ahead of it at launch is paid here. Measured once, before any other preview opens.
     let cold = try await open(docs[0].source, tokens: light)
-    record("cold open (first web view in process)", "small", [cold.elapsed])
+    record("first open in process", "small", [cold.elapsed])
     try await assertPaints(cold.webView)
 
     for doc in docs {
@@ -75,7 +75,7 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
         webView = opened.webView
       }
       try await assertRenderedWhole(webView, doc.source)
-      record("open (new web view → painted)", doc.name, opens)
+      record("open (preview created → painted)", doc.name, opens)
 
       // A loaded page given new source, as when the file changes on disk: the production
       // `__render` plus the same double animation frame the coordinator waits on.
@@ -132,6 +132,11 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
     report["concurrent_views_distinct_webcontent_pids"] = Set(pids).count
     lines.append("3 previews open at once → \(Set(pids).count) WebContent process(es)")
     hosts.removeAll()
+
+    // What keeping a booted page ready costs while no preview is open.
+    if let spare = MarkdownWebViewPool.shared.spare {
+      memory(spare, label: "idle pooled page")
+    }
 
     try writeReport()
   }

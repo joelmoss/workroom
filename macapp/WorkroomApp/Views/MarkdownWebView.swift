@@ -28,37 +28,66 @@ struct MarkdownWebView: NSViewRepresentable {
   var onFirstRender: () -> Void = {}
 
   /// The bundled template and the directory the web assets live in (read-access scope for the load).
-  private static let assetDirectory = Bundle.main.url(
+  static let assetDirectory = Bundle.main.url(
     forResource: "markdown", withExtension: nil, subdirectory: nil)
-  private static let templateURL = assetDirectory?.appendingPathComponent("template.html")
+  static let templateURL = assetDirectory?.appendingPathComponent("template.html")
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
   func makeNSView(context: Context) -> WKWebView {
-    let config = WKWebViewConfiguration()
-    config.websiteDataStore = .nonPersistent()  // no cache/cookies for untrusted content
-    // Seed the theme CSS variables at document start, before styles.css first paints. Without this
-    // the page paints one frame with the stylesheet's light `--bg` default (a white flash over the
-    // panel in dark mode) until `didFinish`'s applyTheme lands. Setting them pre-paint themes frame 1.
-    if let boot = Self.themeBootScript(themeVars(tokens)) {
-      config.userContentController.addUserScript(boot)
-    }
-
-    let webView = WKWebView(frame: .zero, configuration: config)
+    // The pool's page is already booted (or booting), so the preview skips WebKit's page load and,
+    // for the first preview after launch, its WebContent spawn. Its theme lands through
+    // `applyTheme` below, behind `PlainFileViewer`'s loader, so its stale boot colours never show.
+    let pooled = MarkdownWebViewPool.shared.take()
+    let webView = pooled?.webView ?? Self.makeWebView(bootThemeVars: themeVars(tokens))
     webView.navigationDelegate = context.coordinator
-    webView.setValue(false, forKey: "drawsBackground")  // let the page's themed background show
     webView.underPageBackgroundColor = tokens.nsBg  // no white flash before first paint
     context.coordinator.webView = webView
     context.coordinator.templateURL = Self.templateURL
     context.coordinator.assetDirectory = Self.assetDirectory
     context.coordinator.onFirstRender = onFirstRender
-
-    if let template = Self.templateURL, let dir = Self.assetDirectory {
-      webView.loadFileURL(template, allowingReadAccessTo: dir)
-    }
     context.coordinator.pendingMarkdown = markdown
     context.coordinator.pendingThemeVars = themeVars(tokens)
+
+    if pooled == nil {
+      Self.loadTemplate(webView)
+    } else if pooled?.isLoaded == true {
+      // Next turn, once SwiftUI has put the view in its window. Rendered here instead, before that,
+      // a 370 KB file took ~50 ms longer to paint (measured with `make app-bench-markdown`).
+      // Skipped if the preview closed first and its page went back to the pool.
+      let coordinator = context.coordinator
+      Task { @MainActor in
+        if webView.navigationDelegate === coordinator { coordinator.pageDidLoad() }
+      }
+    }
     return webView
+  }
+
+  /// The page goes back to the pool for the next preview, unless its WebContent process died.
+  static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+    guard !coordinator.processTerminated else { return }
+    MarkdownWebViewPool.shared.give(webView)
+  }
+
+  /// A web view configured for an untrusted preview, not yet loaded. With `bootThemeVars`, the
+  /// theme's CSS variables are set at document start, before styles.css first paints: without them
+  /// the page paints one frame with the stylesheet's light `--bg` default (a white flash over the
+  /// panel in dark mode) until `didFinish`'s applyTheme lands.
+  static func makeWebView(bootThemeVars: [String: String]?) -> WKWebView {
+    let config = WKWebViewConfiguration()
+    config.websiteDataStore = .nonPersistent()  // no cache/cookies for untrusted content
+    if let vars = bootThemeVars, let boot = themeBootScript(vars) {
+      config.userContentController.addUserScript(boot)
+    }
+    let webView = WKWebView(frame: .zero, configuration: config)
+    webView.setValue(false, forKey: "drawsBackground")  // let the page's themed background show
+    return webView
+  }
+
+  static func loadTemplate(_ webView: WKWebView) {
+    if let template = templateURL, let dir = assetDirectory {
+      webView.loadFileURL(template, allowingReadAccessTo: dir)
+    }
   }
 
   func updateNSView(_ webView: WKWebView, context: Context) {
@@ -154,7 +183,20 @@ struct MarkdownWebView: NSViewRepresentable {
       case cancel  // drop it
     }
 
+    /// Set when WebKit reports the page's WebContent process gone; such a page is not reused.
+    private(set) var processTerminated = false
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+      processTerminated = true
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+      pageDidLoad()
+    }
+
+    /// The template is loaded: flush what was queued. Called from `didFinish`, or straight away for
+    /// a page the pool hands over already loaded.
+    func pageDidLoad() {
       isLoaded = true
       if let vars = pendingThemeVars {
         applyTheme(vars)
@@ -280,6 +322,75 @@ struct MarkdownWebView: NSViewRepresentable {
       let base = dir.standardizedFileURL.path
       return target == base || target.hasPrefix(base + "/")
     }
+  }
+}
+
+/// Keeps one booted preview page ready. A fresh `WKWebView` costs ~100 ms to load the template
+/// before it can render, and the first one in the app 0.4–0.9 s more to spawn its WebContent process;
+/// a page taken from here renders at once. Prewarmed at launch, refilled whenever its page is taken,
+/// and a closed preview's page comes back here when the pool is empty or still booting its own.
+///
+/// Reuse means a later file can render in the process an earlier file's preview used. Every file is
+/// equally untrusted and goes through the same DOMPurify pass and CSP, the page has no cookies or
+/// network, and a returned page is emptied before it is handed out again.
+@MainActor
+final class MarkdownWebViewPool: NSObject, WKNavigationDelegate {
+  static let shared = MarkdownWebViewPool()
+
+  /// The page the next preview gets, and whether its template has finished loading.
+  private(set) var spare: WKWebView?
+  private(set) var spareIsLoaded = false
+
+  /// Starts booting the spare page, if there isn't one.
+  func prewarm() {
+    guard spare == nil else { return }
+    let webView = MarkdownWebView.makeWebView(bootThemeVars: nil)
+    webView.navigationDelegate = self
+    spare = webView
+    spareIsLoaded = false
+    MarkdownWebView.loadTemplate(webView)
+  }
+
+  /// The spare page, loaded or still loading (the caller becomes its navigation delegate either
+  /// way, so a load still in flight reaches it), and a new spare starts booting behind it.
+  func take() -> (webView: WKWebView, isLoaded: Bool)? {
+    guard let webView = spare else { return nil }
+    let isLoaded = spareIsLoaded
+    spare = nil
+    prewarm()
+    return (webView, isLoaded)
+  }
+
+  /// Takes back a closed preview's page, emptied, when it beats what the pool holds: nothing, or a
+  /// spare still booting. Otherwise the page is let go.
+  func give(_ webView: WKWebView) {
+    guard spare == nil || !spareIsLoaded else { return }
+    webView.navigationDelegate = self
+    webView.evaluateJavaScript(
+      "window.__render(''); window.scrollTo(0, 0); getSelection().removeAllRanges();",
+      completionHandler: nil)
+    spare = webView
+    spareIsLoaded = true
+  }
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    if webView === spare { spareIsLoaded = true }
+  }
+
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    if webView === spare { spare = nil }
+  }
+
+  /// The same gate a preview applies, for the template load and anything after it while pooled.
+  func webView(
+    _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+    decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+  ) {
+    let decision = MarkdownWebView.Coordinator.navigationDecision(
+      url: navigationAction.request.url,
+      isLinkActivated: navigationAction.navigationType == .linkActivated,
+      templateURL: MarkdownWebView.templateURL, assetDirectory: MarkdownWebView.assetDirectory)
+    decisionHandler(decision == .allow ? .allow : .cancel)
   }
 }
 
