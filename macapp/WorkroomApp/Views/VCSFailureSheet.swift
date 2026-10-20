@@ -12,7 +12,7 @@ import WorkroomVCS
 /// notice; this carries the message.
 ///
 /// Presented by `VCSFailurePresenter` on the app's root, NOT on the inspector: an action can be started
-/// from the Source Control menu with the inspector hidden, and a dialog that only appears when a
+/// from the Room menu with the inspector hidden, and a dialog that only appears when a
 /// particular pane happens to be open is worse than no dialog.
 struct VCSFailureSheet: View {
   let dialog: VCSFailureDialog

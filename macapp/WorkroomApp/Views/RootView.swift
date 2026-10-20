@@ -10,8 +10,8 @@ struct RootView: View {
   // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
   // workroom gains its first terminal and disappears when it loses its last) — issue #23.
   @EnvironmentObject var terminals: TerminalSessions
-  // Observed so the Source Control menu items follow `canFetch`/`canPush`/`canPull`, which the
-  // store's Observation tracking cannot see.
+  // Observed so the Room menu's Fetch/Push/Pull items follow `canFetch`/`canPush`/`canPull`, which
+  // the store's Observation tracking cannot see.
   @EnvironmentObject var remoteState: RemoteStateModel
   // Drives the leading title-bar "Update" pill (injected into the accessory closure below) and the
   // "What's New" dialog. Both injected by `WorkroomApp` on the `RootWindow`.
@@ -232,7 +232,7 @@ struct RootView: View {
           onCancel: { showAddProject = false })
       }
       // VCS failure dialog. Hosted here rather than on the inspector because ⌥⇧⌘P and the rest of the
-      // Source Control menu work with the inspector hidden, and a failure they raise still has to be
+      // Room menu work with the inspector hidden, and a failure they raise still has to be
       // readable. `performRemoteAction`, not `runRemoteAction`, so a Pull recovery meets the dirty-tree
       // confirmation — and the sheet is window-modal, so the selection cannot have moved under it.
       .modifier(
@@ -343,7 +343,7 @@ struct RootView: View {
       // The commit dialog. Presented on the ROOT for `VCSFailureSheet`'s reason: it can be opened
       // from the Changes header, and a dialog that only survives while a particular pane happens to
       // be open is worse than no dialog. `pendingCommit` is already counted by
-      // `hasModalPresentation`, so Source Control shortcuts are inert behind it.
+      // `hasModalPresentation`, so the Room menu's Fetch/Push/Pull shortcuts are inert behind it.
       .sheet(item: $store.pendingCommit) { pending in
         CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
           .environmentObject(store)
@@ -504,9 +504,9 @@ struct RootView: View {
           // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
           hasRunCommand: selectedHasRunCommand && !store.hasModalPresentation,
           runCommandActive: selectedRunCommandActive && !store.hasModalPresentation,
-          // Source Control (⌥⇧⌘F / ⇧⌘P / ⌥⇧⌘P). The model's own `can*` already fold in "a remote
-          // exists" and "nothing is in flight"; the tool floor and the modal guard are ANDed here so
-          // the menu can't fire an action the toolbar itself would refuse.
+          // Room menu's Fetch / Push / Pull (⌥⇧⌘F / ⇧⌘P / ⌥⇧⌘P). The model's own `can*` already
+          // fold in "a remote exists" and "nothing is in flight"; the tool floor and the modal guard
+          // are ANDed here so the menu can't fire an action the toolbar itself would refuse.
           vcsCanFetch: remoteState.canFetch && vcsToolsUsable && !store.hasModalPresentation,
           vcsCanPush: remoteState.canPush && vcsToolsUsable && !store.hasModalPresentation,
           vcsCanPull: remoteState.canPull && vcsToolsUsable && !store.hasModalPresentation,

@@ -801,7 +801,7 @@ final class AppStore: ObservableObject {
   /// Request a remote action, confirming first when one is needed.
   ///
   /// **The confirmation gate lives HERE, not in the toolbar.** It used to sit in `VCSToolbar.perform`,
-  /// which meant the Source Control menu's ⌥⇧⌘P went straight past it: the button warned before
+  /// which meant the Room menu's ⌥⇧⌘P went straight past it: the button warned before
   /// autostashing a dirty tree and the keyboard shortcut didn't. A safety gate that only one of two
   /// entry points honours isn't a gate, so every caller funnels through this.
   func performRemoteAction(_ action: VCSRemoteAction) {

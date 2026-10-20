@@ -138,7 +138,7 @@ final class ModalState {
   /// `--autostash` will stash and reapply.
   ///
   /// Store-level rather than a `RightInspector` `@State` for the same reason `pendingProjectSettings` is:
-  /// there are two entry points (the toolbar segment and the Source Control menu's ⌥⇧⌘P), and a gate
+  /// there are two entry points (the toolbar segment and the Room menu's ⌥⇧⌘P), and a gate
   /// owned by one view can only guard that view. It carries the `SidebarID` it was raised for so the
   /// confirmed action can't be redirected onto whatever is selected by the time the dialog is answered.
   var pendingRemoteConfirm: PendingVCSAction?
@@ -177,8 +177,8 @@ final class ModalState {
       || pendingWorkroomClose != nil
       || pendingProjectDeletion != nil || pendingWorkroomLabel != nil
       || pendingProjectSettings != nil || errorMessage != nil
-      // Included so the Source Control shortcuts are inert while the confirmation is up — otherwise
-      // ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
+      // Included so the Room menu's Fetch/Push/Pull shortcuts are inert while the confirmation is up
+      // — otherwise ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
       || pendingRemoteConfirm != nil
       // Same for the commit sheet: without this, ⌥⇧⌘P could fire a push behind an open commit
       // dialog, and the terminal-scoped shortcuts would still reach a surface the user can't see.

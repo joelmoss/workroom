@@ -33,7 +33,7 @@ final class RunStatusUITests: XCTestCase {
   /// collapse into the toolbar overflow); the menu item is always hittable.
   private func startRun(_ app: XCUIApplication) {
     XCTAssertTrue(app.buttons["runCommand.run"].waitForExistence(timeout: 15), "Run is available")
-    app.menuBars.menuBarItems["Run"].menuItems["Run"].click()
+    app.menuBars.menuBarItems["Room"].menuItems["Run"].click()
   }
 
   private func runTabChip(_ app: XCUIApplication) -> XCUIElement {

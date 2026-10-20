@@ -1498,13 +1498,13 @@ final class GhosttySurfaceView: NSView {
     // toggle (issue #57); ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘R = Restart run (issue #7).
     // (⌥⌘N was the Notifications inspector toggle; removed with issue #118, so it's no longer
     // reserved and passes through to the terminal.)
-    // ⇧⌘P = Push (Source Control) joins the list for the same reason as the rest. ⇧⌘M = Go to
-    // Terminal That Needs You (#358).
+    // ⇧⌘P = Push (Room) joins the list for the same reason as the rest. ⇧⌘M = Go to
+    // Terminal That Needs You (#358). ⇧⌘O = Room ▸ Open in <editor>.
     if flags == [.command, .shift] {
       return key == "d" || key == "g" || key == "k" || key == "l" || key == "n" || key == "r"
-        || key == "p" || key == "m"
+        || key == "p" || key == "m" || key == "o"
     }
-    // ⌥⇧⌘F = Fetch, ⌥⇧⌘P = Pull with Rebase (Source Control). Three-modifier combinations fail every
+    // ⌥⇧⌘F = Fetch, ⌥⇧⌘P = Pull with Rebase (Room). Three-modifier combinations fail every
     // guard below, so they need their own branch.
     if flags == [.command, .shift, .option] {
       return key == "f" || key == "p"

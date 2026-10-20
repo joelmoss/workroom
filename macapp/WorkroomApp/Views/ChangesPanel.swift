@@ -46,7 +46,7 @@ struct RightInspector: View {
       }
     }
     // Bound to the STORE, not a local `@State`: the gate that raises this lives in
-    // `AppStore.performRemoteAction` so the Source Control menu's ⌥⇧⌘P goes through it too. When the
+    // `AppStore.performRemoteAction` so the Room menu's ⌥⇧⌘P goes through it too. When the
     // toolbar owned the gate, the shortcut autostashed a dirty tree with no warning at all.
     .confirmationDialog(
       store.pendingRemoteConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",

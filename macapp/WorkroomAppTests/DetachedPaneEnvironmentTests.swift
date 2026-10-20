@@ -16,7 +16,7 @@ import XCTest
 /// documented.
 final class DetachedPaneEnvironmentTests: XCTestCase {
   /// The ones the pane subtree genuinely cannot reach: `RootView` chrome only (the update pill, the
-  /// What's New dialog, and the Source Control menu state). If a pane ever needs one, it goes into
+  /// What's New dialog, and the Room menu state). If a pane ever needs one, it goes into
   /// `detachedPaneEnvironment` and comes out of here — deliberately, rather than by a test quietly
   /// going green.
   private let sceneOnly: Set<String> = ["Updater", "WhatsNewService", "RemoteStateModel"]

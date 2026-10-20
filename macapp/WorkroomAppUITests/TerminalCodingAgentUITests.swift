@@ -29,7 +29,7 @@ final class TerminalCodingAgentUITests: XCTestCase {
 
   private func startRun(_ app: XCUIApplication) {
     XCTAssertTrue(app.buttons["runCommand.run"].waitForExistence(timeout: 15), "Run is available")
-    app.menuBars.menuBarItems["Run"].menuItems["Run"].click()
+    app.menuBars.menuBarItems["Room"].menuItems["Run"].click()
   }
 
   /// Runs start backgrounded (issue #67), so the failing run tab isn't on screen. Focus it so its

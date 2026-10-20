@@ -4,8 +4,8 @@ import SwiftUI
 
 /// A create's pane (#483): a GitHub Actions-style checklist of the steps its kind runs, each with its
 /// time and its log one click away, what to do next on failure under the step that failed, and
-/// Done in a footer on success. Shown bare, with no title bar, tab bar or footer, from the click until the run ends
-/// (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
+/// Done in a footer on success. Shown bare, with no title bar, tab bar or footer, from the click
+/// until the run ends (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
 ///
 /// Layout (design D4): one continuous `panel` surface, a leading column at most 640pt wide holding the
 /// header and the rows. A row's open log is as tall as its lines, up to what the pane has left, with
@@ -30,6 +30,8 @@ struct CreationPane: View {
   /// Three log lines and the log's padding: the open log shrinks no further before the column
   /// scrolls.
   private static let minimumLogHeight: CGFloat = 3 * 13 + 2 * CreationLogView.padding
+  /// The failure notice's scroll identity.
+  private static let noticeID = "CreationPane.notice"
   /// The space above and below an open log.
   private static let logPadding: CGFloat = 4
 
@@ -68,50 +70,59 @@ struct CreationPane: View {
         logContent: logContentHeight, minimum: Self.minimumLogHeight)
       // A failure's notice goes under its step's row (owner), above that step's open log.
       let noticeStep = P.noticeStep(in: run.steps) ?? run.steps.last?.id
-      ScrollView {
-        VStack(alignment: .leading, spacing: 0) {
-          header.padding(.bottom, 20)
-            .onGeometryChange(for: CGFloat.self) {
-              $0.size.height
-            } action: {
-              headerHeight = $0
-            }
-          ForEach(run.steps) { step in
-            row(step)
+      ScrollViewReader { proxy in
+        ScrollView {
+          VStack(alignment: .leading, spacing: 0) {
+            header.padding(.bottom, 20)
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.height
               } action: {
-                rowHeights[step.id] = $0
+                headerHeight = $0
               }
-            if let footer, noticeStep == step.id {
-              CreationFailureNotice(footer: footer) { perform($0) }
-                .padding(.leading, CreationStepRow.titleInset)
-                .padding(.vertical, 6)
+            ForEach(run.steps) { step in
+              row(step)
                 .onGeometryChange(for: CGFloat.self) {
                   $0.size.height
                 } action: {
-                  noticeHeight = $0
+                  rowHeights[step.id] = $0
                 }
-            }
-            if expanded == step.id {
-              CreationLogView(lines: P.log(of: step), onContentHeight: { logContentHeight = $0 })
-                .id(step.id)
-                .frame(height: logHeight)
-                .padding(.leading, CreationStepRow.titleInset)
-                .padding(.vertical, Self.logPadding)
+              if let footer, noticeStep == step.id {
+                CreationFailureNotice(footer: footer) { perform($0) }
+                  .id(Self.noticeID)
+                  .padding(.leading, CreationStepRow.titleInset)
+                  .padding(.vertical, 6)
+                  .onGeometryChange(for: CGFloat.self) {
+                    $0.size.height
+                  } action: {
+                    noticeHeight = $0
+                  }
+              }
+              if expanded == step.id {
+                CreationLogView(lines: P.log(of: step), onContentHeight: { logContentHeight = $0 })
+                  .id(step.id)
+                  .frame(height: logHeight)
+                  .padding(.leading, CreationStepRow.titleInset)
+                  .padding(.vertical, Self.logPadding)
+              }
             }
           }
+          // The checklist's container sits on the column, the first view here with several children: a
+          // container with a single child folds into it, and the bare pane's `workroom.pane` container
+          // (`WorkroomPaneLeaf`) folds into the same element and takes its identifier.
+          .accessibilityElement(children: .contain)
+          .accessibilityIdentifier("CreationPane")
+          .frame(maxWidth: Self.columnWidth, alignment: .leading)
+          .padding(inset)
+          .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .topLeading)
         }
-        // The checklist's container sits on the column, the first view here with several children: a
-        // container with a single child folds into it, and the bare pane's `workroom.pane` container
-        // (`WorkroomPaneLeaf`) folds into the same element and takes its identifier.
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("CreationPane")
-        .frame(maxWidth: Self.columnWidth, alignment: .leading)
-        .padding(inset)
-        .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .topLeading)
+        .scrollBounceBehavior(.basedOnSize)
+        // Return and Escape answer the notice's buttons, so a notice that appears below the fold, in a
+        // long list or under an open log, scrolls into view first. Deferred a tick so it is laid out.
+        .onChange(of: footer != nil, initial: true) { _, shown in
+          guard shown else { return }
+          Task { @MainActor in proxy.scrollTo(Self.noticeID) }
+        }
       }
-      .scrollBounceBehavior(.basedOnSize)
     }
     .onKeyPress(keys: [.upArrow, .downArrow, .space, .rightArrow, .leftArrow]) { press in
       guard let focused = focusedRow else { return .ignored }

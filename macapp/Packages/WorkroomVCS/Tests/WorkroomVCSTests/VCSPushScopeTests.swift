@@ -1,8 +1,8 @@
 import WorkroomVCS
 import XCTest
 
-/// `VCSPushScope.unpushedHelp`: the unpushed badge's tooltip, shared by the History row, its hover
-/// card and the changeset header.
+/// `VCSPushScope.unpushedHelp`: the unpushed badge's tooltip, shared by the History row and the
+/// changeset header.
 final class VCSPushScopeTests: XCTestCase {
   func testUnpushedHelpNamesASingleOriginBranch() {
     let help = VCSPushScope.unpushedHelp(VCSPushScope(refName: "origin/main", count: 1))

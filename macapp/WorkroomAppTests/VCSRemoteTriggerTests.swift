@@ -216,7 +216,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   }
 
   /// **The gate must live in the STORE, not the toolbar.** It used to sit in `VCSToolbar.perform`, so the
-  /// Source Control menu's ⌥⇧⌘P — which calls `performRemoteAction` directly — autostashed a dirty tree
+  /// Room menu's ⌥⇧⌘P — which calls `performRemoteAction` directly — autostashed a dirty tree
   /// with no warning while the button warned. This asserts the gate from the store's own entry point,
   /// which is the one the menu uses.
   func testPullOverADirtyTreeRaisesAConfirmationInsteadOfActing() async {
@@ -301,8 +301,8 @@ final class VCSRemoteTriggerTests: XCTestCase {
     XCTAssertNil(store.pendingRemoteConfirm)
   }
 
-  /// A confirmation up means the Source Control shortcuts must be inert, or ⌥⇧⌘P could queue a second
-  /// pull behind the dialog asking about the first.
+  /// A confirmation up means the Room menu's Fetch/Push/Pull shortcuts must be inert, or ⌥⇧⌘P could
+  /// queue a second pull behind the dialog asking about the first.
   func testAPendingConfirmationCountsAsAModalPresentation() async {
     let (store, _) = makeStore(visible: true, section: .changes)
     let sid = SidebarID.workroom(project: "/p", name: "feat")

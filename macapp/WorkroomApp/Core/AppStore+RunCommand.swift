@@ -509,7 +509,8 @@ extension AppStore {
       stopRunCommand(for: target)
     } else {
       // Issue #67: starting from the sidebar no longer navigates to the workroom — the run goes to the
-      // background and the toast is the feedback. Open it from the toast / ⌘R / Go ▸ Run Terminal.
+      // background and the toast is the feedback. Open it from the toast / ⌘R / Room ▸ Go to Run
+      // Terminal.
       restartRunCommand(for: target)  // no run tab → start in background; stopped-but-open → re-run
     }
   }
@@ -521,7 +522,7 @@ extension AppStore {
   /// the terminal surface is a plain `NSView`, so this stays false when a terminal is focused.
   private var isEditingTextField: Bool { NSApp.keyWindow?.firstResponder is NSText }
 
-  /// ⌘R / the Run menu = "ensure running" (OV-B), acting on the current **selection**. The state
+  /// ⌘R / Room ▸ Run ="ensure running" (OV-B), acting on the current **selection**. The state
   /// machine itself lives in the per-target overload below; this is the selection-scoped door, and the
   /// only one that consults `isEditingTextField` — the ambient shortcut must not fire behind an
   /// editor, but a deliberate button *click* must (issue #139).
@@ -638,9 +639,9 @@ extension AppStore {
     restartRunCommand(for: target)
   }
 
-  /// Go ▸ Run Terminal: jump to a run terminal if one exists — select its target and focus the run
-  /// tab. Prefers the selected target's run terminal, else any. Pure navigation; never starts a
-  /// command (issue #7).
+  /// Room ▸ Go to Run Terminal: jump to a run terminal if one exists — select its target and focus
+  /// the run tab. Prefers the selected target's run terminal, else any. Pure navigation; never
+  /// starts a command (issue #7).
   func revealRunTerminal() {
     let targetID =
       selectedTarget.flatMap { runStates[$0.id]?.tab != nil ? $0.id : nil }

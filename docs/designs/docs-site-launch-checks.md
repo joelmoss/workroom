@@ -22,7 +22,7 @@ Each is a claim the code supports but can't prove on its own. Look, and fix the 
 
 ### Checked in the running app (Dev build, 2026-10-20)
 
-- **Menus:** **Settings…** is in the app menu; **New Window**, **Move pane into new window** and **Move workroom into new window** top the Window menu.
+- **Menus:** **Settings…** is in the app menu; The Window menu has **New Window** and **Move pane into new window**; **Move Workroom into New Window** is now in the Room menu.
 - **Project row:** the gear appears left of the **+** on hover and the rows don't move. The sidebar's **+** is at the bottom right.
 - **Tab bar:** workroom tabs run across the top. A workroom being created gets a tab straight away, before it has a terminal; the docs only say open workrooms appear there, so nothing to change.
 - **Creation pane:** **Close automatically when done** is at the bottom left once the create finishes, and **Done** opens the terminal. Only the steps the project has are listed: emoji, with no `.worktreeinclude` or setup script, showed two rows, so `app/workrooms.md` now says the last two are conditional.

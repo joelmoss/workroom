@@ -41,8 +41,8 @@ public struct VCSPushScope: Equatable, Sendable {
   public let refName: String?
   public let count: Int
 
-  /// The tooltip for an unpushed badge, shared by every surface that shows one (history row, hover
-  /// card, changeset header) so the claim is worded identically in all three.
+  /// The tooltip for an unpushed badge, shared by every surface that shows one (history row and
+  /// changeset header) so the claim is worded identically in both.
   ///
   /// It says "local remote-tracking refs", NOT "your last fetch": a local `git push` updates those refs
   /// too, so naming only fetch would be wrong half the time. Either way the badge is a statement about

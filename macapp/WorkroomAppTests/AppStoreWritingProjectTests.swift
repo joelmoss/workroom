@@ -147,4 +147,39 @@ extension AppStoreWritingProjectTests {
     secondWindow.endWrite(projectRoot: two)
     XCTAssertTrue(shared.writingProjectRoots.isEmpty)
   }
+
+  /// Value: protects=Room ▸ Commit… and the Changes commit button open the dialog only for a dirty,
+  /// known, not-committing workroom or root; fails_when=a clean, unknown, in-flight or group-header
+  /// target opens it, or a dirty one doesn't; why_new=the rule moved out of a view, untested; seam=none;
+  /// no_claim=the menu item's drawing
+  func testCanCommitAndRequestCommitFollowTheTargetsStatus() async throws {
+    let store = try await makeStore([project("/proj", workrooms: ["wr"])])
+    let wr = SidebarID.workroom(project: "/proj", name: "wr")
+    let root = SidebarID.root(project: "/proj")
+
+    XCTAssertFalse(store.canCommit(nil), "nothing inspected")
+    XCTAssertFalse(store.canCommit(wr), "no status read yet")
+    store.workroomStatuses[wr] = WorkroomStatus(dirty: false)
+    XCTAssertFalse(store.canCommit(wr), "clean")
+    store.workroomStatuses[wr] = .unresolved
+    XCTAssertFalse(store.canCommit(wr), "unknown")
+    store.workroomStatuses[.project("/proj")] = WorkroomStatus(dirty: true)
+    XCTAssertFalse(store.canCommit(.project("/proj")), "a group header has no status to commit")
+
+    store.workroomStatuses[wr] = WorkroomStatus(dirty: true)
+    store.workroomStatuses[root] = WorkroomStatus(dirty: true)
+    XCTAssertTrue(store.canCommit(wr))
+    XCTAssertTrue(store.canCommit(root))
+
+    store.committingTargets.insert(wr)
+    XCTAssertFalse(store.canCommit(wr), "a commit is already in flight")
+    store.requestCommit(wr)
+    XCTAssertNil(store.pendingCommit)
+
+    store.committingTargets.remove(wr)
+    store.requestCommit(nil)
+    XCTAssertNil(store.pendingCommit)
+    store.requestCommit(wr)
+    XCTAssertEqual(store.pendingCommit, PendingCommit(sid: wr))
+  }
 }

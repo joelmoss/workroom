@@ -458,7 +458,8 @@ final class RunCommandController {
     terminals.view(forTab: tab, inTarget: target)?.runStoppedAwaitingClose = value
   }
 
-  /// Whether any run terminal exists (running or stopped-but-open) — gates Go ▸ Run Terminal.
+  /// Whether any run terminal exists (running or stopped-but-open) — gates Room ▸ Go to Run
+  /// Terminal.
   var hasAnyRunTerminal: Bool { runStates.values.contains { $0.tab != nil } }
 
   /// Stop the run command (issue #7): one press tells the SUPERVISOR to stop the child gracefully and
