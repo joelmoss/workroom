@@ -1482,7 +1482,8 @@ final class GhosttySurfaceView: NSView {
     // ⌥⌘←/→ = prev/next terminal tab; ⇧⌥⌘←/→ = prev/next workroom tab (issue #29). Reserved like the
     // Run keys so the menu key-equivalent wins over a TUI in an enhanced keyboard mode (Claude/Codex).
     // ⌃⌘arrows (split-pane focus, issue #3) is monitor-only with no menu item, so it's deliberately
-    // NOT reserved — it passes through to the terminal at a split's edge, exactly as it did on ⌥⌘arrows.
+    // NOT reserved. It wraps at a split's edge; with no other pane it reaches libghostty, whose macOS
+    // default binds it to `resize_split`, which Workroom ignores, so no program ever sees it.
     if keyCode == 123 || keyCode == 124 {  // ← / →
       if flags == [.command, .option] || flags == [.command, .option, .shift] { return true }
     }

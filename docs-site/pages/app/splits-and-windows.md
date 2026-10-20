@@ -27,7 +27,7 @@ The new pane opens next to the focused one, with a new terminal in it. To take a
 
 ## Move focus between panes
 
-Click a pane to focus it. From the keyboard, use <kbd>⌃⌘←</kbd>, <kbd>⌃⌘→</kbd>, <kbd>⌃⌘↑</kbd> and <kbd>⌃⌘↓</kbd>. At the edge of a split the keys pass through to the program in the terminal.
+Click a pane to focus it. From the keyboard, use <kbd>⌃⌘←</kbd>, <kbd>⌃⌘→</kbd>, <kbd>⌃⌘↑</kbd> and <kbd>⌃⌘↓</kbd>. At the edge of a split they wrap around to the pane on the far side.
 
 <kbd>⌃Tab</kbd> flips to the pane you used last. See [Terminals and tabs](terminals-and-tabs.md#tabs).
 
