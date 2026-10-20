@@ -8,8 +8,8 @@ import XCTest
 /// the chip may say `user.rb`, but the footer and the tooltip must say `app/models/user.rb`.
 ///
 /// The rendering half can't be asserted here — a unit-test process has no accessibility tree for a
-/// hosted SwiftUI view, and a SwiftUI `Text` isn't an inspectable AppKit subview (see
-/// `HistoryCommitCardTests`). That's `DiffViewerUITests` / `ChangesPanelUITests`.
+/// hosted SwiftUI view, and a SwiftUI `Text` isn't an inspectable AppKit subview. That's
+/// `DiffViewerUITests` / `ChangesPanelUITests`.
 @MainActor
 final class TabContentFilePathTests: XCTestCase {
 
