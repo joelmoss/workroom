@@ -840,6 +840,21 @@ final class RunCommandTests: XCTestCase {
       captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: .codex))
   }
 
+  // Value: protects=Auto Investigate opens codex when the failed diagnosis was claude-not-found; fails_when=startInvestigate stops passing bannerState.claudeMissing (auto then opens claude); why_new=other tests use a non-cliNotFound state, so the claudeMissing wiring is unpinned; seam=none; no_claim=real agent launch (captured command line only)
+  func testStartInvestigateAutoOpensCodexWhenClaudeIsMissing() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    guard case .awaitingDiagnose(let failure) = investigateBanner(t) else {
+      return XCTFail("investigateBanner should be awaitingDiagnose")
+    }
+    let missing = CodingAgentBannerState.failure(failure, .cliNotFound)
+
+    store.startInvestigate(bannerState: missing, target: t, surface: nil, agentSetting: "auto")
+
+    XCTAssertEqual(
+      captured.last, CodingAgentPrompt.investigateCommandLine(for: missing, agent: .codex))
+  }
+
   func testInvestigateLivenessClearsViaChildExitAndViaTabRemoval() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
