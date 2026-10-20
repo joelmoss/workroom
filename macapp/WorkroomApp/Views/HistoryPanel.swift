@@ -213,18 +213,10 @@ nonisolated(unsafe) private let historyRelativeFormatter: RelativeDateTimeFormat
   return f
 }()
 
-/// The full date and time a History row's relative time tooltips, shared as the formatter above is.
-nonisolated(unsafe) private let historyFullDateFormatter: DateFormatter = {
-  let f = DateFormatter()
-  f.dateStyle = .full
-  f.timeStyle = .short
-  return f
-}()
-
 /// One commit row: first line of the message, then a metadata line (short id · author · relative
 /// time) with any branch/tag refs.
 ///
-/// Deliberately `internal`, not `private` (same reason `HistoryCommitCard` below is): the row's
+/// Deliberately `internal`, not `private`: the row's
 /// invalidation behaviour is the regression net for the WORKROOM-2B App Hang, and
 /// `HistoryRowInvalidationTests` reads `bodyPasses` to assert it. XCUITest can only see that rows
 /// exist, not how many times they were rebuilt.
@@ -305,9 +297,10 @@ struct HistoryRow: View, Equatable {
           "\(commit.shortID), \(commit.summary.isEmpty ? "(no description)" : commit.summary)")
 
         // Line two — short id, author avatars, relative time (its full date and time on hover), then
-        // any branch/tag refs right of the timestamp, then the unpushed marker. Refs live here (not line one) so a long branch never
-        // wraps: each is a single truncating capsule, and the timestamp keeps layout priority so the
-        // refs give way first (the unpushed chip is a fixed ~16pt, so it never gives way).
+        // any branch/tag refs right of the timestamp, then the unpushed marker. Refs live here (not
+        // line one) so a long branch never wraps: the short id and the time are fixed width
+        // (`.fixedSize()`), and the refs show as whole chips while they fit, then "+N"
+        // (`HistoryRefChips`). The unpushed chip is a fixed ~16pt, so it never gives way.
         //
         // Authors are avatars ONLY here — the names would crowd the narrow sidebar row and push the
         // refs out. Each avatar tooltips its own name, the changeset detail spells the names out, and
@@ -331,7 +324,7 @@ struct HistoryRow: View, Equatable {
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .fixedSize()
-            .help(historyFullDateFormatter.string(from: commit.timestamp))
+            .help(commit.timestamp.formatted(date: .complete, time: .shortened))
             .accessibilityLabel(names.isEmpty ? relative : "\(names), \(relative)")
           if !commit.refs.isEmpty { HistoryRefChips(refs: commit.refs) }
           if commit.showsUnpushedBadge { unpushedBadge }

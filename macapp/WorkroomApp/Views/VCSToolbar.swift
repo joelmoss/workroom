@@ -190,7 +190,7 @@ struct VCSToolbar: View {
 
   /// Hands straight to the store, which owns the dirty-tree confirmation gate.
   ///
-  /// The gate used to live here, and that was the bug: the Source Control menu calls
+  /// The gate used to live here, and that was the bug: the Room menu calls
   /// `performRemoteAction` directly, so ⌥⇧⌘P autostashed a dirty tree with no warning while this button
   /// warned. A gate only one of two entry points honours isn't a gate.
   private func perform(_ action: VCSRemoteAction?) {

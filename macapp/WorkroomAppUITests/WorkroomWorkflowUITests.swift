@@ -257,9 +257,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
     assertCount(app.buttons.matching(identifier: "runCommand.run"), reaches: 1)
     XCTAssertFalse(stop.exists, "nothing running yet")
 
-    // Scope to the Run menu's Run item (not a bare menuItems["Run"], which would also match other
+    // Scope to the Room menu's Run item (not a bare menuItems["Run"], which would also match other
     // "Run"-titled items) so this unambiguously starts the command.
-    app.menuBars.menuBarItems["Run"].menuItems["Run"].click()
+    app.menuBars.menuBarItems["Room"].menuItems["Run"].click()
 
     XCTAssertTrue(stop.waitForExistence(timeout: 8), "Run should become Stop once the command runs")
     XCTAssertTrue(restart.exists, "Restart should appear alongside Stop")

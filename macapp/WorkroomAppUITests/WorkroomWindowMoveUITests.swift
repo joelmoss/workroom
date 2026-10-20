@@ -41,7 +41,7 @@ final class WorkroomWindowMoveUITests: XCTestCase {
     XCTAssertTrue(selected.waitForExistence(timeout: 5))
     let movedID = selected.identifier
 
-    let item = app.menuBars.menuBarItems["Window"].menuItems["Move workroom into new window"]
+    let item = app.menuBars.menuBarItems["Room"].menuItems["Move Workroom into New Window"]
     XCTAssertTrue(item.isEnabled, "a window's second workroom can move")
     item.click()
 
@@ -65,7 +65,7 @@ final class WorkroomWindowMoveUITests: XCTestCase {
       "both workrooms show a live terminal, one in each window")
 
     // The new window now holds one workroom; moving it on would just give it the same window.
-    let only = app.menuBars.menuBarItems["Window"].menuItems["Move workroom into new window"]
+    let only = app.menuBars.menuBarItems["Room"].menuItems["Move Workroom into New Window"]
     XCTAssertFalse(only.isEnabled, "a window's only workroom does not move from the menu")
   }
 }

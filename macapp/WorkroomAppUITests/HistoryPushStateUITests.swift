@@ -7,9 +7,6 @@ import XCTest
 /// The exact count is the assertion that matters — a plain
 /// `.exists` check would pass a badge-on-every-row bug just as happily.
 ///
-/// The hover card is NOT covered here: XCUITest can't drive `.onHover`. It's covered at the view level
-/// by `HistoryCommitCardTests`.
-///
 /// Run with `make app-uitest` on a real GUI login session.
 final class HistoryPushStateUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
@@ -94,11 +91,10 @@ final class HistoryPushStateUITests: XCTestCase {
   /// pushed" that carries the header's `ChangesetDetail` id, which propagates onto every header leaf
   /// (tree dumped 2026-10-06; see `ChangesetDetailView`'s comment on the marker).
   ///
-  /// Scoped by that id on purpose. Two other things on screen say "Not pushed": the History row's
-  /// badge (`HistoryRowUnpushed`) and the row's hover card. The old app-wide `value CONTAINS` match
-  /// never reached this marker at all and passed on the hover card, which shows up a beat after a
-  /// click on the row. The identifier query runs first (indexed, fast), so the label predicate only
-  /// filters the header's few leaves.
+  /// Scoped by that id on purpose. Another thing on screen says "Not pushed": the History row's
+  /// badge (`HistoryRowUnpushed`). The old app-wide `value CONTAINS` match never reached this
+  /// marker at all and could pass on the row's badge alone. The identifier query runs first
+  /// (indexed, fast), so the label predicate only filters the header's few leaves.
   private func headerSaysNotPushed(_ app: XCUIApplication) -> XCUIElement {
     app.descendants(matching: .any).matching(identifier: "ChangesetDetail")
       .matching(NSPredicate(format: "label == %@", "Not pushed")).firstMatch

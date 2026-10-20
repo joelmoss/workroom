@@ -147,6 +147,23 @@ final class PaneTreeLayoutTests: XCTestCase {
     XCTAssertNil(PaneTreeLayout.adjacentPane(to: a, direction: .up, in: .leaf(a)))
   }
 
+  /// A wrap target must share rows (or columns) with the pane, and of two equally far ones the
+  /// closer on the other axis wins: a full-height pane has nothing above it to wrap to, and from a
+  /// tall pane the wrap lands on the stacked pane that shares the most of its rows.
+  func testAdjacentPaneWrapNeedsOverlapAndPrefersTheClosestRow() {
+    let a = UUID()
+    let b = UUID()
+    let c = UUID()
+    // (A over B, A short) | C
+    let layout = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5,
+      first: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.3, first: .leaf(a), second: .leaf(b)),
+      second: .leaf(c))
+    XCTAssertNil(PaneTreeLayout.adjacentPane(to: c, direction: .up, in: layout))
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: c, direction: .right, in: layout), b)
+  }
+
   /// Wrapping lands on the FARTHEST pane the other way, not the nearest one.
   func testAdjacentPaneWrapsToTheFarSide() {
     let a = UUID()

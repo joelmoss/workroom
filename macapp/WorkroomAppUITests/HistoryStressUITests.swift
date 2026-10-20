@@ -147,7 +147,7 @@ final class HistoryStressUITests: XCTestCase {
     let firstShortID = String(firstLabel.prefix(while: { $0 != "," }))
     XCTAssertNotEqual(shortID, firstShortID)
     // Scoped to the detail header's leaves (they all carry its `ChangesetDetail` id): the row's own
-    // hover card also shows the short id, and an app-wide match used to pass on the card alone.
+    // label also carries the short id, and an app-wide match used to pass on the row alone.
     XCTAssertTrue(
       app.descendants(matching: .any).matching(identifier: "ChangesetDetail")
         .matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", shortID, shortID))

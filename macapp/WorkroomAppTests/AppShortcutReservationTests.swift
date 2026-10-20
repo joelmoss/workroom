@@ -20,11 +20,11 @@ final class AppShortcutReservationTests: XCTestCase {
       modifierFlags: flags, keyCode: keyCode, charactersIgnoringModifiers: key)
   }
 
-  // MARK: Source Control (the new ones)
+  // MARK: Room menu's Fetch/Push/Pull (the new ones)
 
-  /// Every Source Control shortcut, checked against the menu's own declarations. The three-modifier
-  /// ones (Fetch, Pull with Rebase) fail every other branch in the classifier, so they need their
-  /// own — which is exactly the kind of gap that has bitten before.
+  /// Every Room menu Fetch/Push/Pull shortcut, checked against the menu's own declarations. The
+  /// three-modifier ones (Fetch, Pull with Rebase) fail every other branch in the classifier, so
+  /// they need their own — which is exactly the kind of gap that has bitten before.
   func testEverySourceControlShortcutIsReserved() {
     let menuShortcuts: [(String, NSEvent.ModifierFlags, String)] = [
       ("f", [.command, .shift, .option], "Fetch"),
@@ -50,7 +50,8 @@ final class AppShortcutReservationTests: XCTestCase {
   // MARK: Regression guard for the combinations already reserved
 
   func testExistingShiftCommandShortcutsStayReserved() {
-    for key in ["d", "g", "k", "l", "m", "n", "r"] {
+    // o = Room ▸ Open in <editor>: an agent TUI swallowed it, so Open in did nothing.
+    for key in ["d", "g", "k", "l", "m", "n", "o", "r"] {
       XCTAssertTrue(reserved(key, [.command, .shift]), "⇧⌘\(key.uppercased())")
     }
   }
@@ -128,7 +129,7 @@ final class AppShortcutReservationTests: XCTestCase {
     XCTAssertFalse(reserved("z", .command))
     XCTAssertFalse(reserved("c", .control), "⌃C must always reach the terminal")
     XCTAssertFalse(reserved("a", [.command, .shift]))
-    XCTAssertFalse(reserved("x", [.command, .shift, .option]), "not a Source Control key")
+    XCTAssertFalse(reserved("x", [.command, .shift, .option]), "not a Room menu key")
   }
 
   func testEmptyCharactersAreNotReserved() {

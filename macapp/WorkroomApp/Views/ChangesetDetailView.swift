@@ -189,7 +189,7 @@ struct ChangesetDetailView: View {
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 10) {
         // Identity: the commit-id (blue), monospaced — rather than a `#`-prefixed short id — as the
-        // History hover card shows it.
+        // History row shows it.
         Text(commit.shortID)
           .font(.system(.caption, design: .monospaced))
           .foregroundStyle(.blue)

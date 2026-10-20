@@ -542,8 +542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       }
       // ⌃⌘arrows: move focus between split panes (issue #3) — moved off ⌥⌘arrows, which now cycles
       // terminal tabs (issue #29). Wraps at a split's edge; consumed only when focus actually moves.
-      // (Virtual keycodes: left 123 / right 124 /
-      // down 125 / up 126.)
+      // (Virtual keycodes: left 123 / right 124 / down 125 / up 126.)
       let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
       if flags == [.command, .control], let direction = arrows[event.keyCode],
         MainActor.assumeIsolated({ Self.shortcutStore(for: window)?.focusPane(direction) ?? false })
@@ -879,7 +878,7 @@ struct HasWorkroomAnchorKey: FocusedValueKey {
   typealias Value = Bool
 }
 
-/// Whether Window ▸ "Move workroom into new window" applies to the selected workroom (#444): it has
+/// Whether Room ▸ "Move Workroom into New Window" applies to the selected workroom (#444): it has
 /// terminals here, no create is setting it up, and it is not the window's only workroom.
 struct CanMoveWorkroomKey: FocusedValueKey {
   typealias Value = Bool
@@ -896,7 +895,7 @@ struct CanNavigateForwardKey: FocusedValueKey {
 }
 
 /// Whether the selected workroom's project has a non-empty run command (issue #7) — published by
-/// RootView (observes the store), so the Run menu item disables when there's nothing to run.
+/// RootView (observes the store), so the Room ▸ Run item disables when there's nothing to run.
 struct HasRunCommandKey: FocusedValueKey {
   typealias Value = Bool
 }
@@ -908,7 +907,7 @@ struct RunCommandActiveKey: FocusedValueKey {
 }
 
 /// Whether the VCS toolbar's fetch / push / pull are currently possible — published by RootView so the
-/// Source Control menu items disable in step with the toolbar's own segments.
+/// Room menu's Fetch/Push/Pull items disable in step with the toolbar's own segments.
 ///
 /// Three separate keys rather than one, because they genuinely differ: pull needs a counterpart that
 /// exists on the remote (a fresh workroom has none), while push is what creates it.
@@ -923,7 +922,7 @@ struct VCSCanPullKey: FocusedValueKey {
 }
 
 /// Whether any run terminal exists to jump to (issue #7) — published by RootView, so the
-/// View ▸ Run Terminal item disables when there's none.
+/// Room ▸ Go to Run Terminal item disables when there's none.
 struct HasRunTerminalKey: FocusedValueKey {
   typealias Value = Bool
 }
@@ -1194,7 +1193,6 @@ struct WorkroomCommands: Commands {
     }
     return store.workroomStatuses[sid]?.pr
   }
-  private var hasPullRequest: Bool? { pullRequest != nil }
   /// Ready for Review or Convert to Draft, whichever an open pull request offers.
   private var draftAction: PRAction? {
     pullRequest.flatMap { pr in
@@ -1202,9 +1200,13 @@ struct WorkroomCommands: Commands {
     }
   }
   private var canChangeDraft: Bool? { draftAction != nil && store?.prActionInFlight == false }
-  /// A workroom rather than a root: only a workroom is labelled or deleted.
+  /// The selected workroom, as the menu's title and the workroom's right-click menu take it; a root
+  /// is never labelled or deleted, so it has none.
   private var inspectedPair: (workroom: Workroom, project: Project)? {
-    inspectedWorkroom.flatMap { store?.workroomAndProject(for: $0) }
+    guard let store, !store.hasModalPresentation, let sid = store.selectedTargetID else {
+      return nil
+    }
+    return store.workroomAndProject(for: sid)
   }
   private var canLabel: Bool? { inspectedPair != nil }
   private var canDelete: Bool? {
@@ -1545,7 +1547,7 @@ struct WorkroomCommands: Commands {
         Button("Go to Pull Request") {
           if let url = URL(string: pullRequest.url) { NSWorkspace.shared.open(url) }
         }
-        .disabled(!workroomCommandEnabled(hasPullRequest))
+        .disabled(detachedWindowKey)
         if let draftAction, let sid = inspectedWorkroom {
           Button(draftAction.label) {
             store?.performPRAction(draftAction, number: pullRequest.number, on: sid)
@@ -1677,7 +1679,7 @@ struct WorkroomCommands: Commands {
 
       // Cycle terminal tabs (⌥⌘←/→) and workroom tabs (⇧⌥⌘←/→) (issue #29). The keys are caught by
       // the AppDelegate monitor so they fire before the terminal; shown here for discoverability (the
-      // monitor consumes them, so no double-fire — like the Run menu). Disabled when there's nothing
+      // monitor consumes them, so no double-fire — like Room ▸ Run). Disabled when there's nothing
       // to cycle between (≤1 tab).
       Divider()
       Button("Next Terminal Tab") { store?.cycleTerminalTab(forward: true) }
