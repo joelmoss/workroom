@@ -22,7 +22,7 @@ The diagnosis has these buttons:
 - **Investigate** opens an interactive Claude Code or Codex session in the same folder, seeded with the failure, to dig deeper. **Settings ▸ AI Agents ▸ Investigate with** picks which. It appears once a diagnosis has arrived.
 - The **x** button dismisses it.
 
-The diagnosis always uses the Claude Code command-line tool installed on your Mac, with its tools turned off, so nothing in the failed command's output can make it run anything. Codex has no such mode, so it never runs the diagnosis. If Claude Code is not found, the footer says so, and when Codex is your pick for **Investigate with** it still offers **Investigate**. If Claude Code is not signed in, the footer tells you to run `claude login`. In a remote workroom it warns that a local diagnosis may be inaccurate.
+The diagnosis always uses the Claude Code command-line tool installed on your Mac, with its tools turned off, so nothing in the failed command's output can make it run anything. Codex has no such mode, so it never runs the diagnosis. If Claude Code is not found, the footer says so, and when Codex is installed and is your pick for **Investigate with**, it still offers **Investigate**. If neither is installed, it tells you to install one. If Claude Code is not signed in, the footer tells you to run `claude login`. In a remote workroom it warns that a local diagnosis may be inaccurate.
 
 Failed-command detection needs shell integration. See [Terminals and tabs](terminals-and-tabs.md#shell-integration).
 

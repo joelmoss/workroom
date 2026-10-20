@@ -17,7 +17,10 @@ struct FailedCommand: Equatable, Sendable {
 
 /// Distinct error states so the banner can show actionable guidance.
 enum CodingAgentErrorKind: Equatable, Sendable {
+  /// No claude, which runs the diagnosis, but codex is there for Investigate.
   case cliNotFound
+  /// Neither claude nor codex is installed.
+  case noAgentCLI
   case notAuthenticated
   case timedOut
   case emptyOutput
@@ -54,8 +57,10 @@ enum CodingAgentBannerState: Equatable, Sendable {
   /// The diagnosis ran claude and it wasn't on PATH, which is how "Investigate with: Auto" knows to
   /// pick codex.
   var claudeMissing: Bool {
-    if case .failure(_, .cliNotFound) = self { return true }
-    return false
+    switch self {
+    case .failure(_, .cliNotFound), .failure(_, .noAgentCLI): return true
+    default: return false
+    }
   }
 }
 
@@ -241,12 +246,17 @@ final class TerminalCodingAgentManager: ObservableObject {
     inFlight[tab] = Task { [weak self] in
       let outcome = await runner.diagnoseInline(
         systemPrompt: systemPrompt, model: model, prompt: prompt, cwd: cwd, timeout: timeout)
+      // Without claude, Investigate can still open codex, but only if codex is there.
+      let codexInstalled = outcome == .cliNotFound ? await runner.isInstalled(.codex) : false
       if Task.isCancelled { return }
-      self?.apply(outcome: outcome, tab: tab, failure: failure)
+      self?.apply(outcome: outcome, codexInstalled: codexInstalled, tab: tab, failure: failure)
     }
   }
 
-  private func apply(outcome: CodingAgentRunOutcome, tab: TerminalTab.ID, failure: FailedCommand) {
+  private func apply(
+    outcome: CodingAgentRunOutcome, codexInstalled: Bool, tab: TerminalTab.ID,
+    failure: FailedCommand
+  ) {
     // Ignore a result whose banner was superseded or dismissed while it ran.
     guard case .loading(let pending)? = banners[tab], pending == failure else { return }
     inFlight[tab] = nil
@@ -257,7 +267,7 @@ final class TerminalCodingAgentManager: ObservableObject {
       resolved =
         CodingAgentPrompt.parse(envelopeJSON: stdout).map { .ready(failure, $0) }
         ?? .failure(failure, .malformed)
-    case .cliNotFound: resolved = .failure(failure, .cliNotFound)
+    case .cliNotFound: resolved = .failure(failure, codexInstalled ? .cliNotFound : .noAgentCLI)
     case .notAuthenticated: resolved = .failure(failure, .notAuthenticated)
     case .timedOut: resolved = .failure(failure, .timedOut)
     // The workroom's folder is gone, not a real exit code — see `CodingAgentRunOutcome.launchFailed`.

@@ -158,11 +158,31 @@ final class TerminalCodingAgentManagerTests: XCTestCase {
   // MARK: outcome mapping
 
   func testCliNotFoundMapsToFailure() async {
-    let (manager, _) = makeManager(outcome: .cliNotFound, auto: true)
+    let (manager, runner) = makeManager(outcome: .cliNotFound, auto: true)
     let tab = UUID()
     manager.commandFinished(tab: tab, target: target, failure: failure(1))
     await manager.inFlight[tab]?.value
     XCTAssertEqual(manager.banners[tab], .failure(failure(1), .cliNotFound))
+    XCTAssertEqual(runner.installedChecks, [.codex])
+  }
+
+  /// With neither CLI, the banner says so and offers no Investigate that would open a missing codex.
+  func testCliNotFoundWithoutCodexMapsToNoAgentCLI() async {
+    let (manager, runner) = makeManager(outcome: .cliNotFound, auto: true)
+    runner.codexInstalled = false
+    let tab = UUID()
+    manager.commandFinished(tab: tab, target: target, failure: failure(1))
+    await manager.inFlight[tab]?.value
+    XCTAssertEqual(manager.banners[tab], .failure(failure(1), .noAgentCLI))
+  }
+
+  /// Codex is only looked for when claude is missing, not on every diagnosis.
+  func testCodexIsNotCheckedWhenClaudeAnswers() async {
+    let (manager, runner) = makeManager(auto: true)
+    let tab = UUID()
+    manager.commandFinished(tab: tab, target: target, failure: failure(1))
+    await manager.inFlight[tab]?.value
+    XCTAssertEqual(runner.installedChecks, [])
   }
 
   /// A killed diagnosis must map to `.other("interrupted")`, never `.other("exit 9")` — the whole
@@ -250,10 +270,17 @@ private final class OptInSpy {
 /// Records calls and returns a canned outcome, so the manager runs without a real `claude`/`codex`.
 private final class FakeCodingAgentRunner: CodingAgentRunning, @unchecked Sendable {
   let outcome: CodingAgentRunOutcome
+  var codexInstalled = true
   private(set) var calls = 0
   private(set) var lastCwd: String?
+  private(set) var installedChecks: [CodingAgentBackend] = []
 
   init(outcome: CodingAgentRunOutcome) { self.outcome = outcome }
+
+  func isInstalled(_ backend: CodingAgentBackend) async -> Bool {
+    installedChecks.append(backend)
+    return backend == .codex ? codexInstalled : true
+  }
 
   func diagnoseInline(
     systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
