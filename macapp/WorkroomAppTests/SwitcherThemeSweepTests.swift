@@ -155,6 +155,14 @@ final class SwitcherThemeSweepTests: XCTestCase {
         ("warning", tokens.nsWarning), ("success", tokens.nsSuccess),
         ("failure", tokens.nsFailure), ("conflict", tokens.nsConflict),
       ]
+      // Made readable, a warning must still look like one: walking toward a tinted fg once greyed
+      // iTerm2 Solarized Light's warning into its green.
+      if ThemeTokens.isWarningHue(theme.palette.indices.contains(3) ? theme.palette[3] : .black)
+        || ThemeTokens.isWarningHue(theme.palette.indices.contains(11) ? theme.palette[11] : .black)
+      {
+        XCTAssertTrue(
+          ThemeTokens.isWarningHue(tokens.nsWarning), "\(theme.name): warning lost its hue")
+      }
       for (surface, background) in surfaces {
         for (role, color) in roles {
           XCTAssertGreaterThanOrEqual(
