@@ -62,6 +62,8 @@ The last two switch to where you were last, not to the next one in position. The
 | Pull with Rebase | <kbd>⇧⌥⌘P</kbd> |
 | Open in Editor | <kbd>⇧⌘O</kbd> |
 
+In Workroom 2.1.0 this group is called **Run** and has only Run, Restart and Stop. Commit… has no shortcut there, Fetch, Push and Pull with Rebase are in the **Source Control** menu, and Open in Editor is under Navigation.
+
 ## View
 
 | Action | Keys |

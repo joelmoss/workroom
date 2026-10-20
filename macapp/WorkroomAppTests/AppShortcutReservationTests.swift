@@ -25,7 +25,7 @@ final class AppShortcutReservationTests: XCTestCase {
   /// Every Room menu Fetch/Push/Pull shortcut, checked against the menu's own declarations. The
   /// three-modifier ones (Fetch, Pull with Rebase) fail every other branch in the classifier, so
   /// they need their own — which is exactly the kind of gap that has bitten before.
-  func testEverySourceControlShortcutIsReserved() {
+  func testEveryRoomMenuRemoteShortcutIsReserved() {
     let menuShortcuts: [(String, NSEvent.ModifierFlags, String)] = [
       ("f", [.command, .shift, .option], "Fetch"),
       ("p", [.command, .shift], "Push"),

@@ -80,7 +80,7 @@ The switcher steps through workrooms in every window. <kbd>⌃Tab</kbd> does the
 
 A label is a name that shows in place of the workroom's own name. The workroom and its branch keep their names.
 
-1. Right-click the workroom, in the sidebar or on its tab, and choose **Set Label…**. The **Room** menu has it too.
+1. Right-click the workroom, in the sidebar or on its tab, and choose **Set Label…**. The **Room** menu has it too, except in Workroom 2.1.0.
 2. Type the label and click **Save**.
 
 Choose **Edit Label…** to change it, or **Remove Label** to go back to the real name. A label cannot match the name or label another workroom in the same project already shows.
@@ -104,7 +104,7 @@ A window's only workroom cannot move, because that would leave an empty window. 
 
 Deleting removes the workroom's directory. Workroom keeps the `workroom/<name>` branch in your repository.
 
-1. Hover the workroom in the sidebar and click the trash button, right-click it and choose **Delete Workroom…**, or choose **Room ▸ Delete Workroom…**.
+1. Hover the workroom in the sidebar and click the trash button, right-click it and choose **Delete Workroom…**, or choose **Room ▸ Delete Workroom…** (not in Workroom 2.1.0).
 2. Confirm in the **Delete 'name'?** dialog.
 
 The row leaves the sidebar at once. Workroom runs your project's `scripts/workroom_teardown` script in the background, then removes the directory. You cannot delete a workroom while its setup is still running.

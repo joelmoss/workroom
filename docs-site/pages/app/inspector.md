@@ -46,7 +46,7 @@ The list shows the newest commits first. Use **Load more** at the bottom to go f
 
 ## Commit
 
-Click the check-mark button in the **Changes** header, or choose **Room ▸ Commit…** (<kbd>⌥⌘↩</kbd>), to open **Commit changes**. It is off when there is nothing to commit.
+Click the check-mark button in the **Changes** header, or choose **Room ▸ Commit…** (<kbd>⌥⌘↩</kbd>), to open **Commit changes**. It is off when there is nothing to commit. Workroom 2.1.0 has only the button.
 
 1. Untick any files you do not want in the commit. A file that appears while the sheet is open arrives ticked. To commit a single file, use **Commit Only This File** on its row.
 2. Type a **Summary**. Add a **Description (optional)** if you want one.
@@ -64,7 +64,7 @@ The bar at the top of the Changes pane has three parts: the current branch, a sy
 - The sync button shows the next sensible step for the branch. It reads **Publish branch** for a branch that is not on the remote yet, **Push** when you have commits to push, and **Pull with rebase** when the remote has commits you lack, with counts of how many. With nothing to do it shows when you last fetched. Click it to run that step.
 - The fetch button, with the tooltip **Fetch from the remote**, contacts the remote and updates the counts.
 
-The **Room** menu has the same actions:
+The **Room** menu has the same actions. In Workroom 2.1.0 it is the **Source Control** menu.
 
 | Action | Shortcut |
 | --- | --- |
@@ -86,7 +86,7 @@ When the branch has a pull request:
 - A summary row and one row per check show the CI result. Click a check to open it on GitHub.
 - A draft pull request has a **Ready for Review** button.
 - The merge button merges the pull request into its base branch on GitHub, after you confirm. Its drop-down chooses the method: **Create a merge commit**, **Squash and merge** or **Rebase and merge**. Your choice is remembered.
-- The header's **Pull request actions** menu has **Go to Pull Request**, **Ready for Review** or **Convert to Draft**, **Close Pull Request** and **Reopen Pull Request**. **Go to Pull Request**, and **Ready for Review** or **Convert to Draft**, are also in the **Room** menu.
+- The header's **Pull request actions** menu has **Go to Pull Request**, **Ready for Review** or **Convert to Draft**, **Close Pull Request** and **Reopen Pull Request**. **Go to Pull Request**, and **Ready for Review** or **Convert to Draft**, are also in the **Room** menu, except in Workroom 2.1.0.
 
 With no pull request the section says **No pull request**. Workroom does not open pull requests itself. Create one with `gh pr create` in a terminal, or on GitHub. See [Review and ship](../guides/review-and-ship.md).
 
