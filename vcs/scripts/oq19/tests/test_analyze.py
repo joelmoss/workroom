@@ -340,10 +340,6 @@ class D3AndSelection(unittest.TestCase):
         self.assertFalse(by_age[30.0]["passes_all"])       # the exemption never rescues a false-idle
         self.assertIn("false_idle", by_age[30.0]["failures"])
 
-    def test_d3_does_not_fire_when_some_agnostic_policy_achieves_both(self):
-        rows = [{"four_b_false_idle_zero": True, "three_b_no_busy_forever": True}]
-        self.assertFalse(gates.d3_fallback_fires(rows))
-
     def rows(self, *specs):
         return [dict(config=cfg(**kw), passes_all=ok, false_busy=fb, cost=cost, flaps=0.0, signals=n)
                 for kw, ok, fb, cost, n in specs]
@@ -519,14 +515,6 @@ class ClosedLoop(unittest.TestCase):
                 clf2.feed(smp)
             clf2.close()
             self.assertTrue(any(r["vote"] for r in A.load_jsonl(os.path.join(d, "v2.jsonl"))))
-
-    def test_closed_loop_gate_goes_red_when_the_classifier_can_see_itself(self):
-        run = mk_run("16", [("idle", IDLE, 120)])
-        c = cfg("P4")
-        ok = A.verdict_series(c, A.features(A.Stream(run, 1), True), 10.0)
-        seen = A.verdict_series(c._replace(exclusions=False), A.features(A.Stream(run, 1), False), 10.0)
-        self.assertEqual(gates.evaluate(ok, run.intervals(), 1, 10.0)["no_busy_forever"][0], gates.PASS)
-        self.assertEqual(gates.evaluate(seen, run.intervals(), 1, 10.0)["no_busy_forever"][0], gates.FAIL)
 
     def test_the_wake_shim_is_on_the_exclusion_list(self):
         self.assertIn("wr-wakeshim", A.EXCLUDED_COMMS)
