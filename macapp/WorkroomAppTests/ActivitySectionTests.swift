@@ -38,10 +38,9 @@ final class ActivitySectionTests: XCTestCase {
     XCTAssertEqual(ActivitySection.allCases, [.details, .changes, .files])
   }
 
-  func testEveryCaseHasNonEmptyLabelSystemImageAndShortcut() {
+  func testEveryCaseHasNonEmptyLabelAndShortcut() {
     for section in ActivitySection.allCases {
       XCTAssertFalse(section.label.isEmpty, "\(section) has an empty label")
-      XCTAssertFalse(section.systemImage.isEmpty, "\(section) has an empty systemImage")
       XCTAssertFalse(section.shortcutHint.isEmpty, "\(section) has an empty shortcut hint")
     }
   }

@@ -1262,6 +1262,19 @@ final class RemoteHostsTests: XCTestCase {
       RemoteWorkrooms.Place.exeDev.credentialHint?.contains("exe.dev/integrations") == true)
   }
 
+  /// The Details pane's link to a host: each provider's own page for the machine, as its web app
+  /// routes it; a container has none.
+  func testADashboardURLIsTheProvidersPageForTheMachine() {
+    let machine = "workroom-8a13f76f-01f4-45d1-9065-c14b5cbd86e1"
+    XCTAssertEqual(
+      RemoteWorkrooms.Place.boxd.dashboardURL(machine: machine)?.absoluteString,
+      "https://app.boxd.sh/machines?m=\(machine)")
+    XCTAssertEqual(
+      RemoteWorkrooms.Place.exeDev.dashboardURL(machine: machine)?.absoluteString,
+      "https://exe.dev/vm/\(machine)")
+    XCTAssertNil(RemoteWorkrooms.Place.container(.docker).dashboardURL(machine: machine))
+  }
+
   /// After a relaunch a boxd workroom is reached without Docker: its driver is made by name, with
   /// the org and account its record holds, and a missing container runtime never reads as its host
   /// being gone, which would report a closed pane's session ended while it runs on (#356).

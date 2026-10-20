@@ -25,14 +25,13 @@ struct DetailsPanel: View {
   private func details(_ target: TerminalTarget) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 12) {
-        // The glyph the sidebar and tab bar mark it with: a house for the project's root.
-        let isRoot: Bool = {
-          if case .root = store.inspectorTargetID { return true }
-          return false
-        }()
-        fact(
-          "Running on", target.hostKind ?? "This Mac",
-          icon: isRoot ? "house" : target.workroomGlyph)
+        // The provider's name links to the machine's page on its dashboard.
+        let dashboard = target.machineName.flatMap { machine in
+          target.hostPlace.flatMap { place in
+            place.dashboardURL(machine: machine).map { (place.displayName, $0) }
+          }
+        }
+        fact("Running on", target.hostKind ?? "This Mac", link: dashboard)
         if let machine = target.machineName { fact("Machine Name", machine, copyable: true) }
         fact(target.hostKind == nil ? "Path" : "Path on its host", target.path, copyable: true)
         if let note = target.remoteNote {
@@ -55,11 +54,13 @@ struct DetailsPanel: View {
   }
 
   private func fact(
-    _ title: String, _ value: String, icon: String? = nil, copyable: Bool = false
+    _ title: String, _ value: String, copyable: Bool = false,
+    link: (text: String, url: URL)? = nil
   ) -> some View {
-    VStack(alignment: .leading, spacing: 1) {
-      HStack(spacing: 2) {
-        Text(title).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+    VStack(alignment: .leading, spacing: 3) {
+      Text(title).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+      HStack(alignment: .top, spacing: 2) {
+        factValue(value, copyable: copyable, link: link)
         if copyable {
           InspectorHeaderButton(
             systemImage: "doc.on.doc", help: "Copy \(title.lowercased())", compact: true
@@ -67,25 +68,42 @@ struct DetailsPanel: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(value, forType: .string)
           }
+          // Its glyph on the value's first line.
+          .padding(.top, -3)
         }
       }
-      // The compact copy button's height, so a label without one sits the same as one with.
-      .frame(minHeight: 18)
-      HStack(alignment: .firstTextBaseline, spacing: 5) {
-        if let icon {
-          Image(systemName: icon).font(.caption).foregroundStyle(theme.tokens.fgMuted)
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  private func factValue(
+    _ value: String, copyable: Bool, link: (text: String, url: URL)?
+  ) -> some View {
+    // Every value the same size. A name or path to copy into a terminal is code-like, so
+    // monospaced; "Running on" is prose.
+    Group {
+      // A link ends the value ("Remote workroom on boxd"), with the external-link mark after it.
+      if let link, value.hasSuffix(link.text) {
+        HStack(spacing: 0) {
+          Text(value.dropLast(link.text.count)).foregroundStyle(theme.tokens.fg)
+          Link(destination: link.url) {
+            HStack(spacing: 2) {
+              Text(link.text)
+              Image(systemName: "arrow.up.forward.square")
+            }
+          }
+          .foregroundStyle(Color(nsColor: .linkColor))
+          .help(link.url.absoluteString)
         }
-        // Every value the same size. A name or path to copy into a terminal is code-like, so
-        // monospaced; "Running on" is prose.
+      } else {
         Text(value)
-          .font(.system(size: 11, design: copyable ? .monospaced : .default))
           .foregroundStyle(theme.tokens.fg)
           .textSelection(.enabled)
           .lineLimit(3)
           .truncationMode(.middle)
       }
     }
-    .accessibilityElement(children: .combine)
+    .font(.system(size: 11, design: copyable ? .monospaced : .default))
   }
 }
 
@@ -102,10 +120,13 @@ struct InspectorWorkroomHeader: View {
         if let sid = store.inspectorTargetID, let target = store.inspectorTarget {
           // `project / workroom`, as the pane title bar and the tab chips write it; a root is its
           // project's name alone.
+          // Led by the glyph the sidebar and tab bar mark it with: a house for a root.
+          let workroom = WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target)
           HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Image(systemName: workroom == nil ? "house" : target.workroomGlyph)
+              .foregroundStyle(theme.tokens.fgMuted)
             Text(store.project(forTargetID: target.id)?.displayName ?? target.title)
-            if let workroom = WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target)
-            {
+            if let workroom {
               Text("/").foregroundStyle(.tertiary)
               Text(workroom)
             }

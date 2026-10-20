@@ -45,6 +45,20 @@ enum RemoteWorkrooms {
       }
     }
 
+    /// The host's own page on its provider's dashboard, or nil for a container, which has none.
+    /// Read from the providers' web apps (2026-10-20): boxd's machines list selects `?m=<name>`,
+    /// and exe.dev serves `/vm/<name>` behind its sign-in.
+    func dashboardURL(machine: String) -> URL? {
+      switch self {
+      case .container: return nil
+      case .boxd:
+        var url = URLComponents(string: "https://app.boxd.sh/machines")!
+        url.queryItems = [URLQueryItem(name: "m", value: machine)]
+        return url.url
+      case .exeDev: return URL(string: "https://exe.dev/vm/")?.appendingPathComponent(machine)
+      }
+    }
+
     /// One of its hosts, in a sentence: "a Docker container on this Mac", "a boxd machine".
     var hostPhrase: String {
       switch self {
