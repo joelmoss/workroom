@@ -140,11 +140,16 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Find Previous", keys: "⇧⌘G"),
       ]),
     ShortcutGroup(
-      title: "Run",
+      title: "Room",
       items: [
         ShortcutItem(label: "Run", keys: "⌘R"),
         ShortcutItem(label: "Restart", keys: "⌥⌘R"),
         ShortcutItem(label: "Stop", keys: "⇧⌘R"),
+        ShortcutItem(label: "Commit…", keys: "⌥⌘↩"),
+        ShortcutItem(label: "Fetch", keys: "⇧⌥⌘F"),
+        ShortcutItem(label: "Push", keys: "⇧⌘P"),
+        ShortcutItem(label: "Pull with Rebase", keys: "⇧⌥⌘P"),
+        ShortcutItem(label: "Open in Editor", keys: "⇧⌘O"),
       ]),
     ShortcutGroup(
       title: "View",
@@ -162,7 +167,6 @@ extension KeyboardShortcutsView {
       items: [
         ShortcutItem(label: "Back", keys: "⌘["),
         ShortcutItem(label: "Forward", keys: "⌘]"),
-        ShortcutItem(label: "Open in Editor", keys: "⇧⌘O"),
         ShortcutItem(label: "Next Notification", keys: "⇧⌘N"),
         ShortcutItem(label: "Go to Terminal That Needs You", keys: "⇧⌘M"),
       ]),

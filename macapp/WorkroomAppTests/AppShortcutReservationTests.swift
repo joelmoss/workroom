@@ -39,6 +39,14 @@ final class AppShortcutReservationTests: XCTestCase {
     }
   }
 
+  /// Room ▸ Commit… (⌥⌘↩), matched by Return's key code; a bare or ⌘-only Return stays the
+  /// terminal's.
+  func testCommitShortcutIsReserved() {
+    XCTAssertTrue(reserved("\r", [.command, .option], keyCode: 36), "⌥⌘↩")
+    XCTAssertFalse(reserved("\r", [], keyCode: 36), "↩")
+    XCTAssertFalse(reserved("\r", .option, keyCode: 36), "⌥↩")
+  }
+
   // MARK: Regression guard for the combinations already reserved
 
   func testExistingShiftCommandShortcutsStayReserved() {

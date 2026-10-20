@@ -81,7 +81,7 @@ A whole workroom, with all of its terminals, can move to a new window or into an
 
 - Drag a workroom's tab, or its title bar, out of the window. Drop it on another Workroom window to join that window, or anywhere else to open a new one.
 - Right-click a workroom and choose **Move to New Window**.
-- Use **Window ▸ Move workroom into new window**.
+- Use **Room ▸ Move Workroom into New Window**.
 
 A terminal can also move by itself with **Move to New Window** from its tab menu, right-click menu or sidebar row, then **Move Back to Main Window**. A window's only workroom cannot move. More in [Workrooms](workrooms.md#move-a-workroom-to-another-window).
 

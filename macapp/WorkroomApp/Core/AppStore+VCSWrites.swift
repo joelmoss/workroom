@@ -8,6 +8,20 @@ import WorkroomVCS
 /// from a fresh probe) and use `selectedStatusWorkItem(for:)`, `refreshStatus(for:)` and the
 /// `beginWrite`/`endWrite` bookkeeping, which stay with the status code.
 extension AppStore {
+  /// Whether `sid` has anything a commit could record, and none is in flight: the Changes header's
+  /// commit button and Room ▸ Commit… both ask this.
+  func canCommit(_ sid: SidebarID?) -> Bool {
+    guard let sid, sid.isStatusable, let status = workroomStatuses[sid], !isCommitting(sid)
+    else { return false }
+    return !(status.isClean || status.isUnknown)
+  }
+
+  /// Open the commit dialog for `sid`, when it has something to commit.
+  func requestCommit(_ sid: SidebarID?) {
+    guard let sid, canCommit(sid), selectedStatusWorkItem(for: sid) != nil else { return }
+    pendingCommit = PendingCommit(sid: sid)
+  }
+
   /// Run a PR write action (Phase 2b) on the selected workroom's PR: shell to `gh`, refresh the PR
   /// on success, surface `stderr` on failure. In fixture mode it optimistically updates the seeded
   /// status instead of spawning `gh`, so the actions menu is exercisable hermetically. Delegates the

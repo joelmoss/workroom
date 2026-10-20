@@ -80,7 +80,7 @@ The switcher steps through workrooms in every window. <kbd>⌃Tab</kbd> does the
 
 A label is a name that shows in place of the workroom's own name. The workroom and its branch keep their names.
 
-1. Right-click the workroom, in the sidebar or on its tab, and choose **Set Label…**.
+1. Right-click the workroom, in the sidebar or on its tab, and choose **Set Label…**. The **Room** menu has it too.
 2. Type the label and click **Save**.
 
 Choose **Edit Label…** to change it, or **Remove Label** to go back to the real name. A label cannot match the name or label another workroom in the same project already shows.
@@ -96,7 +96,7 @@ You can give a workroom a window of its own, or move it into another Workroom wi
 - Drag its tab, or its title bar, out of the window. It opens in a new window at the drop point.
 - Drop it on another Workroom window to join that window. It lands at the slot under your cursor on that window's tab bar, or at the end.
 - Right-click the workroom, in the sidebar or on its tab, and choose **Move to New Window**.
-- Use **Window ▸ Move workroom into new window** for the selected workroom.
+- Use **Room ▸ Move Workroom into New Window** for the selected workroom.
 
 A window's only workroom cannot move, because that would leave an empty window. The items are also off while the workroom is still being created.
 
@@ -104,7 +104,7 @@ A window's only workroom cannot move, because that would leave an empty window. 
 
 Deleting removes the workroom's directory. Workroom keeps the `workroom/<name>` branch in your repository.
 
-1. Hover the workroom in the sidebar and click the trash button, or right-click it and choose **Delete Workroom…**.
+1. Hover the workroom in the sidebar and click the trash button, right-click it and choose **Delete Workroom…**, or choose **Room ▸ Delete Workroom…**.
 2. Confirm in the **Delete 'name'?** dialog.
 
 The row leaves the sidebar at once. Workroom runs your project's `scripts/workroom_teardown` script in the background, then removes the directory. You cannot delete a workroom while its setup is still running.

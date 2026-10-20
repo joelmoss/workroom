@@ -44,7 +44,7 @@ Choose the editor in **Settings ▸ Terminal ▸ Open file paths in**. It lists 
 
 A <kbd>⌘</kbd>-click on anything else goes to the terminal as an ordinary click.
 
-To open the whole workroom, use **Go ▸ Open in** your editor, for example **Open in Zed** (<kbd>⇧⌘O</kbd>), or the editor button in the workroom's title bar. Its small arrow lets you pick a different editor. **File ▸ Reveal in Finder** shows the workroom's folder in Finder. Click the folder path in a pane's footer to copy it or reveal it.
+To open the whole workroom, use **Room ▸ Open in** your editor, for example **Open in Zed** (<kbd>⇧⌘O</kbd>), or the editor button in the workroom's title bar. Its small arrow lets you pick a different editor. **Room ▸ Reveal in Finder** shows the workroom's folder in Finder. Click the folder path in a pane's footer to copy it or reveal it.
 
 ## Shell integration
 
@@ -87,10 +87,10 @@ Set a run command for a project, such as `npm run dev`, and start it in any of i
 
 | To do this | Use |
 | --- | --- |
-| Run, or jump to the run if it is already going | <kbd>⌘R</kbd> (**Run ▸ Run**) |
-| Restart | <kbd>⌥⌘R</kbd> (**Run ▸ Restart**) |
-| Stop | <kbd>⇧⌘R</kbd> (**Run ▸ Stop**) |
-| Go to the run terminal | **Go ▸ Run Terminal** |
+| Run, or jump to the run if it is already going | <kbd>⌘R</kbd> (**Room ▸ Run**) |
+| Restart | <kbd>⌥⌘R</kbd> (**Room ▸ Restart**) |
+| Stop | <kbd>⇧⌘R</kbd> (**Room ▸ Stop**) |
+| Go to the run terminal | **Room ▸ Go to Run Terminal** |
 
 The workroom's title bar and the root row in the sidebar have the same buttons. While a run is going, the title bar shows **Restart** and **Stop**. **Stop** sends the command Ctrl-C and waits for it to exit. If it has not exited after about six seconds, Workroom force-quits it.
 
