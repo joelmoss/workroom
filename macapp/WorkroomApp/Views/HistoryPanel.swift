@@ -381,18 +381,30 @@ struct HistoryRow: View, Equatable {
 
 /// A row's branch/tag chips: as many whole ones as fit, then "+N" for the rest (its tooltip names
 /// them). A chip is never shortened, which left a row of empty capsules when there were many.
-private struct HistoryRefChips: View {
+struct HistoryRefChips: View {
   let refs: [String]
+
+  /// The most chips a row ever shows: more never fit the inspector's width. It bounds the layouts
+  /// `ViewThatFits` builds, which would otherwise be every count from all of them down to none,
+  /// quadratic in a commit's refs (Codex measured 2.8 s on the main thread for 200).
+  static let maxShown = 6
+
+  /// The chip counts tried, most first: all of them while that's at most `maxShown`, down to none
+  /// ("+N" alone).
+  static func shownCounts(for refs: Int) -> [Int] {
+    Array(stride(from: min(refs, maxShown), through: 0, by: -1))
+  }
 
   var body: some View {
     // The first option that fits wins; the last, "+N" alone, is shown even when nothing fits.
     ViewThatFits(in: .horizontal) {
-      ForEach(Array(stride(from: refs.count, through: 0, by: -1)), id: \.self) { shown in
+      ForEach(Self.shownCounts(for: refs.count), id: \.self) { shown in
         HStack(spacing: 6) {
           ForEach(refs.prefix(shown), id: \.self) { chip($0).help("Branch / tag") }
           if shown < refs.count {
             chip("+\(refs.count - shown)")
               .help(refs.dropFirst(shown).joined(separator: "\n"))
+              .accessibilityLabel(refs.dropFirst(shown).joined(separator: ", "))
           }
         }
         .fixedSize()

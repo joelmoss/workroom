@@ -293,4 +293,16 @@ final class HistoryRowInvalidationTests: XCTestCase {
       "first layout of a 200-commit page took \(String(format: "%.3f", elapsed))s on the main thread"
     )
   }
+
+  /// Value: protects=a row's ref chips build a bounded number of layouts however many refs its
+  /// commit has; fails_when=the candidates go back to one per ref count (quadratic, measured 2.8 s
+  /// for 200 refs); why_new=the cap is new; seam=none; no_claim=which candidate ViewThatFits picks
+  func testRefChipsTryABoundedNumberOfLayouts() {
+    XCTAssertEqual(HistoryRefChips.shownCounts(for: 0), [0])
+    XCTAssertEqual(HistoryRefChips.shownCounts(for: 3), [3, 2, 1, 0])
+    let many = HistoryRefChips.shownCounts(for: 200)
+    XCTAssertEqual(many.first, HistoryRefChips.maxShown)
+    XCTAssertEqual(many.count, HistoryRefChips.maxShown + 1)
+    XCTAssertEqual(many.last, 0)
+  }
 }
