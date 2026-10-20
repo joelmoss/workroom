@@ -53,19 +53,10 @@ struct MarkdownWebView: NSViewRepresentable {
     } else if pooled?.isLoaded == true {
       // Next turn, once SwiftUI has put the view in its window. Rendered here instead, before that,
       // a 370 KB file took ~50 ms longer to paint (measured with `make app-bench-markdown`).
-      // Skipped if the preview closed first and its page went back to the pool.
       let coordinator = context.coordinator
-      Task { @MainActor in
-        if webView.navigationDelegate === coordinator { coordinator.pageDidLoad() }
-      }
+      Task { @MainActor in coordinator.pageDidLoad() }
     }
     return webView
-  }
-
-  /// The page goes back to the pool for the next preview, unless its WebContent process died.
-  static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-    guard !coordinator.processTerminated else { return }
-    MarkdownWebViewPool.shared.give(webView)
   }
 
   /// A web view configured for an untrusted preview, not yet loaded. With `bootThemeVars`, the
@@ -179,13 +170,6 @@ struct MarkdownWebView: NSViewRepresentable {
       case allow  // keep it in the frame
       case openExternally(URL)  // hand to the user's browser, cancel the in-frame load
       case cancel  // drop it
-    }
-
-    /// Set when WebKit reports the page's WebContent process gone; such a page is not reused.
-    private(set) var processTerminated = false
-
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-      processTerminated = true
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -323,14 +307,13 @@ struct MarkdownWebView: NSViewRepresentable {
   }
 }
 
-/// Keeps one booted preview page ready. A fresh `WKWebView` costs ~100 ms to load the template
-/// before it can render, and the first one in the app 0.4–0.9 s more to spawn its WebContent process;
-/// a page taken from here renders at once. Prewarmed at launch, refilled whenever its page is taken,
-/// and a closed preview's page comes back here when the pool is empty or still booting its own.
+/// Keeps one booted preview page ready, so a preview skips spawning a WebContent process and loading
+/// the template before it can render: a 2 KB file paints in ~70 ms instead of ~112 (measured with
+/// `make app-bench-markdown`). Prewarmed at launch and refilled whenever its page is taken.
 ///
-/// Reuse means a later file can render in the process an earlier file's preview used. Every file is
-/// equally untrusted and goes through the same DOMPurify pass and CSP, the page has no cookies or
-/// network, and a returned page is emptied before it is handed out again.
+/// A closed preview's page is not taken back. A page booted for the next preview opens as fast as a
+/// reused one (~70 ms either way), even back to back, and a reused page would carry the previous
+/// file's memory, and its process, into the next file's preview.
 @MainActor
 final class MarkdownWebViewPool: NSObject, WKNavigationDelegate {
   static let shared = MarkdownWebViewPool()
@@ -357,18 +340,6 @@ final class MarkdownWebViewPool: NSObject, WKNavigationDelegate {
     spare = nil
     prewarm()
     return (webView, isLoaded)
-  }
-
-  /// Takes back a closed preview's page, emptied, when it beats what the pool holds: nothing, or a
-  /// spare still booting. Otherwise the page is let go.
-  func give(_ webView: WKWebView) {
-    guard spare == nil || !spareIsLoaded else { return }
-    webView.navigationDelegate = self
-    webView.evaluateJavaScript(
-      "window.__render(''); window.scrollTo(0, 0); getSelection().removeAllRanges();",
-      completionHandler: nil)
-    spare = webView
-    spareIsLoaded = true
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

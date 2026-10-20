@@ -180,18 +180,6 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
     lines.append("3 previews open at once → \(Set(pids).count) WebContent process(es)")
     hosts.removeAll()
 
-    // Each preview opened while the earlier ones stay open gets a page booted for it, never one
-    // a closed preview handed back: the first-use costs a reused page has already paid.
-    var freshOpens: [Double] = []
-    for _ in 0..<Self.samples {
-      for _ in 0..<80 where MarkdownWebViewPool.shared.spareIsLoaded == false {
-        try await Task.sleep(for: .milliseconds(25))
-      }
-      freshOpens.append(try await open(docs[0].source, tokens: light, keep: &hosts).elapsed)
-    }
-    record("open on a freshly booted page", "small", freshOpens)
-    hosts.removeAll()
-
     // What keeping a booted page ready costs while no preview is open.
     if let spare = MarkdownWebViewPool.shared.spare {
       memory(spare, label: "idle pooled page")
