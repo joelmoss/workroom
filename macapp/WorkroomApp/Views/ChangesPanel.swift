@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 import WorkroomVCS
@@ -226,10 +227,16 @@ struct RightInspector: View {
       // Failing checks only recolor an *open* PR — a merged (purple) / closed (red) badge shouldn't
       // be repainted by stale check history.
       let failing = pr.state == .open && PRPresentation.isFailing(status)
-      let tint: Color = failing ? ThemeService.shared.tokens.failure : badge.semantic.color
+      let tokens = ThemeService.shared.tokens
+      let tint: Color = failing ? tokens.failure : badge.semantic.color
+      // The traffic-light states draw their number over a wash of the same colour, so it is made
+      // readable on that wash; merged (purple) and draft (secondary) keep their colour.
+      let text = PRNumberBadge.trafficColor(badge.semantic, failing: failing, tokens).map {
+        Color(nsColor: tokens.readableOnOwnWash($0, washes: PRNumberBadge.washes))
+      }
       let failSuffix = failing ? ", checks failing" : ""
       PRNumberBadge(
-        number: pr.number, tint: tint, url: URL(string: pr.url),
+        number: pr.number, tint: tint, text: text ?? tint, url: URL(string: pr.url),
         help: "Pull request #\(String(pr.number)): \(badge.label)\(failSuffix). Open in browser.",
         accessibility:
           "Pull request #\(String(pr.number)), \(badge.label)\(failSuffix), open in browser")
@@ -400,8 +407,24 @@ private struct ChangedFileCountBadge: View {
 /// in the browser, tinted by PR state (red when checks fail). A standalone view so it can carry its
 /// own `@State` hover, which the `@ViewBuilder` accessory can't — the capsule fill deepens on hover.
 private struct PRNumberBadge: View {
+  /// The capsule's tint at rest and on hover.
+  static let washes: [CGFloat] = [0.22, 0.34]
+
+  /// The traffic-light token behind a state's tint, or nil for merged and draft.
+  static func trafficColor(
+    _ semantic: PRPresentation.Semantic, failing: Bool, _ tokens: ThemeTokens
+  ) -> NSColor? {
+    if failing { return tokens.nsFailure }
+    switch semantic {
+    case .open: return tokens.nsSuccess
+    case .closed: return tokens.nsFailure
+    case .draft, .merged: return nil
+    }
+  }
+
   let number: Int
   let tint: Color
+  let text: Color
   let url: URL?
   let help: String
   let accessibility: String
@@ -416,9 +439,9 @@ private struct PRNumberBadge: View {
       // group it as "#1,042" — a PR number is an identifier, not a quantity.
       Text(verbatim: "#\(number)")
         .font(.caption2).fontWeight(.semibold).monospacedDigit()
-        .foregroundStyle(tint)
+        .foregroundStyle(text)
         .padding(.horizontal, 5).padding(.vertical, 1)
-        .background(Capsule().fill(tint.opacity(hovering ? 0.34 : 0.22)))
+        .background(Capsule().fill(tint.opacity(hovering ? Self.washes[1] : Self.washes[0])))
         .contentShape(Capsule())
     }
     .buttonStyle(.plain)
