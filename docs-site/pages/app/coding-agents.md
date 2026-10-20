@@ -19,10 +19,10 @@ The diagnosis has these buttons:
 
 - **Diagnose** asks a coding agent for the cause and a suggested fix.
 - **Insert fix** types the suggested command into the terminal without running it. Press <kbd>Return</kbd> yourself to run it. If the command looks destructive, Workroom asks you to confirm before it inserts it.
-- **Investigate** opens an interactive agent session in the same folder, to dig deeper. It appears once a diagnosis has arrived.
+- **Investigate** opens an interactive Claude Code or Codex session in the same folder, seeded with the failure, to dig deeper. **Settings ▸ AI Agents ▸ Investigate with** picks which. It appears once a diagnosis has arrived.
 - The **x** button dismisses it.
 
-The diagnosis uses the Claude Code or Codex command-line tool installed on your Mac. If neither is found, the footer tells you to install one. If the tool is not signed in, it tells you to run `claude login`. In a remote workroom it warns that a local diagnosis may be inaccurate.
+The diagnosis always uses the Claude Code command-line tool installed on your Mac, with its tools turned off, so nothing in the failed command's output can make it run anything. Codex has no such mode, so it never runs the diagnosis. If Claude Code is not found, the footer says so, and when Codex is your pick for **Investigate with** it still offers **Investigate**. If Claude Code is not signed in, the footer tells you to run `claude login`. In a remote workroom it warns that a local diagnosis may be inaccurate.
 
 Failed-command detection needs shell integration. See [Terminals and tabs](terminals-and-tabs.md#shell-integration).
 
@@ -30,7 +30,7 @@ Failed-command detection needs shell integration. See [Terminals and tabs](termi
 
 These are in **Settings ▸ AI Agents**. In Workroom 2.1.0 the pane is called **Agent**.
 
-- **Diagnose with** picks the CLI: **Auto (Claude, else Codex)**, **Claude** or **Codex**. Codex is used only for the interactive **Investigate** action, never for the automatic diagnosis.
+- **Investigate with** picks the agent **Investigate** opens: **Auto (Claude, else Codex)**, **Claude** or **Codex**. **Auto** opens Claude Code, or Codex when Claude Code is not installed. In Workroom 2.1.0 this setting is called **Diagnose with**, and **Investigate** always opens Claude Code.
 - **Diagnose automatically** runs the diagnosis as soon as a command fails, instead of waiting for you to click **Diagnose**.
 - **Redact obvious secrets before sending** masks obvious secrets in the output before it reaches the agent. The pane says that redaction is best-effort, not a guarantee.
 

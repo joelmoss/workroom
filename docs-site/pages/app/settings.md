@@ -68,7 +68,7 @@ This pane is called **Agent** in Workroom 2.1.0.
 
 | Setting | What it does |
 | --- | --- |
-| **Diagnose with** | The command-line tool that diagnoses a failed command: **Auto (Claude, else Codex)**, **Claude** or **Codex**. |
+| **Investigate with** | The agent the **Investigate** button opens: **Auto (Claude, else Codex)**, **Claude** or **Codex**. The diagnosis itself always uses Claude Code. Called **Diagnose with** in Workroom 2.1.0. |
 | **Diagnose automatically** | Runs the diagnosis as soon as a command fails, instead of waiting for you to ask. |
 | **Redact obvious secrets before sending** | Masks obvious secrets in a failed command's output before it goes to the agent. Best-effort, not a guarantee. |
 

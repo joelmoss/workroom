@@ -549,12 +549,12 @@ private struct CodingAgentSettingsPane: View {
       // Inline terminal agent (issue #49): always on — a failed command is diagnosed by the local
       // CLI and a fix suggested in the pane's status bar (+ a ✦ badge on the tab).
       Section {
-        Picker("Diagnose with", selection: $agentBackend) {
+        Picker("Investigate with", selection: $agentBackend) {
           Text("Auto (Claude, else Codex)").tag("auto")
           Text("Claude").tag("claude")
           Text("Codex").tag("codex")
         }
-        .help("Which local CLI diagnoses a failed command.")
+        .help("Which local agent CLI the Investigate button opens.")
 
         Toggle("Diagnose automatically", isOn: $agentAutoDiagnose)
           .help("Run the diagnosis as soon as a command fails, instead of waiting for a click.")
@@ -565,10 +565,10 @@ private struct CodingAgentSettingsPane: View {
             .help("Mask obvious secrets in the command output before sending it to the agent.")
 
           Text(
-            "A failed command's text and output are sent to the local "
-              + "\(agentBackend == "codex" ? "codex" : "claude") CLI for a suggested fix. "
-              + "Secret redaction is best-effort, not a guarantee — Codex is used only for the "
-              + "interactive “Investigate” action, never the automatic diagnosis."
+            "A failed command's text and output are sent to the local claude CLI for a "
+              + "suggested fix, with its tools turned off. Codex has no such mode, so it only "
+              + "runs when you choose “Investigate”. Secret redaction is best-effort, not a "
+              + "guarantee."
           )
           .font(.caption)
           .foregroundStyle(.secondary)

@@ -78,6 +78,19 @@ final class CodingAgentPromptTests: XCTestCase {
     XCTAssertTrue(line.hasSuffix("'"))
     XCTAssertTrue(line.contains("npm run build"))
     XCTAssertTrue(line.contains("missing dep"))
+    let codex = CodingAgentPrompt.investigateCommandLine(for: .ready(failure, diag), agent: .codex)
+    XCTAssertEqual(codex, "codex " + line.dropFirst("claude ".count))
+  }
+
+  /// "Investigate with": Claude and Codex are taken as set; Auto is claude, else codex.
+  func testInvestigateAgentFollowsTheSetting() {
+    XCTAssertEqual(
+      CodingAgentBackend.forInvestigate(setting: "claude", claudeMissing: true), .claude)
+    XCTAssertEqual(
+      CodingAgentBackend.forInvestigate(setting: "codex", claudeMissing: false), .codex)
+    XCTAssertEqual(
+      CodingAgentBackend.forInvestigate(setting: "auto", claudeMissing: false), .claude)
+    XCTAssertEqual(CodingAgentBackend.forInvestigate(setting: "auto", claudeMissing: true), .codex)
   }
 
   // MARK: parse (envelope)
