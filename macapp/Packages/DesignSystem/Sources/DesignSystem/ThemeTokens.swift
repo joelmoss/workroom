@@ -300,6 +300,17 @@ public struct ThemeTokens {
     return current
   }
 
+  /// `color` made readable on `panel` washed with `color` itself at each of `washes`, for text drawn
+  /// over a tint of its own colour (the PR number badge). Text on its own wash caps well below
+  /// `statusGrounds`' 3:1, so this walks further, toward black or white as the status tokens do.
+  public func readableOnOwnWash(_ color: NSColor, washes: [CGFloat]) -> NSColor {
+    let panel = nsPanel.usingColorSpace(.sRGB) ?? nsPanel
+    let tint = color.usingColorSpace(.sRGB) ?? color
+    let target: NSColor = Self.luminance(of: nsFg) > Self.luminance(of: nsBg) ? .white : .black
+    let grounds = washes.map { panel.blended(withFraction: $0, of: tint) ?? panel }
+    return Self.legible(color, on: grounds, towards: target)
+  }
+
   /// Whether a colour reads as a warning: orange through yellow (10°–70°) with real saturation.
   /// Orange stays in because a dozen bundled themes (Zenbones, Xcode Light, Iceberg) deliberately use
   /// it in slot 3; lime (Night Owl, 84°), red and grey are out.

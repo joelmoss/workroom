@@ -175,6 +175,25 @@ final class SwitcherThemeSweepTests: XCTestCase {
         "\(theme.name): the stale clock disappears on its disk")
     }
   }
+
+  /// The PR number badge draws an open or closed PR's number over a wash of its own colour, at rest
+  /// and on hover. Drawn in the plain token, 164 of 464 theme/state pairs were under 3:1 there
+  /// (Farmhouse Dark open: 2.85:1, 2.37:1 hovered).
+  func testEveryBundledThemeKeepsThePRNumberReadableOnItsPill() throws {
+    for theme in try bundledThemes() {
+      let tokens = ThemeTokens(preview: theme)
+      let panel = try XCTUnwrap(tokens.nsPanel.usingColorSpace(.sRGB))
+      for (state, color) in [("open", tokens.nsSuccess), ("closed", tokens.nsFailure)] {
+        let text = tokens.readableOnOwnWash(color, washes: [0.22, 0.34])
+        for wash in [0.22, 0.34] as [CGFloat] {
+          let pill = try XCTUnwrap(panel.blended(withFraction: wash, of: color))
+          XCTAssertGreaterThanOrEqual(
+            ThemeTokens.contrastRatio(text, pill), 3 - 0.01,
+            "\(theme.name): the \(state) PR number disappears on its \(wash) pill")
+        }
+      }
+    }
+  }
 }
 
 extension XCTestCase {
