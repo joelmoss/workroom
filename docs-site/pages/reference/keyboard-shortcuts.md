@@ -49,13 +49,18 @@ The last two switch to where you were last, not to the next one in position. The
 | Find Next | <kbd>⌘G</kbd> |
 | Find Previous | <kbd>⇧⌘G</kbd> |
 
-## Run
+## Room
 
 | Action | Keys |
 | --- | --- |
 | Run | <kbd>⌘R</kbd> |
 | Restart | <kbd>⌥⌘R</kbd> |
 | Stop | <kbd>⇧⌘R</kbd> |
+| Commit… | <kbd>⌥⌘↩</kbd> |
+| Fetch | <kbd>⇧⌥⌘F</kbd> |
+| Push | <kbd>⇧⌘P</kbd> |
+| Pull with Rebase | <kbd>⇧⌥⌘P</kbd> |
+| Open in Editor | <kbd>⇧⌘O</kbd> |
 
 ## View
 
@@ -75,7 +80,6 @@ The last two switch to where you were last, not to the next one in position. The
 | --- | --- |
 | Back | <kbd>⌘[</kbd> |
 | Forward | <kbd>⌘]</kbd> |
-| Open in Editor | <kbd>⇧⌘O</kbd> |
 | Next Notification | <kbd>⇧⌘N</kbd> |
 | Go to Terminal That Needs You | <kbd>⇧⌘M</kbd> |
 
@@ -101,8 +105,5 @@ The sheet doesn't list these, but the menus have them.
 | History | <kbd>⌥⌘Y</kbd> |
 | Files | <kbd>⌥⌘F</kbd> |
 | Details | <kbd>⌥⌘I</kbd> |
-| Fetch | <kbd>⇧⌥⌘F</kbd> |
-| Push | <kbd>⇧⌘P</kbd> |
-| Pull with Rebase | <kbd>⇧⌥⌘P</kbd> |
 
 Details is Nightly only. See [Details and ports](../app/details-and-ports.md).

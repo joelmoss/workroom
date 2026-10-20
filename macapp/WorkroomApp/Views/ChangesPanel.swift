@@ -101,12 +101,7 @@ struct RightInspector: View {
   }
 
   /// Whether the inspector's target has anything a commit could record.
-  private var canCommitSelectedTarget: Bool {
-    guard let sid = store.inspectorTargetID, sid.isStatusable,
-      let status = store.workroomStatuses[sid], !store.isCommitting(sid)
-    else { return false }
-    return !(status.isClean || status.isUnknown)
-  }
+  private var canCommitSelectedTarget: Bool { store.canCommit(store.inspectorTargetID) }
 
   private var commitButtonHelp: String {
     canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
@@ -138,10 +133,7 @@ struct RightInspector: View {
               systemImage: "checkmark.circle", help: commitButtonHelp,
               disabled: !canCommitSelectedTarget
             ) {
-              guard let sid = store.inspectorTargetID,
-                store.selectedStatusWorkItem(for: sid) != nil
-              else { return }
-              store.pendingCommit = PendingCommit(sid: sid)
+              store.requestCommit(store.inspectorTargetID)
             }
             .accessibilityIdentifier("changes.commitButton")
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {

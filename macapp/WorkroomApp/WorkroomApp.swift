@@ -4,6 +4,7 @@ import SwiftUI
 import UserNotifications
 import WorkroomDomain
 import WorkroomSystem
+import WorkroomVCS
 
 // No `@main`: the entry point is `main.swift`, which dispatches Ghostty's `+action` CLI when this
 // binary is invoked through the `Contents/MacOS/ghostty` symlink, and calls `WorkroomApp.main()`
@@ -1181,6 +1182,124 @@ struct WorkroomCommands: Commands {
     return !target.isMissing
   }
 
+  // The Room menu's items that only buttons offered before: read from the store for the workroom
+  // the inspector shows, and off while a dialog or sheet is up, as `MenuStateValues` gates the rest.
+  private var inspectedWorkroom: SidebarID? {
+    store?.hasModalPresentation == false ? store?.inspectorTargetID : nil
+  }
+  private var canCommit: Bool? { inspectedWorkroom.map { store?.canCommit($0) == true } }
+  private var pullRequest: PullRequestInfo? {
+    guard let store, let sid = inspectedWorkroom, store.githubCLIStatus == .available else {
+      return nil
+    }
+    return store.workroomStatuses[sid]?.pr
+  }
+  private var hasPullRequest: Bool? { pullRequest != nil }
+  /// Ready for Review or Convert to Draft, whichever an open pull request offers.
+  private var draftAction: PRAction? {
+    pullRequest.flatMap { pr in
+      PRAction.available(for: pr).first { $0 == .markReady || $0 == .convertToDraft }
+    }
+  }
+  private var canChangeDraft: Bool? { draftAction != nil && store?.prActionInFlight == false }
+  /// A workroom rather than a root: only a workroom is labelled or deleted.
+  private var inspectedPair: (workroom: Workroom, project: Project)? {
+    inspectedWorkroom.flatMap { store?.workroomAndProject(for: $0) }
+  }
+  private var canLabel: Bool? { inspectedPair != nil }
+  private var canDelete: Bool? {
+    inspectedPair.map { store?.isCreatingWorkroom($0.workroom, in: $0.project) == false }
+  }
+
+  /// The Room menu's heading: the selected workroom as `InspectorWorkroomHeader` names it.
+  private var workroomMenuTitle: String? {
+    guard !detachedWindowKey, let store, let sid = store.selectedTargetID,
+      let target = store.selectedTarget
+    else { return nil }
+    let project = store.project(forTargetID: target.id)?.displayName ?? target.title
+    return WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target).map {
+      "\(project) / \($0)"
+    } ?? project
+  }
+
+  /// The inspector's panes, in its activity bar's order (Details first). In View with their
+  /// shortcuts, and copied into Room without them, so no key equivalent belongs to two items.
+  @ViewBuilder
+  private func inspectorPaneToggles(shortcuts: Bool) -> some View {
+    // Details (where the selected workroom runs, and its ports) and Files are single-section panes:
+    // showing one selects it and opens the inspector; turning it off hides the pane. Bumping
+    // `inspectorToggles` makes the bar + inspector re-render synchronously, even when the section
+    // stays put (see `AppStore.apply`).
+    Toggle("Details", isOn: paneBinding(.details))
+      .keyboardShortcut(shortcuts ? KeyboardShortcut("i", modifiers: [.command, .option]) : nil)
+      .disabled(modalBlocked || noProjects)
+    // Changes, History and Pull Request share the **Changes** pane (a stack), so "showing" one means
+    // selecting that pane, opening the inspector, and expanding its sub-section; the checkmark is on
+    // only when all three hold. Turning it off just collapses the sub-section. (History is ⌥⌘Y:
+    // ⌥⌘H is macOS "Hide Others".)
+    Toggle("Changes", isOn: subSectionBinding(\.changesSectionCollapsed))
+      .keyboardShortcut(shortcuts ? KeyboardShortcut("c", modifiers: [.command, .option]) : nil)
+      .disabled(modalBlocked || noProjects)
+    Toggle("History", isOn: subSectionBinding(\.historySectionCollapsed))
+      .keyboardShortcut(shortcuts ? KeyboardShortcut("y", modifiers: [.command, .option]) : nil)
+      .disabled(modalBlocked || noProjects)
+    Toggle("Pull Request", isOn: subSectionBinding(\.prSectionCollapsed))
+      .keyboardShortcut(shortcuts ? KeyboardShortcut("p", modifiers: [.command, .option]) : nil)
+      .disabled(modalBlocked || noProjects)
+    Toggle("Files", isOn: paneBinding(.files))
+      .keyboardShortcut(shortcuts ? KeyboardShortcut("f", modifiers: [.command, .option]) : nil)
+      .disabled(modalBlocked || noProjects)
+  }
+
+  private func paneBinding(_ section: ActivitySection) -> Binding<Bool> {
+    Binding(
+      get: { showInspector && store?.activeInspectorSection == section },
+      set: { on in
+        store?.activeInspectorSection = section
+        showInspector = on
+        store?.inspectorToggles += 1
+      })
+  }
+
+  private func subSectionBinding(_ collapsed: ReferenceWritableKeyPath<AppStore, Bool>)
+    -> Binding<Bool>
+  {
+    Binding(
+      get: {
+        showInspector && store?.activeInspectorSection == .changes
+          && store?[keyPath: collapsed] == false
+      },
+      set: { on in
+        guard let store else { return }
+        if on {
+          store.activeInspectorSection = .changes
+          showInspector = true
+          store[keyPath: collapsed] = false
+          store.inspectorToggles += 1
+        } else {
+          store[keyPath: collapsed] = true
+        }
+      })
+  }
+
+  /// The run command's lifecycle (issue #7): Run is disabled when no command is configured,
+  /// Restart/Stop only while it's running.
+  @ViewBuilder private var runItems: some View {
+    Button("Run") { store?.runOrFocusRunCommand() }
+      .keyboardShortcut("r", modifiers: .command)
+      .disabled(!workroomCommandEnabled(hasRunCommand))
+    Button("Restart") { store?.restartSelectedRunCommand() }
+      .keyboardShortcut("r", modifiers: [.command, .option])
+      .disabled(!workroomCommandEnabled(runCommandActive))
+    Button("Stop") { store?.stopSelectedRunCommand() }
+      .keyboardShortcut("r", modifiers: [.command, .shift])
+      .disabled(!workroomCommandEnabled(runCommandActive))
+    // Jump to the run terminal if one exists — navigation only, so it's named distinctly from Run
+    // (which starts the command). Disabled when there's none to go to.
+    Button("Go to Run Terminal") { store?.revealRunTerminal() }
+      .disabled(!workroomCommandEnabled(hasRunTerminal))
+  }
+
   private func storeFlag(_ keyPath: ReferenceWritableKeyPath<AppStore, Bool>) -> Binding<Bool> {
     Binding(
       get: { store?[keyPath: keyPath] ?? false },
@@ -1266,19 +1385,6 @@ struct WorkroomCommands: Commands {
       }
       .disabled(!workroomCommandEnabled(hasTerminal))
 
-      Divider()
-
-      // Reveal the selected target's directory in Finder (moved off the detail toolbar). Acts on the
-      // current selection like the terminal items above; reads `store.selectedTarget` directly so the
-      // enabled state tracks selection live (the `@ObservedObject store` re-evaluates this body).
-      // Disabled with no selection or a missing directory.
-      Button("Reveal in Finder") {
-        if let path = store?.selectedTarget?.path {
-          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-        }
-      }
-      .disabled(!workroomCommandEnabled(revealInFinderEnabled))
-
       // Gate the close-terminal confirmation (default on). A set-and-forget preference, so a divider
       // sets it apart from the File actions above (like the Quit toggle); no shortcut. Binds the same
       // key as the Settings checkbox and the dialog's "Don't ask me again", so ticking that box in the
@@ -1352,110 +1458,7 @@ struct WorkroomCommands: Commands {
         .keyboardShortcut("b", modifiers: [.command])
         .disabled(modalBlocked || noProjects)
 
-      // View menu: reveal the Changes view. Changes, History and Pull Request share the **Changes**
-      // activity-bar pane (a stack), so "showing" Changes means selecting that pane, opening the
-      // inspector, and expanding the Changes sub-section; the checkmark is on only when all three
-      // hold. Turning it off just collapses the sub-section (the pane stays open if its siblings are
-      // still showing).
-      Toggle(
-        "Changes",
-        isOn: Binding(
-          get: {
-            showInspector && store?.activeInspectorSection == .changes
-              && !(store?.changesSectionCollapsed ?? true)
-          },
-          set: { on in
-            if on {
-              store?.activeInspectorSection = .changes
-              showInspector = true
-              store?.changesSectionCollapsed = false
-              store?.inspectorToggles += 1
-            } else {
-              store?.changesSectionCollapsed = true
-            }
-          })
-      )
-      .keyboardShortcut("c", modifiers: [.command, .option])
-      .disabled(modalBlocked || noProjects)
-
-      // View menu: reveal the History view (the commit log) — the middle sub-section of the Changes
-      // pane, so it collapses in place like its siblings. (⌥⌘Y — ⌥⌘H is macOS "Hide Others".)
-      Toggle(
-        "History",
-        isOn: Binding(
-          get: {
-            showInspector && store?.activeInspectorSection == .changes
-              && !(store?.historySectionCollapsed ?? true)
-          },
-          set: { on in
-            if on {
-              store?.activeInspectorSection = .changes
-              showInspector = true
-              store?.historySectionCollapsed = false
-              store?.inspectorToggles += 1
-            } else {
-              store?.historySectionCollapsed = true
-            }
-          })
-      )
-      .keyboardShortcut("y", modifiers: [.command, .option])
-      .disabled(modalBlocked || noProjects)
-
-      // View menu: reveal the Pull Request view — the last sub-section of the Changes pane, so it
-      // selects that pane, opens the inspector, and expands the Pull Request sub-section.
-      Toggle(
-        "Pull Request",
-        isOn: Binding(
-          get: {
-            showInspector && store?.activeInspectorSection == .changes
-              && !(store?.prSectionCollapsed ?? true)
-          },
-          set: { on in
-            if on {
-              store?.activeInspectorSection = .changes
-              showInspector = true
-              store?.prSectionCollapsed = false
-              store?.inspectorToggles += 1
-            } else {
-              store?.prSectionCollapsed = true
-            }
-          })
-      )
-      .keyboardShortcut("p", modifiers: [.command, .option])
-      .disabled(modalBlocked || noProjects)
-
-      // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
-      // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
-      // pane (Files has no sub-section to collapse). Bumping `inspectorToggles` makes the bar +
-      // inspector re-render synchronously, even when the section stays Files (see `AppStore.apply`);
-      // the Changes, History and Pull Request reveals above bump it for the same reason.
-      Toggle(
-        "Files",
-        isOn: Binding(
-          get: { showInspector && store?.activeInspectorSection == .files },
-          set: { on in
-            store?.activeInspectorSection = .files
-            showInspector = on
-            store?.inspectorToggles += 1
-          })
-      )
-      .keyboardShortcut("f", modifiers: [.command, .option])
-      .disabled(modalBlocked || noProjects)
-
-      // View menu: reveal the Details view (where the selected workroom runs, and its ports), a
-      // single-section pane like Files, revealed the same way.
-      Toggle(
-        "Details",
-        isOn: Binding(
-          get: { showInspector && store?.activeInspectorSection == .details },
-          set: { on in
-            store?.activeInspectorSection = .details
-            showInspector = on
-            store?.inspectorToggles += 1
-          })
-      )
-      .keyboardShortcut("i", modifiers: [.command, .option])
-      .disabled(modalBlocked || noProjects)
+      inspectorPaneToggles(shortcuts: true)
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
       // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.
@@ -1501,40 +1504,106 @@ struct WorkroomCommands: Commands {
       Divider()
     }
 
-    // Dedicated Run menu (issue #7): the run command's lifecycle. The keys (⌘R / ⇧⌘R / ⌥⌘R) are
-    // handled by the AppDelegate monitor so they fire before the terminal; shown here for
-    // discoverability (the monitor consumes them, so no double-fire). Run is disabled when no command
-    // is configured; Restart/Stop only while it's running.
-    // `@CommandsBuilder` accepts at most 10 children and this scene has 11, so the two action menus
-    // are wrapped in a Group. Purely a builder-arity workaround — it changes nothing about the menus.
-    Group {
-      CommandMenu("Run") {
-        Button("Run") { store?.runOrFocusRunCommand() }
-          .keyboardShortcut("r", modifiers: .command)
-          .disabled(!workroomCommandEnabled(hasRunCommand))
-        Button("Restart") { store?.restartSelectedRunCommand() }
-          .keyboardShortcut("r", modifiers: [.command, .option])
-          .disabled(!workroomCommandEnabled(runCommandActive))
-        Button("Stop") { store?.stopSelectedRunCommand() }
-          .keyboardShortcut("r", modifiers: [.command, .shift])
-          .disabled(!workroomCommandEnabled(runCommandActive))
+    // The Room menu: everything that acts on the current workroom (its run command, its changes
+    // and branch, its pull request, and the workroom itself), after View so it reads as the menu for
+    // what the window shows. Every shortcut here is ALSO reserved in `GhosttySurfaceView.isAppShortcut`
+    // — without that a focused TUI in an enhanced keyboard mode (Claude/Codex) swallows the keystroke
+    // and the menu's key equivalent never fires. The run keys (⌘R / ⌥⌘R / ⇧⌘R) are also handled by
+    // the AppDelegate monitor so they fire before the terminal (the monitor consumes them, so no
+    // double-fire).
+    // Named Room, not Workroom: Release and Nightly's app menu is already "Workroom".
+    CommandMenu("Room") {
+      // Headed by the workroom it acts on, as the right sidebar's title writes it ("project /
+      // workroom", a root its project alone); no heading with nothing selected.
+      if let workroomMenuTitle {
+        Section(workroomMenuTitle) {
+          Divider()
+          runItems
+        }
+      } else {
+        runItems
       }
 
-      // These are actions, not view toggles, so they get their own menu rather than joining View.
-      // Every shortcut here is ALSO reserved in `GhosttySurfaceView.isAppShortcut` — without that a
-      // focused TUI in an enhanced keyboard mode (Claude/Codex) swallows the keystroke and the menu's
-      // key equivalent never fires.
-      CommandMenu("Source Control") {
-        Button("Fetch") { store?.performRemoteAction(.fetch) }
-          .keyboardShortcut("f", modifiers: [.command, .shift, .option])
-          .disabled(!workroomCommandEnabled(vcsCanFetch))
-        Button("Push") { store?.performRemoteAction(.push) }
-          .keyboardShortcut("p", modifiers: [.command, .shift])
-          .disabled(!workroomCommandEnabled(vcsCanPush))
-        Button("Pull with Rebase") { store?.performRemoteAction(.pull) }
-          .keyboardShortcut("p", modifiers: [.command, .shift, .option])
-          .disabled(!workroomCommandEnabled(vcsCanPull))
+      Divider()
+      // The Changes header's commit button.
+      Button("Commit…") { store?.requestCommit(store?.inspectorTargetID) }
+        .keyboardShortcut(.return, modifiers: [.command, .option])
+        .disabled(!workroomCommandEnabled(canCommit))
+      Button("Fetch") { store?.performRemoteAction(.fetch) }
+        .keyboardShortcut("f", modifiers: [.command, .shift, .option])
+        .disabled(!workroomCommandEnabled(vcsCanFetch))
+      Button("Push") { store?.performRemoteAction(.push) }
+        .keyboardShortcut("p", modifiers: [.command, .shift])
+        .disabled(!workroomCommandEnabled(vcsCanPush))
+      Button("Pull with Rebase") { store?.performRemoteAction(.pull) }
+        .keyboardShortcut("p", modifiers: [.command, .shift, .option])
+        .disabled(!workroomCommandEnabled(vcsCanPull))
+
+      // The Pull Request section's actions menu: only while the branch has a pull request.
+      if let pullRequest {
+        Divider()
+        Button("Go to Pull Request") {
+          if let url = URL(string: pullRequest.url) { NSWorkspace.shared.open(url) }
+        }
+        .disabled(!workroomCommandEnabled(hasPullRequest))
+        if let draftAction, let sid = inspectedWorkroom {
+          Button(draftAction.label) {
+            store?.performPRAction(draftAction, number: pullRequest.number, on: sid)
+          }
+          .disabled(!workroomCommandEnabled(canChangeDraft))
+        }
       }
+
+      // The inspector's panes, as View has them (without their shortcuts, which stay View's).
+      Divider()
+      inspectorPaneToggles(shortcuts: false)
+
+      // Open the selected target in the remembered external editor (the toolbar's open button, ⇧⌘O),
+      // or show its folder in Finder. Disabled when nothing's selected or its directory is missing
+      // (a remote workroom's), and Open in when no editor is installed.
+      Divider()
+      Button("Open in \(ExternalEditor.remembered?.name ?? "Editor")") {
+        store?.openSelectedInEditor()
+      }
+      .keyboardShortcut("o", modifiers: [.command, .shift])
+      .disabled(!workroomCommandEnabled(canOpenInEditor))
+      Button("Reveal in Finder") {
+        if let path = store?.selectedTarget?.path {
+          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+      }
+      .disabled(!workroomCommandEnabled(revealInFinderEnabled))
+
+      // The workroom's own items, as its right-click menu has them (`WorkroomContextMenu`): a root is
+      // never labelled or deleted, so these are off for one.
+      Divider()
+      Button(inspectedPair?.workroom.label == nil ? "Set Label…" : "Edit Label…") {
+        if let pair = inspectedPair {
+          store?.pendingWorkroomLabel = PendingWorkroomLabel(
+            workroom: pair.workroom, project: pair.project)
+        }
+      }
+      .disabled(!workroomCommandEnabled(canLabel))
+      if let pair = inspectedPair, pair.workroom.label != nil {
+        Button("Remove Label") { store?.removeWorkroomLabel(pair.workroom, in: pair.project) }
+          .disabled(!workroomCommandEnabled(canLabel))
+      }
+      // The selected workroom, every terminal of it, into a window of its own (#444).
+      Button("Move Workroom into New Window") {
+        if let store, let sid = store.selectedTargetID { store.moveWorkroomToNewWindow(sid) }
+      }
+      .disabled(!workroomCommandEnabled(canMoveWorkroom))
+
+      Divider()
+      // Through RootView's confirmation, so its title ends in an ellipsis. Not while its setup still
+      // runs against the worktree (issue #116).
+      Button("Delete Workroom…") {
+        if let pair = inspectedPair {
+          store?.pendingDeletion = PendingWorkroomDeletion(
+            workroom: pair.workroom, project: pair.project)
+        }
+      }
+      .disabled(!workroomCommandEnabled(canDelete))
     }
 
     CommandGroup(after: .pasteboard) {
@@ -1579,11 +1648,6 @@ struct WorkroomCommands: Commands {
           .keyboardShortcut("o", modifiers: [.command, .control])
           .disabled(!workroomCommandEnabled(workroomSelected))
       }
-      // The selected workroom, every terminal of it, into a window of its own (#444).
-      Button("Move workroom into new window") {
-        if let store, let sid = store.selectedTargetID { store.moveWorkroomToNewWindow(sid) }
-      }
-      .disabled(!workroomCommandEnabled(canMoveWorkroom))
       Divider()
     }
 
@@ -1599,17 +1663,6 @@ struct WorkroomCommands: Commands {
       Button("Forward") { store?.navigateForward() }
         .keyboardShortcut("]", modifiers: .command)
         .disabled(!workroomCommandEnabled(canNavigateForward))
-
-      // Open the selected target in the remembered external editor (the toolbar's open button, ⇧⌘O).
-      // ⌘O is now File ▸ Open workroom… (issue #94); this took ⇧⌘O from New Project, which keeps its
-      // menu item without a shortcut. Disabled when nothing's selected / its directory is missing /
-      // no editor is installed.
-      Divider()
-      Button("Open in \(ExternalEditor.remembered?.name ?? "Editor")") {
-        store?.openSelectedInEditor()
-      }
-      .keyboardShortcut("o", modifiers: [.command, .shift])
-      .disabled(!workroomCommandEnabled(canOpenInEditor))
 
       // Scroll the focused terminal to the top/bottom of its scrollback (issue #42). ⌘↑/⌘↓ — the
       // menu key-equivalent fires before the terminal, so it works even in an enhanced-keyboard TUI.
@@ -1664,13 +1717,6 @@ struct WorkroomCommands: Commands {
       Button("Last-Used Pane") { QuickSwitcher.stepFromKeyWindow(.panes) }
         .keyboardShortcut(.tab, modifiers: switcherPaneModifier.eventModifiers)
         .disabled(!workroomCommandEnabled(multipleTerminalTabs))
-
-      Divider()
-
-      // Jump to the run terminal if one exists (issue #7) — navigation only, so it's named distinctly
-      // from the Run menu's "Run" (which starts the command). Disabled when there's none to go to.
-      Button("Run Terminal") { store?.revealRunTerminal() }
-        .disabled(!workroomCommandEnabled(hasRunTerminal))
 
       Divider()
 

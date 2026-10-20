@@ -1487,6 +1487,8 @@ final class GhosttySurfaceView: NSView {
     if keyCode == 123 || keyCode == 124 {  // ← / →
       if flags == [.command, .option] || flags == [.command, .option, .shift] { return true }
     }
+    // ⌥⌘↩ = Room ▸ Commit…, matched by keyCode like the arrows.
+    if keyCode == 36, flags == [.command, .option] { return true }
     guard let chars = charactersIgnoringModifiers, let ch = chars.first else { return false }
     let key = Character(ch.lowercased())
     // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
