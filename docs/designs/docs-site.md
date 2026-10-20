@@ -22,8 +22,8 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   Condensed and Share Tech Mono, black with a grid) is dark only. The Codaset style (Inter,
   `light-dark()` tokens in `lib/themes/tokens.css`, a 65ch measure) has light and dark modes.
 - **Codaset is deployed with Hatchbox.** A deploy runs a script on the server (bundle, yarn,
-  `assets:precompile`, migrate), with per-app `pre_build_script` and `build_script` hooks and
-  `$RELEASE_DIR` set. A deploy can be triggered with
+  `assets:precompile`, migrate), with build hooks it runs from the repo (`.hatchbox/pre-build` and
+  others, Hatchbox help article 18) or from per-app settings, and `$RELEASE_DIR` set. A deploy can be triggered with
   `POST https://app.hatchbox.io/webhooks/deployments/<TOKEN>?sha=<SHA>`.
   Sources: Hatchbox help articles 28, 55 and 73.
 - **Codaset's CI** (`.github/workflows/ci.yml`) runs on PRs and pushes to master. It has no deploy
@@ -202,6 +202,10 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   D13's "Last updated" date comes from.
   `WORKROOM_DOCS_PATH` defaults to that folder in production, so the build needs no environment
   variable.
+  - **As built:** the hook is Codaset's `.hatchbox/pre-build`, which Hatchbox runs from the repo on
+    every deploy, not a `pre_build_script` set in Hatchbox. It runs `bin/fetch-workroom-docs` after
+    the `bun install` that hook already did, so it needs no Hatchbox setting (Codaset 7046b33,
+    2026-10-20).
 - **D32. Every Codaset deploy goes through Codaset's CI.**
   1. Codaset's `ci.yml` gains a `deploy` job. It needs every other job to pass, runs only for
      master, and allows one deploy at a time. It calls the Hatchbox webhook with
@@ -231,7 +235,7 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
     the cobra doc generator, `make docs-preview`, the Help menu, the AGENTS.md rule and PR template,
     the dispatch workflow and the trimmed README.
   - **Codaset:** the renderer, search, `.md` and `llms.txt`, the fixture and real-docs
-    tests, the `pre_build_script`, and the CI `deploy` and `repository_dispatch` jobs.
+    tests, the pre-build hook, and the CI `deploy` and `repository_dispatch` jobs.
 
   This repo's PR merges first, since it does nothing without a renderer. The Codaset PR merges and
   goes live once the owner has reviewed every page. Screenshots come third, after an approved
@@ -262,14 +266,13 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
 - Create the Hatchbox deploy token as a Codaset repo secret.
 - Create a fine-grained GitHub token that can send a `repository_dispatch` to `joelmoss/codaset`,
   and store it as `CODASET_DISPATCH_TOKEN` in this repo.
-- Add the `pre_build_script` in Hatchbox, unless it can live in the repo.
+
+The pre-build step needs no owner action: it lives in Codaset's `.hatchbox/pre-build` (D29).
 
 ## Not verified
 
-- Where Hatchbox runs `pre_build_script` relative to `bundle install` and `assets:precompile`, and
-  whether app env vars are present then. Hatchbox's docs don't say. D29 is designed to need neither,
-  but check it on the first deploy.
-- Whether Hatchbox auto-deploy on push is on for Codaset today. It can't be seen from either repo.
+- Whether a failing `.hatchbox/pre-build` stops the deploy. Hatchbox's docs don't say. If it
+  doesn't, a failed docs fetch ships a release whose `/workroom/docs` answers 503.
 - Whether Hatchbox builds a new release when asked to deploy the commit it already runs. A
   `workroom-docs` dispatch deploys Codaset's unchanged master, so if Hatchbox skips a deploy of the
   same commit, docs-only changes never publish. Check it on the first docs-only change.
@@ -278,3 +281,9 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   has checked. The window is a few minutes and the cost is one page not checked by Codaset's own
   tests. Pulling `client_payload.sha` in the build would need the SHA passed through Hatchbox, so it
   is left for now.
+
+Checked since (2026-10-20):
+
+- Hatchbox's automatic deploy on push is on for Codaset: #58's merge went live with no CI deploy.
+- `.hatchbox/pre-build` runs before `assets:precompile` with `$RELEASE_DIR` set, which Codaset's
+  existing `bun install` hook already relied on, so D29 runs at the right point.
