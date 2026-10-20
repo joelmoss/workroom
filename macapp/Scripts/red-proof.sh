@@ -40,8 +40,10 @@ backup="$(mktemp "${TMPDIR:-/tmp}/red-proof.XXXXXX")" || exit 2
 log="$(mktemp "${TMPDIR:-/tmp}/red-proof-log.XXXXXX")" || exit 2
 cp -p "$file" "$backup" || exit 2
 
+# Restores the bytes with a fresh mtime, never the original one: cargo reuses an artifact whenever
+# its source is older, so putting the old mtime back left it running the build of the broken copy.
 restore() {
-  if cp -p "$backup" "$file" && cmp -s "$backup" "$file"; then
+  if cp "$backup" "$file" && touch "$file" && cmp -s "$backup" "$file"; then
     rm -f "$backup"
     echo "red-proof: restored $file"
   else
