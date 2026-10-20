@@ -6,8 +6,8 @@ import WebKit
 /// Read-only rendered-Markdown view (preview mode of the file viewer). Hosts a `WKWebView` that
 /// loads a bundled offline template (`Resources/markdown/template.html`) and drives it with the
 /// file's Markdown source. Unlike the old `NSAttributedString` renderer this supports GFM **tables**,
-/// task lists, and **mermaid diagrams** — the page runs bundled `marked` + `DOMPurify` + `mermaid`,
-/// all `file:`-local with a strict CSP, so nothing reaches the network.
+/// task lists, and **mermaid diagrams** — the page runs bundled `marked` + `DOMPurify` + Pele (the
+/// diagram engine), all `file:`-local with a strict CSP, so nothing reaches the network.
 ///
 /// The Markdown is untrusted workroom content, so it is defended in depth: DOMPurify strips any
 /// executable HTML before it hits the DOM, the CSP blocks remote script/connect/frame loads, and the
@@ -17,14 +17,13 @@ struct MarkdownWebView: NSViewRepresentable {
   /// The raw Markdown source to render.
   let markdown: String
   let tokens: ThemeTokens
-  /// The theme generation; a change recolours the page (CSS variables + mermaid theme) in place.
+  /// The theme generation; a change recolours the page (CSS variables, diagrams included) in place.
   let generation: Int
   /// Called once, on the main actor, when the first Markdown render has actually *painted*.
   ///
-  /// Booting the page is not instant — the bundled scripts are ~3.5 MB (mermaid alone is 3.4 MB and
-  /// ~104 ms of the ~117 ms script parse), on top of spawning a fresh WebContent process. Until
-  /// `didFinish` lands and `__render` runs, the web view is an empty themed rectangle, which read as
-  /// "the panel is blank for a short while". The owner uses this to cover that window with a loader.
+  /// Showing a preview is not instant, even on a page from `MarkdownWebViewPool`: until `__render`
+  /// has run and WebKit has painted, the web view is an empty themed rectangle, which read as "the
+  /// panel is blank for a short while". The owner uses this to cover that window with a loader.
   var onFirstRender: () -> Void = {}
 
   /// The bundled template and the directory the web assets live in (read-access scope for the load).
@@ -104,8 +103,8 @@ struct MarkdownWebView: NSViewRepresentable {
     }
   }
 
-  /// The theme colours pushed into the page's CSS variables (and the mermaid theme name). Each is a
-  /// `rgba()` string so alpha-based tokens (borders, code fill) composite over the page background.
+  /// The theme colours pushed into the page's CSS variables. Each is a `rgba()` string so alpha-based
+  /// tokens (borders, code fill) composite over the page background.
   private func themeVars(_ t: ThemeTokens) -> [String: String] {
     [
       "bg": Self.css(t.nsBg),
@@ -117,14 +116,13 @@ struct MarkdownWebView: NSViewRepresentable {
       "table-header-bg": Self.css(NSColor(t.surface)),
       "accent": Self.css(NSColor(t.accent)),
       "accent-soft": Self.css(NSColor(t.accentSoft)),
-      "mermaidTheme": t.colorScheme == .dark ? "dark" : "default",
     ]
   }
 
   /// A user script that writes the theme's CSS variables onto `documentElement` at document start —
   /// before `styles.css` paints — so the first frame is themed instead of flashing the stylesheet's
-  /// light `--bg` default. Skips `mermaidTheme` (not a CSS var; mermaid is themed in JS). Mirrors the
-  /// variable-setting half of `render.js`'s `__applyTheme`, but runs pre-paint and needs no bundled JS.
+  /// light `--bg` default. Mirrors `render.js`'s `__applyTheme`, but runs pre-paint and needs no
+  /// bundled JS.
   private static func themeBootScript(_ vars: [String: String]) -> WKUserScript? {
     guard let data = try? JSONSerialization.data(withJSONObject: vars),
       let json = String(data: data, encoding: .utf8)
@@ -132,7 +130,7 @@ struct MarkdownWebView: NSViewRepresentable {
     let source = """
       (function () {
         var v = \(json), s = document.documentElement.style;
-        for (var k in v) { if (k !== "mermaidTheme") s.setProperty("--" + k, v[k]); }
+        for (var k in v) { s.setProperty("--" + k, v[k]); }
       })();
       """
     return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)

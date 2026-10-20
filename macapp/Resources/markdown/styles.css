@@ -159,7 +159,18 @@ body {
   max-width: 100%;
 }
 
-/* Mermaid diagrams render into an inline SVG; centre them and give a little breathing room. */
+/* Mermaid diagrams render into an inline SVG; centre them and give a little breathing room. Pele
+   colours them from these variables, so they follow the theme without being drawn again. */
+.markdown-body {
+  --pele-bg: var(--bg);
+  --pele-fg: var(--fg);
+  --pele-muted: var(--muted);
+  --pele-line: var(--muted);
+  --pele-surface: var(--code-bg);
+  --pele-surface-alt: color-mix(in srgb, var(--fg) 14%, var(--bg));
+  --pele-border: var(--dim);
+  --pele-accent: var(--accent);
+}
 .markdown-body pre.mermaid {
   background: none;
   padding: 8px 0;

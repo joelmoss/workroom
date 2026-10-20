@@ -32,7 +32,7 @@ final class MarkdownWebViewNavigationTests: XCTestCase {
 
   func testBundledSiblingAssetsAllowed() {
     XCTAssertEqual(decide(assetDir.appendingPathComponent("styles.css"), link: false), .allow)
-    XCTAssertEqual(decide(assetDir.appendingPathComponent("mermaid.min.js"), link: false), .allow)
+    XCTAssertEqual(decide(assetDir.appendingPathComponent("pele.global.js"), link: false), .allow)
   }
 
   func testFileOutsideAssetDirBlocked() {

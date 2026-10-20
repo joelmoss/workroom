@@ -1,16 +1,13 @@
 // Glue between the native MarkdownWebView and the bundled libraries. The Swift side loads
 // template.html, then drives this file through two globals it calls via `evaluateJavaScript`:
 //
-//   window.__render(markdownSource)  — parse + sanitize + inject, then render any mermaid diagrams
-//   window.__applyTheme(vars)        — push theme colours into CSS variables and recolour diagrams
+//   window.__render(markdownSource)  — parse + sanitize + inject, then draw any mermaid diagrams
+//   window.__applyTheme(vars)        — push theme colours into CSS variables
 //
-// The last-rendered source is retained so a theme change can re-render (mermaid bakes colours into
-// the SVG at render time, so recolouring means re-running it).
+// Diagrams are drawn by Pele, which reads its colours from CSS variables (styles.css maps them to
+// the theme's), so a theme change recolours them without drawing them again.
 
 "use strict";
-
-let lastSource = "";
-let mermaidTheme = "default";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -66,59 +63,32 @@ marked.use({
   },
 });
 
-// mermaid's generated SVG never passes through the DOMPurify call in renderMarkdown (that pass only
-// ever saw the fenced block as inert text). Two gates cover mermaid output instead: `securityLevel:
-// 'strict'` sanitizes diagram text inside mermaid, and renderMermaid() runs the returned SVG through
-// DOMPurify before it reaches the DOM. `htmlLabels: false` makes mermaid draw labels as native SVG
-// <text> rather than HTML inside <foreignObject> — foreignObject is an mXSS vector DOMPurify strips as
-// a tag, which would otherwise blank every label. startOnLoad is off — we drive rendering explicitly.
-function initMermaid(theme) {
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: "strict",
-    theme,
-    htmlLabels: false,
-    flowchart: { htmlLabels: false },
-  });
-}
-
-// mermaid is loaded ON DEMAND, the first time a document actually contains a ```mermaid fence, rather
-// than by a <script> tag in template.html. It is 3.4 MB of the ~3.5 MB of bundled script and was
-// ~104 ms of the ~117 ms parse on every Markdown open (13 ms without it) — paid by every file, spent
-// by almost none. The injected <script> is the same sibling file: URL the template used, so the page's
-// `script-src 'self'` CSP covers it exactly as before.
+// Pele (the diagram engine) is loaded ON DEMAND, the first time a document actually contains a
+// ```mermaid fence, rather than by a <script> tag in template.html: most files have no diagram, and
+// none of them should pay to parse it. The injected <script> is a sibling file: URL, so the page's
+// `script-src 'self'` CSP covers it.
 //
 // The promise is cached, so N diagrams in one document (and later re-renders) load it once. A failure
 // resolves to `false` rather than throwing: a diagram whose engine never arrived must leave its source
 // text on screen, exactly like a diagram that fails to parse — it must never blank the document.
-let mermaidLoad = null;
-function loadMermaid() {
-  if (mermaidLoad) return mermaidLoad;
-  mermaidLoad = new Promise((resolve) => {
+let peleLoad = null;
+function loadPele() {
+  if (peleLoad) return peleLoad;
+  peleLoad = new Promise((resolve) => {
     const script = document.createElement("script");
-    script.src = "mermaid.min.js";
-    script.onload = () => {
-      initMermaid(mermaidTheme);
-      resolve(true);
-    };
+    script.src = "pele.global.js";
+    script.onload = () => resolve(true);
     script.onerror = () => resolve(false);
     document.head.appendChild(script);
   });
-  return mermaidLoad;
-}
-
-/// Whether mermaid has been loaded AND initialised — so a theme change knows whether there is an
-/// engine to re-theme, and can skip the work entirely for the common no-diagram document.
-function mermaidIsLoaded() {
-  return typeof mermaid !== "undefined";
+  return peleLoad;
 }
 
 function renderMarkdown(source) {
-  lastSource = source;
   const dirty = marked.parse(source);
   // Untrusted Markdown can embed raw HTML; strip anything executable before it touches the DOM.
   const clean = DOMPurify.sanitize(dirty, {
-    USE_PROFILES: { html: true }, // HTML only — drop user-authored SVG/MathML (mermaid emits its own)
+    USE_PROFILES: { html: true }, // HTML only — drop user-authored SVG/MathML (Pele emits its own)
     ADD_TAGS: ["input"], // GitHub-style task-list checkboxes
     ADD_ATTR: ["target"],
   });
@@ -128,10 +98,9 @@ function renderMarkdown(source) {
   renderMermaid(root);
 }
 
-// marked emits a ```mermaid fence as <pre><code class="language-mermaid">…</code></pre>; mermaid wants
-// a bare <pre class="mermaid"> holding the diagram source. Rewrite each such block in place. The
-// original text is read from textContent (inert text, not markup) — mermaid parses it under
-// securityLevel 'strict' and renderMermaid sanitizes the resulting SVG.
+// marked emits a ```mermaid fence as <pre><code class="language-mermaid">…</code></pre>; rewrite each
+// as a bare <pre class="mermaid"> holding the diagram source. The original text is read from
+// textContent (inert text, not markup), and renderMermaid sanitizes the SVG drawn from it.
 function promoteMermaidBlocks(root) {
   const codes = root.querySelectorAll("code.language-mermaid");
   codes.forEach((code) => {
@@ -143,30 +112,30 @@ function promoteMermaidBlocks(root) {
   });
 }
 
-// Render each promoted mermaid block. We use mermaid.render() rather than mermaid.run() (which writes
-// SVG straight into the DOM) so the generated SVG can be run through DOMPurify before it is inserted —
-// diagram labels are attacker-influenced and would otherwise never meet a sanitizer. Each block is
-// caught independently, so one bad diagram is left showing its source text and can't blank the doc.
-let mermaidSeq = 0;
+// Draw each promoted block with pele.render(), which returns an SVG string, rather than pele.mount(),
+// which writes it straight into the DOM, so the SVG goes through DOMPurify first — diagram labels are
+// attacker-influenced and would otherwise never meet a sanitizer. Pele draws labels as SVG <text>,
+// never <foreignObject>, so the svg-only profile keeps them. Labels use the document's font, sized to
+// match it, and the width available lets a wide flowchart turn to run down. Each block is caught
+// independently, so one bad diagram is left showing its source text and can't blank the document.
+const DIAGRAM_FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
+let diagramSeq = 0;
 async function renderMermaid(root) {
   const holders = root.querySelectorAll("pre.mermaid");
-  if (holders.length === 0) return;  // the common case: no diagrams, so mermaid is never fetched
-  if (!(await loadMermaid())) return;  // engine unavailable — leave every block's source text
+  if (holders.length === 0) return;  // the common case: no diagrams, so Pele is never fetched
+  if (!(await loadPele())) return;  // engine unavailable — leave every block's source text
   holders.forEach((holder) => {
-    const source = holder.textContent;
-    mermaid
-      .render("mmd-" + mermaidSeq++, source)
-      .then(({ svg }) => {
-        // mermaid emits native SVG <text> labels (htmlLabels:false above), so an svg-only sanitize
-        // keeps them while dropping foreignObject/HTML. DOMPurify still strips scripts / on* handlers
-        // / javascript: URLs, so mermaid output is gated without widening the allowed-tag surface.
-        holder.innerHTML = DOMPurify.sanitize(svg, {
-          USE_PROFILES: { svg: true, svgFilters: true },
-        });
-      })
-      .catch(() => {
-        /* leave the source text in place */
+    try {
+      const { svg } = pele.render(holder.textContent, {
+        idPrefix: "d" + diagramSeq++ + "-",
+        fontFamily: DIAGRAM_FONT,
+        fontSize: 14,
+        maxWidth: holder.clientWidth || undefined,
       });
+      holder.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+    } catch {
+      /* leave the source text in place */
+    }
   });
 }
 
@@ -180,19 +149,5 @@ window.__render = function (source) {
 
 window.__applyTheme = function (vars) {
   const style = document.documentElement.style;
-  Object.keys(vars).forEach((key) => {
-    if (key === "mermaidTheme") return;
-    style.setProperty("--" + key, vars[key]);
-  });
-  if (vars.mermaidTheme && vars.mermaidTheme !== mermaidTheme) {
-    mermaidTheme = vars.mermaidTheme;
-    // Only re-theme when the engine is actually here. For a document with no diagrams mermaid was
-    // never loaded, so there is nothing to re-initialise and nothing a re-render would change — and
-    // re-rendering anyway would drop the theme switch into the CSS-variable path for no reason. When
-    // it IS loaded, mermaid bakes colours into the SVG at render time, so the diagrams must be redrawn.
-    if (mermaidIsLoaded()) {
-      initMermaid(mermaidTheme);
-      if (lastSource) renderMarkdown(lastSource);
-    }
-  }
+  Object.keys(vars).forEach((key) => style.setProperty("--" + key, vars[key]));
 };

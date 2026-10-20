@@ -5,17 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <!--
       Content-Security-Policy for an UNTRUSTED workroom Markdown file. The page and all scripts are
-      loaded from the app bundle (file:), so 'self' covers our marked/DOMPurify/mermaid/render code.
-      'unsafe-eval' is required by mermaid's rendering path; it is safe here only because every byte of
-      user Markdown is DOMPurify-sanitized (no <script>, no on* handlers, no javascript: URLs survive)
-      before it reaches the DOM, so eval only ever executes our own bundled code. connect-src 'none'
+      loaded from the app bundle (file:), so 'self' covers our marked/DOMPurify/Pele/render code, and
+      none of it evaluates strings as code, so eval stays off. Every byte of user Markdown is
+      DOMPurify-sanitized (no <script>, no on* handlers, no javascript: URLs survive) before it
+      reaches the DOM. connect-src 'none'
       blocks fetch/XHR/WebSocket/sendBeacon. NOTE: img-src allows https:, so a remote <img> in the
       Markdown still fires a one-way GET on open (a tracking / IP-leak channel that connect-src does
       NOT close) — kept as a deliberate tradeoff so web-hosted README images and badges render.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none';"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none';"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -24,9 +24,8 @@
     <!--
       Order matters: parser + sanitizer, then our glue that ties them together.
 
-      mermaid.min.js is deliberately NOT here. It is 3.4 MB of the ~3.5 MB of bundled script and
-      accounted for ~104 ms of the ~117 ms parse on a warm cache (13 ms without it) — a cost every
-      Markdown file paid on open, while almost none contain a diagram. render.js injects it on demand,
+      pele.global.js (the diagram engine) is deliberately NOT here: at 0.7 MB it is most of the
+      bundled script, and almost no Markdown file contains a diagram. render.js injects it on demand,
       the first time a document actually has a ```mermaid fence.
     -->
     <script src="marked.min.js"></script>
