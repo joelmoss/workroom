@@ -2,7 +2,7 @@ import XCTest
 
 /// Moving a workroom into a window of its own (issue #444).
 ///
-/// Driven through the Window menu item, not a drag past the window edge, for the reason
+/// Driven through the Room menu item, not a drag past the window edge, for the reason
 /// `DetachedPaneUITests` gives: synthetic drags around the title bar do not behave like a real mouse
 /// here. Where a drag lands is pure logic and covered by `WorkroomHandOverTests`; what this proves is
 /// the part only the real app can show, that a second window appears holding the workroom with its

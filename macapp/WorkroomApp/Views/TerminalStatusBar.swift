@@ -162,7 +162,7 @@ struct TerminalStatusBar: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(cwd, forType: .string)
       })
-    // `activateFileViewerSelecting`, matching the wording and the File menu's own "Reveal in Finder"
+    // `activateFileViewerSelecting`, matching the wording and the Room menu's own "Reveal in Finder"
     // (which reveals the selected target's directory the same way): the directory comes up selected in
     // its parent. `NSWorkspace.open` would open the folder's own window instead — a different verb
     // than the one this item promises.

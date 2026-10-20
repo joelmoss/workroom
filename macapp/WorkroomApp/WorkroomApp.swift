@@ -1172,7 +1172,7 @@ struct WorkroomCommands: Commands {
     flag == true && !detachedWindowKey
   }
 
-  /// File ▸ Reveal in Finder's precondition: something is selected and its directory still exists.
+  /// Room ▸ Reveal in Finder's precondition: something is selected and its directory still exists.
   /// A computed flag rather than an inline expression so it reads — and gates — like every other
   /// workroom-scoped item. Reads `store.selectedTarget` directly, so the enabled state tracks
   /// selection live (the `@ObservedObject store` re-evaluates this body).
@@ -1181,8 +1181,10 @@ struct WorkroomCommands: Commands {
     return !target.isMissing
   }
 
-  // The Room menu's items that only buttons offered before: read from the store for the workroom
-  // the inspector shows, and off while a dialog or sheet is up, as `MenuStateValues` gates the rest.
+  // The Room menu's items that only buttons offered before, off while a dialog or sheet is up, as
+  // `MenuStateValues` gates the rest. Commit and the pull request items read the workroom the
+  // inspector shows, whose status they need (`inspectorTargetID` is the selection, or nil while it
+  // has no tabs); the workroom's own items read the selection, as its right-click menu does.
   private var inspectedWorkroom: SidebarID? {
     store?.hasModalPresentation == false ? store?.inspectorTargetID : nil
   }
@@ -1202,15 +1204,15 @@ struct WorkroomCommands: Commands {
   private var canChangeDraft: Bool? { draftAction != nil && store?.prActionInFlight == false }
   /// The selected workroom, as the menu's title and the workroom's right-click menu take it; a root
   /// is never labelled or deleted, so it has none.
-  private var inspectedPair: (workroom: Workroom, project: Project)? {
+  private var selectedPair: (workroom: Workroom, project: Project)? {
     guard let store, !store.hasModalPresentation, let sid = store.selectedTargetID else {
       return nil
     }
     return store.workroomAndProject(for: sid)
   }
-  private var canLabel: Bool? { inspectedPair != nil }
+  private var canLabel: Bool? { selectedPair != nil }
   private var canDelete: Bool? {
-    inspectedPair.map { store?.isCreatingWorkroom($0.workroom, in: $0.project) == false }
+    selectedPair.map { store?.isCreatingWorkroom($0.workroom, in: $0.project) == false }
   }
 
   /// The Room menu's heading: the selected workroom as `InspectorWorkroomHeader` names it.
@@ -1579,14 +1581,14 @@ struct WorkroomCommands: Commands {
       // The workroom's own items, as its right-click menu has them (`WorkroomContextMenu`): a root is
       // never labelled or deleted, so these are off for one.
       Divider()
-      Button(inspectedPair?.workroom.label == nil ? "Set Label…" : "Edit Label…") {
-        if let pair = inspectedPair {
+      Button(selectedPair?.workroom.label == nil ? "Set Label…" : "Edit Label…") {
+        if let pair = selectedPair {
           store?.pendingWorkroomLabel = PendingWorkroomLabel(
             workroom: pair.workroom, project: pair.project)
         }
       }
       .disabled(!workroomCommandEnabled(canLabel))
-      if let pair = inspectedPair, pair.workroom.label != nil {
+      if let pair = selectedPair, pair.workroom.label != nil {
         Button("Remove Label") { store?.removeWorkroomLabel(pair.workroom, in: pair.project) }
           .disabled(!workroomCommandEnabled(canLabel))
       }
@@ -1600,7 +1602,7 @@ struct WorkroomCommands: Commands {
       // Through RootView's confirmation, so its title ends in an ellipsis. Not while its setup still
       // runs against the worktree (issue #116).
       Button("Delete Workroom…") {
-        if let pair = inspectedPair {
+        if let pair = selectedPair {
           store?.pendingDeletion = PendingWorkroomDeletion(
             workroom: pair.workroom, project: pair.project)
         }
