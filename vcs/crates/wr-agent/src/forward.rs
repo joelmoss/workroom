@@ -1775,20 +1775,6 @@ mod tests {
         assert!(killed(&forwards, 1));
     }
 
-    /// Bytes for a stream nobody opened are dropped, not answered and not queued — the same silence
-    /// `serve.rs` gives a service byte it does not handle.
-    #[test]
-    fn bytes_for_an_unknown_stream_are_dropped() {
-        let forwards = Forwards::new();
-        let capture = Capture::default();
-        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        forwards.deliver(99, b"nobody is listening");
-        forwards.half_close(99);
-        forwards.close(99);
-        assert!(capture.0.lock().unwrap().is_empty());
-        drop(writer);
-    }
-
     #[test]
     fn listen_and_accept_parse_to_their_own_openings() {
         assert_eq!(

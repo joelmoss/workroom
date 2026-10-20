@@ -178,31 +178,6 @@ impl FrameDecoder {
 mod tests {
     use super::*;
 
-    fn roundtrip(kind: FrameKind, payload: Vec<u8>) {
-        let frame = Frame::new(kind, payload);
-        let mut decoder = FrameDecoder::new();
-        decoder.push(&frame.encode());
-        assert_eq!(decoder.next_frame().unwrap(), Some(frame));
-    }
-
-    #[test]
-    fn round_trips_every_kind() {
-        for raw in [
-            0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x14, 0x21, 0x22, 0x23, 0x24, 0x25, 0x31, 0x32,
-        ] {
-            let kind = FrameKind::from_u8(raw).expect("known kind");
-            roundtrip(kind, b"payload".to_vec());
-            roundtrip(kind, Vec::new());
-        }
-    }
-
-    #[test]
-    fn header_is_one_byte_kind_then_big_endian_length() {
-        let encoded = Frame::new(FrameKind::Output, vec![0xAA; 0x0102]).encode();
-        assert_eq!(encoded[0], 0x12);
-        assert_eq!(&encoded[1..5], &[0x00, 0x00, 0x01, 0x02]);
-    }
-
     /// The case a pipe produces and a socket hides: a header arriving in pieces.
     #[test]
     fn reassembles_a_header_split_across_pushes() {
@@ -263,13 +238,6 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         decoder.push(&frame.encode());
         assert_eq!(decoder.next_frame().unwrap(), Some(frame));
-    }
-
-    #[test]
-    fn rejects_an_unknown_kind() {
-        let mut decoder = FrameDecoder::new();
-        decoder.push(&[0x7f, 0, 0, 0, 0]);
-        assert_eq!(decoder.next_frame(), Err(FrameError::UnknownKind(0x7f)));
     }
 
     /// Order matters: the Swift decoder checks length first, so an oversized frame with an

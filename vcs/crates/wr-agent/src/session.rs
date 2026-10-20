@@ -3582,8 +3582,9 @@ mod tests {
     ///
     /// The shadow is painted directly rather than through the pty: the fixture has to reliably
     /// exceed a megabyte, and driving a real shell to emit that much styled output is slow and
-    /// load-dependent. `terminal::tests::a_repaint_can_exceed_the_frame_cap` pins that this size
-    /// is reachable from real output.
+    /// load-dependent. Styled on purpose: the formatter emits an SGR run per colour change, so a
+    /// large window running a heavily-coloured TUI is the real shape of this, and the fixture
+    /// asserts its own replay still exceeds the cap.
     ///
     /// Asserting the reader is still ALIVE afterwards is the point — a test that only checked
     /// `attach` returned `Ok` would pass against a version that poisoned the lock, because the
@@ -3710,7 +3711,7 @@ mod tests {
             repaint_budget(4 * 1024 * 1024) > repaint_budget(64 * 1024),
             "a bigger screen must get longer, or the budget is a throughput floor"
         );
-        // A megabyte — the size `a_repaint_can_exceed_the_frame_cap` proves is reachable — must get
+        // A megabyte — the size `an_oversized_repaint_does_not_wedge_the_session` reaches — must get
         // meaningfully more than the flat slack, or a slow link cannot ever finish it.
         assert!(
             repaint_budget(1024 * 1024) >= WRITE_TIMEOUT + Duration::from_secs(16),

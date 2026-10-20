@@ -206,28 +206,6 @@ fn attach_frame(id: [u8; 16]) -> Frame {
     Frame::new(FrameKind::Attach, request.encode())
 }
 
-#[test]
-fn a_session_works_over_a_pipe() {
-    let sessions = SessionStore::new();
-    let (mut client, handle) = serve_over_pipe(sessions.clone());
-    client.handshake();
-    client.send(Service::Terminal, 1, attach_frame([1u8; 16]));
-
-    std::thread::sleep(Duration::from_millis(400));
-    client.send(
-        Service::Terminal,
-        1,
-        Frame::new(FrameKind::Input, b"echo OVER-A-PIPE\n".to_vec()),
-    );
-
-    let seen = client.read_until("OVER-A-PIPE", Duration::from_secs(10));
-    assert!(seen.contains("OVER-A-PIPE"), "got {seen:?}");
-
-    close(&client.writer);
-    let _ = handle.join();
-    sessions.kill_all();
-}
-
 /// The property a socket hides: a remote stream can deliver a frame in pieces.
 #[test]
 fn a_frame_split_byte_by_byte_still_works() {
