@@ -49,6 +49,18 @@ expect "a repeated pattern is refused" 2 "let " -- true
 expect "a killed run still restores" 143 "guard ready else { return }" -- \
   sh -c "kill -TERM \$PPID; sleep 1"
 
+# The restored source must not be older than what the run built from the broken copy: cargo reuses
+# any artifact newer than its source, so restoring the old mtime kept the broken build in use.
+printf '%s' "$original" >"$src"
+touch -t 200001010000 "$src"
+artifact="$TMP/artifact"
+bash "$DIR/red-proof.sh" "$src" "guard ready else { return }" "" '^Tests: Failed' -- \
+  touch "$artifact" >"$TMP/out" 2>&1
+if [ "$artifact" -nt "$src" ]; then
+  echo "FAIL: the restored source is older than the build made from the broken copy"
+  fails=$((fails + 1))
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "red-proof_test: $fails failure(s)"
   exit 1
