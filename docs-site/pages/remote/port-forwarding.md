@@ -67,7 +67,7 @@ If the connection to the container drops, the Ports list says `Not connected. A 
 A boxd or exe.dev workroom has no Ports list, and Workroom does not forward its ports. Publish a port with the provider instead:
 
 - On boxd, run `boxd machine proxy add`. The port is public on the internet.
-- On exe.dev, run `ssh exe.dev share port`. The port is private to you by default.
+- On exe.dev, a server on a port from 3000 to 9999 is already at `https://<vm>.exe.xyz:<port>/`, for anyone with access to the VM. Run `ssh exe.dev share port <vm> <port>` to serve that port at `https://<vm>.exe.xyz/` instead. It stays private until you run `ssh exe.dev share set-public <vm>`.
 
 A workroom on your Mac needs neither. Its servers already listen on your Mac.
 

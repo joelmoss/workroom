@@ -52,7 +52,7 @@ If the host restarts, the programs running in your terminals end with it. The ag
 
 A terminal whose program ended with the host shows its last screen with a bottom row that reads `This terminal ended when its host restarted. Close it to start again.` If no screen was kept, it prints `workroom: This terminal has ended. Close it to start again.` Close that tab and open a new one. Workroom does not replace it with a new shell for you on a remote workroom, so you can read what was on screen when it ended.
 
-A stopped container, and an asleep boxd machine, start again when you open their workroom.
+A container that isn't running, and an asleep boxd machine, start again when you open their workroom.
 
 ## Other things you might see
 

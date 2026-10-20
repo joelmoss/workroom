@@ -85,7 +85,7 @@ Deleting a remote workroom destroys its host and everything on it, including cha
 2. Destroy the host.
 3. Remove the workroom from Workroom.
 
-If the teardown script fails, can't start, runs out of time, or the host can't be reached, the delete stops and nothing is removed. Workroom shows why, with the script's output, and offers **Delete Anyway**, which deletes without the script.
+If the teardown script fails, can't start, runs out of time, or the host can't be reached, the delete stops and the host stays. Its terminals in Workroom were closed before the script ran. Workroom shows why, with the script's output, and offers **Delete Anyway**, which deletes without the script.
 
 If destroying the host fails part of the way, the workroom stays in the sidebar, so you can delete it again to finish the job.
 
@@ -94,7 +94,7 @@ Delete a remote workroom in the app. The `workroom delete` command refuses a rem
 > [!NOTE]
 > Workroom does not keep a host awake and does not put one to sleep. Whether a host sleeps is up to you and the provider. A host exists until you delete its workroom.
 
-A Docker or Apple container stops when your Mac sleeps or restarts. Workroom starts it again when you open its workroom.
+Workroom starts a Docker or Apple container when you open its workroom and it isn't running.
 
 ## Release and Nightly
 

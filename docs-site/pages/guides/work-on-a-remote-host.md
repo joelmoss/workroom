@@ -16,7 +16,7 @@ as you would a local one. This guide takes you from a project on your Mac to a r
 | An isolated Linux environment on this Mac, with no cloud account | [Docker or Apple Container](../remote/containers.md) |
 
 boxd and exe.dev are cloud services that need an account and a paid plan; Workroom walks you through
-signing up the first time you use one. A container runs on your Mac, so it stops when your Mac sleeps. See
+signing up the first time you use one. A container runs on your Mac. See
 [Remote workrooms](../remote/overview.md) for how they differ.
 
 ## Get your project ready
