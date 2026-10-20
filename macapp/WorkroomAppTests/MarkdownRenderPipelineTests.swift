@@ -278,6 +278,30 @@ final class MarkdownRenderPipelineTests: XCTestCase {
     XCTAssertEqual(type as? String, "object", "Pele should be loaded once a diagram needs it")
   }
 
+  // Value: protects=pie percentages stay black, readable on every slice colour in light and dark
+  // themes; fails_when=the styles.css override goes and Pele inks them in the page background
+  // (dark-on-colour in dark themes, 1.6:1 white on yellow in light); why_new=the override is new;
+  // seam=none; no_claim=labels drawn beside small slices.
+  func testPieSliceLabelsAreBlackWhateverTheTheme() async throws {
+    _ = try await renderedText("```mermaid\npie\n  \"A\" : 60\n  \"B\" : 40\n```\n")
+    _ = try await webView.evaluateJavaScript(
+      "window.__applyTheme({ bg: 'rgba(30, 31, 36, 1)', fg: 'rgba(216, 218, 224, 1)' }); 'ok'")
+    var fill: String?
+    for _ in 0..<100 {
+      fill =
+        try await webView.evaluateJavaScript(
+          """
+          (() => {
+            const label = document.querySelector('.pele-slice-labels[fill] text');
+            return label ? getComputedStyle(label).fill : '';
+          })()
+          """) as? String
+      if fill?.isEmpty == false { break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    XCTAssertEqual(fill, "rgb(0, 0, 0)")
+  }
+
   // MARK: - Whole-document sanity
 
   /// A long document with a mid-file `<title>` mention must render essentially all of its blocks —

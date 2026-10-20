@@ -180,3 +180,10 @@ body {
   max-width: 100%;
   height: auto;
 }
+/* Percentages drawn on pie slices. Pele inks them in the page background, which in a dark theme is
+   dark text on mid-tone slices, and in a light one white text on yellow (1.6:1). Black reads at
+   4.5:1 or better on every one of Pele's eight slice colours. The labels drawn beside small slices,
+   in a group with no fill of its own, keep the text colour. */
+.markdown-body .pele-slice-labels[fill] {
+  fill: #000;
+}
