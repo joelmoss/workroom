@@ -94,6 +94,26 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
         XCTAssertEqual(how as? String, "raf", "re-render timed on the fallback, not a paint")
       }
       record("re-render (loaded web view)", doc.name, rerenders)
+
+      // How much of a render is parsing and sanitizing, timed inside the page: the most a faster
+      // parser could save. WebKit coarsens `performance.now()` to about a millisecond.
+      var parses: [Double] = []
+      var sanitizes: [Double] = []
+      for _ in 0..<Self.samples {
+        let parts = try await webView.callAsyncJavaScript(
+          """
+          const a = performance.now();
+          const html = marked.parse(source);
+          const b = performance.now();
+          DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_TAGS: ["input"], ADD_ATTR: ["target"] });
+          return [b - a, performance.now() - b];
+          """, arguments: ["source": doc.source], contentWorld: .page)
+        let times = try XCTUnwrap(parts as? [Double])
+        parses.append(times[0])
+        sanitizes.append(times[1])
+      }
+      record("marked.parse, in page", doc.name, parses)
+      record("DOMPurify.sanitize, in page", doc.name, sanitizes)
       memory(webView, label: doc.name)
     }
 
@@ -105,21 +125,36 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
     for _ in 0..<Self.samples {
       let start = ContinuousClock.now
       let opened = try await open(diagrams.source, tokens: light)
-      try await waitForDiagrams(opened.webView, count: diagrams.count, notMarked: false)
+      try await waitForDiagrams(opened.webView, count: diagrams.count)
       mermaidOpens.append(Self.milliseconds(since: start))
 
-      // mermaid bakes colours into its SVG, so a theme change redraws every diagram.
-      _ = try await opened.webView.evaluateJavaScript(
-        "document.querySelectorAll('pre.mermaid svg').forEach((s) => s.dataset.bench = 'old'); 0")
+      // Done when the page has the new theme, every diagram is on screen (an engine that bakes
+      // colours into its SVG has redrawn them all) and that frame has painted.
+      let before = try await opened.webView.evaluateJavaScript(
+        "getComputedStyle(document.documentElement).getPropertyValue('--bg')")
       let switchStart = ContinuousClock.now
       opened.host.rootView = MarkdownWebView(
         markdown: diagrams.source, tokens: dark, generation: 1, onFirstRender: {})
-      try await waitForDiagrams(opened.webView, count: diagrams.count, notMarked: true)
+      let switched = try await opened.webView.callAsyncJavaScript(
+        """
+        const ready = () =>
+          getComputedStyle(document.documentElement).getPropertyValue('--bg') !== before &&
+          document.querySelectorAll('pre.mermaid svg').length === count;
+        const deadline = performance.now() + 20000;
+        while (!ready()) {
+          if (performance.now() > deadline) return false;
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return true;
+        """, arguments: ["before": before as? String ?? "", "count": diagrams.count],
+        contentWorld: .page)
+      XCTAssertEqual(switched as? Bool, true, "the theme switch never landed")
       themeSwitches.append(Self.milliseconds(since: switchStart))
       lastView = opened.webView
     }
     record("open with \(diagrams.count) mermaid diagrams → all drawn", "mermaid", mermaidOpens)
-    record("theme switch → \(diagrams.count) diagrams redrawn", "mermaid", themeSwitches)
+    record("theme switch → painted with \(diagrams.count) diagrams", "mermaid", themeSwitches)
     memory(lastView, label: "mermaid")
 
     // Whether separate previews share a WebContent process: what a pool of warm views would save.
@@ -208,20 +243,17 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
     XCTAssertTrue((text as? String)?.contains(lastHeading) == true, "render stopped short")
   }
 
-  private func waitForDiagrams(_ webView: WKWebView, count: Int, notMarked: Bool) async throws {
+  private func waitForDiagrams(_ webView: WKWebView, count: Int) async throws {
     let done = try await webView.callAsyncJavaScript(
       """
-      const ready = () => {
-        const svgs = [...document.querySelectorAll('pre.mermaid svg')];
-        return svgs.length === count && (!notMarked || svgs.every((s) => !s.dataset.bench));
-      };
+      const ready = () => document.querySelectorAll('pre.mermaid svg').length === count;
       const deadline = performance.now() + 20000;
       while (!ready()) {
         if (performance.now() > deadline) return false;
         await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       return true;
-      """, arguments: ["count": count, "notMarked": notMarked], contentWorld: .page)
+      """, arguments: ["count": count], contentWorld: .page)
     XCTAssertEqual(done as? Bool, true, "mermaid diagrams never all rendered")
   }
 
