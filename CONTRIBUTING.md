@@ -487,7 +487,7 @@ executor and a temp config — no real repo required.
 ## Testing
 
 **Go CLI** — standard `go test`. Coverage spans config CRUD, name generation, the VCS Git parsers
-(with a mock `CommandExecutor`), the script runner (using `testdata/fixtures/{setup,teardown,failed_setup,failed_teardown}`),
+(with a mock `CommandExecutor`), the script runner (using `testdata/fixtures/{setup,failed_setup,failed_teardown}`),
 the updater's version comparison, and the full create/delete/list/`list_data` orchestration plus the
 `delete-project` command (unit + integration).
 

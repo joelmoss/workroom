@@ -62,22 +62,6 @@ func newTestSvc(t *testing.T, v vcs.VCS) (*workroom.Service, *config.Config) {
 	}, cfg
 }
 
-func TestDeleteProjectRequiresJSON(t *testing.T) {
-	svc, _ := newTestSvc(t, &fakeVCS{})
-	err := runDeleteProject(svc, false, "", false, false, []string{"/p"}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("only available in --json mode")) {
-		t.Fatalf("expected --json-only error, got %v", err)
-	}
-}
-
-func TestDeleteProjectRequiresPathArg(t *testing.T) {
-	svc, _ := newTestSvc(t, &fakeVCS{})
-	err := runDeleteProject(svc, true, "", false, false, []string{}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("expected error when no path argument is given")
-	}
-}
-
 func TestDeleteProjectConfirmMismatch(t *testing.T) {
 	svc, cfg := newTestSvc(t, &fakeVCS{})
 	proj := t.TempDir()

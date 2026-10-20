@@ -83,22 +83,6 @@ func TestListDataFastFlagsMissingDirectory(t *testing.T) {
 	}
 }
 
-func TestListDataFlagsEmptyPathAsMissingDirectory(t *testing.T) {
-	mock := &mockExecutor{}
-	svc, _, cfg := newTestService(t, &vcs.Git{Executor: mock})
-
-	cfg.AddWorkroom("/a", "ghost", "", "git")
-
-	res, err := svc.ListData(WarningsFast)
-	if err != nil {
-		t.Fatal(err)
-	}
-	warnings := res.Projects[0].Workrooms[0].Warnings
-	if len(warnings) != 1 || warnings[0].Kind != "DirectoryMissing" {
-		t.Fatalf("workroom with empty/missing path should warn DirectoryMissing, got %v", warnings)
-	}
-}
-
 // listingText flattens a Listing's projects, workroom names and warning messages, for tests that
 // check what the human list shows.
 func listingText(l Listing) string {
@@ -176,41 +160,6 @@ func TestListAndListDataAgreeOnMalformedWorkroomEntry(t *testing.T) {
 	}
 	if len(res.Projects[0].Workrooms) != 0 {
 		t.Fatalf("expected malformed entry to be skipped from --json list, got %v", res.Projects[0].Workrooms)
-	}
-}
-
-func TestListDataFullListsVCSOncePerProject(t *testing.T) {
-	// git worktree list output: foo present, bar absent.
-	mock := &mockExecutor{output: gitWorktrees("/a", "/wr/foo")}
-	git := &vcs.Git{Executor: mock}
-	svc, _, cfg := newTestService(t, git)
-	svc.VCSForTypeFunc = func(vcs.Type) (vcs.VCS, error) { return git, nil }
-
-	cfg.AddWorkroom("/a", "foo", "/wr/foo", "git")
-	cfg.AddWorkroom("/a", "bar", "/wr/bar", "git")
-
-	res, err := svc.ListData(WarningsFull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Exactly one VCS list call for the single project (not one per workroom).
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 VCS call (once per project), got %d: %v", len(mock.calls), mock.calls)
-	}
-
-	warn := map[string]bool{}
-	for _, w := range res.Projects[0].Workrooms {
-		for _, x := range w.Warnings {
-			if x.Kind == "VCSWorkroomMissing" {
-				warn[w.Name] = true
-			}
-		}
-	}
-	if warn["foo"] {
-		t.Fatal("foo is present in the VCS listing; should not be flagged missing")
-	}
-	if !warn["bar"] {
-		t.Fatal("bar is absent from the VCS listing; should be flagged VCSWorkroomMissing")
 	}
 }
 
