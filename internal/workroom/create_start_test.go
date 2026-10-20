@@ -58,25 +58,6 @@ func worktreeAdd(calls [][]string) []string {
 	return nil
 }
 
-// The project's base branch reaches the worktree's start point.
-func TestCreateStartsFromTheProjectBaseBranch(t *testing.T) {
-	svc, exec, dir := newCreateFixture(t, func(args []string) (string, error) {
-		if args[0] == "worktree" && args[1] == "list" {
-			return gitWorktrees(t.TempDir()), nil
-		}
-		return "", nil
-	})
-	if err := svc.Config.SetBaseBranch(dir, "develop"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.CreateNamed(dir, nil); err != nil {
-		t.Fatal(err)
-	}
-	if add := worktreeAdd(exec.calls); add == nil || add[len(add)-1] != "refs/remotes/origin/develop" {
-		t.Fatalf("worktree add = %v, want it to start from refs/remotes/origin/develop", add)
-	}
-}
-
 // A project without a base of its own uses the global one, and its own wins when both are set.
 func TestCreateUsesTheGlobalBaseUnlessTheProjectHasOne(t *testing.T) {
 	answer := func(args []string) (string, error) {

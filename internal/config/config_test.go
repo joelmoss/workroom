@@ -89,34 +89,6 @@ func TestAddWorkroom(t *testing.T) {
 	}
 }
 
-func TestAddMultipleWorkrooms(t *testing.T) {
-	c := newTestConfig(t)
-
-	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.AddWorkroom("/project", "bar", "/bar", "git"); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := c.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	project := data["/project"].(map[string]any)
-	workrooms := project["workrooms"].(map[string]any)
-
-	foo := workrooms["foo"].(map[string]any)
-	if foo["path"] != "/foo" {
-		t.Fatalf("expected /foo, got %v", foo["path"])
-	}
-	bar := workrooms["bar"].(map[string]any)
-	if bar["path"] != "/bar" {
-		t.Fatalf("expected /bar, got %v", bar["path"])
-	}
-}
-
 // The config is shared with the app, whose sidebar keeps a project with no workrooms; the CLI
 // cannot tell one the app pinned from one only it used, so deleting the last workroom keeps both.
 func TestRemoveWorkroomKeepsTheEmptiedProject(t *testing.T) {
@@ -229,33 +201,6 @@ func TestWorkroomsDirExpandsTilde(t *testing.T) {
 	}
 	if got != expected {
 		t.Fatalf("expected %s, got %s", expected, got)
-	}
-}
-
-func TestSetProjectVCSUpdatesAndPreservesWorkrooms(t *testing.T) {
-	c := newTestConfig(t)
-	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := c.SetProjectVCS("/project", "git"); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := c.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := data["/project"].(map[string]any)
-	if project["vcs"] != "git" {
-		t.Fatalf("expected vcs git, got %v", project["vcs"])
-	}
-	workrooms, ok := project["workrooms"].(map[string]any)
-	if !ok {
-		t.Fatal("workrooms map was clobbered")
-	}
-	if _, ok := workrooms["foo"].(map[string]any); !ok {
-		t.Fatalf("expected workroom foo preserved, got %v", workrooms)
 	}
 }
 

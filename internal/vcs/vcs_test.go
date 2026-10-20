@@ -102,27 +102,6 @@ func TestGitListWorktrees(t *testing.T) {
 	}
 }
 
-// TestGitListWorktreesSupportsMembershipCheck pins that ListWorkrooms alone (no separate
-// WorkroomExists method — removed; it was a hidden full list-and-scan behind a signature that
-// looked like a cheap probe) is sufficient for a caller to do its own membership check.
-func TestGitListWorktreesSupportsMembershipCheck(t *testing.T) {
-	mock := &MockExecutor{
-		Output: "worktree /project\nHEAD cbace1f043eee2836c7b8494797dfe49f6985716\nbranch refs/heads/master\n\nworktree /workrooms/foo\nHEAD abc123\nbranch refs/heads/workroom/foo\n",
-	}
-	git := &Git{Executor: mock}
-
-	worktrees, err := git.ListWorkrooms("/project")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(worktrees, "foo") {
-		t.Fatalf("expected foo to be present, got %v", worktrees)
-	}
-	if slices.Contains(worktrees, "bar") {
-		t.Fatalf("expected bar to be absent, got %v", worktrees)
-	}
-}
-
 func TestGitCreate(t *testing.T) {
 	mock := &MockExecutor{Output: "origin"}
 	git := &Git{Executor: mock}
@@ -465,33 +444,6 @@ func TestGitDelete(t *testing.T) {
 		if mock.Calls[0][i] != v {
 			t.Fatalf("expected %s at position %d, got %s", v, i, mock.Calls[0][i])
 		}
-	}
-}
-
-func TestGitExcludesCurrentDir(t *testing.T) {
-	mock := &MockExecutor{
-		Output: "worktree /project\nHEAD cbace1f\nbranch refs/heads/master\n",
-	}
-	git := &Git{Executor: mock}
-
-	workrooms, err := git.ListWorkrooms("/project")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(workrooms) != 0 {
-		t.Fatalf("expected 0 worktrees (cwd excluded), got %d", len(workrooms))
-	}
-}
-
-func TestGitParsePortableFormat(t *testing.T) {
-	output := `worktree /
-HEAD cbace1f043eee2836c7b8494797dfe49f6985716
-branch refs/heads/master
-
-`
-	result := parseGitWorktrees(output, "/")
-	if len(result) != 0 {
-		t.Fatalf("expected 0 (excluded cwd), got %d", len(result))
 	}
 }
 

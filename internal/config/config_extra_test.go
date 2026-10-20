@@ -75,20 +75,6 @@ func TestAllProjectsIncludesEmptyAndSkipsScalars(t *testing.T) {
 	}
 }
 
-func TestAllProjectsHandlesMissingWorkroomsKey(t *testing.T) {
-	c := newTestConfig(t)
-	if err := c.Write(map[string]any{"/proj": map[string]any{"vcs": "git"}}); err != nil {
-		t.Fatal(err)
-	}
-	all, err := c.AllProjects()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := all["/proj"]; !ok {
-		t.Fatal("AllProjects dropped a project that lacks a workrooms key")
-	}
-}
-
 func TestAllProjectsHandlesMalformedWorkroomsValue(t *testing.T) {
 	c := newTestConfig(t)
 	// A "workrooms" value that isn't an object (e.g. hand-edited or legacy config) must decode

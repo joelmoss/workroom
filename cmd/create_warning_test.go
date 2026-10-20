@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -44,7 +43,8 @@ func unreachableOriginProject(t *testing.T) string {
 }
 
 // create's JSON carries the fetch warning: in the success payload, and in the error's `created`
-// block when setup fails too, for --json callers. The app reads it from the stderr event (below).
+// block when setup fails too, for --json callers. The app reads it from the stderr `created` event,
+// which the create-fetch-warning-events.ndjson contract golden pins.
 func TestCreateJSONCarriesTheFetchWarning(t *testing.T) {
 	project := unreachableOriginProject(t)
 	code, envelope := runHostCLI(t, "create", "--json", "--no-editor", "--project", project)
@@ -58,21 +58,4 @@ func TestCreateJSONCarriesTheFetchWarning(t *testing.T) {
 	if warning, _ := created["warning"].(string); code == 0 || !strings.Contains(warning, "Could not fetch origin") {
 		t.Fatalf("failed setup: exit %d, %v; want the warning in created", code, envelope)
 	}
-}
-
-// The app takes the warning from the stderr "created" event, which arrives before setup runs, so
-// a setup script that then fails cannot lose it.
-func TestCreateEventCarriesTheFetchWarning(t *testing.T) {
-	project := unreachableOriginProject(t)
-	events := runCLI(t, "create", "--json", "--no-editor", "--project", project).stderr
-	for _, line := range strings.Split(string(events), "\n") {
-		var event map[string]any
-		if json.Unmarshal([]byte(line), &event) == nil && event["type"] == "created" {
-			if warning, _ := event["warning"].(string); !strings.Contains(warning, "Could not fetch origin") {
-				t.Fatalf("created event = %v, want the fetch warning", event)
-			}
-			return
-		}
-	}
-	t.Fatalf("no created event on stderr: %q", events)
 }

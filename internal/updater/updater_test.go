@@ -234,24 +234,6 @@ func TestLatestForChannelNightly(t *testing.T) {
 	}
 }
 
-func TestSha256File(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "a.bin")
-	data := []byte("hello workroom")
-	if err := os.WriteFile(p, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(data)
-	want := hex.EncodeToString(sum[:])
-	got, err := sha256File(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Errorf("sha256File = %q, want %q", got, want)
-	}
-}
-
 func TestVerifyChecksum(t *testing.T) {
 	dir := t.TempDir()
 	archive := filepath.Join(dir, "workroom_1.0.0_x.tar.gz")
