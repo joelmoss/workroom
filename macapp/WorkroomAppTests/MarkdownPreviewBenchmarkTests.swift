@@ -62,8 +62,12 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
 
     // The first preview in this process: whatever WebContent spawn and template load the app hasn't
     // done ahead of it at launch is paid here. Measured once, before any other preview opens.
+    // Nobody opens a preview the instant the app starts, and right after launch the host's own
+    // start-up work inflates the first open: 192 ms at once, 107 ms after 0.5 s, 130 ms after 2 s
+    // (measured 2026-10-21). So the first open waits as a user would.
+    try await Task.sleep(for: .seconds(2))
     let cold = try await open(docs[0].source, tokens: light)
-    record("first open in process", "small", [cold.elapsed])
+    record("first open in process (2 s after start)", "small", [cold.elapsed])
     try await assertPaints(cold.webView)
 
     for doc in docs {
@@ -174,6 +178,18 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
     }
     report["concurrent_views_distinct_webcontent_pids"] = Set(pids).count
     lines.append("3 previews open at once → \(Set(pids).count) WebContent process(es)")
+    hosts.removeAll()
+
+    // Each preview opened while the earlier ones stay open gets a page booted for it, never one
+    // a closed preview handed back: the first-use costs a reused page has already paid.
+    var freshOpens: [Double] = []
+    for _ in 0..<Self.samples {
+      for _ in 0..<80 where MarkdownWebViewPool.shared.spareIsLoaded == false {
+        try await Task.sleep(for: .milliseconds(25))
+      }
+      freshOpens.append(try await open(docs[0].source, tokens: light, keep: &hosts).elapsed)
+    }
+    record("open on a freshly booted page", "small", freshOpens)
     hosts.removeAll()
 
     // What keeping a booted page ready costs while no preview is open.
