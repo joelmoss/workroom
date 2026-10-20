@@ -8,11 +8,11 @@
 #
 #   macapp/Scripts/vendor-markdown.sh                 # bump all three to latest, rewrite VENDOR.md
 #   macapp/Scripts/vendor-markdown.sh --check         # verify on-disk files match VENDOR.md checksums
-#   DOMPURIFY=3.4.11 MARKED=18.0.5 MERMAID=11.16.0 \
+#   DOMPURIFY=3.4.11 MARKED=18.0.5 PELE=1.8.0 \
 #     macapp/Scripts/vendor-markdown.sh               # pin explicit versions
 #
 # After a bump: `make app-build` and visually QA a doc with a GFM table, a task list, and a
-# ```mermaid diagram in preview mode — major bumps (marked, mermaid) can change rendering.
+# ```mermaid diagram in preview mode — major bumps (marked, pele) can change rendering.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../Resources/markdown" && pwd)"
@@ -24,7 +24,7 @@ MANIFEST="$DIR/VENDOR.md"
 LIBS=(
   "dompurify|dist/purify.min.js|dompurify.min.js"
   "marked|lib/marked.umd.min.js|marked.min.js"
-  "mermaid|dist/mermaid.min.js|mermaid.min.js"
+  "pele|dist/pele.global.js|pele.global.js"
 )
 
 sha() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -38,7 +38,7 @@ env_pin() { # pkg -> value of matching env override, or empty
   case "$1" in
     dompurify) echo "${DOMPURIFY:-}" ;;
     marked) echo "${MARKED:-}" ;;
-    mermaid) echo "${MERMAID:-}" ;;
+    pele) echo "${PELE:-}" ;;
   esac
 }
 
@@ -65,8 +65,8 @@ fi
   echo "**Do not edit these files by hand.** Refresh with \`macapp/Scripts/vendor-markdown.sh\`."
   echo "DOMPurify sanitizes untrusted Markdown before it hits the DOM, so keep it current."
   echo
-  echo "\`mermaid.min.js\` is the exception: it is NOT in \`template.html\`. At 3.4 MB it was ~104 ms of"
-  echo "the ~117 ms script parse on every Markdown open (8-10 ms without it), so \`render.js\` injects it"
+  echo "\`pele.global.js\`, the diagram engine, is the exception: it is NOT in \`template.html\`. At 0.7 MB"
+  echo "it is most of the bundled script and almost no file has a diagram, so \`render.js\` injects it"
   echo "on demand, the first time a document actually contains a \\\`\\\`\\\`mermaid fence."
   echo
   echo "| File | Package | Version | SHA-256 | Source |"
