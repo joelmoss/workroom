@@ -99,7 +99,7 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 
 | Component | Technology |
 | --- | --- |
-| **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+, Apple Silicon) |
+| **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+; Release builds are universal, arm64 and x86_64) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm`, Metal-rendered) |
 | **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); agent-routed reads and writes via the Rust `wr-agent` |
 | **Syntax highlighting** | [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + tree-sitter grammars |
@@ -614,7 +614,7 @@ Channels are delivered as **two products**, not one switchable install:
 
 - **Main product** — one install (the `workroom` CLI and the "Workroom" app) that tracks **stable**
   or **pre**, chosen at runtime (`workroom update --channel stable|pre`, or the app's *Settings ▸
-  General ▸ Release channel*). Mutually exclusive; no side-by-side.
+  About ▸ Release channel*). Mutually exclusive; no side-by-side.
 - **Nightly product** — a **separate download** (the `workroom-nightly` CLI and a distinct "Workroom
   Nightly" app: own bundle id `…workroom.nightly`, name, violet icon) pinned to nightly, running
   **alongside** the main install (and the Debug "Workroom Dev" build). Channel here is a *build
@@ -720,7 +720,7 @@ dialog shows the polished notes instead of raw commits.
 
 **Channels.** `appcast.xml` carries stable and pre: `appcast.sh` tags each item with
 `<sparkle:channel>pre</sparkle:channel>` (stable items stay untagged), and the **main app** reads
-`Updater.allowedChannels(for:)` = the picked stable/pre floor (from *Settings ▸ General ▸ Release
+`Updater.allowedChannels(for:)` = the picked stable/pre floor (from *Settings ▸ About ▸ Release
 channel*). Sparkle only offers items whose channel is allowed, and the untagged/default channel is
 always allowed, which gives the nested stable ⊂ pre model for free. Pre/GA items are appended and
 idempotent on `(channel, build)`.

@@ -24,7 +24,7 @@ others' way.
 ## Install
 
 Download the app, open the `.dmg` and drag **Workroom** into Applications. It needs macOS 15 Sequoia or
-later on Apple Silicon, and it updates itself.
+later, and it updates itself.
 
 The `workroom` command-line tool is bundled inside the app. To use it on its own, on macOS or Linux:
 

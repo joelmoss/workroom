@@ -548,7 +548,7 @@ on the fixed `appcast` GitHub release. See `CONTRIBUTING.md` ("Auto-update") for
 setup and the `SPARKLE_PRIVATE_KEY` secret.
 
 **Release channels (issue #91) — two build identities.** The **main** app (`Release` config)
-switches `stable`⟷`pre` at runtime via the *Settings ▸ General ▸ Release channel* picker
+switches `stable`⟷`pre` at runtime via the *Settings ▸ About ▸ Release channel* picker
 (`ReleaseChannel.pickerCases` = stable/pre only). **Workroom Nightly** is a separate side-by-side
 product — the `Nightly` build config in `project.yml` (bundle id `…workroom.nightly`, name, labelled
 `AppIcon-Nightly`, `WORKROOM_RELEASE_CHANNEL=nightly` → the `WorkroomReleaseChannel` Info.plist

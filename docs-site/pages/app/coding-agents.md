@@ -82,7 +82,7 @@ Codex does not ask Workroom whether it supports program status, so Workroom trea
 
 Workroom carries the microphone entitlement macOS needs, so a program in a terminal can use your microphone. Claude Code's voice mode is the main example. The first time a program asks, macOS shows a prompt: **Programs Workroom runs, including terminal commands, repository setup scripts and coding agents, can use your microphone.**
 
-If you do not see the prompt in a terminal that was already open when you updated Workroom, open a new terminal. If voice still fails, look for Workroom in **System Settings ▸ Privacy & Security ▸ Microphone**.
+If you do not see the prompt after updating Workroom, close every terminal, quit Workroom, wait about 30 seconds and open it again. Terminals keep running under a helper the previous version started, and new terminals do too while it lives, so opening a new terminal is not enough. If voice still fails, look for Workroom in **System Settings ▸ Privacy & Security ▸ Microphone**. See [Troubleshooting](../help/troubleshooting.md#a-coding-agents-voice-mode-never-asks-for-the-microphone).
 
 > [!NOTE]
 > Without the entitlement, macOS refuses microphone access before it ever asks, and voice fails with no prompt and no error.

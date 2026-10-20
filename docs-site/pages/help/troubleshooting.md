@@ -103,8 +103,8 @@ The prompt reads "Workroom would like to access data from other apps". A program
 Voice input from a program in a Workroom terminal, such as Claude Code's voice mode, needs the microphone. Without the right permission macOS refuses before it asks, so voice fails with no prompt and no error. Current builds of Workroom allow it.
 
 1. Update Workroom.
-2. Open System Settings, then Privacy & Security, then Microphone, and check that Workroom is listed and on.
-3. If a terminal that was open before the update still never prompts, close every terminal, quit Workroom, wait about 30 seconds, and open it again.
+2. Close every terminal, quit Workroom, wait about 30 seconds, and open it again. Terminals, new ones included, keep running under a helper the previous version started until it exits.
+3. If voice still never prompts, open System Settings, then Privacy & Security, then Microphone, and check that Workroom is listed and on.
 
 ## A remote workroom's host can't be reached {nightly}
 

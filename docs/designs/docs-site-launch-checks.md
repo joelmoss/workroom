@@ -2,18 +2,13 @@
 
 The pages under `docs-site/` were drafted from the code and the README, never from the running app (D5). Each item below is a claim to check in the app, a detail left out because it could not be confirmed, or a place where the code and the older docs disagree. Work through it before the Codaset PR goes live, then delete this file.
 
-## Contradictions found while drafting
+## Contradictions found while drafting (resolved 2026-10-20)
 
-- **README** says the app creates pull requests. It doesn't: the Pull Request panel shows, readies, drafts, closes, reopens and merges them (`gh pr create` opens one). The docs say so.
-- **README** says the Quick Terminal hotkey is ⌘§. It is ⌥§; ⌘§ shows and hides Workroom.
-- **README** install examples put `VERSION=` and `WORKROOM_CHANNEL=` before `curl`, where `sh` never sees them. The docs put them before `sh`.
-- **README** says exit code 2 is "usage / validation". Only `ConfirmationMismatch`, `UnsafeDeletePath` and `InvalidHostDescriptor` return 2.
-- **README** says a stale `config.json.lock` self-heals after about 10 seconds. The code uses an OS lock with a 30-second backstop.
-- **README** presents **Delete Anyway** as shipped; v2.1.0 does not have it.
-- **CONTRIBUTING** puts the release channel under Settings ▸ General; it is under Settings ▸ About.
-- **`DeleteProjectSheet.swift`** still warns about "its base machine", which #395 removed.
-- **Voice mode recovery** differs: `app/coding-agents.md` follows `macapp/README.md` (open a new terminal, check System Settings); `help/troubleshooting.md` follows the #368 release-note plan (close every terminal, quit, wait about 30 seconds, relaunch). Pick one.
-- **Architecture**: the README says Apple Silicon, but the Release build is universal (`ARCHS` arm64 and x86_64). `get-started/install.md` names no architecture until that is settled.
+- **The six README contradictions** (pull request creation, the ⌘§ Quick Terminal hotkey, install variables before `curl`, exit code 2, the 10-second lock, Delete Anyway as shipped) went with the README trim (D14). The README now links to the docs, which had the code's version of each.
+- **CONTRIBUTING** put the release channel under Settings ▸ General. Fixed to Settings ▸ About, where `AboutSettingsPane` has the picker, in CONTRIBUTING.md (twice) and `macapp/AGENTS.md`.
+- **`DeleteProjectSheet.swift`'s "base machine" warning is not stale.** It shows only when `project.host` is set, and a project can still record a base an older build made until `BaseRetirement` takes it down (a base it can't take down keeps its record). `RemoteWorkroomDeletionTests` pins the wording. No change.
+- **Voice mode recovery:** `app/coding-agents.md` was the odd one out. `macapp/README.md` and the #368 release-note plan agree: terminals, new ones included, run under the previous version's helper while it lives, so the fix is to close every terminal, quit, wait about 30 seconds and relaunch, then check System Settings ▸ Privacy & Security ▸ Microphone. Both pages now say that, in that order.
+- **Architecture:** the shipped app is universal. Every executable in v2.1.0's `.dmg` (Workroom, ghostty, workroom-session, wr-agent) and the bundled CLI is `x86_64 arm64` (`lipo -archs`), and `release.sh` refuses a release that isn't. The README and CONTRIBUTING.md no longer say Apple Silicon only; they say macOS 15 or later, like `get-started/install.md`. Whether to say Intel Macs are supported is the owner's call, since no one has checked the app on one.
 
 ## Notes: docs-site/pages/app/*
 
