@@ -14,6 +14,7 @@ The pages under `docs-site/` were drafted from the code and the README, never fr
 
 - **"Diagnose with" did nothing.** The setting was never read: diagnosis and Investigate both always ran `claude`. The owner chose to keep the automatic diagnosis Claude-only (decision X1: `codex exec` still has no tools-off mode in 0.163) and have the setting pick the agent **Investigate** opens. It is now **Investigate with**; Auto is Claude, else Codex, and with Claude Code missing the banner still offers Investigate with Codex. The caption and the not-found message say so, and `app/coding-agents.md` and `app/settings.md` match.
 - **The Stop button's tooltip** promised a second-press force-quit that doesn't exist. It now reads "Stop the run command (⇧⌘R)".
+- **Checked in the running app (Dev build of 8b4e71bec).** The red **Command failed (exit 1)** sits after the branch in the pane footer. The **Investigate with** picker and its caption read as `app/settings.md` says. With Claude installed, Diagnose gives a fix and **Investigate** opens `codex` when Codex is the pick. With `claude` off the PATH, the footer reads "Claude Code CLI not found — it runs the diagnosis". **Investigate** then opens `codex` under Auto, and there is no button under Claude. With neither CLI, it reads "No agent CLI found — install Claude Code or Codex" and offers nothing. That matches `app/coding-agents.md`.
 ## Needs the running app
 
 Each is a claim the code supports but can't prove on its own. Look, and fix the page if it differs.
@@ -25,7 +26,6 @@ Each is a claim the code supports but can't prove on its own. Look, and fix the 
 - The workroom tab bar runs across the top of the window, and a workroom becomes a tab only once it has a terminal.
 - **Close automatically when done** sits at the bottom left of the creation pane.
 - The **Update** button and its scrolling note at the trailing end of the title bar (needs a Release or Nightly build that is behind; Debug builds don't check).
-- The red **Command failed (exit N)** in the pane footer, and its position after the branch.
 - How the sync button's text shortens at narrow inspector widths ("origin" and "with rebase" drop), and the width where a diff falls back to unified.
 
 ### Behaviour
