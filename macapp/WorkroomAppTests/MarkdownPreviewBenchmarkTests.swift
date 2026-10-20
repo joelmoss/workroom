@@ -97,6 +97,8 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
       try await assertRenderedWhole(webView, doc.source)
       record("open (preview created → painted)", doc.name, opens)
       record("open → whole document in page", doc.name, wholes)
+      // Before the renders below pile more into the same page: what one open costs.
+      memory(webView, label: doc.name)
 
       // A loaded page given new source, as when the file changes on disk: the production
       // `__render` plus the same double animation frame the coordinator waits on.
@@ -135,7 +137,6 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
       }
       record("marked.parse, in page", doc.name, parses)
       record("DOMPurify.sanitize, in page", doc.name, sanitizes)
-      memory(webView, label: doc.name)
     }
 
     // Diagrams render after the first paint, so the clock runs until every one is an <svg>.
