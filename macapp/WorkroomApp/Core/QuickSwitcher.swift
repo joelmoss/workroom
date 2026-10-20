@@ -69,8 +69,8 @@ enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
 ///
 /// Deliberately **not** added to `GhosttySurfaceView.isAppShortcut`. That list is a static allowlist,
 /// and whether Tab belongs to the app depends on runtime state — a workroom with one pane has nothing
-/// to switch to, so ⌃Tab must reach the TUI. The codebase already resolved this same fork the same
-/// way: ⌃⌘arrows is deliberately unreserved so it passes through at a split's edge. The `AppDelegate`
+/// to switch to, so ⌃Tab must reach the TUI. ⌃⌘arrows is unreserved the same way, though libghostty's
+/// own default binding takes it when there is no other pane. The `AppDelegate`
 /// monitor runs inside `NSApp.sendEvent` *before* key-equivalent dispatch, so when the switcher does
 /// act the surface never sees the key regardless.
 enum QuickSwitcherKey {

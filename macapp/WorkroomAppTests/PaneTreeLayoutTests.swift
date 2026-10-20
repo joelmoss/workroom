@@ -140,8 +140,26 @@ final class PaneTreeLayoutTests: XCTestCase {
       id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
     XCTAssertEqual(PaneTreeLayout.adjacentPane(to: a, direction: .right, in: layout), b)
     XCTAssertEqual(PaneTreeLayout.adjacentPane(to: b, direction: .left, in: layout), a)
-    XCTAssertNil(PaneTreeLayout.adjacentPane(to: a, direction: .left, in: layout))
+    // At the edge it wraps to the far side; nothing shares the column, so up stays put.
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: a, direction: .left, in: layout), b)
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: b, direction: .right, in: layout), a)
     XCTAssertNil(PaneTreeLayout.adjacentPane(to: a, direction: .up, in: layout))
+    XCTAssertNil(PaneTreeLayout.adjacentPane(to: a, direction: .up, in: .leaf(a)))
+  }
+
+  /// Wrapping lands on the FARTHEST pane the other way, not the nearest one.
+  func testAdjacentPaneWrapsToTheFarSide() {
+    let a = UUID()
+    let b = UUID()
+    let c = UUID()
+    // A | B | C
+    let layout = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 1.0 / 3, first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: c, direction: .right, in: layout), a)
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: a, direction: .left, in: layout), c)
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: b, direction: .right, in: layout), c)
   }
 
   func testAdjacentPaneInNestedSplit() {
@@ -158,7 +176,9 @@ final class PaneTreeLayoutTests: XCTestCase {
     XCTAssertEqual(PaneTreeLayout.adjacentPane(to: c, direction: .up, in: layout), b)
     XCTAssertEqual(PaneTreeLayout.adjacentPane(to: b, direction: .left, in: layout), a)
     XCTAssertEqual(PaneTreeLayout.adjacentPane(to: c, direction: .left, in: layout), a)
-    XCTAssertNil(PaneTreeLayout.adjacentPane(to: b, direction: .right, in: layout))
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: b, direction: .right, in: layout), a)
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: b, direction: .up, in: layout), c)
+    XCTAssertEqual(PaneTreeLayout.adjacentPane(to: c, direction: .down, in: layout), b)
     let fromA = PaneTreeLayout.adjacentPane(to: a, direction: .right, in: layout)
     XCTAssertTrue(fromA == b || fromA == c)  // a right-column pane
   }

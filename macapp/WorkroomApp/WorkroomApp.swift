@@ -540,8 +540,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return nil
       }
       // ⌃⌘arrows: move focus between split panes (issue #3) — moved off ⌥⌘arrows, which now cycles
-      // terminal tabs (issue #29). Consumed only when focus actually moves, so the keys still reach
-      // the terminal when there's no split to navigate. (Virtual keycodes: left 123 / right 124 /
+      // terminal tabs (issue #29). Wraps at a split's edge; consumed only when focus actually moves.
+      // (Virtual keycodes: left 123 / right 124 /
       // down 125 / up 126.)
       let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
       if flags == [.command, .control], let direction = arrows[event.keyCode],

@@ -1086,7 +1086,10 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.activeTab(for: target)?.id, a)
     XCTAssertTrue(s.focusAdjacentPane(.right, for: target))
     XCTAssertEqual(s.activeTab(for: target)?.id, b)
-    XCTAssertFalse(s.focusAdjacentPane(.right, for: target))  // nothing to the right of b
+    // Nothing to the right of b: it wraps to the far side, a.
+    XCTAssertTrue(s.focusAdjacentPane(.right, for: target))
+    XCTAssertEqual(s.activeTab(for: target)?.id, a)
+    XCTAssertFalse(s.focusAdjacentPane(.up, for: target))  // nothing above or below either
   }
 
   func testFocusAdjacentPaneNoSplitIsNoOp() {

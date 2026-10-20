@@ -614,7 +614,8 @@ enum PaneTreeLayout {
 
   /// The pane nearest `tabID` in `direction` within `layout`: the closest pane that lies that way and
   /// overlaps on the perpendicular axis (so ⌃⌘→ from a tall left pane lands on whichever right pane
-  /// shares the most rows). Pure geometry over a reference rect — `nil` if there's nothing that way.
+  /// shares the most rows). At the split's edge it wraps to the farthest overlapping pane the other
+  /// way, as iTerm does. Pure geometry over a reference rect — `nil` if no pane overlaps on that axis.
   static func adjacentPane<Leaf: Hashable>(
     to tabID: Leaf, direction: PaneDirection, in layout: PaneLayout<Leaf>
   ) -> Leaf? {
@@ -622,6 +623,7 @@ enum PaneTreeLayout {
     guard let from = panes[tabID] else { return nil }
     let horizontal = direction == .left || direction == .right
     var best: (id: Leaf, primary: CGFloat, secondary: CGFloat)?
+    var wrap: (id: Leaf, primary: CGFloat, secondary: CGFloat)?
     for (id, r) in panes where id != tabID {
       let inDirection: Bool
       switch direction {
@@ -633,16 +635,23 @@ enum PaneTreeLayout {
       let overlaps =
         horizontal
         ? (from.minY < r.maxY && r.minY < from.maxY) : (from.minX < r.maxX && r.minX < from.maxX)
-      guard inDirection, overlaps else { continue }
+      guard overlaps else { continue }
       let primary = horizontal ? abs(r.midX - from.midX) : abs(r.midY - from.midY)
       let secondary = horizontal ? abs(r.midY - from.midY) : abs(r.midX - from.midX)
-      if best == nil || primary < best!.primary
-        || (primary == best!.primary && secondary < best!.secondary)
+      if inDirection {
+        if best == nil || primary < best!.primary
+          || (primary == best!.primary && secondary < best!.secondary)
+        {
+          best = (id, primary, secondary)
+        }
+      } else if primary > 0,
+        wrap == nil || primary > wrap!.primary
+          || (primary == wrap!.primary && secondary < wrap!.secondary)
       {
-        best = (id, primary, secondary)
+        wrap = (id, primary, secondary)
       }
     }
-    return best?.id
+    return best?.id ?? wrap?.id
   }
 
   /// The half-pane band to highlight for a drop on `edge`.
