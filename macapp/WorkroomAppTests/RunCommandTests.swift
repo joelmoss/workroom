@@ -821,10 +821,23 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let bannerState = investigateBanner(t)
 
-    let tab = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let tab = store.startInvestigate(
+      bannerState: bannerState, target: t, surface: nil, agentSetting: "auto")
 
     XCTAssertEqual(captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState))
     XCTAssertEqual(store.investigateTabs[tab.id], t.id)
+  }
+
+  /// The "Investigate with" setting picks the agent the Investigate tab runs.
+  func testStartInvestigateRunsTheChosenAgent() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let bannerState = investigateBanner(t)
+
+    store.startInvestigate(bannerState: bannerState, target: t, surface: nil, agentSetting: "codex")
+
+    XCTAssertEqual(
+      captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: .codex))
   }
 
   func testInvestigateLivenessClearsViaChildExitAndViaTabRemoval() {

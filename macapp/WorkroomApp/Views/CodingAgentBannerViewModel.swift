@@ -1,3 +1,4 @@
+import Defaults
 import Foundation
 
 /// Pure presentation of an `CodingAgentBannerState` (issue #49, T8): the text and which controls the
@@ -18,7 +19,9 @@ struct CodingAgentBannerViewModel: Equatable {
   let showsInvestigate: Bool
   let showsDismiss: Bool
 
-  init(state: CodingAgentBannerState) {
+  /// `investigateSetting` is the "Investigate with" setting (`terminalAgentBackend`).
+  init(state: CodingAgentBannerState, investigateSetting: String = Defaults[.terminalAgentBackend])
+  {
     switch state {
     case .awaitingDiagnose(let failure):
       style = .awaiting
@@ -61,7 +64,12 @@ struct CodingAgentBannerViewModel: Equatable {
       fixIsDestructive = false
       showsDiagnoseButton = Self.isRetryable(kind)
       showsInsertFix = false
-      showsInvestigate = false
+      // With claude missing there's no diagnosis, but Investigate can still open codex when that's
+      // the pick (auto falls back to it).
+      showsInvestigate =
+        kind == .cliNotFound
+        && CodingAgentBackend.forInvestigate(setting: investigateSetting, claudeMissing: true)
+          == .codex
       showsDismiss = true
 
     case .remoteCaveat(let failure):
@@ -81,7 +89,7 @@ struct CodingAgentBannerViewModel: Equatable {
   /// User-facing message for an error outcome.
   static func message(for kind: CodingAgentErrorKind) -> String {
     switch kind {
-    case .cliNotFound: return "No agent CLI found — install Claude Code or Codex"
+    case .cliNotFound: return "Claude Code CLI not found — it runs the diagnosis"
     case .notAuthenticated: return "Agent not signed in — run `claude login`"
     case .timedOut: return "Diagnosis timed out"
     case .emptyOutput: return "No diagnosis returned"

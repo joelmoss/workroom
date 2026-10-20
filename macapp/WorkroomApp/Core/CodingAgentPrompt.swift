@@ -50,14 +50,17 @@ enum CodingAgentPrompt {
     return lines.joined(separator: "\n")
   }
 
-  /// A shell command line that opens an interactive `claude` seeded with the failure so the agent can
-  /// start investigating immediately (issue #49). Run in the pane's real cwd (unlike the neutral-dir
-  /// no-tools diagnosis), so it can inspect the project.
-  static func investigateCommandLine(for state: CodingAgentBannerState) -> String {
+  /// A shell command line that opens an interactive `agent` (`claude` or `codex`, both take the
+  /// prompt as their positional argument) seeded with the failure so it can start investigating
+  /// immediately (issue #49). Run in the pane's real cwd (unlike the neutral-dir no-tools diagnosis),
+  /// so it can inspect the project.
+  static func investigateCommandLine(
+    for state: CodingAgentBannerState, agent: CodingAgentBackend = .claude
+  ) -> String {
     let (failure, diagnosis) = state.failureAndDiagnosis
     let prompt = investigatePrompt(
       command: failure.command, exitCode: failure.exitCode, diagnosis: diagnosis)
-    return "claude " + shellSingleQuoted(prompt)
+    return agent.executable + " " + shellSingleQuoted(prompt)
   }
 
   /// The natural-language seed prompt for the interactive Investigate session: the failed command,

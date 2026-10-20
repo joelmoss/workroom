@@ -64,6 +64,22 @@ final class CodingAgentBannerViewModelTests: XCTestCase {
     XCTAssertTrue(vm.headline.lowercased().contains("cli"))
   }
 
+  /// No claude means no diagnosis, but Investigate still opens codex when that's the pick: Auto
+  /// falls back to it, and an explicit Claude pick has nothing to open.
+  func testCliNotFoundOffersInvestigateOnlyWhenCodexIsThePick() {
+    let state = CodingAgentBannerState.failure(failure(), .cliNotFound)
+    XCTAssertTrue(
+      CodingAgentBannerViewModel(state: state, investigateSetting: "auto").showsInvestigate)
+    XCTAssertTrue(
+      CodingAgentBannerViewModel(state: state, investigateSetting: "codex").showsInvestigate)
+    XCTAssertFalse(
+      CodingAgentBannerViewModel(state: state, investigateSetting: "claude").showsInvestigate)
+    XCTAssertFalse(
+      CodingAgentBannerViewModel(state: .failure(failure(), .timedOut), investigateSetting: "codex")
+        .showsInvestigate,
+      "claude is there, so a failed run is retried, not handed to codex")
+  }
+
   func testFailureTimeoutIsRetryable() {
     let vm = CodingAgentBannerViewModel(state: .failure(failure(), .timedOut))
     XCTAssertTrue(vm.showsDiagnoseButton)

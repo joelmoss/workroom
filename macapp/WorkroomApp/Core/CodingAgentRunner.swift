@@ -5,8 +5,9 @@ import WorkroomSystem
 /// - `.claude` can run a **true no-tools** inline diagnosis (`--allowed-tools none --permission-mode
 ///   plan`, verified: returns a JSON envelope with no tool calls), so it backs the inline/automatic
 ///   path AND the Investigate hand-off.
-/// - `.codex exec` has no zero-tools mode (`-s read-only` still runs read-only commands), so it is
-///   **Investigate-only** — never the silent inline path. (Investigate is wired in the banner, T8.)
+/// - `.codex exec` has no zero-tools mode (`-s read-only` still runs read-only commands; still true
+///   of 0.163), so it is **Investigate-only** — never the silent inline path. The "Investigate with"
+///   setting picks which agent Investigate opens (`forInvestigate`).
 enum CodingAgentBackend: String, Sendable, CaseIterable {
   case claude
   case codex
@@ -40,6 +41,17 @@ enum CodingAgentBackend: String, Sendable, CaseIterable {
     if installed.contains(.claude) { return .claude }
     if installed.contains(.codex) { return .codex }
     return nil
+  }
+
+  /// The agent the Investigate button opens, from the "Investigate with" setting
+  /// (`terminalAgentBackend`: `auto`, `claude` or `codex`). Auto is claude, else codex; whether claude
+  /// is missing comes from the diagnosis itself, which runs claude and ends `.cliNotFound` without it.
+  static func forInvestigate(setting: String, claudeMissing: Bool) -> CodingAgentBackend {
+    switch setting {
+    case CodingAgentBackend.claude.rawValue: return .claude
+    case CodingAgentBackend.codex.rawValue: return .codex
+    default: return claudeMissing ? .codex : .claude
+    }
   }
 }
 

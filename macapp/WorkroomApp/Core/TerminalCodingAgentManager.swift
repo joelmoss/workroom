@@ -50,6 +50,13 @@ enum CodingAgentBannerState: Equatable, Sendable {
       return (failure, diagnosis)
     }
   }
+
+  /// The diagnosis ran claude and it wasn't on PATH, which is how "Investigate with: Auto" knows to
+  /// pick codex.
+  var claudeMissing: Bool {
+    if case .failure(_, .cliNotFound) = self { return true }
+    return false
+  }
 }
 
 /// Orchestrates the inline terminal agent (issue #49, T6): classify a finished command, decide

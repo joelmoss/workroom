@@ -179,7 +179,7 @@ struct RunControls: View {
           } label: {
             Image(systemName: "stop.fill")
           }
-          .help("Stop the run command (⇧⌘R) — again to force-quit")
+          .help("Stop the run command (⇧⌘R)")
           .accessibilityLabel("Stop")
           .accessibilityIdentifier("runCommand.stop")
         } else {

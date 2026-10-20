@@ -390,10 +390,13 @@ extension AppStore {
   /// tracks the tab in `investigateTabs` so it isn't invisible to quit/close teardown.
   @discardableResult
   func startInvestigate(
-    bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?
+    bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?,
+    agentSetting: String = Defaults[.terminalAgentBackend]
   ) -> TerminalTab {
     let cwd = surface?.lastKnownCwd ?? target.path
-    let command = CodingAgentPrompt.investigateCommandLine(for: bannerState)
+    let agent = CodingAgentBackend.forInvestigate(
+      setting: agentSetting, claudeMissing: bannerState.claudeMissing)
+    let command = CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: agent)
     let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
     investigateTabs[tab.id] = target.id
     let tabID = tab.id
