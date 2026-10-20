@@ -40,18 +40,12 @@ import XCTest
 ///   incidentally proved the READ side works: `stampIsAdvancing`/`pollUntilAdvancing` correctly
 ///   distinguished "still touching its file" from "stopped," every time, which is the actual
 ///   mechanism the real test's `XCTAssertFalse` depends on.
-/// - **The fault-injection trick (`testStampDetectionCatchesAGenuineOrphan_designProof`) itself did
-///   NOT reproduce reliably** after switching to the correct foreground-`exec` shape: `trap '' HUP`
-///   on the marked process sometimes went red as intended, sometimes green (the process died on quit
-///   anyway) across repeated runs — inconclusive, not a confirmed non-vacuity proof for THIS
-///   mechanism. Time-boxed rather than chased further: this test is disabled and never runs in CI, so
-///   its own flakiness doesn't threaten `make app-uitest`, and the detection mechanism it was meant to
-///   re-verify is already proven by the point above. Whoever revisits this: a stronger fault
-///   injection (e.g. actually holding the app's teardown open, per the plan's "debug flag or timing
-///   hack" alternative) would need real app-code cooperation, which this session deliberately avoided
-///   adding just to satisfy a proof.
-///
-/// It stays here, disabled, as the design record of what was tried.
+/// - **A fault-injection proof did NOT reproduce reliably** after switching to the correct
+///   foreground-`exec` shape: a `trap '' HUP` on the marked process sometimes went red as intended,
+///   sometimes green (the process died on quit anyway) across repeated runs — inconclusive, so that
+///   disabled design-proof test was removed (its last version is in git history). Whoever revisits
+///   this: a stronger fault injection (e.g. actually holding the app's teardown open, per the plan's
+///   "debug flag or timing hack" alternative) would need real app-code cooperation.
 ///
 /// **One typing gotcha found and fixed along the way, worth knowing for future edits to this file:**
 /// `XCUIElement.typeText` garbled a bare `:` (as in the idiomatic `while :; do …`) into `;5u;`,
@@ -126,23 +120,15 @@ final class GhosttyOrphanShellUITests: XCTestCase {
   /// backgrounded the stamper (with or without `disown`) and it "leaked" on every run, healthy app or
   /// not, because it was never attached to the PTY as the foreground process in the first place —
   /// nothing about libghostty was under test. `exec`ing the marked process INTO the shell's own slot
-  /// is what makes it the thing that actually receives (or, for the proof test, is made to ignore)
-  /// the hangup.
+  /// is what makes it the thing that actually receives the hangup.
   ///
   /// `while true`, not the more idiomatic `while :`. Measured while writing this test:
   /// `XCUIElement.typeText` garbled the bare `:` into `;5u;`, corrupting the loop condition into
   /// invalid syntax and silently breaking the whole stamper — the line still ECHOED as typed (so a
   /// naive glance at the terminal looked fine) because the corruption happened in the synthesized
   /// keystrokes themselves, not in rendering. `true` avoids the character entirely.
-  ///
-  /// `hupImmune` makes the marked process ignore `SIGHUP` (`trap '' HUP`) before it starts looping —
-  /// the design-proof's fault injection, applied directly to the process that will actually receive
-  /// the hangup this time (unlike an earlier attempt that trapped on a process one level removed from
-  /// the marked one and proved nothing). Simulates "survives regardless of teardown health" without
-  /// touching a single line of app or engine code.
-  private func stamperCommand(marker: String, stamp: String, hupImmune: Bool) -> String {
-    let trap = hupImmune ? "trap '' HUP; " : ""
-    return "exec -a \(marker) sh -c '\(trap)while true; do touch \(stamp); sleep 0.5; done'"
+  private func stamperCommand(marker: String, stamp: String) -> String {
+    "exec -a \(marker) sh -c 'while true; do touch \(stamp); sleep 0.5; done'"
   }
 
   private func modificationDate(_ path: String) -> Date? {
@@ -180,7 +166,7 @@ final class GhosttyOrphanShellUITests: XCTestCase {
 
     let app = launchedApp()
     focusTerminal(app)
-    run(app, stamperCommand(marker: marker, stamp: stamp, hupImmune: false))
+    run(app, stamperCommand(marker: marker, stamp: stamp))
 
     // Sanity-check the setup itself before trusting the teardown assertion: if the stamper never
     // started, "it stopped after quit" would trivially — and meaninglessly — pass.
@@ -196,46 +182,5 @@ final class GhosttyOrphanShellUITests: XCTestCase {
       stampIsAdvancing(stamp, window: 2),
       "a process tagged \(marker) kept touching \(stamp) after the app quit — the IO-layer teardown "
         + "path leaked it")
-  }
-
-  /// Design-time-only proof, kept as a record of what was tried — see the class doc's honest account
-  /// of the result. NOT run by `make app-uitest` (disabled). Flipping `disabled` to `false` and
-  /// running it standalone was RED sometimes and GREEN other times across repeated attempts in this
-  /// session, not consistently RED — so treat a single run either way as inconclusive, not as new
-  /// evidence about the app.
-  ///
-  /// **Manual cleanup required after running this.** It deliberately leaves a `SIGHUP`-immune
-  /// infinite loop running as the pane's former foreground process, and — the same restriction this
-  /// whole file exists to work around — the runner cannot spawn `Process()` to kill it itself. Run
-  /// `pkill -f qa_orphan_uitest_proof` yourself afterward.
-  func testStampDetectionCatchesAGenuineOrphan_designProof() throws {
-    let disabled = true
-    try XCTSkipIf(
-      disabled, "design-time proof only — see the class doc for why this isn't a CI test")
-
-    let marker = "qa_orphan_uitest_proof_\(UUID().uuidString.prefix(8))"
-    let stamp = stampPath(marker)
-    addTeardownBlock { try? FileManager.default.removeItem(atPath: stamp) }
-
-    let app = launchedApp()
-    focusTerminal(app)
-    // `trap '' HUP` makes the marked process ignore the hangup a normal quit sends it — enough to
-    // simulate "survives the app quitting" without touching a single line of app or engine code.
-    run(app, stamperCommand(marker: marker, stamp: stamp, hupImmune: true))
-
-    XCTAssertTrue(
-      pollUntilAdvancing(stamp),
-      "setup failed: the marked stamper (\(marker)) never started touching \(stamp)")
-
-    app.terminate()
-    RunLoop.current.run(until: Date().addingTimeInterval(1))
-
-    // The EXACT assertion `testNormalQuitLeavesNoOrphanedShell` makes, applied to a scenario known to
-    // leak — this must fail (go red) for the real test's assertion to be trusted at all.
-    XCTAssertFalse(
-      stampIsAdvancing(stamp, window: 2),
-      "expected this to FAIL: a HUP-immune stamper should still be touching its file after quit — if "
-        + "this assertion passes instead, the detection mechanism itself is broken, not just "
-        + "insensitive to a real leak")
   }
 }
