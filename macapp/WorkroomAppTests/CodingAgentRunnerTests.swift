@@ -73,12 +73,6 @@ final class CodingAgentRunnerTests: XCTestCase {
     XCTAssertNil(CodingAgentBackend.inlineBackend(installed: []))
   }
 
-  func testPreferredFallsBackToCodex() {
-    XCTAssertEqual(CodingAgentBackend.preferred(installed: [.claude, .codex]), .claude)
-    XCTAssertEqual(CodingAgentBackend.preferred(installed: [.codex]), .codex)
-    XCTAssertNil(CodingAgentBackend.preferred(installed: []))
-  }
-
   func testDisplayNamesAreSeparateFromExecutables() {
     XCTAssertEqual(CodingAgentBackend.claude.displayName, "Claude")
     XCTAssertEqual(CodingAgentBackend.claude.executable, "claude")
@@ -174,6 +168,20 @@ final class CodingAgentRunnerTests: XCTestCase {
     XCTAssertTrue(fake.lastArgs?.contains("none") ?? false)
     XCTAssertEqual(fake.lastDirectory, "/tmp/proj")
     XCTAssertEqual(fake.lastTimeout, 30)
+  }
+
+  /// Only "not on PATH" (env's 127) means missing; a CLI that fails `--version` is still there.
+  func testIsInstalledIsFalseOnlyWhenTheCLIIsNotOnPath() async {
+    for (code, installed) in [
+      (CommandResult.commandNotFound, false), (Int32(0), true), (Int32(1), true),
+    ] {
+      let fake = FakeExecutor(
+        stub: CommandResult(stdout: "", stderr: "", exitCode: code, timedOut: false))
+      let result = await CodingAgentRunner(executor: fake).isInstalled(.codex)
+      XCTAssertEqual(result, installed, "exit \(code)")
+      XCTAssertEqual(fake.lastExecutable, "codex")
+      XCTAssertEqual(fake.lastArgs, ["--version"])
+    }
   }
 
   func testDiagnoseInlineMapsTimeout() async {

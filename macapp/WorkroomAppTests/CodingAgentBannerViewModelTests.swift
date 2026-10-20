@@ -80,6 +80,15 @@ final class CodingAgentBannerViewModelTests: XCTestCase {
       "claude is there, so a failed run is retried, not handed to codex")
   }
 
+  /// Neither CLI: say to install one, offer nothing to click.
+  func testNoAgentCLIOffersNoInvestigateOrRetry() {
+    let vm = CodingAgentBannerViewModel(
+      state: .failure(failure(), .noAgentCLI), investigateSetting: "auto")
+    XCTAssertFalse(vm.showsInvestigate)
+    XCTAssertFalse(vm.showsDiagnoseButton)
+    XCTAssertEqual(vm.headline, "No agent CLI found — install Claude Code or Codex")
+  }
+
   func testFailureTimeoutIsRetryable() {
     let vm = CodingAgentBannerViewModel(state: .failure(failure(), .timedOut))
     XCTAssertTrue(vm.showsDiagnoseButton)

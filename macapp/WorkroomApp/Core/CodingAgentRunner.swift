@@ -30,17 +30,10 @@ enum CodingAgentBackend: String, Sendable, CaseIterable {
   /// Only claude can run the inline diagnosis with no tool execution (X1).
   var supportsInlineDiagnosis: Bool { self == .claude }
 
-  /// The inline-diagnosis backend among those installed: claude or nothing (X1). When nil, the UI
-  /// offers Investigate-with-codex only rather than a silent inline run.
+  /// The inline-diagnosis backend among those installed: claude or nothing (X1). States the rule;
+  /// the diagnosis itself always runs claude and reports `.cliNotFound` without it.
   static func inlineBackend(installed: Set<CodingAgentBackend>) -> CodingAgentBackend? {
     installed.contains(.claude) ? .claude : nil
-  }
-
-  /// Preferred backend for the Investigate hand-off: claude, else codex.
-  static func preferred(installed: Set<CodingAgentBackend>) -> CodingAgentBackend? {
-    if installed.contains(.claude) { return .claude }
-    if installed.contains(.codex) { return .codex }
-    return nil
   }
 
   /// The agent the Investigate button opens, from the "Investigate with" setting
@@ -133,6 +126,15 @@ protocol CodingAgentRunning: Sendable {
   func diagnoseInline(
     systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
   ) async -> CodingAgentRunOutcome
+
+  /// Whether `backend`'s CLI is on the augmented PATH the diagnosis uses. Asked only when the
+  /// diagnosis found no claude, so Investigate offers codex only when it can open it.
+  func isInstalled(_ backend: CodingAgentBackend) async -> Bool
+}
+
+extension CodingAgentRunning {
+  /// Fakes and the UI-test stub have every agent.
+  func isInstalled(_ backend: CodingAgentBackend) async -> Bool { true }
 }
 
 /// Default `CodingAgentRunning`: builds the claude inline argv and runs it through the existing
@@ -154,6 +156,14 @@ struct CodingAgentRunner: CodingAgentRunning {
     let result = await executor.run(
       invocation.executable, invocation.arguments, in: cwd, timeout: timeout)
     return Self.classify(result)
+  }
+
+  /// `<agent> --version` through the same `/usr/bin/env` lookup: only "not on PATH" means missing,
+  /// so a CLI that's there but fails, or is slow, still counts.
+  func isInstalled(_ backend: CodingAgentBackend) async -> Bool {
+    let result = await executor.run(
+      backend.executable, ["--version"], in: NSTemporaryDirectory(), timeout: 10)
+    return result.exitCode != CommandResult.commandNotFound
   }
 
   /// Map a raw process result to a diagnosis outcome. Pure + unit-tested. stdout carries the model's

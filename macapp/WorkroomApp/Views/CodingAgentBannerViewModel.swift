@@ -90,6 +90,7 @@ struct CodingAgentBannerViewModel: Equatable {
   static func message(for kind: CodingAgentErrorKind) -> String {
     switch kind {
     case .cliNotFound: return "Claude Code CLI not found — it runs the diagnosis"
+    case .noAgentCLI: return "No agent CLI found — install Claude Code or Codex"
     case .notAuthenticated: return "Agent not signed in — run `claude login`"
     case .timedOut: return "Diagnosis timed out"
     case .emptyOutput: return "No diagnosis returned"
@@ -103,7 +104,7 @@ struct CodingAgentBannerViewModel: Equatable {
   static func isRetryable(_ kind: CodingAgentErrorKind) -> Bool {
     switch kind {
     case .timedOut, .emptyOutput, .malformed, .other: return true
-    case .cliNotFound, .notAuthenticated: return false
+    case .cliNotFound, .noAgentCLI, .notAuthenticated: return false
     }
   }
 }
