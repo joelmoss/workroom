@@ -15,31 +15,36 @@ The pages under `docs-site/` were drafted from the code and the README, never fr
 - **"Diagnose with" did nothing.** The setting was never read: diagnosis and Investigate both always ran `claude`. The owner chose to keep the automatic diagnosis Claude-only (decision X1: `codex exec` still has no tools-off mode in 0.163) and have the setting pick the agent **Investigate** opens. It is now **Investigate with**; Auto is Claude, else Codex, and with Claude Code missing the banner still offers Investigate with Codex. The caption and the not-found message say so, and `app/coding-agents.md` and `app/settings.md` match.
 - **The Stop button's tooltip** promised a second-press force-quit that doesn't exist. It now reads "Stop the run command (⇧⌘R)".
 - **Checked in the running app (Dev build of 8b4e71bec).** The red **Command failed (exit 1)** sits after the branch in the pane footer. The **Investigate with** picker and its caption read as `app/settings.md` says. With Claude installed, Diagnose gives a fix and **Investigate** opens `codex` when Codex is the pick. With `claude` off the PATH, the footer reads "Claude Code CLI not found — it runs the diagnosis". **Investigate** then opens `codex` under Auto, and there is no button under Claude. With neither CLI, it reads "No agent CLI found — install Claude Code or Codex" and offers nothing. That matches `app/coding-agents.md`.
+
 ## Needs the running app
 
 Each is a claim the code supports but can't prove on its own. Look, and fix the page if it differs.
 
+### Checked in the running app (Dev build, 2026-10-20)
+
+- **Menus:** **Settings…** is in the app menu; **New Window**, **Move pane into new window** and **Move workroom into new window** top the Window menu.
+- **Project row:** the gear appears left of the **+** on hover and the rows don't move. The sidebar's **+** is at the bottom right.
+- **Tab bar:** workroom tabs run across the top. A workroom being created gets a tab straight away, before it has a terminal; the docs only say open workrooms appear there, so nothing to change.
+- **Creation pane:** **Close automatically when done** is at the bottom left once the create finishes, and **Done** opens the terminal. Only the steps the project has are listed: emoji, with no `.worktreeinclude` or setup script, showed two rows, so `app/workrooms.md` now says the last two are conditional.
+- **Sync button:** **Publish branch** on an unpublished branch, the last fetch time with nothing to do. The docs make no claim about the text shortening.
+- **Diff fallback:** with **Side by Side** set in Settings, a narrow pane shows unified and widening it brings side by side back. A diff switched from its own title bar stays side by side at any width (by design, `DiffViewer.showSideBySide`), so `app/inspector.md` now says the fallback applies to the Settings default only.
+- **Tab names:** `sleep 30` names the tab and gives it no moving underline. When the command ends the tab goes back to **Terminal 1**, not the folder (by design, `handleCommandFinished`), so `app/terminals-and-tabs.md` now says so.
+- **Quick switcher:** a tap of <kbd>⌥Tab</kbd> flips to the last-used workroom and back.
+- **Quick Terminal:** **File ▸ Quick Terminal** opens a small window, in proportion to 800 × 500, with a shell in `~`; <kbd>⌘W</kbd> closes it.
+- **`/bin/bash` 3.2:** a failed command shows no **Command failed** and no diagnosis, and the tab title stays `/bin/bash`.
+
 ### Menus and placement
 
-- The app menu's **Settings…** item (system-provided by the SwiftUI `Settings` scene) and the Window menu's order: **New Window** and the **Move … into new window** items should be at the top.
-- The project row: the gear appears left of the **+** on hover, without the row changing height. The sidebar's **+** for adding a project is at the bottom right.
-- The workroom tab bar runs across the top of the window, and a workroom becomes a tab only once it has a terminal.
-- **Close automatically when done** sits at the bottom left of the creation pane.
 - The **Update** button and its scrolling note at the trailing end of the title bar (needs a Release or Nightly build that is behind; Debug builds don't check).
-- How the sync button's text shortens at narrow inspector widths ("origin" and "with rebase" drop), and the width where a diff falls back to unified.
 
 ### Behaviour
 
-- After a create finishes, the workroom's terminal appears (on Nightly it mounts after **Done** or auto-close).
 - After a failed teardown, "nothing is removed": the row comes back, but the workroom's terminals were already closed before the teardown ran. Check what's left and reword if needed.
-- The quick switcher: tap flips, holding shows the rail after about 250 ms, Tab and the arrows step, Esc cancels, release or click commits.
-- A tab names itself after the running command (run `sleep 30`) or the folder.
-- A plain command like `sleep 30` does not animate the tab (the docs now say only a program that reports it is working does). If it does animate, revert that sentence.
-- Dragging tabs to reorder them; dragging a sidebar workroom onto a pane edge shows a band and lands on that side; dragging a pane title bar or tab past the window edge makes it a window at the drop point; a popped-out pane reopens in the same place after a relaunch; <kbd>⌃⌘</kbd>-arrows pass through to a TUI at a split's edge.
-- The Quick Terminal window's size (800 × 500 in code; the page says "small").
+- The quick switcher while held: the rail after about 250 ms, Tab and the arrows step, Esc cancels, release or click commits. (Synthetic input can't hold <kbd>⌥</kbd> while pressing Tab.)
+- The <kbd>⌥§</kbd> Quick Terminal hotkey. A synthetic <kbd>⌥§</kbd> did nothing, but Workroom Nightly was running too and the key may not exist on the layout used; try it by hand.
+- Dragging tabs to reorder them (a synthetic drag showed the reorder gap but the tab went back on drop; try it by hand before calling it a bug); dragging a sidebar workroom onto a pane edge shows a band and lands on that side; dragging a pane title bar or tab past the window edge makes it a window at the drop point; a popped-out pane reopens in the same place after a relaunch; <kbd>⌃⌘</kbd>-arrows pass through to a TUI at a split's edge.
 - The yellow warning triangle on a project (its colour comes from the theme).
 - The Dock badge, and a real macOS banner and clicking it.
-- `/bin/bash` (3.2) never shows a command result, and loses the inline agent, tab-title reset and folder tracking (only `docs/program-status.md` says so).
 
 ### Outside Workroom
 

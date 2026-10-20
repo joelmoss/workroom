@@ -34,7 +34,7 @@ The inspector shows the project and workroom name above its panes. The **Workroo
 
 ### Read a diff
 
-A diff opens as a tab beside your terminals. The view is **Unified** by default. Switch to **Side by Side** from the diff pane's title bar, or from **Settings ▸ Appearance ▸ Diff view**, which sets the layout for diffs you open afterwards. A pane that is too narrow falls back to unified.
+A diff opens as a tab beside your terminals. The view is **Unified** by default. Switch to **Side by Side** from the diff pane's title bar, or from **Settings ▸ Appearance ▸ Diff view**, which sets the layout for diffs you open afterwards. With **Side by Side** set in Settings, a pane that is too narrow falls back to unified. A diff you switch from its title bar keeps the layout you chose at any width.
 
 Right-click a diff tab to switch the view, **Open File**, **Open File in…**, or **Keep Open**.
 

@@ -13,7 +13,7 @@ While a program in a terminal reports that it is working, such as a coding agent
 
 ## Tabs
 
-A workroom can hold as many terminals as you like. They sit in a tab strip that you can reorder by dragging. A tab names itself after the running command or the working directory.
+A workroom can hold as many terminals as you like. They sit in a tab strip that you can reorder by dragging. A tab names itself after the running command. When the command ends it goes back to its own name, such as **Terminal 1**, unless your shell sets a title of its own, such as the working directory.
 
 | To do this | Use |
 | --- | --- |

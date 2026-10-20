@@ -34,6 +34,8 @@ A new workroom opens a creation pane at once, with a checklist of the steps. For
 3. **Copy local files**, which copies the files listed in your project's `.worktreeinclude`
 4. **Run setup script**, which runs your project's `scripts/workroom_setup`
 
+The last two rows appear only when your project has a `.worktreeinclude` or a setup script.
+
 Each row shows how long its step took. Click a row, or press <kbd>Space</kbd> on it, to open its log. <kbd>↑</kbd> and <kbd>↓</kbd> move between rows, <kbd>→</kbd> opens a log and <kbd>←</kbd> closes it. A row says **Waiting for you** while it needs an answer from you.
 
 When every step is done, click **Done** to open the terminal. Turn on **Close automatically when done** at the bottom left of the pane, and the pane closes itself a few seconds after the workroom is ready. The same switch is in **Settings ▸ General** as **Close the checklist automatically when done**.
