@@ -182,10 +182,14 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     }
     // "Cannot connect to…", and a socket the user can't open ("permission denied while trying to
     // connect to the Docker daemon socket"), which the registry check would read as a refusal.
+    // Docker 29 says "the docker API" for both ("failed to connect to the docker API at…").
     let lowered = said.lowercased()
     guard
-      ["connect to the docker daemon", "error during connect", "unable to resolve docker"]
-        .contains(where: lowered.contains)
+      [
+        "connect to the docker daemon", "connect to the docker api", "error during connect",
+        "unable to resolve docker",
+      ]
+      .contains(where: lowered.contains)
     else { return nil }
     return HostDriverError.provisioning(
       "Docker didn't answer. Start it (Docker Desktop, OrbStack or Colima), or check that the "
