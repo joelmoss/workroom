@@ -48,8 +48,15 @@ Each is a claim the code supports but can't prove on its own. Look, and fix the 
 
 ### Outside Workroom
 
-- The Claude Code (2.1.295) and Codex (0.163) minimum versions, and the timings ("about 6 seconds after", "1 to 3 seconds in"), which come only from `docs/program-status.md`.
-- macOS's own wording of the "would like to access data from other apps" prompt, and the Full Disk Access and Microphone paths in System Settings.
+Checked 2026-10-20:
+
+- **Minimum versions.** Claude Code's changelog adds "Program Status Protocol (OSC 7501) support" under 2.1.295; Codex's rust-v0.163.0 release notes have "Report terminal program status with OSC 7501" (#52725).
+- **"About 6 seconds".** Claude Code 2.1.304 run in a pty that answers the probe: it reported `state=blocked:kind=permission` and posted its own notification (OSC 777) 6.01 s later. Answering at 3 s, it posted nothing. Its idle "waiting for your input" notification is a separate one, at 60 s (`messageIdleNotifThresholdMs`).
+- **"1 to 3 seconds in".** Workroom's own timing: an unprobed request is promoted once it has waited `GRACE` (1 s), checked on the agent's 2 s tick (`screens::INTERVAL`).
+- **macOS wording and paths.** macOS 27.0.1's TCC strings have “%@” would like to access data from other apps, as `help/troubleshooting.md` quotes, and System Settings has Privacy & Security ▸ Full Disk Access and ▸ Microphone. TCC also has a newer prompt, "Allow “%@” to access your “%@” data?", and a "Data Access Blocked" notice pointing to Files & Folders. Which one a terminal program triggers on macOS 27 was not seen; if it is the newer one, the troubleshooting heading needs it.
+
+Still open:
+
 - The microphone recovery steps (close every terminal, quit, wait about 30 seconds, relaunch) on a real update.
 
 ### Remote workrooms
