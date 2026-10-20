@@ -31,7 +31,7 @@ Leave these alone.
 - `channel` is the release channel the CLI's `workroom update` follows, `stable` or `pre`. Set it with `workroom update --channel`. See [updates and channels](../app/updates-and-channels.md).
 - Every other top-level key is a project, named by its absolute path with symlinks resolved. A path reached through a symlink or with a trailing slash maps to the same entry.
 - A project entry holds `vcs`, which is `git`, and `workrooms`. Each workroom has a `path`. A project can also have `base_branch`.
-- A project or workroom on a remote host has a `host` object. The app owns what is inside it.
+- On Nightly, a project or workroom on a remote host has a `host` object. The app owns what is inside it.
 - On Nightly, `trusted_scripts` on a project holds the SHA-256 of each setup or teardown script you approved. Don't edit it. An entry there tells Workroom to run that exact script without asking. Use `workroom trust` and `workroom untrust` instead. See [workroom trust](../cli/workroom-trust.md).
 
 Workroom keeps keys it doesn't recognise when it rewrites the file.

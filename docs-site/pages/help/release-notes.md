@@ -7,7 +7,7 @@ Release notes are on [GitHub Releases](https://github.com/joelmoss/workroom/rele
 
 ## In the app
 
-After an update, the app opens a What's New window the first time you launch it. It shows the release notes of the version you updated to, and each one has a **View on GitHub ↗** button. Choose **Done** to close it.
+After an update, the app opens a What's New window the first time you launch it. It lists the release notes of every version from the one you had to the one you updated to, newest first, and each one has a **View on GitHub ↗** button. Choose **Done** to close it. It doesn't open on a fresh install.
 
 ## Stable and Nightly
 

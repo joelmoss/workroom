@@ -19,7 +19,7 @@ The diagnosis has these buttons:
 
 - **Diagnose** asks a coding agent for the cause and a suggested fix.
 - **Insert fix** types the suggested command into the terminal without running it. Press <kbd>Return</kbd> yourself to run it. If the command looks destructive, Workroom asks you to confirm before it inserts it.
-- **Investigate** opens an interactive agent session in the same folder, to dig deeper.
+- **Investigate** opens an interactive agent session in the same folder, to dig deeper. It appears once a diagnosis has arrived.
 - The **x** button dismisses it.
 
 The diagnosis uses the Claude Code or Codex command-line tool installed on your Mac. If neither is found, the footer tells you to install one. If the tool is not signed in, it tells you to run `claude login`. In a remote workroom it warns that a local diagnosis may be inaccurate.
@@ -52,13 +52,13 @@ Hide the footer usage with **Settings ▸ AI Agents ▸ Usage ▸ Show in the wi
 
 ### Several Claude accounts
 
-If you use [cswap](https://github.com/realiti4/claude-swap) to manage more than one Claude account, the footer shows every account it manages, each labelled with its alias and slot. When there is no room for all of them, a **+N** button lists the rest. Click an account's bars to see its organisation and email.
+If you use [cswap](https://github.com/realiti4/claude-swap) to manage more than one Claude account, the footer shows every account it manages, each labelled with its alias, shortened to 8 characters, or with `#` and its slot number when it has no alias. The details show the alias and slot together. When there is no room for all of them, a **+N** button lists the rest. Click an account's bars to see its organisation and email.
 
 ### Claude usage without cswap
 
 Without cswap, Workroom reads Claude's usage from Claude's status line. You enable it once:
 
-1. Click **Enable usage…** in the footer.
+1. Once you have run Claude Code in a pane, click **Enable usage…** in the footer.
 2. Read the prompt. It says Workroom will update `~/.claude/settings.json` to run its status-line wrapper. The wrapper stores only Claude's `rate_limits` data and passes the original status-line input, unchanged, to your current status-line command.
 3. Click **Enable**.
 
@@ -72,7 +72,7 @@ Codex usage comes from the Codex app server, or from its local session files.
 
 ### When there is no reading
 
-If a reading is missing, the footer shows a grey bar with a warning icon, and the tooltip says that usage is unavailable for that account. Click it to see why.
+If cswap has no reading for one of your Claude accounts, that account shows a grey bar with an exclamation-mark icon, and the tooltip says its usage is unavailable. Click it to see why. An agent with no reading at all is not shown.
 
 ## Codex alerts {nightly}
 

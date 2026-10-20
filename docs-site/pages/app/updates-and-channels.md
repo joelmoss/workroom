@@ -11,13 +11,13 @@ Workroom checks for updates in the background and tells you when one is ready. T
 
 - **Workroom ▸ Check for Updates…** checks right now. It is also in **Settings ▸ About** as **Check for Updates…**.
 - **Settings ▸ About ▸ Automatically check for updates** turns the background checks on or off.
-- When an update is waiting, an **Update** button appears in the title bar. Click it to install the update. While it downloads, the button reads **Updating…**.
+- When an update is waiting, an **Update** button appears in the title bar. Click it to open the update prompt, then confirm the install there. While it downloads, the button reads **Updating…**.
 
 **Settings ▸ About** also has **View release notes**, which opens the releases page on GitHub. See also [Release notes](../help/release-notes.md).
 
 ### Updating keeps your terminals {nightly}
 
-Next to the **Update** button, a short note scrolls past: Safe to update, workroom terminals keep running. Run commands and the Quick Terminal stop. Terminals in your workrooms keep their sessions across the update. A run command stops when you quit, and the Quick Terminal has no session to keep.
+Next to the **Update** button, a short note scrolls past: Safe to update: workroom terminals keep running. Run commands and the Quick Terminal stop. Terminals in your workrooms keep their sessions across the update. A run command stops when you quit, and the Quick Terminal has no session to keep.
 
 ## Release channels
 
@@ -30,9 +30,9 @@ The choice applies to the next update check. Workroom does not run a check when 
 
 ## Nightly
 
-Nightly is not a channel you switch to. It is a separate app, **Workroom Nightly**, built every day from the latest work on the main branch. It has its own name and its own violet icon, and it runs alongside your regular Workroom. A Nightly build can have features that are not in a stable release yet. The docs mark them with a Nightly badge.
+Nightly is not a channel you switch to. It is a separate app, **Workroom Nightly**, built every day from the latest work on the `master` branch. It has its own name and its own violet icon, and it runs alongside your regular Workroom. A Nightly build can have features that are not in a stable release yet. The docs mark them with a Nightly badge.
 
-To get it, download `workroom-macos-app_nightly.dmg` from the [releases page](https://github.com/joelmoss/workroom/releases) on GitHub, on the release named `nightly`. Workroom Nightly updates itself from its own feed, so it only ever moves to a newer Nightly build.
+To get it, download `workroom-macos-app_nightly.dmg` from the [releases page](https://github.com/joelmoss/workroom/releases) on GitHub, on the pre-release tagged `nightly`. Its title is the current Nightly version. Workroom Nightly updates itself from its own feed, so it only ever moves to a newer Nightly build.
 
 Nightly builds are numbered like `2.2.0-nightly.1234`, where the last number counts commits, so a later build always has a higher number.
 

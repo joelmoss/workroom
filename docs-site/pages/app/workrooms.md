@@ -11,7 +11,7 @@ Each workroom gets a generated name such as `swift-meadow`, and a branch called 
 
 You can start a create in three ways:
 
-- Hover a project in the sidebar and click its **+**.
+- Click the **+** on a project's row in the sidebar.
 - Right-click a project and choose **New Workroom**.
 - Press <kbd>⌘N</kbd> (**File ▸ New Workroom…**) and pick a project.
 
@@ -60,7 +60,7 @@ You can also right-click a workroom in the sidebar and choose **Open (split righ
 
 | To do this | Use |
 | --- | --- |
-| Switch to workroom 1 to 9 | <kbd>⌥⌘1</kbd> to <kbd>⌥⌘9</kbd> |
+| Switch to the 1st to 9th workroom tab | <kbd>⌥⌘1</kbd> to <kbd>⌥⌘9</kbd> |
 | Step through workroom tabs | <kbd>⇧⌥⌘→</kbd> and <kbd>⇧⌥⌘←</kbd> (**Go ▸ Next Workroom Tab** and **Previous Workroom Tab**) |
 | Flip to the workroom you used last | <kbd>⌥Tab</kbd> (**Go ▸ Last-Used Workroom**) |
 | Go back and forward through where you have been | <kbd>⌘[</kbd> and <kbd>⌘]</kbd> |
@@ -79,9 +79,9 @@ The switcher steps through workrooms in every window. <kbd>⌃Tab</kbd> does the
 A label is a name that shows in place of the workroom's own name. The workroom and its branch keep their names.
 
 1. Right-click the workroom, in the sidebar or on its tab, and choose **Set Label…**.
-2. Type the label and confirm.
+2. Type the label and click **Save**.
 
-Choose **Edit Label…** to change it, or **Remove Label** to go back to the real name. A label cannot match another workroom's name in the same project.
+Choose **Edit Label…** to change it, or **Remove Label** to go back to the real name. A label cannot match the name or label another workroom in the same project already shows.
 
 ## Close a workroom
 
@@ -109,7 +109,7 @@ The row leaves the sidebar at once. Workroom runs your project's `scripts/workro
 
 ### When the teardown fails
 
-If the teardown script fails, can't start, or is not approved on this Mac, the delete stops and nothing is removed. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again.
+If the teardown script fails or can't start, the delete stops and nothing is removed. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again. If the script has not been approved on this Mac, the sheet is titled **Approve the teardown script of ‘name’?** instead and shows the script.
 
 ### Delete Anyway {nightly}
 

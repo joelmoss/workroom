@@ -9,7 +9,7 @@ Workroom tells you when a terminal you are not looking at has something for you,
 
 The bell sits at the right of the footer along the bottom of the window. A number on it counts your unread notifications. The footer stays in place when you switch workrooms or hide the sidebars.
 
-Click the bell to open the list. Each entry names the terminal that raised it and how long ago. A repeat from the same terminal is counted as `×N`. Click an entry to go straight to that terminal. Right-click an entry for **Delete Notification**, or click **Clear All** at the bottom of the list.
+Click the bell to open the list. Each entry shows the notification's title and text, the workroom it came from and how long ago. A repeat from the same terminal is counted as `×N`. Click an entry to go straight to that terminal. Right-click an entry for **Delete Notification**, or click **Clear All** at the bottom of the list.
 
 <kbd>⌘</kbd>-click the bell, or press <kbd>⇧⌘N</kbd> (**Go ▸ Next Notification**), to jump to the oldest pending one. Opening it dismisses it, so pressing the key again walks through the backlog from oldest to newest. The bell is off when there are none.
 
@@ -17,7 +17,7 @@ When a terminal in the background posts a notification, its tab and its project 
 
 ## The menu bar
 
-Workroom can show a bell in the macOS menu bar, with the same count across all your windows. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**. In Workroom 2.1.0 this switch is in **Settings ▸ General**.
+Workroom can show its logo in the macOS menu bar, with the same count across all your windows. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**. In Workroom 2.1.0 this switch is in **Settings ▸ General**.
 
 Click it to open the list. When there is nothing pending, a click brings Workroom to the front instead. Click an entry to open its terminal.
 
@@ -30,8 +30,8 @@ A program in a terminal can tell Workroom what it is doing: working, waiting on 
 | Mark | Meaning |
 | --- | --- |
 | A raised hand | The program is waiting on you: a permission, a question or a sign-in |
-| A red mark | The program failed |
-| A spinner | The program is working |
+| A red line under the tab, a red exclamation mark in the sidebar row | The program failed |
+| A moving line under the tab, a spinner in the sidebar row | The program is working |
 | A check mark | The program finished its turn |
 
 The marks show on the terminal's tab and its row in the sidebar. The hand also shows on a workroom's row with a count, on a collapsed project, and on the switcher. Only one mark shows in each place. The order is waiting, then failed, then working, then finished.
@@ -42,7 +42,7 @@ A terminal with no mark is not reporting. That is not the same as not waiting. P
 
 ### Go to the terminal that needs you
 
-Click the hand on a workroom row, a project or a switcher card to go to the terminal that has waited longest. Or press <kbd>⇧⌘M</kbd> (**Go ▸ Go to Terminal That Needs You**), which looks across every window. Press it again to step through the others.
+Click the hand on a workroom row or on a collapsed project to go to the terminal that has waited longest. The switcher shows the hand too, as a mark only. Or press <kbd>⇧⌘M</kbd> (**Go ▸ Go to Terminal That Needs You**), which looks across every window. Press it again to step through the others.
 
 ### The alert
 

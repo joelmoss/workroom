@@ -9,7 +9,7 @@ Every workroom opens with a real terminal in its directory. This page covers ope
 
 Terminals are drawn by [libghostty](https://ghostty.org), the engine behind the Ghostty terminal. Select a workroom, and its terminal is already in the right directory. A workroom keeps its terminals running while you work in another one, so a dev server, a build or a coding agent is as you left it when you come back.
 
-While a command runs, its tab and its sidebar row animate, so you can see what is busy without switching to it.
+While a program in a terminal reports that it is working, such as a coding agent, its tab shows a moving underline and its sidebar row a spinner, so you can see what is busy without switching to it.
 
 ## Tabs
 
@@ -24,7 +24,7 @@ A workroom can hold as many terminals as you like. They sit in a tab strip that 
 | Close the tab | <kbd>⌘W</kbd> (**File ▸ Close Tab**) |
 | Scroll to the top or bottom | <kbd>⌘↑</kbd> and <kbd>⌘↓</kbd> |
 
-**File ▸ Close Other Tabs** and **File ▸ Close All Tabs** close several at once. Closing a terminal ends its shell and anything running in it. To be asked first, turn on **Settings ▸ Terminal ▸ Confirm before closing a terminal**, or **File ▸ Confirm Before Closing a Terminal**.
+**File ▸ Close Other Tabs** and **File ▸ Close All Tabs** close several at once. Closing a terminal ends its shell and anything running in it. When a process is still running, Workroom asks first. This is on by default. Turn it off with **Settings ▸ Terminal ▸ Confirm before closing a terminal**, **File ▸ Confirm Before Closing a Terminal**, or **Don't ask me again** in the prompt.
 
 Right-click a tab for **Split Right**, **Split Left**, **Split Down**, **Split Up**, **Move to New Window** and **Close**. See [Splits and windows](splits-and-windows.md). Right-click inside the terminal for **Paste** and the same split, window and close commands, plus **New Terminal**.
 
@@ -38,13 +38,13 @@ With **Copy on select** on, anything you select in a terminal is copied to the c
 
 ## Open file paths in your editor
 
-<kbd>⌘</kbd>-click a file path in a terminal to open that file in your editor. It works on paths that point at a real file, including relative paths, and on `file:line:column` forms. VS Code, Zed and Xcode open the file at that line. When Workroom knows the workroom folder, they open the folder and the file in one window.
+<kbd>⌘</kbd>-click a file path in a terminal to open that file in your editor. It works on paths that point at a real file, including relative paths, and on `file:line:column` forms. VS Code, Zed and Xcode open the file at that line.
 
 Choose the editor in **Settings ▸ Terminal ▸ Open file paths in**. It lists **Default App** and whichever of Visual Studio Code, Zed and Xcode you have installed. **Default App** opens the file as Finder would.
 
 A <kbd>⌘</kbd>-click on anything else goes to the terminal as an ordinary click.
 
-To open the whole workroom, use **Go ▸ Open in Editor** (<kbd>⇧⌘O</kbd>) or the **Open in…** button in the workroom's title bar. **File ▸ Reveal in Finder** shows the workroom's folder in Finder. Click the folder path in a pane's footer to copy it or reveal it.
+To open the whole workroom, use **Go ▸ Open in** your editor, for example **Open in Zed** (<kbd>⇧⌘O</kbd>), or the editor button in the workroom's title bar. Its small arrow lets you pick a different editor. **File ▸ Reveal in Finder** shows the workroom's folder in Finder. Click the folder path in a pane's footer to copy it or reveal it.
 
 ## Shell integration
 
@@ -92,7 +92,7 @@ Set a run command for a project, such as `npm run dev`, and start it in any of i
 | Stop | <kbd>⇧⌘R</kbd> (**Run ▸ Stop**) |
 | Go to the run terminal | **Go ▸ Run Terminal** |
 
-The workroom's title bar and the root row in the sidebar have the same buttons. While a run is going, the title bar shows **Restart** and **Stop**. Press **Stop** a second time to force-quit.
+The workroom's title bar and the root row in the sidebar have the same buttons. While a run is going, the title bar shows **Restart** and **Stop**. **Stop** sends the command Ctrl-C and waits for it to exit. If it has not exited after about six seconds, Workroom force-quits it.
 
 The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state. If a run ends or fails while you are looking at another tab or workroom, a toast tells you. Run commands stop when you quit Workroom.
 

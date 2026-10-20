@@ -38,10 +38,10 @@ The schema is versioned with `schema_version`, currently `1`. Adding a field is 
 
 - `create` returns `name`, `path`, `vcs` and `project`. On Nightly it adds a `warning` string when the new workroom starts from out-of-date refs or from a fallback base.
 - `delete` returns `name`.
-- `list` returns `projects`, `workrooms_dir` and `config_path`. Each project has `path`, `vcs` and `workrooms`, and each workroom has `name`, `path`, `vcs_name` and `warnings`. A workroom or project on another host also has a `host` object. On Nightly, `list` adds `base_branch` at the top level for the global default, and to each project that sets its own. Without a setting the field is absent.
+- `list` returns `projects`, `workrooms_dir` and `config_path`. Each project has `path`, `vcs` and `workrooms`, and each workroom has `name`, `path`, `vcs_name` and `warnings`. On Nightly, a workroom or project on another host also has a `host` object. On Nightly, `list` adds `base_branch` at the top level for the global default, and to each project that sets its own. Without a setting the field is absent.
 - On Nightly, `base set` and `base clear` return `{"project": …, "base_branch": …}`, or `{"global": true, "base_branch": …}` with `--global`.
 
-The `warnings` on a workroom have a `kind` and a `message`. The kinds are `DirectoryMissing`, `VCSWorkroomMissing` and, for a remote workroom whose host its provider destroyed, `HostDestroyed`. A remote workroom never gets the first two.
+The `warnings` on a workroom have a `kind` and a `message`. The kinds are `DirectoryMissing` and `VCSWorkroomMissing`. On Nightly there is a third, `HostDestroyed`, for a remote workroom whose host its provider destroyed. A remote workroom never gets the first two.
 
 ### A create that fails after the workroom exists
 
@@ -72,7 +72,7 @@ A `log` event is one line of a script's output. `phase` is `setup` or `teardown`
 
 ### Step events {nightly}
 
-On Nightly, `create --json` also reports its steps, in order: `fetch` (fetch the base branch), `worktree` (`git worktree add`) and `script` (the setup script). `state` is `running`, `done`, `warning`, `skipped` or `failed`. `detail` carries the warning text, the reason a step was skipped, or the failure message, and is left out when there is none:
+On Nightly, `create --json` also reports its steps, in order: `fetch` (fetch the base branch), `worktree` (`git worktree add`), `include` (copy the files listed in `.worktreeinclude`, only when the project has that file) and `script` (the setup script). `state` is `running`, `done`, `warning`, `skipped` or `failed`. `detail` carries the warning text, the reason a step was skipped, or the failure message, and is left out when there is none:
 
 ```json
 { "type": "step", "id": "fetch", "state": "warning", "detail": "Could not fetch origin. …" }
@@ -115,8 +115,6 @@ Branch on the exit code when you don't need the details.
 | `ConfigReadFailed` | 6 | The config file could not be read or parsed. |
 | `ConfigWriteFailed` | 6 | The config file could not be written. |
 | `VCSCommandFailed` | 1 | An underlying `git` command failed. |
-| `RemoteProjectUnsupported` | 3 | `add-project` was given a remote path such as `host:path` or `ssh://…`. |
-| `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
 | `InternalError` | 1 | Anything else. |
 
 These kinds exist on Nightly only:
@@ -129,6 +127,8 @@ These kinds exist on Nightly only:
 | `WorkroomNotFound` | 3 | The workroom is not registered. |
 | `WorkroomExists` | 3 | A workroom of that name is already registered. |
 | `InvalidHostDescriptor` | 2 | A host descriptor must be a JSON object. |
+| `RemoteProjectUnsupported` | 3 | `add-project` was given a remote path such as `host:path` or `ssh://…`. |
+| `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
 
 ### The ScriptNotTrusted envelope {nightly}
 

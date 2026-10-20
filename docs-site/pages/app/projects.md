@@ -9,10 +9,7 @@ A project is a Git repository you have registered with Workroom. This page shows
 
 The sidebar on the left lists every project. Each project expands into its root, then its workrooms. The root is the project's own checkout. Click the project name to expand or collapse it. Workroom remembers which projects are open, and which one you had selected, when you relaunch.
 
-Hover a project row to see two buttons:
-
-- The gear opens [Project Settings](#project-settings).
-- The **+** creates a workroom. See [Workrooms](workrooms.md#create-a-workroom).
+Each project row has a **+** button that creates a workroom. See [Workrooms](workrooms.md#create-a-workroom). Hover the row to reveal a gear button, which opens [Project Settings](#project-settings).
 
 Right-click a project row for **New Workroom**, **Project Settings…** and **Delete Project…**.
 
@@ -20,14 +17,14 @@ To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>).
 
 ## Add a project
 
-1. Click the **+** at the bottom right of the sidebar, or choose **File ▸ New Project…**. With no projects yet, the sidebar shows **Add Project…** instead.
+1. Click the **+** at the bottom right of the sidebar, or choose **File ▸ New Project…**. With no projects yet, the sidebar is hidden and the main window shows an **Add Project…** button instead.
 2. Choose one of the two sources:
    - **From existing path…** adds a Git repository that is already on disk.
    - **Create new directory…** makes a new folder and runs `git init` in it.
 3. Type the full path in the field, or click **Choose…** to pick a folder. A leading `~` works.
 4. Click **Add Project**.
 
-The **Add Project** button stays off until the path is absolute. In **Create new directory…** mode it also stays off if the path is an existing file. If the folder you name does not exist, Workroom creates it and initialises it as a Git repository.
+The **Add Project** button stays off until the path is absolute. In **Create new directory…** mode it also stays off if the path is an existing file, and a folder that does not exist yet is created and initialised as a Git repository. **From existing path…** needs a folder that is already a Git repository.
 
 > [!NOTE]
 > Workroom does not accept a path on another computer, such as `ssh://…` or `host:repo`. Add the project from a local repository. A remote workroom always belongs to a local project. See [Remote workrooms](../remote/overview.md).
@@ -70,7 +67,7 @@ Deleting a project removes it from Workroom. What happens to the files depends o
 3. Type the project's name to confirm. The delete button stays off until the name matches exactly, including case.
 4. Click the delete button. Its label follows your choice: **Delete Project**, **Delete Project & N Workrooms** or **Delete Everything to Bin**.
 
-Each workroom's teardown script runs before its directory goes. A failing teardown stops the delete. See [Delete a workroom](workrooms.md#delete-a-workroom).
+With either option that removes workrooms, each workroom's teardown script runs before its directory goes, and a failing teardown stops the delete. **Remove from Workroom only** runs no scripts. See [Delete a workroom](workrooms.md#delete-a-workroom).
 
 Deleting a project also closes its terminals. If a coding agent started with **Investigate** is still running there, the sheet warns you that deleting stops it. Workroom will not delete a project while a workroom in it is still being created.
 
