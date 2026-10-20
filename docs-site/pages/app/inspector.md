@@ -15,7 +15,7 @@ Press <kbd>⌘B</kbd> (**View ▸ Inspector**) to show or hide it. The icon stri
 | Changes | Three sections: Changes, History and Pull Request | <kbd>⌥⌘C</kbd> |
 | Files | The workroom's file tree | <kbd>⌥⌘F</kbd> |
 
-**View** also has an item for each section of the Changes pane: **Changes**, **History** (<kbd>⌥⌘Y</kbd>) and **Pull Request** (<kbd>⌥⌘P</kbd>). Each opens the inspector at that section. The sections stack in the Changes pane, and you can collapse them or drag the dividers to resize them.
+**View** also has an item for each section of the Changes pane: **Changes**, **History** (<kbd>⌥⌘Y</kbd>) and **Pull Request** (<kbd>⌥⌘P</kbd>). Each opens the inspector at that section. The **Room** menu repeats these pane and section items, without the shortcuts, except in Workroom 2.1.0. The sections stack in the Changes pane, and you can collapse them or drag the dividers to resize them.
 
 The inspector follows the workroom you are in.
 
