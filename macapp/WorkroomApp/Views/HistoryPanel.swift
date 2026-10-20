@@ -213,6 +213,14 @@ nonisolated(unsafe) private let historyRelativeFormatter: RelativeDateTimeFormat
   return f
 }()
 
+/// The full date and time a History row's relative time tooltips, shared as the formatter above is.
+nonisolated(unsafe) private let historyFullDateFormatter: DateFormatter = {
+  let f = DateFormatter()
+  f.dateStyle = .full
+  f.timeStyle = .short
+  return f
+}()
+
 /// One commit row: first line of the message, then a metadata line (short id · author · relative
 /// time) with any branch/tag refs.
 ///
@@ -237,26 +245,19 @@ struct HistoryRow: View, Equatable {
   /// persists (quick double-click).
   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
   @State private var hovering = false
-  /// Whether the rich hover card (mirroring the changeset detail's header) is showing. Revealed on a
-  /// short hover dwell so it doesn't flash while the pointer scans down the list (see the `.task`).
-  @State private var showCard = false
-  /// Which dwell-task invocation started last — a generation token, as in `AvatarView`, because an
-  /// in-place `.task(id:)` swap does not reliably cancel the outgoing task. A stale task that wakes
-  /// after a newer one started (say, the row was selected mid-dwell) sees a newer value and stays put.
-  @State private var dwellGeneration = 0
   /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
   @State private var lastClick: Date?
   private let theme = ThemeService.shared
 
   /// The equality gate behind `.equatable()` at the use site. Synthesis is impossible (the row stores
-  /// four `@State`s, a `ThemeService` handle and a closure), so this lists what the body actually reads
+  /// two `@State`s, a `ThemeService` handle and a closure), so this lists what the body actually reads
   /// from its inputs: the commit, the page's push scope, and whether this row is the selected one.
   ///
   /// `open` is EXCLUDED. That is sound only because `HistoryPanel` builds it with an explicit `[store]`
   /// capture list over a `static` title helper, so two instances differing only in closure identity are
   /// behaviourally identical. If that closure ever captures per-pass state, this `==` must start
   /// comparing it — or go away. `@State` and `ThemeService`'s Observation invalidate the body directly,
-  /// past this gate, so hover, the dwell popover and theme repaints are unaffected.
+  /// past this gate, so hover and theme repaints are unaffected.
   /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
   /// row to another, only the two rows whose own selected-ness changed compare unequal — the rest of
   /// the realized page stays elided.
@@ -303,17 +304,23 @@ struct HistoryRow: View, Equatable {
         .accessibilityLabel(
           "\(commit.shortID), \(commit.summary.isEmpty ? "(no description)" : commit.summary)")
 
-        // Line two — author avatars, relative time, then any branch/tag refs right of the
-        // timestamp, then the unpushed marker. Refs live here (not line one) so a long branch never
+        // Line two — short id, author avatars, relative time (its full date and time on hover), then
+        // any branch/tag refs right of the timestamp, then the unpushed marker. Refs live here (not line one) so a long branch never
         // wraps: each is a single truncating capsule, and the timestamp keeps layout priority so the
         // refs give way first (the unpushed chip is a fixed ~16pt, so it never gives way).
         //
         // Authors are avatars ONLY here — the names would crowd the narrow sidebar row and push the
-        // refs out. Each avatar tooltips its own name, the hover card and the changeset detail spell
-        // the names out, and the timestamp carries them as its accessibility label for VoiceOver.
+        // refs out. Each avatar tooltips its own name, the changeset detail spells the names out, and
+        // the timestamp carries them as its accessibility label for VoiceOver.
         HStack(spacing: 6) {
           let relative = historyRelativeFormatter.localizedString(
             for: commit.timestamp, relativeTo: Date())
+          // Styled as the changeset detail's header writes it: monospaced, blue.
+          Text(commit.shortID)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.blue)
+            .lineLimit(1)
+            .fixedSize()
           if !commit.authors.isEmpty {
             AvatarStack(
               subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
@@ -323,17 +330,10 @@ struct HistoryRow: View, Equatable {
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .layoutPriority(1)
+            .fixedSize()
+            .help(historyFullDateFormatter.string(from: commit.timestamp))
             .accessibilityLabel(names.isEmpty ? relative : "\(names), \(relative)")
-          ForEach(commit.refs, id: \.self) { ref in
-            Text(ref)
-              .font(.caption2)
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .padding(.horizontal, 5).padding(.vertical, 1)
-              .background(.quaternary, in: Capsule())
-              .help("Branch / tag")
-          }
+          if !commit.refs.isEmpty { HistoryRefChips(refs: commit.refs) }
           if commit.showsUnpushedBadge { unpushedBadge }
           Spacer(minLength: 6)
         }
@@ -351,40 +351,9 @@ struct HistoryRow: View, Equatable {
       )
       .contentShape(Rectangle())
       .onHover { hovering = $0 }
-      // Rich hover card in place of a plain text `.help` tooltip: the same header layout the changeset
-      // detail uses (summary, id/author/date/refs line, then the description body), so a full commit
-      // reads the same on hover as when opened. Anchored leading — the inspector sits at the window's
-      // trailing edge, so the card opens inward over the detail area rather than off-screen.
-      .popover(isPresented: $showCard, arrowEdge: .leading) {
-        HistoryCommitCard(commit: commit, pushScope: pushScope)
-      }
-      // Dwell gate: reveal only after the pointer rests ~0.5s, and hide the instant it leaves. Flipping
-      // `hovering` re-runs this task (SwiftUI cancels the prior one), so a quick pass over the row
-      // cancels the pending reveal before it fires — no popover flicker while scanning the list.
-      // Keyed on `isSelected` too: the closure reads the row as it was when the task started, so a
-      // click that opens this commit mid-dwell must restart it or the guard below sees it unselected.
-      .task(id: [hovering, isSelected]) {
-        dwellGeneration &+= 1
-        let generation = dwellGeneration
-        // Down when the pointer leaves, and over the open commit's row: its detail is already
-        // showing, and a card there sat under the pointer and ate the first click of a double-click
-        // meant to keep the tab. Hidden here too, not only on click, for a row opened another way.
-        guard hovering, !isSelected else {
-          showCard = false
-          return
-        }
-        try? await Task.sleep(for: .milliseconds(500))
-        // Checked against the generation, not `Task.isCancelled` alone: this closure's `isSelected`
-        // is the value from when it started, and cancellation of an in-place swap isn't reliable
-        // (`AvatarView` measured `Task.isCancelled == false` after the swap).
-        guard !Task.isCancelled, dwellGeneration == generation, hovering else { return }
-        showCard = true
-      }
       // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
       // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
       .onTapGesture {
-        // A click opens the commit; its card goes down now, and the dwell guard keeps it down.
-        showCard = false
         let now = Date()
         if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
           open(commit, true)
@@ -417,83 +386,32 @@ struct HistoryRow: View, Equatable {
   nonisolated fileprivate var isSelected: Bool { selectedCommitID == commit.commitID }
 }
 
-/// The history row's hover card — a peek, not the whole commit: the summary, then the same
-/// identity/refs/author/date line the changeset detail view heads with (`ChangesetDetailView.header`),
-/// so those facts read identically on hover as when opened. The description is deliberately left out
-/// along with the detail's diff `+N −M` stat and file list — the stat and files need a resolved
-/// changeset (the card is built purely from the `VCSCommit` already in hand, no fetch), and an
-/// unclamped body grew the card arbitrarily tall on a long commit message. All of it is one click
-/// away in the detail view. Rendered inside a `.popover`.
-///
-/// Deliberately `internal`, not `private`: XCUITest can't drive `.onHover`, so the card's contents are
-/// covered by a view-level test that constructs it directly (`HistoryCommitCardTests`).
-struct HistoryCommitCard: View {
-  let commit: VCSCommit
-  /// What push state was measured against, for the unpushed marker's tooltip.
-  var pushScope: VCSPushScope?
-  private let theme = ThemeService.shared
-
-  /// Whether the card states "Not pushed" — the same rule the row's chip uses. A named property rather
-  /// than an inline condition because a unit-test process has no accessibility tree for a hosted
-  /// SwiftUI view (macOS builds it only for a live AX client), so this is the only way to assert the
-  /// card's wiring; `HistoryCommitCardTests` covers it, and the row's XCUITest covers the visual.
-  var showsUnpushedMarker: Bool { commit.showsUnpushedBadge }
-
-  private static let dateFormatter: DateFormatter = {
-    let f = DateFormatter()
-    f.dateStyle = .medium
-    f.timeStyle = .short
-    return f
-  }()
+/// A row's branch/tag chips: as many whole ones as fit, then "+N" for the rest (its tooltip names
+/// them). A chip is never shortened, which left a row of empty capsules when there were many.
+private struct HistoryRefChips: View {
+  let refs: [String]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 5) {
-      Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
-        .font(.callout.weight(.semibold))
-        .foregroundStyle(commit.summary.isEmpty ? .secondary : .primary)
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)
-      HStack(spacing: 10) {
-        // Identity, styled like the detail header: commit-id (blue), monospaced.
-        Text(commit.shortID)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(.blue)
-        // Branches/tags, as the same gray capsules the rows use, left of the author — mirrors
-        // `ChangesetDetailView.header`.
-        ForEach(commit.refs, id: \.self) { ref in
-          Text(ref)
-            .font(.caption2)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
-            .help("Branch / tag")
-        }
-        if !commit.authorNamesDisplay.isEmpty {
-          Label {
-            Text(commit.authorNamesDisplay)
-          } icon: {
-            AvatarStack(
-              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 54) }, size: 18)
+    // The first option that fits wins; the last, "+N" alone, is shown even when nothing fits.
+    ViewThatFits(in: .horizontal) {
+      ForEach(Array(stride(from: refs.count, through: 0, by: -1)), id: \.self) { shown in
+        HStack(spacing: 6) {
+          ForEach(refs.prefix(shown), id: \.self) { chip($0).help("Branch / tag") }
+          if shown < refs.count {
+            chip("+\(refs.count - shown)")
+              .help(refs.dropFirst(shown).joined(separator: "\n"))
           }
         }
-        Label(Self.dateFormatter.string(from: commit.timestamp), systemImage: "clock")
-        if commit.parentIDs.count > 1 {
-          Label("Merge", systemImage: "arrow.triangle.merge")
-        }
-        if showsUnpushedMarker {
-          // Spelled out here rather than reusing the row's icon capsule: the card has room for words,
-          // and it mirrors how the changeset detail header states the same fact.
-          Label("Not pushed", systemImage: "arrow.up")
-            .foregroundStyle(theme.tokens.warning)
-            .help(VCSPushScope.unpushedHelp(pushScope))
-            .accessibilityIdentifier("HistoryCardUnpushed")
-        }
-        Spacer(minLength: 0)
+        .fixedSize()
       }
-      .font(.caption).foregroundStyle(.secondary).lineLimit(1)
     }
-    .padding(.horizontal, 12).padding(.vertical, 10)
-    .frame(width: 420, alignment: .leading)
+  }
+
+  private func chip(_ text: String) -> some View {
+    Text(text)
+      .font(.caption2)
+      .lineLimit(1)
+      .padding(.horizontal, 5).padding(.vertical, 1)
+      .background(.quaternary, in: Capsule())
   }
 }
