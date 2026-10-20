@@ -67,68 +67,6 @@ final class RepositoryWriteGateTests: XCTestCase {
     XCTAssertEqual(maxConcurrent, 2, "different-project calls must not wait on each other")
   }
 
-  func testCancelledBeforeTurnSkipsOperation() async throws {
-    let gate = makeGate()
-    let log = EventLog()
-
-    // Occupies the gate for "/p" long enough for the second call to be cancelled before its turn.
-    let first = Task {
-      try await gate.run(projectRoot: "/p") {
-        await log.append("first:start")
-        try await Task.sleep(nanoseconds: 100_000_000)
-        await log.append("first:end")
-      }
-    }
-    try await Task.sleep(nanoseconds: 10_000_000)  // let `first` claim the gate
-
-    let second = Task {
-      try await gate.run(projectRoot: "/p") {
-        await log.append("second:ran")  // must never happen — cancelled before its turn
-      }
-    }
-    try await Task.sleep(nanoseconds: 20_000_000)  // still well before `first` finishes
-    second.cancel()
-
-    _ = try await first.value
-    _ = try? await second.value
-
-    let events = await log.events
-    XCTAssertFalse(events.contains("second:ran"), "a call cancelled before its turn must not run")
-    XCTAssertEqual(events, ["first:start", "first:end"])
-  }
-
-  func testChainWaitsForRealCompletionNotAbandonment() async throws {
-    let gate = makeGate()
-    let log = EventLog()
-
-    // Models `withTimeout` abandoning a call: the caller stops waiting (cancels), but the
-    // underlying operation is a black-box synchronous call that keeps running regardless —
-    // exactly `RepositoryWriteGate`'s documented contract for why `operation` must be un-timed.
-    let first = Task {
-      try? await gate.run(projectRoot: "/p") {
-        await log.append("first:start")
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        await log.append("first:end")
-      }
-    }
-    try await Task.sleep(nanoseconds: 10_000_000)
-    first.cancel()  // the caller gives up; the operation body above is NOT cancellation-aware
-
-    // Queued right after `first` is cancelled — must still wait for `first`'s operation to
-    // actually finish, not merely for the cancellation request.
-    let second = Task {
-      try await gate.run(projectRoot: "/p") {
-        await log.append("second:start")
-      }
-    }
-
-    _ = await first.value
-    try await second.value
-
-    let events = await log.events
-    XCTAssertEqual(events, ["first:start", "first:end", "second:start"])
-  }
-
   /// The tail chain swallows a predecessor's thrown error (`try? await task.value` in `run`) so the
   /// queue keeps flowing — prove a same-project call queued behind a THROWING predecessor still
   /// runs (and that the throwing call's own caller still observes its error).

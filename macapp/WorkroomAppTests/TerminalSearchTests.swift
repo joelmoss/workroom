@@ -44,40 +44,12 @@ final class TerminalSearchTests: XCTestCase {
   // the engine's `navigate_search` (which walks newest→oldest), so Find Next emits engine `previous`
   // (toward index 0 / the bottom) and Find Previous emits engine `next`. The user-facing top-down
   // position is `total - selected`. (Verified against Ghostty's `search_selected = sel.idx`.)
-
-  func testNavigationPlanFindNextStepsEnginePrevious() {
-    // Find Next, away from the ends → one engine `previous` step (one match down the screen).
-    XCTAssertEqual(
-      TerminalSearchAction.navigationPlan(findNext: true, selected: 5, total: 12), [.previous])
-  }
+  // The direction, both wraps and the no-selection step are pinned through `TerminalSearchModel`
+  // (its only caller) in the model tests below; these are the cases that have no model twin.
 
   func testNavigationPlanFindPreviousStepsEngineNext() {
     XCTAssertEqual(
       TerminalSearchAction.navigationPlan(findNext: false, selected: 5, total: 12), [.next])
-  }
-
-  func testNavigationPlanFindNextWrapsAtBottom() {
-    // Find Next on the bottom match (index 0, the last Find-Next position) wraps to the top via
-    // (total-1) engine `next` steps. The engine doesn't wrap; the burst coalesces into one selection.
-    XCTAssertEqual(
-      TerminalSearchAction.navigationPlan(findNext: true, selected: 0, total: 12),
-      Array(repeating: .next, count: 11))
-  }
-
-  func testNavigationPlanFindPreviousWrapsAtTop() {
-    // Find Previous on the top match (index total-1) wraps to the bottom via (total-1) `previous`.
-    XCTAssertEqual(
-      TerminalSearchAction.navigationPlan(findNext: false, selected: 11, total: 12),
-      Array(repeating: .previous, count: 11))
-  }
-
-  func testNavigationPlanNoSelectionTakesSingleStep() {
-    // selected < 0 (no current match): a single step lets the engine pick an end itself — and it must
-    // NOT be mistaken for an end match (index 0 / total-1) and wrap.
-    XCTAssertEqual(
-      TerminalSearchAction.navigationPlan(findNext: true, selected: -1, total: 12), [.previous])
-    XCTAssertEqual(
-      TerminalSearchAction.navigationPlan(findNext: false, selected: -1, total: 12), [.next])
   }
 
   func testNavigationPlanSingleMatchDoesNotWrap() {

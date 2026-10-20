@@ -42,11 +42,6 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(TerminalLinkOpener.absolutePath(for: "~/x.txt", cwd: nil), "\(home)/x.txt")
   }
 
-  func testRelativeJoinsCwd() {
-    XCTAssertEqual(
-      TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: "/proj"), "/proj/src/main.go")
-  }
-
   func testRelativeWithoutCwdIsNil() {
     // No working directory known → can't resolve a relative path.
     XCTAssertNil(TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: nil))
@@ -294,19 +289,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(inv[0].arguments, ["/proj/app.rb"])
   }
 
-  // The pure URL/arg builders.
-
-  func testPositionSuffixed() {
-    XCTAssertEqual(
-      TerminalLinkOpener.positionSuffixed(.init(path: "/a/b.rb", line: nil, column: nil)), "/a/b.rb"
-    )
-    XCTAssertEqual(
-      TerminalLinkOpener.positionSuffixed(.init(path: "/a/b.rb", line: 7, column: nil)), "/a/b.rb:7"
-    )
-    XCTAssertEqual(
-      TerminalLinkOpener.positionSuffixed(.init(path: "/a/b.rb", line: 7, column: 3)), "/a/b.rb:7:3"
-    )
-  }
+  // The pure URL/arg builders. (`positionSuffixed`'s three shapes are pinned through
+  // `launchInvocations` above, its only caller.)
 
   func testVSCodeURLPercentEncodesPathKeepingSlashes() {
     XCTAssertEqual(

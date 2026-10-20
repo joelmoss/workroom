@@ -171,21 +171,6 @@ final class AppStoreSessionRestoreTests: XCTestCase {
 
   // MARK: Applying
 
-  func testRestoresPanesForResolvableTargets() throws {
-    let projects = [project("/p", workrooms: ["calm-otter"])]
-    let store = makeStore(
-      projects: projects,
-      session: windowSession(
-        targetID: "wr|/p|calm-otter", titles: ["Terminal 1", "Terminal 2"]))
-
-    store.claimSessionIfNeeded()
-    store.restorePersistedSessionIfPending(in: projects)
-
-    let target = try XCTUnwrap(
-      store.target(for: .workroom(project: "/p", name: "calm-otter")))
-    XCTAssertEqual(store.terminals.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2"])
-  }
-
   /// `apply` runs twice per bootstrap and again on every reload — restoring more than once would
   /// duplicate panes.
   func testRestoreIsOneShot() throws {

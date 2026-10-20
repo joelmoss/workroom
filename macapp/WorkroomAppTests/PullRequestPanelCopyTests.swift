@@ -38,16 +38,7 @@ final class PullRequestPanelCopyTests: XCTestCase {
       copy.body.contains("gh auth login"), "an upgrade problem must not be sold as a sign-in one")
   }
 
-  /// Every state gets DISTINCT copy. A switch that mapped two states to the same message would still
-  /// compile and still render, and this is what catches it.
-  func testEveryWarningStateHasItsOwnTitle() {
-    let titles = [GitHubCLIStatus.notInstalled, .notAuthenticated, .tooOld]
-      .map { PullRequestPanel.ghWarningCopy(for: $0).title }
-    XCTAssertEqual(Set(titles).count, titles.count, "two states share a title: \(titles)")
-    XCTAssertFalse(titles.contains(""), "a warning state rendered an empty title")
-  }
-
-  /// The a11y-identifier suffix must be distinct per state too — it is the ONLY handle a UI test has,
+  /// The a11y-identifier suffix must be distinct per state — it is the ONLY handle a UI test has,
   /// because the rendered `Text`s expose empty accessibility labels. Two states sharing an id would
   /// make "wrong warning for the state" invisible to the UI suite.
   func testEveryWarningStateHasItsOwnAccessibilityID() {

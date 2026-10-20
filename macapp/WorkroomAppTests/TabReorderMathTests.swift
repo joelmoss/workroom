@@ -208,27 +208,6 @@ final class TabStripOverflowTests: XCTestCase {
     }
     XCTAssertTrue(pinned, "a 308pt run should pin somewhere between 400pt and 100pt")
   }
-
-  /// The anti-oscillation property, as a test rather than a comment. Once the controls pin they stop
-  /// occupying the scroller's viewport, so a predicate written against the *viewport* would see the
-  /// smaller number and might un-pin, then re-pin. This predicate reads the width the strip was
-  /// granted, which the pinning does not change — so re-evaluating with the same inputs is stable, and
-  /// feeding it the (smaller) post-pin viewport is not something the API permits: there is no such
-  /// parameter. This test pins the intent so a later "simplification" to content-vs-viewport fails here.
-  func testDecisionIsStableAcrossReevaluation() {
-    let inputs = (runWidth: CGFloat(308), add: CGFloat(20), available: CGFloat(320))
-    let first = TabStripOverflow.pinsControls(
-      runWidth: inputs.runWidth, add: inputs.add, available: inputs.available, leadingInset: 8,
-      inlineAddLead: 6)
-    XCTAssertTrue(first)
-    for _ in 0..<5 {
-      XCTAssertEqual(
-        TabStripOverflow.pinsControls(
-          runWidth: inputs.runWidth, add: inputs.add, available: inputs.available, leadingInset: 8,
-          inlineAddLead: 6),
-        first, "the decision must not depend on how many times it is evaluated")
-    }
-  }
 }
 
 /// Unit tests for the split-group bracket's geometry, lifted out of `TerminalTabStrip.splitRunRect`

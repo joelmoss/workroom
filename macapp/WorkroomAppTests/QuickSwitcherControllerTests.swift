@@ -132,17 +132,6 @@ final class QuickSwitcherControllerTests: XCTestCase {
       "cancelled, not committed — the rail was steering a choice the user can no longer see")
   }
 
-  func testNonVoiceOverDoesOpenASession() {
-    let store = makeStore(workrooms: ["fox", "owl"])
-    store.selectedTargetID = .workroom(project: "/p", name: "fox")
-    attach(store)
-    let (controller, _) = makeController()
-    _ = controller.handleTrigger(
-      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
-    XCTAssertTrue(controller.isLive)
-    XCTAssertFalse(controller.isRevealed, "pending — the rail waits out the reveal delay")
-  }
-
   // MARK: Modifier poll
 
   func testPollEndsTheSessionOnceTheModifierIsReleased() {

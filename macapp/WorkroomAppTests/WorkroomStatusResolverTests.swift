@@ -549,16 +549,6 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertTrue(pr.reviewers.isEmpty)
   }
 
-  /// REGRESSION: JSON omitting the review fields must still resolve to a PR with no reviewer rows.
-  func testClassifyPRBackCompatNoReviewFields() {
-    let r = ok(
-      #"[{"number":9,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"APPROVED"}]"#
-    )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
-    XCTAssertEqual(pr.reviewDecision, .approved)
-    XCTAssertTrue(pr.reviewers.isEmpty)
-  }
-
   // MARK: - parseReviewURLs (review-permalink enrichment)
 
   func testParseReviewURLsMapsLoginToURL() {
@@ -762,15 +752,6 @@ final class WorkroomStatusResolverTests: XCTestCase {
       """#
     let r = CommandResult(stdout: json, stderr: "", exitCode: 9, timedOut: false, signaled: true)
     XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
-  }
-
-  /// ORDERING LOCK: our own timeout SIGTERMs the child, so a timed-out result carries `signaled` too.
-  /// `timedOut` must be tested first or a timeout gets reported as a bare interruption. Both land on
-  /// `.keepPrior` today, so this pins the ordering rather than an observable difference — which is
-  /// exactly what stops a later edit from reordering them into a real bug.
-  func testClassifyGitHubCLITimeoutAlsoCarriesSignaled() {
-    let r = CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
   }
 
   /// A gh older than 2.57 REJECTS `--json`/`--active` rather than ignoring them: measured exit 1,

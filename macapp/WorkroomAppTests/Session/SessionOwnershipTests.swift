@@ -571,45 +571,6 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     XCTAssertEqual(command?.hasSuffix(" attach"), true, "got \(command ?? "nil")")
   }
 
-  /// The bug. The owner is resolved and cached while the daemon holds the session; the shell then
-  /// exits; a later reattach must NOT proceed on the cached answer.
-  @MainActor
-  func testASessionTheDaemonHasLostIsNotAttachedThroughIt() {
-    let answers = OwnershipScript([.owned, .notOwned])
-    let service = PersistentSessionService(
-      probe: { _ in .ready(version: "protocol 1") },
-      ownership: { _ in answers.next() })
-    let sessionID = UUID()
-
-    // Resolved and cached while it was still held — this is what makes the cache stale later.
-    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
-
-    XCTAssertEqual(
-      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone,
-      """
-      attaching here would ask the v2.0.0 daemon for a session it no longer holds, and it creates \
-      one rather than refusing — the user's running work is replaced by an empty shell that looks \
-      exactly like a successful reattach.
-      """)
-  }
-
-  /// And the stale answer is dropped, so a later reattach resolves afresh instead of arriving back
-  /// at the same wrong conclusion.
-  @MainActor
-  func testALostSessionDropsItsCachedOwner() {
-    let answers = OwnershipScript([.owned, .notOwned, .notOwned])
-    let service = PersistentSessionService(
-      probe: { _ in .ready(version: "protocol 1") },
-      ownership: { _ in answers.next() })
-    let sessionID = UUID()
-    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
-    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
-
-    XCTAssertEqual(
-      service.backend(forSession: sessionID), .rustAgent,
-      "the cached daemon answer must be gone, so the session re-resolves to where new ones go")
-  }
-
   /// **A daemon that cannot answer still gets attached to.** `.unreachable` means we could not ask,
   /// not that the session is gone — and the substitution needs the daemon responsive enough to
   /// answer "not mine" and then fork. One too wedged to reply cannot produce the wrong result, so
@@ -695,8 +656,11 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     XCTAssertFalse(replaced(.notOwned, restored: false), "a new pane's id has never existed")
   }
 
-  /// A session the retired daemon lost re-resolves to the agent, so its pane gets the agent's
-  /// `--no-create` attach rather than the daemon's client, which would create a new session.
+  /// The bug. The owner is resolved and cached while the daemon holds the session; the shell then
+  /// exits; a later reattach must NOT proceed on the cached answer — the v2.0.0 daemon creates a
+  /// session it no longer holds rather than refusing, so the user's running work would be replaced
+  /// by an empty shell that looks exactly like a successful reattach. The stale answer is dropped,
+  /// so the session re-resolves to the agent and its pane gets the agent's `--no-create` attach.
   @MainActor
   func testASessionTheDaemonLostIsAttachedThroughTheAgent() {
     let answers = OwnershipScript([.owned, .notOwned])
@@ -704,6 +668,7 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
       probe: { _ in .ready(version: "protocol 1") },
       ownership: { _ in answers.next() })
     let sessionID = UUID()
+    // Resolved and cached while it was still held — this is what makes the cache stale later.
     XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
     XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
 

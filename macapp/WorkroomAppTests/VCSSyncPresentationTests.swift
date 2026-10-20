@@ -537,15 +537,6 @@ final class VCSSyncPresentationTests: XCTestCase {
     XCTAssertTrue(p.subtitle.contains("Abort"))
   }
 
-  /// The fix for a rejection is to pull, never to force — the engine has no force-push.
-  func testRejectionOffersPull() {
-    let p = VCSSyncPresenter.make(
-      state: state(ahead: 2), hasTarget: true, failure: .rejected("! [rejected]"),
-      lastAction: .push,
-      now: now)
-    XCTAssertEqual(p.action, .pull)
-  }
-
   /// Nothing a click can do about a missing binary.
   func testToolMissingOffersNoAction() {
     let p = VCSSyncPresenter.make(

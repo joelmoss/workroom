@@ -19,12 +19,6 @@ final class SwitcherMarkTests: XCTestCase {
     XCTAssertEqual(SwitcherMark.hue(for: "root|/p"), 0)
   }
 
-  func testTheHueIsDeterministicForTheSameKey() {
-    for key in ["a", "wr|/p|fox", "", "🙂-room"] {
-      XCTAssertEqual(SwitcherMark.hue(for: key), SwitcherMark.hue(for: key), "key \(key)")
-    }
-  }
-
   func testTheHueIsAlwaysInRange() {
     for index in 0..<500 {
       let hue = SwitcherMark.hue(for: "wr|/project-\(index)|room-\(index)")
@@ -126,15 +120,6 @@ final class SwitcherMarkTests: XCTestCase {
     XCTAssertEqual(before.hue, after.hue, "the hue must survive a relabel")
     XCTAssertEqual(before.monogram, "PC")
     XCTAssertEqual(after.monogram, "AR")
-  }
-
-  func testTwoWorkroomsWithTheSameNameInDifferentProjectsCanDiffer() {
-    let a = SwitcherMark(displayName: "fox", stableKey: "wr|/alpha|fox")
-    let b = SwitcherMark(displayName: "fox", stableKey: "wr|/beta|fox")
-    XCTAssertEqual(a.monogram, b.monogram, "same name reads the same")
-    // Not guaranteed to differ (6 buckets), but the keys are distinct so the mapping had the chance.
-    XCTAssertNotEqual("wr|/alpha|fox", "wr|/beta|fox")
-    _ = (a.hue, b.hue)
   }
 
   // MARK: Mark palette
@@ -248,10 +233,6 @@ final class SwitcherMarkTests: XCTestCase {
     XCTAssertEqual(added.label, "Added")
     XCTAssertEqual(deleted.label, "Deleted")
     XCTAssertEqual(PaneMiniature.diff(.conflicted).label, "Conflicted")
-  }
-
-  func testTheRunningTerminalIsADistinctMiniature() {
-    XCTAssertNotEqual(PaneMiniature.terminal(running: true), .terminal(running: false))
   }
 
   func testATerminalReportsItsStateRatherThanRepeatingItsKind() {

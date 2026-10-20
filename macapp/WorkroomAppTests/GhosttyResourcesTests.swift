@@ -65,7 +65,9 @@ final class GhosttyResourcesTests: XCTestCase {
   ///
   /// Membership is asserted in *both* directions on purpose. A checksum-only test passes when a file
   /// is deleted from the bundle, and a listing-only test passes when a file's contents change —
-  /// which is precisely the drift this exists to catch.
+  /// which is precisely the drift this exists to catch. The membership half also keeps `themes/` out
+  /// of this manifest: it is ours, changes on its own schedule and has `themes/CHECKSUMS`, so folding
+  /// it in would make a theme refresh look like engine drift and vice versa.
   func testBundledResourceChecksumsMatch() throws {
     let dir = try resourceDir()
     let manifest = try XCTUnwrap(
@@ -129,17 +131,6 @@ final class GhosttyResourcesTests: XCTestCase {
     XCTAssertEqual(
       present.subtracting(allowed), [],
       "unexpected entries in the ghostty folder reference — they ship inside the signed bundle")
-  }
-
-  /// `themes/` must stay out of this manifest. It is ours, it changes on its own schedule, and it
-  /// already has `themes/CHECKSUMS`. Folding it in here would make a theme refresh look like engine
-  /// drift and vice versa — the two signals have to stay separable.
-  func testChecksumsExcludesThemes() throws {
-    let manifest = try XCTUnwrap(
-      try? String(contentsOfFile: try resourceDir() + "/CHECKSUMS", encoding: .utf8))
-    XCTAssertFalse(
-      manifest.contains("themes/"),
-      "themes/ is tracked by themes/CHECKSUMS — keep the two manifests disjoint")
   }
 
   /// Both terminfo entries are the same compiled record under two names. Upstream ships the

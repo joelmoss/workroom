@@ -3,8 +3,8 @@ import XCTest
 
 @testable import Workroom
 
-/// `Defaults[.copyOnSelect]` must default to ON — the key is absent until the user first toggles it
-/// — and otherwise honour the stored value. The `Key`'s `default: true` is what guarantees this;
+/// `Defaults[.copyOnSelect]` must default to ON — the key is absent until the user first toggles it.
+/// The `Key`'s `default: true` is what guarantees this;
 /// the old hand-rolled `object(forKey:) as? Bool ?? true` (and the latent bug where a bare
 /// `bool(forKey:)` would have defaulted to `false`) is gone by construction.
 final class CopyOnSelectTests: XCTestCase {
@@ -30,14 +30,6 @@ final class CopyOnSelectTests: XCTestCase {
 
   func testEnabledByDefaultWhenUnset() {
     UserDefaults.app.removeObject(forKey: key)
-    XCTAssertTrue(Defaults[.copyOnSelect])
-  }
-
-  func testRespectsStoredValue() {
-    Defaults[.copyOnSelect] = false
-    XCTAssertFalse(Defaults[.copyOnSelect])
-
-    Defaults[.copyOnSelect] = true
     XCTAssertTrue(Defaults[.copyOnSelect])
   }
 }

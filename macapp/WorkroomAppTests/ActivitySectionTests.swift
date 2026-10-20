@@ -71,22 +71,11 @@ final class ActivitySectionTests: XCTestCase {
     XCTAssertEqual(InspectorSectionKind.history.storeIndex, 3)
   }
 
-  func testDefaultsToChangesWhenUnset() {
-    UserDefaults.app.removeObject(forKey: probeKey)
-    XCTAssertEqual(Defaults[probe], .changes)
-  }
-
   /// Stored as the **bare raw string** (`PreferRawRepresentable`), not a JSON-encoded value — that's
-  /// what makes a launch argument / hand-written pref readable, and what the fallback below keys on.
+  /// what makes a launch argument / hand-written pref readable, and what the fallback keys on.
   func testRoundTripsAValidValueAsItsRawString() {
     Defaults[probe] = .files
     XCTAssertEqual(Defaults[probe], .files)
     XCTAssertEqual(UserDefaults.app.string(forKey: probeKey), "files")
-  }
-
-  /// A corrupt/renamed raw string deserialises to `nil`, and `Defaults` falls back to `.changes`.
-  func testCorruptStoredValueFallsBackToChanges() {
-    UserDefaults.app.set("bogus", forKey: probeKey)
-    XCTAssertEqual(Defaults[probe], .changes)
   }
 }

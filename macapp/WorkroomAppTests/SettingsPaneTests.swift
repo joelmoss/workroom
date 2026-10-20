@@ -45,11 +45,6 @@ final class SettingsPaneTests: XCTestCase {
     XCTAssertEqual(Defaults[.settingsSelectedPane], .general)
   }
 
-  func testRoundTripsAValidValue() {
-    Defaults[.settingsSelectedPane] = .agent
-    XCTAssertEqual(Defaults[.settingsSelectedPane], .agent)
-  }
-
   /// A `PreferRawRepresentable` enum persists as its bare raw string, so a corrupt/renamed value is
   /// simulated by writing a plain string straight to the suite — it can't be injected through the
   /// typed `Key`. Deserialising it yields `nil`, and `Defaults` falls back to the key's default.

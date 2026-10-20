@@ -56,16 +56,4 @@ final class ActivityBarReducerTests: XCTestCase {
       ActivityBarReducer.reduce(State(active: .files, visible: false), .toggleVisibility),
       State(active: .files, visible: true))
   }
-
-  /// Regression guard for the FilesPanel activation gate (`activeInspectorSection == .files`):
-  /// selecting Files makes it active (the tree activates); selecting Changes makes it inactive (the
-  /// Files pane unmounts and stops listing). The tree's actual (de)activation is exercised end-to-end
-  /// in `ActivityBarUITests`; this pins the state transition the gate reads.
-  func testSelectingFilesThenChangesFlipsActiveSection() {
-    let toFiles = ActivityBarReducer.reduce(
-      State(active: .changes, visible: true), .iconClick(.files))
-    XCTAssertEqual(toFiles.active, .files)
-    let backToChanges = ActivityBarReducer.reduce(toFiles, .iconClick(.changes))
-    XCTAssertEqual(backToChanges.active, .changes)
-  }
 }

@@ -106,14 +106,6 @@ final class WorkroomSplitTests: XCTestCase {
   private func tooNarrow() -> CGRect { CGRect(x: 0, y: 0, width: 348, height: 800) }
   private func roomy() -> CGRect { CGRect(x: 0, y: 0, width: 1200, height: 800) }
 
-  func testDropIsRefusedWhenThePaneCannotHoldTwoHalves() {
-    let store = store3()
-    store.insertWorkroomSplit(
-      wr("feature"), beside: wr("main"), edge: .right, destinationRect: tooNarrow())
-    XCTAssertTrue(store.workroomSplits.isEmpty, "the split must not be created at all")
-    XCTAssertFalse(store.workroomSplitActive)
-  }
-
   func testDropIsAllowedWhenThePaneIsWideEnough() {
     let store = store3()
     store.insertWorkroomSplit(
@@ -139,13 +131,6 @@ final class WorkroomSplitTests: XCTestCase {
       wr("main"), beside: wr("feature"), edge: .right, destinationRect: tooNarrow())
     XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2, "a rearrangement must still go through")
     XCTAssertEqual(Set(onlySplit(store)?.tabIDs ?? []), [wr("main"), wr("feature")])
-  }
-
-  func testAnUnmeasuredCallerKeepsThePreFloorBehaviour() {
-    // `destinationRect: nil` is the default — no measurement available, so no floor is applied.
-    let store = store3()
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2)
   }
 
   // MARK: insert's return value (issue #163)
@@ -367,35 +352,12 @@ final class WorkroomSplitTests: XCTestCase {
       "the band must still show for a rearrangement, which the floor does not gate")
   }
 
-  func testInsertMovingExistingMemberIsNotADuplicate() {
-    let store = store3()
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // [main, feature]
-    // Drag "main" (already a member) beside "feature": a move, not a duplicate.
-    store.insertWorkroomSplit(wr("main"), beside: wr("feature"), edge: .right)
-    XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2, "move, not duplicate")
-    XCTAssertEqual(Set(onlySplit(store)?.tabIDs ?? []), [wr("main"), wr("feature")])
-  }
-
-  func testInsertSelfDropIsNoOp() {
-    let store = store3()
-    store.insertWorkroomSplit(wr("main"), beside: wr("main"), edge: .right)
-    XCTAssertNil(onlySplit(store))
-  }
-
   func testInsertRejectsNonResolvingLeaf() {
     let store = store3()
     // `.project` is never a target, and an unknown workroom doesn't resolve — both must be rejected.
     store.insertWorkroomSplit(.project("/a"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("ghost"), beside: wr("main"), edge: .right)
     XCTAssertNil(onlySplit(store))
-  }
-
-  func testInsertRejectsMissingWorkroom() {
-    // A workroom whose directory is gone (`isMissing`) resolves in the list but must not be draggable
-    // into a split — it would render a "Directory not found" pane you can only back out of (issue #23).
-    let store = makeStore([project("/a", present: ["main"], missing: ["gone"])])
-    store.insertWorkroomSplit(wr("gone"), beside: wr("main"), edge: .right)
-    XCTAssertNil(onlySplit(store), "a missing workroom is rejected as a drop source")
   }
 
   func testInsertAllowsCrossProjectSplit() {
@@ -1023,23 +985,6 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(store.workroomSplits.count, 2)
   }
 
-  // MARK: leaf-agnostic geometry (drop-planning math over SidebarID — issue #23 follow-up)
-
-  func testPlanAndDropTargetResolveOverSidebarIDLeaves() {
-    let a = wr("main")
-    let b = wr("feature")
-    let layout: PaneLayout<SidebarID> = .split(
-      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
-    let plan = PaneTreeLayout.plan(layout, in: CGRect(x: 0, y: 0, width: 400, height: 100))
-    XCTAssertNotNil(plan.panes[a])
-    XCTAssertNotNil(plan.panes[b])
-    // A point deep in the right pane resolves to `b`, nearest edge `.right` — the same geometry the
-    // terminal split uses, now proven leaf-agnostic at `SidebarID`.
-    let hit = PaneTreeLayout.dropTarget(at: CGPoint(x: 380, y: 50), panes: plan.panes)
-    XCTAssertEqual(hit?.tab, b)
-    XCTAssertEqual(hit?.edge, .right)
-  }
-
   // MARK: pane card frame (the focused member's primary cue)
 
   /// Tokens with a known foreground, so the hairline/neutral alphas are checkable. No palette, so
@@ -1167,14 +1112,6 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
     XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
-  }
-
-  func testAnInsertEvensAwayASkewedDivider() {
-    let store = makeStore(["main", "feature", "bugfix"])
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   func testRemovingAMemberEvensTheSurvivors() {

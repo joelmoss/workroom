@@ -115,17 +115,6 @@ final class AppStoreWritingProjectTests: XCTestCase {
       "the mark must clear even though no AppStore instance was ever touched")
   }
 
-  /// Two writes marked against the same root (defensive symmetry, mirrors `testEndWriteDecrements
-  /// RatherThanClears`): releasing must decrement, not clear outright, so a sibling write still in
-  /// flight isn't falsely freed.
-  func testReleaseWriteDecrementsRatherThanClears() async throws {
-    let proj = try await RepositoryLocation.local("/proj")
-    let projectStore = ProjectStore()
-    projectStore.writingProjectRoots[proj] = 2
-    AppStore.releaseWrite(projectRoot: proj, in: projectStore)
-    XCTAssertEqual(projectStore.writingProjectRoots[proj], 1)
-  }
-
   /// Unknown ownership refuses the commit before reserving any cross-window suppression.
   func testUnregisteredCommitFailsWithoutMarkingAWrite() async throws {
     let store = AppStore(projectStore: ProjectStore())

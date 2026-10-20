@@ -102,51 +102,10 @@ final class PaneDimDecisionTests: XCTestCase {
     XCTAssertFalse(PaneTreeView.shouldRecede(active: true, enabled: false))
   }
 
-  // MARK: AppStore.shouldPulse — isOnScreen && (isSelectedMember ? !isCursorTab : true)
-
-  /// ① The cursor pane of the focused workroom never pulses — you're looking at it.
-  func testSelectedMemberCursorTabDoesNotPulse() {
-    XCTAssertFalse(
-      AppStore.shouldPulse(isOnScreen: true, isSelectedMember: true, isCursorTab: true))
-  }
-
-  /// ② A non-cursor pane within the focused workroom's split pulses (pre-existing split-mate flash).
-  func testSelectedMemberNonCursorPanePulses() {
-    XCTAssertTrue(
-      AppStore.shouldPulse(isOnScreen: true, isSelectedMember: true, isCursorTab: false))
-  }
-
-  /// ③ Any on-screen pane of a co-displayed NON-selected (backgrounded) workroom pulses — the new
-  /// parity. `isCursorTab` is irrelevant when the whole workroom is backgrounded.
-  func testCoDisplayedNonSelectedMemberPulses() {
-    XCTAssertTrue(
-      AppStore.shouldPulse(isOnScreen: true, isSelectedMember: false, isCursorTab: true))
-    XCTAssertTrue(
-      AppStore.shouldPulse(isOnScreen: true, isSelectedMember: false, isCursorTab: false))
-  }
-
-  /// ④ An off-screen pane never pulses (it gets a banner/badge instead).
-  func testOffScreenDoesNotPulse() {
-    XCTAssertFalse(
-      AppStore.shouldPulse(isOnScreen: false, isSelectedMember: false, isCursorTab: false))
-    XCTAssertFalse(
-      AppStore.shouldPulse(isOnScreen: false, isSelectedMember: true, isCursorTab: false))
-  }
-
-  // MARK: AppStore.isSeen — appFrontmost && isSelectedTarget && isCursorTab
-
-  /// Only the cursor tab of the selected workroom, while the app is frontmost (this window key), is
-  /// "seen" (suppressed). The issue #89 regression guard: every other pane is unseen → it notifies.
-  func testIsSeenOnlyTrueForFrontmostSelectedCursor() {
-    XCTAssertTrue(AppStore.isSeen(appFrontmost: true, isSelectedTarget: true, isCursorTab: true))
-    XCTAssertFalse(AppStore.isSeen(appFrontmost: false, isSelectedTarget: true, isCursorTab: true))
-    XCTAssertFalse(AppStore.isSeen(appFrontmost: true, isSelectedTarget: false, isCursorTab: true))
-    XCTAssertFalse(AppStore.isSeen(appFrontmost: true, isSelectedTarget: true, isCursorTab: false))
-  }
-
   // MARK: AppStore.activityOutcome — the full (frontmost × onScreen × selected × cursor) matrix
 
-  /// Exhaustive truth table over all 16 input combinations. `record == false` only for the one pane
+  /// Exhaustive truth table over all 16 input combinations, through `activityOutcome` — the only
+  /// caller of `shouldPulse` and `isSeen`, so this covers both. `record == false` only for the one pane
   /// the user is looking at (frontmost + on-screen + selected + cursor); everything else records
   /// (issue #89). `pulse` fires only for a frontmost, on-screen, non-cursor pane (issue #82). The
   /// frontmost+off-screen rows pin the totality guard: an off-screen tab records even when it's

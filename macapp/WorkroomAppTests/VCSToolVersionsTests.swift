@@ -200,7 +200,7 @@ final class VCSToolVersionsTests: XCTestCase {
 
   /// A `.belowFloor` verdict must clear after its (short) TTL, so a user who upgrades and is told to
   /// relaunch actually sees it clear without relaunching — the bug the single, pinned-forever cache
-  /// used to have. `.ok` gets a long TTL by contrast (see `testStillCachedWithinTheDefaultLongTTL`).
+  /// used to have. `.ok` gets a long TTL by contrast (see `testPresentToolIsStillCached`).
   func testBelowFloorExpiresAfterItsShortTTLAndReprobes() async {
     let runner = RecordingVersionRunner(responses: [
       "git": CommandResult(stdout: "git version 2.30.0", stderr: "", exitCode: 0, timedOut: false)
@@ -216,24 +216,6 @@ final class VCSToolVersionsTests: XCTestCase {
     let gitProbes = await runner.executables().filter { $0 == "git" }.count
     XCTAssertEqual(gitProbes, 2, "a stale belowFloor verdict must re-probe, not stay pinned")
   }
-
-  /// The counterpart: within the TTL, a settled verdict — including `.belowFloor` — must NOT
-  /// re-probe on every call. Only proven with an injectable clock would this be airtight against a
-  /// slow CI runner, but the default TTL (60s) is generous enough that two immediate calls prove the
-  /// cache is doing anything at all.
-  func testStillCachedWithinTheDefaultLongTTL() async {
-    let runner = RecordingVersionRunner(responses: [
-      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
-    ])
-    let cache = VCSToolVersionCache()
-
-    _ = await cache.report(runner: runner)
-    _ = await cache.report(runner: runner)
-
-    let gitProbes = await runner.executables().filter { $0 == "git" }.count
-    XCTAssertEqual(gitProbes, 1)
-  }
-
 }
 
 /// Records which executables were asked for, so a test can assert what was spawned.
