@@ -42,7 +42,7 @@ Open a second workroom beside the one you are in. Any of these work:
 - Right-click a workroom in the sidebar and choose **Open (split right)**.
 - Drag a workroom from the sidebar onto a pane. A band shows where it will land.
 
-To take a workroom out of the split, right-click it and choose **Remove from Split**, or use the close button on its title bar. It keeps running. See [Workrooms](workrooms.md).
+To take a workroom out of the split, right-click its title bar and choose **Remove from Split**, or click the **Remove this workroom from the split** button in the title bar. It keeps running. The **Close all tabs in this workroom** button next to it closes its terminals. See [Workrooms](workrooms.md).
 
 ## Even out a split
 

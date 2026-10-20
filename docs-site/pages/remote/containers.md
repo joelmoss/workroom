@@ -34,7 +34,7 @@ A runtime that does not meet these is dimmed in the New Workroom menu, with the 
 2. Under **Local containers**, choose **Docker** or **Apple Container**.
 3. Watch the checklist in the pane: **Check repository**, **Pull host image**, **Start container**, **Connect**, **Clone repository**, **Check out branch**. When it finishes, click **Done**.
 
-The first create downloads Workroom's host image, and shows how far the download has got on the project's row. Later creates reuse it. If the download fails, the message says whether the registry refused it or your network failed.
+The first create downloads Workroom's host image, and the **Pull host image** row shows how far the download has got. Later creates reuse it, and that row says `Image already downloaded`. If the download fails, the message says whether the registry refused it or your network failed.
 
 The container runs Workroom's own image. A `devcontainer.json` in your repository does not change it: `image`, `build`, `features` and the rest of the container definition are ignored. Only its ports are read. See [Port forwarding](port-forwarding.md).
 

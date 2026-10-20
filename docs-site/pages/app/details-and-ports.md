@@ -26,7 +26,7 @@ The **Ports** list appears only for a workroom in a Docker or Apple container. A
 localhost:5173 → container 5173
 ```
 
-Open `http://localhost:5173` on your Mac to reach the server. A port you labelled in `devcontainer.json` shows its label beside the row.
+Open the address before the arrow on your Mac to reach the server. If something on your Mac already holds the port, the row shows a different number, such as `localhost:51234 → container 5173`. A port you labelled in `devcontainer.json` shows its label beside the row.
 
 Workroom forwards the ports your project's `devcontainer.json` declares when you open the workroom. See [Port forwarding](../remote/port-forwarding.md) for the file and its fields.
 

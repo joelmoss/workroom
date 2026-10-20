@@ -31,7 +31,7 @@ For the Plan and GitHub steps, **Open exe.dev Again** reopens the page, and **Ch
 
 When every step has a tick, click **Create Workroom**. The create that the sheet interrupted carries on, in the same pane. **Cancel** ends it and removes the pane. Closing the sheet cancels the setup.
 
-If a check cannot get an answer, the step says so, and **Create Workroom** is available anyway. In that case exe.dev decides: if something is really missing, the create fails and says what.
+If the Plan or GitHub check cannot get an answer, the step says so, and **Create Workroom** is available anyway. In that case exe.dev decides: if something is really missing, the create fails and says what. The Account step has to be done first.
 
 ## Create a workroom on exe.dev
 

@@ -40,7 +40,7 @@ Right-click a diff tab to switch the view, **Open File**, **Open File in…**, o
 
 ## History
 
-**History** is the log of commits on the workroom's branch, newest first. Click a commit to open its changeset in a preview tab: the message, the authors, the changed files, and a diff for each file you select. Click quickly twice to keep the tab open. Branch and tag names show beside the commits they point at, and a commit that is not pushed yet is marked **Not pushed**.
+**History** is the log of commits on the workroom's branch, newest first. Click a commit to open its changeset in a preview tab: the message, the authors, the changed files, and a diff for each file you select. Click quickly twice to keep the tab open. Branch and tag names show beside the commits they point at, and a commit that is not pushed yet has an orange up-arrow beside it. Hover it, or open the commit, to read **Not pushed**.
 
 The list shows the newest commits first. Use **Load more** at the bottom to go further back.
 

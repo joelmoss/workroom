@@ -15,13 +15,13 @@ You are inside a workroom folder, which has a `.Workroom` marker. Run the comman
 
 ## The workroom was created but its setup failed
 
-Creating a workroom is not all or nothing, so the workroom exists even though the setup script failed. The CLI exits with code 5. The app offers to delete the half-made workroom.
+Creating a workroom is not all or nothing, so the workroom exists even though the setup script failed. The CLI exits with code 5.
 
 1. Fix `scripts/workroom_setup`.
 2. Delete the workroom with `workroom delete NAME`.
 3. Create it again.
 
-On a remote workroom the app offers **Open Anyway** or **Delete**. The remote host keeps running until you choose.
+On Nightly the app shows the failure with **Open Anyway** and **Delete Workroom…**. On a remote workroom the host keeps running until you choose.
 
 ## The script is not trusted on this Mac {nightly}
 
@@ -32,9 +32,9 @@ The message is "script is not trusted on this Mac". The setup or teardown script
 
 In the app, the creation pane waits with the script shown and **Approve** and **Cancel**. A delete's sheet offers **Approve and Run**, **Delete Anyway** and **Cancel**.
 
-A `--json` or scripted call can't ask, so it exits with code 3. `workroom trust status` exits 2 when the base branch can't be resolved. Fix the base branch first. See [workroom trust](../cli/workroom-trust.md).
+A `--json` or scripted call can't ask, so it exits with code 3. `workroom trust status` exits 2 when it can't tell, for example when the base branch can't be resolved. Fix that first. See [workroom trust](../cli/workroom-trust.md).
 
-## A delete stopped and nothing was removed
+## A delete stopped and nothing was removed {nightly}
 
 When the teardown script fails, can't start, runs out of time, or isn't approved, the delete stops and removes nothing. For a remote workroom it also stops when the host can't be reached. The app shows why, with the script's output.
 
@@ -47,13 +47,13 @@ The CLI's version of **Delete Anyway** is `workroom delete NAME --skip-teardown`
 
 This is on purpose. Workroom never deletes the `workroom/NAME` branch. Remove it yourself with `git branch -D workroom/NAME`.
 
-## The list shows "directory not found" or "workspace not found"
+## The list shows "directory not found" or "git workroom not found"
 
-The workroom's folder, or its Git worktree, was removed outside Workroom. Run `workroom delete NAME` to clean up the entry.
+The workroom's folder, or its Git worktree, was removed outside Workroom. Run `workroom delete NAME` to clean up the entry. Version 2.1.0 words the second as "git workspace not found".
 
 ## A project shows a warning triangle in the sidebar
 
-The tooltip says "Project folder not found". Workroom tracks a project by its path, so the folder was moved or deleted. Put it back at the same path, or remove the project from the sidebar.
+The tooltip says "Project folder not found". Workroom tracks a project by its path, so the folder was moved or deleted. Put it back at the same path, or choose **Delete Project…** from the project's menu and pick **Remove from Workroom only — keep all files**.
 
 ## `workroom update` says it can't update
 

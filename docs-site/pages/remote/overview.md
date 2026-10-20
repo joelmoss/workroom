@@ -42,7 +42,7 @@ What stays on your Mac:
 - The `gh` sign-in that Workroom uses for pull requests and CI.
 - A container's GitHub access. A Docker or Apple container gets its GitHub credentials from your Mac's `gh`, while you have Workroom open. boxd and exe.dev hosts use GitHub access you set up with the provider, so they keep working with your Mac closed.
 
-The **Details** pane in the inspector shows where a workroom runs: **Running on**, **Machine Name** (for boxd and exe.dev) and **Path on its host**. Open it with <kbd>⌥⌘I</kbd>. See [Details and ports](../app/details-and-ports.md).
+The **Details** pane in the inspector shows where a workroom runs: **Running on**, **Machine Name** (the name the host is listed under, in boxd's or exe.dev's dashboard or in `docker ps`) and **Path on its host**. Open it with <kbd>⌥⌘I</kbd>. See [Details and ports](../app/details-and-ports.md).
 
 ## Create one
 
@@ -52,7 +52,7 @@ When you pick a host, the workroom's pane opens at once with a checklist. It sho
 - boxd: **Check repository**, **Check boxd account**, **Create machine**, **Set up machine**, **Connect**, **Clone repository**, **Check out branch**.
 - exe.dev: **Check repository**, **Check exe.dev account**, **Create VM**, **Wait for boot**, **Set up machine**, **Connect**, **Clone repository**, **Check out branch**.
 
-After these, **Copy local files** runs if your project has a `.worktreeinclude`, and **Run setup script** runs if it has a `scripts/workroom_setup`. If a step fails, the pane tells you why and offers **Try Again** or **Close**.
+After these, **Copy local files** runs if your project has a `.worktreeinclude`, and **Run setup script** runs if it has a `scripts/workroom_setup`. If a step fails, the pane tells you why and offers **Try Again** or **Close**. If the failed create could not take its machine down, the pane says the machine is still running and offers **Delete Workroom…** or **Close** instead.
 
 The first time you use boxd or exe.dev, the **Check ... account** step waits for you while a setup sheet walks you through signing up. See [boxd](boxd.md) and [exe.dev](exe-dev.md).
 
