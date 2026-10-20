@@ -2,7 +2,8 @@
 
 Issues and PRs are welcome at <https://github.com/joelmoss/workroom>. This document covers the
 architecture, the local development setup, the test/lint gates, and the release process. For what
-Workroom *is* and how to use it, see [`README.md`](README.md).
+Workroom *is* and how to use it, see the [user docs](https://codaset.dev/workroom/docs), written in
+[`docs-site/`](docs-site/).
 
 Before opening a PR:
 
@@ -11,7 +12,7 @@ Before opening a PR:
 - Run the relevant tests: `make cli-test` and/or `make app-test`.
 - Keep the `--json` contract stable — it's the boundary between the CLI and the app. Breaking changes
   bump `schema_version` (`cmd/json.go`). See
-  [the contract](README.md#the---json-machine-contract).
+  [the contract](docs-site/pages/reference/json-output.md).
 - Workroom supports Git repos only, so contribute through Git.
 - Report security vulnerabilities privately, as [`SECURITY.md`](SECURITY.md) describes. Do not file
   them as public issues or PRs.
@@ -87,7 +88,8 @@ and the hash there together. That job
 installs `shellcheck` 0.11.0 the same way (`SHELLCHECK_VERSION` and `SHELLCHECK_SHA256`), because the
 runner's own is older, and also lints `macapp/Scripts/*.sh` through `make app-scripts-lint`.
 
-Runtime requirements for *using* Workroom are in [the README](README.md#requirements).
+Runtime requirements for *using* Workroom are in the docs'
+[Install page](docs-site/pages/get-started/install.md).
 
 ---
 
@@ -293,7 +295,7 @@ renders each `DeleteResult`.
    slow setup script runs.
 8. **Run setup:** if `scripts/workroom_setup` exists in the new workroom, else in the root project,
    `script.Run("setup", …)` executes it inside the new workroom with the
-   [environment variables](README.md#environment-variables), streaming combined
+   [environment variables](docs-site/pages/reference/environment-variables.md), streaming combined
    stdout/stderr live, as the `script` step (`skipped` when there is no script). The file is hashed
    and gated again first, where it is, so bytes that changed since step 5 never run.
 
@@ -375,7 +377,7 @@ config. Shape:
   rather than failing.
 
 The CLI's machine-readable `--json` envelope — the contract the app drives the engine over — is
-documented in [the README](README.md#the---json-machine-contract).
+documented in the docs' [JSON output page](docs-site/pages/reference/json-output.md).
 
 ---
 
@@ -756,4 +758,4 @@ installs are untouched; the nightly build skips migration entirely (its channel 
 Run `make app-generate` (or `make app-clean` then `make app-build`), confirm `xcodegen` and a Go
 toolchain are on `PATH`, and remember adding/removing Swift files requires regenerating the project.
 
-See [the README's Troubleshooting section](README.md#troubleshooting) for runtime issues.
+See the docs' [Troubleshooting page](docs-site/pages/help/troubleshooting.md) for runtime issues.

@@ -129,6 +129,9 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   There is no "Ask AI" panel and no feedback widget.
 - **D14. The README shrinks** to an intro, an install line and a link to the docs. The docs site is
   the one source of truth.
+  - **As built (2026-10-20):** done once the docs were live. The README keeps the intro, the demo
+    video, the app and CLI install lines, and links to the docs, CONTRIBUTING.md and the licence.
+    Links into its old sections (CONTRIBUTING.md, ADR 0013, PRODUCT.md) point at the docs pages.
 - **D15. Screenshots appear only on the Get started and Guides pages,** in dark mode. Claude asks
   before every capture session, which drives the real app, or the owner takes them.
 - **D16. URLs follow the file path:** `/workroom/docs/<group>/<page>`. Adding `.md` returns the raw
@@ -246,8 +249,6 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
 
 ## Not done yet
 
-- **D14, the README trim**, waits for a follow-up PR once the Codaset side is live. Trimming it first
-  would point readers at a site that doesn't exist yet.
 - **D26, links from error messages to Troubleshooting**, is a follow-up.
 - **D15, screenshots**, need a capture session the owner approves.
 - **D5, checking every page in the app**: [docs-site-launch-checks.md](docs-site-launch-checks.md)

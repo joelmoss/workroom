@@ -56,7 +56,8 @@ Workroom's durable distinction is parallel development context: each task gets a
 
 ## Evidence on Hand
 
-- Product documentation and factual feature inventory: `/Users/joelmoss/.codex/worktrees/3f49/workroom/README.md`.
+- Product documentation and factual feature inventory: `docs-site/pages/` (served at
+  https://codaset.dev/workroom/docs).
 - Native app architecture and development documentation: `/Users/joelmoss/.codex/worktrees/3f49/workroom/macapp/README.md`.
 - Current product screenshot: `/Users/joelmoss/.codex/worktrees/3f49/workroom/docs/workroom-app.png`.
 - Shared Codaset/Workroom square mark: no longer in this repo; the last copy is `website/assets/workroom-mark.svg` at commit 5be0428b.

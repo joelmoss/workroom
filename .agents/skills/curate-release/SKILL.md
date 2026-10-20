@@ -3,7 +3,7 @@ name: curate-release
 description: Workroom's tag-driven release process — channel architecture (stable/pre vs the side-by-side Nightly build), keeping the channel-classification logic in lockstep across Go/Swift/shell, and curating GitHub release notes after a tag publishes.
 ---
 
-Tag-driven (see README "Releases"). After a release publishes, **curate its GitHub release
+Tag-driven (see CONTRIBUTING.md "Deployment & Releases"). After a release publishes, **curate its GitHub release
 notes** — replace GoReleaser's raw commit list with a succinct, themed summary in the style of
 `v2.0.0-beta.1` (a headline, a one-line framing, and grouped bullets). The commit list is what
 the git log is for.
