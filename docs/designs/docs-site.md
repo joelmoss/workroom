@@ -217,7 +217,8 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
   3. This repo sends that dispatch only after master CI succeeds. As built, it sends it on every
      green master push, not only when `docs-site/` changed (owner, 2026-10-20): a docs change whose
      own run went red would otherwise wait for the next docs change to publish. It sends it
-     using `CODASET_DISPATCH_TOKEN`, a fine-grained token limited to the Codaset repo. As built, it
+     using `CODASET_DISPATCH_TOKEN`, a fine-grained token limited to the Codaset repo, with
+     Contents set to "Read and write" (read-only gets a 403). As built, it
      is a `docs-deploy` job at the end of `ci.yml` rather than a `workflow_run` workflow. CI is one
      workflow, and a job that `needs` every other job is the same gate without `workflow_run`'s
      pitfalls: it runs the default branch's copy of the file, has no path filter, and needs its own
@@ -262,10 +263,14 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
 
 ## Owner actions
 
-- Turn off Hatchbox's automatic deploy on push for Codaset.
-- Create the Hatchbox deploy token as a Codaset repo secret.
-- Create a fine-grained GitHub token that can send a `repository_dispatch` to `joelmoss/codaset`,
-  and store it as `CODASET_DISPATCH_TOKEN` in this repo.
+All done on 2026-10-20:
+
+- Hatchbox's automatic deploy on push for Codaset is off, so CI's `deploy` job is the only way to
+  deploy.
+- The Hatchbox deploy token is Codaset's `HATCHBOX_DEPLOY_TOKEN` secret. It is the token at the end
+  of the deploy URL on the app's Repository tab in Hatchbox.
+- `CODASET_DISPATCH_TOKEN` is this repo's secret: a fine-grained token on `joelmoss/codaset` with
+  Contents "Read and write". With Contents read-only, the dispatch failed with a 403.
 
 The pre-build step needs no owner action: it lives in Codaset's `.hatchbox/pre-build` (D29).
 
@@ -284,6 +289,15 @@ The pre-build step needs no owner action: it lives in Codaset's `.hatchbox/pre-b
 
 Checked since (2026-10-20):
 
-- Hatchbox's automatic deploy on push is on for Codaset: #58's merge went live with no CI deploy.
+- Hatchbox's automatic deploy on push was on for Codaset: #58's merge went live with no CI deploy.
+  The owner has since turned it off.
 - `.hatchbox/pre-build` runs before `assets:precompile` with `$RELEASE_DIR` set, which Codaset's
   existing `bun install` hook already relied on, so D29 runs at the right point.
+- The docs went live with the first CI deploy (Codaset 7046b33, Hatchbox deployment 4636414):
+  `/workroom/docs` went from 503 to 200, with pages, `.md` twins, search and `llms.txt` serving.
+- The publish path works end to end. This repo's `docs-deploy` (master run 39431555161, commit
+  f85a3f786) sent the dispatch. Codaset's dispatch run (39435325713) tested the docs at
+  f85a3f786, rendering every real page, and passed every job. Its `deploy` job found Codaset's
+  master unchanged and asked Hatchbox to deploy it (deployment 4636623). Whether Hatchbox rebuilt
+  that same commit, rather than skipping it, shows only in that deployment's log in Hatchbox; it
+  stays listed under Not verified until a docs-only change is seen to go live.
