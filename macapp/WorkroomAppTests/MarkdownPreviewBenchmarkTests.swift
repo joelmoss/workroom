@@ -70,6 +70,15 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
     record("first open in process (2 s after start)", "small", [cold.elapsed])
     try await assertPaints(cold.webView)
 
+    // How previews are usually opened: a while after the last one, with the ready page sat idle.
+    let idle = Double(Self.environment["WORKROOM_BENCH_IDLE_S"] ?? "2")!
+    var idleOpens: [Double] = []
+    for _ in 0..<5 {
+      try await Task.sleep(for: .seconds(idle))
+      idleOpens.append(try await open(docs[0].source, tokens: light).elapsed)
+    }
+    record("open after \(idle) s idle", "small", idleOpens)
+
     for doc in docs {
       var opens: [Double] = []
       var wholes: [Double] = []
