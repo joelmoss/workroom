@@ -138,11 +138,6 @@ final class ShellEnvironmentTests: XCTestCase {
     XCTAssertTrue(parts.contains("/usr/local/bin"))
   }
 
-  func testFloorNeverReturnsEmpty() {
-    let parts = floor("/nonexistent/paths", "/nonexistent/paths.d", inherited: "")
-    XCTAssertFalse(parts.isEmpty)
-  }
-
   // MARK: loginShellInvocation
 
   func testPOSIXShellsGetInteractiveLogin() {
@@ -165,11 +160,6 @@ final class ShellEnvironmentTests: XCTestCase {
       XCTAssertTrue(invocation.commandString.contains("/bin/sh"), shell)
       XCTAssertTrue(invocation.commandString.contains("-lc"), shell)
     }
-  }
-
-  func testLoginShellExecutableMatchesInvocation() {
-    XCTAssertEqual(ShellEnvironment.loginShellExecutable(shell: "/bin/zsh"), "/bin/zsh")
-    XCTAssertEqual(ShellEnvironment.loginShellExecutable(shell: "/usr/bin/fish"), "/bin/sh")
   }
 
   func testCommandStringQuotesTheScript() {

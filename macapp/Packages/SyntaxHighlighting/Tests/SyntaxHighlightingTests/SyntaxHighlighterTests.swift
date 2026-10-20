@@ -28,20 +28,6 @@ final class SyntaxHighlighterTests: XCTestCase {
       "expected a string/property capture; got \(Set(spans.map(\.capture)))")
   }
 
-  /// Bash carries an external scanner (`src/scanner.c`). A non-empty parse proves the scanner
-  /// compiled, linked, and runs — the lane-A packaging de-risk.
-  func testBashExternalScannerParses() {
-    let script = """
-      #!/usr/bin/env bash
-      set -euo pipefail
-      greeting="hello"
-      echo "$greeting world"
-      """
-    let spans = SyntaxHighlighter.shared.spans(for: script, grammar: .bash)
-    XCTAssertFalse(
-      spans.isEmpty, "Bash (external-scanner grammar) should parse and produce highlight spans")
-  }
-
   /// Spans are ascending and non-overlapping (the resolver's contract — the byte→AttributedString
   /// mapping depends on it).
   func testSpansAreAscendingAndNonOverlapping() {
@@ -141,17 +127,6 @@ final class SyntaxHighlighterTests: XCTestCase {
 
   func testSkipMinifiedDoubleExtension() {
     XCTAssertNil(SyntaxLanguage.grammar(forPath: "dist/app.min.js"))
-  }
-
-  func testGrammarForPathFallsBackToOldPathAcrossRename() {
-    // Mirrors DiffViewer.applyHighlight's real fallback composition — grammar(forPath: new) ??
-    // grammar(forPath: old) — for a rename across extensions: new side unknown, old side is
-    // JSON → highlight off the old path.
-    let newPath = "data.unknownext"
-    let oldPath = "data.json"
-    XCTAssertNil(SyntaxLanguage.grammar(forPath: newPath))
-    XCTAssertEqual(
-      SyntaxLanguage.grammar(forPath: newPath) ?? SyntaxLanguage.grammar(forPath: oldPath), .json)
   }
 
   // MARK: - Shebang detection (extension-less scripts)

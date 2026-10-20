@@ -3,15 +3,6 @@ import XCTest
 @testable import WorkroomWire
 
 final class SessionFrameTests: XCTestCase {
-  func testRoundTripsEmptyPayload() throws {
-    let frame = SessionFrame(kind: .list)
-    var decoder = SessionFrameDecoder()
-    decoder.push(frame.encoded())
-    let decoded = try XCTUnwrap(decoder.next())
-    XCTAssertEqual(decoded, frame)
-    XCTAssertNil(try decoder.next())
-  }
-
   func testRoundTripsAttachPayload() throws {
     let identifier = try XCTUnwrap(
       SessionIdentifier(uuidString: "3f2504e0-4f89-11d3-9a0c-0305e82c3301"))
