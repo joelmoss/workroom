@@ -57,11 +57,7 @@ final class PaneTreeLayoutTests: XCTestCase {
   /// Too small to honour the floor → the ratio passes through untouched. It must NOT centre: the
   /// caller persists whatever comes back, so centring would erase the user's split the moment the
   /// window got narrow. `lengths` is what makes it *render* centred (asserted above).
-  func testClampRatioTooSmallPassesTheRatioThrough() {
-    XCTAssertEqual(
-      PaneTreeLayout.clampRatio(0.9, total: 500, along: .horizontal), 0.9, accuracy: 0.001)
-  }
-
+  ///
   /// The regression behind the pass-through: narrowing a container below the floor and nudging the
   /// divider used to write `0.5` over a stored 70/30, unrecoverably. Round-trip the stored ratio
   /// through a narrow container and back out to a wide one — it has to survive.
@@ -568,16 +564,10 @@ final class PaneDragOutcomeTests: XCTestCase {
     XCTAssertEqual(outcome(CGPoint(x: 250, y: -30)), PaneTreeLayout.PaneDragOutcome<String>.extract)
   }
 
-  /// The regression this fence exists for: the top edge must TEAR OFF, not extract.
-  ///
-  /// The old condition was a bare `location.y < 0`, which is equally true a pixel above the panes and
-  /// a mile above the screen — so without the fence the top edge could never detach, and it is the
-  /// edge the pane title bar's own accessibility hint points people toward.
-  func testPastTheTopEdgeDetachesRatherThanExtracting() {
-    XCTAssertEqual(outcome(CGPoint(x: 250, y: -61)), PaneTreeLayout.PaneDragOutcome<String>.detach)
-  }
-
-  /// All four exits detach, so the gesture reads the same whichever way you pull.
+  /// All four exits detach, so the gesture reads the same whichever way you pull. The top edge is
+  /// the regression this fence exists for: the old condition was a bare `location.y < 0`, equally
+  /// true a pixel above the panes and a mile above the screen, so the top edge could never detach,
+  /// and it is the edge the pane title bar's own accessibility hint points people toward.
   func testEveryEdgeDetaches() {
     XCTAssertEqual(outcome(CGPoint(x: -1, y: 370)), PaneTreeLayout.PaneDragOutcome<String>.detach)
     XCTAssertEqual(outcome(CGPoint(x: 1001, y: 370)), PaneTreeLayout.PaneDragOutcome<String>.detach)

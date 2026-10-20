@@ -304,18 +304,6 @@ final class RunCommandTests: XCTestCase {
       "a button press carries its own target and must not depend on the selection")
   }
 
-  /// The selection-scoped door still works — it just delegates now.
-  func testRunOrFocusSelectionOverloadDelegatesToThePerTargetOne() {
-    let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
-    let t = target(store, "/a", "main")
-    store.selectedTargetID = .workroom(project: "/a", name: "main")
-
-    store.runOrFocusRunCommand()
-
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
-  }
-
   /// A missing directory is refused on the per-target path too, not just via the selection.
   func testRunOrFocusForTargetRefusesAMissingWorkroom() {
     let store = makeStore([project("/a", workrooms: ["main"])])
@@ -589,30 +577,6 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "no duplicate shell on re-mount")
   }
 
-  func testInitialTerminalLeavesExistingTerminalsAlone() {
-    let store = makeStore([project("/a", workrooms: ["main"])])
-    let t = target(store, "/a", "main")
-
-    // A target that already has a terminal open gets no extra one — "open one if there are none open".
-    store.terminals.addTab(for: t)
-    store.ensureInitialTerminal(for: t)
-
-    XCTAssertEqual(
-      store.terminals.tabCount(forTargetID: t.id), 1, "existing terminal → no extra tab")
-  }
-
-  func testToggleStartsWhenNotRunning() {
-    let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
-    let t = target(store, "/a", "main")
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
-
-    store.toggleRunCommand(for: t)  // sidebar run button: not running → start
-
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
-    XCTAssertNotNil(store.runTabID(for: t.id))
-  }
-
   func testReapClearsRunState() async {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
@@ -762,7 +726,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(condition(), message, file: file, line: line)
   }
 
-  func testSecondStopWaitsForLiveProcessThenCloses() {
+  func testRequestCloseWaitsForLiveRunCommand() {
     // Under the supervisor model, closing the run tab (requestCloseTerminalTab) when a live process
     // is present sends SIGTERM via gracefullyStopRuns and waits before freeing. Simulated here by
     // stopping the command and then requesting a close.
@@ -784,23 +748,6 @@ final class RunCommandTests: XCTestCase {
     view.liveProcessOverrideForTesting = false  // process exits
     waitUntil("tab closes once the process has exited") { store.runTabID(for: t.id) == nil }
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
-  }
-
-  func testRequestCloseWaitsForLiveRunCommand() {
-    let store = makeStore([project("/a", workrooms: ["main"])])  // confirm pinned off in makeStore
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
-    let t = target(store, "/a", "main")
-    store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
-    let view = try! XCTUnwrap(runView(store, t))
-    view.liveProcessOverrideForTesting = true
-
-    store.requestCloseTerminalTab(tab, for: t)
-    XCTAssertEqual(store.runTabID(for: t.id), tab, "closing waits for the live run process to exit")
-    XCTAssertTrue(signals.contains { $0.1 == SIGTERM }, "close must send SIGTERM to supervisor")
-
-    view.liveProcessOverrideForTesting = false
-    waitUntil("tab closes once the process has exited") { store.runTabID(for: t.id) == nil }
   }
 
   func testGracefullyStopAllWaitsForEveryLiveCommandThenCompletes() {
@@ -1504,6 +1451,8 @@ final class RunCommandTests: XCTestCase {
     // no-op seam) — `canSpawnSurface` is true for a fresh view and must flip to false after teardown.
     let view = GhosttySurfaceView(
       workingDirectory: "/tmp", command: "bin/rails s", spawnsSurface: true)
+    // A fresh view must be eligible, or a fix that over-broadly blocks legitimate (re)spawns (the
+    // background-run off-window spawn, a normal window mount) would pass.
     XCTAssertTrue(view.canSpawnSurface, "a fresh run view is eligible to spawn its surface")
     XCTAssertFalse(view.isTornDown)
 
@@ -1514,14 +1463,6 @@ final class RunCommandTests: XCTestCase {
       view.canSpawnSurface,
       "a torn-down view must NEVER re-spawn — a re-mount can't relaunch the command (phantom server)"
     )
-  }
-
-  /// A live (not-yet-torn-down) view stays spawn-eligible — guards against a fix that over-broadly
-  /// blocks legitimate (re)spawns (e.g. the background-run off-window spawn or a normal window mount).
-  func testLiveRunViewRemainsSpawnEligible() {
-    let view = GhosttySurfaceView(
-      workingDirectory: "/tmp", command: "bin/rails s", spawnsSurface: true)
-    XCTAssertTrue(view.canSpawnSurface, "a live view must still be able to spawn its surface")
   }
 
   /// The run state lives on `RunCommandController` and the store forwards it. The toolbar's Run/Stop

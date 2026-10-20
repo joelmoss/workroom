@@ -219,18 +219,11 @@ final class GhosttyUnshiftedCodepointTests: XCTestCase {
         isARepeat: false, keyCode: keyCode))
   }
 
-  func testFlagsChangedEventYieldsZeroWithoutRaising() throws {
-    // Left Command (55) — the exact event shape seen throwing in the live app during ⌘-Tab. Reading
-    // `charactersIgnoringModifiers` here is what raised; reaching the assertion at all is the test.
-    let event = try flagsChangedEvent(keyCode: 55, flags: .command)
-    XCTAssertEqual(
-      GhosttySurfaceView.unshiftedCodepoint(for: event), 0,
-      "a bare modifier has no unshifted codepoint — and must not raise reading for one")
-  }
-
   func testEveryModifierKeyIsSafe() throws {
-    // Shift/Option/Control/CapsLock, left and right, plus the release event (flags cleared) — only
-    // ⌘ was exercised by hand, so pin the whole family rather than the one that was observed.
+    // Left Command (55) with .command is the exact event shape seen throwing in the live app during
+    // ⌘-Tab: reading `charactersIgnoringModifiers` is what raised, so reaching the assertions at all
+    // is part of the test. Shift/Option/Control/CapsLock, left and right, plus the release event
+    // (flags cleared) — only ⌘ was exercised by hand, so pin the whole family.
     for keyCode: UInt16 in [54, 55, 56, 57, 58, 59, 60, 61, 62] {
       for flags: NSEvent.ModifierFlags in [[], .command, .shift, .option, .control, .capsLock] {
         let event = try flagsChangedEvent(keyCode: keyCode, flags: flags)

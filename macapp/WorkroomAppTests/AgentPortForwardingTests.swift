@@ -1238,15 +1238,6 @@ final class PortForwardingModelTests: XCTestCase {
   }
 
   /// The dev container convention: port N is reachable at N on this Mac when nothing here holds it.
-  func testAForwardTakesItsOwnPortNumberWhenItIsFree() async throws {
-    let port = try freePort()
-    let model = try await model(lease: lease(), sameLocalPort: true)
-    model.draft = String(port)
-    await model.add()
-    XCTAssertNil(model.message)
-    XCTAssertEqual(model.forwards.first?.localPort, port)
-  }
-
   /// `localhost:N`, which the Ports list shows, reaches the container on `::1` too, where a browser
   /// tries first, and a server the Mac starts later on `::1:N` can't take it from the forward.
   func testAForwardAnswersLocalhostOnIPv6AndKeepsItFromALaterServer() async throws {
@@ -1254,6 +1245,7 @@ final class PortForwardingModelTests: XCTestCase {
     let model = try await model(lease: lease(), sameLocalPort: true)
     model.draft = String(port)
     await model.add()
+    XCTAssertNil(model.message)
     XCTAssertEqual(model.forwards.first?.localPort, port)
     XCTAssertNil(
       LoopbackSocket.listenIPv6(port: port), "a later ::1 server took the forward's port")

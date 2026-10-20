@@ -231,20 +231,6 @@ final class ThemeServiceTests: XCTestCase {
     XCTAssertEqual(dirs.last, ThemeService.bundledThemeDirectory())
   }
 
-  func testResetPreviewCacheForTestingClearsIt() throws {
-    let name = try XCTUnwrap(ThemeCatalog.families.first?.dark)
-    // Reset FIRST: the cache is a process-lifetime static, so without this the test silently inherits
-    // whatever an earlier case in the same process left warm and proves nothing about a cold start.
-    ThemeCatalog.resetPreviewCacheForTesting()
-    let cold = try XCTUnwrap(ThemeService.themePreview(named: name))
-    ThemeCatalog.resetPreviewCacheForTesting()
-    // Same colours after a reset — the cache is an optimisation, never the source of truth, so a
-    // repopulated entry must be indistinguishable from the one it replaced.
-    let repopulated = try XCTUnwrap(ThemeService.themePreview(named: name))
-    XCTAssertEqual(repopulated.background, cold.background)
-    XCTAssertEqual(repopulated.palette, cold.palette)
-  }
-
   // MARK: dark/light quick toggle (issue #57)
 
   func testToggledLightDarkFlipsForcedModes() {

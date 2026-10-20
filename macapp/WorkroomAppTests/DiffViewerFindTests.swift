@@ -90,15 +90,6 @@ final class DiffViewerFindTests: XCTestCase {
 
   // MARK: DiffLineID / hasDuplicateIDs
 
-  func testDiffLineIDEqualityAndHashing() {
-    let a = DiffLineID(kind: .context, oldLine: 1, newLine: 1)
-    let b = DiffLineID(kind: .context, oldLine: 1, newLine: 1)
-    let c = DiffLineID(kind: .addition, oldLine: nil, newLine: 1)
-    XCTAssertEqual(a, b)
-    XCTAssertNotEqual(a, c)
-    XCTAssertEqual(Set([a, b, c]).count, 2)
-  }
-
   func testHasDuplicateIDsFalseForUniqueSet() {
     let ids = [
       DiffLineID(kind: .context, oldLine: 1, newLine: 1),

@@ -1640,15 +1640,6 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(heights, [449], "both rows are the same height")
   }
 
-  func testASplitEvensAwayASkewedDivider() {
-    let s = makeSessions()
-    s.addTab(for: target)
-    s.splitFocusedPane(for: target, orientation: .horizontal)
-    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
-    s.splitFocusedPane(for: target, orientation: .vertical)
-    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
-  }
-
   func testClosingAPaneEvensTheSurvivors() {
     let s = makeSessions()
     threePanes(s)

@@ -35,8 +35,9 @@ final class ChangesetDetailViewFindTests: XCTestCase {
   }
 
   func testEmptyChangesetHasNoSearchableDiff() {
+    // The retarget case: a selection left over from the previous commit, and no files in this one.
     let state = ChangesetDetailView.LoadState.loaded(changeset(files: []))
-    XCTAssertFalse(ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: nil))
+    XCTAssertFalse(ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: "a.swift"))
   }
 
   func testStaleSelectionHasNoSearchableDiff() {

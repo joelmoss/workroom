@@ -46,19 +46,10 @@ final class BranchLabelTests: XCTestCase {
   // MARK: One shared accessor
 
   /// `branchName(for:)` is the single answer every branch-showing surface uses — the status bar, the
-  /// Changes header, the sidebar root row and the VCS toolbar. `branchLabel(for:)` must stay a thin
-  /// wrapper over it, or those surfaces can drift apart again.
-  func testBranchLabelDelegatesToTheSharedAccessor() {
-    let store = makeStore()
-    let sid = SidebarID.workroom(project: "/p", name: "feat")
-    store.workroomStatuses[sid] = WorkroomStatus(branchForCI: "feature/login")
-    let target = store.target(for: sid)!
-    XCTAssertEqual(store.branchLabel(for: target), store.branchName(for: sid))
-  }
-
-  /// The resolver's answer leads when it has one: it is force-refreshed the moment anything changes the
-  /// branch, whereas `branchForCI` waits for the status sweep's TTL. Without this the toolbar and the
-  /// status bar could show different names for the same workroom.
+  /// Changes header, the sidebar root row and the VCS toolbar — and `branchLabel(for:)` must stay a
+  /// thin wrapper over it. The resolver's answer leads when it has one: it is force-refreshed the
+  /// moment anything changes the branch, whereas `branchForCI` waits for the status sweep's TTL.
+  /// Without this the toolbar and the status bar could show different names for the same workroom.
   func testResolvedNameWinsOverTheStatusSweep() {
     let store = makeStore()
     let sid = SidebarID.workroom(project: "/p", name: "feat")

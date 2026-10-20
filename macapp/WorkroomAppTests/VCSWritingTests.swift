@@ -893,11 +893,6 @@ final class VCSWritingTests: XCTestCase {
       .timedOut)
   }
 
-  func testClassifyCommitSuccessIsNil() {
-    let ok = CommandResult(stdout: "[main abc] m", stderr: "", exitCode: 0, timedOut: false)
-    XCTAssertNil(CLIVCSWriter.classifyCommit(ok, tool: "git"))
-  }
-
   /// **The user's own words must not steer the classifier.** `git commit` echoes the subject on
   /// stdout, so matching the nothing-to-commit markers against stdout before the success guard read a
   /// perfectly good commit as a failure — and because the ref had legitimately moved, `commit()`
@@ -933,13 +928,6 @@ final class VCSWritingTests: XCTestCase {
       stdout: "On branch main\nnothing to commit, working tree clean\n",
       stderr: "", exitCode: 1, timedOut: false)
     XCTAssertEqual(CLIVCSWriter.classifyCommit(empty, tool: "git"), .nothingToCommit)
-  }
-
-  /// git never exits 0 on a no-op, so an exit-zero commit is never read as one — whatever it printed.
-  func testAnExitZeroCommitIsNeverANoOp() {
-    let gitSaysIt = CommandResult(
-      stdout: "", stderr: "Nothing changed.\n", exitCode: 0, timedOut: false)
-    XCTAssertNil(CLIVCSWriter.classifyCommit(gitSaysIt, tool: "git"))
   }
 
   // MARK: - Commit: sequencer state

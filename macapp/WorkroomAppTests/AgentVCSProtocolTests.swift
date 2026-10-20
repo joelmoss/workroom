@@ -321,6 +321,7 @@ final class AgentVCSProtocolTests: XCTestCase {
   func testTheAdvertisedExecVersionIsTheOneActuallySent() {
     let request = AgentExecRequest(
       executable: "git", args: [], dir: "/tmp", timeoutMs: 1000, stdin: nil, env: [:])
+    XCTAssertEqual(request.version, AgentVCSConnection.execVersion)
     XCTAssertEqual(request.version, 1)
     XCTAssertEqual(request.kind, "exec")
   }

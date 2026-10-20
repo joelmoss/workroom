@@ -22,19 +22,9 @@ final class AppShortcutReservationTests: XCTestCase {
 
   // MARK: Source Control (the new ones)
 
-  /// ⌥⇧⌘F = Fetch, ⌥⇧⌘P = Pull with Rebase. Three-modifier combinations fail every other branch in the
-  /// classifier, so they need their own — which is exactly the kind of gap that has bitten before.
-  func testSourceControlThreeModifierShortcutsAreReserved() {
-    XCTAssertTrue(reserved("f", [.command, .shift, .option]), "⌥⇧⌘F = Fetch")
-    XCTAssertTrue(reserved("p", [.command, .shift, .option]), "⌥⇧⌘P = Pull with Rebase")
-  }
-
-  /// ⇧⌘P = Push.
-  func testPushIsReserved() {
-    XCTAssertTrue(reserved("p", [.command, .shift]), "⇧⌘P = Push")
-  }
-
-  /// Every Source Control shortcut, checked against the menu's own declarations.
+  /// Every Source Control shortcut, checked against the menu's own declarations. The three-modifier
+  /// ones (Fetch, Pull with Rebase) fail every other branch in the classifier, so they need their
+  /// own — which is exactly the kind of gap that has bitten before.
   func testEverySourceControlShortcutIsReserved() {
     let menuShortcuts: [(String, NSEvent.ModifierFlags, String)] = [
       ("f", [.command, .shift, .option], "Fetch"),
@@ -58,7 +48,8 @@ final class AppShortcutReservationTests: XCTestCase {
   }
 
   func testExistingOptionCommandShortcutsStayReserved() {
-    // ⌥⌘I = Details: a focused TUI would otherwise swallow it.
+    // ⌥⌘I = Details: a focused TUI would otherwise swallow it. ⌥⌘N/⌥⌘O are the File-menu
+    // "…in Split" items (issue #163); ⌥⌘N was un-reserved with issue #118 and deliberately re-taken.
     for key in ["r", "i", "c", "f", "y", "p", "s", "b", "n", "o"] {
       XCTAssertTrue(reserved(key, [.command, .option]), "⌥⌘\(key.uppercased())")
     }
@@ -130,14 +121,6 @@ final class AppShortcutReservationTests: XCTestCase {
     XCTAssertFalse(reserved("c", .control), "⌃C must always reach the terminal")
     XCTAssertFalse(reserved("a", [.command, .shift]))
     XCTAssertFalse(reserved("x", [.command, .shift, .option]), "not a Source Control key")
-  }
-
-  /// ⌥⌘N/⌥⌘O are the File-menu "…in Split" items (issue #163). ⌥⌘N was previously the
-  /// Notifications inspector toggle and was un-reserved with issue #118; it is deliberately
-  /// re-taken here, which is why the old "must no longer be reserved" guard is gone.
-  func testSplitWorkroomShortcutsAreReserved() {
-    XCTAssertTrue(reserved("n", [.command, .option]), "⌥⌘N = New Workroom in Split")
-    XCTAssertTrue(reserved("o", [.command, .option]), "⌥⌘O = Open Workroom in Split")
   }
 
   func testEmptyCharactersAreNotReserved() {

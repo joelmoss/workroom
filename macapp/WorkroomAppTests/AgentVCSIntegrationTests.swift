@@ -564,6 +564,10 @@ final class AgentVCSIntegrationTests: XCTestCase {
 
   // MARK: - Writes (#205)
 
+  /// A live agent must actually ROUTE writes, not merely fail to refuse them. Paired with the
+  /// fallback tests below, which cover the refusal: together they pin the DECISION rather than the
+  /// capability number that currently encodes it. `localWriter` is the only writer wired and it
+  /// cannot throw `backendVersion`, so the commit is the agent's own child process or nothing.
   func testGitCommitRoutesThroughTheAgentAndMatchesNativeReads() async throws {
     let root = try gitRepo()
     try "second\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
@@ -752,34 +756,6 @@ final class AgentVCSIntegrationTests: XCTestCase {
     } catch {
       XCTAssertEqual(error as? HostConnectionError, .connectionLost, "got \(error)")
     }
-  }
-
-  /// A live agent must actually ROUTE writes, not merely fail to refuse them. Paired with the two
-  /// fallback tests above, which cover the refusal: together they pin the DECISION rather than the
-  /// capability number that currently encodes it, so replacing that number with an exec-service
-  /// check does not invalidate this.
-  ///
-  /// `localWriter` is the only writer wired and it cannot throw `backendVersion`, so a fallback here
-  /// is impossible — the commit below is the agent's own child process or nothing.
-  func testACapableAgentRoutesWritesThroughTheAgentRatherThanFallingBack() async throws {
-    let root = try gitRepo()
-    try "second\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    let connection = try await connect()
-    let location = try await RepositoryLocation.local(root.path)
-    let router = RepositoryRouter(
-      localReader: { try connection.reader(context: $0) },
-      localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
-    try router.register(.init(location: location, sharedLocation: location))
-
-    let result = await (try await router.writer(for: location)).commit(
-      request: VCSCommitRequest(
-        message: "agent-routed commit",
-        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)], mode: .commit))
-    guard case .ok = result else { return XCTFail("agent-routed commit failed: \(result)") }
-
-    let log = try run("git", ["log", "-1", "--format=%s"], at: root)
-    XCTAssertEqual(log.trimmingCharacters(in: .whitespacesAndNewlines), "agent-routed commit")
-    await connection.close()
   }
 
   /// The write path's transport-failure mapping, end to end through the real client: a write whose

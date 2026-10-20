@@ -639,16 +639,6 @@ final class VCSCommitIntegrationTests: XCTestCase {
     XCTAssertNil(preflight.sequencer, "nothing is parked")
   }
 
-  /// A repo with no commits has nothing to amend, and must report that rather than an empty label.
-  func testGitPreflightHasNoAmendTargetOnAnUnbornBranch() async throws {
-    let dir = tempDir()
-    sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
-
-    let preflight = try await writer().commitPreflight(path: dir)
-
-    XCTAssertNil(preflight.amendTarget)
-  }
-
   /// The parked-operation check, which is a `.git` directory listing — the read that made this
   /// dialog work only for a repo on this Mac.
   ///

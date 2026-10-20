@@ -30,6 +30,8 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertEqual(SessionBackend.swiftDaemon.binaryName, "workroom-session")
   }
 
+  /// The property the whole migration rests on: a session created by one helper is never reachable
+  /// through the other, so a draining daemon and a running agent can't fight over one socket.
   func testSocketPathsDifferPerBackend() throws {
     let daemon = try PersistentSessionPaths.preferredSocketPath(backend: .swiftDaemon)
     let agent = try PersistentSessionPaths.preferredSocketPath(backend: .rustAgent)
@@ -76,19 +78,6 @@ final class SessionBackendTests: XCTestCase {
   }
 
   // MARK: - The migration
-
-  /// The property the whole migration rests on: the two helpers use different socket files, so a
-  /// session created by one is never reachable through the other. If these ever matched, a
-  /// draining daemon and a running agent would fight over one socket — and the user would see
-  /// terminals stealing each other's input rather than a clean error.
-  func testTheTwoHelpersCanNeverMeet() throws {
-    let daemon = try PersistentSessionPaths.preferredSocketPath(backend: .swiftDaemon)
-    let agent = try PersistentSessionPaths.preferredSocketPath(backend: .rustAgent)
-    XCTAssertNotEqual(daemon, agent)
-    XCTAssertNotEqual(
-      try PersistentSessionPaths.fallbackSocketPath(backend: .swiftDaemon),
-      try PersistentSessionPaths.fallbackSocketPath(backend: .rustAgent))
-  }
 
   /// Nothing persists a backend choice. A stored one would go stale the moment a daemon exited or
   /// an upgrade landed, and would send the app to a helper that is not holding the session.

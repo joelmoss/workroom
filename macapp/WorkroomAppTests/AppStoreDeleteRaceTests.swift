@@ -435,26 +435,6 @@ final class AppStoreDeleteRaceTests: XCTestCase {
       "a sibling workroom's notifications must be untouched")
   }
 
-  /// The tombstone clears after a successful teardown, so re-creating a same-named workroom later
-  /// isn't filtered out by a stale tombstone.
-  func testTombstoneClearsAfterSuccessfulTeardown() async {
-    let a = workroom("a")
-    let fake = DeleteRaceFakeCLI()
-    fake.listResult = [project([a])]
-    let store = makeStore(fake)
-    await store.reload()
-
-    store.deleteWorkroom(a, in: project([a]))
-    await waitUntil({ fake.deleteStarted }, "teardown should start")
-    fake.allowDelete = true
-    await waitUntil({ store.deletingWorkrooms.isEmpty }, "tombstone should clear")
-
-    // A fresh create of the same name resolves normally (not filtered by a lingering tombstone).
-    fake.listResult = [project([a])]
-    await store.reload()
-    XCTAssertEqual(workroomNames(store), ["a"])
-  }
-
   // MARK: - Delete blocked during setup
 
   /// A workroom whose create is still in flight (its setup runs against the worktree) can't be

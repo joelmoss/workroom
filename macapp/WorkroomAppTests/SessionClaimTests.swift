@@ -231,7 +231,10 @@ final class SessionClaimTests: XCTestCase {
     XCTAssertTrue(WindowSeed.launch.isLaunch)
     XCTAssertTrue(WindowSeed.launch.restore)
 
-    let sibling = WindowSeed.restoring(key: UUID())
+    // A sibling is opened keyed on the session it will claim, so the two cannot drift apart.
+    let key = UUID()
+    let sibling = WindowSeed.restoring(key: key)
+    XCTAssertEqual(sibling.id, key)
     XCTAssertFalse(sibling.isLaunch, "a restored sibling must not run the What's-New check")
     XCTAssertTrue(sibling.restore, "but it must still be allowed to claim its session")
 
@@ -240,7 +243,6 @@ final class SessionClaimTests: XCTestCase {
     XCTAssertFalse(newWindow.restore, "⌘N always opens blank")
   }
 
-  /// A sibling is opened keyed on the session it will claim, so the two cannot drift apart.
   // MARK: The abandoned restore
 
   /// **CRITICAL REGRESSION.** A restore that never completes must FREEZE saving, not resume it.
@@ -286,10 +288,5 @@ final class SessionClaimTests: XCTestCase {
     pump(0.4)
     XCTAssertFalse(
       store.sessionCoordinator.isFrozen, "a completed restore must leave saving working")
-  }
-
-  func testRestoringSeedCarriesTheSessionKey() {
-    let key = UUID()
-    XCTAssertEqual(WindowSeed.restoring(key: key).id, key)
   }
 }

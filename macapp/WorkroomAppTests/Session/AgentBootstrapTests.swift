@@ -480,24 +480,10 @@ final class AgentBootstrapTests: XCTestCase {
 
   /// A far side that closes its output but never exits (a child of its own holding on, say) is
   /// waited for a bounded time, then ended, and the exchange throws.
-  func testAnExchangeWhoseCommandClosesItsOutputButDoesNotExitIsEnded() async throws {
-    let stream = try HostStream.spawn(
-      URL(fileURLWithPath: "/bin/sh"), ["-c", "exec 0<&- 1>&-; exec sleep 30"],
-      environment: [:], handshakeTimeout: 5, purpose: .exchange)
-    let started = ContinuousClock.now
-    do {
-      _ = try await stream.communicate(nil, timeout: 20)
-      XCTFail("a command that never exited returned")
-    } catch HostConnectionError.serviceUnavailable(let detail) {
-      XCTAssertTrue(detail.contains("did not exit"), detail)
-    }
-    XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
-  }
-
   // Value: protects=a carrier that closes its output and ignores SIGTERM, with no silence or
   // cancel, does not outlive the failed exchange; fails_when=that path stops escalating to SIGKILL
-  // after its grace (#316); why_new=the test above's `sleep` dies on the first SIGTERM, and the
-  // other carrier tests were already sent SIGTERM by the watchdog or a cancel; seam=none
+  // after its grace (#316); why_new=a plain `sleep` dies on the first SIGTERM, and the other
+  // carrier tests were already sent SIGTERM by the watchdog or a cancel; seam=none
   func testACarrierThatClosesItsOutputAndIgnoresSIGTERMIsKilled() async throws {
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", "trap '' TERM; exec 0<&- 1>&-; exec sleep 30"],

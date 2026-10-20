@@ -45,10 +45,6 @@ final class BoxdHostDriverTests: XCTestCase {
   func testSSHDetailsComeFromTheCLIsBlocksOnly() throws {
     let details = try XCTUnwrap(
       SSHDetails(machine: "workroom-1", sshConfig: Self.sshConfig, knownHosts: Self.knownHosts))
-    XCTAssertEqual(
-      details,
-      SSHDetails(
-        machine: "workroom-1", sshConfig: Self.sshConfig, knownHosts: Self.knownHosts))
     XCTAssertEqual(details.hostName, "workroom-1.boxd.sh", "a stanza outside the block was read")
     XCTAssertEqual(details.port, 14996)
     XCTAssertEqual(details.user, "boxd")

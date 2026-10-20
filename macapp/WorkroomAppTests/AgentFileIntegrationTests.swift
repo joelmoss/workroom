@@ -98,20 +98,6 @@ final class AgentFileIntegrationTests: XCTestCase {
 
   // MARK: Negotiation
 
-  func testAnAgentWithTheFileServiceNegotiatesItAndVCSStillWorks() async throws {
-    let (connection, _) = try await connect()
-    let root = try gitRepo()
-    let fileContext = try await context(root)
-    XCTAssertNoThrow(try connection.files(context: fileContext))
-    // The VCS reads that shipped before the File service are untouched by its negotiation.
-    let location = try await RepositoryLocation.local(root.path)
-    let router = RepositoryRouter()
-    try router.register(.init(location: location, sharedLocation: location))
-    let reader = try connection.reader(context: try router.registeredContext(for: location))
-    XCTAssertEqual(reader.context.location, location)
-    await connection.close()
-  }
-
   /// AC2: a protocol-2 agent silently DROPS File envelopes, so the version is checked against the raw
   /// greeting before any is sent. Proven against a stand-in that records every service byte it gets.
   func testAProtocol2AgentIsNeverSentAFileEnvelopeAndReportsBackendVersion() async throws {

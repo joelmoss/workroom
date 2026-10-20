@@ -25,13 +25,6 @@ final class CodingAgentRunnerTests: XCTestCase {
       ])
   }
 
-  func testClaudeInlinePromptIsTrailingPositional() {
-    let inv = CodingAgentInvocationBuilder.claudeInline(prompt: "the prompt")
-    XCTAssertEqual(inv.arguments.last, "the prompt")
-    // No flag may follow the prompt (it must be the final positional).
-    XCTAssertFalse(inv.arguments.dropLast().contains("the prompt"))
-  }
-
   func testClaudeInlineInjectsSystemPrompt() {
     let inv = CodingAgentInvocationBuilder.claudeInline(systemPrompt: "be terse", prompt: "p")
     // --system-prompt <value> appears immediately before the trailing prompt positional.
