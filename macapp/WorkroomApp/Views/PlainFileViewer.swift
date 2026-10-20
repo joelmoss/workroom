@@ -112,7 +112,7 @@ struct PlainFileViewer: View {
       // search runs against what's actually on screen.
       .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
       // Toggling Source/Preview swaps which branch of `fileBody` exists, so returning to Preview
-      // builds a fresh `WKWebView` that boots from scratch — the loader has to come back with it.
+      // builds a new preview, which has a render to wait for — the loader has to come back with it.
       .onChange(of: showingPreview) { _, preview in if preview { previewRendered = false } }
   }
 
