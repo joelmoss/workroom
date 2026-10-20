@@ -146,13 +146,16 @@ public struct ThemeTokens {
     nsAccent = accentColor
     accentSoft = Color(nsColor: accentColor.withAlphaComponent(0.10))
     accentForeground = Color(nsColor: Self.contrastingForeground(for: accentColor))
-    // The traffic-light colours are the theme's own, walked toward fg until each clears 3:1 on every
-    // themed surface: as defined, 70 of them across 35 bundled families were under it, mostly
-    // yellows on light themes.
+    // The traffic-light colours are the theme's own, darkened (or lightened on a dark theme) until
+    // each clears 3:1 on every themed surface: as defined, 70 of them across 35 bundled families
+    // were under it, mostly yellows on light themes. Toward black or white, not fg: a tinted fg
+    // pulls the hue with it (iTerm2 Solarized Light's grey-teal turned its warning into its green).
     let statusGrounds = Self.statusGrounds(
       bg: bgColor, panel: panelColor, fg: fgColor, accent: accentColor)
+    let statusTarget: NSColor =
+      Self.luminance(of: fgColor) > Self.luminance(of: bgColor) ? .white : .black
     func status(_ color: NSColor) -> NSColor {
-      Self.legible(color, on: statusGrounds, towards: fgColor)
+      Self.legible(color, on: statusGrounds, towards: statusTarget)
     }
     // Some themes put a non-yellow in slot 3 (Night Owl's is lime, next to its green "added"), which
     // makes a warning read as fine; their bright yellow (slot 11) usually is one.
