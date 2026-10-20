@@ -229,6 +229,14 @@ red-proof: ## Prove a unit test goes red without a line: FILE= PATTERN= [REPLACE
 	@bash macapp/Scripts/red-proof.sh "$$FILE" "$$PATTERN" "$${REPLACE-}" '^Tests: Failed' -- \
 	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/$$TEST"
 
+# Times the Markdown preview end to end on the real MarkdownWebView (MarkdownPreviewBenchmarkTests):
+# fresh opens, re-renders, mermaid, a theme switch and WebContent memory. Serial, and it puts a
+# window on screen while it runs, since WebKit paints nothing it isn't displaying. Prints a table and
+# writes JSON to BENCH_OUT, by default a timestamped file in macapp/DerivedData/Benchmarks.
+app-bench-markdown: ## Benchmark the Markdown preview (shows a window while it runs) [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/MarkdownPreviewBenchmarkTests"
+
 # Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock.
 # CI, nightly and release run it beside `make app-test`. Each package resolves first, up to three
 # times: SyntaxHighlighting clones 16 grammars, and a github.com blip would otherwise fail a release
