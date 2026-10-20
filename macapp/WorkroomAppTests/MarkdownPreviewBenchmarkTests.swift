@@ -68,14 +68,22 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
 
     for doc in docs {
       var opens: [Double] = []
+      var wholes: [Double] = []
       var webView: WKWebView!
       for _ in 0..<Self.samples {
         let opened = try await open(doc.source, tokens: light)
         opens.append(opened.elapsed)
+        // A long document paints its first screens before the rest is in the page.
+        // (`__renderComplete` is undefined before progressive rendering, and awaits as done.)
+        let rest = ContinuousClock.now
+        _ = try await opened.webView.callAsyncJavaScript(
+          "await window.__renderComplete; return 0", arguments: [:], contentWorld: .page)
+        wholes.append(opened.elapsed + Self.milliseconds(since: rest))
         webView = opened.webView
       }
       try await assertRenderedWhole(webView, doc.source)
       record("open (preview created → painted)", doc.name, opens)
+      record("open → whole document in page", doc.name, wholes)
 
       // A loaded page given new source, as when the file changes on disk: the production
       // `__render` plus the same double animation frame the coordinator waits on.

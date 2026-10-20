@@ -84,31 +84,84 @@ function loadPele() {
   return peleLoad;
 }
 
+// A document opened into an empty page shows its first screens first: that much goes in, the page
+// paints, and the rest follows a slice at a time, each after the previous one painted, so a long file
+// is on screen in a fraction of the time it takes to lay all of it out. A re-render (the open file
+// changed) replaces the content in one go, so the reader's scroll position never sees a half-built
+// page. Sizes are in characters of text: the first slice fills a tall pane twice over.
+const FIRST_SLICE_CHARS = 6000;
+const LATER_SLICE_CHARS = 30000;
+let renderGeneration = 0;
+// Resolves once the whole of the latest document is in the page (the benchmark waits on it).
+window.__renderComplete = Promise.resolve();
+
 function renderMarkdown(source) {
+  const generation = ++renderGeneration;
   const dirty = marked.parse(source);
   // Untrusted Markdown can embed raw HTML; strip anything executable before it touches the DOM.
+  // Returned as nodes rather than a string, so the page doesn't parse the HTML a second time.
   const clean = DOMPurify.sanitize(dirty, {
     USE_PROFILES: { html: true }, // HTML only — drop user-authored SVG/MathML (Pele emits its own)
     ADD_TAGS: ["input"], // GitHub-style task-list checkboxes
     ADD_ATTR: ["target"],
+    RETURN_DOM_FRAGMENT: true,
   });
   const root = document.getElementById("content");
-  root.innerHTML = clean;
-  promoteMermaidBlocks(root);
-  renderMermaid(root);
+  if (root.firstChild !== null) {
+    root.replaceChildren(clean);
+    renderMermaid(promoteMermaidBlocks(root));
+    window.__renderComplete = Promise.resolve();
+    return;
+  }
+  window.__renderComplete = new Promise((resolve) => {
+    const step = (chars) => {
+      if (generation !== renderGeneration) return resolve();  // a newer render took over
+      const slice = takeSlice(clean, chars);
+      root.append(slice);
+      renderMermaid(promoteMermaidBlocks(root));
+      if (clean.firstChild === null) return resolve();
+      afterPaint(() => step(LATER_SLICE_CHARS));
+    };
+    step(FIRST_SLICE_CHARS);
+  });
+}
+
+/// The leading top-level nodes of `fragment`, moved out, up to about `chars` characters of text.
+function takeSlice(fragment, chars) {
+  const slice = document.createDocumentFragment();
+  let taken = 0;
+  while (fragment.firstChild !== null && taken < chars) {
+    taken += fragment.firstChild.textContent.length;
+    slice.append(fragment.firstChild);
+  }
+  return slice;
+}
+
+/// Runs `next` once the frame now pending has painted. WebKit runs no animation frames for a view it
+/// isn't displaying, so a timer stands in after 100 ms; whichever comes first wins.
+function afterPaint(next) {
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    next();
+  };
+  requestAnimationFrame(() => setTimeout(run, 0));
+  setTimeout(run, 100);
 }
 
 // marked emits a ```mermaid fence as <pre><code class="language-mermaid">…</code></pre>; rewrite each
-// as a bare <pre class="mermaid"> holding the diagram source. The original text is read from
-// textContent (inert text, not markup), and renderMermaid sanitizes the SVG drawn from it.
+// as a bare <pre class="mermaid"> holding the diagram source, and return the new blocks. The original
+// text is read from textContent (inert text, not markup), and renderMermaid sanitizes the SVG drawn
+// from it.
 function promoteMermaidBlocks(root) {
-  const codes = root.querySelectorAll("code.language-mermaid");
-  codes.forEach((code) => {
+  return [...root.querySelectorAll("code.language-mermaid")].map((code) => {
     const pre = code.closest("pre") || code;
     const holder = document.createElement("pre");
     holder.className = "mermaid";
     holder.textContent = code.textContent;
     pre.replaceWith(holder);
+    return holder;
   });
 }
 
@@ -120,8 +173,7 @@ function promoteMermaidBlocks(root) {
 // independently, so one bad diagram is left showing its source text and can't blank the document.
 const DIAGRAM_FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
 let diagramSeq = 0;
-async function renderMermaid(root) {
-  const holders = root.querySelectorAll("pre.mermaid");
+async function renderMermaid(holders) {
   if (holders.length === 0) return;  // the common case: no diagrams, so Pele is never fetched
   if (!(await loadPele())) return;  // engine unavailable — leave every block's source text
   holders.forEach((holder) => {
