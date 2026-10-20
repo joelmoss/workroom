@@ -143,6 +143,23 @@ final class CreationPanePresentationTests: XCTestCase {
 
   // MARK: Failure footer
 
+  /// Value: protects=a failure's notice sits under the step it is about (owner); fails_when=it goes
+  /// under a step that didn't fail, or past a failed step to a waiting one; no_claim=the drawing
+  func testTheNoticeGoesUnderTheFailedOrWaitingStep() {
+    func step(_ id: String, _ state: CreationStep.State) -> CreationStep {
+      CreationStep(id: id, title: id, state: state)
+    }
+    XCTAssertEqual(
+      P.noticeStep(in: [step("a", .done), step("b", .failed), step("c", .skipped(reason: nil))]),
+      "b")
+    XCTAssertEqual(
+      P.noticeStep(in: [step("a", .done), step("script", .waitingForUser), step("c", .pending)]),
+      "script")
+    XCTAssertEqual(
+      P.noticeStep(in: [step("a", .failed), step("b", .waitingForUser)]), "a")
+    XCTAssertNil(P.noticeStep(in: [step("a", .done), step("b", .skipped(reason: nil))]))
+  }
+
   /// Value: protects=a failed setup script's footer says "setup script failed" once, with the CLI's
   /// own message (`errs.ErrSetup`, as in testdata/contracts/create-setup-failed.json); fails_when=the
   /// footer repeats it; no_claim=the footer's drawing

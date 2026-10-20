@@ -3,8 +3,8 @@ import DesignSystem
 import SwiftUI
 
 /// A create's pane (#483): a GitHub Actions-style checklist of the steps its kind runs, each with its
-/// time and its log one click away, and a footer with what to do next on failure, or Done on
-/// success. Shown bare, with no title bar, tab bar or footer, from the click until the run ends
+/// time and its log one click away, what to do next on failure under the step that failed, and
+/// Done in a footer on success. Shown bare, with no title bar, tab bar or footer, from the click until the run ends
 /// (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
 ///
 /// Layout (design D4): one continuous `panel` surface, a leading column at most 640pt wide holding the
@@ -20,6 +20,7 @@ struct CreationPane: View {
   /// The header's and each row's height: what the open log leaves room for (D9).
   @State private var headerHeight: CGFloat = 0
   @State private var rowHeights: [String: CGFloat] = [:]
+  @State private var noticeHeight: CGFloat = 0
   private let theme = ThemeService.shared
 
   private typealias P = CreationPanePresentation
@@ -37,12 +38,7 @@ struct CreationPane: View {
       let narrow = geo.size.width < Self.narrowWidth
       VStack(spacing: 0) {
         checklist(inset: narrow ? 16 : 32)
-        if let footer = P.footer(for: run.outcome) {
-          CreationFailureFooter(footer: footer, narrow: narrow, inset: narrow ? 16 : 32) {
-            perform($0)
-          }
-          .transition(.move(edge: .bottom))
-        } else if run.outcome == .succeeded {
+        if run.outcome == .succeeded {
           CreationDoneFooter(inset: narrow ? 16 : 32) { store.finishCreation(run) }
             .transition(.move(edge: .bottom))
         }
@@ -64,11 +60,14 @@ struct CreationPane: View {
     GeometryReader { geo in
       // A ScrollView offers its content unlimited height, so the column's height is worked out here
       // (D9): the pane's, with the log taking what the header and rows leave.
+      let footer = P.footer(for: run.outcome)
       let logHeight = P.openLogHeight(
         pane: geo.size.height - 2 * inset,
         fixed: headerHeight + run.steps.compactMap { rowHeights[$0.id] }.reduce(0, +)
-          + Self.logPadding * 2,
+          + (footer == nil ? 0 : noticeHeight) + Self.logPadding * 2,
         logContent: logContentHeight, minimum: Self.minimumLogHeight)
+      // A failure's notice goes under its step's row (owner), above that step's open log.
+      let noticeStep = P.noticeStep(in: run.steps) ?? run.steps.last?.id
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           header.padding(.bottom, 20)
@@ -84,6 +83,16 @@ struct CreationPane: View {
               } action: {
                 rowHeights[step.id] = $0
               }
+            if let footer, noticeStep == step.id {
+              CreationFailureNotice(footer: footer) { perform($0) }
+                .padding(.leading, CreationStepRow.titleInset)
+                .padding(.vertical, 6)
+                .onGeometryChange(for: CGFloat.self) {
+                  $0.size.height
+                } action: {
+                  noticeHeight = $0
+                }
+            }
             if expanded == step.id {
               CreationLogView(lines: P.log(of: step), onContentHeight: { logContentHeight = $0 })
                 .id(step.id)
@@ -420,80 +429,43 @@ private struct CreationLogView: View {
   }
 }
 
-/// The failure footer (design D3), pinned to the pane's bottom edge: the reason in red on the left,
-/// in full and selectable, the buttons on the right. In a narrow pane (D15) the reason takes its own
-/// lines, with the buttons below it.
-private struct CreationFailureFooter: View {
+/// What to do about a failed create, or a script to approve, under the row of the step it is about
+/// (owner): the reason first, then the buttons, then any output (the script), so the buttons never
+/// sit below something long to read.
+private struct CreationFailureNotice: View {
   let footer: CreationPanePresentation.Footer
-  let narrow: Bool
-  let inset: CGFloat
   let perform: (CreationPanePresentation.Action) -> Void
-  /// The reason's height as laid out, which its scroll view is, up to `maxReasonHeight`.
-  @State private var reasonHeight: CGFloat = 0
   private let theme = ThemeService.shared
 
   var body: some View {
-    VStack(spacing: 0) {
-      Divider()
-      Group {
-        if narrow {
-          VStack(alignment: .leading, spacing: 10) {
-            reason
-            HStack {
-              Spacer()
-              buttons
-            }
-          }
-        } else {
-          HStack(spacing: 12) {
-            reason
-            Spacer(minLength: 8)
-            buttons
-          }
-        }
-      }
-      .padding(.horizontal, inset)
-      .padding(.vertical, 12)
-    }
-    .background(theme.tokens.panel)
-  }
-
-  /// Wrapped, never truncated (owner): a reason cut short behind a tooltip hid the part that said
-  /// why. One taller than `maxReasonHeight` (a failed command's whole output) scrolls, so it never
-  /// pushes the buttons out of the pane.
-  private var reason: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 8) {
-        Text(footer.reason)
-          .font(.callout)
-          .foregroundStyle(theme.tokens.failure)
-          .fixedSize(horizontal: false, vertical: true)
-        // A script to approve (#363), as it would run.
-        if let script = footer.script {
+    VStack(alignment: .leading, spacing: 10) {
+      // Wrapped, never truncated (owner): a reason cut short behind a tooltip hid the part that
+      // said why.
+      Text(footer.reason)
+        .font(.callout)
+        .foregroundStyle(theme.tokens.failure)
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
+      buttons
+      // A script to approve (#363), as it would run. A long one scrolls.
+      if let script = footer.script {
+        ScrollView {
           Text(script)
             .font(.system(.caption, design: .monospaced))
-            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
-            .accessibilityIdentifier("CreationPane.script")
         }
-      }
-      .textSelection(.enabled)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .onGeometryChange(for: CGFloat.self) {
-        $0.size.height
-      } action: {
-        reasonHeight = $0
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: Self.maxScriptHeight)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
+        .accessibilityIdentifier("CreationPane.script")
       }
     }
-    .scrollBounceBehavior(.basedOnSize)
-    .frame(
-      height: min(
-        reasonHeight, footer.script == nil ? Self.maxReasonHeight : Self.maxScriptHeight))
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private static let maxReasonHeight: CGFloat = 120
   /// Room to read a script before approving it; a longer one scrolls.
   private static let maxScriptHeight: CGFloat = 240
 

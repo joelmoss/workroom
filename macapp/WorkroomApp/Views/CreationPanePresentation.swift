@@ -150,6 +150,12 @@ enum CreationPanePresentation {
     var returnAction: Action? { primary == .approveScript ? nil : primary }
   }
 
+  /// The row a failure's notice goes under: the step that failed, or the one waiting on the user (a
+  /// script to approve). Nil when no step is either, and the notice follows the last row.
+  static func noticeStep(in steps: [CreationStep]) -> String? {
+    (steps.first { $0.state == .failed } ?? steps.first { $0.state == .waitingForUser })?.id
+  }
+
   /// The footer a run's outcome shows, or nil while it runs or once it has ended well.
   static func footer(for outcome: CreationOutcome) -> Footer? {
     switch outcome {
