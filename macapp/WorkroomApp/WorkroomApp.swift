@@ -374,6 +374,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     SwitcherPanelController.shared.prepare()
     SwitcherPanelController.shared.attach(to: .shared)
 
+    // Boot a Markdown preview page now, so the first preview doesn't wait 0.4–0.9 s for WebKit to
+    // spawn its content process and load the template.
+    MarkdownWebViewPool.shared.prewarm()
+
     // Save the session whenever the app goes to the background (issue #46). Belt and braces on top
     // of the coalesced writes: ⌘-tabbing away is the most common moment a user leaves a layout they
     // would hate to lose, and it costs nothing when nothing changed (the coordinator compares the
