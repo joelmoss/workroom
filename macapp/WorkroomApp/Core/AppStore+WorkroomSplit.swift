@@ -355,11 +355,11 @@ extension AppStore {
     let survivor = workroomSplits[index].removingLeaf(sid)?.firstTabID
     let axis = workroomSplits[index].axis(around: sid)
     detachFromSplitGroup(sid)
-    // The survivors' dividers still budget space for the pane that just left — `A | (B / C)` at
-    // root 1/3 collapses to `A | B` still at 1/3 — so even them (issue #126), along the axis the
-    // member left only, so no other direction moves. Plain `equalized`,
-    // not the pruning variant: `survivor` was chosen above and a prune-driven dissolve here would
-    // strand the selection on it. Indices shift when a group dissolves, so re-derive.
+    // The survivors' dividers still budget space for the pane that just left — `A | B | C` at root
+    // 1/3 collapses to `A | B` still at 1/3 — so even them (issue #126), along the axis the member
+    // left only: dividers running the other way stay put. Plain `equalized`, not the pruning
+    // variant: `survivor` was chosen above and a prune-driven dissolve here would strand the
+    // selection on it. Indices shift when a group dissolves, so re-derive.
     if autoEvenSplits(), let survivor, let index = splitIndex(containing: survivor) {
       workroomSplits[index] = PaneTreeLayout.evenedIfHonourable(
         workroomSplits[index], in: workroomPaneSpace, enabled: true, along: axis)

@@ -104,8 +104,9 @@ extension Defaults.Keys {
 
   /// Re-even a split's dividers whenever a pane is added to or removed from it (issue #126). On by
   /// default: a third pane otherwise lands at a quarter width, and removing one leaves the survivors
-  /// budgeted for a pane that's gone. Off keeps every divider where it is; View ▸ Resize Splits
-  /// Evenly stays available either way.
+  /// budgeted for a pane that's gone. Only dividers along the axis of the pane that joined or left
+  /// move. Off keeps every divider where it is; View ▸ Resize Splits Evenly stays available either
+  /// way.
   static let autoResizeSplitsEvenly = Key<Bool>(
     "autoResizeSplitsEvenly", default: true, suite: .app)
 

@@ -425,11 +425,13 @@ private struct AppearanceSettingsPane: View {
         .accessibilityIdentifier("settings.control.dimUnfocusedPanes")
 
       // Auto-even splits (issue #126): a third pane otherwise lands at a quarter width, and removing
-      // one leaves the survivors budgeted for a pane that's gone. Off keeps every divider put.
+      // one leaves the survivors budgeted for a pane that's gone. Only the dividers running the same
+      // way as that pane move. Off keeps every divider put.
       Toggle("Resize splits evenly automatically", isOn: $autoResizeSplitsEvenly)
         .help(
-          "Even out the dividers whenever a pane is added to or removed from a split. Off leaves "
-            + "them where they are; View ▸ Resize Splits Evenly still works either way."
+          "Even out the dividers whenever a pane is added to or removed from a split, only those "
+            + "running the same way as that pane. Off leaves them where they are; View ▸ Resize "
+            + "Splits Evenly still works either way."
         )
         .accessibilityIdentifier("settings.control.autoResizeSplitsEvenly")
 
