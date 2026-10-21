@@ -396,6 +396,39 @@ func TestCreateStartLocalGatesAScriptOnlyTheUnpushedCommitHas(t *testing.T) {
 	}
 }
 
+// Value: protects=including changes judges the edited setup script that will run, not the committed
+// one, before anything exists, so the app can ask for approval and Approve covers what runs;
+// fails_when=the committed (approved) copy is judged and the edited one is refused only after the
+// workroom exists, or runs unapproved; why_new=PR #520 review (Codex); seam=none;
+// no_claim=the app's sheet
+func TestIncludingChangesJudgesTheEditedSetupScriptFirst(t *testing.T) {
+	home, project := originProject(t)
+	commitScript(t, project, "workroom_setup", "echo hi\n")
+	run(t, project, "git", "push", "-q", "origin", "main")
+	approveForTest(t, project, "workroom_setup", "#!/bin/sh\necho hi\n")
+	marker := filepath.Join(home, "ran")
+	writeScriptFile(t, project, "workroom_setup", "#!/bin/sh\ntouch "+marker+"\n")
+
+	r := runCLI(t, "create", "--json", "--no-editor", "--start", "local-with-changes", "--project", project)
+	env := decodeUntrusted(t, r.stdout)
+	if r.code != 3 || env.Error.Kind != "ScriptNotTrusted" || env.Created != nil ||
+		env.Script.Text != "#!/bin/sh\ntouch "+marker+"\n" {
+		t.Fatalf("exit %d, want the edited script refused before creating: %s %s", r.code, r.stdout, r.stderr)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(home, "workrooms")); len(entries) != 0 {
+		t.Fatalf("workrooms dir has %v, want nothing created", entries)
+	}
+
+	// Approving the bytes shown lets the same create through, running the edited script.
+	approveForTest(t, project, "workroom_setup", "#!/bin/sh\ntouch "+marker+"\n")
+	if r = runCLI(t, "create", "--json", "--no-editor", "--start", "local-with-changes", "--project", project); r.code != 0 {
+		t.Fatalf("after approving: exit %d: %s %s", r.code, r.stdout, r.stderr)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the approved edited script didn't run: %v", err)
+	}
+}
+
 // Value: protects=the app decodes trust status's local_work, so a remote create's notice appears;
 // fails_when=the "local_work" key or any of its fields is renamed or dropped in the JSON;
 // why_new=TestTrustStatusReportsTheLocalWork reads the Go struct, not the shape the app decodes;
