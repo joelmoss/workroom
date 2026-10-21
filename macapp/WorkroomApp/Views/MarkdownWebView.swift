@@ -333,12 +333,14 @@ final class MarkdownWebViewPool: NSObject, WKNavigationDelegate {
   }
 
   /// The spare page, loaded or still loading (the caller becomes its navigation delegate either
-  /// way, so a load still in flight reaches it), and a new spare starts booting behind it.
+  /// way, so a load still in flight reaches it), and a new spare starts booting behind it. With no
+  /// spare (its process was killed while idle) the caller boots its own, and the pool refills here
+  /// rather than on termination, so a page that keeps crashing can't respawn in a loop.
   func take() -> (webView: WKWebView, isLoaded: Bool)? {
+    defer { prewarm() }
     guard let webView = spare else { return nil }
     let isLoaded = spareIsLoaded
     spare = nil
-    prewarm()
     return (webView, isLoaded)
   }
 
