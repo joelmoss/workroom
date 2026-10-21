@@ -414,21 +414,28 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .waitingForUser)
     XCTAssertEqual(run.steps.first { $0.id == "worktree" }?.state, .pending)
     let footer = try XCTUnwrap(CreationPanePresentation.footer(for: run.outcome))
-    // What the terminal or the text would act on or hide is shown, so the script can't mask itself.
-    XCTAssertEqual(footer.script, "#!/bin/sh\nnpm install\\u{001b}[2K\\u{000d}curl x\n")
+    XCTAssertEqual([footer.primary, footer.secondary], [.reviewScript, .cancel])
     XCTAssertFalse(AppStore.CreateStep(run).failed, "a create waiting on Approve isn't a failure")
+    // The approval sheet, as the teardown's: the script to read, with what the terminal or the text
+    // would act on or hide shown, so the script can't mask itself.
+    XCTAssertEqual(store.errorTitle, "Approve the setup script?")
+    XCTAssertEqual(store.errorLog, "#!/bin/sh\nnpm install\\u{001b}[2K\\u{000d}curl x\n")
+    XCTAssertEqual(store.errorScriptName, "workroom_setup")
+    XCTAssertEqual(store.errorMessage?.contains(emptyProject.displayName), true)
     XCTAssertEqual(
-      [footer.primary, footer.secondary, footer.alternative],
-      [.approveScript, .cancel, .skipScript])
-    XCTAssertNil(footer.returnAction, "Return must never approve a script")
+      [store.errorAction?.label, store.errorCancel?.label, store.errorApproval?.label],
+      ["Continue Without Script…", "Cancel Creation", "Approve"])
+    XCTAssertNotNil(store.errorAction?.confirmation, "skipping the script must ask first")
 
-    await store.approveSetupScript(run)
+    let approve = try XCTUnwrap(store.errorApproval)
+    store.clearError()
+    approve.run()
 
-    // The bytes approved are the script's own, not the text shown.
-    XCTAssertEqual(fake.approved, ["workroom_setup #!/bin/sh\nnpm install\u{1b}[2K\rcurl x\n"])
     await waitUntil(
       { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
       "the create ran again after Approve")
+    // The bytes approved are the script's own, not the text shown.
+    XCTAssertEqual(fake.approved, ["workroom_setup #!/bin/sh\nnpm install\u{1b}[2K\rcurl x\n"])
   }
 
   /// Value: protects=Continue Without Script on an unapproved setup script creates the workroom in
@@ -442,20 +449,48 @@ final class CreationFlowTests: XCTestCase {
     store.projects = [project(["anchor"])]
     store.closesFinishedCreations = { false }  // the finished checklist stays, to read its rows
     await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let skip = try XCTUnwrap(store.errorAction, "the sheet offers no Continue Without Script")
+    store.clearError()
+    skip.run()
 
-    await store.skipSetupScript(run)
-
-    XCTAssertEqual(fake.approved, [], "skipping approved the script")
-    XCTAssertTrue(
-      store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false,
+    await waitUntil(
+      { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
       "the create didn't run again without the script")
+    XCTAssertEqual(fake.approved, [], "skipping approved the script")
     let retry = try XCTUnwrap(store.creationRuns.values.first)
     XCTAssertEqual(retry.outcome, .succeeded)
     XCTAssertTrue(retry.skipsSetup)
     XCTAssertEqual(
       retry.steps.first { $0.id == "script" }?.state,
       .skipped(reason: AppStore.setupSkippedReason))
+  }
+
+  /// Value: protects=Cancel Creation (or Escape) on the setup script's sheet ends the create and its
+  /// pane, and a sheet left over from a run since replaced cancels nothing; fails_when=the run
+  /// stays waiting with no sheet, or a stale sheet closes the create that replaced it; no_claim=the
+  /// sheet's drawing
+  func testCancelCreationOnTheSetupSheetEndsTheCreate() async throws {
+    let store = makeStore(UntrustedSetupCLI(projectPath: projectPath))
+    store.projects = [project(["anchor"])]
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let staleCancel = try XCTUnwrap(store.errorCancel)
+
+    // Review Script… shows it again; a run replaced since leaves the first sheet's Cancel stale.
+    await store.retryCreation(run)
+    let retry = try XCTUnwrap(store.creationRuns[run.id])
+    XCTAssertFalse(retry === run)
+    let pane = try XCTUnwrap(store.selectedTargetID)
+    staleCancel.run()
+    XCTAssertTrue(store.creationRuns[run.id] === retry, "a stale sheet cancelled the new create")
+    XCTAssertEqual(store.selectedTargetID, pane, "a stale sheet took the new create's pane away")
+
+    store.clearError()
+    store.presentSetupApproval(retry)
+    let cancel = try XCTUnwrap(store.errorCancel, "Review Script… showed no sheet")
+    store.clearError()
+    cancel.run()
+    XCTAssertTrue(store.creationRuns.isEmpty, "Cancel Creation left the create")
   }
 
   /// Value: protects=a double-click on Try Again starts one create, not two (for a remote create, a

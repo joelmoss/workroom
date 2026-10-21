@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// What the creation pane (#483) says about its run, kept apart from the drawing so it can be
 /// tested: the timing column, captions, the header, the failure footer, each row's VoiceOver label,
@@ -117,10 +118,9 @@ enum CreationPanePresentation {
   /// A failure footer's button.
   enum Action: Equatable {
     case tryAgain, close, openAnyway, deleteWorkroom
-    /// Approve the setup script shown and create again (#363).
-    case approveScript
-    /// Create again without the setup script shown, approving nothing, once confirmed.
-    case skipScript
+    /// Opens the setup script's approval sheet again (#363), where it is read and approved or
+    /// skipped.
+    case reviewScript
     /// Close, worded for a create that made nothing and is waiting on the user: the whole create
     /// goes, not only the script.
     case cancel
@@ -132,39 +132,41 @@ enum CreationPanePresentation {
       case .openAnyway: "Open Anyway"
       // An ellipsis: it opens the delete confirmation rather than deleting.
       case .deleteWorkroom: "Delete Workroom…"
-      case .approveScript: "Approve"
-      // An ellipsis: it asks first.
-      case .skipScript: "Continue Without Script…"
+      // An ellipsis: it opens a sheet.
+      case .reviewScript: "Review Script…"
       case .cancel: "Cancel Creation"
       }
     }
   }
 
-  /// Continue Without Script's confirmation, for the script `name`.
-  static func skipConfirmation(scriptName name: String) -> (title: String, message: String) {
-    (
-      "Create the workroom without running scripts/\(name)?",
-      "The workroom is created, but nothing the script would have set up is done. The script stays "
-        + "unapproved, so you'll be asked again next time."
-    )
+  /// The setup script approval sheet's message (#363): why the create stopped, for which project,
+  /// and the ways on. Worded as the teardown's (`AppStore.teardownApprovalMessage`).
+  @MainActor static func setupApprovalMessage(for run: CreationRun, script: ScriptTrust) -> String {
+    "Creating a workroom in \(run.project.displayName) runs scripts/\(script.name) "
+      + "\(script.originLabel), and it is new, or changed since it was approved on this Mac. Read "
+      + "it, then approve it to run it, or create the workroom without running it."
   }
 
-  /// The failure footer (design D3, D12): the reason on the left, then the secondary, any
-  /// `alternative` and the default (`primary`) buttons.
+  /// Continue Without Script's confirmation, for the script `name`.
+  static func skipConfirmation(scriptName name: String) -> ErrorAction.Confirmation {
+    ErrorAction.Confirmation(
+      title: "Create the workroom without running scripts/\(name)?",
+      message: "The workroom is created, but nothing the script would have set up is done. The "
+        + "script stays unapproved, so you'll be asked again next time.",
+      button: "Continue Without Script")
+  }
+
+  /// The failure footer (design D3, D12): the reason on the left, then the secondary and the default
+  /// (`primary`) buttons.
   struct Footer: Equatable {
     let reason: String
     let primary: Action
     let secondary: Action
-    /// A third way on, between the two.
-    var alternative: Action? = nil
-    /// A script to read before approving it, shown under the reason, and its file name.
-    var script: String? = nil
-    var scriptName: String? = nil
     /// What Escape answers: Close or Cancel, where it is shown (D16).
     var escapeAction: Action? { [.close, .cancel].contains(secondary) ? secondary : nil }
-    /// What Return answers: the primary, except Approve, which runs code and so is never a keypress
-    /// away.
-    var returnAction: Action? { primary == .approveScript ? nil : primary }
+    /// What Return answers: the primary. Approving a script is never a keypress away; that is the
+    /// sheet's, where Return doesn't answer it.
+    var returnAction: Action? { primary }
   }
 
   /// The row a failure's notice goes under: the step that failed, or the one waiting on the user (a
@@ -192,10 +194,9 @@ enum CreationPanePresentation {
         primary: .deleteWorkroom, secondary: .close)
     case .scriptNotTrusted(let script):
       Footer(
-        reason: "scripts/\(script.name) \(script.originLabel) is new, or changed since it was "
-          + "approved on this Mac. Read it, then approve it to run it, or continue without it.",
-        primary: .approveScript, secondary: .cancel, alternative: .skipScript,
-        script: script.visibleText, scriptName: script.name)
+        reason: "scripts/\(script.name) \(script.originLabel) needs approving before the workroom "
+          + "is made.",
+        primary: .reviewScript, secondary: .cancel)
     }
   }
 

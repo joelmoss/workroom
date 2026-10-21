@@ -611,6 +611,14 @@ final class AppStore: ObservableObject {
     get { modals.errorApproval }
     set { modals.errorApproval = newValue }
   }
+  var errorScriptName: String? {
+    get { modals.errorScriptName }
+    set { modals.errorScriptName = newValue }
+  }
+  var errorCancel: ErrorAction? {
+    get { modals.errorCancel }
+    set { modals.errorCancel = newValue }
+  }
   func clearError() { modals.clearError() }
 
   /// Tells the user a closed remote pane's session may still be running on its host (#283), unless
@@ -2566,13 +2574,22 @@ final class AppStore: ObservableObject {
       else { return }
       self.deleteWorkroom(workroom, in: project, skipTeardown: skipTeardown)
     }
-    errorAction = ErrorAction(label: "Delete Anyway") { deleteAgain(true) }
+    let deleteAnyway = ErrorAction(label: "Delete Anyway") { deleteAgain(true) }
+    errorAction = deleteAnyway
     guard let script = Self.untrustedTeardown(error) else { return }
+    // The CLI's own message tells a terminal what to type: say why the delete stopped, in the app's
+    // terms. A new message drops what was set after it, so the rest goes back after.
+    let details = errorDetails
+    errorMessage = Self.teardownApprovalMessage(
+      script, workroom: workroom.displayName, project: project)
+    errorDetails = details
+    errorAction = deleteAnyway
     // The script never ran, so it printed nothing: its text is what to read before approving it.
-    errorTitle = "Approve the teardown script of ‘\(workroom.name)’?"
+    errorTitle = "Approve the teardown script?"
     errorLog = script.visibleText
+    errorScriptName = script.name
     let cli = self.cli
-    errorApproval = ErrorAction(label: "Approve and Run") { [weak self] in
+    errorApproval = ErrorAction(label: "Approve") { [weak self] in
       Task {
         do {
           try await cli.trustScript(script.name, text: script.approvalBytes, project: path)
@@ -2583,6 +2600,16 @@ final class AppStore: ObservableObject {
         }
       }
     }
+  }
+
+  /// Why a delete stopped on a teardown script this Mac has not approved (#363), which workroom of
+  /// which project, and the ways on, as the creation pane words its setup script.
+  nonisolated static func teardownApprovalMessage(
+    _ script: ScriptTrust, workroom: String, project: Project
+  ) -> String {
+    "Deleting ‘\(workroom)’ in \(project.displayName) runs scripts/\(script.name) "
+      + "\(script.originLabel) first, and it is new, or changed since it was approved on this Mac. "
+      + "Read it, then approve it to run it and delete the workroom, or delete without running it."
   }
 
   /// The teardown script a delete refused, when this Mac has not approved it (#363).
