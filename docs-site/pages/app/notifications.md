@@ -19,7 +19,7 @@ When a terminal in the background posts a notification, its tab and its project 
 
 Workroom can show its logo in the macOS menu bar. The logo turns yellow while any of your windows has an unread notification or a request waiting. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**. In Workroom 2.1.0 this switch is in **Settings ▸ General**.
 
-To see how many are pending, turn on **Settings ▸ Notifications ▸ Show unread count in the menu bar**. The count then sits beside the logo, as it always did before.
+To see how many are pending, turn on **Settings ▸ Notifications ▸ Show unread count in the menu bar**. The count then sits beside the logo, across all your windows. In Workroom 2.1.0 the count always shows and the logo does not change colour.
 
 Click it to open the list. When there is nothing pending, a click brings Workroom to the front instead. Click an entry to open its terminal.
 
@@ -48,7 +48,7 @@ Click the hand on a workroom row or on a collapsed project to go to the terminal
 
 ### The alert
 
-When a program starts waiting on you and you are not looking at its terminal, Workroom posts a notification such as "Terminal 2 in fix-auth needs you". It also counts the request on the Dock badge and the menu bar. The count drops when you answer the request, on this Mac or another, or when the program ends. Reading the notification does not lower it.
+When a program starts waiting on you and you are not looking at its terminal, Workroom posts a notification such as "Terminal 2 in fix-auth needs you". It also counts the request on the Dock badge and turns the menu bar logo yellow. The count drops when you answer the request, on this Mac or another, or when the program ends. Reading the notification does not lower it.
 
 In the menu bar list, requests appear under **Waiting for you** and everything else under **Unread notifications**.
 
