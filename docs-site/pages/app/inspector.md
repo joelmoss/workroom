@@ -92,6 +92,9 @@ With no pull request the section says **No pull request**. Workroom does not ope
 
 ## Files
 
-**Files** shows the workroom's working tree as a list you can expand. A click on a file opens it read-only in the main pane, in a preview tab. Click again quickly to keep it open. <kbd>⌘</kbd>-click opens it in your editor. Markdown files open as a rendered preview, with a switch to the source. Files are shown with syntax highlighting.
+**Files** shows the workroom's working tree as a list you can expand. A click on a file opens it read-only in the main pane, in a preview tab. Click again quickly to keep it open. <kbd>⌘</kbd>-click opens it in your editor. Markdown files open as a rendered preview, with a switch to the source. A `mermaid` code block is drawn as a diagram in the preview. A diagram Workroom cannot draw shows its source instead. Files are shown with syntax highlighting.
+
+> [!NOTE]
+> In Workroom 2.1.0 a diagram is drawn in a fixed light or dark style. Nightly draws it in your theme's colours, so a theme change recolours it at once.
 
 The refresh button in the header reloads the tree. A very large tree is cut off, with a line that says how many more there are.
