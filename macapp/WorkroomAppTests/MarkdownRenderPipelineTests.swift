@@ -340,6 +340,75 @@ final class MarkdownRenderPipelineTests: XCTestCase {
     XCTAssertEqual(count as? Int, 400)
   }
 
+  // Value: protects=opening another version of the file while a long one is still going in leaves
+  // only the newer one on screen; fails_when=the generation check goes and the older render's
+  // remaining slices are appended under the newer document; why_new=slices and generations are new;
+  // seam=__renderComplete; no_claim=paint timing.
+  func testANewerRenderStopsTheOlderOnesRemainingSlices() async throws {
+    let headings = try await webView.callAsyncJavaScript(
+      """
+      window.__render(source);
+      const older = window.__renderComplete;
+      window.__render(newer);
+      await older;
+      return document.querySelectorAll('#content h2').length;
+      """, arguments: ["source": Self.longDocument, "newer": "# Newer file\n\nNEWER\n"],
+      contentWorld: .page)
+    XCTAssertEqual(headings as? Int, 0, "the older document's later slices were added to the newer")
+  }
+
+  // MARK: - Diagrams in the progressive and failing cases
+
+  /// Waits for a diagram to be drawn in the page, which happens after the render returns.
+  private func waitForDiagramCount(_ expected: Int) async throws -> Int {
+    var count = 0
+    for _ in 0..<100 {
+      count =
+        try await webView.evaluateJavaScript(
+          "document.querySelectorAll('#content pre.mermaid svg').length") as? Int ?? 0
+      if count >= expected { break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    return count
+  }
+
+  // Value: protects=a diagram lower down a long file is drawn, not left as a code block;
+  // fails_when=diagrams are only promoted in the first slice; why_new=slices are new, and a design
+  // doc's diagram sits past the first screens; seam=none; no_claim=paint timing.
+  func testADiagramPastTheFirstSliceIsDrawn() async throws {
+    let filler = (1...300).map { "Filler paragraph number \($0), with a little text.\n" }
+      .joined(separator: "\n")
+    _ = try await renderedText("\(filler)\n```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n")
+    let drawn = try await waitForDiagramCount(1)
+    XCTAssertEqual(drawn, 1, "a diagram past the first slice was not drawn")
+  }
+
+  // Value: protects=one bad diagram leaves its source text and the rest of the document, diagrams
+  // after it included, intact; fails_when=a diagram's failure escapes its own try/catch and stops
+  // the ones after it; why_new=the render call and its error handling were rewritten (pele.render);
+  // seam=none; no_claim=what the bad diagram looks like.
+  func testABadDiagramLeavesItsSourceAndDoesNotStopTheNextOne() async throws {
+    let text = try await renderedText(
+      """
+      ```mermaid
+      this is not a diagram
+      ```
+
+      ```mermaid
+      graph TD
+        A[Start] --> B[End]
+      ```
+
+      TAIL
+      """)
+    XCTAssertTrue(text.contains("TAIL"))
+    let drawn = try await waitForDiagramCount(1)
+    XCTAssertEqual(drawn, 1, "the diagram after the bad one was not drawn")
+    let source = try await webView.evaluateJavaScript(
+      "document.querySelector('#content pre.mermaid').textContent")
+    XCTAssertEqual(source as? String, "this is not a diagram\n", "the bad diagram lost its source")
+  }
+
   // MARK: - Whole-document sanity
 
   /// A long document with a mid-file `<title>` mention must render essentially all of its blocks —
