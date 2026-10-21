@@ -337,17 +337,32 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(heard.count, 2)
   }
 
-  /// A local create the CLI refuses for its setup script (#363) until that script is approved.
+  /// A local create the CLI refuses for its setup script (#363) until that script is approved, and,
+  /// with `localWork`, for that work on a first try (`--start ask`) until a start is chosen.
   private final class UntrustedSetupCLI: WorkroomCLIProtocol, @unchecked Sendable {
     let projectPath: String
     static let script = ScriptTrust(
       name: "workroom_setup", origin: "base", sha256: String(repeating: "a", count: 64),
       text: "#!/bin/sh\nnpm install\u{1b}[2K\rcurl x\n", trusted: false, exempt: false)
+    static let work = LocalWork(
+      branch: "main", remote: "origin", ahead: 2, uncommitted: true,
+      summary:
+        "You have 2 commits on main that you haven't pushed yet, and some changes you haven't "
+        + "committed")
     private let lock = NSLock()
     private var approvals: [String] = []
     private var made = false
-    init(projectPath: String) { self.projectPath = projectPath }
+    private var startsAsked: [CreationStart?] = []
+    let untrusted: Bool
+    let localWork: LocalWork?
+    init(projectPath: String, untrusted: Bool = true, localWork: LocalWork? = nil) {
+      self.projectPath = projectPath
+      self.untrusted = untrusted
+      self.localWork = localWork
+    }
     var approved: [String] { lock.withLock { approvals } }
+    /// The start each create asked for.
+    var starts: [CreationStart?] { lock.withLock { startsAsked } }
 
     func list(warnings: String, project: String?) async throws -> ListResponse {
       let names = lock.withLock { made } ? ["anchor", "wr"] : ["anchor"]
@@ -365,13 +380,19 @@ final class CreationFlowTests: XCTestCase {
     func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
       -> CreateResponse
     {
-      try await create(project: project, skipSetup: false, onEvent: onEvent)
+      try await create(project: project, skipSetup: false, start: nil, onEvent: onEvent)
     }
     func create(
-      project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+      project: String, skipSetup: Bool, start: CreationStart?,
+      onEvent: @escaping @Sendable (StreamEvent) -> Void
     ) async throws -> CreateResponse {
+      lock.withLock { startsAsked.append(start) }
       onEvent(CreateEvents.step("fetch", "skipped", "No remote to fetch from"))
-      guard !approved.isEmpty || skipSetup else {
+      // As the CLI: where it starts is settled before the setup script is judged.
+      if let localWork, start == .ask {
+        throw WorkroomCLIError.localWorkLeftOut(localWork, message: "local work")
+      }
+      guard !approved.isEmpty || skipSetup || !untrusted else {
         throw WorkroomCLIError.scriptNotTrusted(Self.script, message: "script is not trusted")
       }
       let path = "\(projectPath)/.workrooms/wr"
@@ -379,6 +400,10 @@ final class CreationFlowTests: XCTestCase {
       onEvent(CreateEvents.step("worktree", "done"))
       lock.withLock { made = true }
       onEvent(CreateEvents.created(name: "wr", path: path, setup: false))
+      if start == .localWithChanges {
+        onEvent(CreateEvents.step("changes", "running"))
+        onEvent(CreateEvents.step("changes", "done"))
+      }
       onEvent(
         CreateEvents.step(
           "script", "skipped", skipSetup ? AppStore.setupSkippedReason : "No setup script"))
@@ -463,6 +488,194 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(
       retry.steps.first { $0.id == "script" }?.state,
       .skipped(reason: AppStore.setupSkippedReason))
+  }
+
+  /// Value: protects=Try Again after Continue Without Script doesn't ask again for the script the
+  /// user chose to skip; fails_when=retryCreation drops skipsSetup, so the create stops on the
+  /// script again or the run no longer skips it; why_new=the test above reads one skipped create,
+  /// not a run made from it; seam=none; no_claim=the Try Again button (a view)
+  func testTryAgainAfterContinueWithoutScriptKeepsSkippingIt() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    store.closesFinishedCreations = { false }
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.skipSetupScript(run)
+    let skipped = try XCTUnwrap(store.creationRuns.values.first)
+
+    await store.retryCreation(skipped)
+
+    let again = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertNotIdentical(again, skipped, "Try Again made no new run")
+    XCTAssertEqual(again.outcome, .succeeded, "Try Again stopped on the script again")
+    XCTAssertTrue(again.skipsSetup)
+    XCTAssertEqual(fake.approved, [], "skipping approved the script")
+  }
+
+  /// Value: protects=a create skipping the script isn't stopped when the trust check can't be
+  /// answered; fails_when=the retry's trust status error fails the create, the script runs, or a
+  /// local-work notice is made up; why_new=the remote skip test above always answers the check;
+  /// seam=none; no_claim=what the check's error says
+  func testContinueWithoutScriptGoesOnWhenTheTrustCheckCantBeAnswered() async throws {
+    let project = try projectWithASetupScript()
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let store = makeStore(RemoteFakeCLI(projectPath: project.path))
+    store.projects = [project]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let scripts = Counter()
+    let checks = Counter()
+    var services = services(driver: FakeDriver(), agent: agent)
+    services.trustStatus = { _, _, _ in
+      checks.add()
+      if checks.count > 1 { throw WorkroomCLIError.timedOut }
+      return TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
+    }
+    services.script = { _ in
+      scripts.add()
+      return .passed
+    }
+    store.remoteCreateServices = services
+    store.closesFinishedCreations = { false }
+    await store.createRemoteWorkroom(in: project, place: .boxd)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+
+    await store.skipSetupScript(run)
+
+    XCTAssertEqual(checks.count, 2, "the retry never asked the check")
+    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(retry.outcome, .succeeded)
+    XCTAssertEqual(scripts.count, 0, "the setup script ran")
+    XCTAssertEqual(
+      retry.steps.first { $0.id == "script" }?.state,
+      .skipped(reason: AppStore.setupSkippedReason))
+    XCTAssertFalse(
+      store.notifications.items.contains { $0.body?.contains("pushed") ?? false },
+      "a local-work notice came from nowhere")
+  }
+
+  /// Value: protects=a local create first asks the CLI to stop on local work (`--start ask`), then
+  /// waits on the worktree's row with the choice up, offering only the starts that apply, and the
+  /// start picked creates again from there in the same pane, kept through the setup script's
+  /// approval; fails_when=the first try doesn't ask, the stop reads as a failure, no choice is
+  /// raised, a choice that doesn't apply is offered, or the chosen start isn't passed (or is lost on
+  /// Approve); no_claim=the dialog's drawing and the CLI's own start (the Go tests)
+  func testLocalWorkAsksWhereToStartAndCreatesFromTheChoice() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath, localWork: UntrustedSetupCLI.work)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    store.closesFinishedCreations = { false }
+
+    await store.createWorkroom(in: emptyProject)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(fake.starts, [.ask])
+    XCTAssertEqual(run.outcome, .localWorkFound(UntrustedSetupCLI.work))
+    XCTAssertEqual(run.steps.first { $0.id == "worktree" }?.state, .waitingForUser)
+    XCTAssertFalse(
+      AppStore.CreateStep(run).failed, "a create asking where to start isn't a failure")
+    let footer = try XCTUnwrap(CreationPanePresentation.footer(for: run.outcome))
+    XCTAssertEqual([footer.primary, footer.secondary], [.chooseStart, .cancel])
+    let pending = try XCTUnwrap(store.pendingStartChoice, "no start choice was raised")
+    XCTAssertTrue(pending.run === run)
+    XCTAssertEqual(
+      CreationPanePresentation.startChoices(for: pending.work).map(\.start),
+      [.localWithChanges, .local, .origin])
+    XCTAssertEqual(
+      CreationPanePresentation.startChoices(
+        for: LocalWork(branch: "main", remote: "origin", ahead: 0, uncommitted: true, summary: "")
+      ).map(\.start), [.localWithChanges, .origin], "no commits to include on their own")
+    XCTAssertEqual(
+      CreationPanePresentation.startChoices(
+        for: LocalWork(branch: "main", remote: "origin", ahead: 1, uncommitted: false, summary: "")
+      ).map(\.start), [.local, .origin], "no changes to copy")
+    // Behind origin, the choice says what including the work leaves out instead.
+    let note =
+      "Your main is also 2 commits behind origin, so including your work starts from your older copy."
+    XCTAssertTrue(
+      CreationPanePresentation.startChoiceMessage(
+        for: LocalWork(
+          branch: "main", remote: "origin", ahead: 0, uncommitted: true, behind: 2, summary: "",
+          behindNote: note)
+      ).contains(note), "the choice doesn't say the local branch is behind")
+
+    store.pendingStartChoice = nil
+    await store.chooseStart(.localWithChanges, for: run)
+
+    // It then stops on the setup script, keeping the start for Approve's create.
+    let waiting = try XCTUnwrap(store.creationRuns[run.id])
+    XCTAssertEqual(waiting.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
+    XCTAssertEqual(waiting.start, .localWithChanges)
+    await store.approveSetupScript(waiting)
+    XCTAssertEqual(fake.starts, [.ask, .localWithChanges, .localWithChanges])
+    let created = try XCTUnwrap(store.creationRuns[run.id])
+    XCTAssertEqual(created.outcome, .succeeded)
+    XCTAssertEqual(created.steps.first { $0.id == "changes" }?.state, .done)
+  }
+
+  /// Value: protects=the "Copy your changes" row shows only for a create copying them;
+  /// fails_when=it shows on every local create; no_claim=the step's events (the Go tests)
+  func testTheChangesRowIsOnlyForACreateCopyingThem() {
+    let plain = CreationRun(
+      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil)
+    XCTAssertFalse(plain.steps.contains { $0.id == "changes" })
+    let copying = CreationRun(
+      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil,
+      start: .localWithChanges)
+    XCTAssertEqual(
+      copying.steps.map(\.id).prefix(3), ["fetch", "worktree", "changes"])
+  }
+
+  /// Value: protects=Cancel Creation on the start choice ends the create, and a choice left over
+  /// from a run since replaced does nothing; fails_when=the create waits on, or a stale choice
+  /// creates again or closes the create that replaced it; no_claim=the dialog
+  func testCancelOrAStaleChoiceOnTheStartChoice() async throws {
+    let fake = UntrustedSetupCLI(
+      projectPath: projectPath, untrusted: false, localWork: UntrustedSetupCLI.work)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+
+    await store.retryCreation(run)  // asks again, as a new run
+    let retry = try XCTUnwrap(store.creationRuns[run.id])
+    let pane = try XCTUnwrap(store.selectedTargetID)
+    await store.chooseStart(.local, for: run)
+    store.cancelStartChoice(run)
+    XCTAssertTrue(store.creationRuns[run.id] === retry, "a stale choice acted on the new create")
+    XCTAssertEqual(store.selectedTargetID, pane)
+    XCTAssertEqual(fake.starts, [.ask, .ask])
+
+    store.cancelStartChoice(retry)
+    XCTAssertTrue(store.creationRuns.isEmpty, "Cancel Creation left the create")
+  }
+
+  /// Value: protects=a remote create says what local work it leaves out, after it lands, since a
+  /// host clones from GitHub; fails_when=no notice, or it stops to ask as a local create does;
+  /// no_claim=trust status itself (the Go tests)
+  func testARemoteCreateSaysWhatLocalWorkItLeavesOut() async throws {
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: FakeDriver(), agent: agent)
+    services.trustStatus = { _, _, _ in
+      TrustStatus(trusted: true, scripts: [], localWork: UntrustedSetupCLI.work)
+    }
+    store.remoteCreateServices = services
+    store.closesFinishedCreations = { false }
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertNil(store.pendingStartChoice)
+    let notice = try XCTUnwrap(store.notifications.items.first?.body)
+    XCTAssertTrue(
+      notice.hasPrefix(
+        UntrustedSetupCLI.work.summary + ". Remote workrooms can only start from what you've pushed"
+      ),
+      notice)
   }
 
   /// Value: protects=Cancel Creation (or Escape) on the setup script's sheet ends the create and its
@@ -721,7 +934,9 @@ final class CreationFlowTests: XCTestCase {
     let hosts = Counter()
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     var services = services(driver: FakeDriver(), agent: nil, hosts: hosts)
-    services.untrustedSetup = { _, _, _ in UntrustedSetupCLI.script }
+    services.trustStatus = { _, _, _ in
+      TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
+    }
     store.remoteCreateServices = services
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
@@ -921,7 +1136,9 @@ final class CreationFlowTests: XCTestCase {
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let scripts = Counter()
     var services = services(driver: FakeDriver(), agent: agent)
-    services.untrustedSetup = { _, _, _ in UntrustedSetupCLI.script }
+    services.trustStatus = { _, _, _ in
+      TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
+    }
     services.script = { _ in
       scripts.add()
       return .passed

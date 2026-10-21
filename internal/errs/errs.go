@@ -26,6 +26,7 @@ var (
 	ErrWorkroomExists      = errors.New("a workroom of that name is already registered")
 	ErrBaseBranchNotFound  = errors.New("the base branch exists neither on its remote nor locally")
 	ErrScriptNotTrusted    = errors.New("script is not trusted on this Mac")
+	ErrLocalWork           = errors.New("the new workroom would leave out some of your work")
 )
 
 // classification is one sentinel error's entry in the registry: its stable --json code and
@@ -64,6 +65,7 @@ var registry = []classification{
 	{ErrWorkroomExists, "WorkroomExists", 3},
 	{ErrBaseBranchNotFound, "BaseBranchNotFound", 3},
 	{ErrScriptNotTrusted, "ScriptNotTrusted", 3},
+	{ErrLocalWork, "LocalWorkLeftOut", 3},
 }
 
 func classify(err error) (classification, bool) {

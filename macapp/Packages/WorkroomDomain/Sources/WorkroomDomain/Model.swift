@@ -240,17 +240,63 @@ public struct Envelope: Codable, Sendable {
   public let error: CLIErrorBody?
   /// The script a `ScriptNotTrusted` error refused (#363).
   public let script: ScriptTrust?
+  /// The work a `LocalWorkLeftOut` error says a create would leave out.
+  public let localWork: LocalWork?
 
-  public init(ok: Bool, schemaVersion: Int?, error: CLIErrorBody?, script: ScriptTrust? = nil) {
+  public init(
+    ok: Bool, schemaVersion: Int?, error: CLIErrorBody?, script: ScriptTrust? = nil,
+    localWork: LocalWork? = nil
+  ) {
     self.ok = ok
     self.schemaVersion = schemaVersion
     self.error = error
     self.script = script
+    self.localWork = localWork
   }
 
   enum CodingKeys: String, CodingKey {
     case ok, error, script
     case schemaVersion = "schema_version"
+    case localWork = "local_work"
+  }
+}
+
+/// What a create starting from a remote's copy of the base branch leaves out of the main checkout:
+/// commits the local branch has that the remote's copy lacks, and uncommitted changes when the main
+/// checkout has that branch out.
+public struct LocalWork: Codable, Sendable, Equatable {
+  /// The base branch's local name, such as master.
+  public let branch: String
+  /// The remote whose copy the create starts from, such as origin.
+  public let remote: String
+  /// How many commits the local branch has that the remote's copy lacks.
+  public let ahead: Int
+  public let uncommitted: Bool
+  /// How many commits the remote's copy has that the local branch lacks: what including the work
+  /// leaves out instead.
+  public let behind: Int
+  /// For a person: "You have 2 commits on master that you haven't pushed yet".
+  public let summary: String
+  /// Said beside the summary when the local branch is behind: "Your master is also 3 commits behind
+  /// origin, so including your work starts from your older copy."; "" when it isn't.
+  public let behindNote: String
+
+  public init(
+    branch: String, remote: String, ahead: Int, uncommitted: Bool, behind: Int = 0,
+    summary: String, behindNote: String = ""
+  ) {
+    self.branch = branch
+    self.remote = remote
+    self.ahead = ahead
+    self.uncommitted = uncommitted
+    self.behind = behind
+    self.summary = summary
+    self.behindNote = behindNote
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case branch, remote, ahead, uncommitted, behind, summary
+    case behindNote = "behind_note"
   }
 }
 
@@ -292,10 +338,18 @@ public struct ScriptTrust: Codable, Sendable, Equatable {
 public struct TrustStatus: Codable, Sendable {
   public let trusted: Bool
   public let scripts: [ScriptTrust]
+  /// What a create from the base judged leaves out of the main checkout, when anything.
+  public let localWork: LocalWork?
 
-  public init(trusted: Bool, scripts: [ScriptTrust]) {
+  public init(trusted: Bool, scripts: [ScriptTrust], localWork: LocalWork? = nil) {
     self.trusted = trusted
     self.scripts = scripts
+    self.localWork = localWork
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case trusted, scripts
+    case localWork = "local_work"
   }
 }
 

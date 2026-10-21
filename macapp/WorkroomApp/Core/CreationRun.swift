@@ -38,6 +38,7 @@ enum CreationKind: Equatable {
       return [
         CreationStep(id: "fetch", title: "Fetch base branch"),
         CreationStep(id: "worktree", title: "Create worktree"),
+        CreationStep(id: "changes", title: "Copy your changes"),
         CreationStep(id: Step.include.rawValue, title: "Copy local files"),
         CreationStep(id: "script", title: "Run setup script"),
       ]
@@ -121,6 +122,22 @@ enum CreationOutcome: Equatable {
   /// Stopped before anything was made: this Mac has not approved the setup script (#363). Approve
   /// records it and starts the create again.
   case scriptNotTrusted(ScriptTrust)
+  /// Stopped before anything was made: the main checkout has work the create would leave out, and
+  /// the user chooses where it starts (`CreationStart`), which starts the create again.
+  case localWorkFound(LocalWork)
+}
+
+/// Where a local create starts when the main checkout has work the remote's copy of the base branch
+/// lacks: the CLI's `--start`.
+enum CreationStart: String, Equatable {
+  /// The remote's copy, leaving the work out.
+  case origin
+  /// The local branch, with its unpushed commits.
+  case local
+  /// The local branch, with the main checkout's uncommitted changes copied in too.
+  case localWithChanges = "local-with-changes"
+  /// Stop on local work with `localWorkLeftOut`, to ask: a create's first try.
+  case ask
 }
 
 /// One create's progress (#483): the plan of steps it shows from the first frame, each step's state,
@@ -141,6 +158,9 @@ final class CreationRun: ObservableObject, Identifiable {
   /// Continue Without Script on an unapproved setup script: this create neither judges nor runs it
   /// (#363), and a Try Again keeps that.
   let skipsSetup: Bool
+  /// Where it starts, as the user chose when it found local work; `.ask` until then. A Try Again
+  /// keeps it.
+  let start: CreationStart
   @Published private(set) var steps: [CreationStep]
   @Published private(set) var name: String?
   @Published private(set) var outcome: CreationOutcome = .running
@@ -150,11 +170,12 @@ final class CreationRun: ObservableObject, Identifiable {
 
   /// `hasSetupScript` false leaves the setup script's row out of the plan; it comes back if the
   /// script runs after all (one only the new worktree has). `hasIncludeFile` false, a root with no
-  /// `.worktreeinclude`, leaves out the "Copy local files" row (#367) the same way.
+  /// `.worktreeinclude`, leaves out the "Copy local files" row (#367) the same way. The "Copy
+  /// your changes" row is there only for a create that starts `.localWithChanges`.
   init(
     id: UUID = UUID(), project: Project, kind: CreationKind, splitAnchor: SidebarID?,
     previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
-    skipsSetup: Bool = false, now: @escaping () -> Date = Date.init
+    skipsSetup: Bool = false, start: CreationStart = .ask, now: @escaping () -> Date = Date.init
   ) {
     self.id = id
     self.project = project
@@ -162,21 +183,26 @@ final class CreationRun: ObservableObject, Identifiable {
     self.splitAnchor = splitAnchor
     self.previousSelection = previousSelection
     self.skipsSetup = skipsSetup
+    self.start = start
     self.now = now
     self.startedAt = now()
     self.steps = kind.plan.filter {
       // A skipped script keeps its row, to say so: it may be one only the base commit has.
       (hasSetupScript || skipsSetup || $0.id != "script")
         && (hasIncludeFile || $0.id != ProvisioningProgress.Step.include.rawValue)
+        && (start == .localWithChanges || $0.id != "changes")
     }
   }
 
   var isRunning: Bool { outcome == .running }
 
-  /// Stopped on its setup script, waiting for Approve (#363): not running, and not failed either.
+  /// Stopped before anything was made, waiting on the user: its setup script's Approve (#363), or
+  /// where to start. Not running, and not failed either.
   var awaitsApproval: Bool {
-    if case .scriptNotTrusted = outcome { return true }
-    return false
+    switch outcome {
+    case .scriptNotTrusted, .localWorkFound: true
+    default: false
+    }
   }
 
   /// The step running now, or waiting on the user.
@@ -256,6 +282,16 @@ final class CreationRun: ObservableObject, Identifiable {
       steps[index].state = .waitingForUser
     }
     outcome = .scriptNotTrusted(script)
+  }
+
+  /// The main checkout has work the create would leave out, so where it starts waits on the user:
+  /// the step running now ends done and the worktree's row, which starts from the choice, waits.
+  func awaitStartChoice(for work: LocalWork) {
+    if let running = runningIndex { end(running, as: .done) }
+    if let index = steps.firstIndex(where: { $0.id == "worktree" }) {
+      steps[index].state = .waitingForUser
+    }
+    outcome = .localWorkFound(work)
   }
 
   /// The create finished: the running step ends done and every step still pending is skipped.

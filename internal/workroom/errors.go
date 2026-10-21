@@ -18,4 +18,5 @@ var (
 	ErrBaseBranchNotFound  = errs.ErrBaseBranchNotFound
 	ErrRemoteWorkroom      = errs.ErrRemoteWorkroom
 	ErrScriptNotTrusted    = errs.ErrScriptNotTrusted
+	ErrLocalWork           = errs.ErrLocalWork
 )

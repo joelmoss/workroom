@@ -8,6 +8,7 @@ import (
 	"maps"
 
 	"github.com/joelmoss/workroom/internal/errs"
+	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/joelmoss/workroom/internal/workroom"
 )
 
@@ -17,6 +18,16 @@ func scriptJSON(sc workroom.Script) map[string]any {
 	return map[string]any{
 		"name": sc.Name, "origin": sc.Origin, "sha256": sc.SHA256, "text": string(sc.Text),
 		"bytes": base64.StdEncoding.EncodeToString(sc.Text), "trusted": sc.Trusted, "exempt": sc.Exempt,
+	}
+}
+
+// localWorkJSON is local work a create would leave out (vcs.LocalWork) as the --json contract
+// carries it, with `summary` to show and `behind_note`, said beside it when the local branch is
+// behind ("" when it isn't).
+func localWorkJSON(w vcs.LocalWork) map[string]any {
+	return map[string]any{
+		"branch": w.Branch, "remote": w.Remote, "ahead": w.Ahead, "uncommitted": w.Uncommitted,
+		"behind": w.Behind, "summary": w.Summary(), "behind_note": w.BehindNote(),
 	}
 }
 
@@ -70,6 +81,10 @@ func writeJSONError(w io.Writer, command string, err error) {
 	// The refused script, so a GUI can show it and ask (#363).
 	if untrusted := (*workroom.UntrustedScriptError)(nil); errors.As(err, &untrusted) {
 		obj["script"] = scriptJSON(untrusted.Script)
+	}
+	// The work a create would leave out, so a GUI can ask where it starts.
+	if left := (*workroom.LocalWorkError)(nil); errors.As(err, &left) {
+		obj["local_work"] = localWorkJSON(left.Work)
 	}
 	maps.Copy(obj, jsonErrorExtra)
 	enc := json.NewEncoder(w)

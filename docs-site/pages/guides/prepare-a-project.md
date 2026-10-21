@@ -152,3 +152,7 @@ workroom base clear                       # back to origin's default branch
 A plain name such as `develop` is a branch on `origin`. Write `upstream/main` to use another remote,
 for example to start from the real project's `main` when you work from a fork. See
 [`workroom base`](../cli/workroom-base.md).
+
+When you have commits on that branch you haven't pushed, or changes you haven't committed, Workroom
+asks whether the new workroom should include them. See
+[Include work you haven't pushed](../app/workrooms.md#include-work-you-havent-pushed).

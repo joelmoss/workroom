@@ -1,6 +1,7 @@
 package vcs
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,8 +23,69 @@ type Progress struct {
 	Log  io.Writer
 	Step func(id, state, detail string)
 	// BeforeWorktree, when set, is called with the start point once it is resolved and before
-	// the workspace exists ("" is HEAD); an error it returns ends the create there.
-	BeforeWorktree func(start string) error
+	// the workspace exists ("" is HEAD), with the local work that start leaves out. It returns the
+	// start to use instead (the local branch, when the user chose it); an error ends the create
+	// there.
+	BeforeWorktree func(start string, work LocalWork) (string, error)
+}
+
+// LocalWork is what a create starting from a remote's copy of a branch leaves behind in the main
+// checkout: commits on the local branch the remote's copy lacks, and uncommitted changes when the
+// main checkout has that branch out. Changes on another branch aren't the base branch's, so they
+// don't count.
+type LocalWork struct {
+	// Branch is the base branch's local name, such as master; "" when there is no local branch to
+	// compare, and nothing else is set.
+	Branch string
+	// Remote is the remote whose copy of Branch the create starts from, such as origin.
+	Remote string
+	// Ahead is how many commits the local branch has that the start lacks.
+	Ahead int
+	// Uncommitted is true when the main checkout is on Branch with changes git hasn't committed:
+	// modified, staged or untracked files.
+	Uncommitted bool
+	// Behind is how many commits the start has that the local branch lacks: what starting from the
+	// local branch would leave out instead.
+	Behind int
+	// Stale is true when the start already came with a warning (a failed fetch, a fallback), so the
+	// counts are against a remote copy that may be out of date: nobody is asked, though a start
+	// chosen beforehand still holds.
+	Stale bool
+}
+
+// Any reports whether there is local work a create would leave out.
+func (w LocalWork) Any() bool { return w.Ahead > 0 || w.Uncommitted }
+
+// Summary says what the work is, plainly, for a person: "You have 2 commits on master that you
+// haven't pushed yet, and some changes you haven't committed". "" when there is none.
+func (w LocalWork) Summary() string {
+	commits := "commits"
+	if w.Ahead == 1 {
+		commits = "commit"
+	}
+	switch {
+	case w.Ahead > 0 && w.Uncommitted:
+		return fmt.Sprintf("You have %d %s on %s that you haven't pushed yet, and some changes you haven't committed", w.Ahead, commits, w.Branch)
+	case w.Ahead > 0:
+		return fmt.Sprintf("You have %d %s on %s that you haven't pushed yet", w.Ahead, commits, w.Branch)
+	case w.Uncommitted:
+		return fmt.Sprintf("You have changes on %s that you haven't committed yet", w.Branch)
+	}
+	return ""
+}
+
+// BehindNote says, plainly, what including the work would leave out instead, when the local branch
+// lacks commits the remote has: "Your master is also 3 commits behind origin, so including your
+// work starts from your older copy.". "" when it isn't behind.
+func (w LocalWork) BehindNote() string {
+	if w.Behind == 0 {
+		return ""
+	}
+	commits := "commits"
+	if w.Behind == 1 {
+		commits = "commit"
+	}
+	return fmt.Sprintf("Your %s is also %d %s behind %s, so including your work starts from your older copy.", w.Branch, w.Behind, commits, w.Remote)
 }
 
 func (p Progress) step(id, state, detail string) {
@@ -43,6 +105,9 @@ type VCS interface {
 	// StartPoint resolves, fetching first, where Create would start from base, without making
 	// anything: the ref ("" is HEAD) and a warning for the user, or "".
 	StartPoint(dir, base string, fallback bool, progress Progress) (start, warning string, err error)
+	// LocalWork is what starting from start, a resolved start point, leaves out of the main
+	// checkout at dir. Empty unless start is a remote's branch.
+	LocalWork(dir, start string) LocalWork
 	Delete(dir, vcsName, path string) (string, error)
 	// ListWorkrooms is the sole membership primitive: a caller that needs an existence check
 	// lists once and does an in-memory lookup, rather than the interface exposing a second

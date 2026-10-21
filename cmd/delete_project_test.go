@@ -34,6 +34,7 @@ func (f *fakeVCS) ListWorkrooms(_ string) ([]string, error)                     
 func (f *fakeVCS) StartPoint(string, string, bool, vcs.Progress) (string, string, error) {
 	return "", "", nil
 }
+func (f *fakeVCS) LocalWork(string, string) vcs.LocalWork { return vcs.LocalWork{} }
 func (f *fakeVCS) Delete(_, vcsName, _ string) (string, error) {
 	f.deleteCalls = append(f.deleteCalls, vcsName)
 	if f.onDelete != nil {

@@ -72,7 +72,7 @@ A `log` event is one line of a script's output. `phase` is `setup` or `teardown`
 
 ### Step events {nightly}
 
-On Nightly, `create --json` also reports its steps, in order: `fetch` (fetch the base branch), `worktree` (`git worktree add`), `include` (copy the files listed in `.worktreeinclude`, only when the project has that file) and `script` (the setup script). `state` is `running`, `done`, `warning`, `skipped` or `failed`. `detail` carries the warning text, the reason a step was skipped, or the failure message, and is left out when there is none:
+On Nightly, `create --json` also reports its steps, in order: `fetch` (fetch the base branch), `worktree` (`git worktree add`), `changes` (copy your main checkout's uncommitted changes, only with `--start local-with-changes`), `include` (copy the files listed in `.worktreeinclude`, only when the project has that file) and `script` (the setup script). `state` is `running`, `done`, `warning`, `skipped` or `failed`. `detail` carries the warning text, the reason a step was skipped, or the failure message, and is left out when there is none:
 
 ```json
 { "type": "step", "id": "fetch", "state": "warning", "detail": "Could not fetch origin. …" }
@@ -123,6 +123,7 @@ These kinds exist on Nightly only:
 | ------ | ---- | ------- |
 | `BaseBranchNotFound` | 3 | A base branch exists neither on its remote nor locally, or the fetch that checks the remote failed. |
 | `ScriptNotTrusted` | 3 | A setup or teardown script this Mac has not approved. |
+| `LocalWorkLeftOut` | 3 | `create --start ask` found unpushed commits on your local base branch, or uncommitted changes on it, that the new workroom would leave out. Nothing was created. The envelope's `local_work` carries `branch`, `remote`, `ahead` (the commits not pushed), `behind` (the remote's commits the local branch lacks), `uncommitted`, `summary` and `behind_note` (a sentence saying it is behind, or `""`); create again with `--start origin`, `local` or `local-with-changes`. `trust status` reports the same `local_work` when there is some. |
 | `ProjectNotFound` | 3 | The project is not registered. |
 | `WorkroomNotFound` | 3 | The workroom is not registered. |
 | `WorkroomExists` | 3 | A workroom of that name is already registered. |

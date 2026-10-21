@@ -5,6 +5,7 @@ import (
 	"io"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/joelmoss/workroom/internal/errs"
@@ -19,20 +20,38 @@ func (g *Git) Type() Type    { return TypeGit }
 func (g *Git) Label() string { return "Git worktree" }
 
 // Create branches from origin's default branch, as a remote workroom does, not from whatever
-// the main checkout has out; or from base, when the project names one. fallback marks base as the
-// app-wide default, which gives way to origin's default branch where it doesn't fit (see
-// startPoint). `--no-track`: a workroom's branch has no upstream until published. The returned
-// string is a warning for the user, non-empty when the start point may not be what they expect.
+// the main checkout has out; or from base, when the project names one. BeforeWorktree is told
+// the local work that start leaves out, and may switch to the local branch (the user's choice,
+// workroom.Start). fallback marks base as the app-wide default, which gives way to origin's
+// default branch where it doesn't fit (see startPoint). `--no-track`: a workroom's branch has no
+// upstream until published. The returned string is a warning for the user, non-empty when the
+// start point may not be what they expect.
 func (g *Git) Create(dir, vcsName, path, base string, fallback bool, progress Progress) (string, error) {
-	start, warning, err := g.StartPoint(dir, base, fallback, progress)
+	fs := &fetchStep{progress: progress}
+	start, warning, err := g.startPoint(dir, base, fallback, fs)
 	if err != nil {
+		fs.finish(warning, err)
 		return "", err
 	}
 	if progress.BeforeWorktree != nil {
-		if err := progress.BeforeWorktree(start); err != nil {
+		// A start that already warns (a failed fetch, a fallback) is compared all the same, so a
+		// start the user chose still holds, but marked stale: nobody is asked against it.
+		work := g.LocalWork(dir, start)
+		work.Stale = warning != ""
+		remoteStart := start
+		if start, err = progress.BeforeWorktree(start, work); err != nil {
+			fs.finish(warning, nil)
 			return "", err
 		}
+		// The warning was about the remote's copy; a start switched to the local branch says what
+		// it really is instead.
+		if warning != "" && start != remoteStart {
+			warning = localStartWarning(base, remoteStart, work, fs.failed)
+		}
 	}
+	// The fetch step carries the start-point warning, so it ends only once the start is settled:
+	// its row and the create's notice then say the same.
+	fs.finish(warning, nil)
 	progress.step("worktree", "running", "")
 	args := []string{"worktree", "add", "-b", vcsName, path}
 	if start != "" {
@@ -44,6 +63,22 @@ func (g *Git) Create(dir, vcsName, path, base string, fallback bool, progress Pr
 	}
 	progress.step("worktree", "done", "")
 	return warning, nil
+}
+
+// localStartWarning is the warning for a start switched to the local branch against a remote copy
+// that came with one: why the default base wasn't used, if it wasn't, that the workroom starts from
+// the local branch, and, when the fetch failed, that it couldn't be checked against the remote.
+func localStartWarning(base, remoteStart string, work LocalWork, fetchFailed bool) string {
+	var parts []string
+	// originDefault's fallback: the app-wide default base gave way to origin's default branch.
+	if base != "" && remoteStart == "refs/remotes/origin/HEAD" {
+		parts = append(parts, fmt.Sprintf("The default base branch %s doesn't exist in this project.", base))
+	}
+	parts = append(parts, fmt.Sprintf("The workroom starts from your local %s, as you chose.", work.Branch))
+	if fetchFailed {
+		parts = append(parts, fmt.Sprintf("It couldn't be checked against %s, so it may differ from what's there.", work.Remote))
+	}
+	return strings.Join(parts, " ")
 }
 
 // StartPoint is startPoint with its fetch reported as the create's fetch step.
@@ -184,6 +219,40 @@ func (g *Git) fetch(dir, remote string, setHead bool, fs *fetchStep) bool {
 		_, _ = g.Executor.Run(dir, "git", "remote", "set-head", remote, "--auto")
 	}
 	return true
+}
+
+// LocalWork compares start, a remote's branch such as refs/remotes/origin/HEAD, with the local
+// branch of the same name and with the main checkout at dir.
+func (g *Git) LocalWork(dir, start string) LocalWork {
+	rest, ok := strings.CutPrefix(start, "refs/remotes/")
+	if !ok {
+		return LocalWork{}
+	}
+	// origin/HEAD stands for the branch it points to.
+	if strings.HasSuffix(rest, "/HEAD") {
+		target, err := g.Executor.Run(dir, "git", "symbolic-ref", "--quiet", start)
+		if err != nil {
+			return LocalWork{}
+		}
+		rest = strings.TrimPrefix(target, "refs/remotes/")
+	}
+	remote, branch, ok := strings.Cut(rest, "/")
+	if !ok || g.firstRef(dir, []string{"refs/heads/" + branch}) == "" {
+		return LocalWork{}
+	}
+	work := LocalWork{Branch: branch, Remote: remote}
+	// "<behind>\t<ahead>": the start's commits the local branch lacks, then the local branch's.
+	if out, err := g.Executor.Run(dir, "git", "rev-list", "--left-right", "--count", start+"...refs/heads/"+branch); err == nil {
+		if behind, ahead, ok := strings.Cut(out, "\t"); ok {
+			work.Behind, _ = strconv.Atoi(behind)
+			work.Ahead, _ = strconv.Atoi(ahead)
+		}
+	}
+	if head, err := g.Executor.Run(dir, "git", "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil && head == branch {
+		status, err := g.Executor.Run(dir, "git", "status", "--porcelain")
+		work.Uncommitted = err == nil && status != ""
+	}
+	return work
 }
 
 // firstRef is the first of refs that names a commit, or "".
