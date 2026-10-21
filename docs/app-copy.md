@@ -22,6 +22,7 @@ as they are. Write every new string in this voice, and bring a string you touch 
 | root checkout, main checkout, project root | your project |
 | uncommitted changes, working tree, dirty | changes you haven't committed, your changes |
 | unpushed commits, ahead | commits you haven't pushed, your commits |
+| fetch failed, offline | it couldn't be compared with what you've pushed |
 | base branch | your main (by its name) |
 
 ## Buttons

@@ -496,7 +496,7 @@ func TestAChosenStartHoldsWhenTheFetchFails(t *testing.T) {
 	r := runCLI(t, "create", "--json", "--no-editor", "--start", "local", "--project", project)
 	env := decodeLocalWork(t, r.stdout)
 	// The warning says where it really starts, not origin's stale copy, and so does the fetch row.
-	want := "The workroom starts from your local main, as you chose. It couldn't be checked against origin, so it may differ from what's there."
+	want := "The workroom starts from your local main, as you chose. It couldn't be compared with what you've pushed, so the two may differ."
 	if r.code != 0 || env.Warning != want {
 		t.Fatalf("--start local: exit %d warning %q, want %q: %s", r.code, env.Warning, want, r.stdout)
 	}

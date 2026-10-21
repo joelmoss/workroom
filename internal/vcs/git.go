@@ -67,7 +67,7 @@ func (g *Git) Create(dir, vcsName, path, base string, fallback bool, progress Pr
 
 // localStartWarning is the warning for a start switched to the local branch against a remote copy
 // that came with one: why the default base wasn't used, if it wasn't, that the workroom starts from
-// the local branch, and, when the fetch failed, that it couldn't be checked against the remote.
+// the local branch, and, when the fetch failed, that it couldn't be compared with what was pushed.
 func localStartWarning(base, remoteStart string, work LocalWork, fetchFailed bool) string {
 	var parts []string
 	// originDefault's fallback: the app-wide default base gave way to origin's default branch.
@@ -76,7 +76,7 @@ func localStartWarning(base, remoteStart string, work LocalWork, fetchFailed boo
 	}
 	parts = append(parts, fmt.Sprintf("The workroom starts from your local %s, as you chose.", work.Branch))
 	if fetchFailed {
-		parts = append(parts, fmt.Sprintf("It couldn't be checked against %s, so it may differ from what's there.", work.Remote))
+		parts = append(parts, "It couldn't be compared with what you've pushed, so the two may differ.")
 	}
 	return strings.Join(parts, " ")
 }
