@@ -132,11 +132,11 @@ The row leaves the sidebar at once. Workroom runs your project's `scripts/workro
 
 ### When the teardown fails
 
-If the teardown script fails or can't start, the delete stops. The workroom comes back in the sidebar with its folder and branch, but its terminals were closed before the script ran, so open new ones if you keep it. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again. If the script has not been approved on this Mac, the sheet is titled **Approve the teardown script of ‘name’?** instead and shows the script.
+If the teardown script fails or can't start, the delete stops. The workroom comes back in the sidebar with its folder and branch, but its terminals were closed before the script ran, so open new ones if you keep it. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again. If the script has not been approved on this Mac, the sheet is titled **Approve the teardown script?** instead, says which workroom and project it's for, and shows the script.
 
 ### Delete Anyway {nightly}
 
-The sheet has a **Delete Anyway** button that deletes the workroom without running the teardown script. If the script has not been approved on this Mac, the sheet shows it with an **Approve and Run** button. See [Prepare a project](../guides/prepare-a-project.md).
+The sheet has a **Delete Anyway** button that deletes the workroom without running the teardown script. If the script has not been approved on this Mac, the sheet shows it with an **Approve** button, which runs it and deletes the workroom. See [Prepare a project](../guides/prepare-a-project.md).
 
 > [!NOTE]
 > Deleting a remote workroom destroys its host and everything on it, including changes and commits that are not pushed. The confirmation dialog says so.

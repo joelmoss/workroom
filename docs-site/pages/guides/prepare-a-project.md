@@ -78,10 +78,17 @@ Setup and teardown scripts are code from the repository, so Workroom runs one on
 approved its exact contents on this Mac. The first create or delete that would run a new script, or one
 that changed since you approved it, stops first and shows it to you:
 
-- In the app, the creation pane's **Run setup script** step waits with the script shown. Click
-  **Approve** to run it, or **Cancel**. A delete offers **Approve and Run**, **Delete Anyway** and
-  **Cancel**.
+- In the app, a sheet says why it stopped and shows the script with line numbers and colours. The
+  button at its top right opens it in a window of its own. Creating a workroom offers **Approve**,
+  **Continue Without Script…** (creates the workroom without running it, after asking) and
+  **Cancel Creation**. Deleting one offers **Approve**, **Delete Anyway** and **Cancel**. Return
+  never approves; click it.
 - In a terminal, `workroom create` and `workroom delete` print the script and ask.
+  `workroom create --skip-setup` creates without running the setup script.
+
+Skipping a script approves nothing, so the next create asks again. When you include your
+uncommitted changes in a new workroom and you've edited the setup script, it's your edited copy that
+needs approving, since that's the one that runs.
 
 An approval covers the script's own contents only, not what it runs in turn, such as `npm install` and
 the `package.json` it reads. A script that git ignores in your root never needs approving, because a
