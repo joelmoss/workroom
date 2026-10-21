@@ -342,11 +342,12 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await waitUntil({ self.workroomNames(store).isEmpty }, "the workroom wasn't deleted")
   }
 
-  /// Value: protects=#363, a teardown this Mac has not approved offers Approve and Run beside Delete
-  /// Anyway, shows the script to read, and Approve and Run records the bytes shown then deletes with
-  /// the script; fails_when=no approval is offered, the script isn't shown, or the delete skips the
-  /// script or never runs again; no_claim=the sheet's drawing (UI tests)
-  func testAnUnapprovedTeardownOffersApproveAndRun() async throws {
+  /// Value: protects=#363, a teardown this Mac has not approved offers Approve beside Delete Anyway,
+  /// says why the delete stopped and for which workroom of which project, shows the script to read,
+  /// and Approve records the bytes shown then deletes with the script; fails_when=no approval is
+  /// offered, the message leaves out the reason, workroom or project, the script isn't shown, or the
+  /// delete skips the script or never runs again; no_claim=the sheet's drawing (UI tests)
+  func testAnUnapprovedTeardownOffersApprove() async throws {
     let a = workroom("a")
     let fake = DeleteRaceFakeCLI()
     fake.listResult = [project([a])]
@@ -360,10 +361,19 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     store.deleteWorkroom(a, in: project([a]))
     fake.allowDelete = true
-    await waitUntil({ store.errorApproval != nil }, "no Approve and Run was offered")
-    XCTAssertEqual(store.errorApproval?.label, "Approve and Run")
+    await waitUntil({ store.errorApproval != nil }, "no Approve was offered")
+    XCTAssertEqual(store.errorApproval?.label, "Approve")
     XCTAssertEqual(store.errorAction?.label, "Delete Anyway")
+    XCTAssertEqual(store.errorTitle, "Approve the teardown script?")
+    XCTAssertEqual(
+      store.errorMessage,
+      "Deleting ‘a’ in \(project([a]).displayName) runs scripts/workroom_teardown in the workroom "
+        + "first, and it is new, or changed since it was approved on this Mac. Read it, then "
+        + "approve it to run it and delete the workroom, or delete without running it.")
+    XCTAssertNotNil(store.errorDetails, "the error's codes went with the new message")
     XCTAssertEqual(store.errorLog, "#!/bin/sh\ndropdb a\n")
+    XCTAssertEqual(
+      store.errorScriptName, "workroom_teardown", "the sheet can't draw it as its file")
 
     fake.deleteFails = false
     fake.listResult = [project([])]
@@ -371,7 +381,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     store.clearError()
     approve.run()
     await waitUntil(
-      { fake.skips == [false, false] }, "Approve and Run didn't delete with the script")
+      { fake.skips == [false, false] }, "Approve didn't delete with the script")
     XCTAssertEqual(fake.approvals, ["workroom_teardown #!/bin/sh\ndropdb a\n"])
     await waitUntil({ self.workroomNames(store).isEmpty }, "the workroom wasn't deleted")
   }

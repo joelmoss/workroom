@@ -48,6 +48,48 @@ struct ScriptCodeView: View {
   }
 }
 
+/// A script to read before approving it, boxed: the creation pane's setup script and the error
+/// sheet's teardown script (#363). A longer script than fits scrolls. A button inside its top right
+/// corner, on a backing of its own so it stands out over the script, opens it in a window of its own.
+struct ScriptBox: View {
+  let text: String
+  let name: String
+  /// The box's accessibility identifier; its button's adds ".openInWindow".
+  let id: String
+  private let theme = ThemeService.shared
+
+  private static let maxHeight: CGFloat = 240
+
+  var body: some View {
+    ScriptCodeView(text: text, name: name)
+      .frame(height: min(ScriptCodeView.contentHeight(of: text), Self.maxHeight))
+      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .strokeBorder(theme.tokens.border, lineWidth: 1)
+      )
+      .accessibilityIdentifier(id)
+      .overlay(alignment: .topTrailing) {
+        PaneToolbarButton(
+          systemImage: "arrow.up.forward.square", help: "Open in new window",
+          accessibilityLabel: "Open script in new window", identifier: "\(id).openInWindow"
+        ) { ScriptWindow.show(text: text, name: name) }
+        .buttonStyle(
+          ToolbarIconButtonStyle(
+            wellSize: PaneTitleBarMetrics.wellSize,
+            horizontalPadding: PaneTitleBarMetrics.wellPadding)
+        )
+        .font(.system(size: PaneTitleBarMetrics.glyph))
+        .background(theme.tokens.panel, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .strokeBorder(theme.tokens.border, lineWidth: 1)
+        )
+        .padding(6)
+      }
+  }
+}
+
 /// A script in a window of its own, to read at length. It holds a copy of the text, so it stays
 /// open whatever happens to the create that showed it. ⌘W closes it, as any auxiliary window.
 final class ScriptWindow: NSWindow {

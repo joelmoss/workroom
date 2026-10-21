@@ -199,9 +199,36 @@ extension AppStore {
   private func refuseCreation(_ run: CreationRun, _ script: ScriptTrust) {
     run.awaitApproval(of: script)
     Self.announceCreation("scripts/\(script.name) needs approving")
+    presentSetupApproval(run)
   }
 
   // MARK: Failure actions
+
+  /// The setup script's approval sheet, the teardown's (`presentTeardownFailure`) for a create: the
+  /// script to read, Continue Without Script… (confirmed), Cancel Creation, and Approve. Opened when
+  /// the create stops, and again by the pane's Review Script….
+  func presentSetupApproval(_ run: CreationRun) {
+    guard creationRuns[run.id] === run, case .scriptNotTrusted(let script) = run.outcome else {
+      return
+    }
+    // The message first: setting it clears what the rest set.
+    errorMessage = CreationPanePresentation.setupApprovalMessage(for: run, script: script)
+    errorTitle = "Approve the setup script?"
+    errorLog = script.visibleText
+    errorScriptName = script.name
+    errorAction = ErrorAction(
+      label: "Continue Without Script…", destructive: false,
+      confirmation: CreationPanePresentation.skipConfirmation(scriptName: script.name)
+    ) { [weak self] in Task { await self?.skipSetupScript(run) } }
+    // A stale sheet (the run approved or replaced since) cancels nothing.
+    errorCancel = ErrorAction(label: "Cancel Creation") { [weak self] in
+      guard let self, self.creationRuns[run.id] === run else { return }
+      self.closeCreation(run)
+    }
+    errorApproval = ErrorAction(label: "Approve") { [weak self] in
+      Task { await self?.approveSetupScript(run) }
+    }
+  }
 
   /// Approve on a create its setup script stopped: the bytes shown are recorded as approved and the
   /// create starts again, in the same pane.

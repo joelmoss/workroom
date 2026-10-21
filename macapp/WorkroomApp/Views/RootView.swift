@@ -211,7 +211,9 @@ struct RootView: View {
         ErrorSheet(
           title: store.errorTitle ?? "Something went wrong", message: store.errorMessage ?? "",
           log: store.errorLog, details: store.errorDetails, action: store.errorAction,
-          approval: store.errorApproval, onDismiss: { store.clearError() })
+          approval: store.errorApproval, scriptName: store.errorScriptName,
+          cancel: store.errorCancel,
+          onDismiss: { store.clearError() })
       }
       // Add-project importer + delete confirmation, re-homed here from ProjectSidebar (issue #23 OV1) so
       // the ⌘O / ⌘⌫ menu commands present reliably even when the sidebar is collapsed in Workrooms View.

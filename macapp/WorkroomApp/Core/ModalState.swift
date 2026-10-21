@@ -60,7 +60,18 @@ struct PendingProjectSettings: Identifiable {
 
 /// A way past an error, offered on its sheet: a label and what it does.
 struct ErrorAction {
+  /// What the sheet asks before running an action that needs it.
+  struct Confirmation {
+    let title: String
+    let message: String
+    let button: String
+  }
+
   let label: String
+  /// Drawn as destructive (Delete Anyway); as an `errorAction` only.
+  var destructive = true
+  /// Asked, over the sheet, before `run`; as an `errorAction` only.
+  var confirmation: Confirmation? = nil
   let run: @MainActor () -> Void
 }
 
@@ -79,6 +90,8 @@ final class ModalState {
       errorLog = nil
       errorAction = nil
       errorApproval = nil
+      errorScriptName = nil
+      errorCancel = nil
     }
   }
   /// Title for the error alert. Nil falls back to the generic title; specific
@@ -93,9 +106,16 @@ final class ModalState {
   /// A way past the error the sheet offers beside OK (Delete Anyway, after a failed teardown). Set
   /// after the message, cleared with it.
   var errorAction: ErrorAction?
-  /// Approve and Run, for a script this Mac has not approved, whose text is `errorLog` (#363). With
+  /// Approve, for a script this Mac has not approved, whose text is `errorLog` (#363). With
   /// it the sheet's OK reads Cancel. Set after the message, cleared with it.
   var errorApproval: ErrorAction?
+  /// With `errorApproval`, the file name of the script `errorLog` holds, so the sheet draws it as
+  /// that file. Set after the message, cleared with it.
+  var errorScriptName: String?
+  /// With `errorApproval`, what Cancel (and Escape) does besides closing the sheet, under its own
+  /// label: Cancel Creation, for a create's setup script. Nil: Cancel only closes it. Set after the
+  /// message, cleared with it.
+  var errorCancel: ErrorAction?
 
   /// Dismisses the error sheet.
   func clearError() {
