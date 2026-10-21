@@ -87,6 +87,16 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
     }
   }
 
+  /// The orientation of the split directly holding leaf `id`: the axis that leaf's removal frees
+  /// space along. nil if `id` isn't a leaf of this tree, or the tree is that lone leaf.
+  public func axis(around id: Leaf) -> SplitOrientation? {
+    guard case .split(_, let o, _, let first, let second) = self else { return nil }
+    for child in [first, second] {
+      if case .leaf(let leaf) = child, leaf == id { return o }
+    }
+    return first.axis(around: id) ?? second.axis(around: id)
+  }
+
   /// Whether this (sub)tree holds the split NODE `splitID` — the divider-addressing counterpart to
   /// `contains(_:)`. Lets a caller holding several trees (the window's workroom split groups, issue #23
   /// follow-up) find which one owns the divider being dragged, instead of rewriting them all.
@@ -222,17 +232,22 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   /// other tiling terminal, and that is the point: the alternative resized panes the user never
   /// touched. The renderer subtracts a divider per split and rounds, so visible sizes land within a
   /// divider-thickness of even — sub-character drift on a terminal, deliberately not corrected here.
-  public func equalized() -> PaneLayout<Leaf> {
+  ///
+  /// `axis` limits the rebalance to dividers of that orientation, keeping every other divider where
+  /// it is: adding or removing a pane in a left/right split must never change any pane's height,
+  /// nor in a top/bottom split any pane's width. nil evens every divider (the menu's "Resize
+  /// Splits Evenly").
+  public func equalized(along axis: SplitOrientation? = nil) -> PaneLayout<Leaf> {
     switch self {
     case .leaf:
       return self
-    case .split(let sid, let o, _, let first, let second):
+    case .split(let sid, let o, let r, let first, let second):
       let ours = first.slots(along: o)
       let theirs = second.slots(along: o)
-      let ratio = CGFloat(ours) / CGFloat(ours + theirs)
+      let ratio = axis == nil || axis == o ? CGFloat(ours) / CGFloat(ours + theirs) : r
       return .split(
         id: sid, orientation: o, ratio: PaneRatio.sanitize(ratio),
-        first: first.equalized(), second: second.equalized())
+        first: first.equalized(along: axis), second: second.equalized(along: axis))
     }
   }
 }

@@ -459,11 +459,15 @@ enum PaneTreeLayout {
   /// Shared by the fit guard and the commit that follows it, so the guard can never admit a split
   /// whose real result it didn't measure. That divergence is the class
   /// `WorkroomSplitTests.testAdmissibilityMatchesWhatInsertActuallyDoes` exists to catch.
+  ///
+  /// `axis` limits the even to that direction's dividers: the orientation of the split being added,
+  /// or of the split a removed pane left.
   static func evenedIfHonourable<Leaf: Hashable>(
-    _ tree: PaneLayout<Leaf>, in container: CGRect?, enabled: Bool
+    _ tree: PaneLayout<Leaf>, in container: CGRect?, enabled: Bool,
+    along axis: SplitOrientation? = nil
   ) -> PaneLayout<Leaf> {
     guard enabled else { return tree }
-    let evened = tree.equalized()
+    let evened = tree.equalized(along: axis)
     guard let container else { return evened }
     return plansEvenly(evened, in: container) ? evened : tree
   }

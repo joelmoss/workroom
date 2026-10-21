@@ -1605,16 +1605,26 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.splitFocusedPane(for: target, orientation: .vertical)
   }
 
-  /// `a | (b / c)`: the stacked pair is ONE column, so `a` keeps half the width. The skew matters —
-  /// this shape sits at 0.5 with or without evening, so asserting 0.5 on a fresh tree would pass
-  /// against code that never evens at all (measured: it did).
-  func testAThirdPaneEvensTheSplit() {
+  /// `a | (b / c)`: a top/bottom split divides height only, so the left/right divider the user
+  /// dragged stays where it was. The skew matters — at 0.5 the assertion would pass whether or not
+  /// the split touched the other axis.
+  func testATopBottomSplitKeepsTheLeftRightDividers() {
     let s = makeSessions()
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
     s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
     s.splitFocusedPane(for: target, orientation: .vertical)
-    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.8, accuracy: 0.0001)
+  }
+
+  /// The other way round: `a / (b | c)` keeps the top/bottom divider the user dragged.
+  func testALeftRightSplitKeepsTheTopBottomDividers() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    s.setRatio(0.3, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.3, accuracy: 0.0001)
   }
 
   func testAThirdPaneOnTheSameAxisSplitsIntoThirds() {
@@ -1643,21 +1653,28 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(heights, [449], "both rows are the same height")
   }
 
+  /// `a | b | c`, three columns: closing one frees width, so the left/right dividers even out.
+  private func threeColumns(_ s: TerminalSessions) {
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+  }
+
   func testClosingAPaneEvensTheSurvivors() {
     let s = makeSessions()
-    threePanes(s)
+    threeColumns(s)
     s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)  // or 0.5 would hold either way
     let closed = s.focusedTab(for: target)!.id
     s.closeTab(closed, for: target)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
     XCTAssertEqual(
       rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
-      "the survivors must not keep the 1/3 budgeted for three panes")
+      "the survivors must not keep the 0.8 dragged for three panes")
   }
 
   func testExtractingAPaneEvensTheSurvivors() {
     let s = makeSessions()
-    threePanes(s)
+    threeColumns(s)
     s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)  // or 0.5 would hold either way
     let extracted = s.focusedTab(for: target)!.id
     s.extractFromSplit(extracted, for: target)
@@ -1685,11 +1702,11 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
     let solo = s.addTab(for: target).id
     let member = s.splits(for: target).first!.tabIDs[0]
-    s.moveTabIntoSplit(solo, ontoEdge: .bottom, of: member, for: target)
+    s.moveTabIntoSplit(solo, ontoEdge: .right, of: member, for: target)
     XCTAssertEqual(s.splits(for: target).first?.tabIDs.count, 3)
-    // The drop stacked the solo tab under the FIRST member. That subtree divides its own height,
-    // so as a COLUMN it is still one of two — the outer divider returns to a half.
-    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
+    // The drop put the solo tab beside the FIRST member: `(a | solo) | b`, three columns, so the
+    // outer divider moves to two thirds.
+    XCTAssertEqual(rootRatio(s) ?? -1, 2.0 / 3.0, accuracy: 0.0001)
   }
 
   func testPrefOffKeepsEveryDivider() {
@@ -1698,7 +1715,10 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
     s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
-    s.splitFocusedPane(for: target, orientation: .vertical)
+    // Split the wide left pane on the same axis, or neither half would even with the pref on.
+    s.focus(s.split(for: target)!.tabIDs[0], for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3, "precondition: the split was made")
     XCTAssertEqual(rootRatio(s) ?? -1, 0.8, accuracy: 0.0001, "the split left it alone")
     s.closeTab(s.focusedTab(for: target)!.id, for: target)
     XCTAssertEqual(rootRatio(s) ?? -1, 0.8, accuracy: 0.0001, "and so did the close")
@@ -1709,20 +1729,20 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
   /// vacuous: the floor refuses the insert outright, so the ratio never moves for an entirely
   /// different reason and the test passes whether the honourability check exists or not.
   func testACrampedContainerKeepsTheDividersInstead() {
-    let s = makeSessions(space: CGRect(x: 0, y: 0, width: 800, height: 900))
+    let s = makeSessions(space: CGRect(x: 0, y: 0, width: 800, height: 500))
     s.addTab(for: target)
-    s.splitFocusedPane(for: target, orientation: .horizontal)
-    s.splitFocusedPane(for: target, orientation: .vertical)  // a | (b / c), all three admitted
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    s.splitFocusedPane(for: target, orientation: .vertical)  // a / b / c, all three admitted
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3, "precondition: three panes exist")
     s.setRatio(0.62, forSplit: rootSplitID(s)!, for: target)
 
-    // Close one of the stacked pair. The survivors are `a | b` — two columns of 800pt, which evening
-    // would split 50/50 at 399 each, above the floor… so this one IS honourable and evens.
+    // Close one row. The survivors are `a / b` — two rows of 500pt, which evening would split
+    // 50/50 at 249 each, above the 150pt floor… so this one IS honourable and evens.
     let closed = s.focusedTab(for: target)!.id
     s.closeTab(closed, for: target)
     XCTAssertEqual(
       rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
-      "800pt holds two 399pt columns, so the even-out is honoured")
+      "500pt holds two 249pt rows, so the even-out is honoured")
   }
 
   /// The other half, where the container genuinely cannot honour it. Reaching it takes a window that
@@ -1755,15 +1775,14 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.paneSpace[target.id] = nil
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
-    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)  // or 0.5 would hold either way
-    s.splitFocusedPane(for: target, orientation: .vertical)
-    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertEqual(rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "three columns are thirds")
   }
 
-  /// The shape manual QA produced: two columns, each split vertically, then one pane closed. The
-  /// left column collapses to a single full-height pane and the root ratio is still the 0.5 that
-  /// budgeted two columns — so the survivor keeps half the width where three leaves want a third.
-  func testClosingAPaneInATwoColumnGridEvensTheSurvivors() {
+  /// Two columns, each split top/bottom, then one pane closed: the left column collapses to a single
+  /// full-height pane, and no pane's width changes.
+  func testClosingAPaneInAGridKeepsTheOtherAxisDividers() {
     let s = makeSessions()
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)  // t1 | t2
@@ -1779,8 +1798,8 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.closeTab(bottomLeft, for: target)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3)
     XCTAssertEqual(
-      rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
-      "still two columns — the left one just stopped being divided")
+      rootRatio(s) ?? -1, 0.8, accuracy: 0.0001,
+      "the close freed height only, so the left/right divider the user dragged stays")
   }
 
   func testTheMenuActionStillEvensWithThePrefOff() {

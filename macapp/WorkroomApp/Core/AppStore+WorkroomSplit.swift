@@ -186,7 +186,7 @@ extension AppStore {
         sid, beside: beside, orientation: edge.orientation,
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
       let stored = PaneTreeLayout.evenedIfHonourable(
-        prospective, in: space, enabled: autoEvenSplits())
+        prospective, in: space, enabled: autoEvenSplits(), along: edge.orientation)
       return PaneTreeLayout.fitsEveryPane(
         stored, in: space, notWorseThan: base, splitting: beside)
     }
@@ -227,12 +227,11 @@ extension AppStore {
     // A survivor of the group `sid` is LEAVING, captured before the detach so the source group can be
     // found again afterwards (indices shift when a group dissolves). A cross-group move removes a
     // member from that group exactly as the ✕ does, so its survivors are owed the same even-out —
-    // without this, dragging C out of a skewed `A | (B / C)` left A and B at 0.8 while removing C
-    // through the menu rebalanced them.
-    let sourceSurvivor: SidebarID? =
-      adds
-      ? splitIndex(containing: sid).flatMap { workroomSplits[$0].removingLeaf(sid)?.firstTabID }
-      : nil
+    // without this, dragging C out of a skewed `A | B | C` left A and B at 0.8 while removing C
+    // through the menu rebalanced them. Along the axis C left only, as the ✕ does.
+    let sourceGroup = adds ? splitIndex(containing: sid).map { workroomSplits[$0] } : nil
+    let sourceSurvivor = sourceGroup?.removingLeaf(sid)?.firstTabID
+    let sourceAxis = sourceGroup?.axis(around: sid)
     // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
     // only, no selection re-point: `sid` is about to be focused anyway.
     detachFromSplitGroup(sid)
@@ -240,7 +239,7 @@ extension AppStore {
       let sourceIndex = splitIndex(containing: sourceSurvivor)
     {
       workroomSplits[sourceIndex] = PaneTreeLayout.evenedIfHonourable(
-        workroomSplits[sourceIndex], in: workroomPaneSpace, enabled: true)
+        workroomSplits[sourceIndex], in: workroomPaneSpace, enabled: true, along: sourceAxis)
     }
     if let index = splitIndex(containing: beside) {
       let grown = workroomSplits[index].inserting(
@@ -250,7 +249,7 @@ extension AppStore {
       // dropped from the tree by `pruneWorkroomSplitToLiveLeaves` on the next reload, not before.
       // The pruned-and-evened candidate cannot go through `evenedIfHonourable` (which evens the
       // tree it is handed), so this one site asks the honourability question directly.
-      if adds, autoEvenSplits(), let evened = prunedAndEvened(grown),
+      if adds, autoEvenSplits(), let evened = prunedAndEvened(grown, along: edge.orientation),
         workroomPaneSpace.map({ PaneTreeLayout.plansEvenly(evened, in: $0) }) ?? true
       {
         workroomSplits[index] = evened
@@ -354,14 +353,16 @@ extension AppStore {
     // edit, which shares one implementation with the move path so the two can't diverge on the
     // ≥2-members invariant.
     let survivor = workroomSplits[index].removingLeaf(sid)?.firstTabID
+    let axis = workroomSplits[index].axis(around: sid)
     detachFromSplitGroup(sid)
     // The survivors' dividers still budget space for the pane that just left — `A | (B / C)` at
-    // root 1/3 collapses to `A | B` still at 1/3 — so even them (issue #126). Plain `equalized`,
+    // root 1/3 collapses to `A | B` still at 1/3 — so even them (issue #126), along the axis the
+    // member left only, so no other direction moves. Plain `equalized`,
     // not the pruning variant: `survivor` was chosen above and a prune-driven dissolve here would
     // strand the selection on it. Indices shift when a group dissolves, so re-derive.
     if autoEvenSplits(), let survivor, let index = splitIndex(containing: survivor) {
       workroomSplits[index] = PaneTreeLayout.evenedIfHonourable(
-        workroomSplits[index], in: workroomPaneSpace, enabled: true)
+        workroomSplits[index], in: workroomPaneSpace, enabled: true, along: axis)
     }
     if wasFocused, let survivor { focusWorkroomMember(survivor) }
   }
@@ -465,10 +466,12 @@ extension AppStore {
   /// deliberately NOT called by `removeWorkroomSplitMember`, which picks the survivor to focus
   /// before its structural edit: a prune that dissolved the group afterwards would leave the
   /// selection on a workroom that no longer resolves, so that path evens without pruning.
-  private func prunedAndEvened(_ group: PaneLayout<SidebarID>) -> PaneLayout<SidebarID>? {
+  private func prunedAndEvened(
+    _ group: PaneLayout<SidebarID>, along axis: SplitOrientation? = nil
+  ) -> PaneLayout<SidebarID>? {
     let live = liveLeavesOnly(group)
     guard live.tabIDs.count >= 2 else { return nil }
-    return live.equalized()
+    return live.equalized(along: axis)
   }
 
   /// `group` with every leaf whose workroom no longer resolves dropped — what the renderer shows and
@@ -506,15 +509,19 @@ extension AppStore {
       }
       if live.count >= 2 {
         var pruned = group
+        var axes: Set<SplitOrientation> = []
         for sid in group.tabIDs where target(for: sid) == nil {
+          if let axis = pruned.axis(around: sid) { axes.insert(axis) }
           pruned = pruned.removingLeaf(sid) ?? pruned
         }
         // This branch has already proven the group lost a leaf, so it is a removal like any other
         // (issue #126): even the survivors rather than leave them budgeted for the workroom that
-        // went away. Plain `equalized` — the tree in hand is the pruned one.
+        // went away, along the axes the dead leaves left (both, when they left different ways).
+        // Plain `equalized` — the tree in hand is the pruned one.
         kept.append(
           PaneTreeLayout.evenedIfHonourable(
-            pruned, in: workroomPaneSpace, enabled: autoEvenSplits()))
+            pruned, in: workroomPaneSpace, enabled: autoEvenSplits(),
+            along: axes.count == 1 ? axes.first : nil))
       } else if let survivor = live.first {
         survivors.append(survivor)
       }
