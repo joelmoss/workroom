@@ -278,8 +278,13 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 				carryChanges = choice == StartLocalWithChanges && work.Uncommitted
 			}
 			if !s.SkipSetup {
-				// At the start chosen: a local branch can carry another setup script.
-				if refused = s.gateSetup(dir, start); refused != nil {
+				// At the start chosen: a local branch can carry another setup script, and copied
+				// changes can carry an edited one, which is then the one that runs.
+				gate := func() error { return s.gateSetup(dir, start) }
+				if carryChanges {
+					gate = func() error { return s.gateRootSetup(dir) }
+				}
+				if refused = gate(); refused != nil {
 					return "", refused
 				}
 			}

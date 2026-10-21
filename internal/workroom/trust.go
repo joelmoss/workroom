@@ -248,6 +248,17 @@ func (s *Service) gateSetup(dir, start string) error {
 	return s.gate(dir, sc)
 }
 
+// gateRootSetup is gate for the root's working copy of the setup script: what a create that copies
+// the main checkout's changes in runs, edits and all, so an edited script is judged, and can be
+// approved, before anything exists.
+func (s *Service) gateRootSetup(dir string) error {
+	sc, ok, err := s.RootScript(dir, SetupScript)
+	if err != nil || !ok {
+		return err
+	}
+	return s.gate(dir, sc)
+}
+
 // gateFound is gate for the file findScript found, about to run in the workroom at wrPath.
 func (s *Service) gateFound(dir, name, wrPath, path string) error {
 	sc, ok, err := s.foundScript(dir, name, wrPath, path)

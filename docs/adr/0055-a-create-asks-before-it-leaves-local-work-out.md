@@ -10,7 +10,7 @@ When there is local work, the create asks where it starts, on every create; noth
 - `local`: the local branch, with its unpushed commits. Offered only when there are some.
 - `local-with-changes`: the local branch, and the main checkout's uncommitted changes copied into the new workroom (`git stash create` and `stash apply`, plus untracked files git doesn't ignore, regular files only; an untracked folder that is a repository of its own isn't copied, and the step warns naming it). The main checkout keeps them: copied, never moved. Offered only when the main checkout has the base branch out with changes. The copy needs the workroom to start from the main checkout's own commit; if that has moved, the step warns rather than leave conflicts.
 
-The setup script is judged at the start chosen, since a local branch can carry another one.
+The setup script is judged at the start chosen, since a local branch can carry another one; when the changes are copied, the root's working copy is judged instead, since an edited script comes along and is the one that runs.
 
 Who asks: a person at a terminal is asked (`ChooseStartFn`); the app passes `--start ask`, which refuses before anything exists (`LocalWorkLeftOut`, exit 3, `local_work` in the envelope) and asks in a window-modal choice, then creates again with the answer. A create with nobody to ask (a script, `--json` without `--start`) keeps starting from `origin`, now with a warning naming what it left out, so no existing caller starts failing.
 
