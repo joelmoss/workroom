@@ -303,6 +303,46 @@ final class MarkdownRenderPipelineTests: XCTestCase {
     XCTAssertEqual(fill, "rgb(0, 0, 0)")
   }
 
+  // Value: protects=the preview stays covered until a diagram on its first screen is drawn, so
+  // opening a diagram doc never shows the source text and then jumps; fails_when=__render stops
+  // returning the drawing's promise (the Swift side then uncovers before Pele has loaded);
+  // why_new=the promise is new; seam=none; no_claim=the Swift side's wait (needs a displayed view).
+  func testRenderSettlesOnceTheDiagramsOnScreenAreDrawn() async throws {
+    let drawn = try await webView.callAsyncJavaScript(
+      """
+      await window.__render(source);
+      return document.querySelectorAll('#content pre.mermaid svg').length;
+      """, arguments: ["source": "# Top\n\n```mermaid\ngraph TD\n  A --> B\n```\n"],
+      contentWorld: .page)
+    XCTAssertEqual(drawn as? Int, 1, "__render settled before the diagram was drawn")
+  }
+
+  // Value: protects=diagrams take the theme's colours, so they stay readable in a dark theme;
+  // fails_when=the --pele-* mapping in styles.css goes, or a Pele bump renames the variables it
+  // reads, and diagrams keep Pele's light defaults; why_new=the mapping is the only theming path
+  // since mermaid's theme name went; seam=none; no_claim=each Pele colour role.
+  func testDiagramColoursFollowTheTheme() async throws {
+    _ = try await renderedText("```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n")
+    _ = try await webView.evaluateJavaScript(
+      "window.__applyTheme({ bg: 'rgba(30, 31, 36, 1)', fg: 'rgba(216, 218, 224, 1)' }); 'ok'")
+    var colours: [String] = []
+    for _ in 0..<100 {
+      colours =
+        try await webView.evaluateJavaScript(
+          """
+          (() => {
+            const svg = document.querySelector('#content pre.mermaid svg');
+            if (!svg) return [];
+            const style = getComputedStyle(svg);
+            return [style.getPropertyValue('--_bg').trim(), style.getPropertyValue('--_fg').trim()];
+          })()
+          """) as? [String] ?? []
+      if !colours.isEmpty { break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    XCTAssertEqual(colours, ["rgba(30, 31, 36, 1)", "rgba(216, 218, 224, 1)"])
+  }
+
   // MARK: - Progressive first render
 
   /// 400 sections of ~60 characters: well past the first slice.

@@ -42,9 +42,8 @@ struct PlainFileViewer: View {
   @State private var content = ""
   /// True when the file was longer than `lineCap` and only the head is shown.
   @State private var truncated = false
-  /// Whether the Markdown preview has painted its first render. The `WKWebView` needs a moment to
-  /// spawn its content process and parse ~3.5 MB of bundled script before `__render` can run, and
-  /// until then it is an empty themed rectangle — so the preview shows a loader instead of blankness.
+  /// Whether the Markdown preview has painted its first render. Until `__render` has run and WebKit
+  /// has painted, the `WKWebView` is an empty rectangle, so the preview covers it with a themed panel.
   @State private var previewRendered = false
   /// The themed, (optionally) syntax-highlighted content the `NSTextView` renders. Plain immediately
   /// on load, upgraded when highlighting arrives / the theme changes.
@@ -263,7 +262,7 @@ struct PlainFileViewer: View {
         )
         // Cover the web view's boot window with a themed panel from the first frame, so opening a
         // Markdown file never shows an empty white rectangle. Most previews paint in under 100 ms,
-        // so the spinner only joins the cover once the render has taken longer than that.
+        // so the spinner only joins the cover once the render has taken `DelayedSpinner.delay`.
         .overlay {
           if !previewRendered {
             centered { DelayedSpinner() }

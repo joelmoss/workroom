@@ -109,21 +109,23 @@ function renderMarkdown(source) {
   const root = document.getElementById("content");
   if (root.firstChild !== null) {
     root.replaceChildren(clean);
-    renderMermaid(promoteMermaidBlocks(root));
     window.__renderComplete = Promise.resolve();
-    return;
+    return renderMermaid(promoteMermaidBlocks(root));
   }
+  let firstDiagrams = null;
   window.__renderComplete = new Promise((resolve) => {
     const step = (chars) => {
       if (generation !== renderGeneration) return resolve();  // a newer render took over
       const slice = takeSlice(clean, chars);
       root.append(slice);
-      renderMermaid(promoteMermaidBlocks(root));
+      const drawn = renderMermaid(promoteMermaidBlocks(root));
+      if (firstDiagrams === null) firstDiagrams = drawn;
       if (clean.firstChild === null) return resolve();
       afterPaint(() => step(LATER_SLICE_CHARS));
     };
     step(FIRST_SLICE_CHARS);
   });
+  return firstDiagrams;
 }
 
 /// The leading top-level nodes of `fragment`, moved out, up to about `chars` characters of text.
@@ -176,13 +178,15 @@ let diagramSeq = 0;
 async function renderMermaid(holders) {
   if (holders.length === 0) return;  // the common case: no diagrams, so Pele is never fetched
   if (!(await loadPele())) return;  // engine unavailable — leave every block's source text
-  holders.forEach((holder) => {
+  // Widths first: a read after a diagram is drawn would force the page to lay out again.
+  const widths = holders.map((holder) => holder.clientWidth);
+  holders.forEach((holder, i) => {
     try {
       const { svg } = pele.render(holder.textContent, {
         idPrefix: "d" + diagramSeq++ + "-",
         fontFamily: DIAGRAM_FONT,
         fontSize: 14,
-        maxWidth: holder.clientWidth || undefined,
+        maxWidth: widths[i] || undefined,
       });
       holder.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
     } catch {
@@ -191,9 +195,11 @@ async function renderMermaid(holders) {
   });
 }
 
+// Returns a promise that settles once the diagrams in what is now on screen are drawn, so the Swift
+// side can keep the preview covered until then rather than uncover their source text for a frame.
 window.__render = function (source) {
   try {
-    renderMarkdown(source);
+    return renderMarkdown(source);
   } catch (e) {
     document.getElementById("content").textContent = String(source);
   }

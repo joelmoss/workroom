@@ -4,11 +4,10 @@ import XCTest
 ///
 /// Two behaviours that only exist on screen, so neither is reachable from the unit gate:
 ///
-/// 1. **The panel is never blank while the preview boots.** The web view has to spawn a WebContent
-///    process and parse ~3.5 MB of bundled script (mermaid alone is 3.4 MB, ~104 ms of the ~117 ms
-///    parse) before `__render` can run. That window used to show an empty rectangle; it now shows a
-///    loader. `MarkdownFirstRenderTests` covers the *signal*, but only a UI test can prove the loader
-///    is actually in the view hierarchy.
+/// 1. **The panel is never blank while the preview boots.** Until `__render` has run and painted, the
+///    web view is an empty rectangle. That window used to show nothing; it now shows a themed cover,
+///    with a spinner once it has lasted 250 ms. `MarkdownFirstRenderTests` covers the *signal*, but
+///    only a UI test can prove the loader is actually in the view hierarchy.
 /// 2. **The preview renders the WHOLE file.** The seeded fixture mentions a raw `<title>` in prose
 ///    before its tail marker — the exact shape that made the preview silently render only the head of
 ///    the document. Asserting the tail in the live web view is the end-to-end version of that fix.

@@ -669,10 +669,10 @@ enum UITestFixture {
   static let seededMarkdownTailMarker = "UITEST_MARKDOWN_TAIL"
 
   /// When set (`-WorkroomUITestHoldPreviewLoader 1`), `PlainFileViewer` ignores the Markdown preview's
-  /// first-render signal, so the loading state stays on screen. The real loader lives for only a few
-  /// hundred milliseconds (WebContent process spawn + ~3.5 MB of bundled script), which is far too
-  /// racy for an XCUITest to catch — this pins it so the loading state can be asserted deterministically
-  /// instead of being left to manual QA.
+  /// first-render signal, so the loading state stays on screen. The real cover lives for well under a
+  /// second and its spinner only appears after 250 ms, which is far too racy for an XCUITest to
+  /// catch — this pins it so the loading state can be asserted deterministically instead of being
+  /// left to manual QA.
   static var holdPreviewLoader: Bool {
     flag("WorkroomUITestHoldPreviewLoader")
   }

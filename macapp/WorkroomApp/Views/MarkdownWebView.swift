@@ -205,6 +205,8 @@ struct MarkdownWebView: NSViewRepresentable {
       // The double `requestAnimationFrame` is what makes `onFirstRender` mean *painted* rather than
       // *in the DOM*: the first callback runs before the frame that includes the new content, the
       // second after it. Hiding the loader on DOM-insertion alone would uncover one blank frame.
+      // They wait for `__render`'s promise first: a diagram on screen is drawn once Pele has loaded,
+      // and uncovering before then would show its source text, then shift the page when it draws.
       //
       // The `setTimeout` is not belt-and-braces, it is load-bearing. WebKit does not run animation
       // frames for a web view that isn't being displayed — zero-sized, off-screen, in an occluded
@@ -213,9 +215,10 @@ struct MarkdownWebView: NSViewRepresentable {
       // web view has no window at all). Whichever fires first wins; `resolve` is idempotent.
       webView.callAsyncJavaScript(
         """
-        window.__render(source);
+        const diagramsDrawn = window.__render(source);
         await new Promise((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(resolve));
+          Promise.resolve(diagramsDrawn).then(() =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)));
           setTimeout(resolve, \(Self.paintFallbackMilliseconds));
         });
         """,
