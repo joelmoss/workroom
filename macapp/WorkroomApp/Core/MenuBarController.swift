@@ -10,7 +10,8 @@ import SwiftUI
 /// unconditionally toggles its window on click with no hook to intercept, which is why this owns the
 /// status item and popover directly.
 ///
-/// It's still a second *surface*, not a second source of truth: the glyph + count and the popover
+/// It's still a second *surface*, not a second source of truth: the glyph (yellow while anything is
+/// pending), the optional count and the popover
 /// body both read from `WindowRegistry.shared` (the count aggregated across every window, issue #70),
 /// and the list is the same `MenuBarNotificationsView`/`NotificationsList` the in-app bell uses.
 @MainActor
@@ -20,14 +21,19 @@ final class MenuBarController {
   private let popover = NSPopover()
   private var cancellables: Set<AnyCancellable> = []
   private var visibilityObserver: Task<Void, Never>?
+  private var countObserver: Task<Void, Never>?
+  private var appearanceObserver: NSKeyValueObservation?
+  private let icon: NSImage? = {
+    let icon = NSImage(named: "MenuBarIcon")
+    icon?.isTemplate = true  // follow the menu bar's appearance (and dim when inactive)
+    return icon
+  }()
 
   init(registry: WindowRegistry) {
     self.registry = registry
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
     if let button = statusItem.button {
-      let icon = NSImage(named: "MenuBarIcon")
-      icon?.isTemplate = true  // follow the menu bar's appearance (and dim when inactive)
       button.image = icon
       button.imagePosition = .imageLeft  // count, when shown, sits to the icon's right
       button.target = self
@@ -58,6 +64,17 @@ final class MenuBarController {
       .store(in: &cancellables)
     applyCount(registry.aggregateUnread)
 
+    // The highlighted logo picks its outline by the bar's light/dark appearance, which follows the
+    // wallpaper behind it; rebuild it on a change rather than trust AppKit to redraw a cached image.
+    appearanceObserver = statusItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in
+      MainActor.assumeIsolated { self.map { $0.applyCount($0.registry.aggregateUnread) } }
+    }
+    countObserver = Task { [weak self] in
+      for await _ in Defaults.updates(.showMenuBarCount, initial: false) {
+        self.map { $0.applyCount($0.registry.aggregateUnread) }
+      }
+    }
+
     // Show/hide the item live with the `showMenuBarItem` setting (issue #33) — same key as the
     // Settings checkbox. Keep the item created either way; just toggle its visibility.
     statusItem.isVisible = Defaults[.showMenuBarItem]
@@ -68,16 +85,23 @@ final class MenuBarController {
     }
   }
 
-  deinit { visibilityObserver?.cancel() }
+  deinit {
+    visibilityObserver?.cancel()
+    countObserver?.cancel()
+  }
 
-  /// Mirror the aggregate unread count onto the button: the bare count beside the glyph when there's
-  /// one (matching the in-app `UnreadCount.label` cap), nothing otherwise.
+  /// Mirror what's pending onto the button: the logo turns Workroom yellow, and with the
+  /// `showMenuBarCount` setting on, the bare count sits beside it (matching the in-app
+  /// `UnreadCount.label` cap).
   private func applyCount(_ total: Int) {
     guard let button = statusItem.button else { return }
+    let waiting = ProgramStatusAlerts.shared.waiting
     let breakdown = Self.breakdown(
-      waiting: ProgramStatusAlerts.shared.waiting,
+      waiting: waiting,
       unread: registry.allStores.reduce(0) { $0 + $1.notifications.unreadExcludingRequests })
-    button.title = total > 0 ? UnreadCount.label(total) : ""
+    let pending = total > 0 || !waiting.isEmpty
+    button.image = pending ? icon.map(Self.highlighted) : icon
+    button.title = total > 0 && Defaults[.showMenuBarCount] ? UnreadCount.label(total) : ""
     button.toolTip = breakdown
     button.setAccessibilityLabel(breakdown.map { "Workroom, \($0)" } ?? "Workroom notifications")
   }
@@ -94,6 +118,39 @@ final class MenuBarController {
     guard !parts.isEmpty else { return nil }
     let stale = waiting.count { $0.stale }
     return parts.joined(separator: ", ") + (stale > 0 ? " (\(stale) may be out of date)" : "")
+  }
+
+  /// The logo's yellow, sampled from `AppMarkColor`.
+  static let workroomYellow = NSColor(srgbRed: 1, green: 0xEB / 255, blue: 0, alpha: 1)
+
+  /// `glyph` filled Workroom yellow. Yellow alone all but vanishes on a light menu bar, so there each
+  /// shape gets a thin dark ring; a dark bar needs none. Drawn lazily so the light/dark check reads
+  /// the bar's appearance at draw time.
+  static func highlighted(_ glyph: NSImage) -> NSImage {
+    let image = NSImage(size: glyph.size, flipped: false) { rect in
+      let light = NSAppearance.currentDrawing().bestMatch(from: [.aqua, .darkAqua]) == .aqua
+      if light {
+        let ring = tinted(glyph, NSColor.black.withAlphaComponent(0.3))
+        for dx in [-0.5, 0, 0.5] {
+          for dy in [-0.5, 0, 0.5] where dx != 0 || dy != 0 {
+            ring.draw(in: rect.offsetBy(dx: dx, dy: dy))
+          }
+        }
+      }
+      tinted(glyph, workroomYellow).draw(in: rect)
+      return true
+    }
+    image.isTemplate = false
+    return image
+  }
+
+  private static func tinted(_ glyph: NSImage, _ color: NSColor) -> NSImage {
+    NSImage(size: glyph.size, flipped: false) { rect in
+      glyph.draw(in: rect)
+      color.set()
+      rect.fill(using: .sourceAtop)
+      return true
+    }
   }
 
   @objc private func handleClick() {

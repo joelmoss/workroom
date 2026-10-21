@@ -17,7 +17,9 @@ When a terminal in the background posts a notification, its tab and its project 
 
 ## The menu bar
 
-Workroom can show its logo in the macOS menu bar, with the same count across all your windows. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**. In Workroom 2.1.0 this switch is in **Settings ▸ General**.
+Workroom can show its logo in the macOS menu bar. The logo turns yellow while any of your windows has an unread notification or a request waiting. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**. In Workroom 2.1.0 this switch is in **Settings ▸ General**.
+
+To see how many are pending, turn on **Settings ▸ Notifications ▸ Show unread count in the menu bar**. The count then sits beside the logo, as it always did before.
 
 Click it to open the list. When there is nothing pending, a click brings Workroom to the front instead. Click an entry to open its terminal.
 

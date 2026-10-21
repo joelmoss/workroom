@@ -172,6 +172,10 @@ extension Defaults.Keys {
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true, suite: .app)
 
+  /// Whether the menu bar item shows the pending count beside its logo. Off by default: the logo
+  /// turning yellow already says something is pending.
+  static let showMenuBarCount = Key<Bool>("showMenuBarCount", default: false, suite: .app)
+
   /// Alert, and count in the Dock badge, when a program in a terminal waits on the user (#358).
   /// Off leaves the marks and the menu bar's list; programs' own notifications are unchanged.
   static let notifyWhenTerminalNeedsMe = Key<Bool>(
