@@ -32,7 +32,7 @@ struct TargetTerminalDetail: View {
       if let run {
         // On top, so when the run ends it fades out over the terminal mounting beneath it (design
         // D13); under Reduce Motion, a plain swap.
-        CreationPane(run: run)
+        CreationPane(run: run, isActive: surfaceActive)
           .zIndex(1)
           .transition(.opacity)
       } else if target.opensTerminals {
