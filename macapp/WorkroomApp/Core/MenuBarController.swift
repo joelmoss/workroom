@@ -101,9 +101,14 @@ final class MenuBarController {
       unread: registry.allStores.reduce(0) { $0 + $1.notifications.unreadExcludingRequests })
     let pending = total > 0 || !waiting.isEmpty
     button.image = pending ? icon.map(Self.highlighted) : icon
-    button.title = total > 0 && Defaults[.showMenuBarCount] ? UnreadCount.label(total) : ""
+    button.title = Self.title(total: total, showsCount: Defaults[.showMenuBarCount])
     button.toolTip = breakdown
     button.setAccessibilityLabel(breakdown.map { "Workroom, \($0)" } ?? "Workroom notifications")
+  }
+
+  /// The text beside the logo: the count only when there is one and the setting asks for it.
+  static func title(total: Int, showsCount: Bool) -> String {
+    total > 0 && showsCount ? UnreadCount.label(total) : ""
   }
 
   /// "2 requests waiting, 1 unread notification (1 may be out of date)", or nil with neither.

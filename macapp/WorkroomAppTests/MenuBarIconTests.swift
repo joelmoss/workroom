@@ -40,6 +40,15 @@ final class MenuBarIconTests: XCTestCase {
     }
   }
 
+  // Value: protects=the menu bar count shows only with showMenuBarCount on; fails_when=the setting
+  // check is dropped or inverted; why_new=no test read the setting; seam=none; no_claim=the live
+  // status item's redraw
+  func testTheCountShowsOnlyWhenTheSettingIsOn() {
+    XCTAssertEqual(MenuBarController.title(total: 3, showsCount: true), UnreadCount.label(3))
+    XCTAssertEqual(MenuBarController.title(total: 3, showsCount: false), "")
+    XCTAssertEqual(MenuBarController.title(total: 0, showsCount: true), "")
+  }
+
   /// The half point just left of the square's edge (pixel 7 of 36, the square starts at 8): a dark
   /// ring on a light bar, nothing on a dark one.
   func testOnlyALightBarGetsTheRing() {
