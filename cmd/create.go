@@ -16,6 +16,8 @@ import (
 var (
 	createProject  string
 	createNoEditor bool
+	// Create without the setup script (the app's Continue Without Script), approving nothing.
+	createSkipSetup bool
 	// The desktop app's remote workrooms (#253): the descriptor and the checkout's path on the host.
 	createHost     string
 	createHostPath string
@@ -33,6 +35,7 @@ var createCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		svc.SkipSetup = createSkipSetup
 		dir, err := resolveProject(createProject)
 		if err != nil {
 			return err
@@ -176,5 +179,6 @@ func init() {
 	_ = createCmd.Flags().MarkHidden("host-path")
 	createCmd.Flags().StringVar(&createProject, "project", "", "Project directory to create the workroom in (defaults to the current directory)")
 	createCmd.Flags().BoolVar(&createNoEditor, "no-editor", false, "Do not offer to open the new workroom in $EDITOR")
+	createCmd.Flags().BoolVar(&createSkipSetup, "skip-setup", false, "Create without running the setup script, and without asking to approve it")
 	rootCmd.AddCommand(createCmd)
 }

@@ -195,6 +195,11 @@ protocol WorkroomCLIProtocol: Sendable {
   /// that then fails doesn't lose it) once the workroom exists.
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
+  /// `create`, with `skipSetup` neither judging nor running the setup script: Continue Without
+  /// Script, for one this Mac has not approved.
+  func create(
+    project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+  ) async throws -> CreateResponse
   func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws
   /// `delete`, with `skipTeardown` running no teardown script: Delete Anyway, after it failed.
   func delete(
@@ -234,6 +239,13 @@ extension WorkroomCLIProtocol {
     name: String, project: String, skipTeardown: Bool, onLog: (@Sendable (String) -> Void)?
   ) async throws {
     try await delete(name: name, project: project, onLog: onLog)
+  }
+
+  /// Fakes that never see Continue Without Script need not implement it: it is a plain create there.
+  func create(
+    project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+  ) async throws -> CreateResponse {
+    try await create(project: project, onEvent: onEvent)
   }
 
   func deleteProject(
@@ -454,13 +466,19 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
   {
+    try await create(project: project, skipSetup: false, onEvent: onEvent)
+  }
+
+  func create(
+    project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+  ) async throws -> CreateResponse {
     // Setup scripts run inside this call, so resolve the user's environment first — freshly, in
     // case a tool was installed or a dotfile edited since launch. Usually already warm: the New
     // Workroom dialog kicks the same single-flighted probe when it opens.
     await ShellEnvironment.refresh()
-    let result = try await run(
-      ["create", "--json", "--no-editor", "--project", project], timeout: 600, userInitiated: true,
-      onEvent: onEvent)
+    var args = ["create", "--json", "--no-editor", "--project", project]
+    if skipSetup { args.append("--skip-setup") }
+    let result = try await run(args, timeout: 600, userInitiated: true, onEvent: onEvent)
     return try decode(CreateResponse.self, from: result)
   }
 

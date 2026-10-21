@@ -42,6 +42,9 @@ type Service struct {
 	// SkipTeardown deletes without running the teardown script: a GUI's Delete Anyway, after the
 	// script failed. Everything else a delete does still runs.
 	SkipTeardown bool
+	// SkipSetup creates without judging or running the setup script: the app's Continue Without
+	// Script, for one this Mac has not approved. Nothing is recorded, so the next create asks again.
+	SkipSetup bool
 	// ScriptLogWriter, when set, receives setup/teardown script output as it runs.
 	// It is the --json mode sink (an NDJSON event stream on stderr) and takes the
 	// place of the human terminal log panel. The captured output is still returned,
@@ -245,10 +248,13 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		}
 		// The setup script is judged before anything exists, so a refusal leaves nothing behind.
 		var gateErr error
-		progress := vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep, BeforeWorktree: func(start string) error {
-			gateErr = s.gateSetup(dir, start)
-			return gateErr
-		}}
+		progress := vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep}
+		if !s.SkipSetup {
+			progress.BeforeWorktree = func(start string) error {
+				gateErr = s.gateSetup(dir, start)
+				return gateErr
+			}
+		}
 		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global, progress)
 		if gateErr != nil || errors.Is(err, ErrBaseBranchNotFound) {
 			return res, err
@@ -290,7 +296,11 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	if setupOut == nil {
 		setupOut = s.ScriptLogWriter
 	}
-	if res.HasSetup {
+	if res.HasSetup && s.SkipSetup {
+		if !s.Pretend {
+			s.step("script", "skipped", "Skipped without approval")
+		}
+	} else if res.HasSetup {
 		s.sayStatus("setup", fmt.Sprintf("Running %s from %q", setupScript, wrPath))
 		if !s.Pretend {
 			s.step("script", "running", "")

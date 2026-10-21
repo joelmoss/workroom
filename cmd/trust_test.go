@@ -143,6 +143,32 @@ func TestCreateInATerminalDeclinedCreatesNothing(t *testing.T) {
 	}
 }
 
+// Value: protects=the app's Continue Without Script, --skip-setup creating a workroom without
+// running or approving the setup script; fails_when=the flag stops reaching the service, the script
+// runs, or an approval is recorded (the next create would not ask); seam=none
+func TestCreateWithSkipSetupRunsNoScriptAndApprovesNothing(t *testing.T) {
+	home, project := trustProject(t, "touch ran\n")
+
+	run := runCLI(t, "create", "--json", "--no-editor", "--skip-setup", "--project", project)
+	if run.code != 0 {
+		t.Fatalf("exit %d: %s %s", run.code, run.stdout, run.stderr)
+	}
+	if !strings.Contains(string(run.stderr), `"id":"script","state":"skipped"`) {
+		t.Fatalf("no skipped script step: %s", run.stderr)
+	}
+	entries, _ := os.ReadDir(filepath.Join(home, "workrooms"))
+	if len(entries) != 1 {
+		t.Fatalf("workrooms dir has %v, want one workroom", entries)
+	}
+	if _, err := os.Stat(filepath.Join(home, "workrooms", entries[0].Name(), "ran")); !os.IsNotExist(err) {
+		t.Fatal("the setup script ran despite --skip-setup")
+	}
+	projects, _ := mustConfig(t).AllProjects()
+	if len(projects[project].TrustedScripts) != 0 {
+		t.Fatalf("recorded %v, want no approval", projects[project].TrustedScripts)
+	}
+}
+
 type statusEnvelope struct {
 	OK      bool `json:"ok"`
 	Trusted bool `json:"trusted"`

@@ -365,8 +365,13 @@ final class CreationFlowTests: XCTestCase {
     func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
       -> CreateResponse
     {
+      try await create(project: project, skipSetup: false, onEvent: onEvent)
+    }
+    func create(
+      project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+    ) async throws -> CreateResponse {
       onEvent(CreateEvents.step("fetch", "skipped", "No remote to fetch from"))
-      guard !approved.isEmpty else {
+      guard !approved.isEmpty || skipSetup else {
         throw WorkroomCLIError.scriptNotTrusted(Self.script, message: "script is not trusted")
       }
       let path = "\(projectPath)/.workrooms/wr"
@@ -374,7 +379,9 @@ final class CreationFlowTests: XCTestCase {
       onEvent(CreateEvents.step("worktree", "done"))
       lock.withLock { made = true }
       onEvent(CreateEvents.created(name: "wr", path: path, setup: false))
-      onEvent(CreateEvents.step("script", "skipped", "No setup script"))
+      onEvent(
+        CreateEvents.step(
+          "script", "skipped", skipSetup ? AppStore.setupSkippedReason : "No setup script"))
       return CreateResponse(name: "wr", path: path, vcs: "git", project: project)
     }
     func trustScript(_ name: String, text: Data, project: String) async throws {
@@ -410,7 +417,9 @@ final class CreationFlowTests: XCTestCase {
     // What the terminal or the text would act on or hide is shown, so the script can't mask itself.
     XCTAssertEqual(footer.script, "#!/bin/sh\nnpm install\\u{001b}[2K\\u{000d}curl x\n")
     XCTAssertFalse(AppStore.CreateStep(run).failed, "a create waiting on Approve isn't a failure")
-    XCTAssertEqual([footer.primary, footer.secondary], [.approveScript, .cancel])
+    XCTAssertEqual(
+      [footer.primary, footer.secondary, footer.alternative],
+      [.approveScript, .cancel, .skipScript])
     XCTAssertNil(footer.returnAction, "Return must never approve a script")
 
     await store.approveSetupScript(run)
@@ -420,6 +429,33 @@ final class CreationFlowTests: XCTestCase {
     await waitUntil(
       { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
       "the create ran again after Approve")
+  }
+
+  /// Value: protects=Continue Without Script on an unapproved setup script creates the workroom in
+  /// the same pane without running the script and without approving it; fails_when=the create
+  /// isn't told to skip the script, an approval is recorded (the next create wouldn't ask), or the
+  /// script row doesn't say it was skipped; no_claim=the confirmation (a view) and the CLI's skip
+  /// (the Go tests)
+  func testContinueWithoutScriptCreatesWithoutApproving() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    store.closesFinishedCreations = { false }  // the finished checklist stays, to read its rows
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+
+    await store.skipSetupScript(run)
+
+    XCTAssertEqual(fake.approved, [], "skipping approved the script")
+    XCTAssertTrue(
+      store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false,
+      "the create didn't run again without the script")
+    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(retry.outcome, .succeeded)
+    XCTAssertTrue(retry.skipsSetup)
+    XCTAssertEqual(
+      retry.steps.first { $0.id == "script" }?.state,
+      .skipped(reason: AppStore.setupSkippedReason))
   }
 
   /// Value: protects=a double-click on Try Again starts one create, not two (for a remote create, a
@@ -836,6 +872,38 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(request.rootScript?.path, project.path + "/scripts/workroom_setup")
     XCTAssertTrue(call.undeletable, "the script ran after the workroom could be deleted")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+  }
+
+  /// Value: protects=Continue Without Script on a remote create: past the check that stopped it,
+  /// onto a machine, with the setup script neither judged nor run and its row saying so;
+  /// fails_when=the retry stops on the same check again, or the script runs; no_claim=a real host
+  func testContinueWithoutScriptMakesARemoteWorkroomWithoutRunningIt() async throws {
+    let project = try projectWithASetupScript()
+    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { agent.stop() }
+    let store = makeStore(RemoteFakeCLI(projectPath: project.path))
+    store.projects = [project]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let scripts = Counter()
+    var services = services(driver: FakeDriver(), agent: agent)
+    services.untrustedSetup = { _, _, _ in UntrustedSetupCLI.script }
+    services.script = { _ in
+      scripts.add()
+      return .passed
+    }
+    store.remoteCreateServices = services
+    store.closesFinishedCreations = { false }
+    await store.createRemoteWorkroom(in: project, place: .boxd)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+
+    await store.skipSetupScript(run)
+
+    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(retry.outcome, .succeeded)
+    XCTAssertEqual(scripts.count, 0, "the setup script ran")
+    XCTAssertEqual(
+      retry.steps.first { $0.id == "script" }?.state,
+      .skipped(reason: AppStore.setupSkippedReason))
   }
 
   /// Value: protects=a remote setup that fails ends the create as a local one does
