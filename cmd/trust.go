@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/joelmoss/workroom/internal/ui"
+	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -40,7 +41,7 @@ var trustCmd = &cobra.Command{
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "trust"
-		svc, dir, scripts, err := judgedScripts()
+		svc, dir, scripts, _, err := judgedScripts()
 		if err != nil {
 			return err
 		}
@@ -99,7 +100,7 @@ var trustStatusCmd = &cobra.Command{
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "trust status"
-		_, _, scripts, err := judgedScripts()
+		_, _, scripts, work, err := judgedScripts()
 		if err != nil {
 			return exitStatus{code: 2, err: err}
 		}
@@ -108,7 +109,12 @@ var trustStatusCmd = &cobra.Command{
 			trusted = trusted && sc.Trusted
 		}
 		if jsonOutput {
-			if err := writeJSONSuccess(os.Stdout, "trust status", map[string]any{"trusted": trusted, "scripts": scriptsJSON(scripts)}); err != nil {
+			payload := map[string]any{"trusted": trusted, "scripts": scriptsJSON(scripts)}
+			// What a create from that start leaves out, for a remote create to warn about.
+			if work.Any() {
+				payload["local_work"] = localWorkJSON(work)
+			}
+			if err := writeJSONSuccess(os.Stdout, "trust status", payload); err != nil {
 				return err
 			}
 		} else {
@@ -159,33 +165,36 @@ var untrustCmd = &cobra.Command{
 }
 
 // judgedScripts is the project the trust commands name, judged: the one script read from stdin
-// with --stdin, else the scripts it would run next.
-func judgedScripts() (*workroom.Service, string, []workroom.Script, error) {
+// with --stdin, else the scripts it would run next and the local work a create from that start
+// leaves out of the main checkout, which trust status reports for a remote create to warn about.
+func judgedScripts() (*workroom.Service, string, []workroom.Script, vcs.LocalWork, error) {
+	var work vcs.LocalWork
 	svc, err := newService()
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, work, err
 	}
 	dir, err := trustedProject(svc)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, work, err
 	}
 	if trustStdin == "" {
+		var scripts []workroom.Script
 		if trustBaseSet {
-			scripts, err := svc.ProjectScriptsFrom(dir, trustBase)
-			return svc, dir, scripts, err
+			scripts, work, err = svc.ProjectScriptsFrom(dir, trustBase)
+		} else {
+			scripts, work, err = svc.ProjectScripts(dir)
 		}
-		scripts, err := svc.ProjectScripts(dir)
-		return svc, dir, scripts, err
+		return svc, dir, scripts, work, err
 	}
 	if trustStdin != workroom.SetupScript && trustStdin != workroom.TeardownScript {
-		return nil, "", nil, fmt.Errorf("--stdin takes %s or %s, not %q", workroom.SetupScript, workroom.TeardownScript, trustStdin)
+		return nil, "", nil, work, fmt.Errorf("--stdin takes %s or %s, not %q", workroom.SetupScript, workroom.TeardownScript, trustStdin)
 	}
 	text, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, work, err
 	}
 	sc, err := svc.JudgeScript(dir, trustStdin, workroom.OriginStdin, "", text)
-	return svc, dir, []workroom.Script{sc}, err
+	return svc, dir, []workroom.Script{sc}, work, err
 }
 
 // trustedProject is the project the trust commands act on: --project or the current directory,

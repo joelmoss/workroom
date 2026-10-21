@@ -26,6 +26,12 @@ struct PendingWorkroomClose {
   let name: String
 }
 
+/// A create waiting on where it starts: the main checkout has work the remote's copy lacks.
+struct PendingStartChoice {
+  let run: CreationRun
+  let work: LocalWork
+}
+
 /// A project queued for deletion, awaiting the user's type-the-name confirmation. Held on
 /// the store (and `Identifiable` so it drives a `.sheet(item:)`) so the sidebar's Delete
 /// Project affordance and the confirm sheet share one piece of state. `id` is the project
@@ -142,6 +148,8 @@ final class ModalState {
   var pendingDeletion: PendingWorkroomDeletion?
   /// A target awaiting close confirmation (tab bar "Close"); setting it raises the close prompt.
   var pendingWorkroomClose: PendingWorkroomClose?
+  /// A create asking where it starts; setting it raises the choice.
+  var pendingStartChoice: PendingStartChoice?
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
   /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
   var pendingProjectDeletion: PendingProjectDeletion?
@@ -194,7 +202,7 @@ final class ModalState {
   /// actually created a second terminal tab behind it.
   var hasModalPresentation: Bool {
     activePicker != nil || auxSheetPresented || pendingDeletion != nil
-      || pendingWorkroomClose != nil
+      || pendingWorkroomClose != nil || pendingStartChoice != nil
       || pendingProjectDeletion != nil || pendingWorkroomLabel != nil
       || pendingProjectSettings != nil || errorMessage != nil
       // Included so the Room menu's Fetch/Push/Pull shortcuts are inert while the confirmation is up

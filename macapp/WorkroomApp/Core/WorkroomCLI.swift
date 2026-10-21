@@ -13,6 +13,9 @@ enum WorkroomCLIError: LocalizedError {
   case nonzero(code: Int32, stderr: String)
   /// `ScriptNotTrusted`: the CLI refused to run `script`, which this Mac has not approved (#363).
   case scriptNotTrusted(ScriptTrust, message: String)
+  /// `LocalWorkLeftOut`: `create --start ask` stopped, before making anything, on work the main
+  /// checkout has that the create would leave out.
+  case localWorkLeftOut(LocalWork, message: String)
 
   var errorDescription: String? {
     switch self {
@@ -22,7 +25,8 @@ enum WorkroomCLIError: LocalizedError {
       return "The workroom command timed out."
     case .decodeFailed(let raw):
       return "Could not parse the workroom response: \(raw.prefix(200))"
-    case .cli(_, let message), .scriptNotTrusted(_, let message):
+    case .cli(_, let message), .scriptNotTrusted(_, let message),
+      .localWorkLeftOut(_, let message):
       return message
     case .nonzero(let code, let stderr):
       return stderr.isEmpty ? "workroom exited with code \(code)." : stderr
@@ -34,6 +38,7 @@ enum WorkroomCLIError: LocalizedError {
     switch self {
     case .cli(let kind, _): kind
     case .scriptNotTrusted: "ScriptNotTrusted"
+    case .localWorkLeftOut: "LocalWorkLeftOut"
     default: nil
     }
   }
@@ -43,6 +48,8 @@ enum WorkroomCLIError: LocalizedError {
     guard let body = envelope.error else { return nil }
     if body.kind == "ScriptNotTrusted", let script = envelope.script {
       self = .scriptNotTrusted(script, message: body.message)
+    } else if body.kind == "LocalWorkLeftOut", let work = envelope.localWork {
+      self = .localWorkLeftOut(work, message: body.message)
     } else {
       self = .cli(kind: body.kind, message: body.message)
     }
@@ -51,6 +58,12 @@ enum WorkroomCLIError: LocalizedError {
   /// The refused script, for a `ScriptNotTrusted` error.
   static func untrustedScript(_ error: any Error) -> ScriptTrust? {
     if case WorkroomCLIError.scriptNotTrusted(let script, _) = error { return script }
+    return nil
+  }
+
+  /// The work a `LocalWorkLeftOut` error says a create would leave out.
+  static func leftOutWork(_ error: any Error) -> LocalWork? {
+    if case WorkroomCLIError.localWorkLeftOut(let work, _) = error { return work }
     return nil
   }
 }
@@ -195,10 +208,13 @@ protocol WorkroomCLIProtocol: Sendable {
   /// that then fails doesn't lose it) once the workroom exists.
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
-  /// `create`, with `skipSetup` neither judging nor running the setup script: Continue Without
-  /// Script, for one this Mac has not approved.
+  /// `create`, with `skipSetup` neither judging nor running the setup script (Continue Without
+  /// Script, for one this Mac has not approved), and `start` saying where it starts when the main
+  /// checkout has work the remote's copy of the base branch lacks; `.ask` stops on that work with
+  /// `localWorkLeftOut`, and nil leaves it to the CLI (origin, with a warning).
   func create(
-    project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+    project: String, skipSetup: Bool, start: CreationStart?,
+    onEvent: @escaping @Sendable (StreamEvent) -> Void
   ) async throws -> CreateResponse
   func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws
   /// `delete`, with `skipTeardown` running no teardown script: Delete Anyway, after it failed.
@@ -241,9 +257,11 @@ extension WorkroomCLIProtocol {
     try await delete(name: name, project: project, onLog: onLog)
   }
 
-  /// Fakes that never see Continue Without Script need not implement it: it is a plain create there.
+  /// Fakes that never skip a script or meet local work need not implement it: it is a plain create
+  /// there.
   func create(
-    project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+    project: String, skipSetup: Bool, start: CreationStart?,
+    onEvent: @escaping @Sendable (StreamEvent) -> Void
   ) async throws -> CreateResponse {
     try await create(project: project, onEvent: onEvent)
   }
@@ -466,11 +484,12 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
   {
-    try await create(project: project, skipSetup: false, onEvent: onEvent)
+    try await create(project: project, skipSetup: false, start: nil, onEvent: onEvent)
   }
 
   func create(
-    project: String, skipSetup: Bool, onEvent: @escaping @Sendable (StreamEvent) -> Void
+    project: String, skipSetup: Bool, start: CreationStart?,
+    onEvent: @escaping @Sendable (StreamEvent) -> Void
   ) async throws -> CreateResponse {
     // Setup scripts run inside this call, so resolve the user's environment first — freshly, in
     // case a tool was installed or a dotfile edited since launch. Usually already warm: the New
@@ -478,6 +497,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     await ShellEnvironment.refresh()
     var args = ["create", "--json", "--no-editor", "--project", project]
     if skipSetup { args.append("--skip-setup") }
+    if let start { args += ["--start", start.rawValue] }
     let result = try await run(args, timeout: 600, userInitiated: true, onEvent: onEvent)
     return try decode(CreateResponse.self, from: result)
   }

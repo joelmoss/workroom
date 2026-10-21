@@ -202,7 +202,35 @@ extension AppStore {
     presentSetupApproval(run)
   }
 
+  /// The main checkout has work the create would leave out, before anything is made: the worktree's
+  /// row waits, the user is asked where it starts, and VoiceOver hears it once.
+  private func refuseCreation(_ run: CreationRun, leaving work: LocalWork) {
+    run.awaitStartChoice(for: work)
+    Self.announceCreation("\(work.summary). Choose whether the new workroom includes it")
+    presentStartChoice(run)
+  }
+
   // MARK: Failure actions
+
+  /// Where a create starts, asked when it found local work: opened when the create stops, and again
+  /// by the pane's Choose Start….
+  func presentStartChoice(_ run: CreationRun) {
+    guard creationRuns[run.id] === run, case .localWorkFound(let work) = run.outcome else { return }
+    pendingStartChoice = PendingStartChoice(run: run, work: work)
+  }
+
+  /// A start chosen for a create that found local work: it starts again, in the same pane, from
+  /// there. A choice left over from a run since replaced does nothing.
+  func chooseStart(_ start: CreationStart, for run: CreationRun) async {
+    guard creationRuns[run.id] === run, case .localWorkFound = run.outcome else { return }
+    await retryCreation(run, start: start)
+  }
+
+  /// Cancel Creation on the start choice; stale, it cancels nothing.
+  func cancelStartChoice(_ run: CreationRun) {
+    guard creationRuns[run.id] === run, case .localWorkFound = run.outcome else { return }
+    closeCreation(run)
+  }
 
   /// The setup script's approval sheet, the teardown's (`presentTeardownFailure`) for a create: the
   /// script to read, Continue Without Script… (confirmed), Cancel Creation, and Approve. Opened when
@@ -249,7 +277,7 @@ extension AppStore {
   /// again, in the same pane, without that script. Nothing is approved, so the next create asks
   /// again.
   func skipSetupScript(_ run: CreationRun) async {
-    guard creationRuns[run.id] === run, run.awaitsApproval else { return }
+    guard creationRuns[run.id] === run, case .scriptNotTrusted = run.outcome else { return }
     await retryCreation(run, skipsSetup: true)
   }
 
@@ -274,9 +302,11 @@ extension AppStore {
   }
 
   /// Try Again: the same request again, in the same pane, as a new run that replaces `run`. The base
-  /// branch is read afresh, as a new create does. It skips the setup script as `run` did, unless
-  /// `skipsSetup` says otherwise.
-  func retryCreation(_ run: CreationRun, skipsSetup: Bool? = nil) async {
+  /// branch is read afresh, as a new create does. It skips the setup script and starts where `run`
+  /// did, unless `skipsSetup` or `start` says otherwise.
+  func retryCreation(
+    _ run: CreationRun, skipsSetup: Bool? = nil, start: CreationStart? = nil
+  ) async {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
     let project = projects.first { $0.path == run.project.path } ?? run.project
@@ -284,7 +314,8 @@ extension AppStore {
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
       previousSelection: run.previousSelection,
       hasSetupScript: Self.hasSetupScript(project),
-      hasIncludeFile: Self.hasIncludeFile(project), skipsSetup: skipsSetup ?? run.skipsSetup)
+      hasIncludeFile: Self.hasIncludeFile(project), skipsSetup: skipsSetup ?? run.skipsSetup,
+      start: start ?? run.start)
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)
@@ -335,8 +366,9 @@ extension AppStore {
       if let id = landing.landedID { releaseCreatingWorkroom(id) }
     }
     do {
-      let created = try await cli.create(project: project.path, skipSetup: run.skipsSetup) {
-        event in
+      let created = try await cli.create(
+        project: project.path, skipSetup: run.skipsSetup, start: run.start
+      ) { event in
         if event.type == "created", let name = event.name {
           if let text = event.warning, !text.isEmpty { warning.value = text }
           // Registered synchronously, so it is there to await when `create` returns.
@@ -374,6 +406,8 @@ extension AppStore {
         if let text = warning.value { noticeStaleStart(of: id, text) }
       } else if let script = WorkroomCLIError.untrustedScript(error) {
         refuseCreation(run, script)
+      } else if let work = WorkroomCLIError.leftOutWork(error) {
+        refuseCreation(run, leaving: work)
       } else {
         failCreationRun(run, .failedBeforeWorkroom(message: errorText(error)))
       }
@@ -480,9 +514,25 @@ extension AppStore {
       let plan = try await services.plan(self, run.project)
       defaultNotUsed = plan.defaultNotUsed
       // Before any machine is made, so a script this Mac won't run never costs a paid host (#363).
-      if !run.skipsSetup, let script = try await services.untrustedSetup(self, run.project, plan) {
+      // A create skipping the script doesn't need it judged, so it isn't stopped when that can't be
+      // told; it then only goes without the local-work notice.
+      let status =
+        run.skipsSetup
+        ? (try? await services.trustStatus(self, run.project, plan))
+          ?? TrustStatus(trusted: true, scripts: [])
+        : try await services.trustStatus(self, run.project, plan)
+      if !run.skipsSetup,
+        let script = status.scripts.first(where: {
+          $0.name == RemoteProvisioning.Script.setup.fileName && !$0.trusted
+        })
+      {
         refuseCreation(run, script)
         return
+      }
+      // A remote host clones from GitHub, so local work can't come along: it is only said.
+      let leftOut = status.localWork.map {
+        "\($0.summary). Remote workrooms can only start from what you've pushed, so this one "
+          + "doesn't include that work."
       }
       // After the project's own checks, so nobody signs up or picks a plan for a project the
       // provider can't take.
@@ -524,12 +574,14 @@ extension AppStore {
       } else {
         await completeCreationRun(run)
       }
-      if let defaultNotUsed {
-        noticeStaleStart(
-          of: id,
-          "The default base branch \(defaultNotUsed) can't be used on a remote machine here, so the "
-            + "workroom starts from origin's default branch.")
-      }
+      let notices = [
+        defaultNotUsed.map {
+          "The default base branch \($0) can't be used on a remote machine here, so the workroom "
+            + "starts from origin's default branch."
+        },
+        leftOut,
+      ].compactMap { $0 }
+      if !notices.isEmpty { noticeStaleStart(of: id, notices.joined(separator: " ")) }
     } catch {
       // A record the rollback forgot has already given its pane back (`provisionRemote`'s
       // `forget`); one still naming a live machine keeps its workroom pane, for Delete.
@@ -790,13 +842,13 @@ struct RemoteCreateServices {
   var script: @MainActor (RemoteWorkrooms.ScriptRequest) async -> RemoteProvisioning.ScriptRun = {
     _ in .absent
   }
-  /// The setup script a create would run, when this Mac has not approved it (#363): the CLI's
-  /// `trust status`, at the origin branch the plan checks out. A test's fakes approve every script
-  /// unless they say.
-  var untrustedSetup:
-    @MainActor (AppStore, Project, RemoteCreatePlan) async throws -> ScriptTrust? = { _, _, _ in
-      nil
-    }
+  /// The CLI's `trust status` at the origin branch the plan checks out: the setup script a create
+  /// would run, judged against this Mac's approvals (#363), and the local work that start leaves
+  /// out. A test's fakes approve every script and find no local work unless they say.
+  var trustStatus: @MainActor (AppStore, Project, RemoteCreatePlan) async throws -> TrustStatus = {
+    _, _, _ in
+    TrustStatus(trusted: true, scripts: [])
+  }
 
   static var live: RemoteCreateServices {
     RemoteCreateServices(
@@ -819,12 +871,10 @@ struct RemoteCreateServices {
         return RemoteCreateHost(key: key, driver: driver, environment: environment)
       },
       script: { request in await RemoteWorkrooms.runScript(request) },
-      untrustedSetup: { store, project, plan in
+      trustStatus: { store, project, plan in
         // origin named, so a branch like `release/1.0` is never read as a remote's.
         let base = plan.startBranch.map { "origin/\($0)" } ?? ""
-        return try await store.cli.trustStatus(project: project.path, base: base).scripts.first {
-          $0.name == RemoteProvisioning.Script.setup.fileName && !$0.trusted
-        }
+        return try await store.cli.trustStatus(project: project.path, base: base)
       })
   }
 }

@@ -118,6 +118,34 @@ final class CLIContractTests: XCTestCase {
     XCTAssertEqual(status.scripts, [script])
   }
 
+  /// Value: protects=the app decodes trust status's local_work so a remote create's notice
+  /// appears; fails_when=the "local_work" CodingKey or the Go key is renamed; why_new=only the
+  /// create envelope's local work was decoded; seam=none; no_claim=the scripts list
+  func testTrustStatusLocalWork() throws {
+    try assertSuccess("trust-status-local-work.json")
+    let status = try decode(TrustStatus.self, "trust-status-local-work.json")
+    XCTAssertEqual(
+      status.localWork,
+      LocalWork(
+        branch: "main", remote: "origin", ahead: 1, uncommitted: false,
+        summary: "You have 1 commit on main that you haven't pushed yet"))
+  }
+
+  /// A create that would leave local work out, asked to stop (`--start ask`), carries that work,
+  /// which the app asks where to start from.
+  func testLocalWorkLeftOut() throws {
+    try assertError("create-local-work.json", kind: "LocalWorkLeftOut")
+    let error = try XCTUnwrap(
+      WorkroomCLIError(envelope: decode(Envelope.self, "create-local-work.json")))
+    XCTAssertEqual(
+      WorkroomCLIError.leftOutWork(error),
+      LocalWork(
+        branch: "main", remote: "origin", ahead: 1, uncommitted: true,
+        summary:
+          "You have 1 commit on main that you haven't pushed yet, and some changes you haven't "
+          + "committed"))
+  }
+
   func testCreate() throws {
     try assertSuccess("create.json")
     let created = try decode(CreateResponse.self, "create.json")

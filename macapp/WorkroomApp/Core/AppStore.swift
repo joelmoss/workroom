@@ -694,6 +694,10 @@ final class AppStore: ObservableObject {
     get { modals.pendingWorkroomClose }
     set { modals.pendingWorkroomClose = newValue }
   }
+  var pendingStartChoice: PendingStartChoice? {
+    get { modals.pendingStartChoice }
+    set { modals.pendingStartChoice = newValue }
+  }
   var pendingProjectDeletion: PendingProjectDeletion? {
     get { modals.pendingProjectDeletion }
     set { modals.pendingProjectDeletion = newValue }

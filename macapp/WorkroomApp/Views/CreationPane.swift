@@ -52,7 +52,9 @@ struct CreationPane: View {
     .background(theme.tokens.panel)
     // Return and Escape reach the footer only while focus is inside this pane (D16): another pane's
     // failed create never answers them, as a window-wide `.keyboardShortcut` would.
-    .onKeyPress(.return) { answer { $0.returnAction } }
+    // Return answers the primary. Approving a script is never a keypress away: that is the
+    // approval sheet's, where Return doesn't answer it.
+    .onKeyPress(.return) { answer { $0.primary } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
     // Once the run ends, focus moves into the pane (to its last row, which draws no ring), so Return
     // answers Done or the footer without a click first; only in the window's active pane, so a
@@ -216,6 +218,7 @@ struct CreationPane: View {
     switch action {
     case .tryAgain: Task { await store.retryCreation(run) }
     case .reviewScript: store.presentSetupApproval(run)
+    case .chooseStart: store.presentStartChoice(run)
     case .close, .cancel: store.closeCreation(run)
     case .openAnyway: store.openCreatedWorkroomAnyway(run)
     case .deleteWorkroom: deleteWorkroom()
@@ -486,6 +489,41 @@ private struct CreationFailureNotice: View {
   private func button(_ action: CreationPanePresentation.Action) -> some View {
     Button(action.title) { perform(action) }
       .accessibilityIdentifier("CreationPane.\(action.title)")
+  }
+}
+
+/// Where a create that found local work starts: unpushed commits on the base branch, or
+/// uncommitted changes in the main checkout, that the remote's copy lacks. A window-modal choice
+/// raised by `AppStore.pendingStartChoice`, offering only the starts that apply; Cancel (and Escape)
+/// is Cancel Creation. Dismissed otherwise, the create waits, and its pane's Choose Start… asks
+/// again.
+struct StartChoicePresenter: ViewModifier {
+  @ObservedObject var store: AppStore
+
+  func body(content: Content) -> some View {
+    let pending = store.pendingStartChoice
+    content.confirmationDialog(
+      pending.map { $0.work.summary + "." } ?? "",
+      isPresented: Binding(
+        get: { store.pendingStartChoice != nil },
+        set: { if !$0 { store.pendingStartChoice = nil } }),
+      titleVisibility: .visible
+    ) {
+      if let pending {
+        ForEach(CreationPanePresentation.startChoices(for: pending.work), id: \.start) { choice in
+          Button(choice.title) {
+            store.pendingStartChoice = nil
+            Task { await store.chooseStart(choice.start, for: pending.run) }
+          }
+        }
+        Button("Cancel Creation", role: .cancel) {
+          store.pendingStartChoice = nil
+          store.cancelStartChoice(pending.run)
+        }
+      }
+    } message: {
+      if let pending { Text(CreationPanePresentation.startChoiceMessage(for: pending.work)) }
+    }
   }
 }
 

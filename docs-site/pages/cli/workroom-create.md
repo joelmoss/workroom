@@ -20,6 +20,7 @@ workroom create [flags]
       --no-editor        Do not offer to open the new workroom in $EDITOR
       --project string   Project directory to create the workroom in (defaults to the current directory)
       --skip-setup       Create without running the setup script, and without asking to approve it
+      --start string     What to include when you have commits you haven't pushed, or changes you haven't committed: local-with-changes (both), local (your commits), origin (neither), or ask (stop with exit 3 and say what there is). A terminal asks when unset
 ```
 
 ## Options inherited from parent commands

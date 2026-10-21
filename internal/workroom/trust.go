@@ -193,44 +193,50 @@ func (s *Service) RootScript(dir, name string) (Script, bool, error) {
 // ProjectScripts judges the scripts project dir would run next: the setup script a create would
 // run, at the base it resolves and fetches as a create does, and the root's teardown copy. A
 // script that is nowhere is left out. A base that cannot be resolved is an error.
-func (s *Service) ProjectScripts(dir string) ([]Script, error) {
+func (s *Service) ProjectScripts(dir string) ([]Script, vcs.LocalWork, error) {
 	base, global, err := s.base(dir)
 	if err != nil {
-		return nil, err
+		return nil, vcs.LocalWork{}, err
 	}
 	return s.projectScripts(dir, base, global)
 }
 
 // ProjectScriptsFrom is ProjectScripts with new workrooms starting from base ("" is origin's
 // default branch) rather than the project's: what a remote create checks out, which may differ.
-func (s *Service) ProjectScriptsFrom(dir, base string) ([]Script, error) {
+// The local work is what that start leaves out of the main checkout, as a create would find it.
+func (s *Service) ProjectScriptsFrom(dir, base string) ([]Script, vcs.LocalWork, error) {
 	return s.projectScripts(dir, base, false)
 }
 
-func (s *Service) projectScripts(dir, base string, global bool) ([]Script, error) {
+func (s *Service) projectScripts(dir, base string, global bool) ([]Script, vcs.LocalWork, error) {
+	var work vcs.LocalWork
 	if err := s.detectVCS(dir); err != nil {
-		return nil, err
+		return nil, work, err
 	}
-	start, _, err := s.VCS.StartPoint(dir, base, global, vcs.Progress{})
+	start, warning, err := s.VCS.StartPoint(dir, base, global, vcs.Progress{})
 	if err != nil {
-		return nil, err
+		return nil, work, err
+	}
+	// As a create does: not against a start that already warns.
+	if warning == "" {
+		work = s.VCS.LocalWork(dir, start)
 	}
 	var scripts []Script
 	setup, ok, err := s.SetupScriptAt(dir, start)
 	if err != nil {
-		return nil, err
+		return nil, work, err
 	}
 	if ok {
 		scripts = append(scripts, setup)
 	}
 	teardown, ok, err := s.RootScript(dir, TeardownScript)
 	if err != nil {
-		return nil, err
+		return nil, work, err
 	}
 	if ok {
 		scripts = append(scripts, teardown)
 	}
-	return scripts, nil
+	return scripts, work, nil
 }
 
 // gateSetup is gate for the setup script a create starting from start would run, if any.

@@ -137,6 +137,19 @@ final class ModalShortcutRoutingTests: XCTestCase {
                 directory: FileManager.default.temporaryDirectory)))
         }
       ),
+      (
+        // Value: protects=menu shortcuts go inert while the start choice is up; fails_when=
+        // `|| pendingStartChoice != nil` is dropped from hasModalPresentation; why_new=no other
+        // row sets it; seam=none; no_claim=the choice sheet itself
+        "pendingStartChoice",
+        {
+          $0.pendingStartChoice = PendingStartChoice(
+            run: CreationRun(
+              project: project, kind: .local, splitAnchor: nil, previousSelection: nil),
+            work: LocalWork(
+              branch: "main", remote: "origin", ahead: 1, uncommitted: false, summary: "s"))
+        }
+      ),
       ("errorMessage", { $0.errorMessage = "boom" }),
     ]
 

@@ -67,6 +67,13 @@ type Service struct {
 	// ApproveScriptFn, when set, is shown a setup or teardown script this Mac has not approved and
 	// answers whether to approve and run it (#363). Unset, such a script is refused.
 	ApproveScriptFn func(Script) (bool, error)
+	// Start is where a create starts when the main checkout has work the remote's copy of the base
+	// branch lacks: commits not pushed, or uncommitted changes. "" asks ChooseStartFn when set, and
+	// otherwise starts from the remote's copy with a warning.
+	Start Start
+	// ChooseStartFn, when set, is told the local work a create would leave out and answers where it
+	// starts. A person at a terminal is asked.
+	ChooseStartFn func(vcs.LocalWork) (Start, error)
 }
 
 func (s *Service) sayStatus(status, msg string) {
@@ -177,7 +184,7 @@ type CreateResult struct {
 	VCS     string `json:"vcs"`
 	Project string `json:"project"`
 	// Warning is for the user: non-empty when the workspace started from a ref that may be out
-	// of date because the fetch before it failed.
+	// of date because the fetch before it failed, or without local work the main checkout has.
 	Warning     string `json:"warning,omitempty"`
 	SetupOutput string `json:"-"`
 	HasSetup    bool   `json:"-"`
@@ -185,6 +192,9 @@ type CreateResult struct {
 	// (#367), for the human create; --json callers read them from the step's events.
 	IncludeWarning string   `json:"-"`
 	IncludeSkipped []string `json:"-"`
+	// ChangesWarning is the warning of the step that copies the main checkout's uncommitted
+	// changes, for the human create, as IncludeWarning.
+	ChangesWarning string `json:"-"`
 }
 
 // CreateNamed generates a unique name, creates the VCS workspace, updates config,
@@ -234,6 +244,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 
 	// Create VCS workspace
 	var warning string
+	var carryChanges bool
 	if !s.Pretend {
 		base, global, err := s.base(dir)
 		if err != nil {
@@ -246,21 +257,43 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		if err := os.MkdirAll(wrDir, 0o755); err != nil {
 			return res, err
 		}
-		// The setup script is judged before anything exists, so a refusal leaves nothing behind.
-		var gateErr error
+		// Where it starts, and the setup script there, are settled before anything exists, so a
+		// refusal leaves nothing behind.
+		var refused error
+		var leftOut string
 		progress := vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep}
-		if !s.SkipSetup {
-			progress.BeforeWorktree = func(start string) error {
-				gateErr = s.gateSetup(dir, start)
-				return gateErr
+		progress.BeforeWorktree = func(start string, work vcs.LocalWork) (string, error) {
+			choice, err := s.chooseStart(work)
+			if err != nil {
+				refused = err
+				return "", err
 			}
+			switch choice {
+			case "":
+				if work.Any() {
+					leftOut = leftOutWarning(work)
+				}
+			case StartLocal, StartLocalWithChanges:
+				start = "refs/heads/" + work.Branch
+				carryChanges = choice == StartLocalWithChanges && work.Uncommitted
+			}
+			if !s.SkipSetup {
+				// At the start chosen: a local branch can carry another setup script.
+				if refused = s.gateSetup(dir, start); refused != nil {
+					return "", refused
+				}
+			}
+			return start, nil
 		}
 		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global, progress)
-		if gateErr != nil || errors.Is(err, ErrBaseBranchNotFound) {
+		if refused != nil || errors.Is(err, ErrBaseBranchNotFound) {
 			return res, err
 		}
 		if err != nil {
 			return res, fmt.Errorf("%w: %v", ErrVCSCommand, err)
+		}
+		if warning == "" {
+			warning = leftOut
 		}
 	}
 
@@ -286,7 +319,11 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		s.OnReady(res)
 	}
 
-	// The root's included files, before the setup script so it can rely on them (#367).
+	// The main checkout's uncommitted changes, when the user chose to bring them, then the root's
+	// included files, both before the setup script so it can rely on them (#367).
+	if carryChanges {
+		res.ChangesWarning = s.carryChanges(dir, wrPath)
+	}
 	if !s.Pretend {
 		res.IncludeWarning, res.IncludeSkipped = s.copyIncluded(dir, wrPath)
 	}

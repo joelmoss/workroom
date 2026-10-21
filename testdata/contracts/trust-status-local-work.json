@@ -1,0 +1,1 @@
+{"cli_version":"dev","command":"trust status","local_work":{"ahead":1,"behind":0,"behind_note":"","branch":"main","remote":"origin","summary":"You have 1 commit on main that you haven't pushed yet","uncommitted":false},"ok":true,"schema_version":1,"scripts":[],"trusted":true}

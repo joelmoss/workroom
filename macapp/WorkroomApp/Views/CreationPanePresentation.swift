@@ -121,6 +121,8 @@ enum CreationPanePresentation {
     /// Opens the setup script's approval sheet again (#363), where it is read and approved or
     /// skipped.
     case reviewScript
+    /// Asks again where a create that found local work starts.
+    case chooseStart
     /// Close, worded for a create that made nothing and is waiting on the user: the whole create
     /// goes, not only the script.
     case cancel
@@ -134,6 +136,7 @@ enum CreationPanePresentation {
       case .deleteWorkroom: "Delete Workroom…"
       // An ellipsis: it opens a sheet.
       case .reviewScript: "Review Script…"
+      case .chooseStart: "Choose…"
       case .cancel: "Cancel Creation"
       }
     }
@@ -164,9 +167,6 @@ enum CreationPanePresentation {
     let secondary: Action
     /// What Escape answers: Close or Cancel, where it is shown (D16).
     var escapeAction: Action? { [.close, .cancel].contains(secondary) ? secondary : nil }
-    /// What Return answers: the primary. Approving a script is never a keypress away; that is the
-    /// sheet's, where Return doesn't answer it.
-    var returnAction: Action? { primary }
   }
 
   /// The row a failure's notice goes under: the step that failed, or the one waiting on the user (a
@@ -197,7 +197,39 @@ enum CreationPanePresentation {
         reason: "scripts/\(script.name) \(script.originLabel) needs approving before the workroom "
           + "is made.",
         primary: .reviewScript, secondary: .cancel)
+    case .localWorkFound(let work):
+      Footer(
+        reason: "\(work.summary). Choose whether the new workroom includes it.",
+        primary: .chooseStart, secondary: .cancel)
     }
+  }
+
+  /// The choices a create that found local work offers, most first: the commits and the changes,
+  /// the commits only, then neither. Only the ones that apply.
+  static func startChoices(for work: LocalWork) -> [(start: CreationStart, title: String)] {
+    var choices: [(CreationStart, String)] = []
+    switch (work.ahead > 0, work.uncommitted) {
+    case (true, true):
+      choices = [
+        (.localWithChanges, "Include My Commits and Changes"), (.local, "Include My Commits Only"),
+      ]
+    case (false, true): choices = [(.localWithChanges, "Include My Changes")]
+    default: choices = [(.local, "Include My Commits")]
+    }
+    return choices + [(.origin, "Leave It Out")]
+  }
+
+  /// The start choice's message under its title (the work's summary).
+  static func startChoiceMessage(for work: LocalWork) -> String {
+    var lines = [
+      "New workrooms start from what you've pushed, so this one won't have it unless you "
+        + "include it."
+    ]
+    if !work.behindNote.isEmpty { lines.append(work.behindNote) }
+    if work.uncommitted {
+      lines.append("Your changes stay where they are too; the new workroom gets a copy.")
+    }
+    return lines.joined(separator: " ")
   }
 
   // MARK: Keyboard

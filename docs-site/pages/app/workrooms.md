@@ -31,14 +31,15 @@ A new workroom opens a creation pane at once, with a checklist of the steps. For
 
 1. **Fetch base branch**
 2. **Create worktree**
-3. **Copy local files**, which copies the files listed in your project's `.worktreeinclude`
-4. **Run setup script**, which runs your project's `scripts/workroom_setup`
+3. **Copy your changes**, only when you chose to include them (see [Include work you haven't pushed](#include-work-you-havent-pushed))
+4. **Copy local files**, which copies the files listed in your project's `.worktreeinclude`
+5. **Run setup script**, which runs your project's `scripts/workroom_setup`
 
 The last two rows appear only when your project has a `.worktreeinclude` or a setup script.
 
 Each row shows how long its step took. Click a row, or press <kbd>Space</kbd> on it, to open its log. <kbd>↑</kbd> and <kbd>↓</kbd> move between rows, <kbd>→</kbd> opens a log and <kbd>←</kbd> closes it. A row says **Waiting for you** while it needs an answer from you.
 
-When every step is done, click **Done** to open the terminal. Turn on **Close automatically when done** at the bottom left of the pane, and the pane closes itself a few seconds after the workroom is ready. The same switch is in **Settings ▸ General** as **Close the checklist automatically when done**.
+When every step is done, click **Done** or press <kbd>Return</kbd> to open the terminal. Turn on **Close automatically when done** at the bottom left of the pane, and the pane closes itself a few seconds after the workroom is ready. The same switch is in **Settings ▸ General** as **Close the checklist automatically when done**.
 
 If a step fails, the pane shows the reason under that step's row, with two buttons below it:
 
@@ -46,9 +47,29 @@ If a step fails, the pane shows the reason under that step's row, with two butto
 | --- | --- |
 | The create failed before a workroom existed | **Try Again**, **Close** |
 | The setup script failed | **Open Anyway**, **Delete Workroom…** |
-| The setup script is new or changed and needs your approval | **Approve**, **Cancel** |
+| The setup script is new or changed and needs your approval | **Review Script…**, **Cancel Creation** |
+| You have work the new workroom would leave out | **Choose…**, **Cancel Creation** |
 
-**Open Anyway** opens the workroom's terminal even though setup failed. The run command does not start automatically. See [Prepare a project](../guides/prepare-a-project.md) for setup scripts and the approval step.
+**Open Anyway** opens the workroom's terminal even though setup failed. The run command does not start automatically.
+
+When the setup script needs your approval, a sheet shows it before anything is created, with **Continue Without Script…**, **Cancel Creation** and **Approve**. Continue Without Script asks first, then creates the workroom without running the script, and leaves it unapproved. **Review Script…** in the pane opens the sheet again. See [Prepare a project](../guides/prepare-a-project.md) for setup scripts and the approval step.
+
+### Include work you haven't pushed {nightly}
+
+New workrooms start from what you've pushed, so they don't have commits you haven't pushed yet, or changes you haven't committed. When you have either on the base branch, Workroom asks before it creates anything, and offers only what applies:
+
+- **Include My Commits and Changes** starts from your commits and copies your changes in, new files included. Your changes stay in your project too.
+- **Include My Commits** (or **Include My Commits Only**) starts from your commits, without the changes.
+- **Include My Changes** copies your changes in, when you have changes but no unpushed commits.
+- **Leave It Out** starts from what you've pushed, as before.
+
+If you haven't pulled the latest changes, including your work starts from your older copy, without what others have pushed since, and Workroom says so in the question. Pull first if you want both.
+
+**Cancel Creation** stops the create. **Choose…** in the pane asks again. Files your `.gitignore` lists are never copied this way; list them in `.worktreeinclude` instead (see [Prepare a project](../guides/prepare-a-project.md)). A new folder that is a git repository of its own isn't copied either; the **Copy your changes** step says which. Changes on a different branch don't count. When Workroom can't reach `origin`, it doesn't ask.
+
+A remote workroom can only start from what you've pushed. It is created without your other work, and a notice says what it left out.
+
+From the command line, `workroom create` asks the same question in a terminal, or takes `--start local-with-changes`, `local` or `origin`. See [workroom create](../cli/workroom-create.md).
 
 ## Open a workroom
 

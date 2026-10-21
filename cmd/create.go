@@ -5,10 +5,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/joelmoss/workroom/internal/errs"
 	"github.com/joelmoss/workroom/internal/ui"
+	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/spf13/cobra"
 )
@@ -18,6 +20,8 @@ var (
 	createNoEditor bool
 	// Create without the setup script (the app's Continue Without Script), approving nothing.
 	createSkipSetup bool
+	// Where to start when the main checkout has work origin lacks; "" asks at a terminal.
+	createStart string
 	// The desktop app's remote workrooms (#253): the descriptor and the checkout's path on the host.
 	createHost     string
 	createHostPath string
@@ -36,6 +40,14 @@ var createCmd = &cobra.Command{
 			return err
 		}
 		svc.SkipSetup = createSkipSetup
+		if createStart != "" && !slices.Contains(workroom.Starts, workroom.Start(createStart)) {
+			names := make([]string, len(workroom.Starts))
+			for i, s := range workroom.Starts {
+				names[i] = string(s)
+			}
+			return fmt.Errorf("--start must be one of %s, not %q", strings.Join(names, ", "), createStart)
+		}
+		svc.Start = workroom.Start(createStart)
 		dir, err := resolveProject(createProject)
 		if err != nil {
 			return err
@@ -112,6 +124,9 @@ func createWorkroom(svc *workroom.Service, dir string, out io.Writer, offerEdito
 	if res.IncludeWarning != "" {
 		fmt.Fprintln(out, ui.Yellow(res.IncludeWarning))
 	}
+	if res.ChangesWarning != "" {
+		fmt.Fprintln(out, ui.Yellow(res.ChangesWarning))
+	}
 	if err != nil {
 		return err
 	}
@@ -136,6 +151,38 @@ func createWorkroom(svc *workroom.Service, dir string, out io.Writer, offerEdito
 	}
 
 	return nil
+}
+
+// askSelect asks a person to pick one of options, returning its index. Tests replace it.
+var askSelect = ui.Select
+
+// chooseStart asks a person at a terminal what a create that would leave work out includes: the
+// commits and changes, the commits only, or neither. Only the choices that apply are offered.
+func chooseStart(work vcs.LocalWork) (workroom.Start, error) {
+	var starts []workroom.Start
+	var options []string
+	switch {
+	case work.Uncommitted && work.Ahead > 0:
+		starts = append(starts, workroom.StartLocalWithChanges, workroom.StartLocal)
+		options = append(options, "Include my commits and changes", "Include my commits only")
+	case work.Uncommitted:
+		starts = append(starts, workroom.StartLocalWithChanges)
+		options = append(options, "Include my changes")
+	default:
+		starts = append(starts, workroom.StartLocal)
+		options = append(options, "Include my commits")
+	}
+	starts = append(starts, workroom.StartOrigin)
+	options = append(options, "Leave it out")
+	question := "New workrooms start from what you've pushed. Include this work in the new one?"
+	if note := work.BehindNote(); note != "" {
+		question = note + " " + question
+	}
+	i, err := askSelect(work.Summary()+".", question, options)
+	if err != nil {
+		return "", err
+	}
+	return starts[i], nil
 }
 
 // openEditor opens path with editor, a command line such as $EDITOR, attached to this terminal.
@@ -180,5 +227,6 @@ func init() {
 	createCmd.Flags().StringVar(&createProject, "project", "", "Project directory to create the workroom in (defaults to the current directory)")
 	createCmd.Flags().BoolVar(&createNoEditor, "no-editor", false, "Do not offer to open the new workroom in $EDITOR")
 	createCmd.Flags().BoolVar(&createSkipSetup, "skip-setup", false, "Create without running the setup script, and without asking to approve it")
+	createCmd.Flags().StringVar(&createStart, "start", "", "What to include when you have commits you haven't pushed, or changes you haven't committed: local-with-changes (both), local (your commits), origin (neither), or ask (stop with exit 3 and say what there is). A terminal asks when unset")
 	rootCmd.AddCommand(createCmd)
 }

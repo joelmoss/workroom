@@ -249,6 +249,7 @@ struct RootView: View {
       // Open Workroom picker (⌘O, issue #94): same store-flag bridge, also gated on `hasProjects`.
       // One of several sibling `.sheet` presenters on this view — only one is ever active at a time.
       .modifier(OpenWorkroomPresenter(store: store))
+      .modifier(StartChoicePresenter(store: store))
       .confirmationDialog(
         store.pendingDeletion.map { "Delete '\($0.workroom.displayName)'?" } ?? "Delete workroom?",
         isPresented: Binding(

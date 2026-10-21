@@ -29,6 +29,7 @@ func (f *fakeVCS) Create(dir, vcsName, path, base string, fallback bool, _ vcs.P
 func (f *fakeVCS) StartPoint(string, string, bool, vcs.Progress) (string, string, error) {
 	return "", "", nil
 }
+func (f *fakeVCS) LocalWork(string, string) vcs.LocalWork { return vcs.LocalWork{} }
 func (f *fakeVCS) Delete(dir, vcsName, path string) (string, error) {
 	return "", nil
 }

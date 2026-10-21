@@ -99,6 +99,7 @@ func newService() (*workroom.Service, error) {
 	// Only a person at a terminal can read a script and approve it; anything else is refused.
 	if !jsonOutput && stdinIsTerminal() {
 		svc.ApproveScriptFn = func(sc workroom.Script) (bool, error) { return approveScript(os.Stdout, sc) }
+		svc.ChooseStartFn = chooseStart
 	}
 	if verbose && !jsonOutput {
 		svc.Status = func(status, msg string) {
