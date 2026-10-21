@@ -261,17 +261,14 @@ struct PlainFileViewer: View {
             if !UITestFixture.holdPreviewLoader { previewRendered = true }
           }
         )
-        // Cover the web view's boot window (process spawn + ~3.5 MB of script) with the same loader
-        // the file read uses, so opening a Markdown file never shows an empty panel.
+        // Cover the web view's boot window with a themed panel from the first frame, so opening a
+        // Markdown file never shows an empty white rectangle. Most previews paint in under 100 ms,
+        // so the spinner only joins the cover once the render has taken longer than that.
         .overlay {
           if !previewRendered {
-            centered {
-              ProgressView()
-                .controlSize(.small)
-                .accessibilityIdentifier("file.preview.loading")
-            }
-            .background(theme.tokens.bg)
-            .transition(.opacity)
+            centered { DelayedSpinner() }
+              .background(theme.tokens.bg)
+              .transition(.opacity)
           }
         }
         .animation(.easeOut(duration: 0.12), value: previewRendered)
@@ -316,5 +313,27 @@ struct PlainFileViewer: View {
 
   private func centered<V: View>(@ViewBuilder _ inner: () -> V) -> some View {
     inner().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+  }
+}
+
+/// The preview loader's spinner, held back for `delay` so a fast render never flashes it. Each time
+/// the cover appears it is a new view, so the wait starts again.
+private struct DelayedSpinner: View {
+  static let delay: Duration = .milliseconds(250)
+  @State private var due = false
+
+  var body: some View {
+    ZStack {
+      if due {
+        ProgressView()
+          .controlSize(.small)
+          .accessibilityIdentifier("file.preview.loading")
+          .transition(.opacity)
+      }
+    }
+    .task {
+      guard (try? await Task.sleep(for: Self.delay)) != nil else { return }
+      withAnimation(.easeIn(duration: 0.12)) { due = true }
+    }
   }
 }
