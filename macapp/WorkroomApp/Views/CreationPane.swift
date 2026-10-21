@@ -12,6 +12,8 @@ import SwiftUI
 /// the rows below straight after it (D9); only below a 3-line log does the whole column scroll.
 struct CreationPane: View {
   @ObservedObject var run: CreationRun
+  /// Whether this is its window's active pane (`TargetTerminalDetail.surfaceActive`).
+  var isActive = true
   @EnvironmentObject private var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @FocusState private var focusedRow: String?
@@ -52,6 +54,12 @@ struct CreationPane: View {
     // failed create never answers them, as a window-wide `.keyboardShortcut` would.
     .onKeyPress(.return) { answer { $0.returnAction } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
+    // Once the run ends, focus moves into the pane (to its last row, which draws no ring), so Return
+    // answers Done or the footer without a click first; only in the window's active pane, so a
+    // terminal being typed in beside it keeps its keys.
+    .onChange(of: !run.isRunning && isActive, initial: true) { _, ended in
+      if ended, focusedRow == nil { focusedRow = run.steps.last?.id }
+    }
   }
 
   private var isDone: Bool { run.outcome == .succeeded }
