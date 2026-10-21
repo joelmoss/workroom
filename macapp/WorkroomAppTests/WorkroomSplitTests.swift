@@ -1346,4 +1346,17 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
       "three 300pt panes cannot fit in 700pt, however the space is shared out")
     XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 2)
   }
+
+  /// The right column, asked for 0.2 of 1000pt, renders at the 300pt floor. Evening only the rows
+  /// must not be vetoed by that untouched, clamped divider: three ~199pt rows fit in 600pt.
+  func testAClampedOtherAxisDividerDoesNotBlockTheSplit() {
+    let store = makeStore(["main", "feature", "bugfix", "docs"])
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1000, height: 600)
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    XCTAssertTrue(store.insertWorkroomSplit(wr("docs"), beside: wr("bugfix"), edge: .bottom))
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 4)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001, "and no width changed")
+  }
 }

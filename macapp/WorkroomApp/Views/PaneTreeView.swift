@@ -366,13 +366,25 @@ enum PaneTreeLayout {
   /// #126's slot weighting a mixed tree is deliberately not equal-area (a full-width pane above two
   /// side-by-side ones is twice their area), so only the node's own axis can say whether its
   /// division survived. An unmeasured container permits, matching `canSplit`.
-  static func plansEvenly<Leaf: Hashable>(_ tree: PaneLayout<Leaf>, in container: CGRect) -> Bool {
+  ///
+  /// `evenedAxis` is the axis an axis-only even rebalanced. A divider of the other axis was left
+  /// where the user put it, so it is laid out as the renderer will (clamped) rather than judged: a
+  /// clamped divider the even never touched must not veto it.
+  static func plansEvenly<Leaf: Hashable>(
+    _ tree: PaneLayout<Leaf>, in container: CGRect, evenedAxis: SplitOrientation? = nil
+  ) -> Bool {
     guard container.width > 0, container.height > 0 else { return true }
     guard case .split(_, let orientation, let ratio, let first, let second) = tree else {
       return true
     }
     let axis = orientation == .horizontal ? container.width : container.height
     let usable = max(0, axis - dividerThickness)
+    if let evenedAxis, evenedAxis != orientation {
+      let (firstLen, secondLen) = lengths(total: axis, ratio: ratio, along: orientation)
+      let (firstRect, secondRect) = childRects(container, orientation, firstLen, secondLen)
+      return plansEvenly(first, in: firstRect, evenedAxis: evenedAxis)
+        && plansEvenly(second, in: secondRect, evenedAxis: evenedAxis)
+    }
     // BELOW twice the floor `lengths` abandons the ratio and returns a bare half-and-half, which
     // EQUALS the ratio-implied length whenever the stored ratio is already 0.5 — so the drift check
     // below cannot see it, and both children are under the floor by construction. Measured (the
@@ -388,8 +400,18 @@ enum PaneTreeLayout {
     // What the ratio asked for, before any clamp. More than a point of drift means the renderer
     // overrode it.
     guard abs(firstLen - (usable * ratio).rounded()) <= 1 else { return false }
-    let (firstRect, secondRect) =
-      orientation == .horizontal
+    let (firstRect, secondRect) = childRects(container, orientation, firstLen, secondLen)
+    return plansEvenly(first, in: firstRect, evenedAxis: evenedAxis)
+      && plansEvenly(second, in: secondRect, evenedAxis: evenedAxis)
+  }
+
+  /// The two children's rects (origin-free; only their size matters here) for a split of
+  /// `container` along `orientation` whose children are `firstLen` and `secondLen` long.
+  private static func childRects(
+    _ container: CGRect, _ orientation: SplitOrientation, _ firstLen: CGFloat,
+    _ secondLen: CGFloat
+  ) -> (CGRect, CGRect) {
+    orientation == .horizontal
       ? (
         CGRect(x: 0, y: 0, width: firstLen, height: container.height),
         CGRect(x: 0, y: 0, width: secondLen, height: container.height)
@@ -398,7 +420,6 @@ enum PaneTreeLayout {
         CGRect(x: 0, y: 0, width: container.width, height: firstLen),
         CGRect(x: 0, y: 0, width: container.width, height: secondLen)
       )
-    return plansEvenly(first, in: firstRect) && plansEvenly(second, in: secondRect)
   }
 
   /// Whether every pane of `tree` lands at or above BOTH axis floors in `container` — the
@@ -469,7 +490,7 @@ enum PaneTreeLayout {
     guard enabled else { return tree }
     let evened = tree.equalized(along: axis)
     guard let container else { return evened }
-    return plansEvenly(evened, in: container) ? evened : tree
+    return plansEvenly(evened, in: container, evenedAxis: axis) ? evened : tree
   }
 
   /// Draggable hit-zone thickness for the resize divider (issue #83). The visible gutter stays

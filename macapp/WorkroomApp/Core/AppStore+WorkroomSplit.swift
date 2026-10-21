@@ -250,7 +250,9 @@ extension AppStore {
       // The pruned-and-evened candidate cannot go through `evenedIfHonourable` (which evens the
       // tree it is handed), so this one site asks the honourability question directly.
       if adds, autoEvenSplits(), let evened = prunedAndEvened(grown, along: edge.orientation),
-        workroomPaneSpace.map({ PaneTreeLayout.plansEvenly(evened, in: $0) }) ?? true
+        workroomPaneSpace.map({
+          PaneTreeLayout.plansEvenly(evened, in: $0, evenedAxis: edge.orientation)
+        }) ?? true
       {
         workroomSplits[index] = evened
       } else {
