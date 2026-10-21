@@ -155,9 +155,10 @@ struct MarkdownWebView: NSViewRepresentable {
     var onFirstRender: () -> Void = {}
     private var hasReportedFirstRender = false
 
-    /// How long the render round-trip waits for an animation frame before giving up on paint timing
-    /// and reporting anyway. Only reached when WebKit isn't animating the view (not displayed), so it
-    /// bounds the loader's lifetime rather than adding delay to the normal path.
+    /// How long the render round-trip waits for the first screen's diagrams and an animation frame
+    /// before reporting anyway. Reached when WebKit isn't animating the view (not displayed), or when
+    /// Pele takes longer than this to load and draw, in which case the cover lifts with the diagram's
+    /// source showing. It bounds the loader's lifetime rather than adding delay to the normal path.
     static let paintFallbackMilliseconds = 250
 
     /// Web/mail schemes a rendered link may open in the user's browser. A workroom Markdown file is
