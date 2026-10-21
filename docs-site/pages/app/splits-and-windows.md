@@ -46,7 +46,7 @@ To take a workroom out of the split, right-click its title bar and choose **Remo
 
 ## Even out a split
 
-With **Resize splits evenly automatically** on, Workroom evens out the dividers whenever a pane joins or leaves a split. A third pane then never lands at a quarter of the width. Only the dividers that run the same way as the pane that joined or left are evened: adding or closing a pane beside another never changes a pane's height, and adding or closing one above or below never changes its width. It is on by default. Turn it off in **Settings ▸ Appearance**.
+With **Resize splits evenly automatically** on, Workroom evens out the dividers whenever a pane joins or leaves a split. A third pane then never lands at a quarter of the width. Only the dividers that run the same way as the pane that joined or left are evened: adding or closing a pane beside another never changes a pane's height, and adding or closing one above or below never changes its width. In Workroom 2.1.0 every divider is evened. It is on by default. Turn it off in **Settings ▸ Appearance**.
 
 You can even a split out by hand at any time, whatever the setting:
 
