@@ -1768,6 +1768,21 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
       "thirds of 800pt would clamp against the 300pt floor, so the dividers stay as they are")
   }
 
+  /// A divider the even leaves alone can be clamped by the renderer (here the right column, asked
+  /// for 0.2 of 1000pt, sits at the 300pt floor). That must not veto evening the axis being split:
+  /// three rows of the 600pt column fit at ~199pt each, but un-evened the new pane lands under the
+  /// 150pt floor and ⌘D silently does nothing.
+  func testAClampedOtherAxisDividerDoesNotBlockTheSplit() {
+    let s = makeSessions(space: CGRect(x: 0, y: 0, width: 1000, height: 600))
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 4, "the third row was made")
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.8, accuracy: 0.0001, "and no width changed")
+  }
+
   func testAnUnmeasuredContainerStillEvens() {
     // No layout pass yet (no `paneSpace` entry): nothing to judge, so even optimistically rather
     // than withhold the behaviour on the very first split of a session.
