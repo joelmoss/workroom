@@ -159,4 +159,33 @@ final class PaneLayoutTests: XCTestCase {
       XCTFail("expected a nested split")
     }
   }
+  func testAxisAroundIsTheOrientationOfTheSplitHoldingTheLeaf() {
+    // A | (B / C)
+    let tree = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5,
+      first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
+    XCTAssertEqual(tree.axis(around: a), .horizontal)
+    XCTAssertEqual(tree.axis(around: c), .vertical)
+    XCTAssertNil(tree.axis(around: d))
+    XCTAssertNil(PaneLayout.leaf(a).axis(around: a))
+  }
+  func testEqualizedAlongAnAxisKeepsTheOtherAxis() {
+    // (A / B) | C | D: the vertical divider inside the first column keeps its 0.8 while the
+    // horizontal chain below and above it is still evened.
+    let tree = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.9,
+      first: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.8, first: .leaf(a), second: .leaf(b)),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.1, first: .leaf(c), second: .leaf(d)))
+    guard
+      case .split(_, _, let root, .split(_, _, let column, _, _), .split(_, _, let row, _, _)) =
+        tree.equalized(along: .horizontal)
+    else { return XCTFail("expected the same shape") }
+    XCTAssertEqual(root, 1.0 / 3.0, accuracy: 0.0001)
+    XCTAssertEqual(row, 0.5, accuracy: 0.0001)
+    XCTAssertEqual(column, 0.8, accuracy: 0.0001)
+  }
 }

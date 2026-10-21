@@ -1097,14 +1097,24 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     return store
   }
 
-  /// `main | (feature / bugfix)`: the stacked pair is ONE column, so main keeps half the width. The
-  /// skew is what makes this discriminate — the shape sits at 0.5 with or without evening.
-  func testAThirdMemberEvensTheGroup() {
+  /// `main | (feature / bugfix)`: a top/bottom split divides height only, so the left/right divider
+  /// the user dragged stays where it was. The skew is what makes this discriminate — at 0.5 it
+  /// would pass whether or not the split touched the other axis.
+  func testATopBottomSplitKeepsTheLeftRightDividers() {
     let store = makeStore(["main", "feature", "bugfix"])
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001)
+  }
+
+  /// The other way round: `main / (feature | bugfix)` keeps the top/bottom divider the user dragged.
+  func testALeftRightSplitKeepsTheTopBottomDividers() {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .bottom)
+    store.setWorkroomSplitRatio(0.3, forSplit: rootSplitID(store)!)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.3, accuracy: 0.0001)
   }
 
   func testAThirdMemberOnTheSameAxisSplitsIntoThirds() {
@@ -1114,14 +1124,32 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
   }
 
+  /// `main | feature | bugfix` — three columns, so a removal frees width.
+  private func threeColumnStore() -> AppStore {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
+    return store
+  }
+
   func testRemovingAMemberEvensTheSurvivors() {
     // Skew the group first so the removal has something to put right: dropping bugfix collapses
-    // `main | (feature / bugfix)` to `main | feature`, which would otherwise keep the skew.
-    let store = threePaneStore()
+    // `main | feature | bugfix` to `main | feature`, which would otherwise keep the skew.
+    let store = threeColumnStore()
     store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
     store.removeWorkroomSplitMember(wr("bugfix"))
     XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
     XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "two survivors split evenly")
+  }
+
+  /// `main | (feature / bugfix)`: removing bugfix frees height only, so the left/right divider the
+  /// user dragged stays.
+  func testRemovingAMemberKeepsTheOtherAxisDividers() {
+    let store = threePaneStore()
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
+    store.removeWorkroomSplitMember(wr("bugfix"))
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001)
   }
 
   /// THE defect the leaf-count design had. `insertWorkroomSplit` detaches before it inserts, so a
@@ -1169,7 +1197,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
   func testTheSweepEvensAGroupThatLostAWorkroom() {
     // An EXTERNAL delete (CLI, another window): the workroom vanishes from the project list, so the
     // reload's sweep prunes the leaf — and the survivors are left budgeted for three panes.
-    let store = threePaneStore()
+    let store = threeColumnStore()
     store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)  // or 0.5 would hold either way
     store.selectedTargetID = wr("main")
     store.projects = [
@@ -1184,12 +1212,29 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
   }
 
+  func testTheSweepKeepsTheOtherAxisDividers() {
+    let store = threePaneStore()  // main | (feature / bugfix)
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
+    store.selectedTargetID = wr("main")
+    store.projects = [
+      Project(
+        path: "/a", vcs: "git",
+        workrooms: ["main", "feature"].map {
+          Workroom(name: $0, path: "/a/\($0)", vcsName: "workroom/\($0)", warnings: [])
+        })
+    ]
+    store.pruneWorkroomSplitToLiveLeaves(formerSelection: wr("main"))
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001)
+  }
+
   func testPrefOffKeepsEveryDivider() {
     let store = makeStore(["main", "feature", "bugfix"])
     store.autoEvenSplits = { false }
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    // Same axis, or neither half would even with the pref on either.
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
     XCTAssertEqual(rootRatio(store) ?? -1, 0.9, accuracy: 0.0001, "the insert left it alone")
     store.removeWorkroomSplitMember(wr("bugfix"))
     XCTAssertEqual(rootRatio(store) ?? -1, 0.9, accuracy: 0.0001, "and so did the removal")
@@ -1275,6 +1320,19 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(
       ratio, 0.5, accuracy: 0.0001,
       "the survivors of the group it LEFT are evened, exactly as the ✕ would")
+  }
+
+  func testACrossGroupMoveKeepsTheSourceGroupsOtherAxisDividers() {
+    let store = makeStore(["main", "feature", "bugfix", "docs"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store, group: 0)!)
+
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("docs"), edge: .right)
+
+    let groupA = store.workroomSplits.first { Set($0.tabIDs) == [wr("main"), wr("feature")] }
+    guard case .split(_, _, let ratio, _, _) = groupA else { return XCTFail("expected a split") }
+    XCTAssertEqual(ratio, 0.8, accuracy: 0.0001, "bugfix left a top/bottom split: no width changes")
   }
 
   func testAGroupWithNoRoomStillRefuses() {

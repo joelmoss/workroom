@@ -1453,7 +1453,7 @@ final class TerminalSessions: ObservableObject {
         splitsByTarget[target.id]![groupIndex].inserting(
           newTab.id, beside: focused.id, orientation: edge.orientation,
           newLeafFirst: edge.placesDroppedFirst, ratio: 0.5),
-        groupAt: groupIndex, for: target.id, evening: true)
+        groupAt: groupIndex, for: target.id, evening: true, along: edge.orientation)
     } else {
       // Seed a NEW group from the focused solo tab. `groupAt: nil` appends, so the other groups stay
       // exactly as they are — this is the whole difference from the old single-layout model.
@@ -1464,7 +1464,7 @@ final class TerminalSessions: ObservableObject {
           id: UUID(), orientation: edge.orientation, ratio: 0.5,
           first: edge.placesDroppedFirst ? new : anchor,
           second: edge.placesDroppedFirst ? anchor : new),
-        groupAt: nil, for: target.id, evening: true)
+        groupAt: nil, for: target.id, evening: true, along: edge.orientation)
     }
     // Place the new tab right after the focused one in the loose order (display normalises anyway).
     insertID(newTab.id, after: focused.id, for: target)
@@ -1585,7 +1585,7 @@ final class TerminalSessions: ObservableObject {
       base.inserting(
         movedID, beside: destID, orientation: edge.orientation,
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5),
-      groupAt: index, for: target.id, evening: addsAMember)
+      groupAt: index, for: target.id, evening: addsAMember, along: edge.orientation)
     insertID(movedID, after: destID, for: target)  // display normalises the contiguous run
     setFocused(movedID, for: target.id)
     reconcileOcclusion(for: target)
@@ -2251,7 +2251,7 @@ final class TerminalSessions: ObservableObject {
       let prospective = base.inserting(
         UUID(), beside: tab.id, orientation: orientation, newLeafFirst: false, ratio: 0.5)
       let stored = PaneTreeLayout.evenedIfHonourable(
-        prospective, in: space, enabled: autoEvenSplits())
+        prospective, in: space, enabled: autoEvenSplits(), along: orientation)
       return PaneTreeLayout.fitsEveryPane(
         stored, in: space, notWorseThan: base, splitting: tab.id)
     }
@@ -2272,9 +2272,12 @@ final class TerminalSessions: ObservableObject {
   /// Evens the tree first when this edit added or removed a pane and the container can honour
   /// equality (issue #126). The gate is INTENT, not a leaf-count delta: every caller already knows
   /// whether it is adding, removing, or merely rearranging, and a rearrange must keep the dividers
-  /// the user dragged.
+  /// the user dragged. `axis` limits the even to one direction: an add passes its split's
+  /// orientation, a removal the orientation of the split the pane left.
   private func setSplit(
-    _ tree: TerminalPaneLayout?, groupAt index: Int?, for targetID: TerminalTarget.ID, evening: Bool
+    _ tree: TerminalPaneLayout?, groupAt index: Int?, for targetID: TerminalTarget.ID,
+    evening: Bool,
+    along axis: SplitOrientation? = nil
   ) {
     var groups = splitsByTarget[targetID] ?? []
     guard let tree, tree.tabIDs.count >= 2 else {
@@ -2284,7 +2287,8 @@ final class TerminalSessions: ObservableObject {
     }
     let stored =
       evening
-      ? PaneTreeLayout.evenedIfHonourable(tree, in: paneSpace[targetID], enabled: autoEvenSplits())
+      ? PaneTreeLayout.evenedIfHonourable(
+        tree, in: paneSpace[targetID], enabled: autoEvenSplits(), along: axis)
       : tree
     // A nil index means "append a new group". A NON-nil index that no longer addresses anything means
     // a caller held one across a mutation — and appending there would silently seed a SECOND group
@@ -2310,9 +2314,10 @@ final class TerminalSessions: ObservableObject {
     _ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID, evening: Bool
   ) {
     guard let index = splitIndex(containing: tabID, for: targetID) else { return }
+    let group = splitsByTarget[targetID]![index]
     setSplit(
-      splitsByTarget[targetID]![index].removingLeaf(tabID), groupAt: index, for: targetID,
-      evening: evening)
+      group.removingLeaf(tabID), groupAt: index, for: targetID, evening: evening,
+      along: group.axis(around: tabID))
   }
 
   /// The tab to focus after `tabID` is closed: the most-recently-focused tab that is still open
