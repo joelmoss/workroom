@@ -9,7 +9,8 @@ architecture, signing, and notarization detail — this file is the quick refere
 The app must always be a polished, friendly and delightful experience, in both its UX and its UI.
 Aim for perfection as far as is possible and appropriate: sweat the details of layout, spacing,
 copy, motion, empty and error states, and keyboard flow, and follow the macOS Human Interface
-Guidelines. A change that works but feels rough is not finished.
+Guidelines. A change that works but feels rough is not finished. Write any user-facing words
+(titles, messages, buttons, warnings) in the voice of `docs/app-copy.md`.
 
 ## Dev tasks (Makefile)
 
