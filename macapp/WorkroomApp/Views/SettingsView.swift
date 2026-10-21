@@ -204,6 +204,7 @@ private struct GeneralSettingsPane: View {
 
 private struct NotificationsSettingsPane: View {
   @Default(.showMenuBarItem) private var showMenuBarItem
+  @Default(.showMenuBarCount) private var showMenuBarCount
   @Default(.notifyWhenTerminalNeedsMe) private var notifyWhenTerminalNeedsMe
   @Default(.notifyWhenTurnFinishes) private var notifyWhenTurnFinishes
 
@@ -211,6 +212,10 @@ private struct NotificationsSettingsPane: View {
     Form {
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
+
+      Toggle("Show unread count in the menu bar", isOn: $showMenuBarCount)
+        .help("Show how many notifications and requests are pending beside the menu bar logo.")
+        .disabled(!showMenuBarItem)
 
       Toggle(isOn: $notifyWhenTerminalNeedsMe) {
         Text("Notify when a terminal needs me")
