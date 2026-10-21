@@ -119,7 +119,10 @@ enum CreationPanePresentation {
     case tryAgain, close, openAnyway, deleteWorkroom
     /// Approve the setup script shown and create again (#363).
     case approveScript
-    /// Close, worded for a create that made nothing and is waiting on the user.
+    /// Create again without the setup script shown, approving nothing, once confirmed.
+    case skipScript
+    /// Close, worded for a create that made nothing and is waiting on the user: the whole create
+    /// goes, not only the script.
     case cancel
 
     var title: String {
@@ -130,19 +133,33 @@ enum CreationPanePresentation {
       // An ellipsis: it opens the delete confirmation rather than deleting.
       case .deleteWorkroom: "Delete Workroom…"
       case .approveScript: "Approve"
-      case .cancel: "Cancel"
+      // An ellipsis: it asks first.
+      case .skipScript: "Continue Without Script…"
+      case .cancel: "Cancel Creation"
       }
     }
   }
 
-  /// The failure footer (design D3, D12): the reason on the left, then the secondary and the default
-  /// (`primary`) buttons.
+  /// Continue Without Script's confirmation, for the script `name`.
+  static func skipConfirmation(scriptName name: String) -> (title: String, message: String) {
+    (
+      "Create the workroom without running scripts/\(name)?",
+      "The workroom is created, but nothing the script would have set up is done. The script stays "
+        + "unapproved, so you'll be asked again next time."
+    )
+  }
+
+  /// The failure footer (design D3, D12): the reason on the left, then the secondary, any
+  /// `alternative` and the default (`primary`) buttons.
   struct Footer: Equatable {
     let reason: String
     let primary: Action
     let secondary: Action
-    /// A script to read before approving it, shown under the reason.
+    /// A third way on, between the two.
+    var alternative: Action? = nil
+    /// A script to read before approving it, shown under the reason, and its file name.
     var script: String? = nil
+    var scriptName: String? = nil
     /// What Escape answers: Close or Cancel, where it is shown (D16).
     var escapeAction: Action? { [.close, .cancel].contains(secondary) ? secondary : nil }
     /// What Return answers: the primary, except Approve, which runs code and so is never a keypress
@@ -176,8 +193,9 @@ enum CreationPanePresentation {
     case .scriptNotTrusted(let script):
       Footer(
         reason: "scripts/\(script.name) \(script.originLabel) is new, or changed since it was "
-          + "approved on this Mac. Read it, then approve it to run it.",
-        primary: .approveScript, secondary: .cancel, script: script.visibleText)
+          + "approved on this Mac. Read it, then approve it to run it, or continue without it.",
+        primary: .approveScript, secondary: .cancel, alternative: .skipScript,
+        script: script.visibleText, scriptName: script.name)
     }
   }
 

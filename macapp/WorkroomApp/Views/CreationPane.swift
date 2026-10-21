@@ -21,6 +21,8 @@ struct CreationPane: View {
   @State private var headerHeight: CGFloat = 0
   @State private var rowHeights: [String: CGFloat] = [:]
   @State private var noticeHeight: CGFloat = 0
+  /// Continue Without Script's confirmation is up.
+  @State private var confirmingSkip = false
   private let theme = ThemeService.shared
 
   private typealias P = CreationPanePresentation
@@ -52,6 +54,18 @@ struct CreationPane: View {
     // failed create never answers them, as a window-wide `.keyboardShortcut` would.
     .onKeyPress(.return) { answer { $0.returnAction } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
+    .confirmationDialog(
+      skipConfirmation.title, isPresented: $confirmingSkip, titleVisibility: .visible
+    ) {
+      Button("Continue Without Script") { Task { await store.skipSetupScript(run) } }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(skipConfirmation.message)
+    }
+  }
+
+  private var skipConfirmation: (title: String, message: String) {
+    P.skipConfirmation(scriptName: P.footer(for: run.outcome)?.scriptName ?? "workroom_setup")
   }
 
   private var isDone: Bool { run.outcome == .succeeded }
@@ -208,6 +222,7 @@ struct CreationPane: View {
     switch action {
     case .tryAgain: Task { await store.retryCreation(run) }
     case .approveScript: Task { await store.approveSetupScript(run) }
+    case .skipScript: confirmingSkip = true
     case .close, .cancel: store.closeCreation(run)
     case .openAnyway: store.openCreatedWorkroomAnyway(run)
     case .deleteWorkroom: deleteWorkroom()
@@ -458,20 +473,31 @@ private struct CreationFailureNotice: View {
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
       buttons
-      // A script to approve (#363), as it would run. A long one scrolls.
+      // A script to approve (#363), as it would run, drawn as a file from the Files inspector. A
+      // long one scrolls, or opens in a window of its own.
       if let script = footer.script {
-        ScrollView {
-          Text(script)
-            .font(.system(.caption, design: .monospaced))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
+        let name = footer.scriptName ?? "workroom_setup"
+        VStack(alignment: .trailing, spacing: 4) {
+          PaneToolbarButton(
+            systemImage: "macwindow.badge.plus", help: "Open in new window",
+            accessibilityLabel: "Open script in new window",
+            identifier: "CreationPane.script.openInWindow"
+          ) { ScriptWindow.show(text: script, name: name) }
+          .buttonStyle(
+            ToolbarIconButtonStyle(
+              wellSize: PaneTitleBarMetrics.wellSize,
+              horizontalPadding: PaneTitleBarMetrics.wellPadding)
+          )
+          .font(.system(size: PaneTitleBarMetrics.glyph))
+          ScriptCodeView(text: script, name: name)
+            .frame(height: min(ScriptCodeView.contentHeight(of: script), Self.maxScriptHeight))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+              RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(theme.tokens.border, lineWidth: 1)
+            )
+            .accessibilityIdentifier("CreationPane.script")
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxHeight: Self.maxScriptHeight)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
-        .accessibilityIdentifier("CreationPane.script")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -480,13 +506,19 @@ private struct CreationFailureNotice: View {
   /// Room to read a script before approving it; a longer one scrolls.
   private static let maxScriptHeight: CGFloat = 240
 
-  @ViewBuilder private var buttons: some View {
-    HStack(spacing: 8) {
-      button(footer.secondary)
-      // The default: prominent, and answering Return while focus is in this pane (D16).
-      button(footer.primary).buttonStyle(.borderedProminent)
+  /// In a row, or stacked where a narrow pane has no room for three (D15).
+  private var buttons: some View {
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 8) { buttonList }.fixedSize()
+      VStack(alignment: .leading, spacing: 8) { buttonList }.fixedSize()
     }
-    .fixedSize()
+  }
+
+  @ViewBuilder private var buttonList: some View {
+    button(footer.secondary)
+    if let alternative = footer.alternative { button(alternative) }
+    // The default: prominent, and answering Return while focus is in this pane (D16).
+    button(footer.primary).buttonStyle(.borderedProminent)
   }
 
   private func button(_ action: CreationPanePresentation.Action) -> some View {

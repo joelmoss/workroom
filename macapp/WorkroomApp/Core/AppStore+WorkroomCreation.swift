@@ -218,6 +218,17 @@ extension AppStore {
     await retryCreation(run)
   }
 
+  /// Continue Without Script, once confirmed, on a create its setup script stopped: the create starts
+  /// again, in the same pane, without that script. Nothing is approved, so the next create asks
+  /// again.
+  func skipSetupScript(_ run: CreationRun) async {
+    guard creationRuns[run.id] === run, run.awaitsApproval else { return }
+    await retryCreation(run, skipsSetup: true)
+  }
+
+  /// The setup script row's reason on a create that skipped it, as the CLI words it.
+  nonisolated static let setupSkippedReason = "Skipped without approval"
+
   /// Close on a failed create, or Cancel on its provider setup: the pane goes. A split collapses to
   /// its sibling; a pane on its own gives way to what was selected before, if it still exists.
   func closeCreation(_ run: CreationRun) {
@@ -236,8 +247,9 @@ extension AppStore {
   }
 
   /// Try Again: the same request again, in the same pane, as a new run that replaces `run`. The base
-  /// branch is read afresh, as a new create does.
-  func retryCreation(_ run: CreationRun) async {
+  /// branch is read afresh, as a new create does. It skips the setup script as `run` did, unless
+  /// `skipsSetup` says otherwise.
+  func retryCreation(_ run: CreationRun, skipsSetup: Bool? = nil) async {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
     let project = projects.first { $0.path == run.project.path } ?? run.project
@@ -245,7 +257,7 @@ extension AppStore {
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
       previousSelection: run.previousSelection,
       hasSetupScript: Self.hasSetupScript(project),
-      hasIncludeFile: Self.hasIncludeFile(project))
+      hasIncludeFile: Self.hasIncludeFile(project), skipsSetup: skipsSetup ?? run.skipsSetup)
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)
@@ -296,7 +308,8 @@ extension AppStore {
       if let id = landing.landedID { releaseCreatingWorkroom(id) }
     }
     do {
-      let created = try await cli.create(project: project.path) { event in
+      let created = try await cli.create(project: project.path, skipSetup: run.skipsSetup) {
+        event in
         if event.type == "created", let name = event.name {
           if let text = event.warning, !text.isEmpty { warning.value = text }
           // Registered synchronously, so it is there to await when `create` returns.
@@ -440,7 +453,7 @@ extension AppStore {
       let plan = try await services.plan(self, run.project)
       defaultNotUsed = plan.defaultNotUsed
       // Before any machine is made, so a script this Mac won't run never costs a paid host (#363).
-      if let script = try await services.untrustedSetup(self, run.project, plan) {
+      if !run.skipsSetup, let script = try await services.untrustedSetup(self, run.project, plan) {
         refuseCreation(run, script)
         return
       }
@@ -470,7 +483,13 @@ extension AppStore {
       await reload()
       let id = TerminalTarget.workroomID(project: path, name: created.name)
       // Still undeletable while the script runs, as a local create's workroom is (issue #116).
-      let setupFailure = await runRemoteSetup(run, created: created, host: host, services: services)
+      var setupFailure: String?
+      if run.skipsSetup {
+        run.begin("script")
+        run.finish("script", as: .skipped(reason: Self.setupSkippedReason))
+      } else {
+        setupFailure = await runRemoteSetup(run, created: created, host: host, services: services)
+      }
       releaseCreatingWorkroom(id)
       if let setupFailure {
         // As a local create's: the workroom and its host stay, for Open Anyway or Delete.

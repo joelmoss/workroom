@@ -138,6 +138,9 @@ final class CreationRun: ObservableObject, Identifiable {
   let previousSelection: SidebarID?
   /// When the run started, which orders two unnamed runs in the sidebar.
   let startedAt: Date
+  /// Continue Without Script on an unapproved setup script: this create neither judges nor runs it
+  /// (#363), and a Try Again keeps that.
+  let skipsSetup: Bool
   @Published private(set) var steps: [CreationStep]
   @Published private(set) var name: String?
   @Published private(set) var outcome: CreationOutcome = .running
@@ -151,17 +154,19 @@ final class CreationRun: ObservableObject, Identifiable {
   init(
     id: UUID = UUID(), project: Project, kind: CreationKind, splitAnchor: SidebarID?,
     previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
-    now: @escaping () -> Date = Date.init
+    skipsSetup: Bool = false, now: @escaping () -> Date = Date.init
   ) {
     self.id = id
     self.project = project
     self.kind = kind
     self.splitAnchor = splitAnchor
     self.previousSelection = previousSelection
+    self.skipsSetup = skipsSetup
     self.now = now
     self.startedAt = now()
     self.steps = kind.plan.filter {
-      (hasSetupScript || $0.id != "script")
+      // A skipped script keeps its row, to say so: it may be one only the base commit has.
+      (hasSetupScript || skipsSetup || $0.id != "script")
         && (hasIncludeFile || $0.id != ProvisioningProgress.Step.include.rawValue)
     }
   }

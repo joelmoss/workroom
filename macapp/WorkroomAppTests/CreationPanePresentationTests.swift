@@ -201,8 +201,11 @@ final class CreationPanePresentationTests: XCTestCase {
         reason: "Couldn't create the workroom, and its machine is still running: clone failed",
         primary: .deleteWorkroom, secondary: .close))
     XCTAssertEqual(
-      [P.Action.tryAgain, .close, .openAnyway, .deleteWorkroom].map(\.title),
-      ["Try Again", "Close", "Open Anyway", "Delete Workroom…"])
+      [P.Action.tryAgain, .close, .openAnyway, .deleteWorkroom, .skipScript, .cancel].map(\.title),
+      [
+        "Try Again", "Close", "Open Anyway", "Delete Workroom…", "Continue Without Script…",
+        "Cancel Creation",
+      ])
   }
 
   /// Value: protects=D16, Escape answers only where Close is shown; fails_when=Escape triggers

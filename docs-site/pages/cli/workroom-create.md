@@ -19,6 +19,7 @@ workroom create [flags]
   -h, --help             help for create
       --no-editor        Do not offer to open the new workroom in $EDITOR
       --project string   Project directory to create the workroom in (defaults to the current directory)
+      --skip-setup       Create without running the setup script, and without asking to approve it
 ```
 
 ## Options inherited from parent commands
