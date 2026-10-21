@@ -18,7 +18,9 @@ func commitAll(t *testing.T, dir, msg string) {
 }
 
 // originProjectAt is a project registered under home whose origin has main, with local main equal
-// to it and a clean tree. base.txt is a tracked file for a test to modify.
+// to it and a clean tree. base.txt is a tracked file for a test to modify. origin/HEAD is set, as a
+// real clone (or an earlier create's fetch) leaves it: without it a start that can't be fetched
+// falls back to the checkout's own HEAD, and an offline test passes whatever the code does.
 func originProjectAt(t *testing.T, home, name string) string {
 	t.Helper()
 	origin := filepath.Join(home, name+".git")
@@ -29,6 +31,7 @@ func originProjectAt(t *testing.T, home, name string) string {
 	commitAll(t, project, "base")
 	run(t, project, "git", "remote", "add", "origin", origin)
 	run(t, project, "git", "push", "-q", "-u", "origin", "main")
+	run(t, project, "git", "remote", "set-head", "origin", "main")
 	if err := mustConfig(t).AddProject(project, "git"); err != nil {
 		t.Fatal(err)
 	}
@@ -443,6 +446,21 @@ func TestContractTrustStatusLocalWork(t *testing.T) {
 	checkContract(t, "trust-status-local-work.json", r.stdout, home)
 }
 
+// An offline create that starts from the local branch, as chosen: the events the app turns into the
+// checklist, and the envelope its notice reads. The fetch row and the warning name the same start.
+func TestContractCreateOfflineLocalStart(t *testing.T) {
+	home, project := aheadProject(t)
+	run(t, project, "git", "remote", "set-url", "origin", filepath.Join(home, "gone.git"))
+
+	r := runCLI(t, "create", "--json", "--no-editor", "--start", "local", "--project", project)
+	if r.code != 0 {
+		t.Fatalf("create: exit %d, %s %s", r.code, r.stdout, r.stderr)
+	}
+	name := createdName(t, r.stdout)
+	checkContract(t, "create-offline-local-start.json", r.stdout, home, name, contractName)
+	checkContract(t, "create-offline-local-start-events.ndjson", r.stderr, home, name, contractName)
+}
+
 // Value: protects=the choice says when the local branch is behind origin, since including the work
 // then starts from the older copy; fails_when=behind isn't counted or the note is missing from the
 // payload or the message; why_new=every other fixture's main has all of origin's commits;
@@ -473,9 +491,6 @@ func TestCreateStartAskSaysWhenTheLocalBranchIsBehind(t *testing.T) {
 // no_claim=the fetch warning's wording
 func TestAChosenStartHoldsWhenTheFetchFails(t *testing.T) {
 	home, project := aheadProject(t)
-	// As an earlier create's fetch leaves it: origin/HEAD known, so offline the start is the stale
-	// origin/main, not this checkout's HEAD (which has the commit anyway).
-	run(t, project, "git", "remote", "set-head", "origin", "main")
 	run(t, project, "git", "remote", "set-url", "origin", filepath.Join(home, "gone.git"))
 
 	r := runCLI(t, "create", "--json", "--no-editor", "--start", "local", "--project", project)
