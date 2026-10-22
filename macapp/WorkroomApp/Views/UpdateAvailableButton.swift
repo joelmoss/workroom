@@ -101,7 +101,7 @@ struct UpdateAvailableButton: View {
   }
 }
 
-/// The note inside the Update capsule saying what an update keeps: the local agent keeps every
+/// The note inside the Update capsule saying what an update keeps: the local daemon keeps every
 /// workroom terminal's session and hands it to the new build (`DaemonHandOff`). Run commands are
 /// stopped on quit and the Quick Terminal has no session, so the note names both. The pill's type
 /// size, scrolling slowly so the whole sentence fits a small slot. Under Reduce Motion a short form

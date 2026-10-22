@@ -1,17 +1,17 @@
 import XCTest
 
 /// Program status (#358) end to end, through a REAL `workroomd`: the fixture's terminals attach
-/// through a scratch agent of their own (`-WorkroomUITestLiveDaemon`, so no agent, session or config
+/// through a scratch daemon of their own (`-WorkroomUITestLiveDaemon`, so no daemon, session or config
 /// of the developer's is touched), and `testdata/program-status/mock-claude-code.sh` plays back
 /// what Claude Code sends. So this covers what the seeded `ProgramStatusUITests` cannot: the probe
-/// answered by the agent, the service, the app's subscription, the monitor, the indicators, the
+/// answered by the daemon, the service, the app's subscription, the monitor, the indicators, the
 /// "needs you" alert, Claude's own alert folded into it, and ⇧⌘M.
 ///
 /// Banners in Notification Center are not assertable here (another process, behind a permission
 /// prompt); the in-app alert stands in for them.
 ///
 /// The runner cannot spawn a process, and `terminate()` does not run the app's quit path, so the
-/// test ends its own shells before quitting: with no session left, the scratch agent idles out.
+/// test ends its own shells before quitting: with no session left, the scratch daemon idles out.
 final class ProgramStatusLiveDaemonUITests: XCTestCase {
   private var app: XCUIApplication!
   private let scratch = "/tmp/wr-ps-\(UUID().uuidString.prefix(8))"
@@ -33,9 +33,9 @@ final class ProgramStatusLiveDaemonUITests: XCTestCase {
   }
 
   override func tearDown() {
-    // End the scratch agent from a shell it runs (the shell's parent), its sessions with it, a few
+    // End the scratch daemon from a shell it runs (the shell's parent), its sessions with it, a few
     // seconds after the app has quit: exiting the shells is not enough (the app opens a fresh
-    // terminal when the last closes), and a live app would start the agent again. The shell also
+    // terminal when the last closes), and a live app would start the daemon again. The shell also
     // removes the scratch directory, which the runner may not.
     if chips.count > 0 {
       chip(0).click()
@@ -88,7 +88,7 @@ final class ProgramStatusLiveDaemonUITests: XCTestCase {
     return condition()
   }
 
-  /// Focus Terminal 1 and prove its shell runs (through the agent) before typing into it.
+  /// Focus Terminal 1 and prove its shell runs (through the daemon) before typing into it.
   private func readyTerminalOne() {
     app.activate()
     let one = chip(0)
@@ -101,10 +101,10 @@ final class ProgramStatusLiveDaemonUITests: XCTestCase {
     app.typeText("\r")
     XCTAssertTrue(
       poll(timeout: 30) { ((surface().value as? String) ?? "").contains("WRREADY2") },
-      "Terminal 1's shell never came up through the scratch agent")
+      "Terminal 1's shell never came up through the scratch daemon")
   }
 
-  /// Start the mock in the focused terminal: it probes (the agent answers), works for two steps,
+  /// Start the mock in the focused terminal: it probes (the daemon answers), works for two steps,
   /// then waits on a permission request for `hold` seconds, with Claude's own alert 1 s in.
   private func startMock(hold: Int) {
     app.typeText("MOCK_STEP=2 MOCK_HOLD=\(hold) MOCK_ALERT_DELAY=1 sh '\(mock)' --auto")

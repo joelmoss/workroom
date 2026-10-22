@@ -172,7 +172,7 @@ struct ExecRequest {
 /// ssh is kept from prompting WITHOUT setting `GIT_SSH_COMMAND`, which would outrank a repository's
 /// own `core.sshCommand`, the usual home of a deploy key, and so replace the host's ssh for every
 /// repository on it. It cannot prompt anyway: `SSH_ASKPASS_REQUIRE=never` rules out a helper, and a
-/// supervised agent has no terminal for one. A `GIT_SSH_COMMAND` the host sets itself is kept and
+/// supervised daemon has no terminal for one. A `GIT_SSH_COMMAND` the host sets itself is kept and
 /// gets `BatchMode`, as the app does locally (`StatusCommandRunner.networkEnvironment`).
 ///
 /// Built from `vars_os`, not `vars`, which panics on one variable that is not UTF-8 and would take

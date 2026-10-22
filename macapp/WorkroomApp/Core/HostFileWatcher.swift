@@ -1,28 +1,28 @@
 import Foundation
 import WorkroomVCS
 
-/// A watch on one directory tree that prefers the host agent and falls back to local FSEvents.
+/// A watch on one directory tree that prefers the host daemon and falls back to local FSEvents.
 /// The drop-in for `WorkroomFileWatcher` at all three watch sites (the Files tree, the selected
 /// workroom, the per-project `.git` dir): same `start(path:)` / `stop()`, same "deliver on the
 /// main actor" contract, plus an `overflow` flag on every delivery.
 ///
-/// **Routing.** A local host's running agent serves the watch when it has the File service. When it
-/// does not — a pre-upgrade agent kept alive for its terminals, or any failure to reach or subscribe
+/// **Routing.** A local host's running daemon serves the watch if it has the File service. When it
+/// does not — a pre-upgrade daemon kept alive for its terminals, or any failure to reach or subscribe
 /// to one — this falls back to `WorkroomFileWatcher` (FSEvents in this process), so a panel is never
-/// left with no watch at all. The fallback is dropped the moment an agent subscription succeeds.
+/// left with no watch at all. The fallback is dropped the moment a daemon subscription succeeds.
 ///
 /// **Reconnect.** A subscription dies with its connection, and `HostConnectionManager` never
 /// reconnects on its own. So the loop below RE-ACQUIRES through the router (which reconnects, and
-/// spawns the agent if it is gone) whenever a subscription ends, backing off while that fails. This is
-/// what makes a killed agent, or a Mac that slept through a socket timeout, recover without the user
+/// spawns the daemon if it is gone) whenever a subscription ends, backing off while that fails. This is
+/// what makes a killed daemon, or a Mac that slept through a socket timeout, recover without the user
 /// touching anything.
 ///
 /// **One synthetic refresh per gap.** Anything that could have been missed while no watch was live —
-/// the connection dropping, the root vanishing, the switch between FSEvents and the agent — is
+/// the connection dropping, the root vanishing, the switch between FSEvents and the daemon — is
 /// reported once as `onChange([], overflow: true)`. `overflow` is relevant to every consumer filter,
 /// so the panel re-reads whatever it shows instead of trusting state from before the gap.
 ///
-/// Coalescing happens on the agent (see `watch.rs`); this delivers each batch as it arrives.
+/// Coalescing happens on the daemon (see `watch.rs`); this delivers each batch as it arrives.
 ///
 /// Like `WorkroomFileWatcher`, call `start`/`stop` from the main thread. `onChange` runs on the main
 /// actor.
@@ -30,7 +30,7 @@ import WorkroomVCS
 /// the loop's own task keeps alive, so the LOOP cannot keep THIS object alive. That is what lets
 /// `deinit` stop the watch. Without the split the task's strong reference made `deinit` unreachable
 /// while a subscription was running, and an owner that was simply dropped (a closed window's
-/// `AppStore`) left its subscriptions and their reconnect loops holding agent slots forever.
+/// `AppStore`) left its subscriptions and their reconnect loops holding daemon slots forever.
 final class HostFileWatcher {
   private let core: WatchCore
 
@@ -154,7 +154,7 @@ private final class WatchCore: @unchecked Sendable {
     var gap = false
     while !Task.isCancelled, current(generation) {
       guard let location = try? await RepositoryLocation.local(path) else {
-        // Not a usable path: nothing an agent could watch, so the local watcher's own behavior stands.
+        // Not a usable path: nothing a daemon could watch, so the local watcher's own behavior stands.
         await startFallback(path: path, generation: generation)
         return
       }
@@ -175,9 +175,9 @@ private final class WatchCore: @unchecked Sendable {
       }
 
       guard let handle else {
-        // The agent cannot serve this watch right now. Watch locally so the panel stays live, tell
+        // The daemon cannot serve this watch right now. Watch locally so the panel stays live, tell
         // the consumer once that it may have missed something, and — unless the provider is simply
-        // native and never will — try the agent again later.
+        // native and never will — try the daemon again later.
         await startFallback(path: path, generation: generation)
         if gap {
           deliver([], overflow: true, generation: generation)
@@ -189,7 +189,7 @@ private final class WatchCore: @unchecked Sendable {
         continue
       }
 
-      // A change the fallback had seen but not yet delivered dies with it, and the agent's watch
+      // A change the fallback had seen but not yet delivered dies with it, and the daemon's watch
       // never saw it, so a handoff is a gap like any other.
       if await stopFallback(generation: generation) { gap = true }
       backoff = .milliseconds(500)
@@ -217,7 +217,7 @@ private final class WatchCore: @unchecked Sendable {
       // the whole point.
       if endedByDaemon { try? await Task.sleep(for: .seconds(1)) }
       // The subscription is over, however it ended. Whatever happened while nothing was watching is
-      // unknown, and is reported once when the next watch (agent or fallback) is live.
+      // unknown, and is reported once when the next watch (daemon or fallback) is live.
       gap = true
     }
   }

@@ -76,7 +76,7 @@ public enum SSHTransport {
     try HostStream.spawn(
       URL(fileURLWithPath: "/usr/bin/ssh"), route.options + [route.destination, command],
       environment: route.environment,
-      // ssh connects and authenticates before the agent can greet. `ConnectTimeout` bounds the
+      // ssh connects and authenticates before the daemon can greet. `ConnectTimeout` bounds the
       // connect; this leaves room for the rest.
       handshakeTimeout: 20, purpose: purpose)
   }

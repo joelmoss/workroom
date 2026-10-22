@@ -14,8 +14,8 @@ use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 ///
 /// On this Mac, a new shell in its place. Reached only when the session exits between the daemon's
 /// check and its attach; a plain refusal gets a new session (`run_attach`). On a remote host
-/// (`--no-spawn`), never a shell (#255, D7): one started here would be this process's child, not an
-/// agent session, so no other Mac could see it and it would die with the ssh link. The pane is told
+/// (`--no-spawn`), never a shell (#255, D7): one started here would be this process's child, not a
+/// daemon session; no other Mac could see it and it would die with the ssh link. The pane is told
 /// the terminal ended, then holds with input going nowhere until its user closes it, as a pane
 /// shown a record does.
 fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
@@ -195,7 +195,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     let mut request = serve::AttachRequest::from_env();
     // `--no-create`: attach only if the session exists (see `AttachRequest::existing_only`).
     request.existing_only = args.iter().any(|arg| arg == "--no-create");
-    // `--no-spawn`: never start a daemon. On a remote host that is the supervisor's job, and an
+    // `--no-spawn`: never start a daemon. On a remote host that is the supervisor's job, and a
     // daemon started here would be the idle-exit kind a remote host must not have, racing the
     // supervised one for the socket (#228). It also changes what a lost daemon connection means:
     // see the main loop's `Ok(0) | Err(_)` arm.
@@ -585,7 +585,7 @@ fn relay_resizes(
 /// - `ISIG` turns `^C` into a `SIGINT` for THIS process instead of a byte for the program on the
 ///   far end — so Ctrl-C appears to do nothing, having killed the wrong thing.
 ///
-/// `SessionAttachClient.enterRawMode` has done this since the Swift daemon shipped; the daemon
+/// `SessionAttachClient.enterRawMode` has done this since the Swift helper shipped; the daemon
 /// arrived without it and reached one nightly that way.
 ///
 /// `tcgetattr` failing is the not-a-tty case — a pipe, a test harness — and is deliberately not an

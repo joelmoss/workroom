@@ -43,7 +43,7 @@ final class FileTreeModel: ObservableObject {
   private let runner: StatusCommandRunning
   private var watcher: HostFileWatcher?
   private var loadTask: Task<Void, Never>?
-  /// The listing in flight, if any. Cancelling it stops waiting but NOT the work: on the agent path
+  /// The listing in flight, if any. Cancelling it stops waiting, NOT the work: on the daemon path
   /// the request has already left, and the host keeps listing until it finishes. So a burst of reloads must not each start their own — that would queue
   /// N host-side listings behind each other for one screenful of tree. See `reload()`.
   private struct Listing {
@@ -135,7 +135,7 @@ final class FileTreeModel: ObservableObject {
       return
     }
     state = .loading
-    // A remote tree is listed by its agent, and not watched: `HostFileWatcher` watches local paths
+    // A remote tree is listed by its daemon, and not watched: `HostFileWatcher` watches local paths
     // only, so it refreshes on reactivation and Reload.
     guard location.host == .local else { return reload() }
     loadTask = Task { [weak self] in
@@ -160,7 +160,7 @@ final class FileTreeModel: ObservableObject {
   ///
   /// At most ONE listing per location is in flight, plus at most one follow-up. Each `reload()` used
   /// to cancel the previous listing and start another, which was free while cancelling killed the
-  /// child process; through the agent it only abandons the wait, so a burst of watch events would
+  /// child process; through the daemon it only abandons the wait, so a burst of watch events would
   /// stack that many listings on the host.
   func reload() {
     guard let location = currentLocation else { return }
@@ -270,13 +270,13 @@ final class FileTreeModel: ObservableObject {
     /// the caller must not blank an existing tree over it — the sensible read is "try again", not
     /// "this isn't a repo any more".
     case interrupted
-    /// The file service refused or failed this once (agent lock contention, a full request budget,
+    /// The file service refused or failed this once (daemon lock contention, a full request budget,
     /// an I/O error). Like `.interrupted`, it says nothing about the tree, so an existing one stays.
     case transient(String)
     case failed(RepositoryRoutingError)
   }
 
-  /// A listing error that is neither truncation nor a routing verdict. The agent reports a vanished
+  /// A listing error that's neither truncation nor a routing verdict. The daemon reports a vanished
   /// working directory and an I/O hiccup as the same `Io` failure, so the disk decides, for every
   /// error: a folder that is confirmed gone (or no longer a directory) is `.unavailable` and blanks
   /// the tree; anything else, including a check that itself failed, keeps it.

@@ -13,7 +13,7 @@ struct WaitingRequest: Identifiable, Equatable {
   let since: Date
   /// Its host's link is down: it may have been answered meanwhile.
   let stale: Bool
-  /// Counted in the badge: alerts are on, and its program answered the probe, or the agent saw
+  /// Counted in the badge: alerts are on, and its program answered the probe, or the daemon saw
   /// it stay running, or Workroom alerted it (#481).
   let counted: Bool
 }
@@ -23,7 +23,7 @@ struct WaitingRequest: Identifiable, Equatable {
 /// used that terminal in, folds the program's own notification into it, and keeps the list of
 /// waiting requests the badge and the menu bar count.
 ///
-/// An episode is (agent boot, session, record id, episode number): the agent numbers each entry
+/// An episode is (daemon boot, session, record id, episode number): the daemon numbers each entry
 /// into `blocked` from one counter per session, so a request that resolves and comes back is a new
 /// episode, and a hand-off, which keeps `boot`, re-alerts nothing.
 @MainActor
@@ -90,13 +90,13 @@ final class ProgramStatusAlerts: ObservableObject {
         if open[key] == nil {
           open[key] = (session, record.id)
           // There before the app was, or blocked while someone was looking at its terminal (the
-          // rule a probed request gets from `alert`, for one the agent promotes later): shown,
+          // rule a probed request gets from `alert`, for one the daemon promotes later): shown,
           // never alerted.
           if change.isLaunchSnapshot || attachments(of: session).contains(where: \.focused) {
             notified.insert(key)
           }
         }
-        // A program that never probed alerts once the agent has seen it stay running, or once
+        // A program that never probed alerts once the daemon has seen it stay running, or once
         // its own notification announced the request (#481).
         if !notified.contains(key), record.notify || held[session] != nil {
           let held = takeHeldEntry(session)

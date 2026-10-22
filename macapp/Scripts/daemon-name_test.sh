@@ -4,7 +4,7 @@
 # WR-AGENT), anywhere in the tracked tree except:
 #
 # - history that keeps the names of its time: docs/designs/, docs/recently-done.md and the OQ19
-#   measurement spike (vcs/scripts/oq19/);
+#   measurement spike (vcs/scripts/oq19/), and ADR 0057, which records the rename;
 # - the code that still has to know the old name, until #526 retires it: finding a v2.1.0 daemon
 #   on agent.sock, refusing a host an older Nightly made (its `wr-agent`), the protocol test that
 #   reads older release tags, and the tests and fixture of those;
@@ -20,6 +20,7 @@ hits="$(git -C "$ROOT" grep --no-color -n -I -E 'wr-agent|wr_agent|WR_AGENT|WR-A
   ':!docs/designs' \
   ':!docs/recently-done.md' \
   ':!vcs/scripts/oq19' \
+  ':!docs/adr/0057-wr-agent-became-workroomd-and-what-keeps-the-old-name.md' \
   ':!macapp/Scripts/daemon-name_test.sh' \
   ':!macapp/Scripts/daemon-protocol_test.sh' \
   ':!macapp/Packages/HostDrivers/Sources/HostDrivers/DaemonInstall.swift' \

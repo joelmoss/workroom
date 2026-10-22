@@ -300,7 +300,7 @@ extension AppStore {
     }
   }
 
-  /// A reachable remote workroom's item (#253): read through its agent at its location on its host,
+  /// A reachable remote workroom's item (#253): read via its daemon at its location on its host,
   /// and its own shared root there (`RemoteWorkrooms.registrations`).
   private func remoteStatusWorkItem(_ w: Workroom, in p: Project) -> StatusWorkItem? {
     guard let host = w.reachableHost,

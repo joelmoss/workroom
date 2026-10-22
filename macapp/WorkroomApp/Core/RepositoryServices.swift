@@ -77,7 +77,7 @@ struct BoundLocalWriter: VCSWriting {
   private var path: String { context.location.path }
   private let projectRoot: String
 
-  /// For a local repository, or a remote one whose writer reads that host's disk through the agent
+  /// For a local repository, or a remote one whose writer reads that host's disk through the daemon
   /// (`DaemonVCSConnection.writer`). The paths here are only ever handed to
   /// the writer as strings, never resolved against this disk.
   init(context: RepositoryContext, reader: VCSProviding, writer: LocalVCSWriting) throws {

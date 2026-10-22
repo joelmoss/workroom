@@ -555,7 +555,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(Array(found.path.utf8), Array(name.utf8))
   }
 
-  /// What a read is sent never has a `.` or `..` component: the agent refuses such a path before
+  /// What a read is sent never has a `.` or `..` component: the daemon refuses such a path before
   /// it opens anything (`vcs::relative`), so a parent traversal is also resolved here. Sent to a
   /// read as written, every `../file.rb` click opened nothing (found in review). The `..` goes to
   /// the host's `resolve` instead (#327), as `onHost`, and only when it stays in the workroom.
@@ -581,7 +581,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
       TerminalLinkOpener.remoteCandidates(for: "../x.txt", cwd: "\(root)/lib", root: root).first?
         .onHost, "lib/../x.txt")
     // No `..`, nothing to resolve; and one that climbs out of the root as written and back in is
-    // only resolved here, since the agent refuses it before any lookup.
+    // only resolved here, since the daemon refuses it before any lookup.
     XCTAssertNil(
       TerminalLinkOpener.remoteCandidates(for: "a/b.rb", cwd: root, root: root).first?.onHost)
     XCTAssertEqual(
@@ -599,7 +599,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
   }
 
   /// #327: `link/../file.rb` is the file beside the link's TARGET, which the host resolves. An
-  /// agent from before `resolve` answers it as unsupported, and the click falls back to the
+  /// daemon from before `resolve` answers it as unsupported, and the click falls back to the
   /// lexical path, as before. A host that says the path is not there is believed.
   @MainActor
   func testARemoteParentTraversalIsResolvedOnTheHost() async throws {
@@ -632,7 +632,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let missing = await sessions.remoteFile("link/../file.rb", cwd: nil, target: target)
     XCTAssertNil(missing, "the decoy beside the link opened after the host found nothing")
 
-    // Busy, or an error resolving (a link into an unreadable directory, a loop), is not an agent
+    // Busy, or an error resolving (a link into an unreadable directory, a loop), is not a daemon
     // that can't resolve: the decoy stays shut.
     for failure in ["too many reads in flight", "Permission denied (os error 13)"] {
       sessions.remoteFiles = provider(failing: [
@@ -669,7 +669,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let busyRead = await sessions.remoteFile("file.rb:4", cwd: nil, target: target)
     XCTAssertNil(busyRead, "a click probed another candidate after file opens reached their cap")
 
-    // So does the agent's refusal while too many earlier walks are stuck: the next candidate of
+    // So does the daemon's refusal while too many earlier walks are stuck: the next candidate of
     // `link/file.rb:12/../t.rb` is plain `link/file.rb`, a read through the same hung link with no
     // deadline (#343). It exists here, so reading it would return it.
     sessions.remoteFiles = { location in
@@ -682,7 +682,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
         ])
     }
     let busy = await sessions.remoteFile("link/file.rb:12/../t.rb", cwd: nil, target: target)
-    XCTAssertNil(busy, "a click read through the hung link after the agent refused its resolve")
+    XCTAssertNil(busy, "a click read through the hung link after the daemon refused its resolve")
   }
 
   /// Only what the host's file service can read: nothing outside the workroom's root, no `~` (this
@@ -767,7 +767,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
 
   /// What the probe makes of the host's answers, one candidate at a time. A refused candidate (a
   /// link out of the root, a directory) is skipped for the next, as a missing one is. Any other
-  /// failure is the HOST's (it dropped, the agent errored), so the next candidate would fail the
+  /// failure is the HOST's (it dropped, the daemon errored), so the next candidate would fail the
   /// same way and the probe gives up with nothing, rather than reporting a file it never read.
   // Value: protects=the host probe skips refused candidates but stops on a host failure;
   //   fails_when=refused stops the probe, or a host failure continues to a later candidate;
@@ -976,7 +976,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
 }
 
 /// A remote host's file service for the remote-pane tests (#254): `files` by workroom-relative
-/// path, reads capped as the agent caps them. Shared with `RemotePaneFooterTests`.
+/// path, reads capped as the daemon caps them. Shared with `RemotePaneFooterTests`.
 struct HostFiles: FileProviding {
   let context: FileContext
   let files: [String: Data]
@@ -989,7 +989,7 @@ struct HostFiles: FileProviding {
     CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
   }
   func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
-    // The real agent refuses these before it opens anything (`vcs::relative`).
+    // The real daemon refuses these before it opens anything (`vcs::relative`).
     if path.split(separator: "/", omittingEmptySubsequences: false).contains(where: {
       $0 == ".." || $0 == "." || $0.isEmpty
     }) {

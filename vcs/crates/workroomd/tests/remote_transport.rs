@@ -11,7 +11,7 @@
 //! a transport change actually breaks things.
 //!
 //! **What this cannot cover, and what a container is still for:** another machine, its own process
-//! space, a real ssh hop, and pushing the agent binary to a host that does not have it. Those are
+//! space, a real ssh hop, and pushing the daemon binary to a host that does not have it. Those are
 //! the driver's job, not the protocol's. The ssh hop is covered at the end of this file, by tests
 //! that are ignored unless `vcs/scripts/ssh-fixture/run.sh` has started the container they need.
 
@@ -507,7 +507,7 @@ fn attached_after(client: &mut Client, id: [u8; 16], stream: u32) -> bool {
         .any(|e| e.service == Service::Control && e.stream == stream)
 }
 
-/// A closed pane's attach can reach the agent after the pane's kill, over ssh by seconds. It is
+/// A closed pane's attach can reach the daemon after the pane's kill, over ssh by seconds. It is
 /// refused rather than starting a shell that would run on with no pane (#297).
 #[test]
 fn an_attach_behind_a_kill_does_not_start_the_session() {
@@ -652,7 +652,7 @@ fn a_restored_pane_with_a_screen_over_one_frame_still_gets_it_whole() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A peer that is not an agent — an ssh banner, an MOTD, a login message — must be rejected, not
+/// A peer that is not a daemon — an ssh banner, an MOTD, a login message — must be rejected, not
 /// waited on. This is the failure mode of a real ssh hop, where the remote shell prints before the
 /// daemon ever starts.
 #[test]
@@ -1056,7 +1056,7 @@ fn start_daemon(socket: &Path) -> Spawned {
     daemon
 }
 
-/// The local half of the persistent remote path, with no ssh: a supervised-style agent, a relay
+/// The local half of the persistent remote path, with no ssh: a supervised-style daemon, a relay
 /// in front of it, and a relay killed mid-session. The next relay must reach the SAME shell.
 #[test]
 fn a_relay_reaches_the_same_daemon_after_the_link_drops() {
@@ -1441,7 +1441,7 @@ impl Fixture {
             })
             .collect();
         std::fs::write(&self.config, config).expect("write the ssh config");
-        // Up means sshd answers AND the supervisor has the agent serving, as run.sh waits for it.
+        // Up means sshd answers AND the supervisor has the daemon serving, as run.sh waits for it.
         assert!(
             self.wait_for(
                 &format!(
@@ -1648,7 +1648,7 @@ impl Drop for Pane {
     }
 }
 
-/// The bootstrap's far side (#231), through the app's own scripts over ssh: a host with no agent
+/// The bootstrap's far side (#231), through the app's own scripts over ssh: a host with no daemon
 /// gets this build installed and started; a host already holding it is pushed nothing; a host
 /// running another build is handed off to this one with an attached pane's shell, its pid and
 /// its exit code intact, and the pane comes back; and a binary that passes every check and then
@@ -1780,7 +1780,7 @@ fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
         "the daemon's pid must survive the hand-off"
     );
     fixture.run(&format!("kill -0 {shell}"));
-    // The pane's link to the agent ended with the exec, and it says so with ssh's own status for
+    // The pane's link to the daemon ended with the exec, and it says so with ssh's own status for
     // a dropped link, which the app answers by attaching it again as a restored one.
     assert_eq!(pane.exit_code(Duration::from_secs(10)), Some(255));
     drop(pane);

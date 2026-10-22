@@ -1,7 +1,7 @@
 import Foundation
 
 /// App-native VCS domain models. Both readers (local git via SwiftGitX, remote git via workroomd) map
-/// their own types into THESE — the UI depends only on these, never on `SwiftGitX.*` or the agent's
+/// their own types into THESE — the UI depends only on these, never on `SwiftGitX.*` or the daemon's
 /// wire DTOs. That keeps the UI decoupled from the library/wire shapes and lets a reader change
 /// without touching views.
 

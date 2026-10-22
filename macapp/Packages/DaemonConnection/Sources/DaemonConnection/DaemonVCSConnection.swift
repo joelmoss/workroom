@@ -116,7 +116,7 @@ public final class DaemonVCSConnection: @unchecked Sendable {
   /// send OPENs it would certainly refuse.
   private var forwardsHeld = 0
   /// The local process carrying a driver's stream (`ssh host workroomd relay`), or nil for a local
-  /// agent's socket. Ended when the connection fails, so a closed connection leaves no ssh behind.
+  /// daemon's socket. Ended when the connection fails, so a closed connection leaves no ssh behind.
   private let carrier: HostStream?
 
   private init(host: HostID, descriptor: Int32, helloVersion: UInt16, carrier: HostStream?) {

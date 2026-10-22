@@ -2,7 +2,7 @@ import Foundation
 import WorkroomWire
 import os
 
-/// Where a remote workroom's layout is kept: its host's agent (`DaemonLayoutService`), or a fake.
+/// Where a remote workroom's layout is kept: its host's daemon (`DaemonLayoutService`), or a fake.
 protocol HostLayoutStore: Sendable {
   func get(_ key: String) async throws -> DaemonLayout
   func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64

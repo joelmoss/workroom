@@ -240,7 +240,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
   }
 
   /// The real runner, except that a HEAD read fails once HEAD names a commit: the read after the
-  /// commit is lost to a timeout, a dropped agent, or a signal.
+  /// commit is lost to a timeout, a dropped daemon, or a signal.
   private struct HeadReadsFailOnceItExists: StatusCommandRunning {
     let real = StatusCommandRunner()
     let failure: CommandResult
@@ -261,7 +261,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     }
   }
 
-  /// The real runner, except that the intent-to-add step loses contact with the agent.
+  /// The real runner, except that the intent-to-add step loses contact with the daemon.
   private struct StagingLosesContact: StatusCommandRunning {
     let real = StatusCommandRunner()
 

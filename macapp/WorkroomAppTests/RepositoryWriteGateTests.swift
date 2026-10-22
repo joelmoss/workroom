@@ -216,9 +216,9 @@ extension RepositoryWriteGateTests {
 extension RepositoryWriteGateTests {
   /// The `Task.detached` shield in `run(repository:)`. Every other blocking test here uses
   /// `runBlocking`, which ignores cancellation, so they stay green without the shield. An
-  /// agent-routed git write DOES observe cancellation: unshielded, cancelling the caller throws out
+  /// daemon-run git write DOES observe cancellation: unshielded, cancelling the caller throws out
   /// of its `Task.sleep`-like wait, releases the tail early, and lets the next write start while the
-  /// agent's `git` is still running. With the shield the operation runs to its own end first.
+  /// daemon's `git` is still running. With the shield the operation runs to its own end first.
   func testCancelledCallKeepsTailUntilCancellationObservingOperationEnds() async throws {
     let gate = RepositoryWriteGate(maxChainWait: 5)
     let location = try RepositoryLocation.remote(host: UUID(), path: "/repo")

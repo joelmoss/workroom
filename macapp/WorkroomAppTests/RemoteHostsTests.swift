@@ -1190,7 +1190,7 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   /// A delete of a remote provider's host asks for that provider's driver and environment, never
-  /// Docker's; the environment's agent socket is the driver's own, on the host's home disk, never
+  /// Docker's; the environment's daemon socket is the driver's own, on the host's home disk, never
   /// the container image's tmpfs `/run/workroom` one; its git never borrows the Mac's `gh`
   /// (OQ20); and a clone that fails says the provider's own fix. One row per remote provider.
   @MainActor
@@ -1552,7 +1552,7 @@ final class RemoteHostsTests: XCTestCase {
     let environment = RemoteProvisioning.Environment(
       driver: driver,
       daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
-      connect: { _ in throw HostDriverError.provisioning("no agent") })
+      connect: { _ in throw HostDriverError.provisioning("no daemon") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
       reserve: { _, _ in "x" }, record: { _, descriptor in recorded.add(descriptor) },

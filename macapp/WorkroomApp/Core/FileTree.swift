@@ -147,7 +147,7 @@ enum FileTreeBuilder {
 /// Pure command construction + output parsing for the working-tree listing, so the args and the
 /// path-cleanup are unit-tested without spawning git.
 enum FileListing {
-  /// Seconds a listing command may run. `LIST_TIMEOUT` in the agent's `file.rs` is the same value, so
+  /// Seconds a listing command may run. `LIST_TIMEOUT` in the daemon's `file.rs` is the same value, so
   /// a slow tree fails the same way on both paths.
   static let timeout: TimeInterval = 10
 

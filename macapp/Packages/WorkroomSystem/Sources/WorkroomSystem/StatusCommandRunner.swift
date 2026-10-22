@@ -27,7 +27,7 @@ public struct CommandResult: Sendable, Equatable {
 
   /// `stdout` was cut at the runner's capture cap: the child wrote more than was kept, so the text can
   /// end mid-line — mid-FILENAME, for a listing. A consumer that parses it as a whole must check this
-  /// first. Set by `StatusCommandRunner` and by the agent's listing reply; every other producer leaves
+  /// first. Set by `StatusCommandRunner` and by the daemon's listing reply; every other producer leaves
   /// it false, which is what a fake runner's short canned output is.
   public let stdoutTruncated: Bool
 
@@ -45,7 +45,7 @@ public struct CommandResult: Sendable, Equatable {
   /// Negative and outside 0-255, so it can never collide with a real exit code or a signal number.
   public static let launchFailed: Int32 = -1
   /// The command's outcome is **unknown**: it was dispatched and we stopped listening before an
-  /// answer came back. Only reachable on the agent-routed path (`DaemonCommandRunner.outcomeUnknown`),
+  /// answer came back. Only reachable on the daemon-routed path (`DaemonCommandRunner.outcomeUnknown`),
   /// where a connection loss, a client-side deadline or a cancellation ends the round trip while the
   /// host-side command keeps running — there is no cancel message in the protocol.
   ///
@@ -58,8 +58,8 @@ public struct CommandResult: Sendable, Equatable {
   /// Negative and outside 0-255 for `launchFailed`'s reason, and distinct from it because "nothing
   /// happened" and "something may have happened" need opposite recoveries.
   public static let outcomeUnknown: Int32 = -2
-  /// Known NOT to have happened, and nothing is wrong with the workroom: the agent (or this side of
-  /// the connection) refused the request before running it — a full request pool, agent lock
+  /// Known NOT to have happened, and nothing is wrong with the workroom: the daemon (or this end of
+  /// the connection) refused the request before running it — a full request pool, daemon lock
   /// contention — or a commit whose staging step lost contact was never sent. Retrying is safe.
   ///
   /// Not `launchFailed`, whose one cause is a vanished working directory ("This workroom's folder
@@ -226,17 +226,17 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
   }
 
   /// The whole environment a REMOTE exec request carries: the pins that are policy, not identity.
-  /// The remote agent builds everything else from the host's own environment. See
+  /// The remote daemon builds everything else from the host's own environment. See
   /// `DaemonCommandRunner.request` for why nothing else crosses.
   public static let remoteEnvironment = [
     "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C",
   ]
 
-  /// The complete environment a `git` child gets, native or agent-routed.
+  /// The complete environment a `git` child gets, native or daemon-routed.
   ///
   /// Extracted from `run` and made static so `DaemonCommandRunner` can send the SAME map to
   /// workroomd, which `env_clear()`s and replaces its own environment with it. Before this existed
-  /// the agent forwarded a small allowlist (`PATH`, plus auth keys on a network command) and the
+  /// the daemon forwarded a small allowlist (`PATH`, plus auth keys on a network command) and the
   /// child inherited everything else from the DAEMON — a process "negotiated with, never replaced"
   /// (`LocalDaemonVCS`) whose environment is a snapshot of whichever app launch first spawned it.
   /// That silently authored commits under a stale `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME`, and no
@@ -244,7 +244,7 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// hooks is open-ended (`GIT_CONFIG_PARAMETERS`, `EMAIL`, `GNUPGHOME`, …). Sending
   /// the whole environment is the only construction under which the two paths agree.
   ///
-  /// Pure, so `StatusCommandRunnerEnvironmentTests` can assert native/agent parity without spawning.
+  /// Pure, so `StatusCommandRunnerEnvironmentTests` can assert native/daemon parity without spawning.
   /// `inherited` exists so a test can feed it variables WITHOUT `setenv`: libghostty snapshots
   /// `environ` at `ghostty_init` and keeps reading that fixed-length copy, so adding or removing a
   /// process variable afterwards leaves it reading freed memory — a later `ghostty_surface_new` in
@@ -300,7 +300,7 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
     // wrong. A user who exports them in their shell (worktree tooling commonly does) would
     // otherwise poison every command the app runs.
     //
-    // Removed for the NATIVE path too, not just the agent's. workroomd already stripped them; the
+    // Removed for the NATIVE path too, not just the daemon's. workroomd already stripped them; the
     // app did not, so the two paths disagreed and the app was the unsafe one. `GIT_INDEX_FILE` is
     // on the list deliberately: its one planned consumer is temp-index commits, which will pass it
     // per-call rather than inherit it (`StatusCommandRunning.run(environment:)`).

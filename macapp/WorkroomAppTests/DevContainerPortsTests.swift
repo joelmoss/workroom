@@ -18,7 +18,7 @@ final class DevContainerPortsTests: XCTestCase {
   }
 
   /// The spec's file is JSON with comments: comments and trailing commas read, a `"host:port"`
-  /// entry (another host's port, which the agent can't reach) is skipped, a repeat is forwarded
+  /// entry (another host's port, which the daemon can't reach) is skipped, a repeat is forwarded
   /// once, and `portsAttributes` gives a single port's label and `requireLocalPort`.
   func testItReadsTheSpecsPortFields() throws {
     let file = """

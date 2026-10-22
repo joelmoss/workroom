@@ -190,7 +190,7 @@ struct DaemonControlClient: SessionControlPlane {
     return false
   }
 
-  /// Reads until `parse` yields a value, the deadline passes, or the peer proves it is not an
+  /// Reads until `parse` yields a value, the deadline passes, or the peer proves it is not a
   /// daemon.
   ///
   /// `do`/`catch` rather than `try?`: the three outcomes are "got it", "need more bytes" and "this

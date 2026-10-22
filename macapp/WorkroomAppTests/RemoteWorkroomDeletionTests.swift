@@ -412,7 +412,7 @@ final class RemoteTeardownTests: XCTestCase {
 
   /// Value: protects=the teardown runs, in the checkout, before the host is destroyed and the
   /// record forgotten; fails_when=it runs after, or not at all; no_claim=a real host
-  /// (RemoteScriptTests runs the agent)
+  /// (RemoteScriptTests runs the daemon)
   func testTheTeardownRunsBeforeTheHostGoes() async throws {
     let log = Log()
     try await delete(host(), log, teardown: teardown(log, result: .passed))
@@ -528,7 +528,7 @@ final class RemoteTeardownTests: XCTestCase {
   }
 
   /// Value: protects=R1, the script connects through the app's `ensureConnected` (which joins a
-  /// connect under way, replaces an older agent and puts a relayed host's credentials up) before
+  /// connect under way, replaces an older daemon and puts a relayed host's credentials up) before
   /// anything runs, and a failed connect is a failed script; fails_when=the script runs without
   /// connecting, or a failed connect passes; no_claim=the join, bootstrap and relay themselves
   /// (RemoteHostsTests and DaemonBootstrap's tests)

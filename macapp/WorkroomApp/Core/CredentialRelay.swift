@@ -7,7 +7,7 @@ import os
 /// The Mac's end of the git credential relay for a local container workroom (#309), which has no
 /// provider to give it GitHub access: it takes the user's own `gh` sign-in on this Mac.
 ///
-/// Its agent's `workroomd credential` dials a port on its own box's loopback (`port(for:)`), which
+/// Its daemon's `workroomd credential` dials a port on its own box's loopback (`port(for:)`), which
 /// `ReverseForwardRegistry` carries over the app's connection to a listener here, on this Mac's
 /// loopback. A connection sends the workroom's secret, then git's request; it is answered from
 /// `gh auth git-credential get`, for `https://github.com` only. The secret is what keeps another
@@ -44,7 +44,7 @@ final class CredentialRelay: @unchecked Sendable {
     self.transport = transport
   }
 
-  /// The agent's port for workroom host `id`: the same on every connection and every launch, so
+  /// The daemon's port for workroom host `id`: the same on every connection and every launch, so
   /// the `relay.json` it was given stays right. 30000-31999, below Linux's ephemeral ports (32768
   /// up).
   static func port(for id: UUID) -> UInt16 {
@@ -52,7 +52,7 @@ final class CredentialRelay: @unchecked Sendable {
     return 30_000 + (UInt16(bytes.2) << 8 | UInt16(bytes.3)) % 2_000
   }
 
-  /// The secret host `id`'s agent sends, made the first time it is asked for this launch. Throws
+  /// The secret host `id`'s daemon sends, made the first time it is asked for this launch. Throws
   /// rather than make one the system's random source didn't fill: a guessable secret would answer
   /// anyone on this Mac.
   func secret(for id: UUID) throws -> String {
@@ -77,7 +77,7 @@ final class CredentialRelay: @unchecked Sendable {
   /// gets here, so connections that never say one can't hold these slots; they can only hold the
   /// reading ones (`maxReading`).
   static let maxConcurrent = 8
-  /// The most one request may take to arrive, whatever pace its bytes come at. The agent writes it
+  /// The most one request may take to arrive, whatever pace its bytes come at. The daemon writes it
   /// whole, at once (`relay` in `credential.rs`), so a second is plenty.
   static let requestDeadline: TimeInterval = 2
   private let reading = DispatchSemaphore(value: maxReading)
@@ -197,7 +197,7 @@ final class CredentialRelay: @unchecked Sendable {
   }
 
   /// The reply to `request` (the secret's line, then git's), as `username`/`password` lines, or an
-  /// `error=` line the agent passes on to git.
+  /// `error=` line the daemon passes on to git.
   func respond(to request: String) -> String {
     let lines = request.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     guard let secret = lines.first, !secret.isEmpty,
@@ -347,7 +347,7 @@ final class CredentialRelay: @unchecked Sendable {
 
   // MARK: Hosts
 
-  /// Has host `id`'s agent ask this Mac for git's credentials: its listener carried here, and
+  /// Has host `id`'s daemon ask this Mac for git's credentials: its listener carried here, and
   /// `workroomd credential relay` run there with this launch's secret. Run on every connect: the
   /// listener goes with the connection, and the secret with the launch.
   @MainActor

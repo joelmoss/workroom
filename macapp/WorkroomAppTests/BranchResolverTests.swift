@@ -25,7 +25,7 @@ private struct StubProvider: LocalVCSProviding {
 
 /// `BranchResolver` now just maps the backend's `VCSRef` → the sidebar's `RootRef`, guards the
 /// vcs kind, and bounds the read with a timeout — the git specifics (symbolic-ref, name cleaning)
-/// live in `GitProvider` (and the agent's `current_ref`).
+/// live in `GitProvider` (and the daemon's `current_ref`).
 final class BranchResolverTests: XCTestCase {
   private func resolver(
     timeout: TimeInterval = 3, _ ref: @escaping @Sendable () async throws -> VCSRef

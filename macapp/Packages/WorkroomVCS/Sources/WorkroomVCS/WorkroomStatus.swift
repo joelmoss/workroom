@@ -94,7 +94,7 @@ public enum VCSStatusFailure: Equatable, Sendable {
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).
 ///
 /// `oldPath` is the pre-move path, set only for `.renamed` (renames are detected via libgit2's status
-/// rename options, or git's own rename detection on the agent path). It stays
+/// rename options, or git's own rename detection on the daemon path). It stays
 /// out of `id` on purpose — a row's identity is where the file is NOW, so a rename doesn't reshuffle
 /// selection when the old path changes.
 public struct ChangedFile: Equatable, Hashable, Identifiable, Sendable {

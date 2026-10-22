@@ -7,7 +7,7 @@ import XCTest
 @testable import Workroom
 
 /// One real provider, as the parity cases need it (#259): its driver and key, and what the cases
-/// do on its machines through its own control plane, never over the Mac's link to the agent.
+/// do on its machines through its own control plane, never over the Mac's link to the daemon.
 struct LiveProvider {
   let driver: any HostTerminalDriver
   /// The key a workroom made the way the app does it records.
@@ -74,7 +74,7 @@ class ProviderParityTestCase: XCTestCase {
 
   /// AC 3, for the machine: every fresh host has an sshd host key and a machine-id of its own,
   /// whatever its provider's image ships (boxd's ships one of each for every machine, measured
-  /// 2026-10-10). The supervisor serves the agent on each, and destroying them leaves nothing.
+  /// 2026-10-10). The supervisor serves the daemon on each, and destroying them leaves nothing.
   func freshHostsHaveAnIdentityOfTheirOwn(_ provider: LiveProvider) async throws {
     let driver = provider.driver
     let first = try await driver.create()
@@ -254,7 +254,7 @@ class ProviderParityTestCase: XCTestCase {
     try await Task.sleep(for: .seconds(1))
     pane.type("echo LAST-SC\"\"REEN\n")
     XCTAssertTrue(pane.read(until: "LAST-SCREEN").contains("LAST-SCREEN"))
-    // The restart kills the agent outright, so only what it has already written survives.
+    // The restart kills the daemon outright, so only what it has already written survives.
     let record = "~/.local/state/workroom/screens/\(session.uuidString.lowercased()).vt"
     var written = false
     for _ in 0..<100 where !written {
@@ -266,7 +266,7 @@ class ProviderParityTestCase: XCTestCase {
     let before = try await identity(provider, first.host)
     try provider.restart(first.host)
 
-    // The restart returns while the machine boots, so the first attaches can find no agent yet:
+    // The restart returns while the machine boots, so the first attaches can find no daemon yet:
     // they exit 255, and the app attaches again with backoff, as this does.
     var seen = ""
     for _ in 0..<30 where !seen.contains("host restarted") {

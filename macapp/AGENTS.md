@@ -86,7 +86,7 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
 - **Local reads → SwiftGitX (libgit2), pure Swift.** `GitProvider` wraps SwiftGitX and implements
   `LocalVCSProviding`. No Rust bridge or xcframework. (An all-Rust core with gix was tried and
   dropped: gix bought no real unification and libgit2 is the more complete git engine.)
-- **Agent-routed reads and writes → `workroomd`.** The `vcs/` Rust workspace holds the `workroomd`
+- **Daemon-routed reads and writes → `workroomd`.** The `vcs/` Rust workspace holds the `workroomd`
   daemon (terminal sessions, VCS and File services) and its git read crates (`wr-vcs-git`,
   `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `DaemonVCSReader` /
   `DaemonVCSConnection`.
@@ -142,28 +142,28 @@ serializer that every commit, fetch, push and pull goes through (`CLIVCSWriter.g
 the raw, untimed call as the operation and wrap the gate in `withTimeout`, never the reverse (see the
 type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
 
-## Terminal sessions: `workroomd` (Rust) and the daemon it replaces
+## Terminal sessions: `workroomd` (Rust) and the Swift helper it replaces
 
 A pane's shell outlives the pane, so the app does not own the pty — a **session helper** does, and
-the app attaches to it. New sessions all go to `workroomd`; the Swift `workroom-session` in this build only
-attaches to older daemons that are still running (issue #154):
+the app attaches to it. New sessions all go to `workroomd`, the Workroom daemon; the Swift `workroom-session` in this build only
+attaches to older Swift helpers that are still running (issue #154):
 
 - **`workroomd`** (`vcs/crates/workroomd`, Rust) — where every NEW session goes. One binary,
   `serve | attach`, multiplexing services over one stream with a versioned envelope
   (`service:u8 | stream:u32 | length:u32 | payload`). It keeps a **shadow terminal** (libghostty-vt,
   behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
-  rather than a byte replay. A newer app does not kill a running agent: it asks it to replace its
+  rather than a byte replay. A newer app does not kill a running daemon: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
   (`DaemonHandOff.start()`, protocol 6, `workroomd hand-off`, #230), in every build; see
   the module comment in `vcs/crates/workroomd/src/handoff.rs` for the mechanics, and ADR 0009 for
   why.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — attach-only now. The `daemon`
-  subcommand is gone, so this build cannot start one; the tool only attaches to daemons an app at or
+  subcommand is gone, so this build cannot start one; the tool only attaches to Swift helpers an app at or
   before v2.0.0 left running, which keep their sessions until the user closes them and cannot hand a
   live pty over.
 
 **A restored remote pane can show its last screen instead of a fresh shell (#232).** When a host's
-supervisor opts in (`workroomd serve --screens <dir>`), the agent keeps each session's last screen on
+supervisor opts in (`workroomd serve --screens <dir>`), the daemon keeps each session's last screen on
 disk and, after a reboot kills the shells, answers a reattach for a session it no longer holds with
 that screen plus a bottom-row notice rather than the usual fresh shell. The app needs no code for
 this: the notice arrives as ordinary VT bytes over the same reattach path `terminal-state` already
@@ -172,23 +172,23 @@ write/prune/restore mechanics, and ADR 0031 for why. The supervisor boxd and exe
 (`Resources/host-setup/systemd.sh`) passes `--screens`, as does the ssh fixture's.
 
 **The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.daemon`, or nil
-when the agent fails its probe (there is no fallback to the daemon, which this build cannot start); `PersistentSessionService.backend(forSession:)` resolves each EXISTING
+when the daemon fails its probe (there is no fallback to the Swift helper, which this build cannot start); `PersistentSessionService.backend(forSession:)` resolves each EXISTING
 session to whichever helper owns it. Two rules there are load-bearing and were both got wrong once:
 the answer is resolved **once per session and cached** (a pane asks twice — `attachCommand` for the
-binary, `launchEnvironment` for the socket — and the two must agree, or the daemon binds the agent's
+binary, `launchEnvironment` for the socket — and the two must agree, or the Swift helper binds the daemon's
 socket), and an **unanswered** ownership probe resolves to *neither* — `backend(forSession:)` returns
 nil and the pane opens a plain shell until a later probe succeeds. There is no safe guess, because
 **both** helpers create-on-attach: the retired `SessionDaemon.handleAttach` (code deleted, but the
-v2.0.0 daemons still run it) ends in `create(request:connection:)` for an id it does not hold, exactly
-as the agent does, so either guess forks a second pty under the
+v2.0.0 Swift helpers still run it) ends in `create(request:connection:)` for an id it does not hold, exactly
+as the daemon does, so either guess forks a second pty under the
 same id and orphans the user's shell. A failed `connect` is NOT an unanswered probe — it means
-nothing is listening, which is a definitive "not owned" (the daemon leaves a stale `session.sock`
+nothing is listening, which is a definitive "not owned" (the Swift helper leaves a stale `session.sock`
 behind on any `pkill`, so this case is common, not exotic).
 
 **Building it.** `macapp/Scripts/build-daemon.sh` is a build phase, mirroring `build-helper.sh` (the
 Go CLI): it iterates `ARCHS`, so a universal Release build produces both slices and `lipo`s them. The
 built binary is staged beside `$DEST` and **renamed into place, never written over it** — a running
-agent executes that file, and macOS SIGKILLs a process whose signed binary changes under it ("Code
+daemon executes that file, and macOS SIGKILLs a process whose signed binary changes under it ("Code
 Signature Invalid"); writing in place used to kill every Dev session, and any hand-off (#230), on
 each rebuild. `build-daemon_test.sh` guards both that loop — the same regression once shipped an
 arm64-only CLI inside 23 universal betas — and the rename (a hard link stands in for the running
@@ -198,18 +198,18 @@ the app**: without it a reattaching pane repaints blank, which only shows up aft
 quit-and-relaunch. `workroomd protocol` reports `terminal-state yes|no`, and the build test asserts it
 against the shipped binary.
 
-**Linux agents (issue #227).** Every build also puts a static musl `workroomd` per
+**Linux daemons (issue #227).** Every build also puts a static musl `workroomd` per
 Linux arch in `Contents/Resources/workroomd-linux-{aarch64,x86_64}`, for pushing to remote hosts.
 Both arches ship always, whatever `ARCHS` says, because a remote box's arch has nothing to do with
 the Mac's. They are not codesigned; the app's signature seals them as resources. Debug builds them
 too, since every build offers remote workrooms. Building them needs `cargo install
 cargo-zigbuild --locked` and `rustup target add aarch64-unknown-linux-musl
 x86_64-unknown-linux-musl`, which the CI and release workflows install. `release.sh` asserts both ELFs are
-present and static, and the `agent-linux` CI job runs `protocol` on each under Linux.
+present and static, and the `daemon-linux` CI job runs `protocol` on each under Linux.
 `DaemonBootstrap.connect` (#231) pushes the matching one to a remote host on first connect, beside
-the agent's socket, and hands the running agent off to it; the far side is
+the daemon's socket, and hands the running daemon off to it; the far side is
 `Resources/daemon-bootstrap/{probe,install,resources}.sh`, run through `HostDriver.exec`. The same
-connect pushes Ghostty's terminfo and shell integration beside the agent (#239), so a remote pane
+connect pushes Ghostty's terminfo and shell integration beside the daemon (#239), so a remote pane
 runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
 
@@ -255,7 +255,7 @@ user's boxd `git` integration, and an exe.dev VM an exe.dev GitHub integration p
 answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
 `Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
 that fails says the provider's fix (`RemoteWorkrooms.Place.credentialHint`). A local container's git
-asks the Mac's own `gh` through `CredentialRelay` (#309), whose agent side is `workroomd credential`
+asks the Mac's own `gh` through `CredentialRelay` (#309), whose daemon side is `workroomd credential`
 (`vcs/crates/workroomd/src/credential.rs`). A new user's first exe.dev create walks them through
 exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
 `make app-run-exedev-fresh`.
@@ -276,7 +276,7 @@ whatever happened, so a delete reads what it printed. Both drivers' shared live 
 CLI (`--json`) and reached over the container driver's ssh transport (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
-`Resources/host-setup/systemd.sh` (an identity unit and the agent's supervisor, both systemd; shared
+`Resources/host-setup/systemd.sh` (an identity unit and the daemon's supervisor, both systemd; shared
 with every provider driver whose machines run systemd, #259). Every remote workroom is a fresh
 machine of its own: `RemoteProvisioning.provision` has the driver `create()` it, then
 clones and checks out the branch, and no driver derives a host from another. The identity unit
@@ -327,7 +327,7 @@ or a remote workroom silently turns local. What the app relies on:
   is held in `deferredTargetSessions` until its first pane opens.
 - Doing something on a host (a connect, an exec, a script, a delete): read
   `docs/remote-host-states.md` first. It lists the states a host can be in (stopped, asleep, gone,
-  connecting, an older agent), the call that reaches it in each (`activate`, then
+  connecting, an older daemon), the call that reaches it in each (`activate`, then
   `ensureConnected(wake: true)` for what the user asked for), and what an exit status means over ssh.
 
 ## Working rules for the session/VCS layers
@@ -337,21 +337,21 @@ apply to the terminal-session and VCS-routing code above, which is concurrent, c
 cross-language, and where a fix that is locally correct is routinely globally wrong.
 
 **1. Verify the premise before writing the justification.** A load-bearing claim about code you did
-not write — "the daemon fails loudly here", "this constant bounds that loop", "nothing else matches
+not write — "the Swift helper fails loudly here", "this constant bounds that loop", "nothing else matches
 on this enum" — gets read and quoted before anything is built on it. If you cannot point at the
 line, you do not know it.
 
 Both of these shipped, each under several paragraphs of confident reasoning, each one grep from
 being disproved:
 
-- *"Guessing the daemon fails loudly, so an unanswered ownership probe should resolve there."*
+- *"Guessing the Swift helper fails loudly, so an unanswered ownership probe should resolve there."*
   `SessionDaemon.handleAttach` ends in `create(request:connection:)` for an id it does not hold —
-  it creates on attach exactly as the agent does. Both guesses silently fork a second shell. The
+  it creates on attach exactly as the daemon does. Both guesses silently fork a second shell. The
   rule was wrong and a test asserted it, which kept it wrong.
 - *"`WRITE_TIMEOUT` bounds the repaint."* It is a **no-progress** bound, reset per `write` call
   (`transport.rs`). Reused as a total-transfer budget it became a throughput floor, so a healthy
   peer on a slow link was permanently unattachable.
-- *"`CLIVCSWriter` is untouched, so agent-routed and native writes classify identically by
+- *"`CLIVCSWriter` is untouched, so daemon-routed and native writes classify identically by
   construction."* Both halves of the premise were true and the conclusion was false. The classifier
   really was untouched; it reached opposite verdicts because the two paths fed it different INPUT —
   a stale child environment, a different exit code for a missing tool, and transport failures

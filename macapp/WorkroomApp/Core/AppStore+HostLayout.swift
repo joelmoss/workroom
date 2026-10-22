@@ -83,7 +83,7 @@ extension AppStore {
   /// (D4). The connect is inside it, so a host that is slow to answer never blanks the workroom.
   static let hostLayoutTimeout: TimeInterval = 5
 
-  /// Where a host's layouts are read and written: its agent, its service connection brought up
+  /// Where a host's layouts are read and written: its daemon, its service connection brought up
   /// first (it can drop while the panes' own links stay up), or a fake in a test.
   nonisolated(unsafe) static var hostLayoutStore:
     @Sendable (HostID) async throws -> HostLayoutStore = { host in
@@ -91,7 +91,7 @@ extension AppStore {
       return try await HostConnectionManager.shared.layouts(host: host)
     }
 
-  /// A host's live sessions, for the append rule: its agent, or a fake in a test.
+  /// A host's live sessions, for the append rule: its daemon, or a fake in a test.
   nonisolated(unsafe) static var hostSessions:
     @Sendable (HostID) async throws -> [SessionDescriptor] = {
       try await HostConnectionManager.shared.sessions(on: $0)
@@ -210,7 +210,7 @@ extension AppStore {
       default: keepsNoLayouts = false
       }
       if keepsNoLayouts {
-        // The host keeps no layouts, or its agent predates them: nothing to write to.
+        // The host keeps no layouts, or its daemon predates them: nothing to write to.
         hostLayouts.readOnly.insert(targetID)
       }
       if held?.hostLayoutStale == true {

@@ -104,7 +104,7 @@ enum DaemonBootstrap {
   /// How long an exchange may go with nothing sent or received before it is given up on: a bound
   /// on silence, never on the whole transfer, which would make it a throughput floor for the 11 MB
   /// push (the `WRITE_TIMEOUT` lesson in macapp/AGENTS.md). The longest silence is the hand-off
-  /// CLI's own waits: ssh connecting (10 s), the agent's bounds (5.7 s), its read of the answer
+  /// CLI's own waits: ssh connecting (10 s), the daemon's bounds (5.7 s), its read of the answer
   /// (30 s) and its greeting from the new program (10 s).
   static let timeout: TimeInterval = 60
   static let architectures = ["aarch64", "x86_64"]
@@ -254,7 +254,7 @@ enum DaemonBootstrap {
     case "kept-older": daemon = .keptOlder(outcome.dropFirst().joined(separator: " "))
     case "refused": daemon = .keptOlder("refused: " + outcome.dropFirst().joined(separator: " "))
     case .some:
-      // The script said no before anything was replaced. A daemon already there is still an
+      // The script said no before anything was replaced. A daemon already there is still a
       // daemon, and the app connects to it; a host with none has nothing to run.
       let why = describe(outcome)
       guard report.installed != nil else { throw Error.installFailed(why) }

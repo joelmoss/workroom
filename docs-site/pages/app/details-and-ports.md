@@ -53,4 +53,4 @@ Forwards do not carry over a relaunch. The ports your `devcontainer.json` declar
 
 ### When it is not connected
 
-If the list says **No agent is connected.**, Workroom has no connection to the container yet, and the controls will not work. **Not connected. A forward reconnects when it is used.** means a forward you already made will reconnect the next time something uses it.
+If the list says **No daemon is connected.**, Workroom has no connection to the container's Workroom daemon yet, and the controls will not work. **Not connected. A forward reconnects when it is used.** means a forward you already made will reconnect the next time something uses it.

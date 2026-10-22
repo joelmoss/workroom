@@ -9,12 +9,12 @@ something on a host: a connect, an exec, a script, a delete.
 - **Something the user asked for** (a click, a create, a delete, a script):
   `RemoteHosts.activate(host)`, then `try await hosts.ensureConnected(host, wake: true)`. That
   starts a stopped container, wakes an asleep boxd box, joins a connect already under way, and
-  bootstraps the agent and the credential relay. `RemoteWorkrooms.runScript` is the worked example.
+  bootstraps the daemon and the credential relay. `RemoteWorkrooms.runScript` is the worked example.
 - **A background read** (a status sweep, a panel refresh): `ensureConnected(host)`. It leaves an
   asleep boxd box asleep, reports a gone one, and after a failure refuses the host for `retryAfter`
   (30 s). A host selected in any window, or one the user opened (`activate`), is connected as if
   the user had asked, so a box on screen doesn't keep reading as asleep after the Mac wakes.
-- **After a wake or a network change** (`RemoteLinkMonitor`): each boxd or exe.dev host's agent is
+- **After a wake or a network change** (`RemoteLinkMonitor`): each boxd or exe.dev host's daemon is
   pinged over its service connection (the VCS `capabilities` request, which no repaint holds up). One that doesn't answer within 2 s has the
   connection dropped and its remote panes attach again, rather than wait the minute ssh's keepalive
   takes to notice a dead link; a pane's attach reconnects the host. One that answers keeps its links.
@@ -33,7 +33,7 @@ something on a host: a connect, an exec, a script, a delete.
 | Asleep boxd box | boxd status `standby` or `hibernated` (`BoxdHostDriver.Presence.asleep`), or boxd couldn't say | A background read throws `RepositoryRoutingError.asleep`; with `wake` or `activate` the connect's ssh login wakes it |
 | Gone boxd machine | `Presence.gone`: deleted, or in another org or account | A background read throws `RepositoryRoutingError.gone`. With `wake` the presence check is skipped, so the connect is tried and fails as unreachable |
 | Unreachable | the connect threw | `ensureConnected` logs the cause and throws `.unavailable`, whose text is "Repository service unavailable." Say what failed in your feature's own words (`runScript`: "couldn't reach the host") |
-| Older or newer agent | `DaemonBootstrap.Outcome.Agent` | An older agent is handed off to this build's (`.handedOff`) unless it refuses (`.keptOlder`); a newer one is never downgraded (`.keptNewer`). Either way a subcommand this build added may be missing on the host |
+| Older or newer daemon | `DaemonBootstrap.Outcome.Daemon` | An older daemon is handed off to this build's (`.handedOff`) unless it refuses (`.keptOlder`); a newer one is never downgraded (`.keptNewer`). Either way a subcommand this build added may be missing on the host |
 | Fresh host | first login on a new machine | No cached login environment, and a cold first login (nvm, conda) can be slow. `workroomd run-script` gives its login-shell probe 10 s, then falls back to its own environment and says so |
 | Mid-create or failed delete | `HostDescriptor.state` is `creating` or `failed` | The host may not be whole. `RemoteWorkrooms.delete` runs a teardown only when `state` is nil, and otherwise just finishes taking it down |
 | Another build's host | its key and labels aren't this build's | `RemoteWorkrooms.checkDeletable` refuses (`Failure.anotherBuildsHost`) |
@@ -46,7 +46,7 @@ something on a host: a connect, an exec, a script, a delete.
 - For a check, accept only the status that means the answer, and read every other non-zero as the
   host not answering. `test -e` exits 1 for a missing file; reading 255 as "missing" would skip a
   teardown and then destroy the host.
-- An agent subcommand's own codes (`run-script`'s 124 timeout, 126 not started) count as its
+- A daemon subcommand's own codes (`run-script`'s 124 timeout, 126 not started) count as its
   report only when its stderr line says so (`workroomd run-script: ...`): a script can exit 124 or
   126 itself.
 - `communicate`'s `timeout` bounds silence, not the exchange. A process the command left in the

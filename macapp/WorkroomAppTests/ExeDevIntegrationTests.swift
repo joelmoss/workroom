@@ -24,7 +24,7 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
       throw XCTSkip("set TEST_RUNNER_WR_EXEDEV_TESTS=1 to run these on exe.dev")
     }
     guard PersistentSessionPaths.linuxDaemonURL(architecture: "x86_64") != nil else {
-      throw XCTSkip("this build bundles no Linux agent")
+      throw XCTSkip("this build bundles no Linux daemon")
     }
     directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-exedev-\(UUID().uuidString.prefix(8))")
@@ -100,7 +100,7 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
   }
 
   /// One shell line on the VM over the user's own ssh, as the driver reaches it, not over the
-  /// Mac's link to the agent. Its output, then `exit=<status>`.
+  /// Mac's link to the daemon. Its output, then `exit=<status>`.
   private func onBox(_ host: HostID, _ line: String) throws -> String {
     let (_, output) = try ssh(
       ExeDevHostDriver.sshOptions + [

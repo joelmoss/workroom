@@ -502,7 +502,7 @@ enum RemoteWorkrooms {
   }
 
   /// Runs a workroom's script on its host, through the app's own connection to it
-  /// (`RemoteHosts.ensureConnected`, then `connect`): that replaces an agent older than this app's,
+  /// (`RemoteHosts.ensureConnected`, then `connect`): that replaces a daemon older than this app's,
   /// so `run-script` is there, and puts a relayed host's git credentials up for the script, as its
   /// terminals get them.
   static func runScript(
@@ -729,7 +729,7 @@ final class RemoteHosts: @unchecked Sendable {
   /// When boxd last said each host was asleep, which answers for it for `retryAfter` (#356).
   private var asleepAt: [HostID: ContinuousClock.Instant] = [:]
   /// The host of the workroom selected in each window (one `AppStore` per window), which a
-  /// background read reconnects whatever its agent last did.
+  /// background read reconnects whatever its daemon last did.
   private var selectedHosts: [AnyHashable: HostID] = [:]
   /// Hosts of workrooms the user has opened this launch (`activate`), whose connect starts a
   /// stopped container first.
@@ -741,7 +741,7 @@ final class RemoteHosts: @unchecked Sendable {
   private let connectHost: (@Sendable (HostID) async throws -> Void)?
   /// Sets up a relayed host's credential relay on its connection; nil in the app.
   private let relayHost: (@Sendable (HostID) async throws -> Void)?
-  /// `connect`'s agent connection, bootstrap included; nil in the app (`DaemonBootstrap.connect`).
+  /// `connect`'s daemon connection, bootstrap included; nil in the app (`DaemonBootstrap.connect`).
   private let connectDaemon:
     (@Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
@@ -792,7 +792,7 @@ final class RemoteHosts: @unchecked Sendable {
   /// timeout. ponytail: a fixed window, so a Reload inside it fails fast too; upgrade path: let a
   /// read the user asked for bypass it.
   static let retryAfter: Duration = .seconds(30)
-  /// How long a host's agent has to answer after a wake or a network change before its links are
+  /// How long a host's daemon has to answer after a wake or a network change before its links are
   /// replaced (`unansweringProviderHosts`).
   static let answerDeadline: TimeInterval = 2
   private static let logger = Logger(
@@ -1110,7 +1110,7 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
-  /// The app's service connection to `host` (`HostConnectionManager`), with its agent bootstrapped
+  /// The app's service connection to `host` (`HostConnectionManager`), with its daemon bootstrapped
   /// first. One already there is kept.
   func connect(_ host: HostID, driver: any HostTerminalDriver) async throws {
     _ = try await HostConnectionManager.shared.connectIfDisconnected(host: host) {

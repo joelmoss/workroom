@@ -9,7 +9,7 @@ import Foundation
 /// revision and stale mark this Mac keeps. `targetID` holds this Mac's project path, so the host's
 /// copy carries the workroom's own key instead and the reader puts its own `target.id` back.
 ///
-/// **Untrusted on the way in.** Anything that can reach the host's agent can write a layout, so
+/// **Untrusted on the way in.** Anything that can reach the host's daemon can write a layout, so
 /// one read back goes through `SessionFile.sanitized()`, the caps and checks `session.json` gets.
 enum HostLayout {
   /// Bumped only for a change an older build cannot read. Adding a tab kind or an optional field

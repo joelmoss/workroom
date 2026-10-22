@@ -13,7 +13,7 @@ A remote workroom's terminals run on its host, so they keep running when your Ma
 
 ## When your Mac wakes or changes network
 
-When your Mac wakes from sleep, or moves to another network (Wi-Fi to a hotspot, a VPN turning on or off, a network coming back after dropping), Workroom checks each boxd and exe.dev host. It waits up to 2 seconds for the host's agent to answer.
+When your Mac wakes from sleep, or moves to another network (Wi-Fi to a hotspot, a VPN turning on or off, a network coming back after dropping), Workroom checks each boxd and exe.dev host. It waits up to 2 seconds for the host's Workroom daemon to answer.
 
 - A host that answers keeps its connections. Its panes do not blink.
 - A host that does not answer has its connection dropped, and its panes attach again at once. Without this check, a pane would wait up to a minute for ssh to notice that its connection died.
@@ -48,7 +48,7 @@ This applies to the reconnect that Workroom started by itself, for a session tha
 
 ## When the host restarts
 
-If the host restarts, the programs running in your terminals end with it. The agent on the host starts again by itself, and Workroom reattaches your panes once the host is back.
+If the host restarts, the programs running in your terminals end with it. The daemon on the host starts again by itself, and Workroom reattaches your panes once the host is back.
 
 A terminal whose program ended with the host shows its last screen with a bottom row that reads `This terminal ended when its host restarted. Close it to start again.` If no screen was kept, it prints `workroom: This terminal has ended. Close it to start again.` Close that tab and open a new one. Workroom does not replace it with a new shell for you on a remote workroom, so you can read what was on screen when it ended.
 
@@ -57,6 +57,6 @@ A container that isn't running, and an asleep boxd machine, start again when you
 ## Other things you might see
 
 - A tab's status, such as a coding agent waiting for you, shows `May be out of date: reconnecting…` while its host's connection is down. It updates once the host answers.
-- In the **Ports** list of a container workroom, `Not connected. A forward reconnects when it is used.` or `No agent is connected.` shows while the connection is down. See [Port forwarding](port-forwarding.md).
+- In the **Ports** list of a container workroom, `Not connected. A forward reconnects when it is used.` or `No daemon is connected.` shows while the connection is down. See [Port forwarding](port-forwarding.md).
 
 See [Troubleshooting](../help/troubleshooting.md) if a pane does not come back.

@@ -3,7 +3,7 @@ import XCTest
 
 @testable import Workroom
 
-/// `Service::ProgramStatus` on the shared agent connection (#358), against `FakeDaemon`.
+/// `Service::ProgramStatus` on the shared daemon connection (#358), against `FakeDaemon`.
 final class ProgramStatusConnectionTests: XCTestCase {
   private let session = UUID()
 
@@ -43,7 +43,7 @@ final class ProgramStatusConnectionTests: XCTestCase {
     await connection.close()
   }
 
-  /// A protocol-7 agent drops a ProgramStatus envelope unanswered, so it is never sent one.
+  /// A protocol-7 daemon drops a ProgramStatus envelope unanswered, so it is never sent one.
   func testAnOlderAgentIsUnsupportedAndNeverSentAnEnvelope() async throws {
     let fake = try FakeDaemon(version: 7, programStatusResult: #"{"available":true}"#)
     defer { fake.stop() }
@@ -67,7 +67,7 @@ final class ProgramStatusConnectionTests: XCTestCase {
     await connection.close()
   }
 
-  /// The agent going away hands the subscriber `.lost`, so the monitor keeps the host's records,
+  /// The daemon going away hands the subscriber `.lost`, so the monitor keeps the host's records,
   /// marks them stale after the grace and reconnects.
   func testADroppedLinkHandsTheSubscriberLost() async throws {
     let fake = try FakeDaemon(version: 8, programStatusResult: #"{"available":true}"#)

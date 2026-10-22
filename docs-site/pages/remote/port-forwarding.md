@@ -60,7 +60,7 @@ Click the **x** button on a row, which is titled **Stop forwarding port** and th
 
 Forwards are not saved. When you open the workroom after relaunching Workroom, the ports in `devcontainer.json` are forwarded again, and each one gets the same port number back when it is free. A port you added by hand is not remembered, so add it again.
 
-If the connection to the container drops, the Ports list says `Not connected. A forward reconnects when it is used.` or `No agent is connected.` See [Reconnecting](reconnecting.md).
+If the connection to the container drops, the Ports list says `Not connected. A forward reconnects when it is used.` or `No daemon is connected.` See [Reconnecting](reconnecting.md).
 
 ## boxd and exe.dev
 

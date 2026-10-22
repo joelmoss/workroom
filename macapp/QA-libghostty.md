@@ -169,12 +169,12 @@ bump is worthless.
   pinned commit; see `Resources/ghostty/SOURCE.md`. Update `GhosttyPinIntegrityTests.expectedRevision`
   in the same commit.
 - Bump `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` to the same engine sha `project.yml` records, so
-  the agent's shadow terminal parses what the app does. `make app-test-scripts` fails
+  the daemon's shadow terminal parses what the app does. `make app-test-scripts` fails
   (`Scripts/test-invariants_test.sh`) if the two disagree.
 - Check the app's terminal still ignores OSC 7501: `src/termio/stream_handler.zig` at the new sha
-  must keep `.program_status` a no-op. The agent answers a program's probe for every daemon-backed
+  must keep `.program_status` a no-op. The daemon answers a program's probe for every daemon-backed
   pane (#358), so if the app's terminal starts answering too, the program reads two replies. If it
-  does, stop the agent answering for panes the app shows, or the app answering for daemon panes.
+  does, stop the daemon answering for panes the app shows, or the app answering for daemon panes.
 - Check upstream still skips Apple's bash: `detectShell` in `src/termio/shell_integration.zig` at
   the new sha must still return no integration for `/bin/bash` on Darwin. `workroomd`'s
   `shell::invocation` mirrors that skip by hand, so if upstream changes it, change both.

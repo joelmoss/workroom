@@ -925,7 +925,7 @@ final class ExeDevHostDriverTests: XCTestCase {
     }
   }
 
-  /// `poll` is the gate every create waits at (boot, identity, agent): it passes once the check
+  /// `poll` is the gate every create waits at (boot, identity, daemon): it passes once the check
   /// exits 0, however many tries it took; gives up with the last answer; and ends at once on a cancel.
   func testPollWaitsForTheCheckThenGivesUpWithTheLastAnswer() async throws {
     // Value: protects=a create waits for a host to come up and says why it never did;

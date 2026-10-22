@@ -4,7 +4,7 @@ Workroom is a native macOS app for working on several branches of a git project 
 
 ## Naming rules
 
-- **Agent** means workroomd and nothing else. Claude and Codex are **coding agents**; Swift type names for them say `CodingAgent`, never bare `Agent` (`CodingAgentRunner`, `TerminalCodingAgentManager`).
+- **Daemon** means workroomd, the Workroom daemon, and nothing else (renamed from "the agent" by #525, ADR 0057). Claude and Codex are **coding agents**; names for them say `CodingAgent` (`CodingAgentRunner`, `TerminalCodingAgentManager`). Bare "agent" names nothing: say daemon or coding agent. The retired Swift `workroom-session` is the **legacy session helper**, never a daemon.
 - **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base. Provider-facing names (boxd and exe.dev call theirs machines and VMs) and older code keep their words; new names say host.
 - **Base** means a base branch only. It no longer names a machine that remote workrooms are derived from.
 - Use the terms below in code, issues, tests and docs. A name that is not here either belongs to one of the contexts below or is a gap to add.
@@ -43,7 +43,7 @@ _Avoid_: Shared files, synced files
 
 ## Version control
 
-Owns repositories, changesets, diffs, history, working status, and the commit and pull request actions. Local reads and reads routed through a host's agent answer the same questions.
+Owns repositories, changesets, diffs, history, working status, and the commit and pull request actions. Local reads and reads routed through a host's daemon answer the same questions.
 
 **Repository**:
 The git data behind a project or a workroom, wherever it is read from.
@@ -98,7 +98,7 @@ How the last long shell command in a session ended, passed or failed, as the she
 
 ## Remote hosts
 
-Owns hosts, their drivers, provisioning, the credential relay and port forwarding. A remote workroom is a workroom whose files, shells and agent live on a host.
+Owns hosts, their drivers, provisioning, the credential relay and port forwarding. A remote workroom is a workroom whose files, shells and daemon live on a host.
 
 **Host**:
 The compute that holds a remote workroom: a VM or container a host driver made for it, on a provider or in a container runtime on this Mac, or an SSH host.
@@ -123,12 +123,13 @@ How a local container workroom's git asks this Mac's own `gh` for GitHub credent
 **Port forward**:
 A loopback port on the host of a container workroom, or of a workroom on an SSH host, made reachable on this Mac for as long as the app is attached: the ports its `devcontainer.json` declares, and any the user adds. boxd and exe.dev publish ports themselves, so their workrooms have none.
 
-## Agent connection
+## Daemon connection
 
 Owns the workroomd wire protocol, its transport and its hand-off. The Mac's end of the connection is the app; the far end is workroomd.
 
-**workroomd**:
-The Rust daemon that holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream. "Agent" on its own means this and nothing else.
+**Daemon**, **workroomd**:
+The Rust daemon that holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream, on this Mac or a host.
+_Avoid_: Agent
 
 **Service**:
 One capability a workroomd serves over its stream, such as terminal sessions, version control or file reads.
@@ -137,7 +138,7 @@ One capability a workroomd serves over its stream, such as terminal sessions, ve
 Replacing a running workroomd's program with a newer binary in place, keeping its process and every session.
 
 **Bootstrap**:
-Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older agent off to it. It runs on every connect; the host's supervisor starts the agent.
+Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect; the host's supervisor starts the daemon.
 
 ## Coding agents
 

@@ -395,7 +395,7 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
         ## Section \(section): remote workrooms
 
         A paragraph with **bold**, *italic*, `inline code`, ~~struck~~ text and a \
-        [link to section \(section)](https://example.com/docs/\(section)). The agent owns the \
+        [link to section \(section)](https://example.com/docs/\(section)). The daemon owns the \
         session, the app attaches over ssh, and a dropped connection reattaches after wake.
 
         - First item with `code`

@@ -14,7 +14,7 @@ struct FileContext: Hashable, Sendable {
 }
 
 /// Listing, raw reads and change notification for one repository's files, on whichever host holds
-/// them. The seam beside `VCSProviding`: native on this machine when no agent serves the request,
+/// them. The seam beside `VCSProviding`: native on this machine when no daemon serves the request,
 /// workroomd otherwise.
 protocol FileProviding: Sendable {
   var context: FileContext { get }
@@ -38,8 +38,8 @@ protocol FileProviding: Sendable {
     -> FileWatchHandle?
 }
 
-/// The local, in-process implementation: what every file operation was before the agent, and what a
-/// local host still uses when its running agent predates the File service.
+/// The local, in-process implementation: what each file operation was before the daemon, and what a
+/// local host still uses when its running daemon predates the File service.
 struct NativeFileProvider: FileProviding {
   let context: FileContext
   var runner: StatusCommandRunning = StatusCommandRunner()
@@ -61,7 +61,7 @@ struct NativeFileProvider: FileProviding {
 
   /// Only a remote pane resolves on the host; a local pane's ⌘-click has this Mac's filesystem.
   ///
-  /// ponytail: unimplemented natively, since nothing local calls it. Port the agent's
+  /// ponytail: unimplemented natively, since nothing local calls it. Port the daemon's
   /// `resolve_path` here if a local caller ever needs it.
   func resolve(path: String) async throws -> String {
     throw FileServiceError.failed("Resolving a path is only done on a remote host.")
@@ -149,20 +149,20 @@ struct NativeFileProvider: FileProviding {
   }
 }
 
-/// What a LOCAL host uses for files when its agent is in play: the agent first, this process second.
+/// What a LOCAL host uses for files when its daemon is in play: the daemon first, this process second.
 ///
-/// A local file is readable without any agent, so an agent that is missing, dead, hung or too old must
+/// A local file is readable without any daemon, so a daemon that is missing, dead, hung or too old must
 /// cost the caller performance and coalescing, never the file. Listing and reading are idempotent, so
-/// when the agent fails at the TRANSPORT level (`HostConnectionError`: connection lost, request timed
+/// when the daemon fails at the TRANSPORT level (`HostConnectionError`: connection lost, request timed
 /// out, budget exhausted, generation replaced, undecodable reply) the same request is simply run
 /// natively. Nothing else falls back:
-/// - a semantic answer from a healthy agent (`.refused`, `.tooLarge`, `.notFound`, a truncated
+/// - a semantic answer from a healthy daemon (`.refused`, `.tooLarge`, `.notFound`, a truncated
 ///   listing, a registration or lock error) is the answer, and the native path would give the same;
 /// - cancellation propagates, since retrying work its caller abandoned helps nobody.
 ///
 /// Never used for a remote host: there is no native path to fall back to, and unavailability is an
 /// explicit failure. `watch` is not retried natively here — the caller (`HostFileWatcher`) owns that
-/// decision because it has to keep trying the agent afterwards.
+/// decision because it has to keep trying the daemon afterwards.
 struct LocalFallbackFileProvider: FileProviding {
   let primary: FileProviding
   let fallback: FileProviding
@@ -197,9 +197,9 @@ struct LocalFallbackFileProvider: FileProviding {
   { try await primary.watch(root: root, onEvent: onEvent) }
 }
 
-/// Stands in for an agent that could not be obtained at all. Every call throws the same transport-level
+/// Stands in for a daemon that could not be obtained at all. Every call throws the same transport-level
 /// error, so a `LocalFallbackFileProvider` around it runs listing and reading natively while `watch`
-/// throws — which is what tells `HostFileWatcher` to watch locally for now and keep retrying the agent,
+/// throws — which is what tells `HostFileWatcher` to watch locally for now and keep retrying the daemon,
 /// where a bare `NativeFileProvider` (whose `watch` is `nil`) would read as "this host never can" and
 /// stop trying.
 struct UnavailableFileProvider: FileProviding {
@@ -245,7 +245,7 @@ struct HostFileProvider: FileProviding {
       let handle = try await service.watch(root: root, onEvent: onEvent)
       // `perform` discards a result that arrives after its caller was cancelled or its lease ended,
       // and this operation's own task is cancelled in exactly those cases. A subscription created
-      // just before that is an agent-side watcher nobody holds a handle to, so it is unsubscribed
+      // just before that is a daemon-side watcher nobody holds a handle to, so it is unsubscribed
       // here, where the handle still exists.
       if Task.isCancelled, let handle {
         await handle.cancel()

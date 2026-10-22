@@ -248,7 +248,7 @@ final class GhosttyUnshiftedCodepointTests: XCTestCase {
 /// When a remote pane reattaches after its ssh exits 255 (#241).
 final class RemoteReconnectBackoffTests: XCTestCase {
   /// A host rebooting for two minutes, whatever it answers meanwhile (refused, timed out, closed
-  /// before its banner, or sshd up before the agent): the pane backs off to the ceiling and never
+  /// before its banner, or sshd up before the daemon): the pane backs off to the ceiling and never
   /// gives up on it.
   func testAHostThatIsGoneForMinutesIsWaitedFor() throws {
     var backoff = RemoteReconnectBackoff()
@@ -472,7 +472,7 @@ final class RemotePaneReconnectTests: XCTestCase {
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a closed pane holds its host")
   }
 
-  // Value: protects=a new remote pane opened offline (or before its agent is installed) getting a
+  // Value: protects=a new remote pane opened offline (or before its daemon is installed) getting a
   // working shell once its host answers, and a Ctrl-C still stopping its retries; fails_when=every
   // reconnect is marked restored again, so its retry carries `--no-create` and the never-created
   // session reads as ended, or a new pane's killed retry keeps trying too (#507);

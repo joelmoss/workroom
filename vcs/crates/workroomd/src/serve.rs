@@ -9,7 +9,7 @@
 //! process's life and released by the kernel on exit, including a crash — no stale-lock cleanup to
 //! get wrong.
 //!
-//! **Idle self-exit is kept exactly as the Swift daemon has it**, and the design doc says why the
+//! **Idle self-exit is kept exactly as the Swift helper has it**, and the design doc says why the
 //! earlier plan to remove it did not survive scrutiny: diffs, history and watches are things a
 //! *connected client* asks for, so a daemon with no connections and no ptys is holding nothing
 //! anyone can lose. The one thing that must outlive the app is a live terminal, which is precisely
@@ -617,7 +617,7 @@ fn dispatch(
 /// `count:u32`, then per session `id:[16]`, `pid:i32`, `tty:u64`, `cwd:string`,
 /// `attached:u8`, `metadata:entries` — all big-endian, strings length-prefixed.
 ///
-/// `tty` is zero: the Swift daemon reports the pty's device number, and nothing in the app reads
+/// `tty` is zero: the Swift helper reports the pty's device number, and nothing in the app reads
 /// it (verified by grep). Reporting a fabricated value would be worse than reporting none.
 /// Wraps an encoded session list in the frame to send, refusing one that is too big.
 ///
@@ -911,7 +911,7 @@ pub struct AttachRequest {
     /// there. A local relay that is refused attaches again without it, after saying so (#459).
     /// Every daemon-owned restored pane, local or remote, sends it, so one request cannot
     /// race the answer; the app asks first (`confirmBeforeAttach`) only about a session the
-    /// retired daemon held, whose client has no such flag. Inverted so the default,
+    /// retired Swift helper held, whose client has no such flag. Inverted so the default,
     /// and an older client that never sends it, keeps create-on-attach.
     pub existing_only: bool,
 }

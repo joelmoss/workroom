@@ -30,7 +30,7 @@ public enum FileServiceError: Error, Equatable, Sendable, LocalizedError {
 }
 
 /// What a watch subscription reports. `.lost` is synthesized locally when the connection carrying the
-/// subscription dies; the agent sends the other two.
+/// subscription dies; the daemon sends the other two.
 public enum FileWatchEvent: Equatable, Sendable {
   /// `overflow` means some changes are not listed (a cap was hit, or the OS lost track): treat the
   /// batch as relevant to every filter.

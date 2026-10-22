@@ -429,7 +429,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
   // not look up is `.failed`, which isn't the unknown-method reply, so the app skips it;
   // fails_when=the method name, the `path` key, or the daemon's error tags drift from what
   // `DaemonFileProvider` decodes; why_new=the real-daemon round trip in RemoteHostIntegrationTests
-  // skips without the ssh fixture, and no other test sends `resolve` to the shipped agent;
+  // skips without the ssh fixture, and no other test sends `resolve` to the shipped daemon;
   // seam=none
   func testAResolveFollowsALinkOnTheDaemonAndItsRefusalsKeepTheirKind() async throws {
     let (connection, _) = try await connect()

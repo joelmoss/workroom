@@ -1055,7 +1055,7 @@ final class SessionRestoreTests: XCTestCase {
     for paneFirst in [false, true] {
       let saved = AppStore.hostLayoutStore
       AppStore.hostLayoutStore = { _ in
-        throw DaemonLayoutError.unsupported("this agent keeps no layouts")
+        throw DaemonLayoutError.unsupported("this daemon keeps no layouts")
       }
       defer { AppStore.hostLayoutStore = saved }
       let workroom = Workroom(
