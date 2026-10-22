@@ -280,13 +280,14 @@ remote-host-image-test: ## Build the `workroom-host` image, without its tag, and
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, exe.dev git setup, test summary, red proof, restore mtime)
+app-test-scripts: ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, daemon name, exe.dev git setup, test summary, red proof, restore mtime)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-daemon_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
 	sh macapp/Scripts/appcast-feed_test.sh
 	sh macapp/Scripts/test-invariants_test.sh
 	sh macapp/Scripts/daemon-protocol_test.sh
+	sh macapp/Scripts/daemon-name_test.sh
 	sh macapp/Scripts/exedev-github_test.sh
 	sh macapp/Scripts/dev-identity_test.sh
 	sh macapp/Scripts/stop-dev-app_test.sh

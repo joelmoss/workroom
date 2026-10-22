@@ -1,6 +1,6 @@
 # Command result on Run tabs and fallback panes
 
-A command result (see `CONTEXT.md`) shows only on daemon-backed panes, where wr-agent's shadow terminal builds it (#473). Run tabs and fallback panes don't get the pane mark.
+A command result (see `CONTEXT.md`) shows only on daemon-backed panes, where workroomd's shadow terminal builds it (#473). Run tabs and fallback panes don't get the pane mark.
 
 ## Why this is out of scope
 
@@ -12,7 +12,7 @@ Run tabs already report how their command ended, by a different route. A Run tab
 
 The toast stands in for the pane mark. Adding the mark as well would say the same thing twice, and a Run tab's command is usually one that runs until you stop it (a dev server), which the ^C rule leaves unmarked anyway.
 
-A fallback pane is the plain shell the app opens when no persistent session can attach. It is a degraded state, not a place people work by choice. Giving it a command result means a second implementation in Swift beside wr-agent's, with its own seen rules, for a pane that exists only while something else is wrong. The fix for a fallback pane is to get the session back, not to make the fallback richer.
+A fallback pane is the plain shell the app opens when no persistent session can attach. It is a degraded state, not a place people work by choice. Giving it a command result means a second implementation in Swift beside workroomd's, with its own seen rules, for a pane that exists only while something else is wrong. The fix for a fallback pane is to get the session back, not to make the fallback richer.
 
 ## If this comes back
 
