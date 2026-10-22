@@ -90,6 +90,24 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 2)
   }
 
+  /// A host an older Nightly made before the daemon was renamed (#525) is refused by the bootstrap,
+  /// and the refusal keeps its words through the connect, so the workroom says to recreate it
+  /// rather than "Repository service unavailable" (eng review D3).
+  func testAnOldLayoutHostSaysToRecreateTheWorkroom() async throws {
+    let host = HostID.remote(UUID())
+    let remote = RemoteHosts(
+      connectHost: { _ in throw DaemonBootstrap.Error.olderLayout }, isConnected: { _ in false },
+      startHost: { _ in }, now: { ContinuousClock.now })
+    do {
+      try await remote.ensureConnected(host)
+      XCTFail("an old-layout host connected")
+    } catch {
+      XCTAssertEqual(error as? RepositoryRoutingError, .olderLayout(host))
+      XCTAssertEqual(
+        (error as? LocalizedError)?.errorDescription, DaemonInstall.formerLayoutMessage)
+    }
+  }
+
   /// A background read never connects to a boxd box boxd says is asleep: the ssh login would wake
   /// it, and every status sweep would keep every box awake and billing (#356). boxd is asked once a
   /// `retryAfter`; opening the workroom connects and wakes it; when boxd can't say, the read leaves

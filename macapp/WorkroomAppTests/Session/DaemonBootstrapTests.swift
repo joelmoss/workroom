@@ -86,6 +86,18 @@ final class DaemonBootstrapTests: XCTestCase {
     .init(output: "WRB host Linux aarch64\nWRB installed \(installed)\nWRB hand-off \(handOff)\n")
   }
 
+  /// Where a pre-#525 host kept its daemon: `agent/wr-agent` on a provider host, whose new layout
+  /// has `daemon/`, and beside the socket in a container.
+  func testTheFormerBinaryIsWhereAnOlderBuildInstalledIt() {
+    XCTAssertEqual(
+      DaemonInstall.formerBinary(
+        besideSocket: "/home/boxd/.local/state/workroom/daemon/workroomd.sock"),
+      "/home/boxd/.local/state/workroom/agent/wr-agent")
+    XCTAssertEqual(
+      DaemonInstall.formerBinary(besideSocket: "/run/workroom/workroomd.sock"),
+      "/run/workroom/wr-agent")
+  }
+
   func testAHostWithNoDaemonGetsOneInstalledAndTheSupervisorStartsIt() async throws {
     let driver = StubDriver([
       probe(installed: "none", handOff: "none"),
@@ -95,10 +107,11 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, daemon: .installed))
     XCTAssertEqual(driver.commands.count, 2)
     // The probe carries the bundled digest per architecture, `-` for one this build lacks, and
-    // where the Ghostty resource set goes.
+    // where the Ghostty resource set goes, then where a pre-#525 host has its daemon.
     XCTAssertTrue(driver.commands[0].contains("'probe' '/run/workroom/workroomd' "))
     XCTAssertTrue(
-      driver.commands[0].hasSuffix("'1' '\(digest)' '-' '/run/workroom/ghostty'"),
+      driver.commands[0].hasSuffix(
+        "'1' '\(digest)' '-' '/run/workroom/ghostty' '/run/workroom/wr-agent'"),
       driver.commands[0])
     // The install carries the digest, for the host to check what arrived against.
     XCTAssertTrue(driver.commands[1].contains("'install' '/run/workroom/workroomd' "))
@@ -444,7 +457,8 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertEqual(kept.resources, .current)
     XCTAssertEqual(current.commands.count, 1)
     XCTAssertTrue(
-      current.commands[0].hasSuffix(" '-' '/run/workroom/ghostty'"), current.commands[0])
+      current.commands[0].hasSuffix(" '-' '/run/workroom/ghostty' '/run/workroom/wr-agent'"),
+      current.commands[0])
 
     let empty = StubDriver([
       probe(installed: digest, handOff: "0 current"),

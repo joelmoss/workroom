@@ -3,12 +3,13 @@
 # host over the driver's transport before any service connects):
 #
 #   sh -c "$(cat probe.sh)" probe <binary> <socket> <hand-off 0|1> <sha256 aarch64> <sha256 x86_64> \
-#     <resources>
+#     <resources> [<former binary>]
 #
 # A sha256 is `-` for an architecture the app bundles no daemon for (it never equals a hash).
 # <resources> is where Ghostty's terminfo and shell integration go (resources.sh, issue #239).
+# <former binary> is where a host made before the daemon was renamed (#525) has it, `wr-agent`.
 #
-# It answers five questions, one line each on stdout, every line prefixed `WRB ` so the app can
+# It answers six questions, one line each on stdout, every line prefixed `WRB ` so the app can
 # tell them from whatever a shell startup file on the host prints ahead of them:
 #
 #   WRB host <uname -s> <uname -m>
@@ -18,6 +19,8 @@
 #   WRB resources <sha256 of <resources>/CHECKSUMS> | unknown (no sha256sum) | none
 #   WRB hand-off <exit status of `workroomd hand-off`> <its first line>
 #                | off (hand-off is off) | no-socket | none (the installed binary is not this build)
+#   WRB former yes (no daemon here, but the pre-#525 `wr-agent` is: an older Nightly's host,
+#                  whose supervisor only starts that name) | no
 #
 # The hand-off is asked for only when the installed binary IS the one the app bundles for this
 # architecture. Then the running daemon answers `current` at once when it already runs it, and
@@ -33,9 +36,16 @@ handoff=$3
 sha_aarch64=$4
 sha_x86_64=$5
 resources=$6
+former=${7:-}
 
 arch=$(uname -m)
 echo "WRB host $(uname -s) $arch"
+# First, so the app can refuse such a host before it asks anything else of it.
+if [ ! -e "$binary" ] && [ -n "$former" ] && [ -x "$former" ]; then
+  echo "WRB former yes"
+  exit 0
+fi
+echo "WRB former no"
 
 installed=none
 if [ -x "$binary" ]; then

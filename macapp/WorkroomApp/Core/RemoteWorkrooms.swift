@@ -1270,6 +1270,10 @@ final class RemoteHosts: @unchecked Sendable {
       lock.withLock { failedAt[host] = now() }
       Self.logger.error(
         "connecting \(String(describing: host), privacy: .public): \(error, privacy: .public)")
+      // The one failure with something the user can do about it, so it keeps its words (D3, #525).
+      if case DaemonBootstrap.Error.olderLayout = error {
+        throw RepositoryRoutingError.olderLayout(host)
+      }
       throw RepositoryRoutingError.unavailable(host)
     }
   }
