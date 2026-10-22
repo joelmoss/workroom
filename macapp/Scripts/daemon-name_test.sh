@@ -23,6 +23,8 @@ hits="$(git -C "$ROOT" grep --no-color -n -I -E 'wr-agent|wr_agent|WR_AGENT|WR-A
   ':!docs/adr/0057-wr-agent-became-workroomd-and-what-keeps-the-old-name.md' \
   ':!macapp/Scripts/daemon-name_test.sh' \
   ':!macapp/Scripts/daemon-protocol_test.sh' \
+  ':!macapp/Scripts/stop-dev-app.sh' \
+  ':!macapp/Scripts/stop-dev-app_test.sh' \
   ':!macapp/Packages/HostDrivers/Sources/HostDrivers/DaemonInstall.swift' \
   ':!macapp/Packages/HostDrivers/Sources/HostDrivers/SSHTransport.swift' \
   ':!macapp/Resources/daemon-bootstrap/probe.sh' \

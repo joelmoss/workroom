@@ -181,14 +181,17 @@ cat >"$TMP/table" <<EOF
 106 $OTHER/Workroom Dev
 107 $THIS/workroomd serve --socket /somewhere/else/workroomd.sock
 108 $OTHER/workroomd serve --socket $SUPPORT/$OTHER_ID/sessions/workroomd.sock
+109 $THIS/wr-agent serve --socket $SUPPORT/$DEV_ID/sessions/agent.sock
+110 $THIS/wr-agent serve --socket /tmp/workroom-501-$PLAIN_ID/agent.sock
 EOF
 got="$(STOP_DEV_APP_PS="$TMP/table" STOP_DEV_APP_DRY_RUN=1 \
   sh "$SCRIPT" "$TMP/this/Workroom Dev.app" | sed -n 's/^stop //p' | sort -n | tr '\n' ' ')"
 # 101 this app; 102 serves this id; 104 serves this id from another bundle; 105 has no socket, so
-# goes by its bundle; 107 names no socket shape we know, so goes by its bundle. Not 103: it lives in
-# this bundle but serves the plain id — stopping it would end the project checkout's sessions.
-if [ "$got" != "101 102 104 105 107 " ]; then
-  echo "FAIL: stopped '$got', want '101 102 104 105 107 '"
+# goes by its bundle; 107 names no socket shape we know, so goes by its bundle; 109 is a daemon a
+# build from before the rename (#525) started, still serving this id. Not 103 or 110: each lives
+# in this bundle but serves the plain id — stopping it would end the project checkout's sessions.
+if [ "$got" != "101 102 104 105 107 109 " ]; then
+  echo "FAIL: stopped '$got', want '101 102 104 105 107 109 '"
   fails=$((fails + 1))
 fi
 

@@ -37,7 +37,8 @@ bundle_id() {
 # `/tmp/workroom-<uid>-<id>/workroomd.sock`. Fails for any other shape. A hand-off keeps the arguments.
 served_id() {
   case "$1" in
-    "workroomd serve "*"--socket "*) ;;
+    # wr-agent: a daemon a build from before the rename (#525) started, until it exits.
+    "workroomd serve "*"--socket "* | "wr-agent serve "*"--socket "*) ;;
     *) return 1 ;;
   esac
   socket="${1#*--socket }"
@@ -98,7 +99,7 @@ while read -r pid cmdline; do
       [ "$(bundle_id "$owner")" = "$want" ] || continue
       apps="$apps $pid"
       ;;
-    workroomd | "workroomd "* | workroom-session | "workroom-session "*)
+    workroomd | "workroomd "* | wr-agent | "wr-agent "* | workroom-session | "workroom-session "*)
       # A helper belongs to the id whose socket it serves, and that is not always the id of the
       # bundle its binary lives in: a daemon runs whichever copy spawned it or last handed it off,
       # so one still serving the plain id can run from a workroom's bundle that has since been

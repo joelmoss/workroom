@@ -13,14 +13,14 @@ public enum DaemonInstall {
     (socket as NSString).deletingLastPathComponent + "/workroomd"
   }
 
-  /// Where a host made before the daemon was renamed (#525) has it: `wr-agent`, in `agent/` where
-  /// the new layout has `daemon/`, else beside the socket (a container's `/run/workroom`). Only
-  /// Nightly and Dev builds ever made such hosts; the app refuses them (`DaemonBootstrap`'s
-  /// `olderLayout`) rather than migrate them (eng review D3). Retired by #526.
   /// What a host with the old layout tells the user, wherever it is met: the bootstrap, and a
   /// pane's attach.
   public static let formerLayoutMessage = RepositoryRoutingError.olderLayoutMessage
 
+  /// Where a host made before the daemon was renamed (#525) has it: `wr-agent`, in `agent/` where
+  /// the new layout has `daemon/`, else beside the socket (a container's `/run/workroom`). Only
+  /// Nightly and Dev builds ever made such hosts; the app refuses them (`DaemonBootstrap`'s
+  /// `olderLayout`) rather than migrate them (eng review D3). Retired by #526.
   public static func formerBinary(besideSocket socket: String) -> String {
     let directory = (socket as NSString).deletingLastPathComponent
     let parent = (directory as NSString).deletingLastPathComponent
