@@ -183,6 +183,49 @@ fn a_hand_off_keeps_every_shell_its_pid_and_its_exit_code() {
     );
 }
 
+/// The update from v2.1.0 (#525): a daemon serving `agent.sock` becomes a binary with another
+/// file name and keeps its pid, its sessions and its socket, which keeps the old name. Nothing in
+/// the hand-off may depend on the binary's name or the socket's.
+#[test]
+fn a_hand_off_to_a_renamed_binary_keeps_the_old_socket_and_every_shell() {
+    let workspace = Workspace::new("renamed");
+    let socket = workspace.dir.join("agent.sock");
+    let mut daemon = start_daemon(&socket);
+    let session = "4a4a4a4a-0000-4000-8000-0000000000aa";
+    let shell = detached_session(&socket, session, "BEFORE-RENAME");
+    let socket_inode = std::fs::metadata(&socket).expect("socket").ino();
+    let renamed = workspace.dir.join("renamed-daemon");
+    std::fs::copy(daemon_binary(), &renamed).expect("copy");
+
+    let output = hand_off(&socket, &renamed, true);
+    assert!(
+        output.status.success(),
+        "hand-off failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "handed off");
+    assert!(
+        daemon.try_wait().expect("wait").is_none(),
+        "the pid changed"
+    );
+    let running = Command::new("ps")
+        .args(["-o", "comm=", "-p", &daemon.id().to_string()])
+        .output()
+        .expect("ps");
+    assert!(
+        String::from_utf8_lossy(&running.stdout).contains("renamed-daemon"),
+        "the daemon is not running the renamed binary: {}",
+        String::from_utf8_lossy(&running.stdout)
+    );
+    assert_eq!(
+        std::fs::metadata(&socket).expect("socket").ino(),
+        socket_inode,
+        "the old socket was unbound"
+    );
+    assert!(alive(shell), "the shell did not survive the hand-off");
+    assert!(list_sessions(&socket).contains(session));
+}
+
 /// The app asks on every launch, so asking a daemon to become the binary it already is must
 /// change nothing.
 #[test]
