@@ -1036,17 +1036,27 @@ fn a_kill_before_an_idle_exit_still_refuses_the_late_attach() {
 }
 
 /// The build number the app reads out of a binary it never runs (`DaemonBootstrap.buildNumber(in:)`)
-/// is in the linked program, not only in its object files, and it is the one `protocol` states.
+/// is in the linked program, not only in its object files, and it is the one `protocol` states. The
+/// prefix is there once: the app reads the first, and a second copy ahead of the marker (once from
+/// `build_number`'s own parse, on x86_64 Linux) read as build 0.
 #[test]
 fn the_linked_program_carries_its_build_marker() {
     let binary = daemon_binary();
     let bytes = std::fs::read(&binary).expect("read the daemon");
     let marker = b"WORKROOMD-BUILD:";
-    let at = bytes
+    let found: Vec<usize> = bytes
         .windows(marker.len())
-        .position(|window| window == marker)
-        .expect("no build marker in the linked program");
-    let rest = &bytes[at + marker.len()..];
+        .enumerate()
+        .filter(|(_, window)| *window == marker)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "the marker's prefix is in the linked program {} times",
+        found.len()
+    );
+    let rest = &bytes[found[0] + marker.len()..];
     let end = rest
         .iter()
         .position(|&byte| byte == b';')

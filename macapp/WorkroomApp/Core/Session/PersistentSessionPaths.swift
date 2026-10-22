@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Primary: Application Support (per bundle id, so Dev/Nightly/Release never share sessions — nor
 /// do two workrooms' Dev builds, which `make` gives distinct ids, `Scripts/dev-identity.sh`).
-/// Fallback: `/tmp/workroom-<uid>` only when the preferred path exceeds `sun_path`.
+/// Fallback: `/tmp/workroom-<uid>` when the preferred path exceeds `sun_path` or can't be made.
 ///
 /// Everything here takes a `SessionBackend` explicitly, with no default, because there is no such
 /// thing as "the" backend: during the migration the Swift helper still owns the sessions it
@@ -82,21 +82,26 @@ enum PersistentSessionPaths {
   static func daemonSocket(fileManager: FileManager = .default) throws -> DaemonSocket {
     if let directory = UITestFixture.liveDaemonDirectory {
       let path = directory + "/" + SessionBackend.daemon.socketFileName
-      return DaemonSocket(live: answers(path) ? path : nil, path: path)
+      return DaemonSocket(live: isLive(path) ? path : nil, path: path)
     }
-    let preferred = try
+    // Either directory may be unusable, as `resolveSocketPath` has always allowed: Application
+    // Support that can't be made falls back to /tmp, where a daemon may already be, and a /tmp
+    // folder another user owns matters only when Application Support's path is too long.
+    let preferred = try?
       (preferredSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
       .deletingLastPathComponent
-    // The fallback is made only when the new name doesn't fit here, as `resolveSocketPath` does, so
-    // one another user owns in /tmp can't stop the daemon. No daemon was ever started there when it
-    // fits: `agent.sock` is the shorter name, so it fit here too.
-    let fallback =
-      (preferred + "/" + SessionBackend.daemon.socketFileName).utf8.count < sunPathLimit
-      ? nil
-      : try (fallbackSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
+    let fallback: String?
+    do {
+      fallback = try (fallbackSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
         .deletingLastPathComponent
+    } catch {
+      guard let preferred,
+        (preferred + "/" + SessionBackend.daemon.socketFileName).utf8.count < sunPathLimit
+      else { throw error }
+      fallback = nil
+    }
     return daemonSocket(
-      preferredDirectory: preferred, fallbackDirectory: fallback, answers: answers)
+      preferredDirectory: preferred, fallbackDirectory: fallback, answers: isLive)
   }
 
   /// The daemon was `wr-agent` on `agent.sock` until #525, and a stable user's running daemon keeps
@@ -106,21 +111,41 @@ enum PersistentSessionPaths {
   /// the fallback while the running one stays put), and found by whether it answers, not whether
   /// its file exists: a crash or reboot leaves the file behind, and starting on a dead old name
   /// would keep that name forever. With nothing answering, a new daemon starts on the new name, in
-  /// the directory `resolveSocketPath` has always picked. The old name goes with #526.
+  /// the directory `resolveSocketPath` has always picked. At least one directory is given (the
+  /// caller throws otherwise). The old name goes with #526.
   static func daemonSocket(
-    preferredDirectory: String, fallbackDirectory: String?, answers: (String) -> Bool
+    preferredDirectory: String?, fallbackDirectory: String?, answers: (String) -> Bool
   ) -> DaemonSocket {
     func fits(_ path: String) -> Bool { path.utf8.count < sunPathLimit }
     let name = SessionBackend.daemon.socketFileName
-    let newPreferred = preferredDirectory + "/" + name
+    let newPreferred = preferredDirectory.map { $0 + "/" + name }
     let newFallback = fallbackDirectory.map { $0 + "/" + name }
-    let standard = fits(newPreferred) ? newPreferred : newFallback ?? newPreferred
+    let standard =
+      newPreferred.flatMap { fits($0) ? $0 : nil } ?? newFallback ?? newPreferred ?? name
     let candidates =
       [standard] + [newFallback].compactMap { $0 }
       + [preferredDirectory, fallbackDirectory].compactMap { $0 }
       .map { $0 + "/" + SessionBackend.formerDaemonSocket }
     let live = candidates.filter(fits).first(where: answers)
     return DaemonSocket(live: live, path: live ?? standard)
+  }
+
+  /// Whether a daemon is on `path`: it answers, or it holds its single-instance lock (`serve.rs`).
+  /// The lock covers a daemon too busy to accept: a full backlog refuses a connect, and taking that
+  /// for "gone" would start a second daemon under the other name beside one holding terminals.
+  static func isLive(_ path: String) -> Bool { answers(path) || holdsLock(path) }
+
+  /// Whether a daemon holds the lock beside `path` (`<name>.lock`, the daemon's
+  /// `socket.with_extension("lock")`), which it keeps for as long as it runs. A shared lock tried
+  /// and given straight back: it never blocks, and refused means an exclusive holder.
+  static func holdsLock(_ path: String) -> Bool {
+    let lock = (path as NSString).deletingPathExtension + ".lock"
+    let descriptor = open(lock, O_RDONLY | O_CLOEXEC)
+    guard descriptor >= 0 else { return false }
+    defer { close(descriptor) }
+    guard flock(descriptor, LOCK_SH | LOCK_NB) == 0 else { return errno == EWOULDBLOCK }
+    flock(descriptor, LOCK_UN)
+    return false
   }
 
   /// Whether a daemon is listening on `path`: a unix `connect` succeeds. A socket file nothing

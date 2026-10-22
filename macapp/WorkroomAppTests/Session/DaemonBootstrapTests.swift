@@ -287,6 +287,10 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertEqual(DaemonBootstrap.buildNumber(in: Data("no marker here".utf8)), 0)
     XCTAssertEqual(DaemonBootstrap.buildNumber(in: Data("WORKROOMD-BUILD:12".utf8)), 0, "cut short")
     XCTAssertEqual(DaemonBootstrap.buildNumber(in: Data("WORKROOMD-BUILD:;".utf8)), 0, "empty")
+    // The prefix alone ahead of the marker, as a linked x86_64 daemon once had it (#525).
+    XCTAssertEqual(
+      DaemonBootstrap.buildNumber(in: Data("WORKROOMD-BUILD:\u{1}e\0x WORKROOMD-BUILD:42;".utf8)),
+      42)
   }
 
   /// Refuse rather than kill: a daemon that predates hand-off, or one that refused the new

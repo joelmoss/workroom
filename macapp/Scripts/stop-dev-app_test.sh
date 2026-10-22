@@ -174,13 +174,13 @@ OTHER="$TMP/other/Workroom Dev.app/Contents/MacOS"
 SUPPORT="/Users/someone/Library/Application Support"
 cat >"$TMP/table" <<EOF
 101 $THIS/Workroom Dev
-102 $THIS/workroomd serve --socket $SUPPORT/$DEV_ID/sessions/workroomd.sock
-103 $THIS/workroomd serve --socket /tmp/workroom-501-$PLAIN_ID/workroomd.sock --handoff /tmp/table
-104 $OTHER/workroomd serve --socket /tmp/workroom-501-$DEV_ID/workroomd.sock --idle-timeout never
+102 $THIS/workroomd serve --socket $SUPPORT/$DEV_ID/sessions/daemon.sock
+103 $THIS/workroomd serve --socket /tmp/workroom-501-$PLAIN_ID/daemon.sock --handoff /tmp/table
+104 $OTHER/workroomd serve --socket /tmp/workroom-501-$DEV_ID/daemon.sock --idle-timeout never
 105 $THIS/workroomd attach --session 6f1c2d
 106 $OTHER/Workroom Dev
-107 $THIS/workroomd serve --socket /somewhere/else/workroomd.sock
-108 $OTHER/workroomd serve --socket $SUPPORT/$OTHER_ID/sessions/workroomd.sock
+107 $THIS/workroomd serve --socket /somewhere/else/daemon.sock
+108 $OTHER/workroomd serve --socket $SUPPORT/$OTHER_ID/sessions/daemon.sock
 109 $THIS/wr-agent serve --socket $SUPPORT/$DEV_ID/sessions/agent.sock
 110 $THIS/wr-agent serve --socket /tmp/workroom-501-$PLAIN_ID/agent.sock
 EOF

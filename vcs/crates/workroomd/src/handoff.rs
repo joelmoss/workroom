@@ -482,11 +482,12 @@ pub fn hand_off(
 ///
 /// Read out of `BUILD_MARKER`, through `black_box`, so the marker is reachable from code that runs:
 /// `#[used]` keeps it in the object file, but only a reference keeps it past a linker that drops
-/// unreferenced sections.
+/// unreferenced sections. Split at its colon rather than stripping the prefix, so the prefix is in
+/// the binary once: a second copy ahead of the marker read as no build at all to the app's scan.
 pub fn build_number() -> u64 {
     std::hint::black_box(BUILD_MARKER)
-        .strip_prefix("WORKROOMD-BUILD:")
-        .and_then(|rest| rest.strip_suffix(';'))
+        .split_once(':')
+        .and_then(|(_, rest)| rest.strip_suffix(';'))
         .and_then(|number| number.parse().ok())
         .unwrap_or(0)
 }

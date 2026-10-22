@@ -33,8 +33,8 @@ bundle_id() {
 }
 
 # The bundle id whose socket a `workroomd serve` listens on, read from its `--socket` argument:
-# `…/Application Support/<id>/sessions/workroomd.sock`, or PersistentSessionPaths' fallback
-# `/tmp/workroom-<uid>-<id>/workroomd.sock`. Fails for any other shape. A hand-off keeps the arguments.
+# `…/Application Support/<id>/sessions/daemon.sock`, or PersistentSessionPaths' fallback
+# `/tmp/workroom-<uid>-<id>/daemon.sock` (`agent.sock` before #525). Fails for any other shape. A hand-off keeps the arguments.
 served_id() {
   case "$1" in
     # wr-agent: a daemon a build from before the rename (#525) started, until it exits.

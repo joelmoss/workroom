@@ -16,7 +16,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-hits="$(git -C "$ROOT" grep --no-color -n -I -E 'wr-agent|wr_agent|WR_AGENT|WR-AGENT' -- . \
+# A prefix, not the whole word, so a glob such as `wr-agen[t]` is caught too.
+hits="$(git -C "$ROOT" grep --no-color -n -I -E 'wr-agen|wr_agen|WR_AGEN|WR-AGEN' -- . \
   ':!docs/designs' \
   ':!docs/recently-done.md' \
   ':!vcs/scripts/oq19' \
