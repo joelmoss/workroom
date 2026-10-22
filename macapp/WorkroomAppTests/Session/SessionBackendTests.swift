@@ -135,6 +135,15 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertTrue(PersistentSessionPaths.isLive(socket), "but the lock is held")
     close(held)
     XCTAssertFalse(PersistentSessionPaths.isLive(socket), "released with its holder")
+
+    // Not under the new name: a daemon starting there must never find the app's probe on its lock.
+    let current = directory.appendingPathComponent("daemon.sock").path
+    let currentLock = open(
+      directory.appendingPathComponent("daemon.lock").path, O_RDWR | O_CREAT, 0o600)
+    defer { close(currentLock) }
+    XCTAssertEqual(flock(currentLock, LOCK_EX | LOCK_NB), 0)
+    XCTAssertTrue(PersistentSessionPaths.holdsLock(current))
+    XCTAssertFalse(PersistentSessionPaths.isLive(current), "the new name goes by its socket alone")
   }
 
   /// An Application Support folder that can't be made falls back to /tmp, as v2.1.0's resolver did,

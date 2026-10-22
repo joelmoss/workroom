@@ -130,10 +130,17 @@ enum PersistentSessionPaths {
     return DaemonSocket(live: live, path: live ?? standard)
   }
 
-  /// Whether a daemon is on `path`: it answers, or it holds its single-instance lock (`serve.rs`).
-  /// The lock covers a daemon too busy to accept: a full backlog refuses a connect, and taking that
-  /// for "gone" would start a second daemon under the other name beside one holding terminals.
-  static func isLive(_ path: String) -> Bool { answers(path) || holdsLock(path) }
+  /// Whether a daemon is on `path`: it answers, or, under the old name, it holds its single-instance
+  /// lock (`serve.rs`). The lock covers a v2.1.0 daemon too busy to accept: a full backlog refuses a
+  /// connect, and taking that for "gone" would start a second daemon under the new name beside one
+  /// holding terminals. Only the old name: no daemon starts on it any more, so the probe's moment
+  /// on the lock can't make a starting one think another holds it. Under the new name the daemon's
+  /// own lock already keeps a second one out.
+  static func isLive(_ path: String) -> Bool {
+    answers(path)
+      || ((path as NSString).lastPathComponent == SessionBackend.formerDaemonSocket
+        && holdsLock(path))
+  }
 
   /// Whether a daemon holds the lock beside `path` (`<name>.lock`, the daemon's
   /// `socket.with_extension("lock")`), which it keeps for as long as it runs. A shared lock tried
