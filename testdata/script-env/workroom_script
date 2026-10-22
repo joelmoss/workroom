@@ -1,6 +1,6 @@
 #!/bin/sh
 # The setup and teardown contract (docs/designs/scripts-on-every-workroom.md): what a workroom
-# script sees. The Go CLI (internal/script) and the agent (workroomd run-script) each run this and
+# script sees. The Go CLI (internal/script) and the daemon (workroomd run-script) each run this and
 # compare its output with the expected file for their kind: local.txt or remote.txt.
 echo "cwd=$(pwd -P)"
 for name in WORKROOM_NAME WORKROOM_PATH WORKROOM_ROOT_PATH WORKROOM_PARENT_DIR WORKROOM_HOST WORKROOM_SHELL_PROBE; do

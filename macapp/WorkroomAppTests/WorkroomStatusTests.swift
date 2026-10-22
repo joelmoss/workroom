@@ -83,6 +83,10 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNotEqual(
       stale?.accessibility,
       VCSStatusPresentation.dot(WorkroomStatus(dirty: nil, failure: .notRepository))?.accessibility)
+
+    // A host an older Nightly made (#525) says what the user must do, as its Changes panel does.
+    let older = VCSStatusPresentation.dot(WorkroomStatus(dirty: nil, failure: .olderLayout))
+    XCTAssertEqual(older?.accessibility, "status unavailable, workroom needs creating again")
   }
 
   // MARK: - VCSStatusPresentation.lineCountsHelp (the Changes header's +/- text)

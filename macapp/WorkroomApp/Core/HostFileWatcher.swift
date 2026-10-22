@@ -211,7 +211,7 @@ private final class WatchCore: @unchecked Sendable {
         }
       }
       await handle.cancel()
-      // An `ended` subscription is one the AGENT gave up on (the root vanished, or the OS watcher
+      // An `ended` subscription is one the DAEMON gave up on (the root vanished, or the OS watcher
       // failed). Subscribing straight back would spin one watch/unwatch round trip per iteration for
       // as long as that stays true, so it waits; a lost connection does not, because reconnecting is
       // the whole point.

@@ -7,7 +7,7 @@ import XCTest
 /// (`vcs/crates/wr-protocol/src/frame.rs`): every kind encodes and decodes to the same bytes in
 /// both codecs, and the same malformed frames are refused.
 final class SessionFrameContractTests: XCTestCase {
-  /// Kinds the agent added after WorkroomWire was frozen (v2.0.0). The shipped app reads them as
+  /// Kinds the daemon added after WorkroomWire was frozen (v2.0.0). The shipped app reads them as
   /// unknown, so that is what this checks; a kind missing from both here and `SessionFrameKind`
   /// fails the test rather than being skipped.
   private static let newerThanWorkroomWire: Set<String> = ["handOff"]

@@ -1,7 +1,7 @@
 # Engine parity patches for libghostty-vt
 
 The app's terminal engine is `libghostty-spm`, which builds Ghostty with its own patch stack. The
-remote agent's shadow terminal is `libghostty-vt`, built from stock Ghostty by
+daemon's shadow terminal is `libghostty-vt`, built from stock Ghostty by
 `../build-ghostty-vt.sh`. Where a package patch changes what the **terminal** does — its state, its
 modes, what it reports — the shadow must do the same, or a pane and its remote shadow disagree about
 the screen they are both tracking.

@@ -349,7 +349,7 @@ enum DaemonBootstrap {
     var former = false
   }
 
-  /// The probe's five lines. Anything not prefixed `WRB ` is whatever the host's shell startup
+  /// The probe's six lines. Anything not prefixed `WRB ` is whatever the host's shell startup
   /// printed, and skipped.
   static func parseProbe(_ output: String) throws -> ProbeReport {
     let fields = reports(in: output)

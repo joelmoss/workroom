@@ -3,7 +3,7 @@ public enum SessionMetadataKey {
   public static let workroom = "workroom"
   public static let tab = "tab"
   public static let title = "title"
-  /// When the agent made the session, in milliseconds since the epoch. The agent adds it itself, so
+  /// When the daemon made the session, in milliseconds since the epoch. The daemon adds it itself, so
   /// it has no environment variable (#255).
   public static let created = "created"
 

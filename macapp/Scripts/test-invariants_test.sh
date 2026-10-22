@@ -181,7 +181,7 @@ if ! grep -q '^[[:space:]]*CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlem
   fails=$((fails + 1))
 fi
 
-# --- The app and the agent's shadow terminal run the same Ghostty engine ---------------------
+# --- The app and the daemon's shadow terminal run the same Ghostty engine --------------------
 # workroomd's shadow repaints every reattaching pane, so it must parse exactly what the app's
 # GhosttyKit parses (vcs/scripts/build-ghostty-vt.sh: "THE PIN IS THE POINT"). The two pins are
 # bumped by hand in two files, and GhosttyPinIntegrityTests only covers Package.resolved, so a

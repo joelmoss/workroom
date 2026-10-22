@@ -87,8 +87,17 @@ enum PersistentSessionPaths {
     let preferred = try
       (preferredSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
       .deletingLastPathComponent
-    let fallback = try (fallbackSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
-      .deletingLastPathComponent
+    // As `resolveSocketPath` always has, a fallback that can't be made (another user owns that
+    // name in /tmp) only matters when the preferred path is too long to use.
+    let fallback: String?
+    do {
+      fallback = try (fallbackSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
+        .deletingLastPathComponent
+    } catch {
+      guard (preferred + "/" + SessionBackend.daemon.socketFileName).utf8.count < sunPathLimit
+      else { throw error }
+      fallback = nil
+    }
     return daemonSocket(
       preferredDirectory: preferred, fallbackDirectory: fallback, answers: answers)
   }
@@ -102,16 +111,17 @@ enum PersistentSessionPaths {
   /// would keep that name forever. With nothing answering, a new daemon starts on the new name, in
   /// the directory `resolveSocketPath` has always picked. The old name goes with #526.
   static func daemonSocket(
-    preferredDirectory: String, fallbackDirectory: String, answers: (String) -> Bool
+    preferredDirectory: String, fallbackDirectory: String?, answers: (String) -> Bool
   ) -> DaemonSocket {
     func fits(_ path: String) -> Bool { path.utf8.count < sunPathLimit }
     let name = SessionBackend.daemon.socketFileName
     let newPreferred = preferredDirectory + "/" + name
-    let newFallback = fallbackDirectory + "/" + name
-    let standard = fits(newPreferred) ? newPreferred : newFallback
+    let newFallback = fallbackDirectory.map { $0 + "/" + name }
+    let standard = fits(newPreferred) ? newPreferred : newFallback ?? newPreferred
     let candidates =
-      [standard, newFallback]
-      + [preferredDirectory, fallbackDirectory].map { $0 + "/" + SessionBackend.formerDaemonSocket }
+      [standard] + [newFallback].compactMap { $0 }
+      + [preferredDirectory, fallbackDirectory].compactMap { $0 }
+      .map { $0 + "/" + SessionBackend.formerDaemonSocket }
     let live = candidates.filter(fits).first(where: answers)
     return DaemonSocket(live: live, path: live ?? standard)
   }
@@ -119,15 +129,10 @@ enum PersistentSessionPaths {
   /// Whether a daemon is listening on `path`: a unix `connect` succeeds. A socket file nothing
   /// listens on is refused, and a missing one is not found; neither answers.
   static func answers(_ path: String) -> Bool {
+    guard var address = PersistentSessionControlClient.address(for: path) else { return false }
     let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return false }
     defer { close(descriptor) }
-    var address = sockaddr_un()
-    address.sun_family = sa_family_t(AF_UNIX)
-    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-    let bytes = Array(path.utf8)
-    guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
-    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
     return withUnsafePointer(to: &address) { pointer in
       pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
         Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0

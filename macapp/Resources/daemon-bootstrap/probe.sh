@@ -13,14 +13,14 @@
 # tell them from whatever a shell startup file on the host prints ahead of them:
 #
 #   WRB host <uname -s> <uname -m>
+#   WRB former yes (no daemon here, but the pre-#525 `wr-agent` is: an older Nightly's host,
+#                  whose supervisor only starts that name; the probe stops here) | no
 #   WRB installed <sha256 of the binary beside the socket> | unknown (no sha256sum) | none
 #   WRB build <the installed daemon's build-number> | unknown (it states none, or would not run)
 #             | none
 #   WRB resources <sha256 of <resources>/CHECKSUMS> | unknown (no sha256sum) | none
 #   WRB hand-off <exit status of `workroomd hand-off`> <its first line>
 #                | off (hand-off is off) | no-socket | none (the installed binary is not this build)
-#   WRB former yes (no daemon here, but the pre-#525 `wr-agent` is: an older Nightly's host,
-#                  whose supervisor only starts that name) | no
 #
 # The hand-off is asked for only when the installed binary IS the one the app bundles for this
 # architecture. Then the running daemon answers `current` at once when it already runs it, and
