@@ -30,6 +30,72 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertEqual(SessionBackend.legacySessionHelper.binaryName, "workroom-session")
   }
 
+  // MARK: - Finding the daemon under either socket name (#525)
+
+  private static let support = "/Users/me/Library/Application Support/id/sessions"
+  private static let fallback = "/tmp/workroom-501-id"
+
+  /// With nothing listening on either name, a new daemon starts on the new name.
+  func testWithNoDaemonListeningTheNewNameIsWhereOneStarts() {
+    let socket = PersistentSessionPaths.daemonSocket(
+      preferredDirectory: Self.support, fallbackDirectory: Self.fallback, answers: { _ in false })
+    XCTAssertNil(socket.live)
+    XCTAssertEqual(socket.path, Self.support + "/workroomd.sock")
+  }
+
+  /// A stable user's daemon, started by v2.1.0, is found on `agent.sock` and used as it is: its
+  /// terminals live there until it exits.
+  func testADaemonOnTheOldNameIsUsedWhereItIs() {
+    let old = Self.support + "/agent.sock"
+    let socket = PersistentSessionPaths.daemonSocket(
+      preferredDirectory: Self.support, fallbackDirectory: Self.fallback, answers: { $0 == old })
+    XCTAssertEqual(socket.live, old)
+    XCTAssertEqual(socket.path, old)
+  }
+
+  /// The new name wins when both answer: a daemon started after the update is the current one.
+  func testTheNewNameWinsWhenBothAnswer() {
+    let socket = PersistentSessionPaths.daemonSocket(
+      preferredDirectory: Self.support, fallbackDirectory: Self.fallback, answers: { _ in true })
+    XCTAssertEqual(socket.path, Self.support + "/workroomd.sock")
+  }
+
+  /// The longer name can push the Application Support path past `sun_path` (Nightly on a typical
+  /// Mac goes from 101 to 105 bytes), which moves a new daemon to the `/tmp` fallback. The running
+  /// daemon is still in Application Support under the old name, and must be found there.
+  func testTheOldNameIsFoundInTheOtherDirectoryWhenTheNewOneDoesNotFit() {
+    let long =
+      "/Users/" + String(repeating: "u", count: 46) + "/Library/Application Support/x/sessions"
+    XCTAssertLessThan((long + "/agent.sock").utf8.count, PersistentSessionPaths.sunPathLimit)
+    XCTAssertGreaterThanOrEqual(
+      (long + "/workroomd.sock").utf8.count, PersistentSessionPaths.sunPathLimit)
+    let old = long + "/agent.sock"
+
+    let running = PersistentSessionPaths.daemonSocket(
+      preferredDirectory: long, fallbackDirectory: Self.fallback, answers: { $0 == old })
+    XCTAssertEqual(running.path, old)
+
+    let none = PersistentSessionPaths.daemonSocket(
+      preferredDirectory: long, fallbackDirectory: Self.fallback, answers: { _ in false })
+    XCTAssertEqual(none.path, Self.fallback + "/workroomd.sock")
+  }
+
+  /// Liveness, not existence: a socket file a crash or reboot left behind is not a daemon, or the
+  /// next one would start on the old name and it would never go away.
+  func testASocketFileNothingListensOnDoesNotAnswer() throws {
+    let directory = URL(fileURLWithPath: "/tmp/wr-answers-\(UUID().uuidString.prefix(8))")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("agent.sock").path
+
+    let descriptor = try UnixSocketListener.listen(at: path)
+    XCTAssertTrue(PersistentSessionPaths.answers(path), "a listening daemon answers")
+    close(descriptor)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: path), "the stale file is still there")
+    XCTAssertFalse(PersistentSessionPaths.answers(path), "a stale socket file does not answer")
+    XCTAssertFalse(PersistentSessionPaths.answers(directory.appendingPathComponent("none").path))
+  }
+
   /// The property the whole migration rests on: a session created by one helper is never reachable
   /// through the other, so a draining helper and a running daemon can't fight over one socket.
   func testSocketPathsDifferPerBackend() throws {

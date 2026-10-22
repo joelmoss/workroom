@@ -367,7 +367,10 @@ final class PersistentSessionService {
     if let cached = resolvedSocketPaths[backend] { return cached }
     do {
       let path = try PersistentSessionPaths.resolveSocketPath(backend: backend)
-      resolvedSocketPaths[backend] = path
+      // Never cached for the daemon: which of its two names answers changes when an old daemon
+      // exits, and a pane given a stale name would start a second daemon beside the new one (the
+      // single-instance lock is named after the socket, so it would not stop it).
+      if backend != .daemon { resolvedSocketPaths[backend] = path }
       return path
     } catch {
       logger.error("unable to resolve the session socket path: \(String(describing: error))")
@@ -378,6 +381,8 @@ final class PersistentSessionService {
   var socketPath: String? { backend.flatMap { socketPath(for: $0) } }
 
   func existingSocketPath(for backend: SessionBackend) -> String? {
+    // The daemon is wherever one answers, under either name (`PersistentSessionPaths.daemonSocket`).
+    if backend == .daemon { return (try? PersistentSessionPaths.daemonSocket())?.live }
     let candidates = [
       try? PersistentSessionPaths.preferredSocketPath(backend: backend),
       try? PersistentSessionPaths.fallbackSocketPath(backend: backend),

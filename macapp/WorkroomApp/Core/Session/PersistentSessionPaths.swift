@@ -49,6 +49,9 @@ enum PersistentSessionPaths {
     return url
   }
 
+  /// Where `backend`'s socket is, for every caller that connects to it or starts one there. For the
+  /// daemon that is wherever one already answers, under either name (`daemonSocket`); for the
+  /// legacy helper it is its one fixed path.
   static func resolveSocketPath(
     fileManager: FileManager = .default,
     backend: SessionBackend
@@ -57,12 +60,79 @@ enum PersistentSessionPaths {
       try prepareDirectory(URL(fileURLWithPath: directory), fileManager: fileManager)
       return directory + "/" + backend.socketFileName
     }
+    if backend == .daemon {
+      return try daemonSocket(fileManager: fileManager).path
+    }
     if let preferred = try? preferredSocketPath(fileManager: fileManager, backend: backend),
       preferred.utf8.count < sunPathLimit
     {
       return preferred
     }
     return try fallbackSocketPath(fileManager: fileManager, backend: backend)
+  }
+
+  /// The daemon's socket: `live` is one that answers, if any does, and `path` is where to connect
+  /// or start one.
+  struct DaemonSocket: Equatable {
+    var live: String?
+    var path: String
+  }
+
+  /// The daemon socket on this Mac, from its two directories (`daemonSocket(preferredDirectory:…)`).
+  static func daemonSocket(fileManager: FileManager = .default) throws -> DaemonSocket {
+    if let directory = UITestFixture.liveDaemonDirectory {
+      let path = directory + "/" + SessionBackend.daemon.socketFileName
+      return DaemonSocket(live: answers(path) ? path : nil, path: path)
+    }
+    let preferred = try
+      (preferredSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
+      .deletingLastPathComponent
+    let fallback = try (fallbackSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
+      .deletingLastPathComponent
+    return daemonSocket(
+      preferredDirectory: preferred, fallbackDirectory: fallback, answers: answers)
+  }
+
+  /// The daemon was `wr-agent` on `agent.sock` until #525, and a stable user's running daemon keeps
+  /// that name until it exits: a hand-off keeps its argv, lock and log, so nothing renames it in
+  /// place (eng review D4). So the daemon is looked for under both names, in both directories (a
+  /// longer name can push the Application Support path past `sun_path`, which moves a NEW daemon to
+  /// the fallback while the running one stays put), and found by whether it answers, not whether
+  /// its file exists: a crash or reboot leaves the file behind, and starting on a dead old name
+  /// would keep that name forever. With nothing answering, a new daemon starts on the new name, in
+  /// the directory `resolveSocketPath` has always picked. The old name goes with #526.
+  static func daemonSocket(
+    preferredDirectory: String, fallbackDirectory: String, answers: (String) -> Bool
+  ) -> DaemonSocket {
+    func fits(_ path: String) -> Bool { path.utf8.count < sunPathLimit }
+    let name = SessionBackend.daemon.socketFileName
+    let newPreferred = preferredDirectory + "/" + name
+    let newFallback = fallbackDirectory + "/" + name
+    let standard = fits(newPreferred) ? newPreferred : newFallback
+    let candidates =
+      [standard, newFallback]
+      + [preferredDirectory, fallbackDirectory].map { $0 + "/" + SessionBackend.formerDaemonSocket }
+    let live = candidates.filter(fits).first(where: answers)
+    return DaemonSocket(live: live, path: live ?? standard)
+  }
+
+  /// Whether a daemon is listening on `path`: a unix `connect` succeeds. A socket file nothing
+  /// listens on is refused, and a missing one is not found; neither answers.
+  static func answers(_ path: String) -> Bool {
+    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { return false }
+    defer { close(descriptor) }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    let bytes = Array(path.utf8)
+    guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+    return withUnsafePointer(to: &address) { pointer in
+      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+      }
+    }
   }
 
   static func preferredSocketPath(

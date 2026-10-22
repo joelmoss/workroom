@@ -49,6 +49,10 @@ enum SessionBackend: String, CaseIterable, Sendable {
     }
   }
 
+  /// The daemon's socket name before #525 (`wr-agent` on `agent.sock`), which a daemon an older
+  /// build started keeps until it exits (`PersistentSessionPaths.daemonSocket`). Retired by #526.
+  static let formerDaemonSocket = "agent.sock"
+
   /// The backend a NEW session should be created in, or **nil when none can take one**.
   ///
   /// Nil is a real answer, not an error: this build can start a daemon and nothing else, so an
