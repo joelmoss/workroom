@@ -337,9 +337,22 @@ mod tests {
         std::fs::canonicalize(&root).unwrap()
     }
 
+    /// Written by `cp`, not by this process: a test on another thread that forks while this one
+    /// holds the file open for writing hands the child that descriptor, and running the script
+    /// then fails on Linux with "Text file busy" (ETXTBSY).
     fn script(dir: &Path, name: &str, body: &str, mode: u32) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, body).unwrap();
+        let draft = dir.join(format!(".{name}.draft"));
+        std::fs::write(&draft, body).unwrap();
+        assert!(
+            Command::new("cp")
+                .arg(&draft)
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::remove_file(&draft).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         path
     }
