@@ -724,10 +724,9 @@ final class RemoteHosts: @unchecked Sendable {
   /// The connection attempt running for each host, which `ensureConnected` callers share, and
   /// whether it starts a stopped container first.
   private var connecting: [HostID: (task: Task<Void, Error>, starts: Bool)] = [:]
-  /// When each host's last attempt failed, which answers for it for `retryAfter`.
-  private var failedAt: [HostID: ContinuousClock.Instant] = [:]
-  /// Hosts whose last attempt failed for an older layout (#525), so the backoff keeps saying so.
-  private var olderLayoutHosts: Set<HostID> = []
+  /// When each host's last attempt failed, which answers for it for `retryAfter`, and whether it
+  /// failed for an older layout (#525), which the backoff keeps saying.
+  private var failedAt: [HostID: (at: ContinuousClock.Instant, olderLayout: Bool)] = [:]
   /// When boxd last said each host was asleep, which answers for it for `retryAfter` (#356).
   private var asleepAt: [HostID: ContinuousClock.Instant] = [:]
   /// The host of the workroom selected in each window (one `AppStore` per window), which a
@@ -1216,11 +1215,9 @@ final class RemoteHosts: @unchecked Sendable {
     // from sleep must not leave it reading as asleep until it is selected again.
     let selected = lock.withLock { selectedHosts.values.contains(host) }
     if !wake, !opened, let failed = lock.withLock({ failedAt[host] }),
-      now() - failed < Self.retryAfter
+      now() - failed.at < Self.retryAfter
     {
-      if lock.withLock({ olderLayoutHosts.contains(host) }) {
-        throw RepositoryRoutingError.olderLayout(host)
-      }
+      if failed.olderLayout { throw RepositoryRoutingError.olderLayout(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
@@ -1231,10 +1228,7 @@ final class RemoteHosts: @unchecked Sendable {
       switch try await boxdPresence(host) {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
-        lock.withLock {
-          failedAt[host] = now()
-          olderLayoutHosts.remove(host)
-        }
+        lock.withLock { failedAt[host] = (now(), false) }
         throw RepositoryRoutingError.gone(host)
       case .awake, nil: break  // nil: not a boxd host
       }
@@ -1271,27 +1265,17 @@ final class RemoteHosts: @unchecked Sendable {
       }
       defer { lock.withLock { if connecting[host]?.task == task { connecting[host] = nil } } }
       try await task.value
-      lock.withLock {
-        failedAt[host] = nil
-        olderLayoutHosts.remove(host)
-      }
+      lock.withLock { failedAt[host] = nil }
     } catch is CancellationError {
       throw CancellationError()
     } catch {
+      // The one failure with something the user can do about it, so it keeps its words (D3, #525).
+      var olderLayout = false
+      if case DaemonBootstrap.Error.olderLayout = error { olderLayout = true }
+      lock.withLock { failedAt[host] = (now(), olderLayout) }
       Self.logger.error(
         "connecting \(String(describing: host), privacy: .public): \(error, privacy: .public)")
-      // The one failure with something the user can do about it, so it keeps its words (D3, #525).
-      if case DaemonBootstrap.Error.olderLayout = error {
-        lock.withLock {
-          failedAt[host] = now()
-          olderLayoutHosts.insert(host)
-        }
-        throw RepositoryRoutingError.olderLayout(host)
-      }
-      lock.withLock {
-        failedAt[host] = now()
-        olderLayoutHosts.remove(host)
-      }
+      if olderLayout { throw RepositoryRoutingError.olderLayout(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
   }
