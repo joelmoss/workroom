@@ -77,5 +77,8 @@
     "ci.yml/cli": "git ls-files '*_test.go'",
     "ci.yml/rust": "git ls-files 'vcs/*.rs'",
     "ci.yml/agent-terminal-state": "git ls-files 'vcs/*.rs'"
+  },
+  "strays": {
+    "allow": ["macapp/Resources/daemon-bootstrap/probe.sh"]
   }
 }
