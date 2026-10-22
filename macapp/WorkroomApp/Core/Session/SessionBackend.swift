@@ -45,11 +45,10 @@ enum SessionBackend: String, CaseIterable, Sendable {
   var socketFileName: String {
     switch self {
     case .legacySessionHelper: return "session.sock"
-    // Not `workroomd.sock`: four bytes longer than `agent.sock`, it pushed a Nightly bundle's
-    // Application Support path past `sun_path` for usernames of 7 to 10 letters, into /tmp, where
-    // macOS's cleaner deletes the daemon's lock and log after three days (#525). A host's socket is
-    // `workroomd.sock`.
-    case .daemon: return "daemon.sock"
+    // No longer than `agent.sock`, so no path that fit before the rename (#525) is pushed past
+    // `sun_path` into /tmp, where macOS's cleaner deletes the daemon's lock after three days (#528).
+    // Its lock and log are `workroomd.lock` and `workroomd.log`. A host's socket is `workroomd.sock`.
+    case .daemon: return "workroomd"
     }
   }
 

@@ -40,7 +40,7 @@ final class SessionBackendTests: XCTestCase {
     let socket = PersistentSessionPaths.daemonSocket(
       preferredDirectory: Self.support, fallbackDirectory: Self.fallback, answers: { _ in false })
     XCTAssertNil(socket.live)
-    XCTAssertEqual(socket.path, Self.support + "/daemon.sock")
+    XCTAssertEqual(socket.path, Self.support + "/workroomd")
   }
 
   /// A /tmp fallback that can't be made private (another user on the Mac owns its name) doesn't
@@ -71,7 +71,7 @@ final class SessionBackendTests: XCTestCase {
     let socket = try PersistentSessionPaths.daemonSocket(fileManager: short)
     XCTAssertNil(socket.live)
     XCTAssertTrue(socket.path.hasPrefix(short.support.path + "/"), socket.path)
-    XCTAssertTrue(socket.path.hasSuffix("/sessions/daemon.sock"), socket.path)
+    XCTAssertTrue(socket.path.hasSuffix("/sessions/workroomd"), socket.path)
 
     let long = FallbackOwnedByAnotherUser(supportNameLength: PersistentSessionPaths.sunPathLimit)
     defer { try? FileManager.default.removeItem(at: long.support) }
@@ -94,27 +94,27 @@ final class SessionBackendTests: XCTestCase {
   func testTheNewNameWinsWhenBothAnswer() {
     let socket = PersistentSessionPaths.daemonSocket(
       preferredDirectory: Self.support, fallbackDirectory: Self.fallback, answers: { _ in true })
-    XCTAssertEqual(socket.path, Self.support + "/daemon.sock")
+    XCTAssertEqual(socket.path, Self.support + "/workroomd")
   }
 
-  /// The new name is a byte longer, which can push the Application Support path past `sun_path` and
-  /// move a new daemon to the `/tmp` fallback. The running daemon is still in Application Support
-  /// under the old name, and must be found there.
-  func testTheOldNameIsFoundInTheOtherDirectoryWhenTheNewOneDoesNotFit() {
+  /// The new name is a byte shorter than the old, so a v2.1.0 daemon whose `agent.sock` didn't fit
+  /// in Application Support is in the `/tmp` fallback while the new name fits here. It must still be
+  /// found there, and with nothing running a new daemon starts in Application Support.
+  func testAnOldDaemonInTmpIsFoundWhenTheNewNameFitsInApplicationSupport() {
     let long =
-      "/Users/" + String(repeating: "u", count: 46) + "/Library/Application Support/x/sessions"
-    XCTAssertLessThan((long + "/agent.sock").utf8.count, PersistentSessionPaths.sunPathLimit)
+      "/Users/" + String(repeating: "u", count: 47) + "/Library/Application Support/x/sessions"
     XCTAssertGreaterThanOrEqual(
-      (long + "/daemon.sock").utf8.count, PersistentSessionPaths.sunPathLimit)
-    let old = long + "/agent.sock"
+      (long + "/agent.sock").utf8.count, PersistentSessionPaths.sunPathLimit)
+    XCTAssertLessThan((long + "/workroomd").utf8.count, PersistentSessionPaths.sunPathLimit)
+    let old = Self.fallback + "/agent.sock"
 
     let running = PersistentSessionPaths.daemonSocket(
       preferredDirectory: long, fallbackDirectory: Self.fallback, answers: { $0 == old })
-    XCTAssertEqual(running.path, old)
+    XCTAssertEqual(running.live, old)
 
     let none = PersistentSessionPaths.daemonSocket(
       preferredDirectory: long, fallbackDirectory: Self.fallback, answers: { _ in false })
-    XCTAssertEqual(none.path, Self.fallback + "/daemon.sock")
+    XCTAssertEqual(none.path, long + "/workroomd")
   }
 
   /// A daemon too busy to accept (a full backlog refuses a connect) still holds its lock, and counts
@@ -137,9 +137,9 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertFalse(PersistentSessionPaths.isLive(socket), "released with its holder")
 
     // Not under the new name: a daemon starting there must never find the app's probe on its lock.
-    let current = directory.appendingPathComponent("daemon.sock").path
+    let current = directory.appendingPathComponent("workroomd").path
     let currentLock = open(
-      directory.appendingPathComponent("daemon.lock").path, O_RDWR | O_CREAT, 0o600)
+      directory.appendingPathComponent("workroomd.lock").path, O_RDWR | O_CREAT, 0o600)
     defer { close(currentLock) }
     XCTAssertEqual(flock(currentLock, LOCK_EX | LOCK_NB), 0)
     XCTAssertTrue(PersistentSessionPaths.holdsLock(current))
@@ -182,7 +182,7 @@ final class SessionBackendTests: XCTestCase {
     let daemon = try PersistentSessionPaths.preferredSocketPath(backend: .daemon)
     XCTAssertNotEqual(helper, daemon)
     XCTAssertTrue(helper.hasSuffix("session.sock"))
-    XCTAssertTrue(daemon.hasSuffix("daemon.sock"))
+    XCTAssertTrue(daemon.hasSuffix("/workroomd"))
   }
 
   /// The fallback path exists for long home directories; it must keep the separation too, or the
