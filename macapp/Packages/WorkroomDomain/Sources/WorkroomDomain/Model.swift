@@ -21,7 +21,7 @@ public struct Warning: Codable, Hashable, Sendable {
 }
 
 /// What a host this driver made needs to be reached and destroyed again by a driver in a later
-/// launch (#253): the `container` part of its host descriptor. The client key and the agent's
+/// launch (#253): the `container` part of its host descriptor. The client key and the daemon's
 /// socket are the driver's own (`Provisioning`), and the container's name follows from the
 /// host's ID.
 public struct ContainerHostRecord: Codable, Hashable, Sendable {

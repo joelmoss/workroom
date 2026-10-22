@@ -7,12 +7,12 @@ import os
 /// local container workroom (`CredentialRelay`, #309).
 ///
 /// **The listener lives only as long as the connection to the host** (every forward does), so this
-/// reopens it on each new connection, on the same port: what the agent saved (its relay's port)
+/// reopens it on each new connection, on the same port: what the daemon saved (its relay's port)
 /// must keep working after a reattach.
 @MainActor
 final class ReverseForwardRegistry {
 
-  /// How the registry reaches a host's connection, so a test can hand it a real agent without
+  /// How the registry reaches a host's connection, so a test can hand it a real daemon without
   /// `HostConnectionManager`: the shape `PortForwardingModel.Transport` set.
   struct Transport {
     var forwarding:
@@ -24,10 +24,10 @@ final class ReverseForwardRegistry {
       updates: { await HostConnectionManager.shared.updates(for: $0) })
   }
 
-  /// How long the agent may take to answer a `listen`.
+  /// How long the daemon may take to answer a `listen`.
   static let listenTimeout: Duration = .seconds(5)
   /// A bind that lost the race with the old connection's teardown is retried this often, this
-  /// many times: the agent notices a departed connection within its 200 ms accept poll.
+  /// many times: the daemon notices a departed connection within its 200 ms accept poll.
   static let bindRetries = 10
   static let bindRetryDelay: Duration = .milliseconds(200)
   /// How many times a connection's listener is tried, `reopenRetry` apart, before the registry
@@ -35,11 +35,11 @@ final class ReverseForwardRegistry {
   static let reopenAttempts = 60
 
   private let transport: Transport
-  /// The agent's port for a workroom: the same on every connection and every launch.
+  /// The daemon's port for a workroom: the same on every connection and every launch.
   private let port: @Sendable (UUID) -> UInt16
   /// The port on this Mac each connection is carried to, asked again for each listener.
   private let target: @Sendable () async -> UInt16
-  /// The error a listener the agent refuses becomes, from the agent's reason.
+  /// The error a listener the daemon refuses becomes, from the daemon's reason.
   private let failure: @Sendable (String) -> Error
   private let reopenRetry: Duration
   private let log = Logger(subsystem: "com.developwithstyle.workroom", category: "reverse-forward")
@@ -71,7 +71,7 @@ final class ReverseForwardRegistry {
   }
 
   /// Open the listener for `workroom` on `host` and keep it open on every later connection. Throws
-  /// when the agent does not listen now.
+  /// when the daemon does not listen now.
   func open(workroom: UUID, host: HostID) async throws {
     if entries[workroom] == nil {
       entries[workroom] = Entry(host: host)
@@ -126,7 +126,7 @@ final class ReverseForwardRegistry {
     entry.forward = nil
     entries[workroom] = entry
 
-    // A bind can lose a race on a reconnect: the agent releases the old connection's port only
+    // A bind can lose a race on a reconnect: the daemon releases the old connection's port only
     // once it notices that connection ended, which can be just after the new one asks. The
     // port is this workroom's alone, so a bind failure is retried for a moment, not reported.
     var attempt = 0
@@ -181,7 +181,7 @@ final class ReverseForwardRegistry {
   }
 
   /// The listener ended. With its connection, the next connection opens a new one; on its own
-  /// (the agent's listener broke while the connection lives), no new connection is coming, so it
+  /// (the daemon's listener broke while the connection lives), no new connection is coming, so it
   /// is reopened here.
   private func lost(_ workroom: UUID, on lease: HostConnectionManager.Lease) {
     guard entries[workroom]?.lease == lease else { return }
@@ -191,7 +191,7 @@ final class ReverseForwardRegistry {
   }
 
   /// Listen until it works, the workroom is closed, or the attempts run out. A link lost without
-  /// a goodbye leaves the old connection's listener holding the port until the agent notices it
+  /// a goodbye leaves the old connection's listener holding the port until the daemon notices it
   /// has gone, which can take as long as ssh's keepalives, so a bind that keeps failing is tried
   /// again every `reopenRetry` rather than given up on until the next connection.
   private func keepTrying(_ workroom: UUID) async {
@@ -226,7 +226,7 @@ final class ReverseForwardRegistry {
   }
 }
 
-/// The first answer to a `listen`, waited on with a deadline: nil once the agent listens, the
+/// The first answer to a `listen`, waited on with a deadline: nil once the daemon listens, the
 /// reason when it will not.
 private final class ListenOutcome: @unchecked Sendable {
   private let lock = NSLock()

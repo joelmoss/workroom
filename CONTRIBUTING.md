@@ -101,7 +101,7 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 | --- | --- |
 | **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+; Release builds are universal, arm64 and x86_64) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm`, Metal-rendered) |
-| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); agent-routed reads and writes via the Rust `workroomd` |
+| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); daemon-routed reads and writes via the Rust `workroomd` |
 | **Syntax highlighting** | [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + tree-sitter grammars |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.6 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |
@@ -199,7 +199,7 @@ SwiftUI app. The core loop:
    [ADR 0050](docs/adr/0050-program-status-service.md)).
 4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch)
    goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and `workroomd` for
-   agent-routed projects — both mapped to app-native models, no CLI text parsing.
+   daemon-routed projects — both mapped to app-native models, no CLI text parsing.
 5. **Mutations** (create/delete workroom, add/remove project) call the bundled Go CLI via
    `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
    overlays `PATH`, drains stdout/stderr concurrently, streams NDJSON logs, and decodes the JSON
@@ -530,7 +530,7 @@ and every PR against either:
 - **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo doc` with
   `RUSTDOCFLAGS="-D warnings"`, and `cargo test` for the whole `vcs/` Rust workspace, on a pinned
   toolchain. `make vcs-lint` runs the same format, lint and doc checks locally, plus the
-  `agent-terminal-state` job's clippy pass and a `terminal-state` doc check CI does not run.
+  `daemon-terminal-state` job's clippy pass and a `terminal-state` doc check CI does not run.
 - **`app-packages` job** (`xcode-27`): sets up Xcode 27.1 and runs `make app-package-test`, the local
   Swift packages' own `swift test` suites, beside `app` rather than ahead of its build.
 - **`app` job** (`xcode-27`): sets up Xcode 27.1 + Go, `brew install xcodegen`, runs `make app-lint`

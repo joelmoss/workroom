@@ -140,7 +140,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
     await until(connection.requests == ["seen 4 []"])
   }
 
-  /// An agent before protocol 8, or one without terminal state, is unavailable, and what was kept
+  /// A daemon before protocol 8, or one without terminal state, is unavailable, and what was kept
   /// for the host goes.
   func testAnUnsupportedAgentClearsTheHost() async {
     let (monitor, gate) = makeMonitor()

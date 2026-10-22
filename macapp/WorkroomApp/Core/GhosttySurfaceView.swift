@@ -534,7 +534,7 @@ final class GhosttySurfaceView: NSView {
   /// gating on the exit status meant no pane ever reattached (#392).
   ///
   /// Only a pane whose attach had been up becomes a restored one. A new pane whose first attach
-  /// never connected (opened offline, or before the bootstrap installed the agent) has no session
+  /// never connected (opened offline, or before the bootstrap installed the daemon) has no session
   /// on the host yet: reattaching it with `--no-create` would show it ended instead of creating
   /// it. Up means longer than the backoff's ceiling, which already reads that as a link that was up.
   ///

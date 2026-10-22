@@ -87,7 +87,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertTrue(requests.isEmpty, "and is not alerted twice")
   }
 
-  /// An agent that started again (a crash, a host reboot) numbers its requests from 1 again: the
+  /// A daemon that started again (a crash, a host reboot) numbers its requests from 1 again: the
   /// boot in the episode keeps a new request from passing for one already alerted.
   func testANewAgentBootAlertsAgainForTheSameEpisodeNumber() {
     alerts.start()
@@ -271,9 +271,9 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(finishes.map(\.body), ["Turn finished: \u{201C}Done: tests pass\u{201D}"])
   }
 
-  /// A program that never probed (Codex) alerts once the agent has seen it stay running (#481):
+  /// A program that never probed (Codex) alerts once the daemon has seen it stay running (#481):
   /// the request it already showed alerts when it turns `notify`, once, and counts from then.
-  /// Value: protects=Codex requests alert at all; fails_when=apply looks only at new episodes; why_new=every other test seeds notify from the start; seam=none; no_claim=the agent's promotion (seeded)
+  /// Value: protects=Codex requests alert at all; fails_when=apply looks only at new episodes; why_new=every other test seeds notify from the start; seam=none; no_claim=the daemon's promotion (seeded)
   func testAnUnprobedRequestAlertsOnceTheAgentPromotesIt() {
     alerts.start()
     let id = session(store.terminals.addTab(for: target))
@@ -289,7 +289,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
 
   /// Codex posts its own notification just before it reports the request (#481): it is held, and
   /// the request it announces raises one alert at once, carrying the program's text, since Codex's
-  /// report has none. The agent's later promotion adds nothing.
+  /// report has none. The daemon's later promotion adds nothing.
   /// Value: protects=one notification per Codex request, with its detail; fails_when=the hold, the immediate raise or the detail is missing; why_new=folding needed the alert raised first; seam=none; no_claim=real cross-route timing
   func testAProgramsNotificationBeforeItsRequestRaisesOneAlertCarryingItsText() {
     alerts.start()
@@ -298,11 +298,11 @@ final class ProgramStatusAlertsTests: XCTestCase {
     programNotified(id, "Approval requested: rm -rf build")
     XCTAssertEqual(shown, [], "held")
     monitor.seed(id, records: [blocked(message: "", notify: false)])
-    XCTAssertEqual(requests.count, 1, "raised without waiting for the agent")
+    XCTAssertEqual(requests.count, 1, "raised without waiting for the daemon")
     XCTAssertEqual(requests.first?.body?.contains("Approval requested: rm -rf build"), true)
     XCTAssertEqual(alerts.countedWaiting, 1, "counted once raised")
     monitor.seed(id, records: [blocked(message: "", notify: true)])
-    XCTAssertEqual(requests.count, 1, "the agent's promotion adds nothing")
+    XCTAssertEqual(requests.count, 1, "the daemon's promotion adds nothing")
     XCTAssertEqual(shown, [])
   }
 

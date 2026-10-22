@@ -44,7 +44,7 @@ func fail(_ message: String) -> Never {
   exit(2)
 }
 
-/// `daemon` is deliberately absent. This binary is an attach-only CLIENT: it connects to a daemon
+/// `daemon` is deliberately absent. This binary is an attach-only CLIENT: it connects to a helper
 /// an app at or before v2.0.0 left running and relays a session it already holds. It cannot start
 /// one, and starting one would serve no session that exists — every new session goes to `workroomd`.
 /// See `docs/designs/remote-workrooms.md`.
@@ -71,10 +71,10 @@ case "attach":
   let status = SessionAttachClient.run(configuration: configuration)
   // **The pane must not die because the helper did.** `config.wait_after_command` is false, so a
   // relay that simply exits leaves a pane with no shell in it — nothing to read the error in, and
-  // nothing to type into. The Rust agent solved this with `fall_back_to_shell`; this client had no
-  // equivalent, so the very failure this branch introduced a bound for (a v2.0.0 daemon that
+  // nothing to type into. The Rust daemon solved this with `fall_back_to_shell`; this client had no
+  // equivalent, so the very failure this branch introduced a bound for (a v2.0.0 helper that
   // accepts and then stalls) destroyed the pane rather than degrading it, while the identical
-  // failure against the agent degraded to a working shell. Two relays behind one feature must fail
+  // failure against the daemon degraded to a working shell. Two relays behind one feature must fail
   // the same way.
   //
   // `finished` and `protocolFailure` never fall back: the first carries the shell's own exit
@@ -106,7 +106,7 @@ case "list":
     fail("usage: workroom-session list --socket <path>")
   }
   guard let sessions = SessionControlClient.list(socketPath: socketPath) else {
-    fail("workroom-session: daemon is not running")
+    fail("workroom-session: no session helper is running")
   }
   for session in sessions {
     let title = session.value(forMetadataKey: SessionMetadataKey.title) ?? ""

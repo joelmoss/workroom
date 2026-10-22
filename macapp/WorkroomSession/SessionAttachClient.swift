@@ -11,7 +11,7 @@ enum SessionAttachExitCode {
 enum SessionAttachClient {
   /// How hard to retry a refused connect, and for how long to wait once connected.
   ///
-  /// These used to be far larger (3 cycles of 50 × 20ms) because `connect` STARTED a daemon when
+  /// These used to be far larger (3 cycles of 50 × 20ms) because `connect` STARTED a helper when
   /// none answered and then had to wait for it to bind its socket. This build cannot start one —
   /// the `daemon` subcommand is gone — so there is nothing to wait for that is not already there.
   /// What remains covers a live helper that is momentarily slow to `accept`, which is the only real
@@ -34,13 +34,13 @@ enum SessionAttachClient {
   /// blocks indefinitely once no settle check is pending, so the pane sat blank forever with no
   /// message and no exit.
   ///
-  /// **Generous, and deliberately not retried.** The v2.0.0 daemon answers an attach from a single
+  /// **Generous, and deliberately not retried.** The v2.0.0 helper answers an attach from a single
   /// poll iteration that first runs process introspection (`foregroundProcessGroup`,
   /// `executableName`, `workingDirectory`) and then enqueues the whole replay buffer, flushing only
   /// once that returns. On a loaded machine that is slow rather than broken, so a tight deadline
   /// plus a retry is the worst combination available: each attempt tears down the connection, makes
   /// the peer redo the same introspection and replay, and hands the next attempt an even busier
-  /// daemon. It cannot converge. One long wait converges or it does not.
+  /// helper. It cannot converge. One long wait converges or it does not.
   static let attachHandshakeTimeoutSeconds: Double = 5
   static let inputBacklogLimit = 4 * 1024 * 1024
   /// How long after attaching to re-check the terminal size once more (seconds).
@@ -123,8 +123,8 @@ enum SessionAttachClient {
     guard payload.count <= SessionFrame.maximumPayloadSize else {
       // Fail fast and specifically rather than retrying `handshakeAttempts` times against the
       // same oversized payload and reporting the generic, misleading "could not reach the
-      // session daemon" — this is almost always a bloated shell environment (exported functions,
-      // PATH bloat from asdf/direnv/nvm hooks), not a daemon problem.
+      // session helper" — this is almost always a bloated shell environment (exported functions,
+      // PATH bloat from asdf/direnv/nvm hooks), not a helper problem.
       report(
         "attach request too large (\(payload.count) bytes, limit "
           + "\(SessionFrame.maximumPayloadSize)) — check for an oversized shell environment")
@@ -149,7 +149,7 @@ enum SessionAttachClient {
       if let deadline = handshakeDeadline, SessionClock.monotonicSeconds() >= deadline {
         // TERMINAL, not `.retry`. Retrying reconnects and re-sends the attach, which on a slow peer
         // makes it redo the introspection and replay this attempt already paid for — three attempts
-        // against a progressively busier daemon, converging on nothing. It also let `run`'s final
+        // against a progressively busier helper, converging on nothing. It also let `run`'s final
         // "no session helper is listening" overwrite this line on screen, which is false in this
         // path: the helper was listening, we reached it three times.
         report(
@@ -201,7 +201,7 @@ enum SessionAttachClient {
       // Cleared BEFORE the settle deadline is armed, so the two are never live at once.
       if isAttached { handshakeDeadline = nil }
       // Arm the settle re-check the moment `.attached` lands, not before — there's nothing to
-      // settle until the daemon has actually accepted us.
+      // settle until the helper has actually accepted us.
       //
       // NOT one-shot, despite how it reads, and this comment used to claim otherwise. Firing it
       // sets `settleDeadline = nil` and `continue`s past this block; the next wake then finds
@@ -350,8 +350,8 @@ enum SessionAttachClient {
   /// Connect to a helper that is ALREADY running, or give up.
   ///
   /// This used to `posix_spawn` `workroom-session daemon` when nothing answered, then wait for the
-  /// new process to bind. That is gone with the daemon itself: the only sessions this client can
-  /// reach are held by a daemon some OLDER build of the app started, and starting a fresh one would
+  /// new process to bind. That is gone with `daemon` itself: the only sessions this client can
+  /// reach are held by a helper some OLDER build of the app started, and starting a fresh one would
   /// serve no session that exists. What is left is a short retry for a live helper that is
   /// momentarily slow to `accept`.
   private static func connect(socketPath: String) -> Int32? {

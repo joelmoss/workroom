@@ -378,7 +378,7 @@ struct TerminalState {
   /// observable state so the detail-panel status bar shows the live directory (issue #49). Nil until
   /// the shell first reports; the status bar falls back to the surface's `lastKnownCwd` / target path.
   var cwd: String?
-  /// A remote pane's working directory ON ITS HOST (#239), from the host agent's session list:
+  /// A remote pane's working directory ON ITS HOST (#239), from the host daemon's session list:
   /// libghostty drops an OSC 7 report whose host is not this Mac, so `cwd` never hears from a remote
   /// shell. Kept apart from `cwd` because this path names nothing on this Mac. The status bar shows
   /// and copies it, and nothing else reads it: not ⌘-click, not a new split, not the snapshot.
@@ -390,7 +390,7 @@ struct TerminalState {
   var progressActive: Bool?
   /// The last progress report was ERROR. Only meaningful while `progressActive` is true.
   var progressFailed = false
-  /// What the program in this terminal reports over OSC 7501 (#358), from the host's agent. Nil
+  /// What the program in this terminal reports over OSC 7501 (#358), from the host's daemon. Nil
   /// when it reports nothing: no record left and no reporting run.
   var programStatus: ProgramStatusRollup?
 
@@ -2042,7 +2042,7 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
-  /// The profile entry from a session descriptor; no entry means the agent cannot say (too old, or
+  /// The profile entry from a session descriptor; no entry means the daemon cannot say (too old, or
   /// the foreground is not a confirmed `claude`).
   nonisolated static func claudeProfile(from descriptor: SessionDescriptor?) -> PaneClaudeProfile {
     descriptor?.value(forMetadataKey: "claude_profile").map(PaneClaudeProfile.reported)
@@ -2389,8 +2389,8 @@ final class TerminalSessions: ObservableObject {
       target.remoteHost != nil && command == nil
       ? sessionID ?? UUID()
       : assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
-    // The workroom a session is tagged with is how its agent's list finds it again: `target.id`
-    // for a workroom on this Mac, whose agent no other Mac reads, and the workroom's own id for a
+    // The workroom a session is tagged with is how its daemon's list finds it again: `target.id`
+    // for a workroom on this Mac, whose daemon no other Mac reads, and the workroom's own id for a
     // remote one, since `target.id` holds this Mac's project path and another Mac's differs (#255).
     let metadata: [(key: String, value: String)] = [
       (SessionMetadataKey.project, projectPath(from: target.id) ?? target.path),
@@ -2608,7 +2608,7 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// ⌘-click in a remote pane resolves on the HOST (C7): against the shell's directory there, as
-  /// its agent reports it (`hostCwd`), and through the host's file service. The file opens in the
+  /// its daemon reports it (`hostCwd`), and through the host's file service. The file opens in the
   /// in-app viewer, since no editor on this Mac can open a file on another machine. Web URLs still
   /// go to this Mac's browser.
   ///
@@ -2687,7 +2687,7 @@ final class TerminalSessions: ObservableObject {
           } catch FileServiceError.failed(let message)
             where message == DaemonFileProvider.unknownMethod
           {
-            // An agent from before `resolve`: probe the lexical path, as every agent did before
+            // A daemon from before `resolve`: probe the lexical path, as every daemon did before
             // #327. Any other failure (busy, unreadable, a loop) skips the candidate below, since
             // the lexical path is the wrong file whenever the host's answer would differ.
           } catch FileServiceError.failed(let message)
@@ -2718,7 +2718,7 @@ final class TerminalSessions: ObservableObject {
       } catch is FileServiceError {
         // About this path: missing, refused, or an error reading it (too long, not a directory
         // on the way). The next candidate, `file.rb` from `file.rb:12`, may still be there. An
-        // agent turning reads away as busy lands here too, and costs only the remaining probes.
+        // daemon turning reads away as busy lands here too, and costs only the remaining probes.
         continue
       } catch {
         // The host or its connection, not the candidate: the next one would fail the same way.

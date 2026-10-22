@@ -359,7 +359,7 @@ final class RepositoryGitHubTests: XCTestCase {
   }
 
   /// A remote host has no checkout to read a branch tip from, so CI is absent — with no process run —
-  /// until the agent supplies a commit (Phase 3).
+  /// until the daemon supplies a commit (Phase 3).
   func testRemoteCIIsAbsentWithoutRunningAnything() async throws {
     let runner = GHRunner(healthy)
     let service = try remote(runner: runner)

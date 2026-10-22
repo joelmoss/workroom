@@ -133,7 +133,7 @@ OUT_ROOT="${CARGO_TARGET_DIR:-$CARGO_DIR/target}"
 # One feature list for the Mac and Linux builds alike. Only the Mac daemon can be run here, and the
 # build test asserts `terminal-state yes` on it; sharing the list is what extends that check to the
 # Linux ELFs, which this Mac cannot run.
-AGENT_FEATURES="terminal-state"
+DAEMON_FEATURES="terminal-state"
 
 SLICES=()
 for target in "${TARGETS[@]}"; do
@@ -145,7 +145,7 @@ for target in "${TARGETS[@]}"; do
   #
   # The library is cached per (engine sha, target) outside the repo, so only the first build of a
   # given pin pays for it; see vcs/scripts/build-ghostty-vt.sh.
-  ( cd "$CARGO_DIR" && $CARGO build --release -p workroomd --features "$AGENT_FEATURES" --target "$target" )
+  ( cd "$CARGO_DIR" && $CARGO build --release -p workroomd --features "$DAEMON_FEATURES" --target "$target" )
   cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$SLICE_DIR/${HELPER_NAME}-slice-$target"
   SLICES+=("$SLICE_DIR/${HELPER_NAME}-slice-$target")
 done
@@ -234,6 +234,6 @@ for arch in $LINUX_ARCHES; do
   target="$arch-unknown-linux-musl"
   echo "Building $HELPER_NAME ($target) -> $RES_DIR/${HELPER_NAME}-linux-$arch"
   ( cd "$CARGO_DIR" && PATH="$LINUX_PATH" cargo zigbuild --release -p workroomd \
-    --features "$AGENT_FEATURES" --target "$target" )
+    --features "$DAEMON_FEATURES" --target "$target" )
   cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$RES_DIR/${HELPER_NAME}-linux-$arch"
 done

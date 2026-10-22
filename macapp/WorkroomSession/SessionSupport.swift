@@ -3,7 +3,7 @@ import WorkroomWire
 
 /// The terminal geometry of a descriptor.
 ///
-/// All that survives of `SessionPTY`, which was deleted with the daemon: this is the one thing the
+/// All that survives of `SessionPTY`, which was deleted with the helper: this is the one thing the
 /// attach client needed from it, and the only part that was never about owning a pty. Everything
 /// else there — `spawn`, `terminate`, the foreground-pgid and `/proc`-equivalent introspection —
 /// existed to RUN sessions, which this build no longer does.

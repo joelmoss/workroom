@@ -283,7 +283,7 @@ enum TerminalLinkOpener {
 
   /// The workroom-relative files a remote pane's ⌘-clicked `word` could name, in the order to probe
   /// them on the host. `cwd` and `root` are paths on the HOST: the pane's working directory as its
-  /// agent reports it, and the workroom's root. Nothing here touches this Mac's filesystem, which
+  /// daemon reports it, and the workroom's root. Nothing here touches this Mac's filesystem, which
   /// is the point (C7): on this Mac the same path is another file, or none.
   ///
   /// A candidate outside `root` is dropped, because the host's file service reads only under the
@@ -304,10 +304,10 @@ enum TerminalLinkOpener {
       guard !candidate.path.hasPrefix("~") else { return nil }
       let joined =
         candidate.path.hasPrefix("/") ? parts(candidate.path) : baseParts + parts(candidate.path)
-      // `..` is resolved here, lexically, for the containment check and for an agent that
+      // `..` is resolved here, lexically, for the containment check and for a daemon that
       // predates resolving. `link/../file.rb` names the file beside the link's TARGET, which only
       // the host knows (#327), so a `..` that stays inside the workroom as written also goes to
-      // the host, as `onHost`. `read` itself never gets a `..`: the agent refuses one there
+      // the host, as `onHost`. `read` itself never gets a `..`: the daemon refuses one there
       // before it opens anything (`vcs::relative`).
       var resolved: [Substring] = []
       for part in joined {
@@ -399,7 +399,7 @@ enum TerminalLinkOpener {
     let column: Int?
     /// A remote candidate written with a `..` (#327): the workroom-relative path with the `..`
     /// still in it, for the host to resolve through any symlink before it. `path` is the same
-    /// path resolved here, lexically, for an agent that predates resolving.
+    /// path resolved here, lexically, for a daemon that predates resolving.
     var onHost: String? = nil
   }
 

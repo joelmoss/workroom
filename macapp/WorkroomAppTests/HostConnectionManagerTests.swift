@@ -173,7 +173,7 @@ final class HostConnectionManagerTests: XCTestCase {
     await manager.disconnect(lease)
   }
 
-  /// Value: protects=a remote pane's close reaches its host's agent over the open connection and never opens one (#283); fails_when=endSession connects or drops the session id; why_new=no manager test covers endSession; seam=none
+  /// Value: protects=a remote pane's close reaches its host's daemon over the open connection and never opens one (#283); fails_when=endSession connects or drops the session id; why_new=no manager test covers endSession; seam=none
   func testEndSessionRidesTheOpenConnectionAndNeverConnects() async throws {
     let manager = HostConnectionManager()
     let host = HostID.remote(UUID())

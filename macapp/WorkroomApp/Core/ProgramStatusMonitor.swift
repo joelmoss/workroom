@@ -3,10 +3,10 @@ import Foundation
 import OSLog
 import WorkroomVCS
 
-/// The tunable values of program status (#358), each with the reason for its number. The agent's
+/// The tunable values of program status (#358), each with the reason for its number. The daemon's
 /// side lives in `program_status::limits`.
 enum ProgramStatusLimits {
-  /// A disconnect shorter than this is not shown: every app update hands the agent off.
+  /// A disconnect shorter than this is not shown: every app update hands the daemon off.
   static let staleGrace: Duration = .seconds(5)
   /// Reconnect backoff for a host whose link dropped: 1 s doubling to 30 s.
   static let backoffFloor: Duration = .seconds(1)
@@ -45,7 +45,7 @@ struct ProgramStatusRollup: Equatable {
   var blockedSince: Date?
 }
 
-/// One session's records as the agent last sent them.
+/// One session's records as the daemon last sent them.
 struct ProgramStatusSession: Equatable {
   let host: HostID
   var boot: String
@@ -78,7 +78,7 @@ struct ProgramStatusSession: Equatable {
 
   func rollup(stale: Bool) -> ProgramStatusRollup {
     // Between a command result (#473) and a program's finished or failed record, whichever came
-    // last shows; a program's live records always stay. The agent sends the oldest change first.
+    // last shows; a program's live records always stay. The daemon sends the oldest change first.
     let lastProgram = records.lastIndex { $0.exitCode == nil } ?? -1
     let lastCommand = records.lastIndex { $0.exitCode != nil } ?? -1
     let records = records.enumerated().filter { index, record in
@@ -111,7 +111,7 @@ final class ProgramStatusMonitor: ObservableObject {
     case live
     /// The link dropped more than `staleGrace` ago; the records are the last known.
     case stale
-    /// The host's agent predates the service or keeps no terminal state.
+    /// The host's daemon predates the service or keeps no terminal state.
     case unavailable(String)
   }
 
@@ -130,7 +130,7 @@ final class ProgramStatusMonitor: ObservableObject {
   @Published private(set) var hosts: [HostID: HostState] = [:]
 
   /// Connects `host` and returns its connection: `LocalDaemonVCS` for this Mac, which may start the
-  /// agent, and `RemoteHosts` for a remote one, which never wakes a sleeping box.
+  /// daemon, and `RemoteHosts` for a remote one, which never wakes a sleeping box.
   var connect: @Sendable (HostID) async throws -> any HostServiceConnection = { host in
     if host == .local { return try await LocalDaemonVCS.shared.programStatus() }
     try await RemoteHosts.shared.ensureConnected(host)
@@ -138,8 +138,8 @@ final class ProgramStatusMonitor: ObservableObject {
   }
   var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   /// Returns once `host`'s link comes up as a new connection (its workroom opened, or a boxd host
-  /// woken), so a retry need not wait out its backoff; never for this Mac's agent. A link that is
-  /// already up does not count, or a host whose agent has no program status would be retried
+  /// woken), so a retry need not wait out its backoff; never for this Mac's daemon. A link that is
+  /// already up does not count, or a host whose daemon has no program status would be retried
   /// without pause. A background host that was unreachable is not reconnected early: `RemoteHosts`
   /// holds its retry window, which this monitor's own failed connects keep open.
   var reconnected: @Sendable (HostID) async -> Void = { host in
@@ -183,9 +183,9 @@ final class ProgramStatusMonitor: ObservableObject {
 
   func removeListener(_ id: UUID) { listeners.removeValue(forKey: id) }
 
-  /// False in a test process or a fixture launch, which must never reach the developer's agent:
+  /// False in a test process or a fixture launch, which must never reach the developer's daemon:
   /// tests drive their own monitor, and the fixture seeds records straight in (`seed`). A fixture
-  /// launch with a scratch agent of its own (`UITestFixture.liveDaemonDirectory`) does watch it.
+  /// launch with a scratch daemon of its own (`UITestFixture.liveDaemonDirectory`) does watch it.
   var watchesHosts =
     !AppEnvironment.current.isTestProcess || UITestFixture.liveDaemonDirectory != nil
 
@@ -208,7 +208,7 @@ final class ProgramStatusMonitor: ObservableObject {
     notify(Change(host: host, sessions: gone, isLaunchSnapshot: false))
   }
 
-  /// Puts `session`'s records in with no agent: the UI-test fixture's seam (`UITestFixture`).
+  /// Puts `session`'s records in with no daemon: the UI-test fixture's seam (`UITestFixture`).
   func seed(
     _ session: UUID, host: HostID = .local, reporting: Bool = true,
     records: [ProgramStatusRecord], stale: Bool = false, boot: String = "fixture"
@@ -300,7 +300,7 @@ final class ProgramStatusMonitor: ObservableObject {
           let gone = Set(sessions.filter { $0.value.host == host }.keys)
           for id in gone { sessions.removeValue(forKey: id) }
           if !gone.isEmpty { notify(Change(host: host, sessions: gone, isLaunchSnapshot: false)) }
-          // An agent is replaced only by an app update, which relaunches this monitor too; a
+          // A daemon is replaced only by an app update, which relaunches this monitor too; a
           // remote host's may be upgraded by a later connect, so look again now and then.
           backoff = ProgramStatusLimits.backoffCeiling
         }

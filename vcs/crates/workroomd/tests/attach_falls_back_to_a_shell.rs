@@ -771,7 +771,7 @@ fn no_spawn_falls_back_to_a_shell_instead_of_starting_a_daemon() {
 }
 
 /// A restored pane on a remote host (`--no-spawn --no-create`) with no daemon listening yet exits
-/// 255, so the app attaches it again. After a reboot sshd can accept before the supervisor's agent
+/// 255, so the app attaches it again. After a reboot sshd can accept before the supervisor's daemon
 /// binds, and a shell here would be a live one hiding the session's last screen (#232).
 #[test]
 fn a_restored_remote_pane_with_no_daemon_yet_exits_255_to_be_retried() {
@@ -1237,7 +1237,7 @@ fn a_remote_attach_whose_daemon_goes_away_exits_255() {
     assert_eq!(remote, Some(255));
 }
 
-/// `list` is the readiness probe (`BoxdHostDriver`'s derive, the agent bootstrap, the ssh fixture),
+/// `list` is the readiness probe (`BoxdHostDriver`'s derive, daemon bootstrap, the ssh fixture),
 /// so a daemon that negotiates and then hangs up without a `Sessions` reply must fail it. It used
 /// to exit 0, and a derive could return a host whose daemon was not answering.
 ///

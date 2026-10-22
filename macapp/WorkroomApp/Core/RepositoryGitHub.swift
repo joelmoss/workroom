@@ -54,7 +54,7 @@ struct RepositoryGitHub: Sendable {
   /// `repository` is a lookup the caller already made (the CI sweep asks once per project and shares
   /// the answer across that project's workrooms); nil asks this service's own.
   ///
-  /// A remote host has no commit source until the agent supplies one (Phase 3), so its CI is absent.
+  /// A remote host has no commit source until the daemon supplies one (Phase 3), so its CI is absent.
   func ci(branch: String?, repository resolution: GitHubRepositoryResolution? = nil) async
     -> CIResolution
   {

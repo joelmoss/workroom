@@ -10,7 +10,7 @@ import WorkroomVCS
 ///
 /// **Every driver must authenticate its peer as strongly as a shell login.** The daemon's exec
 /// service runs `git` with arbitrary arguments, which is arbitrary code execution, so a stream
-/// that reaches an agent is a shell whatever it is called. ssh meets that bar; an SDK exec or a
+/// that reaches a daemon is a shell whatever it is called. ssh meets that bar; an SDK exec or a
 /// WebSocket driver must show it does before it counts as a driver.
 public protocol HostDriver: Sendable {
   /// The supervised daemon's socket on this driver's hosts: what the bootstrap installs the daemon

@@ -114,7 +114,7 @@ func TestRunFailureWithStreamOmitsOutputFromError(t *testing.T) {
 }
 
 // The setup and teardown contract a local workroom's script sees: testdata/script-env's fixture,
-// whose expected output for a remote workroom (remote.txt) the agent's run-script tests check.
+// whose expected output for a remote workroom (remote.txt) the daemon's run-script tests check.
 func TestRunMatchesTheScriptContract(t *testing.T) {
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

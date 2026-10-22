@@ -1965,7 +1965,7 @@ final class AppStore: ObservableObject {
         // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
         // first tab, so add the rest.
         for _ in 1..<UITestFixture.terminalTabs { _ = terminals.addTab(for: target) }
-        // Program status scenario (#358): waiting, stale and failed panes, seeded without an agent.
+        // Program status scenario (#358): waiting, stale and failed panes, seeded without a daemon.
         if UITestFixture.programStatus {
           UITestFixture.seedProgramStatus(in: terminals, target: target)
         }

@@ -1,7 +1,7 @@
 import XCTest
 
 /// Program status indicators (#358), on the panes `-WorkroomUITestProgramStatus 1` seeds into the
-/// fixture workroom with no agent involved: Terminal 1 working (focused at launch), Terminal 2
+/// fixture workroom with no daemon involved: Terminal 1 working (focused at launch), Terminal 2
 /// waiting for permission ("Apply?"), Terminal 3 waiting for an answer on a host whose link is down,
 /// Terminal 4 stopped on an error.
 ///

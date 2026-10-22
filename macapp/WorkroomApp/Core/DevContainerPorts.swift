@@ -9,7 +9,7 @@ import WorkroomVCS
 /// new. Only the port fields are honoured, and only these of them:
 ///
 /// - `forwardPorts`: each number is forwarded. A `"host:port"` string names a port on another
-///   host (a Compose service), which the agent can't reach, so it is skipped.
+///   host (a Compose service), which the daemon can't reach, so it is skipped.
 /// - `portsAttributes`, keyed by a single port: `label`, shown on the row, and `requireLocalPort`,
 ///   which refuses the forward rather than move it to another port when this Mac holds the number.
 ///

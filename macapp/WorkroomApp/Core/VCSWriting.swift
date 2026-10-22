@@ -56,7 +56,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// resolved against this disk, nor shares a queue with a local repository at the same path.
   var host: HostID = .local
   /// Where the classifier's disk facts come from for a repository on a remote host: that host's
-  /// agent (`DaemonVCSConnection.stat`). Nil for a local repository, which reads this Mac's disk.
+  /// daemon (`DaemonVCSConnection.stat`). Nil for a local repository, which reads this Mac's disk.
   var stat: (@Sendable (_ paths: [String], _ read: [String]) async throws -> DiskSnapshot)?
 
   var refTimeout: TimeInterval = 5
@@ -839,7 +839,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// The disk a classification reads, and the worktree's git directory on it, read AFTER the command
   /// it explains: a parked rebase or a leftover lock exists only once that command has failed.
   ///
-  /// Locally, this Mac's disk, live. On a remote host, two round trips to its agent: the worktree's
+  /// Locally, this Mac's disk, live. Remotely, two round trips to its daemon: the worktree's
   /// `.git` says where its git directories are, then everything in them at once. A host that cannot
   /// be asked reads as no evidence (`DiskSnapshot.unknown`), as a missing file would.
   ///
@@ -1181,7 +1181,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
     // Only a commit that definitely did not land. One killed in a `post-commit` hook has already
     // moved HEAD, and `rm --cached` would then stage the deletion of every file it just added. An
-    // unknown outcome may still be running on the agent, and a HEAD that moved or can no longer be
+    // unknown outcome may still be running on the daemon, and a HEAD that moved or can no longer be
     // read may hold the commit, so all three keep the marker: residue the user can clear beats a
     // deletion their next commit records.
     if !result.ok, result.exitCode != CommandResult.outcomeUnknown,

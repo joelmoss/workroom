@@ -106,7 +106,7 @@ deferred (2026-10-05). Neither loses data from a single window.
    write with no retry past `stale`, as an unanswered fetch does.
 2. **One session as a pane in two windows.** In that same case the second window restores its own
    `session.json` copy while the owner's `HostLayoutSync.appending` adds the second window's
-   sessions (same `sessionWorkroomKey`) as tabs, so one agent session is attached twice on one Mac
+   sessions (same `sessionWorkroomKey`) as tabs, so one daemon session is attached twice on one Mac
    and the two panes fight over its size. Fix: append only sessions no window on this Mac shows.
 
 **Why:** Each is rare (two windows on one remote workroom), and the PR was already 4.2k lines.
@@ -119,10 +119,10 @@ deferred (2026-10-05). Neither loses data from a single window.
 
 **What:** Delete the remaining `macapp/WorkroomSession/` client, its pinned v2.0.0 binary fixture
 (`macapp/WorkroomAppTests/Fixtures/workroom-session-v2.0.0`, 464KB), `SessionShimCompatibilityTests`,
-and the freeze on `WorkroomSessionProtocol` — once no user can still be running a v2.0.0 daemon.
+and the freeze on `WorkroomSessionProtocol` — once no user can still be running a v2.0.0 Swift helper.
 
-**Why:** The shim is deliberately temporary. It exists only to reattach terminals held by a daemon
-process started by an app version older than the agent. That population shrinks with every reboot,
+**Why:** The shim is deliberately temporary. It exists only to reattach terminals held by a Swift helper
+process started by an app version older than the daemon. That population shrinks with every reboot,
 every logout, and every closed pane, and eventually reaches zero — at which point the client, its
 fixture and its tests are pure carrying cost.
 
@@ -134,7 +134,7 @@ v2.0.0 binary — can never be recompiled to match).
 release adoption, so this will sit open for a while. Deleting it early strands exactly the users it
 was added for.
 
-**How to start:** Check whether any reattach-from-old-daemon has been reported since the shim landed.
+**How to start:** Check whether any reattach-from-old-Swift-helper has been reported since the shim landed.
 Then delete the directory, the fixture, the compatibility tests, and the freeze comment together —
 they are one unit, and leaving the fixture behind without its tests is worse than leaving all of it.
 
@@ -345,18 +345,18 @@ enumerate remote refs cheaply, and its doc explains why the symref row must be d
 
 ### Remove the jj-era wire fields (macapp, workroomd, wr-vcs-model) — #266 follow-up
 
-**What:** Remove the jj-era wire fields once no supported app or agent still sends or expects them:
+**What:** Remove the jj-era wire fields once no supported app or daemon still sends or expects them:
 `shared_root`, `barrier_root` and `backend` on workroomd VCS/File/exec requests; `Commit.change_id`,
 `is_working_copy`, `is_root`, `change_offset`, `divergent_siblings` and `RefKind::Ancestor` in
 wr-vcs-model and the app's `DaemonCommit`/ref decoding.
 
-**Why:** They carry nothing after #266; they exist only so an older app and a newer agent (or the
+**Why:** They carry nothing after #266; they exist only so an older app and a newer daemon (or the
 reverse) keep decoding each other.
 
 **Pros:** A smaller protocol and model, and no jj-shaped fields to confuse readers.
 
-**Cons:** A wire change — it needs an agent protocol bump/gate, or proof that the launch-time hand-off
-to the bundled agent (on for Nightly and Dev only, commit 26b9d881) is on for stable.
+**Cons:** A wire change — it needs a daemon protocol bump/gate, or proof that the launch-time hand-off
+to the bundled daemon (on for Nightly and Dev only, commit 26b9d881) is on for stable.
 
 **Context / how to start:** #266 kept them deliberately (`Request`/`ExecRequest` are
 `deny_unknown_fields`; older apps decode the Commit fields non-optionally); each is marked with a
@@ -384,9 +384,9 @@ shutdown-ordering case against per-connection teardown.
 
 **How to start:** find the `gstack-shortcut(dec-8742d8a5-42ac-4348-827b-9c15d9330f5a)` marker at the
 watcher creation site. Measure FSEvents duplication first; build the shared registry when the Linux
-agent lands.
+daemon lands.
 
-**Depends on:** Phase 3 Linux agent, or a measured FSEvents problem.
+**Depends on:** Phase 3 Linux daemon, or a measured FSEvents problem.
 
 **Priority:** P3 — no cost on the only platform it ships on today.
 
@@ -399,7 +399,7 @@ large repositories get a tree instead of a "too many files to list" failure.
 silently returned a stdout cut at an arbitrary byte, possibly mid-filename. A repository above about 70k
 paths now sees an error where it used to see a truncated tree with a bogus last entry.
 
-**Pros:** big monorepos get a usable Files panel. **Cons:** more memory per listing on the agent
+**Pros:** big monorepos get a usable Files panel. **Cons:** more memory per listing on the daemon
 (bounded by the shared `ACTIVE` pool) and, for pagination, a stateful protocol.
 
 **How to start:** confirm users actually hit the error, then raise the cap for `list` only, keeping the
@@ -490,13 +490,13 @@ rewrite touches the whole diff UI (regression surface).
 
 ## P3 — Terminal, panes, and focus
 
-### Hand-off by snapshot when both agents share an engine sha (workroomd) — #462/#463 follow-up
+### Hand-off by snapshot when both daemons share an engine sha (workroomd) — #462/#463 follow-up
 
 **What:** Carry each session through a hand-off as a libghostty snapshot instead of VT when the new
 binary reports the same engine sha, falling back to VT otherwise.
 
 **Why:** Since #462/#463 the hand-off sends each session only the newest history that fits its
-share of 16 MiB, so coloured history is trimmed at every agent upgrade. A snapshot keeps all of it,
+share of 16 MiB, so coloured history is trimmed at every daemon upgrade. A snapshot keeps all of it,
 compressed.
 
 **How to start:** `handoff.rs` (a table version carrying the snapshot and the sender's engine sha)
@@ -523,18 +523,18 @@ libghostty path would stay without it.
 
 **Priority:** P3, effort M.
 
-### Agent bootstrap (#231): two review findings the /ship pass deferred (macapp, workroomd)
+### Daemon bootstrap (#231): two review findings the /ship pass deferred (macapp, workroomd)
 
 **What:** Two items the #231 review raised and the branch did not take.
 1. `workroomd hand-off` exit 92 covers both "nothing listening" and "accepted but did not greet in
    5 s"; `install.sh` and `DaemonBootstrap` tell them apart by the CLI's stderr wording
-   (`no agent listening`). Give did-not-greet its own exit code in `run_hand_off` and branch on it.
+   (`no daemon listening`). Give did-not-greet its own exit code in `run_hand_off` and branch on it.
 2. `ContainerHostDriver.shellQuoted` is a one-line forwarder to `PosixShell.quoted` (~14 call
    sites, plus `PersistentSessionService`); two older copies exist in `CommandLineInstaller` and
    `GhosttySurfaceView`. Point everything at `PosixShell.quoted`.
 
 **Why:** 1 changes behaviour (a CLI wording change would silently read a dead socket as a live
-agent); 2 is duplication.
+daemon); 2 is duplication.
 
 **How to start:** 1 in `vcs/crates/workroomd/src/cli/hand_off.rs` (`run_hand_off`, the 92 arms) with the
 fixture's `over_ssh_the_bootstrap_*` test; 2 is mechanical.
@@ -620,9 +620,9 @@ lost with it.
 **What:** `GhosttySurfaceView.foregroundExecutableName` resolves a live pane's foreground process via
 `proc_name`, and `TerminalSessions.updateTitle` derives both the coding agent (issue #49 inline diagnosis
 badge) and the curated tool (issue #141 favicon) from that one read (#503). Port the
-argv0/`KERN_PROCARGS2` logic of the retired daemon's `SessionPTY.executableName(processID:)` (already
+argv0/`KERN_PROCARGS2` logic of the retired Swift helper's `SessionPTY.executableName(processID:)` (already
 correct; the original is `git show 9ce6201f^:macapp/WorkroomSession/SessionPTY.swift`, and the Rust
-agent has its own port, `87dcb476`) into an app-side helper, and use it in place of `proc_name`.
+daemon has its own port, `87dcb476`) into an app-side helper, and use it in place of `proc_name`.
 
 **Why:** `proc_name` is defeated by any CLI that renames its own process title post-launch — confirmed
 case: Claude Code, whose `p_comm` reads as a version string ("2.1.232"), not "claude". No known live
@@ -800,7 +800,7 @@ sweep stage.
 ### Program status for non-daemon panes (macapp, upstream Ghostty) — #358 deferral
 
 **What:** An upstream GhosttyKit apprt program-status action. The app's own terminal ignores
-`.program_status`, so non-daemon panes (run commands, fixture panes, and every pane while the agent
+`.program_status`, so non-daemon panes (run commands, fixture panes, and every pane while the daemon
 is unavailable and panes fall back to a plain shell) never get OSC 7501. An upstream
 apprt action would cover them; daemon-backed panes still need workroomd for reattach and remote.
 

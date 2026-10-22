@@ -1596,7 +1596,7 @@ fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
 /// reader belonged to the connection, a detached session had NO reader: its output never reached
 /// the shadow, so a reattaching client was repainted with a stale screen, and — worse — once the
 /// pty's output queue filled, the shell BLOCKED on write. A background job in a pane you had
-/// closed the app on would simply stop, and only start again when you came back. The Swift daemon
+/// closed the app on would simply stop, and only start again when you came back. The Swift helper
 /// polled every pty regardless of attachment; this restores that.
 ///
 /// It also ends the session when the shell exits, whether or not anyone is watching. Previously a

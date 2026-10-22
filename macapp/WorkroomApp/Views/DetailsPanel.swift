@@ -184,7 +184,7 @@ struct InspectorWorkroomHeader: View {
 }
 
 /// Ports forwarded from a container workroom's host to this Mac (issues #208, #254): the ones its
-/// dev container declares, and any the user adds. Nothing is persisted across launches: the agent
+/// dev container declares, and any the user adds. Nothing is persisted across launches: the daemon
 /// closes every forwarded socket when the client detaches, so a list restored at launch would name
 /// addresses that no longer answer; the declared ones are forwarded again instead.
 private struct PortsSection: View {
@@ -208,7 +208,7 @@ private struct PortsSection: View {
         .accessibilityIdentifier("ports.add")
       }
       if !model.connected {
-        // Said here rather than discovered from `+`: the controls are useless without an agent. A
+        // Said here rather than discovered from `+`: the controls are useless without a daemon. A
         // forward kept across the lost connection reconnects when it is used (#380).
         Text(
           model.forwards.contains(where: \.reconnects)

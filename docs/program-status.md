@@ -33,7 +33,7 @@ what the program said; the last line says it came from the program in that termi
 
 A terminal with no mark is **not reporting**, which is not the same as "not waiting". Programs other
 than Claude Code and Codex mostly don't report yet. The tooltip's last line says so: "Program status: not
-reported", or "unavailable on this host" for an agent too old to keep status.
+reported", or "unavailable on this host" for a daemon too old to keep status.
 
 ### Alerts and the Dock badge
 
@@ -75,18 +75,18 @@ command's ✓ carries no notification, so the dot still shows beside it.
 A program that asked whether the terminal supports the protocol (the probe, below) can alert you at
 once. One that never asked, as Codex doesn't (the spec allows it: "a program MAY send reports
 without querying first"), alerts once it has shown it is a running program: still alive and in the
-foreground 1 second after it started waiting, which the agent checks every 2 seconds, so its alert
+foreground 1 second after it started waiting, which the daemon checks every 2 seconds, so its alert
 comes 1 to 3 seconds in. A report printed by anything else (`cat`ing a file, say) shows its mark
 but never alerts: `cat` has exited by then, or the shell's prompt has dropped the request. Neither
 does a report printed by the shell itself, nor a probe and a report printed back to back: a prober
 has to read the reply before it reports. A replayed recording of a session that probed can still
-alert, because a screen of output separates its probe from its report and the agent reads them
+alert, because a screen of output separates its probe from its report and the daemon reads them
 apart.
 
 ## Which terminals support it
 
 Every terminal whose shell runs under `workroomd`, which is every workroom terminal, on this Mac and
-on remote hosts, once the host's agent speaks protocol 8 or later. The agent, not the terminal you
+on remote hosts, once the host's daemon speaks protocol 8 or later. The daemon, not the terminal you
 see, keeps the status, so it survives closing the window, relaunching Workroom, an app update and a
 second Mac attaching to the same session.
 
@@ -114,7 +114,7 @@ keeps the last result; the next long command replaces it.
   A program's waiting or working mark always stays.
 - Only terminals whose shell runs under `workroomd` show it. Run tabs and fallback panes don't
   (#476).
-- A command still running when Workroom hands its agent off on an update leaves no result.
+- A command still running when Workroom hands its daemon off on an update leaves no result.
 
 ## The protocol, for program authors
 
@@ -184,8 +184,8 @@ To check the whole path without Claude Code (no account, no API turn), run
 below: it probes, waits for Enter as a prompt, then works, asks for permission (`--question` for a
 question), posts Claude's own alert 6 s later, and finishes when you press Enter again. `--auto`
 runs it unattended (`MOCK_STEP` paces it, `MOCK_HOLD` keeps the request and the finished turn up);
-the agent's tests use it that way, and so does `ProgramStatusLiveDaemonUITests`, which runs it in a
-fixture pane attached through a scratch agent of its own (`-WorkroomUITestLiveDaemon <dir>`) and
+the daemon's tests use it that way, and so does `ProgramStatusLiveDaemonUITests`, which runs it in a
+fixture pane attached through a scratch daemon of its own (`-WorkroomUITestLiveDaemon <dir>`) and
 checks the marks, the alert, the merge of Claude's own alert, ⇧⌘M and the focused-terminal case.
 
 ## What Claude Code sends
@@ -221,7 +221,7 @@ sends only OSC 9;4.
   OSC 133, another program's notification in that pane (a build's, say) is dropped too.
 
 - **Run commands and other non-daemon panes** never show program status: only a terminal whose
-  shell runs under `workroomd` has an agent to keep it (see `TODOS.md`).
+  shell runs under `workroomd` has a daemon to keep it (see `TODOS.md`).
 - **A long-running program can relay someone else's request.** A program that never probed alerts
   once it stays running in the foreground, and that cannot tell a relay (`ssh`, `mosh`, `tmux`,
   which is how Codex on another machine reaches you) from `tail -f` on a raw recording, or a `cat`
@@ -238,7 +238,7 @@ sends only OSC 9;4.
   is raised, but the banner may already have been seen. A program whose own notification comes
   before its first report is not held; Claude Code and Codex both report as they start.
 - **A replayed recording can alert.** `cat`ing a raw recording of a session that probed, in a
-  terminal you are not looking at, can flash one "needs you" alert: the agent sees its probe and its
+  terminal you are not looking at, can flash one "needs you" alert: the daemon sees its probe and its
   report in separate reads. The recording's next state takes it back at once.
 - **Alerts route to one tab.** With the same session open in two windows, pointing the tab its alert
   went to at another session (Detached sessions › Active tab) leaves the alert opening that tab.
@@ -276,14 +276,14 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 
 ## Troubleshooting
 
-`workroomd program-status` prints what the agent holds for every session: whether its program is
-reporting, its records, whether this agent keeps terminal state at all, and how many probe replies
+`workroomd program-status` prints what the daemon holds for every session: whether its program is
+reporting, its records, whether this daemon keeps terminal state at all, and how many probe replies
 it could not deliver. `--json` prints the same with a `schema_version`. Run it on the host the
 terminal runs on (on this Mac it is inside the app bundle, `Contents/MacOS/workroomd`).
 
-The agent logs subscribers, dropped replies, evictions and truncations to `workroomd.log` beside its
+The daemon logs subscribers, dropped replies, evictions and truncations to `workroomd.log` beside its
 socket: on this Mac `~/Library/Application Support/<bundle id>/sessions/workroomd.log`, on a remote host
-beside the agent's socket there. The app logs a host going stale and coming back under the `program-status`
+beside the daemon's socket there. The app logs a host going stale and coming back under the `program-status`
 category (`log stream --predicate 'category == "program-status"'`).
 
 A mark that never clears on a **remote** host usually means the host has no shell integration

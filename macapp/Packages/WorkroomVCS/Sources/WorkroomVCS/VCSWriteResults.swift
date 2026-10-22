@@ -69,7 +69,7 @@ public enum VCSRemoteFailure: Equatable, Sendable {
   /// That is also what git's own message tells you to do.
   case locked(VCSLockFile?)
   /// The command was dispatched and we never heard back — `CommandResult.outcomeUnknown`. Only
-  /// reachable on the agent-routed path, where a lost connection, a client-side deadline or a
+  /// reachable on the daemon-routed path, where a lost connection, a client-side deadline or a
   /// cancellation ends the round trip while the host-side `git` keeps running to completion.
   ///
   /// The whole point of the case is the recovery. This is NOT `.other`: that one's recovery is a

@@ -145,7 +145,7 @@ final class DaemonControlPlaneTests: XCTestCase {
     XCTAssertTrue(client.list().isEmpty)
     XCTAssertLessThan(
       Date().timeIntervalSince(started), 1.5,
-      "a banner must be recognised as not-an-daemon, not waited out")
+      "a banner must be recognised as not-a-daemon, not waited out")
   }
 
 }

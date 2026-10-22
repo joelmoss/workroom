@@ -41,13 +41,13 @@ final class ClaudeProfileResolutionTests: XCTestCase {
     }
   }
 
-  /// An agent too old to report the profile sends no entry at all: never guess an account.
+  /// A daemon too old to report the profile sends no entry at all: never guess an account.
   func testAMissingProfileIsNoAccount() {
     XCTAssertNil(
       ClaudeProfileResolution.account(forProfile: .notReported, accounts: accounts, activeSlot: 1))
   }
 
-  /// workroomd always sends the entry, empty when unset; its absence is what marks an old agent.
+  /// workroomd always sends the entry, empty when unset; its absence is what marks an old daemon.
   func testTheDescriptorEntryTellsUnsetFromNotReported() {
     func descriptor(_ metadata: [SessionEnvironmentEntry]) -> SessionDescriptor {
       SessionDescriptor(

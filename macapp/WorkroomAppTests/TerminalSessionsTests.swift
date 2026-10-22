@@ -1856,7 +1856,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
 }
 
 /// A remote pane's footer follows its shell (#239). libghostty drops an OSC 7 whose host is not this
-/// Mac, so the host's agent is asked where the shell is instead: at the first prompt, and each time
+/// Mac, so the host's daemon is asked where the shell is instead: at first prompt, and each time
 /// a command finishes. What it answers is the footer's alone (`hostCwd`), never `cwd`, which
 /// ⌘-click, a new split and the saved snapshot all resolve against this Mac's disk.
 @MainActor
@@ -1966,7 +1966,7 @@ final class RemotePaneFooterTests: XCTestCase {
     XCTAssertEqual(connection.asked, [session], "asked once, when the host connected")
   }
 
-  /// ⌘-click in a remote pane resolves a relative path against the directory the host's agent
+  /// ⌘-click in a remote pane resolves a relative path against the directory the host's daemon
   /// reports for the shell (`hostCwd`), not the workroom's root and not this Mac's directory for
   /// the pane (#254, C7).
   // Value: protects=a remote ⌘-click resolves against the shell's directory on the host;

@@ -38,10 +38,10 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// Checked before every create, destroy and rollback: another account's VM reads as
     /// "not found", which `destroy` would take for gone. Whoever records a host records this.
     public var account: String?
-    /// The agent's socket on every host, on the home disk: the agent's binary is installed beside
+    /// The daemon's socket on every host, on the home disk: the daemon's binary is installed beside
     /// it, and `/run` is a tmpfs (spike).
     public var daemonSocket: String
-    /// Where the supervisor has the agent keep each session's last screen (#232).
+    /// Where the supervisor has the daemon keep each session's last screen (#232).
     public var screens: String
     /// The user's ssh-agent socket, or nil for none. Their `IdentityAgent`, if set, wins.
     public var sshAgent: String?
@@ -105,7 +105,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   // MARK: Provisioning
 
   /// A fresh VM, set up as a workroom's host: the identity unit has minted its identity and the
-  /// supervisor is waiting for an agent. A VM that gets no further is removed.
+  /// supervisor is waiting for a daemon. A VM that gets no further is removed.
   public func create() async throws -> HostID {
     // The app announces the account step itself (it asks before the driver does): only its log here.
     try await ProvisioningProgress.step(.account, report: false) { try await checkAccount() }

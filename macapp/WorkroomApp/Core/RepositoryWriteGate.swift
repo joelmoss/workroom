@@ -90,7 +90,7 @@ actor RepositoryWriteGate {
       // Shielded once started. This is what makes the doc above — "a started operation retains
       // this tail until its actual completion" — true for EVERY write path rather than only by
       // accident. It holds for a local writer because a `Process` inside `runBlocking` cannot
-      // observe Swift cancellation and simply runs on. An agent-routed write DOES observe it:
+      // observe Swift cancellation and simply runs on. A daemon-routed write DOES observe it:
       // without the shield, cancelling returns immediately and releases this tail while
       // workroomd's `git commit` is still running, so the next same-project write starts on top of
       // it and hits `index.lock`.
@@ -98,7 +98,7 @@ actor RepositoryWriteGate {
       // Deliberately here and not in `DaemonCommandRunner`: the gate is the thing that must
       // outlive the child. Shielding inside the runner instead covered every command it forwards,
       // including `remoteState`'s ungated reads, so a superseded refresh squatted one of the
-      // connection's 32 shared slots until the agent answered.
+      // connection's 32 shared slots until the daemon answered.
       return try await Task.detached(priority: Task.currentPriority) {
         try await operation()
       }.value

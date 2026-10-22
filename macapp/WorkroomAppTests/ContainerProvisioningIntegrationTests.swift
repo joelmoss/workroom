@@ -235,7 +235,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     try await Task.sleep(for: .seconds(1))
     first.type("echo LAST-SC\"\"REEN\n")
     XCTAssertTrue(first.read(until: "LAST-SCREEN").contains("LAST-SCREEN"))
-    // The reboot kills the agent outright, so only what it has already written survives.
+    // The reboot kills the daemon outright, so only what it has already written survives.
     let record = "~/.local/state/workroom/screens/\(session.uuidString.lowercased()).vt"
     var written = false
     for _ in 0..<100 where !written {

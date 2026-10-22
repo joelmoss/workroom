@@ -226,7 +226,7 @@ final class FileTreeTests: XCTestCase {
     }
   }
 
-  /// Agent lock contention or an I/O failure during a reload used to read as "unavailable", which
+  /// Daemon lock contention or an I/O failure during a reload used to read as "unavailable", which
   /// blanked a valid tree. Neither says anything about the tree.
   func testAgentRefusalsAreTransientNotUnavailable() async throws {
     let dir = NSTemporaryDirectory() + "transient-\(UUID().uuidString)"
@@ -238,7 +238,7 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(io, .transient("spawn failed"))
   }
 
-  /// The agent reports a vanished working directory as the same `Io` failure as a hiccup, so a
+  /// The daemon reports a vanished working directory as the same `Io` failure as a hiccup, so a
   /// folder that is gone must still blank the tree rather than keep showing its files.
   func testAnAgentIOFailureOnAVanishedFolderIsUnavailable() async {
     let gone = NSTemporaryDirectory() + "gone-\(UUID().uuidString)"
@@ -246,7 +246,7 @@ final class FileTreeTests: XCTestCase {
       FileServiceError.failed("No such file"), path: gone)
     XCTAssertEqual(result, .unavailable)
     let busy = await FileTreeModel.listFailure(VCSError.lockContention, path: gone)
-    XCTAssertEqual(busy, .unavailable, "a busy agent does not make a deleted folder come back")
+    XCTAssertEqual(busy, .unavailable, "a busy daemon does not make a deleted folder come back")
   }
 
   /// A remote workroom's path is on its host (#253): that this Mac has nothing there must not blank
@@ -295,7 +295,7 @@ final class FileTreeTests: XCTestCase {
 
   // MARK: reload coalescing (#211)
 
-  /// Through the agent a cancelled listing keeps running on the host, so a burst of watch events must
+  /// Through the daemon a cancelled listing keeps running on the host, so a burst of watch events must
   /// not each start one: one in flight, one follow-up, and the tree still ends on the last state.
   @MainActor
   func testABurstOfReloadsRunsOneListingAndOneFollowUp() async throws {

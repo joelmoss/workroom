@@ -119,7 +119,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       .split(separator: "\n").map(String.init)
   }
 
-  /// A shell command on the host and its exit status: through the driver's ssh, never the agent.
+  /// A shell command on the host and its exit status: through the driver's ssh, never the daemon.
   private func onHost(_ driver: ContainerHostDriver, _ host: HostID, _ command: String)
     async throws -> (status: Int32, output: String)
   {

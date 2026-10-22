@@ -10,8 +10,8 @@ import WorkroomWire
 /// there, because there is nothing to read it in. The last process able to turn a failed attach
 /// into a working terminal is this one.
 ///
-/// Without it the two relays behind one feature failed differently: a wedged v2.0.0 daemon
-/// destroyed a pane, while the same failure against the agent degraded to a shell.
+/// Without it the two relays behind one feature failed differently: a wedged v2.0.0 helper
+/// destroyed a pane, while the same failure against the daemon degraded to a shell.
 enum SessionAttachFallback {
   /// Never returns on success — `execve` replaces this process, so the shell inherits the pty, the
   /// title, and the exit status, exactly as it would in any other terminal.

@@ -49,7 +49,7 @@ final class CredentialRelayTests: XCTestCase {
     XCTAssertEqual(asked.all, [])
   }
 
-  /// gh with no sign-in, or one that fails, says so in an `error=` line the agent hands git.
+  /// gh with no sign-in, or one that fails, says so in an `error=` line the daemon hands git.
   func testAGhWithoutASignInIsAnErrorLine() throws {
     let empty = CredentialRelay(answer: { _ in "protocol=https\nhost=github.com\n" })
     let secret = try empty.secret(for: UUID())

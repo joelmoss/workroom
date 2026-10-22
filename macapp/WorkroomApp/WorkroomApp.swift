@@ -360,9 +360,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     ProgramStatusAlerts.shared.onWaitingChange = { WindowRegistry.shared.recomputeBadge() }
     ProgramStatusAlerts.shared.start()
 
-    // Not under test (`AppEnvironment.current.isTestProcess`): it would replace the developer's real agent.
+    // Not under test (`AppEnvironment.current.isTestProcess`): it would replace the developer's real daemon.
     if !AppEnvironment.current.isTestProcess {
-      // Hand an older running agent to the bundled one (#230), before panes are likely to attach.
+      // Hand an older running daemon to the bundled one (#230), before panes are likely to attach.
       MainActor.assumeIsolated { DaemonHandOff.start() }
       // Remote panes reattach on wake and network changes, not a minute later.
       MainActor.assumeIsolated { RemoteLinkMonitor.shared.start() }

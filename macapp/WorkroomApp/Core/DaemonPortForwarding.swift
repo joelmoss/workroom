@@ -1171,7 +1171,7 @@ final class PortForwardingModel: ObservableObject {
     }
     var failures: [String] = []
     // Each forward holds a descriptor for the launch, so a file listing hundreds of ports must not
-    // take the app's (terminals, ssh and agent connections share the same limit).
+    // take the app's (terminals, ssh and daemon connections share the same limit).
     if ports.count > DevContainerPorts.maxForwards {
       failures.append(
         "\(file.path) declares \(ports.count) ports; only the first "

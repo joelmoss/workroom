@@ -15,19 +15,19 @@ protocol HostServiceConnection: Sendable {
   /// which the router answers by falling back to native reads for a LOCAL host.
   func files(context: FileContext) throws -> FileProviding
   /// The port-forwarding service on this connection (issue #208). Concrete rather than behind a
-  /// protocol of its own: only a workroomd has one, and a second implementer would be a second agent
+  /// protocol of its own: only a workroomd has one, and a second implementer would be a second daemon
   /// — at which point the protocol can be extracted with a caller to justify it. Throws
   /// `VCSError.backendVersion` when the peer predates the service.
   func forwarding() throws -> DaemonForwardService
   /// The working directory of terminal `session` on this host, or nil when the host holds no such
   /// session (#239). Concrete for the same reason `forwarding()` is.
   func workingDirectory(of session: UUID) async throws -> String?
-  /// Ends terminal `session` on this host (#283): true once the host's agent acknowledges the kill,
+  /// Ends terminal `session` on this host (#283): true once the host's daemon confirms the kill,
   /// which it also does for a session it no longer holds.
   func endSession(_ session: UUID) async throws -> Bool
-  /// Every terminal session the host's agent holds, with what the app said about each (#255).
+  /// Every terminal session the host's daemon holds, with what the app said about each (#255).
   func sessions() async throws -> [SessionDescriptor]
-  /// Returns once the agent answers anything, the cheapest question it has (`dropUnlessAnswering`).
+  /// Returns once the daemon answers anything, its cheapest question (`dropUnlessAnswering`).
   func ping() async throws
   /// Each remote workroom's pane layout, kept on its host (#255). Throws `VCSError.backendVersion`
   /// when the peer predates the service.
@@ -297,7 +297,7 @@ actor HostConnectionManager {
   /// (`RemoteLinkMonitor`). One that doesn't is dropped: ssh would take about a minute to notice it
   /// is dead. A host with no link can't be asked, and is false; one whose link is connecting is
   /// true, and left to connect. A ping that throws got no answer:
-  /// silence, a link that failed under it, or one never sent. An agent's error reply is still a
+  /// silence, a link that failed under it, or one never sent. A daemon's error reply is still a
   /// reply, which `ping` returns rather than throws.
   func dropUnlessAnswering(_ host: HostID, within seconds: TimeInterval) async -> Bool {
     // A connect under way is as good as an answer: a pane's attach starts one, so after an earlier

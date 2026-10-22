@@ -10,7 +10,7 @@ use crate::serve;
 /// Copies bytes between stdin/stdout and a running daemon's socket, and does nothing else.
 ///
 /// This is the far side of a persistent remote stream: `ssh host workroomd relay --socket <path>`
-/// is the ssh implementation of the driver contract's byte stream, and the agent behind the socket
+/// is the ssh implementation of the driver contract's byte stream, and the daemon behind the socket
 /// is a supervised `serve --idle-timeout never` that owns the ptys. A dropped link ends this
 /// process and only this process, so the sessions survive and the next relay reaches the same
 /// owner. `serve --stdio` cannot do that: its session store dies with its stream.
@@ -35,7 +35,7 @@ pub fn run_relay(args: &[String]) -> ExitCode {
     };
 
     // stdin -> daemon. EOF is a half-close: the client has nothing more to send, and it is also how
-    // sshd reports a dead link. Shutting down the write half tells the agent, which detaches this
+    // sshd reports a dead link. Shutting down the write half tells the daemon, which detaches this
     // client's sessions, and still lets its last replies through below.
     let mut to_daemon = match stream.try_clone() {
         Ok(clone) => clone,

@@ -26,7 +26,7 @@ public final class HostStream: @unchecked Sendable {
   }
 
   public let descriptor: Int32
-  /// How long the agent's greeting may take: a local relay answers at once, ssh must connect and
+  /// How long the daemon's greeting may take: a local relay answers at once, ssh must connect and
   /// authenticate first.
   public let handshakeTimeout: TimeInterval
   private let process: Process

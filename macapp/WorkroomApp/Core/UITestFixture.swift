@@ -63,7 +63,7 @@ enum UITestFixture {
 
   /// `-WorkroomUITestLiveDaemon <dir>`: fixture panes attach through a REAL `workroomd` whose socket
   /// is in `<dir>`, and program status (#358) follows it, so a UI test drives the whole path —
-  /// agent, service, monitor, indicators, alerts — with no agent, session or config of the
+  /// daemon, service, monitor, indicators, alerts — with no daemon, session or config of the
   /// developer's touched. Nil, as normal, keeps fixture panes plain shells and the monitor off.
   static var liveDaemonDirectory: String? {
     guard let directory = text("WorkroomUITestLiveDaemon"), !directory.isEmpty else { return nil }
@@ -312,7 +312,7 @@ enum UITestFixture {
   /// When set (`-WorkroomUITestProgramStatus 1`), the fixture workroom opens four terminals with
   /// program status seeded (#358) and the first one focused: Terminal 1 working, Terminal 2 waiting
   /// for permission ("Apply?"), Terminal 3 waiting for an answer on a host whose link is down, and
-  /// Terminal 4 stopped on an error. No agent is involved: the records go straight into the monitor.
+  /// Terminal 4 stopped on an error. No daemon is involved: the records go straight into the monitor.
   static var programStatus: Bool {
     flag("WorkroomUITestProgramStatus")
   }

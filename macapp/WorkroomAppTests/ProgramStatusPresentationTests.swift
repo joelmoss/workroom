@@ -125,7 +125,7 @@ final class ProgramStatusPresentationTests: XCTestCase {
     XCTAssertEqual(lines(.none, nil, host: .stale), ["Program status: not reported"])
     XCTAssertEqual(lines(.none, nil, host: .connecting), ["Program status: connecting…"])
     XCTAssertEqual(
-      lines(.none, nil, host: .unavailable("old agent")),
+      lines(.none, nil, host: .unavailable("old daemon")),
       ["Program status: unavailable on this host"])
     XCTAssertEqual(lines(.none, nil, host: nil), [])
     XCTAssertEqual(lines(.none, nil, hasSession: false), [])

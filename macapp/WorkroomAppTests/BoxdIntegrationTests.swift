@@ -27,7 +27,7 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
       throw XCTSkip("set TEST_RUNNER_WR_BOXD_TESTS=1 to run these on boxd")
     }
     guard PersistentSessionPaths.linuxDaemonURL(architecture: "x86_64") != nil else {
-      throw XCTSkip("this build bundles no Linux agent")
+      throw XCTSkip("this build bundles no Linux daemon")
     }
     cli = URL(
       fileURLWithPath: environment["WR_BOXD_CLI"]
@@ -187,7 +187,7 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
 
   // MARK: Workrooms, through the provisioning sequence (`ProviderParityTestCase`)
 
-  /// boxd also installs a system credential helper; the agent's must win over it.
+  /// boxd also installs a system credential helper; the daemon's must win over it.
   @MainActor
   func testWorkroomsOnBoxdPushWithTheMacDisconnectedAndSurviveAStop() async throws {
     try await workroomsPushWithTheMacDisconnectedAndSurviveARestart(provider())

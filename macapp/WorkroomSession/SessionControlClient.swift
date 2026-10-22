@@ -1,7 +1,7 @@
 import Darwin
 import WorkroomWire
 
-/// One-shot control-channel client for list / info / kill over the daemon socket.
+/// One-shot control-channel client for list / info / kill over the helper's socket.
 enum SessionControlClient {
   static func list(socketPath: String) -> [SessionDescriptor]? {
     transact(socketPath: socketPath, frame: SessionFrame(kind: .list)) { frame in

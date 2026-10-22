@@ -4,7 +4,7 @@ import Foundation
 /// whether it is a directory, when it was modified, and the text of a small file (a worktree's
 /// `.git`). Every decision stays in the classifier; only where these facts come from changes. For a
 /// local repository they are this Mac's (`LocalDisk`); for one on a remote host, what that host's
-/// agent reported (`DiskSnapshot`, from `DaemonVCSConnection.stat`), since reading this disk for a
+/// daemon reported (`DiskSnapshot`, from `DaemonVCSConnection.stat`), since reading this disk for a
 /// path on another machine answers nothing, or worse, the wrong thing.
 protocol RepositoryDisk: Sendable {
   func entry(_ path: String) -> DiskEntry?

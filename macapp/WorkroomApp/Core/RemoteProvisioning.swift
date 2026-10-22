@@ -17,12 +17,12 @@ import WorkroomVCS
 /// exe.dev's GitHub integration): Workroom gives that host none. A local container has no provider,
 /// so its git asks the Mac's own `gh` through the credential relay (#309).
 ///
-/// Repository work runs through the agent's exec service, and the Go CLI stays on the Mac.
+/// Repository work runs through the daemon's exec service, and the Go CLI stays on the Mac.
 enum RemoteProvisioning {
   /// What the sequence reaches a provider through.
   struct Environment: Sendable {
     let driver: any HostDriver
-    /// The agent's socket on each host of `driver`, which puts the agent's binary beside it.
+    /// The daemon's socket on each host of `driver`, which puts the daemon's binary beside it.
     let daemonSocket: String
     /// The Mac's own GitHub token (`gh`), for a workroom whose git goes through the Mac's credential
     /// relay (#309), or nil on a remote provider's host, whose git credentials are the provider's.
@@ -33,7 +33,7 @@ enum RemoteProvisioning {
     /// Gives the provider's hosts a repository before the first is made, where Workroom can
     /// (exe.dev's GitHub integration), or nil where it can't or needn't.
     var grantRepository: (@Sendable (GitHubRepository) async throws -> Void)?
-    /// A connection to the agent on a host, bootstrapping one there first.
+    /// A connection to the daemon on a host, bootstrapping one there first.
     var connect: @Sendable (HostID) async throws -> DaemonVCSConnection
 
     init(
@@ -88,7 +88,7 @@ enum RemoteProvisioning {
     }
   }
 
-  /// How long one git command may run, start to end: the agent's exec deadline is a wall clock
+  /// How long one git command may run, start to end: the daemon's exec deadline is a wall clock
   /// (`exec_timeout` in `vcs.rs`, capped at 610 s), and so is the connection's request deadline.
   /// ponytail: a clone that takes longer fails, and its workroom is removed. Upgrade path: start the
   /// clone detached on the host and poll for it, so only silence ends it.
@@ -291,7 +291,7 @@ enum RemoteProvisioning {
     }
   }
 
-  /// Runs `script` for workroom `name` in its checkout at `path` on `host`, through the host agent's
+  /// Runs `script` for workroom `name` in its checkout at `path` on `host`, through the host daemon's
   /// `run-script`: `onStart` once a script is found, then `onLine` each line it prints as it prints
   /// it. The checkout's own copy is
   /// run; with none, the root's (`rootScript`, on this Mac) is copied in with its mode and run, as
@@ -345,7 +345,7 @@ enum RemoteProvisioning {
       let stream = try await driver.exec(command, on: host)
       let status: Int32
       do {
-        // The agent's own wall clock ends the script; these bounds leave room for the connect, the
+        // The daemon's own wall clock ends the script; these bounds leave room for the connect, the
         // probe and the kill grace before its report. Silence is a dead link. The whole exchange is
         // bounded too, as the local CLI call is: a process the script left in the background holds
         // its output open past the script, and one that keeps printing is never silent.
@@ -362,7 +362,7 @@ enum RemoteProvisioning {
         stream.end()
         throw error
       }
-      // 124 and 126 are the agent's only when it said so: a script can exit with either itself
+      // 124 and 126 are the daemon's only when it said so: a script can exit with either itself
       // (`timeout 30 ...` does). ssh's own 255 can't be told from a script's, so it says both.
       switch status {
       case 0: return .passed
@@ -513,7 +513,7 @@ enum RemoteProvisioning {
 
   // MARK: Plumbing
 
-  /// One git command on the host, through the agent's exec service: the host's own environment,
+  /// One git command on the host, through the daemon's exec service: the host's own environment,
   /// the remote policy pins, and `extra` on top. With `step`, the command line and its output go to
   /// the create's log (`ProvisioningProgress.log`, #483) under that step. Never `extra`, which can
   /// carry the clone's token header (`cloneEnvironment`).
