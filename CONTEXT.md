@@ -17,7 +17,7 @@ Owns projects, workrooms, setup and teardown, and the labels the sidebar shows. 
 A git repository registered with Workroom, identified by its canonical path.
 
 **Workroom**:
-A branch of a project, `workroom/<name>`, that Workroom creates for one line of work, with its own terminals. On this Mac it is a linked git worktree; on a host it is a fresh clone.
+A branch of a project, `workroom/<name>`, that Workroom creates for one line of work, with its own terminals. On this Mac it is a linked git worktree; on a host it is its own clone.
 _Avoid_: Workspace
 
 **Root**:
@@ -101,14 +101,18 @@ How the last long shell command in a session ended, passed or failed, as the she
 Owns hosts, their drivers, provisioning, the credential relay and port forwarding. A remote workroom is a workroom whose files, shells and agent live on a host.
 
 **Host**:
-The compute that holds a remote workroom: a VM or container made by a host driver, on a provider or in a container runtime on this Mac. Every remote workroom gets a fresh one.
+The compute that holds a remote workroom: a VM or container a host driver made for it, on a provider or in a container runtime on this Mac, or an SSH host.
 _Avoid_: Machine, box, VM, base
 
+**SSH host**:
+A Linux server the user already has and reaches with their own ssh, which can hold several remote workrooms, each in its own folder. Workroom never creates or destroys one.
+_Avoid_: Generic host, BYO host, server
+
 **Host driver**:
-The adapter for one provider that creates, reaches and destroys hosts: a local container runtime, boxd or exe.dev.
+The adapter for one kind of host that reaches it, and creates and destroys it where Workroom makes it: a local container runtime, boxd, exe.dev or SSH.
 
 **Provisioning**:
-Making a host for one remote workroom: the driver creates it, and the repository is cloned and checked out.
+Readying a host for one remote workroom: the driver creates it (on an SSH host, makes the workroom's folder instead), and the repository is cloned and checked out.
 
 **Provider credentials**:
 The GitHub access a remote provider gives its own hosts (boxd's git integration, exe.dev's GitHub integration), which a host on that provider fetches and pushes with. Workroom gives such a host none.
@@ -117,7 +121,7 @@ The GitHub access a remote provider gives its own hosts (boxd's git integration,
 How a local container workroom's git asks this Mac's own `gh` for GitHub credentials, over the app's connection.
 
 **Port forward**:
-A loopback port on a container workroom's host made reachable on this Mac for as long as the app is attached: the ports its `devcontainer.json` declares, and any the user adds. boxd and exe.dev publish ports themselves, so their workrooms have none.
+A loopback port on the host of a container workroom, or of a workroom on an SSH host, made reachable on this Mac for as long as the app is attached: the ports its `devcontainer.json` declares, and any the user adds. boxd and exe.dev publish ports themselves, so their workrooms have none.
 
 ## Agent connection
 
