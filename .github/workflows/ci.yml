@@ -742,7 +742,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: vcs -> build-daemon-target
-          key: app-scripts-build-daemon
+          key: app-scripts-build-agent
 
       # `build-daemon_test.sh`'s universal cases need BOTH darwin targets installed and skip
       # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
