@@ -83,7 +83,7 @@ final class CodingAgentBannerViewModelTests: XCTestCase {
   /// Neither CLI: say to install one, offer nothing to click.
   func testNoAgentCLIOffersNoInvestigateOrRetry() {
     let vm = CodingAgentBannerViewModel(
-      state: .failure(failure(), .noAgentCLI), investigateSetting: "auto")
+      state: .failure(failure(), .noCodingAgentCLI), investigateSetting: "auto")
     XCTAssertFalse(vm.showsInvestigate)
     XCTAssertFalse(vm.showsDiagnoseButton)
     XCTAssertEqual(vm.headline, "No agent CLI found — install Claude Code or Codex")

@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Workroom
 
-/// Which Claude account a pane's `claude` bills, from the Claude profile wr-agent reports (#480).
+/// Which Claude account a pane's `claude` bills, from the Claude profile workroomd reports (#480).
 final class ClaudeProfileResolutionTests: XCTestCase {
   private func usage(_ slot: Int) -> ClaudeAccountUsage {
     ClaudeAccountUsage(
@@ -47,7 +47,7 @@ final class ClaudeProfileResolutionTests: XCTestCase {
       ClaudeProfileResolution.account(forProfile: .notReported, accounts: accounts, activeSlot: 1))
   }
 
-  /// wr-agent always sends the entry, empty when unset; its absence is what marks an old agent.
+  /// workroomd always sends the entry, empty when unset; its absence is what marks an old agent.
   func testTheDescriptorEntryTellsUnsetFromNotReported() {
     func descriptor(_ metadata: [SessionEnvironmentEntry]) -> SessionDescriptor {
       SessionDescriptor(

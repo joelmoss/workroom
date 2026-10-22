@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Darwin
 import HostDrivers
 import WorkroomVCS
@@ -6,17 +6,17 @@ import XCTest
 
 @testable import Workroom
 
-/// The reverse direction of `Service::Forward` from the app's side, against the real agent: a port
-/// on the agent's box carried back to this Mac (`ReverseForward`), and the registry that keeps one
+/// The reverse direction of `Service::Forward` from the app's side, against the real daemon: a port
+/// on the daemon's box carried back to this Mac (`ReverseForward`), and the registry that keeps one
 /// open per workroom across reconnects (`ReverseForwardRegistry`), which the credential relay
 /// rides (#309).
 ///
-/// The agent runs on this Mac here, so "the agent's box" and "this Mac" share a loopback: a
+/// The daemon runs on this Mac here, so "the daemon's box" and "this Mac" share a loopback: a
 /// connection to the listener's port is what a process on a remote host would make, and the
 /// target is a server only the app's side of the forward knows about.
 final class ReverseForwardTests: XCTestCase {
-  private var agents: [AgentHarness] = []
-  private var connections: [AgentVCSConnection] = []
+  private var daemons: [DaemonHarness] = []
+  private var connections: [DaemonVCSConnection] = []
   private var reverses: [ReverseForward] = []
   private var echoes: [EchoServer] = []
   private var clients: [TCPClient] = []
@@ -26,12 +26,12 @@ final class ReverseForwardTests: XCTestCase {
     for client in clients { client.close() }
     for reverse in reverses { reverse.stop() }
     for echo in echoes { echo.stop() }
-    for agent in agents { agent.stop() }
+    for daemon in daemons { daemon.stop() }
     for directory in directories { try? FileManager.default.removeItem(at: directory) }
     clients = []
     reverses = []
     echoes = []
-    agents = []
+    daemons = []
     connections = []
     directories = []
     super.tearDown()
@@ -39,15 +39,15 @@ final class ReverseForwardTests: XCTestCase {
 
   // MARK: Fixtures
 
-  private func agent() throws -> AgentHarness {
-    let agent = try AgentHarness.start(environment: ProcessInfo.processInfo.environment)
-    agents.append(agent)
-    return agent
+  private func daemon() throws -> DaemonHarness {
+    let daemon = try DaemonHarness.start(environment: ProcessInfo.processInfo.environment)
+    daemons.append(daemon)
+    return daemon
   }
 
-  private func connection(to agent: AgentHarness) async throws -> AgentVCSConnection {
-    let connection = try await AgentVCSConnection.connect(
-      host: .local, socketPath: agent.socketPath)
+  private func connection(to daemon: DaemonHarness) async throws -> DaemonVCSConnection {
+    let connection = try await DaemonVCSConnection.connect(
+      host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     return connection
   }
@@ -66,9 +66,9 @@ final class ReverseForwardTests: XCTestCase {
     return directory
   }
 
-  /// A reverse forward to `target`, started, and the port the agent bound.
+  /// A reverse forward to `target`, started, and the port the daemon bound.
   private func listening(
-    _ connection: AgentVCSConnection, target: UInt16, remotePort: UInt16 = 0,
+    _ connection: DaemonVCSConnection, target: UInt16, remotePort: UInt16 = 0,
     events: ReverseEvents
   ) async throws -> (ReverseForward, UInt16) {
     let reverse = try connection.forwarding().reverse(remotePort: remotePort, target: target) {
@@ -82,11 +82,11 @@ final class ReverseForwardTests: XCTestCase {
 
   // MARK: ReverseForward
 
-  func testAConnectionOnTheAgentsBoxReachesTheTargetOnThisMac() async throws {
+  func testAConnectionOnTheDaemonsBoxReachesTheTargetOnThisMac() async throws {
     let target = try echo()
     let events = ReverseEvents()
     let (_, port) = try await listening(
-      try await connection(to: try agent()), target: target.port, events: events)
+      try await connection(to: try daemon()), target: target.port, events: events)
 
     let client = try TCPClient(port: port)
     clients.append(client)
@@ -100,14 +100,14 @@ final class ReverseForwardTests: XCTestCase {
     XCTAssertTrue(events.failures.isEmpty, "\(events.failures)")
   }
 
-  /// The process that connected learns at once, not at the agent's 5 s expiry.
+  /// The process that connected learns at once, not at the daemon's 5 s expiry.
   func testAnUnreachableTargetEndsTheConnectionAtOnce() async throws {
     let closed = try echo()
     let unreachable = closed.port
     closed.stop()
     let events = ReverseEvents()
     let (_, port) = try await listening(
-      try await connection(to: try agent()), target: unreachable, events: events)
+      try await connection(to: try daemon()), target: unreachable, events: events)
 
     let started = ContinuousClock.now
     let client = try TCPClient(port: port)
@@ -120,17 +120,17 @@ final class ReverseForwardTests: XCTestCase {
       "\(events.failures)")
   }
 
-  func testStoppingReleasesTheAgentsPort() async throws {
+  func testStoppingReleasesTheDaemonsPort() async throws {
     let target = try echo()
     let events = ReverseEvents()
     let (reverse, port) = try await listening(
-      try await connection(to: try agent()), target: target.port, events: events)
+      try await connection(to: try daemon()), target: target.port, events: events)
 
     reverse.stop()
 
     let deadline = ContinuousClock.now + .seconds(5)
     while (try? TCPClient(port: port)).map({ $0.close() }) != nil {
-      guard ContinuousClock.now < deadline else { return XCTFail("the agent kept listening") }
+      guard ContinuousClock.now < deadline else { return XCTFail("the daemon kept listening") }
       try await Task.sleep(for: .milliseconds(50))
     }
   }
@@ -138,7 +138,7 @@ final class ReverseForwardTests: XCTestCase {
   func testATakenPortStopsTheListenerWithTheReason() async throws {
     let taken = try echo()
     let events = ReverseEvents()
-    let reverse = try await connection(to: try agent()).forwarding().reverse(
+    let reverse = try await connection(to: try daemon()).forwarding().reverse(
       remotePort: taken.port, target: taken.port
     ) { events.add($0) }
     reverses.append(reverse)
@@ -146,7 +146,7 @@ final class ReverseForwardTests: XCTestCase {
 
     do {
       _ = try await events.listening()
-      XCTFail("the agent listened on a taken port")
+      XCTFail("the daemon listened on a taken port")
     } catch let refusal as ReverseForward.Refusal {
       XCTAssertTrue(refusal.detail.hasPrefix("bind:"), refusal.detail)
     }
@@ -172,14 +172,14 @@ final class ReverseForwardTests: XCTestCase {
   }
 
   /// The listener goes with its connection, and the next connection to the host gets it back on the
-  /// same port: the port in the agent's `relay.json` must survive a reattach.
+  /// same port: the port in the daemon's `relay.json` must survive a reattach.
   @MainActor
   func testTheRegistryReopensTheListenerOnTheSamePortAfterAReconnect() async throws {
     let target = try echo()
-    let agent = try agent()
+    let daemon = try daemon()
     let host = HostID.remote(UUID())
     let current = Current(
-      lease: .init(host: host, generation: UUID()), connection: try await connection(to: agent))
+      lease: .init(host: host, generation: UUID()), connection: try await connection(to: daemon))
     let (updates, announce) = AsyncStream.makeStream(of: HostConnectionManager.Snapshot.self)
     let registry = makeRegistry(current, updates: updates, target: { target.port })
     let workroom = UUID()
@@ -188,10 +188,10 @@ final class ReverseForwardTests: XCTestCase {
     let port = CredentialRelay.port(for: workroom)
     try roundTrip(port)
 
-    // A new connection replaces the old one, which takes the agent's listener with it.
+    // A new connection replaces the old one, which takes the daemon's listener with it.
     let first = current.get().connection
     let second = HostConnectionManager.Lease(host: host, generation: UUID())
-    current.set(second, try await connection(to: agent))
+    current.set(second, try await connection(to: daemon))
     await first.close()
     announce.yield(.init(lease: second, status: .connected))
 
@@ -211,10 +211,10 @@ final class ReverseForwardTests: XCTestCase {
   func testAnOpenAfterTheTargetMovesCarriesToTheNewTarget() async throws {
     let first = try echo()
     let second = try echo()
-    let agent = try agent()
+    let daemon = try daemon()
     let host = HostID.remote(UUID())
     let current = Current(
-      lease: .init(host: host, generation: UUID()), connection: try await connection(to: agent))
+      lease: .init(host: host, generation: UUID()), connection: try await connection(to: daemon))
     let target = Target(first.port)
     let registry = makeRegistry(current, updates: AsyncStream { _ in }, target: { target.get() })
     let workroom = UUID()
@@ -235,10 +235,10 @@ final class ReverseForwardTests: XCTestCase {
   @MainActor
   func testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo() async throws {
     let target = try echo()
-    let agent = try agent()
+    let daemon = try daemon()
     let host = HostID.remote(UUID())
     let current = Current(
-      lease: .init(host: host, generation: UUID()), connection: try await connection(to: agent))
+      lease: .init(host: host, generation: UUID()), connection: try await connection(to: daemon))
     let (updates, announce) = AsyncStream.makeStream(of: HostConnectionManager.Snapshot.self)
     let registry = makeRegistry(
       current, updates: updates, target: { target.port }, reopenRetry: .milliseconds(300))
@@ -250,11 +250,11 @@ final class ReverseForwardTests: XCTestCase {
     let port = CredentialRelay.port(for: workroom)
     let stale = current.get().connection
     await stale.close()
-    let holder = try await connection(to: agent)
+    let holder = try await connection(to: daemon)
     var held: ReverseForward?
     let deadlineToHold = ContinuousClock.now + .seconds(5)
     while held == nil {
-      // The agent releases the closed connection's listener within its accept poll.
+      // The daemon releases the closed connection's listener within its accept poll.
       guard ContinuousClock.now < deadlineToHold else { return XCTFail("could not hold the port") }
       let attempt = ReverseEvents()
       let forward = try holder.forwarding().reverse(remotePort: port, target: target.port) {
@@ -265,7 +265,7 @@ final class ReverseForwardTests: XCTestCase {
       if (try? await attempt.listening()) != nil { held = forward } else { forward.stop() }
     }
     let second = HostConnectionManager.Lease(host: host, generation: UUID())
-    current.set(second, try await connection(to: agent))
+    current.set(second, try await connection(to: daemon))
     announce.yield(.init(lease: second, status: .connected))
     // Longer than the bind retries (10 × 200 ms), so only the registry's own retry can recover.
     try await Task.sleep(for: .seconds(3))
@@ -293,15 +293,15 @@ final class ReverseForwardTests: XCTestCase {
 private final class Current: @unchecked Sendable {
   private let lock = NSLock()
   private var lease: HostConnectionManager.Lease
-  private var connection: AgentVCSConnection
-  init(lease: HostConnectionManager.Lease, connection: AgentVCSConnection) {
+  private var connection: DaemonVCSConnection
+  init(lease: HostConnectionManager.Lease, connection: DaemonVCSConnection) {
     self.lease = lease
     self.connection = connection
   }
-  func get() -> (lease: HostConnectionManager.Lease, connection: AgentVCSConnection) {
+  func get() -> (lease: HostConnectionManager.Lease, connection: DaemonVCSConnection) {
     lock.withLock { (lease, connection) }
   }
-  func set(_ lease: HostConnectionManager.Lease, _ connection: AgentVCSConnection) {
+  func set(_ lease: HostConnectionManager.Lease, _ connection: DaemonVCSConnection) {
     lock.withLock {
       self.lease = lease
       self.connection = connection

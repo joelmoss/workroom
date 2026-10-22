@@ -78,7 +78,7 @@ struct BoundLocalWriter: VCSWriting {
   private let projectRoot: String
 
   /// For a local repository, or a remote one whose writer reads that host's disk through the agent
-  /// (`AgentVCSConnection.writer`). The paths here are only ever handed to
+  /// (`DaemonVCSConnection.writer`). The paths here are only ever handed to
   /// the writer as strings, never resolved against this disk.
   init(context: RepositoryContext, reader: VCSProviding, writer: LocalVCSWriting) throws {
     // A remote repository only with a writer that knows it is one; anything else would run git on

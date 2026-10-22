@@ -33,8 +33,8 @@ something on a host: a connect, an exec, a script, a delete.
 | Asleep boxd box | boxd status `standby` or `hibernated` (`BoxdHostDriver.Presence.asleep`), or boxd couldn't say | A background read throws `RepositoryRoutingError.asleep`; with `wake` or `activate` the connect's ssh login wakes it |
 | Gone boxd machine | `Presence.gone`: deleted, or in another org or account | A background read throws `RepositoryRoutingError.gone`. With `wake` the presence check is skipped, so the connect is tried and fails as unreachable |
 | Unreachable | the connect threw | `ensureConnected` logs the cause and throws `.unavailable`, whose text is "Repository service unavailable." Say what failed in your feature's own words (`runScript`: "couldn't reach the host") |
-| Older or newer agent | `AgentBootstrap.Outcome.Agent` | An older agent is handed off to this build's (`.handedOff`) unless it refuses (`.keptOlder`); a newer one is never downgraded (`.keptNewer`). Either way a subcommand this build added may be missing on the host |
-| Fresh host | first login on a new machine | No cached login environment, and a cold first login (nvm, conda) can be slow. `wr-agent run-script` gives its login-shell probe 10 s, then falls back to its own environment and says so |
+| Older or newer agent | `DaemonBootstrap.Outcome.Agent` | An older agent is handed off to this build's (`.handedOff`) unless it refuses (`.keptOlder`); a newer one is never downgraded (`.keptNewer`). Either way a subcommand this build added may be missing on the host |
+| Fresh host | first login on a new machine | No cached login environment, and a cold first login (nvm, conda) can be slow. `workroomd run-script` gives its login-shell probe 10 s, then falls back to its own environment and says so |
 | Mid-create or failed delete | `HostDescriptor.state` is `creating` or `failed` | The host may not be whole. `RemoteWorkrooms.delete` runs a teardown only when `state` is nil, and otherwise just finishes taking it down |
 | Another build's host | its key and labels aren't this build's | `RemoteWorkrooms.checkDeletable` refuses (`Failure.anotherBuildsHost`) |
 
@@ -47,7 +47,7 @@ something on a host: a connect, an exec, a script, a delete.
   host not answering. `test -e` exits 1 for a missing file; reading 255 as "missing" would skip a
   teardown and then destroy the host.
 - An agent subcommand's own codes (`run-script`'s 124 timeout, 126 not started) count as its
-  report only when its stderr line says so (`wr-agent run-script: ...`): a script can exit 124 or
+  report only when its stderr line says so (`workroomd run-script: ...`): a script can exit 124 or
   126 itself.
 - `communicate`'s `timeout` bounds silence, not the exchange. A process the command left in the
   background holds its output open, and one that keeps printing is never silent. When the local

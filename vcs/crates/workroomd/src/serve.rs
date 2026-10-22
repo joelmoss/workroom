@@ -1,0 +1,1449 @@
+//! `workroomd serve`: owns the ptys, speaks the envelope over a stream.
+//!
+//! The transport is a `UnixListener` locally and whatever bidirectional stream a driver opens
+//! remotely, so the connection handler below takes `Read + Write` rather than a socket — that is
+//! the whole reason the local path is also the remote path's test harness.
+//!
+//! **Single instance, by `flock`.** Two daemons on one socket would each own half the sessions and
+//! neither would find the other's, which presents as terminals vanishing. The lock is held for the
+//! process's life and released by the kernel on exit, including a crash — no stale-lock cleanup to
+//! get wrong.
+//!
+//! **Idle self-exit is kept exactly as the Swift daemon has it**, and the design doc says why the
+//! earlier plan to remove it did not survive scrutiny: diffs, history and watches are things a
+//! *connected client* asks for, so a daemon with no connections and no ptys is holding nothing
+//! anyone can lose. The one thing that must outlive the app is a live terminal, which is precisely
+//! what the rule already protects.
+
+use std::ffi::{OsStr, OsString};
+use std::io::{Read, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::rpc::SharedWriter;
+use crate::session::{SessionId, SessionSpec, SessionStore};
+use crate::shell;
+use crate::transport::Transport;
+use wr_protocol::envelope::{
+    Envelope, EnvelopeDecoder, Hello, MAX_ENVELOPE_PAYLOAD, ProtocolError, Service, negotiate,
+};
+use wr_protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
+use wr_protocol::reply::Reply;
+
+pub const BUILD: &str = concat!("workroomd ", env!("CARGO_PKG_VERSION"));
+
+/// How long a daemon with no sessions and no clients waits before exiting.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServeError {
+    #[error("another daemon already holds {0}")]
+    AlreadyRunning(PathBuf),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Holds the single-instance lock for the process's lifetime.
+pub struct InstanceLock {
+    file: std::fs::File,
+}
+
+impl InstanceLock {
+    pub fn fd(&self) -> std::os::unix::io::RawFd {
+        self.file.as_raw_fd()
+    }
+
+    /// The lock an earlier program in this process held, handed over across `execve`
+    /// (`crate::handoff`). A `flock` belongs to the open file description, not the program, so it
+    /// was never released. Close-on-exec goes back on, as on everything a hand-off carries.
+    ///
+    /// # Safety
+    /// `fd` must be the open lock file the hand-off table names, owned by nothing else.
+    pub unsafe fn adopt(fd: std::os::unix::io::RawFd) -> InstanceLock {
+        use std::os::unix::io::FromRawFd;
+        crate::pty::set_cloexec(fd, true);
+        InstanceLock {
+            // SAFETY: the caller guarantees `fd` is the open lock file and owned by nothing else,
+            // so the `File` can take ownership of it.
+            file: unsafe { std::fs::File::from_raw_fd(fd) },
+        }
+    }
+}
+
+/// `flock(LOCK_EX | LOCK_NB)` beside the socket. A lock *file* rather than the socket itself,
+/// because binding a unix socket unlinks and recreates the path — two racing daemons would each
+/// successfully bind and the second would silently steal the first's address.
+pub fn acquire_instance_lock(socket: &Path) -> Result<InstanceLock, ServeError> {
+    let path = socket.with_extension("lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    // SAFETY: the descriptor belongs to `file`, which is open for the call; flock takes integers.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return Err(ServeError::AlreadyRunning(path));
+    }
+    Ok(InstanceLock { file })
+}
+
+pub struct Daemon {
+    pub sessions: SessionStore,
+    connections: Arc<AtomicUsize>,
+}
+
+impl Default for Daemon {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Daemon {
+    pub fn new() -> Self {
+        Self {
+            sessions: SessionStore::new(),
+            connections: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Serves on a bound listener until idle. Returns when no session and no client has existed
+    /// for `idle_timeout`. The listener is the one `bind` returns, or the one a hand-off carried
+    /// across `execve` (`crate::handoff`), which must never be unbound and bound again.
+    pub fn run(
+        &self,
+        listener: UnixListener,
+        socket: &Path,
+        idle_timeout: Duration,
+    ) -> Result<(), ServeError> {
+        listener.set_nonblocking(true)?;
+        let mut idle_since = Some(Instant::now());
+        let mut result = Ok(());
+        loop {
+            // During a hand-off a new client waits in the backlog for the next program
+            // (`crate::handoff::accepting`), rather than being accepted and dropped at the exec.
+            if !crate::handoff::accepting() {
+                idle_since = None;
+                std::thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    idle_since = None;
+                    self.connections.fetch_add(1, Ordering::SeqCst);
+                    let sessions = self.sessions.clone();
+                    let connections = Arc::clone(&self.connections);
+                    // `std::thread::spawn` panics when the OS cannot create a thread. That would
+                    // unwind THIS accept loop — the fetch_add above already ran, so `connections`
+                    // would be stuck one high forever with nothing left to correct it (worse, an
+                    // uncaught panic here takes the whole daemon down with it, over one transient
+                    // thread-exhaustion failure). `Builder::spawn` turns it into an `Err`; the
+                    // closure is dropped without running, so undo the count ourselves and drop this
+                    // one connection rather than the daemon.
+                    if std::thread::Builder::new()
+                        .spawn(move || {
+                            let _ = stream.set_nonblocking(false);
+                            let _ = handle_connection(stream, sessions);
+                            connections.fetch_sub(1, Ordering::SeqCst);
+                        })
+                        .is_err()
+                    {
+                        self.connections.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // `connections` drops as soon as `handle_connection` returns, but `vcs::dispatch`
+                    // answers on a DETACHED thread that outlives it — a client that disconnects (or
+                    // whose request already tripped the app-side timeout) while its VCS request is
+                    // still running, e.g. a git commit mid-way through updating the index, would
+                    // otherwise let `connections` and `sessions` both read empty while that thread is
+                    // still mutating the repository. `crate::rpc::is_busy()` is the only thing that
+                    // actually knows.
+                    // A kill on its own thread is the same shape: see `SessionStore::is_killing`.
+                    let busy = self.connections.load(Ordering::SeqCst) > 0
+                        || !self.sessions.is_empty()
+                        || crate::rpc::is_busy()
+                        || self.sessions.is_killing();
+                    if busy {
+                        idle_since = None;
+                    } else {
+                        let since = idle_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() >= idle_timeout {
+                            break;
+                        }
+                    }
+                    // Sleep until a client connects, waking once a second to re-check idleness:
+                    // polling the listener every 25 ms cost 40 wakeups a second for nothing.
+                    let mut descriptor = libc::pollfd {
+                        fd: listener.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // SAFETY: one live pollfd, for the listener this loop owns.
+                    unsafe { libc::poll(&mut descriptor, 1, 1000) };
+                }
+                // An accept failure (descriptor exhaustion, say) ends the daemon.
+                Err(e) => {
+                    result = Err(e.into());
+                    break;
+                }
+            }
+        }
+        let _ = std::fs::remove_file(socket);
+        result
+    }
+}
+
+/// Binds the daemon's socket.
+///
+/// A socket file left by a previous run would make bind fail with EADDRINUSE even though nobody is
+/// listening. The flock (`acquire_instance_lock`) is what actually guarantees exclusivity, so
+/// removing a stale path here is safe rather than a race.
+pub fn bind(socket: &Path) -> std::io::Result<UnixListener> {
+    if socket.exists() {
+        let _ = std::fs::remove_file(socket);
+    }
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    UnixListener::bind(socket)
+}
+
+/// The state the request/reply services keep for ONE connection, dropped with it.
+///
+/// Per connection, never process-wide: stream ids restart at 1 on every connect and this daemon
+/// outlives the app, so a shared map would let one launch's abandoned chunks corrupt the next
+/// launch's identically-numbered request (see `PartialRequests`). And for `subscriptions` the
+/// teardown matters more than the isolation: dropping it on ANY exit from `handle_connection` stops
+/// every filesystem watcher the client started, so an OS watcher never outlives the peer it reports to.
+/// `forwards` is there for the same reason, and it is what makes the design's "a forwarded port only
+/// carries while a client is attached" true rather than aspirational.
+struct ConnectionServices {
+    /// `Transport::peer`, for the log lines a kill or a hand-off writes.
+    peer: String,
+    partial: crate::rpc::PartialRequests,
+    /// The Layout service's own, so its chunked requests never share a buffer with the VCS one's.
+    layout_partial: crate::rpc::PartialRequests,
+    subscriptions: crate::watch::Subscriptions,
+    forwards: crate::forward::Forwards,
+    /// Its program status subscription, ended with it like `subscriptions`.
+    program_status: crate::program_status::Connection,
+}
+
+/// Greets, negotiates, then serves envelopes until the peer goes away.
+///
+/// Generic over the transport, which is the whole point: the driver contract is a bidirectional
+/// byte stream, so `ssh host workroomd serve --stdio`, a provider's exec channel and a local unix
+/// socket are all the same code path here. It also means the remote protocol can be tested over a
+/// pair of pipes with no container, no ssh and no provider — see `transport::PipeTransport`.
+pub fn handle_connection<T: Transport>(
+    transport: T,
+    sessions: SessionStore,
+) -> Result<(), ProtocolError> {
+    // Before `split`, which consumes the transport: the watch service needs a way to end THIS
+    // connection from a thread that only writes.
+    let closer = transport.closer();
+    let peer = transport.peer();
+    let (mut reader, writer) = transport.split().map_err(|_| ProtocolError::NotADaemon)?;
+    // One writer, shared, and type-erased. A socket could be cloned instead, but a pipe or an exec
+    // channel cannot, and the daemon must not require a transport that can. Boxed because the
+    // SESSION holds it now — its reader outlives this connection, and the next client may arrive
+    // over a different kind of stream. Contention is negligible: the command loop writes only
+    // replies, and the reader holds the lock for one write at a time.
+    let writer: SharedWriter = Arc::new(Mutex::new(Box::new(writer)));
+
+    let send = |bytes: &[u8]| -> bool {
+        match writer.lock() {
+            Ok(mut writer) => writer
+                .write_all(bytes)
+                .and_then(|()| writer.flush())
+                .is_ok(),
+            Err(_) => false,
+        }
+    };
+
+    let local = Hello::current(BUILD);
+    if !send(&local.encode()) {
+        return Err(ProtocolError::NotADaemon);
+    }
+
+    // Read the peer's greeting first — everything after depends on the negotiated version, so
+    // parsing an envelope before it would be parsing at an unknown version.
+    let mut greeting = Vec::new();
+    let mut byte = [0u8; 1];
+    let remote = loop {
+        if let Some((hello, _)) = Hello::decode(&greeting)? {
+            break hello;
+        }
+        match reader.read(&mut byte) {
+            Ok(0) => return Err(ProtocolError::NotADaemon),
+            Ok(_) => greeting.push(byte[0]),
+            Err(_) => return Err(ProtocolError::NotADaemon),
+        }
+    };
+    negotiate(&local, &remote)?;
+
+    let mut decoder = EnvelopeDecoder::new();
+    let mut buffer = [0u8; 8192];
+    let mut attached: Option<SessionId> = None;
+    let mut services = ConnectionServices {
+        peer,
+        partial: crate::rpc::PartialRequests::default(),
+        layout_partial: crate::rpc::PartialRequests::default(),
+        subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), Arc::clone(&closer)),
+        forwards: crate::forward::Forwards::new(),
+        program_status: crate::program_status::Connection::new(
+            Arc::clone(sessions.program_status()),
+            Arc::clone(&writer),
+            closer,
+        ),
+    };
+    // Identifies THIS attachment, so ending this connection cannot detach a client that has since
+    // taken the session over.
+    let mut token = 0u64;
+
+    // The decoder's failure is carried out rather than returned with `?`, so that EVERY exit runs
+    // the detach below. It used to propagate straight out of the function: an unknown service byte
+    // or an oversized declared length left the client registered on the session, holding this
+    // connection's write half — so the fd stayed open, the session reported `attached: true`
+    // forever, and if that client was the size owner nobody else could claim the geometry. A quiet
+    // session never notices, because the eviction that would clean it up only happens on a failed
+    // delivery.
+    let mut failure = None;
+    'outer: loop {
+        loop {
+            match decoder.next_envelope() {
+                Ok(Some(envelope)) => {
+                    if let Some(reply) = dispatch(
+                        &envelope,
+                        &sessions,
+                        &mut attached,
+                        &mut token,
+                        &mut services,
+                        &writer,
+                        &send,
+                    ) && !send(&reply.encode())
+                    {
+                        break 'outer;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    failure = Some(e);
+                    break 'outer;
+                }
+            }
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => decoder.push(&buffer[..n]),
+            Err(_) => break,
+        }
+    }
+
+    // The session keeps its reader; only the client goes. There is nothing to stop and nothing to
+    // join — which is also why a detached session keeps draining its pty instead of wedging the
+    // shell behind a full output queue.
+    if let Some(id) = attached {
+        sessions.detach(id, token);
+    }
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Handles one envelope. Returns a reply to send, if any.
+///
+/// `send` is passed in as well as a reply being returned, because the Attach arm must emit
+/// `Attached` BEFORE the session paints the screen behind it — and the painting happens inside
+/// `SessionStore::attach`, under the lock that keeps it from being interleaved with live output.
+fn dispatch(
+    envelope: &Envelope,
+    sessions: &SessionStore,
+    attached: &mut Option<SessionId>,
+    token: &mut u64,
+    services: &mut ConnectionServices,
+    writer: &SharedWriter,
+    send: &dyn Fn(&[u8]) -> bool,
+) -> Option<Envelope> {
+    if envelope.service == Service::Vcs {
+        crate::vcs::dispatch(&mut services.partial, envelope, writer);
+        return None;
+    }
+    if envelope.service == Service::File {
+        crate::file::dispatch(envelope, writer, &services.subscriptions);
+        return None;
+    }
+    if envelope.service == Service::Layout {
+        crate::layout::dispatch(&mut services.layout_partial, envelope, writer);
+        return None;
+    }
+    if envelope.service == Service::Status {
+        retired_status(envelope, writer);
+        return None;
+    }
+    if envelope.service == Service::Forward {
+        crate::forward::dispatch(envelope, writer, &services.forwards);
+        return None;
+    }
+    if envelope.service == Service::ProgramStatus {
+        crate::program_status::dispatch(envelope, sessions, &mut services.program_status);
+        return None;
+    }
+    if envelope.service != Service::Terminal && envelope.service != Service::Control {
+        return None;
+    }
+    let mut frames = FrameDecoder::new();
+    frames.push(&envelope.payload);
+    let frame = frames.next_frame().ok().flatten()?;
+
+    let reply = |frame: Frame| {
+        Some(Envelope::new(
+            envelope.service,
+            envelope.stream,
+            frame.encode(),
+        ))
+    };
+
+    match frame.kind {
+        FrameKind::Attach => {
+            let request = AttachRequest::decode(&frame.payload)?;
+            let id = request.id?;
+            // A new session must register its first client before its reader starts: a command
+            // such as `echo` can exit before attach, taking its output and exit status with it.
+            let attach = || {
+                send(
+                    &Envelope::new(
+                        Service::Control,
+                        envelope.stream,
+                        Frame::control(FrameKind::Attached).encode(),
+                    )
+                    .encode(),
+                )
+                .then_some(())
+                .ok_or(crate::session::SessionError::NotFound(id.to_hyphenated()))?;
+                sessions.attach(
+                    id,
+                    Arc::clone(writer),
+                    envelope.stream,
+                    request.columns,
+                    request.rows,
+                )
+            };
+            // Refused, not created, for a client that asked to attach only to what exists: see
+            // `AttachRequest::existing_only`. Before any `Attached`, so the client can tell it
+            // apart from a failure on a session it is already showing.
+            //
+            // Read ONCE, for both this and the choice below: read twice, a session that exited in
+            // between would pass the refusal and then be created. With one read, that race ends in
+            // `attach()` finding nothing, which the client already takes as "ended".
+            let exists = sessions.contains(id);
+            if request.existing_only && !exists {
+                // A session that ended with its host, whose last screen was kept (#232,
+                // `crate::screens`): `Attached`, the screen, and nothing after. `attached` stays
+                // unset, so this connection's input and resizes go nowhere, and the pane shows the
+                // screen until its user closes it. Chunked, as `SessionStore::attach` chunks a
+                // repaint: `Frame::encode` panics above the frame cap.
+                let ended = sessions
+                    .screens()
+                    .and_then(|screens| screens.render(id, request.columns, request.rows));
+                if let Some(screen) = ended {
+                    let attached = Frame::control(FrameKind::Attached).encode();
+                    if send(&Envelope::new(Service::Control, envelope.stream, attached).encode()) {
+                        for chunk in screen.chunks(crate::session::READ_CHUNK) {
+                            let output = Frame::new(FrameKind::Output, chunk.to_vec()).encode();
+                            let output = Envelope::new(Service::Terminal, envelope.stream, output);
+                            if !send(&output.encode()) {
+                                break;
+                            }
+                        }
+                    }
+                    return None;
+                }
+                return reply(Frame::new(
+                    FrameKind::Failure,
+                    format!("session ended: {}", id.to_hyphenated()).into_bytes(),
+                ));
+            }
+            // Create on first attach, reattach afterwards. One code path, so a client that
+            // crashed and came back does not have to know which case it is in.
+            let result = if exists {
+                attach()
+            } else {
+                // Not `<shell>` with no arguments: see `shell::invocation`. Spawning the shell
+                // bare cost the login profile and ghostty's shell integration, which showed up in
+                // the app as panes stuck on the title the user's own prompt sets.
+                // **The session's own variables do not reach the session's shell**, matching what
+                // the Swift attach client has always done (`SessionAttachClient.makeRequest`
+                // filters the same prefix before sending). Leaking them had two consequences, both
+                // real: `workroomd attach` typed inside a pane picked up THAT pane's id and socket
+                // from its own environment and attached a second relay to the session it was
+                // running in, with the pty fanning output to both; and `run_attach`'s "was I
+                // invoked by the app" test — which reads exactly these variables — was true for
+                // anything the user typed in a pane, so the usage-instead-of-nested-shell guard
+                // could never fire there.
+                let child_environment: Vec<(OsString, OsString)> = request
+                    .env
+                    .iter()
+                    .filter(|(key, _)| !key.to_string_lossy().starts_with("WORKROOM_SESSION_"))
+                    .cloned()
+                    .collect();
+                let invocation = shell::invocation(
+                    &request
+                        .command
+                        .clone()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    &request.shell.clone().unwrap_or_default().to_string_lossy(),
+                    &request
+                        .resources
+                        .clone()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    &child_environment,
+                );
+                sessions.create_then(
+                    SessionSpec {
+                        id,
+                        program: &invocation.program,
+                        argv0: invocation.arguments.first().map(|a| a.as_os_str()),
+                        args: &invocation.arguments[1..],
+                        env: &invocation.environment,
+                        cwd: request.cwd.as_deref(),
+                        columns: request.columns,
+                        rows: request.rows,
+                        metadata: &session_metadata(&request.env),
+                        interactive: invocation.interactive,
+                    },
+                    |_| attach(),
+                )
+            };
+            match result {
+                Ok((_, granted)) => {
+                    *attached = Some(id);
+                    *token = granted;
+                    None
+                }
+                Err(e) => reply(Frame::new(FrameKind::Failure, e.to_string().into_bytes())),
+            }
+        }
+        FrameKind::Input => {
+            let id = (*attached)?;
+            // Through the session, not straight at the pty, for two reasons: it writes with
+            // `write_all` (the master is non-blocking, so a paste bigger than the pty's input queue
+            // short-writes and the tail would be dropped in silence), and typing is also how a
+            // client CLAIMS the session's size, which only the session can arbitrate.
+            sessions.write_input(id, *token, &frame.payload);
+            None
+        }
+        FrameKind::Resize => {
+            let id = (*attached)?;
+            if frame.payload.len() >= 4 {
+                let columns = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
+                let rows = u16::from_be_bytes([frame.payload[2], frame.payload[3]]);
+                // Recorded always, applied only if this client owns the size or nobody does — a
+                // background window resizing must not move the pty out from under whoever is
+                // typing in another one.
+                sessions.resize(id, *token, columns, rows);
+            }
+            None
+        }
+        FrameKind::List => reply(list_reply(encode_descriptor_list(&sessions.list()))),
+        FrameKind::Kill => {
+            // Answered, not dropped: a request with no reply holds the app's request open until its
+            // timeout.
+            let Some(id) = frame.payload.get(..16).and_then(SessionId::from_slice) else {
+                return reply(Frame::new(
+                    FrameKind::Failure,
+                    b"a kill names one 16-byte session id".to_vec(),
+                ));
+            };
+            crate::note!(
+                "kill of session {} requested by {}",
+                id.to_hyphenated(),
+                services.peer
+            );
+            kill_off_the_reader(sessions, id, writer, envelope.service, envelope.stream)
+        }
+        FrameKind::KillAll => {
+            crate::note!("kill of every session requested by {}", services.peer);
+            sessions.kill_all();
+            reply(Frame::control(FrameKind::Acknowledged))
+        }
+        // `Acknowledged` with "current" when the binary is this program already, "handing off"
+        // just before the exec (which then ends this connection), and `Failure` with the reason
+        // when it refused or the exec failed. See `crate::handoff`.
+        FrameKind::HandOff => {
+            let (&force, path) = frame.payload.split_first()?;
+            let binary = PathBuf::from(OsStr::from_bytes(path));
+            let handing_off = || {
+                let frame = Frame::new(FrameKind::Acknowledged, b"handing off".to_vec());
+                send(&Envelope::new(envelope.service, envelope.stream, frame.encode()).encode())
+            };
+            crate::note!(
+                "hand-off to {} requested by {}{}",
+                binary.display(),
+                services.peer,
+                if force != 0 { " (forced)" } else { "" }
+            );
+            match crate::handoff::hand_off(sessions, &binary, force != 0, handing_off) {
+                Ok(()) => {
+                    crate::note!("hand-off not needed: {} is this program", binary.display());
+                    reply(Frame::new(FrameKind::Acknowledged, b"current".to_vec()))
+                }
+                Err(reason) => {
+                    crate::note!("hand-off refused: {reason}");
+                    let mut reason = reason.to_string().into_bytes();
+                    reason.truncate(crate::handoff::MAX_REASON);
+                    reply(Frame::new(FrameKind::Failure, reason))
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The session list, in the wire format `SessionDescriptor.decodeList` already reads.
+///
+/// Matching the shipped Swift encoding rather than inventing a second one: the app's decoder,
+/// its `SessionDescriptor` type and every caller of `liveSessions()` then work against either
+/// backend with no branching. The format is
+/// `count:u32`, then per session `id:[16]`, `pid:i32`, `tty:u64`, `cwd:string`,
+/// `attached:u8`, `metadata:entries` — all big-endian, strings length-prefixed.
+///
+/// `tty` is zero: the Swift daemon reports the pty's device number, and nothing in the app reads
+/// it (verified by grep). Reporting a fabricated value would be worse than reporting none.
+/// Wraps an encoded session list in the frame to send, refusing one that is too big.
+///
+/// A `Sessions` reply grows with the session count and each session's cwd, and unlike output it
+/// goes out as ONE frame. `Frame::encode` panics past the cap rather than truncating — and even if
+/// it did not, a client that sees a declared length over the cap fails its decoder permanently, so
+/// an over-long list would not merely fail, it would poison every later frame on that connection.
+/// Answer with the failure the app already knows how to show instead.
+///
+/// The frame then goes out inside an envelope, whose own cap `Envelope::encode` asserts, and the
+/// frame's header counts against it. So the limit is the smaller of the frame cap and what an
+/// envelope leaves room for (#246).
+fn list_reply(payload: Vec<u8>) -> Frame {
+    let cap = MAX_PAYLOAD_SIZE.min(MAX_ENVELOPE_PAYLOAD - HEADER_SIZE);
+    if payload.len() > cap {
+        return Frame::new(
+            FrameKind::Failure,
+            format!(
+                "session list of {} bytes exceeds the {cap}-byte reply cap",
+                payload.len()
+            )
+            .into_bytes(),
+        );
+    }
+    Frame::new(FrameKind::Sessions, payload)
+}
+
+/// The Status service is retired (#382): the daemon no longer decides whether its box is busy. An app
+/// from before then still asks for `status`, so every request gets the one failure that app already
+/// handles, `unsupported` at the last version it reads. Dropping it instead would leave that app
+/// waiting out its own timeout. Stream 0 was where verdicts were pushed, never where a request
+/// arrives.
+fn retired_status(envelope: &Envelope, writer: &SharedWriter) {
+    if envelope.stream == 0 {
+        return;
+    }
+    crate::rpc::send(
+        writer,
+        Service::Status,
+        envelope.stream,
+        serde_json::json!(Reply::error(
+            2,
+            serde_json::json!({"unsupported": "this daemon has no status service"})
+        )),
+    );
+}
+
+/// Ends `id` on a thread of its own and acknowledges it there, once the shell is gone, counted in
+/// `SessionStore::is_killing` meanwhile. A shell that declines SIGHUP holds `SessionStore::kill`
+/// for `SIGHUP_GRACE` before the SIGKILL, and one stuck in the kernel holds it in `waitpid` for as
+/// long as that lasts. Either, run on the connection's reader, held up every other request on the
+/// connection behind it: the app's service connection to a host carries its VCS, File and
+/// forwarding traffic as well (#283).
+///
+/// Only a live session gets a thread, or one another kill is still ending, which this kill waits on
+/// so that it too is acknowledged only once the shell is gone. An id the store does not hold costs
+/// the removal of a screen record and a refusal kept for `REFUSED_ID_WINDOW`, so it is ended here,
+/// and a stream of kills for ids that are not sessions cannot start a thread apiece.
+fn kill_off_the_reader(
+    sessions: &SessionStore,
+    id: SessionId,
+    writer: &SharedWriter,
+    service: Service,
+    stream: u32,
+) -> Option<Envelope> {
+    let acknowledged = move || {
+        Envelope::new(
+            service,
+            stream,
+            Frame::control(FrameKind::Acknowledged).encode(),
+        )
+    };
+    // First, so an attach still on its way cannot start the session after this has looked (#297).
+    sessions.refuse(id);
+    if sessions.end_if_absent(id) {
+        return Some(acknowledged());
+    }
+    // Counted before the thread starts, so a hand-off read next on this connection already sees it.
+    let in_flight = sessions.kill_in_flight();
+    let (store, shared) = (sessions.clone(), Arc::clone(writer));
+    let spawned = std::thread::Builder::new().spawn(move || {
+        let _in_flight = in_flight;
+        store.kill(id);
+        let bytes = acknowledged().encode();
+        if let Ok(mut writer) = shared.lock() {
+            let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
+        }
+    });
+    if spawned.is_ok() {
+        return None;
+    }
+    // No thread to be had: the kill happens here after all rather than not at all.
+    sessions.kill(id);
+    Some(acknowledged())
+}
+
+pub fn encode_descriptor_list(sessions: &[crate::session::SessionInfo]) -> Vec<u8> {
+    fn put_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&(sessions.len() as u32).to_be_bytes());
+    for info in sessions {
+        out.extend_from_slice(&info.id.0);
+        out.extend_from_slice(&info.pid.to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes());
+        put_string(&mut out, info.cwd.as_deref().unwrap_or(""));
+        out.push(u8::from(info.attached));
+        // Metadata: the foreground command, under the key the app's own daemon uses for it, so a
+        // pane title resolves identically on either backend; then what the client said about the
+        // session, which is how the app finds a workroom's sessions (#255). The Claude profile is
+        // sent only for a confirmed `claude`, empty when unset; its absence tells the app there is
+        // no account to show (#480).
+        let entries = u32::from(info.foreground.is_some())
+            + u32::from(info.claude_profile.is_some())
+            + info.metadata.len() as u32;
+        out.extend_from_slice(&entries.to_be_bytes());
+        if let Some(command) = &info.foreground {
+            put_string(&mut out, "command");
+            put_string(&mut out, command);
+        }
+        if let Some(profile) = &info.claude_profile {
+            put_string(&mut out, "claude_profile");
+            put_string(&mut out, profile);
+        }
+        for (key, value) in &info.metadata {
+            put_string(&mut out, key);
+            put_string(&mut out, value);
+        }
+    }
+    out
+}
+
+/// Decodes what `encode_descriptor_list` produced, for `workroomd list`'s own output.
+pub fn decode_descriptor_list(payload: &[u8]) -> Vec<(String, bool, String)> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    let take = |at: &mut usize, n: usize| -> Option<&[u8]> {
+        let slice = payload.get(*at..*at + n)?;
+        *at += n;
+        Some(slice)
+    };
+    let Some(count) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap())) else {
+        return out;
+    };
+    for _ in 0..count {
+        let Some(id) = take(&mut at, 16).and_then(SessionId::from_slice) else {
+            break;
+        };
+        if take(&mut at, 4).is_none() || take(&mut at, 8).is_none() {
+            break;
+        }
+        let Some(cwd_len) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+        else {
+            break;
+        };
+        if take(&mut at, cwd_len as usize).is_none() {
+            break;
+        }
+        let Some(attached) = take(&mut at, 1).map(|b| b[0] == 1) else {
+            break;
+        };
+        let Some(entries) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+        else {
+            break;
+        };
+        let mut command = String::from("-");
+        for _ in 0..entries {
+            let Some(key_len) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            else {
+                break;
+            };
+            let key = take(&mut at, key_len as usize)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default();
+            let Some(value_len) =
+                take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            else {
+                break;
+            };
+            let value = take(&mut at, value_len as usize)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default();
+            if key == "command" {
+                command = value;
+            }
+        }
+        out.push((id.to_hyphenated(), attached, command));
+    }
+    out
+}
+
+/// Connects to a running daemon, or returns None if there is nothing listening.
+pub fn connect(socket: &Path) -> Option<UnixStream> {
+    UnixStream::connect(socket).ok()
+}
+
+/// Spawns `workroomd serve` detached, the way the Swift attach client spawns the daemon today:
+/// `posix_spawn` with a new session, stdio to /dev/null, so it outlives whoever started it.
+pub fn spawn_daemon(binary: &Path, socket: &Path) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(binary);
+    command
+        .arg("serve")
+        .arg("--socket")
+        .arg(socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: the closure runs in the forked child before exec, where only async-signal-safe calls
+    // are allowed. It makes one, `setsid`, and allocates nothing.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            // Detach from the caller's session so the daemon is not killed with it, which is the
+            // whole point of a session that outlives the app.
+            libc::setsid();
+            Ok(())
+        });
+    }
+    command.spawn().map(|_| ())
+}
+
+/// The longest workroom id a session keeps (#255). A local workroom's id is `wr|<project>|<name>`,
+/// and a macOS path is at most 1024 bytes, so every real one fits. One past it drops the session's
+/// metadata rather than cutting an id that would then match the wrong workroom, or none.
+pub const MAX_WORKROOM_BYTES: usize = 2048;
+/// The longest title a session keeps, cut at a character boundary. Every session's metadata goes
+/// out in one list reply (`list_reply`), so one long title must not be able to fill it.
+pub const MAX_TITLE_BYTES: usize = 256;
+
+/// What the app said about a session it creates: its workroom and title, from the
+/// variables it puts in the attach command's environment (`PersistentSessionService.launchEnvironment`,
+/// mapped through `SessionMetadataKey.environmentVariables`), which the attach client forwards with
+/// the rest of its environment. Under the keys the app reads them back by (`SessionMetadataKey`).
+/// The app's `project` is not kept: nothing reads it, and it would double the list's worst case.
+///
+/// The shell never sees these (the create path drops `WORKROOM_SESSION_*` from its environment);
+/// before #255 they were dropped here too, so a deleted workroom's sessions were never found.
+pub fn session_metadata(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
+    let get = |name: &str| {
+        env.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.to_string_lossy().into_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let mut metadata = Vec::new();
+    if let Some(workroom) = get("WORKROOM_SESSION_WORKROOM") {
+        if workroom.len() > MAX_WORKROOM_BYTES {
+            return Vec::new();
+        }
+        metadata.push(("workroom".to_string(), workroom));
+    }
+    if let Some(mut title) = get("WORKROOM_SESSION_TITLE") {
+        if title.len() > MAX_TITLE_BYTES {
+            let mut end = MAX_TITLE_BYTES;
+            while !title.is_char_boundary(end) {
+                end -= 1;
+            }
+            title.truncate(end);
+        }
+        metadata.push(("title".to_string(), title));
+    }
+    metadata
+}
+
+/// How a client asks for a session to exist: the id, plus what to run if it does not yet.
+///
+/// These travel in the Attach frame rather than being read from the daemon's own environment,
+/// because the daemon is long-lived and shared — its environment is whatever it happened to be
+/// spawned with, which may be minutes or days older than the client's, and belongs to a different
+/// workroom. The client knows the shell, the directory and the metadata; the daemon must be told.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AttachRequest {
+    pub id: Option<SessionId>,
+    pub shell: Option<OsString>,
+    pub command: Option<OsString>,
+    pub cwd: Option<OsString>,
+    /// Ghostty's bundled resources, whose `shell-integration` subtree the shell is pointed at.
+    /// Without it the shell loads the user's own config directly and the app loses OSC 2/7 —
+    /// which is what a pane's title and working directory are read from.
+    pub resources: Option<OsString>,
+    pub columns: u16,
+    pub rows: u16,
+    /// Passed to the child verbatim. The client's environment, not the daemon's.
+    pub env: Vec<(OsString, OsString)>,
+    /// Attach only if the session exists; never create it (`CREATE=0`). A restored pane sends it,
+    /// because creating would hand back a fresh shell that looks like the one that was running
+    /// there. A local relay that is refused attaches again without it, after saying so (#459).
+    /// Every daemon-owned restored pane, local or remote, sends it, so one request cannot
+    /// race the answer; the app asks first (`confirmBeforeAttach`) only about a session the
+    /// retired daemon held, whose client has no such flag. Inverted so the default,
+    /// and an older client that never sends it, keeps create-on-attach.
+    pub existing_only: bool,
+}
+
+impl AttachRequest {
+    /// 16-byte id, then NUL-terminated `KEY=VALUE` entries. Deliberately not a serialisation
+    /// format: the envelope already carries the version, the fields are all strings, and a
+    /// dependency-free encoding keeps the daemon linkable into anything.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.id.map(|i| i.0).unwrap_or([0u8; 16]));
+        let mut put = |key: &str, value: &[u8]| {
+            out.extend_from_slice(key.as_bytes());
+            out.push(b'=');
+            out.extend_from_slice(value);
+            out.push(0);
+        };
+        if let Some(shell) = &self.shell {
+            put("SHELL", shell.as_bytes());
+        }
+        if let Some(command) = &self.command {
+            put("COMMAND", command.as_bytes());
+        }
+        if let Some(cwd) = &self.cwd {
+            put("CWD", cwd.as_bytes());
+        }
+        if let Some(resources) = &self.resources {
+            put("RESOURCES", resources.as_bytes());
+        }
+        put("COLS", self.columns.to_string().as_bytes());
+        put("ROWS", self.rows.to_string().as_bytes());
+        if self.existing_only {
+            put("CREATE", b"0");
+        }
+        for (key, value) in &self.env {
+            let mut entry = b"ENV:".to_vec();
+            entry.extend_from_slice(key.as_bytes());
+            out.extend_from_slice(&entry);
+            out.push(b'=');
+            out.extend_from_slice(value.as_bytes());
+            out.push(0);
+        }
+        out
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<AttachRequest> {
+        let id = SessionId::from_slice(payload.get(..16)?)?;
+        let mut request = AttachRequest {
+            id: Some(id),
+            ..Default::default()
+        };
+        for entry in payload[16..].split(|b| *b == 0) {
+            if entry.is_empty() {
+                continue;
+            }
+            let Some(split) = entry.iter().position(|b| *b == b'=') else {
+                continue;
+            };
+            let (key, value) = (&entry[..split], &entry[split + 1..]);
+            let value = OsString::from_vec(value.to_vec());
+            match key {
+                b"SHELL" => request.shell = Some(value),
+                b"COMMAND" => request.command = Some(value),
+                b"CWD" => request.cwd = Some(value),
+                b"RESOURCES" => request.resources = Some(value),
+                b"COLS" => {
+                    request.columns = value.to_string_lossy().parse().unwrap_or(0);
+                }
+                b"ROWS" => {
+                    request.rows = value.to_string_lossy().parse().unwrap_or(0);
+                }
+                b"CREATE" => request.existing_only = value == "0",
+                _ => {
+                    if let Some(name) = key.strip_prefix(b"ENV:") {
+                        request.env.push((OsString::from_vec(name.to_vec()), value));
+                    }
+                }
+            }
+        }
+        Some(request)
+    }
+
+    /// Built from the environment `PersistentSessionService.launchEnvironment` sets, so the app
+    /// needs no new contract: it already exports every one of these.
+    pub fn from_env() -> AttachRequest {
+        Self::from_vars(|name| std::env::var_os(name), std::env::vars_os().collect())
+    }
+
+    /// The parsing, with the environment passed in.
+    ///
+    /// Separated from `from_env` so tests never touch the process environment. Setting variables
+    /// in a test is a shared-mutable-state bug waiting to happen: these tests passed serially and
+    /// raced each other under cargo's default parallelism, each clobbering the ids the others had
+    /// just set.
+    pub fn from_vars(
+        get: impl Fn(&str) -> Option<OsString>,
+        env: Vec<(OsString, OsString)>,
+    ) -> AttachRequest {
+        let var = |name: &str| get(name).filter(|v| !v.is_empty());
+        AttachRequest {
+            // An empty COMMAND is the app's "ordinary shell", not a command to run: `sh -c ""`
+            // exits instantly and reads as a session that died on creation.
+            id: var("WORKROOM_SESSION_ID").and_then(|v| parse_session_id(&v)),
+            shell: var("WORKROOM_SESSION_SHELL").or_else(|| var("SHELL")),
+            command: var("WORKROOM_SESSION_COMMAND"),
+            cwd: var("WORKROOM_SESSION_CWD"),
+            resources: var("WORKROOM_SESSION_RESOURCES"),
+            columns: 0,
+            rows: 0,
+            env,
+            existing_only: false,
+        }
+    }
+}
+
+/// The socket the app told us to use, matching `PersistentSessionService`'s
+/// `WORKROOM_SESSION_SOCKET`. `attachCommand()` passes no flags, so the environment is the whole
+/// contract on the app's side.
+pub fn socket_from_env() -> Option<PathBuf> {
+    std::env::var_os("WORKROOM_SESSION_SOCKET")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Parses the app's `uuidString` form — uppercase and hyphenated — tolerantly: hex digits only,
+/// exactly 32 of them. Tolerant because the id is a stored-data contract with Swift's `UUID`
+/// description, and a formatting difference should not silently orphan a live session.
+pub fn parse_session_id(value: &OsStr) -> Option<SessionId> {
+    let text = String::from_utf8(value.as_bytes().to_vec()).ok()?;
+    let hex: String = text.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(SessionId(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instance_lock_is_exclusive() {
+        let dir = std::env::temp_dir().join(format!("workroomd-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("workroomd.sock");
+
+        let first = acquire_instance_lock(&socket).expect("first lock");
+        assert!(
+            matches!(
+                acquire_instance_lock(&socket),
+                Err(ServeError::AlreadyRunning(_))
+            ),
+            "a second daemon must not be able to take the lock"
+        );
+        drop(first);
+        // Released on drop, so a restart after a clean exit works. Retried briefly: a process
+        // another test forks at that moment holds the lock until it execs (see #224).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while acquire_instance_lock(&socket).is_err() {
+            assert!(std::time::Instant::now() < deadline, "lock after release");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The descriptor list must match what `SessionDescriptor.decodeList` expects, byte for byte,
+    /// or the app silently sees no sessions on the Rust backend.
+    #[test]
+    fn descriptor_list_round_trips_through_our_own_decoder() {
+        use crate::session::SessionInfo;
+        let sessions = vec![
+            SessionInfo {
+                id: SessionId([3u8; 16]),
+                pid: 4242,
+                attached: true,
+                foreground: Some("nvim".into()),
+                cwd: Some("/work/room".into()),
+                claude_profile: None,
+                metadata: Vec::new(),
+            },
+            SessionInfo {
+                id: SessionId([9u8; 16]),
+                pid: 77,
+                attached: false,
+                foreground: None,
+                cwd: None,
+                claude_profile: None,
+                metadata: Vec::new(),
+            },
+        ];
+        let decoded = decode_descriptor_list(&encode_descriptor_list(&sessions));
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].0, SessionId([3u8; 16]).to_hyphenated());
+        assert!(decoded[0].1);
+        assert_eq!(decoded[0].2, "nvim");
+        assert!(!decoded[1].1);
+        assert_eq!(decoded[1].2, "-");
+    }
+
+    /// The Claude profile entry is sent for a confirmed `claude`, empty when it has none, and not at
+    /// all otherwise, so the app shows no account rather than guessing one (#480).
+    #[test]
+    fn descriptor_list_carries_the_claude_profile_of_a_claude_only() {
+        use crate::session::SessionInfo;
+        let entry = |key: &str, value: &str| {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(key.len() as u32).to_be_bytes());
+            out.extend_from_slice(key.as_bytes());
+            out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            out.extend_from_slice(value.as_bytes());
+            out
+        };
+        let contains = |haystack: &[u8], needle: &[u8]| {
+            haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+        };
+        let session = |claude_profile: Option<&str>| SessionInfo {
+            id: SessionId([5u8; 16]),
+            pid: 9,
+            attached: false,
+            foreground: Some("claude".into()),
+            cwd: None,
+            claude_profile: claude_profile.map(str::to_string),
+            metadata: Vec::new(),
+        };
+
+        let set = encode_descriptor_list(&[session(Some("/p/sessions/2-u_example.com"))]);
+        assert!(contains(
+            &set,
+            &entry("claude_profile", "/p/sessions/2-u_example.com")
+        ));
+        let unset = encode_descriptor_list(&[session(Some(""))]);
+        assert!(contains(&unset, &entry("claude_profile", "")));
+        // And the entry count covers it, so the app's decoder reads past it to the end.
+        let decoded = decode_descriptor_list(&unset);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].2, "claude");
+        let unknown = encode_descriptor_list(&[session(None)]);
+        assert!(!contains(&unknown, b"claude_profile"));
+        assert_eq!(decode_descriptor_list(&unknown)[0].2, "claude");
+    }
+
+    /// The header the Swift decoder reads first, pinned explicitly: a count, then a 16-byte id.
+    /// `SessionDescriptor.minimumEncodedSize` is 37, and `decodeList` rejects a count larger than
+    /// `payload.count / 37` — so an encoder that disagreed here would be rejected wholesale rather
+    /// than producing a visible error.
+    #[test]
+    fn descriptor_list_layout_matches_the_swift_decoder() {
+        use crate::session::SessionInfo;
+        let bytes = encode_descriptor_list(&[SessionInfo {
+            id: SessionId([1u8; 16]),
+            pid: 1,
+            attached: true,
+            foreground: None,
+            cwd: None,
+            claude_profile: None,
+            metadata: Vec::new(),
+        }]);
+        assert_eq!(&bytes[..4], &[0, 0, 0, 1], "count is a big-endian u32");
+        assert_eq!(&bytes[4..20], &[1u8; 16], "then the 16-byte identifier");
+        // 4 (count) + 16 + 4 (pid) + 8 (tty) + 4 (empty cwd) + 1 (attached) + 4 (no metadata)
+        assert_eq!(bytes.len(), 41);
+        assert!(
+            1 <= bytes.len() / 37,
+            "a single descriptor must satisfy Swift's minimumEncodedSize guard"
+        );
+    }
+
+    /// A `Sessions` reply is one frame, and `Frame::encode` panics rather than truncating past the
+    /// cap. Reply with a failure instead — which the app already renders — rather than killing the
+    /// connection thread and leaving the client waiting for a frame that will never come.
+    #[test]
+    fn an_oversized_session_list_is_refused_rather_than_panicking() {
+        // What `dispatch` sends: the reply frame inside an envelope. Encoding the frame alone
+        // passed at exactly `MAX_PAYLOAD_SIZE`, which then panicked `Envelope::encode` (#246).
+        let sent = |payload: Vec<u8>| {
+            let frame = list_reply(payload);
+            let _ = Envelope::new(Service::Control, 0, frame.encode()).encode();
+            frame.kind
+        };
+
+        // The biggest list that fits is the smaller of the frame cap and what the envelope leaves
+        // after the frame's five-byte header, whichever way round the two caps are.
+        let fits = MAX_PAYLOAD_SIZE.min(MAX_ENVELOPE_PAYLOAD - HEADER_SIZE);
+
+        assert_eq!(sent(encode_descriptor_list(&[])), FrameKind::Sessions);
+        assert_eq!(sent(vec![0u8; fits]), FrameKind::Sessions);
+        // And the refusal must itself be sendable, which is the whole point.
+        assert_eq!(sent(vec![0u8; fits + 1]), FrameKind::Failure);
+        // Exactly `MAX_PAYLOAD_SIZE` is what panicked before the fix (#246).
+        assert_eq!(
+            sent(vec![0u8; MAX_PAYLOAD_SIZE]) == FrameKind::Failure,
+            MAX_PAYLOAD_SIZE > fits
+        );
+        assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE + 1]), FrameKind::Failure);
+    }
+
+    fn env(entries: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        entries
+            .iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+            .collect()
+    }
+
+    /// The app's metadata variables become the session's metadata, under the keys the app reads
+    /// them back by (`SessionMetadataKey`); everything else in the client's environment, the app's
+    /// unread `project` included, is not metadata (#255).
+    #[test]
+    fn a_sessions_metadata_comes_from_the_apps_variables() {
+        let metadata = session_metadata(&env(&[
+            ("PATH", "/bin"),
+            ("WORKROOM_SESSION_ID", "ignored"),
+            ("WORKROOM_SESSION_PROJECT", "/Users/me/dev/app"),
+            (
+                "WORKROOM_SESSION_WORKROOM",
+                "wr|/Users/me/dev/app|cyan-brush",
+            ),
+            ("WORKROOM_SESSION_TITLE", "Terminal 2"),
+            ("WORKROOM_SESSION_TAB", "dead"),
+        ]));
+        assert_eq!(
+            metadata,
+            vec![
+                (
+                    "workroom".to_string(),
+                    "wr|/Users/me/dev/app|cyan-brush".to_string()
+                ),
+                ("title".to_string(), "Terminal 2".to_string()),
+            ]
+        );
+        assert!(session_metadata(&env(&[("WORKROOM_SESSION_WORKROOM", "")])).is_empty());
+    }
+
+    /// A local workroom id holds the whole project path, so it can be long and must still be kept;
+    /// one past the bound drops the metadata whole rather than keep a cut id (D8).
+    #[test]
+    fn a_long_workroom_id_is_kept_and_one_past_the_bound_drops_the_metadata() {
+        let long = format!("wr|/{}|cyan", "p".repeat(1100));
+        let kept = session_metadata(&env(&[
+            ("WORKROOM_SESSION_WORKROOM", &long),
+            ("WORKROOM_SESSION_TITLE", "Terminal 1"),
+        ]));
+        assert_eq!(kept[0], ("workroom".to_string(), long));
+
+        let over = "w".repeat(MAX_WORKROOM_BYTES + 1);
+        assert!(
+            session_metadata(&env(&[
+                ("WORKROOM_SESSION_WORKROOM", &over),
+                ("WORKROOM_SESSION_TITLE", "Terminal 1"),
+            ]))
+            .is_empty()
+        );
+    }
+
+    /// A title is cut to `MAX_TITLE_BYTES` at a character boundary, never mid-character.
+    #[test]
+    fn a_long_title_is_cut_at_a_character_boundary() {
+        // Three bytes each, so 256 falls inside one.
+        let title = "€".repeat(10 * 1024);
+        let metadata = session_metadata(&env(&[("WORKROOM_SESSION_TITLE", &title)]));
+        let (key, cut) = &metadata[0];
+        assert_eq!(key, "title");
+        assert!(cut.len() <= MAX_TITLE_BYTES && cut.len() > MAX_TITLE_BYTES - 3);
+        assert!(cut.chars().all(|c| c == '€'));
+    }
+
+    /// With every field at its bound, hundreds of sessions still fit one list reply, so no title or
+    /// workroom id can turn the whole list into a `Failure` (D8).
+    #[test]
+    fn many_sessions_at_the_metadata_bounds_still_list() {
+        use crate::session::SessionInfo;
+        let metadata = vec![
+            ("workroom".to_string(), "w".repeat(MAX_WORKROOM_BYTES)),
+            ("title".to_string(), "t".repeat(MAX_TITLE_BYTES)),
+            ("created".to_string(), u64::MAX.to_string()),
+        ];
+        let sessions: Vec<SessionInfo> = (0..250u8)
+            .map(|n| SessionInfo {
+                id: SessionId([n; 16]),
+                pid: 1,
+                attached: false,
+                foreground: Some("nvim".into()),
+                cwd: Some("c".repeat(1024)),
+                claude_profile: None,
+                metadata: metadata.clone(),
+            })
+            .collect();
+        assert_eq!(
+            list_reply(encode_descriptor_list(&sessions)).kind,
+            FrameKind::Sessions
+        );
+    }
+
+    #[test]
+    fn an_empty_descriptor_list_is_just_a_zero_count() {
+        assert_eq!(encode_descriptor_list(&[]), vec![0, 0, 0, 0]);
+        assert!(decode_descriptor_list(&[0, 0, 0, 0]).is_empty());
+    }
+
+    #[test]
+    fn a_truncated_descriptor_list_decodes_to_what_survived() {
+        use crate::session::SessionInfo;
+        let full = encode_descriptor_list(&[SessionInfo {
+            id: SessionId([5u8; 16]),
+            pid: 1,
+            attached: true,
+            foreground: None,
+            cwd: None,
+            claude_profile: None,
+            metadata: Vec::new(),
+        }]);
+        // Cut mid-descriptor: no panic, no phantom entry.
+        assert!(decode_descriptor_list(&full[..20]).is_empty());
+    }
+
+    #[test]
+    fn attach_request_round_trips() {
+        let request = AttachRequest {
+            id: Some(SessionId([7u8; 16])),
+            shell: Some(OsString::from("/bin/zsh")),
+            command: Some(OsString::from("npm run dev")),
+            cwd: Some(OsString::from("/Users/x/dev/workroom")),
+            resources: Some(OsString::from(
+                "/Applications/Workroom.app/Contents/Resources/ghostty",
+            )),
+            columns: 120,
+            rows: 40,
+            env: vec![
+                (OsString::from("TERM"), OsString::from("xterm-ghostty")),
+                (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+            ],
+            existing_only: true,
+        };
+        let decoded = AttachRequest::decode(&request.encode()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    /// A value containing `=` must survive: PATH-like variables and commands are full of them, and
+    /// splitting on the LAST rather than the FIRST separator would quietly corrupt them.
+    #[test]
+    fn attach_request_keeps_equals_signs_in_values() {
+        let request = AttachRequest {
+            id: Some(SessionId([1u8; 16])),
+            command: Some(OsString::from("FOO=bar make test ARGS=-v")),
+            env: vec![(OsString::from("K"), OsString::from("a=b=c"))],
+            ..Default::default()
+        };
+        let decoded = AttachRequest::decode(&request.encode()).expect("decode");
+        assert_eq!(decoded.command, request.command);
+        assert_eq!(decoded.env, request.env);
+    }
+
+    #[test]
+    fn attach_request_survives_empty_optional_fields() {
+        let request = AttachRequest {
+            id: Some(SessionId([2u8; 16])),
+            ..Default::default()
+        };
+        let decoded = AttachRequest::decode(&request.encode()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn attach_request_rejects_a_short_payload() {
+        assert!(AttachRequest::decode(&[0u8; 8]).is_none());
+    }
+
+    /// The app sets these and passes NO flags, so the environment alone has to be sufficient.
+    /// The app sets these and passes NO flags, so the environment alone has to be sufficient.
+    #[test]
+    fn attach_request_reads_the_app_environment_contract() {
+        let vars = [
+            (
+                "WORKROOM_SESSION_ID",
+                "550e8400-e29b-41d4-a716-446655440000",
+            ),
+            ("WORKROOM_SESSION_SHELL", "/bin/fish"),
+            ("WORKROOM_SESSION_CWD", "/work/room"),
+            ("WORKROOM_SESSION_COMMAND", ""),
+        ];
+        let request = AttachRequest::from_vars(
+            |name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| OsString::from(*v))
+            },
+            vec![(OsString::from("TERM"), OsString::from("xterm-ghostty"))],
+        );
+        assert_eq!(
+            request.id.map(|i| i.to_hyphenated()).as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(request.shell.as_deref(), Some(OsStr::new("/bin/fish")));
+        assert_eq!(request.cwd.as_deref(), Some(OsStr::new("/work/room")));
+        // An empty COMMAND is "ordinary shell", not a command — `sh -c ""` exits instantly and
+        // reads as a session that died on creation.
+        assert_eq!(request.command, None);
+        assert_eq!(request.env.len(), 1);
+    }
+
+    /// Falls back to the plain SHELL when the app did not name one.
+    #[test]
+    fn attach_request_falls_back_to_the_plain_shell_variable() {
+        let request = AttachRequest::from_vars(
+            |name| (name == "SHELL").then(|| OsString::from("/bin/zsh")),
+            Vec::new(),
+        );
+        assert_eq!(request.shell.as_deref(), Some(OsStr::new("/bin/zsh")));
+    }
+
+    #[test]
+    fn parses_the_apps_uuid_format() {
+        let id = parse_session_id(OsStr::new("550E8400-E29B-41D4-A716-446655440000")).expect("id");
+        assert_eq!(id.to_hyphenated(), "550e8400-e29b-41d4-a716-446655440000");
+        // Unhyphenated is the same id: the separators carry no information.
+        assert_eq!(
+            parse_session_id(OsStr::new("550e8400e29b41d4a716446655440000")),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_session_id() {
+        assert!(parse_session_id(OsStr::new("not-a-uuid")).is_none());
+        assert!(parse_session_id(OsStr::new("")).is_none());
+        // 31 and 33 hex digits are both wrong, and neither may be silently padded or truncated.
+        assert!(parse_session_id(OsStr::new(&"a".repeat(31))).is_none());
+        assert!(parse_session_id(OsStr::new(&"a".repeat(33))).is_none());
+    }
+}

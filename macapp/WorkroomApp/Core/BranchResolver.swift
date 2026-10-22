@@ -4,7 +4,7 @@ import WorkroomSystem
 import WorkroomVCS
 
 /// Resolves a project root's current branch for the sidebar root-row label — the current branch, or
-/// a short SHA when detached — read structurally through `LocalVCSProviding` (SwiftGitX, or wr-agent
+/// a short SHA when detached — read structurally through `LocalVCSProviding` (SwiftGitX, or workroomd
 /// on the agent path). GUI-only: the `workroom` CLI never
 /// shows it, and resolving per project (not inside `list --json`) keeps the list instant and
 /// isolates a slow/wedged repo to its own row. Best-effort — any failure or timeout yields

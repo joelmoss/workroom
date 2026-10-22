@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Foundation
 import WorkroomSystem
 import WorkroomVCS
@@ -16,14 +16,14 @@ import os
 ///   for every machine, which is why a machine's own regenerated keys never trip it (Phase 0,
 ///   item 6). The VM's sshd is not what answers: boxd terminates ssh at the gateway.
 /// - **A host** is a fresh machine with `Resources/host-setup/systemd.sh` run on it: the identity
-///   unit and the agent's supervisor, both systemd units (see the script). The identity unit is
+///   unit and the daemon's supervisor, both systemd units (see the script). The identity unit is
 ///   load-bearing here: every fresh boxd machine boots with the image's one machine-id and ssh
 ///   host key (measured, 2026-10-10).
 /// - **Names.** A host is the machine `<prefix>-<host id>`. A failed step removes by name, since
 ///   the CLI's own output may never have arrived, and a driver made after a relaunch reaches a
 ///   recorded host by its ID alone.
 ///
-/// Everything the agent keeps is on the machine's home disk (`agentSocket`), so a machine that is
+/// Everything the daemon keeps is on the machine's home disk (`daemonSocket`), so a machine that is
 /// stopped and started keeps its binary and its screens.
 public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   public struct Configuration: Sendable {
@@ -43,11 +43,11 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// account the org check alone passes, and a machine of the first account reads as "not
     /// found", which `destroy` would take for gone. Whoever records a host records this beside it.
     public var account: String?
-    /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent's
+    /// The daemon's socket on every host. On the home disk, never the tmpfs `/run`: the daemon's
     /// binary is installed beside it, and a stopped machine would lose it.
-    public var agentSocket: String
+    public var daemonSocket: String
 
-    /// Where the supervisor has the agent keep each session's last screen (#232).
+    /// Where the supervisor has the daemon keep each session's last screen (#232).
     public var screens: String
     /// The files the CLI writes each machine's ssh stanza and host key into.
     public var sshConfig: URL
@@ -58,7 +58,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
     public init(
       cli: URL, prefix: String = "workroom", org: String? = nil, account: String? = nil,
-      agentSocket: String = "\(BoxdHostDriver.stateDirectory)/agent/agent.sock",
+      daemonSocket: String = "\(BoxdHostDriver.stateDirectory)/daemon/workroomd.sock",
       screens: String = "\(BoxdHostDriver.stateDirectory)/screens",
       sshConfig: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
         ".ssh/config"),
@@ -70,7 +70,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       self.prefix = prefix
       self.org = org
       self.account = account
-      self.agentSocket = agentSocket
+      self.daemonSocket = daemonSocket
       self.screens = screens
       self.sshConfig = sshConfig
       self.knownHosts = knownHosts
@@ -80,13 +80,13 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The host descriptor's `driver` for this provider's hosts.
   public static let driverName = "boxd"
-  /// The user every boxd machine logs in as, whose home holds the agent's state and the clone.
+  /// The user every boxd machine logs in as, whose home holds the daemon's state and the clone.
   public static let user = "boxd"
-  /// Where Workroom keeps its state on a boxd machine: the agent's socket and the sessions' screens.
+  /// Where Workroom keeps its state on a boxd machine: the daemon's socket and the sessions' screens.
   public static let stateDirectory = "/home/\(user)/.local/state/workroom"
 
   public let configuration: Configuration
-  public var agentSocket: String { configuration.agentSocket }
+  public var daemonSocket: String { configuration.daemonSocket }
   /// Where each host's `ssh_config` and `known_hosts` are written.
   public let directory: URL
   private let runner: any StatusCommandRunning
@@ -119,7 +119,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   // MARK: Provisioning
 
   /// A fresh machine, set up as a workroom's host: the identity unit has minted its identity and
-  /// the supervisor is waiting for an agent. A machine that gets no further is removed.
+  /// the supervisor is waiting for a daemon. A machine that gets no further is removed.
   public func create() async throws -> HostID {
     // The app announces the account step itself (it asks before the driver does): only its log here.
     try await ProvisioningProgress.step(.account, report: false) { try await checkOrg() }
@@ -133,7 +133,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
         let user = try ssh(id).user
         let command =
           "sudo sh -s -- "
-          + [user, configuration.agentSocket, configuration.screens]
+          + [user, configuration.daemonSocket, configuration.screens]
           .map(PosixShell.quoted).joined(separator: " ")
         try await setUp(
           command, on: .remote(id), stdin: Data(script.utf8), timeout: 120,
@@ -512,7 +512,7 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// Runs boxd's own installer, which puts `boxd` in `~/.local/bin` under `home`. Without a
-  /// terminal it installs only the binary: the PATH line, completions and agent skills it offers
+  /// terminal it installs only the binary: the PATH line, completions and daemon skills it offers
   /// are asked about on `/dev/tty`, and with none it installs none. Never with `-y`, which would
   /// install them all. It checks the download's sha256 and moves it into place whole, so a
   /// cancelled install leaves no `boxd` behind.
@@ -634,14 +634,14 @@ public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     return SSHTransport.Host(
       address: details.hostName, port: details.port, user: details.user,
       identityFile: details.identityFile, hostKey: details.hostKey,
-      agentSocket: configuration.agentSocket)
+      daemonSocket: configuration.daemonSocket)
   }
 
   public func openStream(to host: HostID) async throws -> HostStream {
     let id = try id(of: host)
     let target = try ssh(id)
     return try SSHTransport.exec(
-      SSHTransport.relayCommand(binary: target.agentBinary, socket: target.agentSocket),
+      SSHTransport.relayCommand(binary: target.daemonBinary, socket: target.daemonSocket),
       on: target, in: hostDirectory(id), purpose: .connection)
   }
 

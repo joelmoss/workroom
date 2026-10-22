@@ -78,8 +78,8 @@ final class PersistentSessionAttachGateTests: XCTestCase {
       uses, 0,
       """
       applyPersistentSession references PersistentSessionService.isAvailable again. That answers \
-      for the backend a NEW session would go to, so an unhealthy agent makes it false and strands \
-      every session the retired Swift daemon is still holding — the exact case the attach-only \
+      for the backend a NEW session would go to, so an unhealthy daemon makes it false and strands \
+      every session the retired Swift helper is still holding — the exact case the attach-only \
       client exists to serve. Route per session through attachCommand(forSession:) instead. \
       See docs/designs/remote-workrooms.md.
       """)
@@ -114,22 +114,22 @@ final class PersistentSessionAttachGateTests: XCTestCase {
 
   /// The other call site this commit added, and the one with the same blind spot.
   ///
-  /// `DaemonSessionSubstitutionTests` drives `confirmBeforeAttach` through the service and proves
+  /// `HelperSessionSubstitutionTests` drives `confirmBeforeAttach` through the service and proves
   /// the rule; none of it reaches the view. Deleting the call from `applyPersistentSession` leaves
   /// every one of those tests green while restoring the bug in full: a reattach to a session the
-  /// v2.0.0 daemon has lost, which it answers by forking a new shell and passing it off as the
+  /// v2.0.0 helper has lost, which it answers by forking a new shell and passing it off as the
   /// user's. Same "cover the wiring, not just the writer" failure this file was written for.
   ///
   /// Order is asserted too. A confirmation made AFTER the attach command is resolved is useless:
-  /// the stale daemon owner it is supposed to drop has already been routed to.
-  func testTheAttachIsConfirmedWithTheDaemonBeforeItIsRouted() throws {
+  /// the stale helper owner it is supposed to drop has already been routed to.
+  func testTheAttachIsConfirmedWithTheHelperBeforeItIsRouted() throws {
     let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
 
     guard let confirm = body.range(of: "confirmBeforeAttach(") else {
       return XCTFail(
         """
-        applyPersistentSession no longer asks the daemon whether it still holds this session. The \
-        shipped v2.0.0 daemon CREATES a session on attach for an id it does not hold, so a cached \
+        applyPersistentSession no longer asks the helper whether it still holds this session. The \
+        shipped v2.0.0 helper CREATES a session on attach for an id it does not hold, so a cached \
         ownership answer that has outlived its session turns a reattach into a brand new shell \
         with nothing to mark it as one. See PersistentSessionService.confirmBeforeAttach.
         """)
@@ -141,8 +141,8 @@ final class PersistentSessionAttachGateTests: XCTestCase {
     XCTAssertTrue(
       confirm.lowerBound < attach.lowerBound,
       """
-      the daemon is asked whether it still holds the session AFTER the attach command has been \
-      resolved, so a stale daemon owner is still the one routed to. Confirm first, then route.
+      the helper is asked whether it still holds the session AFTER the attach command has been \
+      resolved, so a stale helper owner is still the one routed to. Confirm first, then route.
       """)
   }
 
@@ -151,7 +151,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   ///
   /// Every test in `TerminalPersistentSessionPolicyTests` calls `usesPersistentSession` directly
   /// with literal arguments, so changing the CALLER to `hasExistingSession: false` restores the
-  /// original bug — an unhealthy agent strands every daemon-held terminal — with all of them still
+  /// original bug — an unhealthy daemon strands every helper-held terminal — with all of them still
   /// green. The argument-passing half is what this commit added, and it needs its own pin.
   func testAssignedSessionIDReportsWhetherTheSessionAlreadyExists() throws {
     let url = URL(fileURLWithPath: #filePath)
@@ -176,7 +176,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
       body.contains("hasExistingSession: persisted != nil"),
       """
       assignedSessionID no longer tells the policy whether the pane already has a session. Passing \
-      a constant there re-strands every session the retired Swift daemon holds whenever the agent \
+      a constant there re-strands every session the retired Swift helper holds whenever the daemon \
       is unhealthy, and TerminalPersistentSessionPolicyTests cannot see it: those tests call the \
       policy directly with literals, so they stay green. See docs/designs/remote-workrooms.md.
       """)

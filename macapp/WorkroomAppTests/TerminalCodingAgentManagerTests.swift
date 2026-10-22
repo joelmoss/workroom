@@ -173,7 +173,7 @@ final class TerminalCodingAgentManagerTests: XCTestCase {
     let tab = UUID()
     manager.commandFinished(tab: tab, target: target, failure: failure(1))
     await manager.inFlight[tab]?.value
-    XCTAssertEqual(manager.banners[tab], .failure(failure(1), .noAgentCLI))
+    XCTAssertEqual(manager.banners[tab], .failure(failure(1), .noCodingAgentCLI))
   }
 
   /// Codex is only looked for when claude is missing, not on every diagnosis.

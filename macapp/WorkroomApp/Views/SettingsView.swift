@@ -540,14 +540,14 @@ private struct TerminalSettingsPane: View {
 }
 
 private struct CodingAgentSettingsPane: View {
-  @Default(.terminalAgentBackend) private var agentBackend
-  @Default(.terminalAgentAutoDiagnose) private var agentAutoDiagnose
-  @Default(.terminalAgentRedactSecrets) private var agentRedactSecrets
+  @Default(.terminalCodingAgentBackend) private var codingAgentBackend
+  @Default(.terminalCodingAgentAutoDiagnose) private var codingAgentAutoDiagnose
+  @Default(.terminalCodingAgentRedactSecrets) private var codingAgentRedactSecrets
   @Default(.usageInWindowFooter) private var usageInWindowFooter
   @Default(.usageInPaneFooter) private var usageInPaneFooter
   @Default(.claudeUsageDeclined) private var claudeUsageDeclined
   @EnvironmentObject private var claudeUsageBridge: ClaudeUsageBridge
-  @EnvironmentObject private var agentUsage: CodingAgentUsageMonitor
+  @EnvironmentObject private var codingAgentUsage: CodingAgentUsageMonitor
   @State private var confirmingClaudeUsage = false
   @State private var bridgeError: String?
 
@@ -556,19 +556,19 @@ private struct CodingAgentSettingsPane: View {
       // Inline terminal agent (issue #49): always on — a failed command is diagnosed by the local
       // CLI and a fix suggested in the pane's status bar (+ a ✦ badge on the tab).
       Section {
-        Picker("Investigate with", selection: $agentBackend) {
+        Picker("Investigate with", selection: $codingAgentBackend) {
           Text("Auto (Claude, else Codex)").tag("auto")
           Text("Claude").tag("claude")
           Text("Codex").tag("codex")
         }
         .help("Which local agent CLI the Investigate button opens.")
 
-        Toggle("Diagnose automatically", isOn: $agentAutoDiagnose)
+        Toggle("Diagnose automatically", isOn: $codingAgentAutoDiagnose)
           .help("Run the diagnosis as soon as a command fails, instead of waiting for a click.")
           .accessibilityIdentifier("settings.control.autoDiagnose")
 
         VStack(alignment: .leading, spacing: 4) {
-          Toggle("Redact obvious secrets before sending", isOn: $agentRedactSecrets)
+          Toggle("Redact obvious secrets before sending", isOn: $codingAgentRedactSecrets)
             .help("Mask obvious secrets in the command output before sending it to the agent.")
 
           Text(
@@ -590,7 +590,9 @@ private struct CodingAgentSettingsPane: View {
           .accessibilityIdentifier("settings.control.usageInPaneFooter")
         // Only after "Don't Ask Again" in the footer: the one place left to change one's mind. Never
         // while cswap supplies Claude usage, which would ignore the bridge.
-        if claudeUsageDeclined, claudeUsageBridge.state == .disabled, agentUsage.claudeUsesBridge {
+        if claudeUsageDeclined, claudeUsageBridge.state == .disabled,
+          codingAgentUsage.claudeUsesBridge
+        {
           LabeledContent("Claude usage") {
             Button("Enable…") { confirmingClaudeUsage = true }
           }
@@ -618,7 +620,7 @@ private struct CodingAgentSettingsPane: View {
         do {
           try claudeUsageBridge.enable()
           claudeUsageDeclined = false
-          agentUsage.refresh()
+          codingAgentUsage.refresh()
         } catch {
           bridgeError = error.localizedDescription
         }

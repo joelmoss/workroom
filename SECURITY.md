@@ -17,7 +17,7 @@ Use GitHub's private vulnerability reporting: open the repository's **Security**
 Include what you need for the maintainer to reproduce it:
 
 - The Workroom version and release channel (stable, pre or Nightly), and your macOS version.
-- Whether the problem involves the app, the `workroom` CLI, the `wr-agent` daemon, or a remote host.
+- Whether the problem involves the app, the `workroom` CLI, the `workroomd` daemon, or a remote host.
 - The steps to reproduce it, and what an attacker gains.
 
 Once a fix has shipped, the advisory is published and credits the reporter unless they ask not to be

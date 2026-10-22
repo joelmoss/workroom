@@ -2,15 +2,15 @@
 //!
 //! **Why the version lives in a handshake and not in every envelope.** The design doc asks for a
 //! "versioned multiplex envelope" and then says what makes that versioning *real rather than
-//! ceremonial*: an agent on a suspended VM can be older than the app reconnecting to it, and the
-//! open question is whether reconnecting **replaces** the running agent — killing the pty children
+//! ceremonial*: a daemon on a suspended VM can be older than the app reconnecting to it, and the
+//! open question is whether reconnecting **replaces** the running daemon — killing the pty children
 //! the whole feature exists to preserve — or **negotiates** with the old one. Only negotiation
 //! preserves the children, and negotiation needs one exchange at connect time, not a version tag
 //! repeated on every frame. A per-envelope version field would cost 2 bytes on every chunk of
 //! terminal output and still not tell either side what the other supports.
 //!
 //! So: [`Hello`] is exchanged once, both sides take the **lower** of the two protocol versions,
-//! and every envelope after that is untagged. An agent that cannot satisfy the client's minimum
+//! and every envelope after that is untagged. A daemon that cannot satisfy the client's minimum
 //! says so and keeps running, rather than being replaced.
 //!
 //! Wire shape, all integers big-endian to match the frame codec:
@@ -23,46 +23,46 @@
 use std::collections::VecDeque;
 
 /// Bumped when the wire changes in a way an older peer cannot parse, OR when a new service is
-/// added that an older agent would silently drop rather than answer (`Service::Vcs`, added at 2 —
-/// an older agent has no `vcs::dispatch` at all, so an unversioned capability probe would just
+/// added that an older daemon would silently drop rather than answer (`Service::Vcs`, added at 2 —
+/// an older daemon has no `vcs::dispatch` at all, so an unversioned capability probe would just
 /// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
 /// at 5, all for the same reason, as is the Control frame `HandOff` at 6, `Service::Layout` at 7
 /// and `Service::ProgramStatus` at 8 — `serve.rs`'s
 /// dispatch returns silently for a service byte it does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
 /// takes the lower of the two sides' versions for the services both already understand (Terminal,
-/// Control), so a newer app still drives an older agent left running rather than replacing it —
+/// Control), so a newer app still drives an older daemon left running rather than replacing it —
 /// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
 pub const PROTOCOL_VERSION: u16 = 8;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
 /// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
 /// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
-/// incorrectly refuse Terminal/Control traffic with a pre-VCS agent too.
+/// incorrectly refuse Terminal/Control traffic with a pre-VCS daemon too.
 pub const MIN_VCS_VERSION: u16 = 2;
 /// The minimum peer version that understands `Service::File`. Same rule as `MIN_VCS_VERSION`: a
 /// File client checks the peer's raw `Hello.protocol_version` against this BEFORE sending anything,
-/// because a protocol-2 agent drops a File envelope without answering it and the request would
+/// because a protocol-2 daemon drops a File envelope without answering it and the request would
 /// otherwise wait out its own timeout. Never folded into `negotiate`.
 pub const MIN_FILE_VERSION: u16 = 3;
 /// The minimum peer version that understands `Service::Forward`. Same rule again: a protocol-4
-/// agent drops a Forward envelope without answering it, so a client checks the peer's raw
+/// daemon drops a Forward envelope without answering it, so a client checks the peer's raw
 /// `Hello.protocol_version` against this BEFORE sending an `open` — otherwise the forwarded
 /// connection hangs until the client's own timeout. Never folded into `negotiate`.
 pub const MIN_FORWARD_VERSION: u16 = 5;
 /// The minimum peer version that answers a `HandOff` frame (#230). Same rule again, and here it is
-/// also the policy: an agent that predates hand-off is never asked, so it keeps running and is
+/// also the policy: a daemon that predates hand-off is never asked, so it keeps running and is
 /// talked to over the versioned envelope.
 pub const MIN_HANDOFF_VERSION: u16 = 6;
 /// The minimum peer version that understands `Service::Layout` (#255). Same rule again: a
-/// protocol-6 agent drops a Layout envelope without answering it, so a client checks the peer's raw
-/// `Hello.protocol_version` against this first and treats an older agent as keeping no layouts.
+/// protocol-6 daemon drops a Layout envelope without answering it, so a client checks the peer's raw
+/// `Hello.protocol_version` against this first and treats an older daemon as keeping no layouts.
 pub const MIN_LAYOUT_VERSION: u16 = 7;
 /// The minimum peer version that understands `Service::ProgramStatus` (#358). Same rule again: a
-/// protocol-7 agent drops the envelope without answering it, and an app below this never sends
+/// protocol-7 daemon drops the envelope without answering it, and an app below this never sends
 /// one, so it never subscribes and is never sent an event.
 pub const MIN_PROGRAM_STATUS_VERSION: u16 = 8;
 
-/// Sent first by both sides. The magic is here so a peer that is not an agent at all — a login
+/// Sent first by both sides. The magic is here so a peer that is not a daemon at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly
 /// instead of being parsed as a service byte and a length.
 pub const MAGIC: [u8; 4] = *b"WRA1";
@@ -146,12 +146,12 @@ impl Hello {
             // instead of reporting it.
             let seen = bytes.len().min(MAGIC.len());
             if bytes[..seen] != MAGIC[..seen] {
-                return Err(ProtocolError::NotAnAgent);
+                return Err(ProtocolError::NotADaemon);
             }
             return Ok(None);
         }
         if bytes[..MAGIC.len()] != MAGIC {
-            return Err(ProtocolError::NotAnAgent);
+            return Err(ProtocolError::NotADaemon);
         }
         let version = u16::from_be_bytes([bytes[4], bytes[5]]);
         let build_len = bytes[6] as usize;
@@ -172,8 +172,8 @@ impl Hello {
 
 /// The negotiated result: the lower of the two versions, provided both sides can still speak it.
 ///
-/// Taking the lower version is what keeps a long-lived agent alive across an app upgrade. The
-/// failure case is deliberately *not* "replace the agent": it is an error the caller surfaces, so
+/// Taking the lower version is what keeps a long-lived daemon alive across an app upgrade. The
+/// failure case is deliberately *not* "replace the daemon": it is an error the caller surfaces, so
 /// that killing a workroom's running processes is always a decision someone made rather than a
 /// side effect of reconnecting.
 pub fn negotiate(local: &Hello, remote: &Hello) -> Result<u16, ProtocolError> {
@@ -222,8 +222,8 @@ impl Envelope {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ProtocolError {
-    #[error("peer did not send the agent greeting (got something else on the stream)")]
-    NotAnAgent,
+    #[error("peer did not send the daemon greeting (got something else on the stream)")]
+    NotADaemon,
     #[error(
         "peer speaks protocol {theirs}, which is below the minimum {minimum} this build supports"
     )]
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn hello_round_trips() {
-        let hello = Hello::current("wr-agent 0.1.0 (test)");
+        let hello = Hello::current("workroomd 0.1.0 (test)");
         let bytes = hello.encode();
         let (decoded, consumed) = Hello::decode(&bytes).unwrap().expect("complete");
         assert_eq!(decoded, hello);
@@ -329,19 +329,19 @@ mod tests {
     /// An ssh banner or MOTD on the stream must fail immediately and legibly, not stall waiting
     /// for bytes that can never make the greeting valid.
     #[test]
-    fn rejects_a_peer_that_is_not_an_agent() {
+    fn rejects_a_peer_that_is_not_a_daemon() {
         assert_eq!(
             Hello::decode(b"Welcome to Ubuntu 24.04 LTS\r\n"),
-            Err(ProtocolError::NotAnAgent)
+            Err(ProtocolError::NotADaemon)
         );
-        assert_eq!(Hello::decode(b"X"), Err(ProtocolError::NotAnAgent));
+        assert_eq!(Hello::decode(b"X"), Err(ProtocolError::NotADaemon));
         // But a genuine PREFIX of the magic is not yet a failure — the rest may still arrive.
         // "Welcome" above is caught at its second byte, which is why the banner fails fast.
         assert_eq!(Hello::decode(b"W").unwrap(), None);
         assert_eq!(Hello::decode(b"WRA").unwrap(), None);
     }
 
-    /// The bytes and versions the app pins too (`AgentHandshake`): a mismatch makes one side send
+    /// The bytes and versions the app pins too (`DaemonHandshake`): a mismatch makes one side send
     /// a service the other drops.
     #[test]
     fn program_status_is_service_7_from_protocol_8() {
@@ -360,7 +360,7 @@ mod tests {
         };
         let older = Hello {
             protocol_version: 1,
-            build: "agent asleep since last release".into(),
+            build: "daemon asleep since last release".into(),
         };
         assert_eq!(negotiate(&newer, &older).unwrap(), 1);
         assert_eq!(negotiate(&older, &newer).unwrap(), 1);

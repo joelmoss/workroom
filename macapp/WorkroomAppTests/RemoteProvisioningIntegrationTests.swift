@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Defaults
 import HostDrivers
 import WorkroomDomain
@@ -16,7 +16,7 @@ import XCTest
 /// provider's host, which Workroom gives no credential. Skipped unless run through the fixture
 /// script:
 ///
-///   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> \
+///   vcs/scripts/ssh-fixture/run.sh <linux workroomd> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/RemoteProvisioningIntegrationTests
 final class RemoteProvisioningIntegrationTests: XCTestCase {
   private var directory: URL!
@@ -56,7 +56,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
 
   private struct Fixture {
     let provisioning: ContainerHostDriver.Provisioning
-    let agent: URL
+    let daemon: URL
   }
 
   private func fixture(runtime override: URL? = nil) throws -> Fixture {
@@ -76,9 +76,9 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
         runtime: override ?? runtime, image: try need("WR_SSH_FIXTURE_IMAGE"),
         user: try need("WR_SSH_FIXTURE_USER"), identityFile: try need("WR_SSH_FIXTURE_IDENTITY"),
         publicKey: try need("WR_SSH_FIXTURE_PUBLIC_KEY"),
-        agentSocket: try need("WR_SSH_FIXTURE_SOCKET"),
+        daemonSocket: try need("WR_SSH_FIXTURE_SOCKET"),
         labels: [try need("WR_SSH_FIXTURE_LABEL"), label]),
-      agent: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_AGENT")))
+      daemon: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_DAEMON")))
   }
 
   /// The sequence's environment over `driver`, as a remote provider's: Workroom gives the host no
@@ -86,15 +86,15 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   @MainActor
   private func environment(
     _ fixture: Fixture, driver: ContainerHostDriver,
-    connect: (@Sendable (HostID) async throws -> AgentVCSConnection)? = nil
+    connect: (@Sendable (HostID) async throws -> DaemonVCSConnection)? = nil
   ) -> RemoteProvisioning.Environment {
-    let agent = fixture.agent
+    let daemon = fixture.daemon
     return RemoteProvisioning.Environment(
-      driver: driver, agentSocket: fixture.provisioning.agentSocket,
+      driver: driver, daemonSocket: fixture.provisioning.daemonSocket,
       connect: connect ?? { host in
-        try await AgentBootstrap.connect(
-          host: host, driver: driver, socket: fixture.provisioning.agentSocket,
-          agent: { $0 == "aarch64" || $0 == "x86_64" ? agent : nil }, handOff: false,
+        try await DaemonBootstrap.connect(
+          host: host, driver: driver, socket: fixture.provisioning.daemonSocket,
+          daemon: { $0 == "aarch64" || $0 == "x86_64" ? daemon : nil }, handOff: false,
           resources: nil)
       })
   }
@@ -416,7 +416,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   /// Value: protects=a remote workroom's script on a real Linux host: the host user's login
   /// environment (bash -lic reading ~/.profile), the remote contract (testdata/script-env), the
   /// 126 path, and `run-script`'s wall clock ending a tree with a `setsid` escaper (/proc-based
-  /// `descendants`); fails_when=the Linux agent probes or kills differently from the macOS one the
+  /// `descendants`); fails_when=the Linux daemon probes or kills differently from the macOS one the
   /// unit tests drive; no_claim=boxd's and exe.dev's own images and users (Debian here), and a
   /// hangup when the Mac side ends
   func testAWorkroomScriptRunsOnALinuxHostAsTheContractSays() async throws {
@@ -445,7 +445,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let lines = Lines()
     let result = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
-      agentBinary: environment.agentBinary, on: instance.host, driver: driver,
+      daemonBinary: environment.daemonBinary, on: instance.host, driver: driver,
       judge: RemoteScriptTests.approveAll, onLine: { lines.add($0) })
     XCTAssertEqual(result, .passed)
     let want = try String(
@@ -457,7 +457,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let profile = Lines()
     let teardown = await RemoteProvisioning.runScript(
       .teardown, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
-      agentBinary: environment.agentBinary, on: instance.host, driver: driver,
+      daemonBinary: environment.daemonBinary, on: instance.host, driver: driver,
       judge: RemoteScriptTests.approveAll, onLine: { profile.add($0) })
     XCTAssertEqual(teardown, .passed)
     XCTAssertEqual(profile.all, ["profile=yes"])
@@ -466,7 +466,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     _ = try await onHost(driver, instance.host, "chmod 644 \(setup)")
     let unstarted = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
-      agentBinary: environment.agentBinary, on: instance.host, driver: driver,
+      daemonBinary: environment.daemonBinary, on: instance.host, driver: driver,
       judge: RemoteScriptTests.approveAll, onLine: { _ in })
     XCTAssertEqual(unstarted, .failed("setup script failed: \(setup) could not be started"))
 
@@ -475,7 +475,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       driver, instance.host,
       "printf '#!/bin/sh\\nsetsid sleep 60 &\\necho $! > /tmp/escaper\\nsleep 60\\n' > /tmp/slow"
         + " && chmod 755 /tmp/slow"
-        + " && { \(environment.agentBinary) run-script --dir /tmp --timeout 1 -- /tmp/slow; echo \"exit=$?\"; }"
+        + " && { \(environment.daemonBinary) run-script --dir /tmp --timeout 1 -- /tmp/slow; echo \"exit=$?\"; }"
         + " && sleep 1 && if kill -0 \"$(cat /tmp/escaper)\" 2>/dev/null; then echo alive; else echo gone; fi"
     )
     XCTAssertEqual(status, 0, output)
@@ -511,7 +511,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
         driver, instance.host, "git -C \(Self.path) remote get-url origin")
       XCTAssertEqual(
         remote.output, "/srv/origin.git", "the remote URL carries something besides the repository")
-      // It serves: a request over its own connection, answered by its own agent.
+      // It serves: a request over its own connection, answered by its own daemon.
       let head = try await RemoteProvisioning.git(
         ["rev-parse", "--abbrev-ref", "HEAD"], in: instance.path, on: instance.connection)
       XCTAssertEqual(head.trimmingCharacters(in: .whitespacesAndNewlines), branch)
@@ -556,8 +556,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       connections: manager,
       connectRemote: { host in
         _ = try await manager.connectIfDisconnected(host: host) {
-          try await AgentBootstrap.connect(
-            host: host, driver: driver, socket: RemoteWorkrooms.agentSocket)
+          try await DaemonBootstrap.connect(
+            host: host, driver: driver, socket: RemoteWorkrooms.daemonSocket)
         }
       })
     router.replaceRemote(RemoteWorkrooms.registrations([project]))
@@ -662,11 +662,11 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           container, "sh", "-c", script + "; echo exit=$?",
         ])
     }
-    // Disconnected: no relay to the Mac's agent connection is left on the box, once the closed
+    // Disconnected: no relay to the Mac's daemon connection is left on the box, once the closed
     // link's ssh has gone. `[w]`, so the pattern does not match the shell running it.
     var relays = ""
     for _ in 0..<50 {
-      relays = try onBox("pgrep -f '[w]r-agent relay'")
+      relays = try onBox("pgrep -f '[w]r-daemon relay'")
       if relays == "exit=1" { break }
       try await Task.sleep(for: .milliseconds(200))
     }
@@ -696,15 +696,15 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    let agent = fixture.agent
-    let socket = fixture.provisioning.agentSocket
+    let daemon = fixture.daemon
+    let socket = fixture.provisioning.daemonSocket
     let token = Self.token
     let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: socket, gitHubToken: { token },
+      driver: driver, daemonSocket: socket, gitHubToken: { token },
       connect: { host in
-        try await AgentBootstrap.connect(
+        try await DaemonBootstrap.connect(
           host: host, driver: driver, socket: socket,
-          agent: { $0 == "aarch64" || $0 == "x86_64" ? agent : nil }, handOff: false,
+          daemon: { $0 == "aarch64" || $0 == "x86_64" ? daemon : nil }, handOff: false,
           resources: nil)
       })
     let instance = try await provision(
@@ -718,7 +718,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       answer: { _ in "username=x-access-token\npassword=\(token)\n" },
       transport: .init(
         forwarding: { host in
-          let connection = try await AgentVCSConnection.connect(
+          let connection = try await DaemonVCSConnection.connect(
             host: host, stream: try await driver.openStream(to: host))
           return (.init(host: host, generation: generation), try connection.forwarding())
         },
@@ -728,7 +728,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           }
         }))
     try await relay.install(
-      on: instance.host, driver: driver, agentBinary: AgentInstall.binary(besideSocket: socket))
+      on: instance.host, driver: driver, daemonBinary: DaemonInstall.binary(besideSocket: socket))
 
     guard case .remote(let id) = instance.host else { return XCTFail("not a remote host") }
     let container = "workroom-\(id.uuidString.lowercased())"

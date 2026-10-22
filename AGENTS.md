@@ -2,13 +2,13 @@
 
 ## Project Structure & Module Organization
 
-Workroom is a native macOS app. The Go CLI at the repository root is the app's engine: the app bundles it and shells out to it for every project and workroom operation, and it also runs standalone. The app bundles the Rust `wr-agent` daemon too. Most work lands in `macapp/`.
+Workroom is a native macOS app. The Go CLI at the repository root is the app's engine: the app bundles it and shells out to it for every project and workroom operation, and it also runs standalone. The app bundles the Rust `workroomd` daemon too. Most work lands in `macapp/`.
 
 - `macapp/WorkroomApp/Core/` contains app services and models; `Views/` contains SwiftUI interfaces. Assets and bundled resources live under `macapp/WorkroomApp/`.
-- `macapp/Packages/` holds local Swift packages the app imports: `WorkroomDomain` (models such as `HostDescriptor`), `WorkroomVCS` (the local git engine behind `LocalVCSProviding`), `WorkroomWire`, `WorkroomSystem`, `AgentConnection`, `HostDrivers` (container, boxd and exe.dev drivers), `DesignSystem` (`ThemeTokens` and shared UI) and `SyntaxHighlighting`. Search there too when a type is missing from `Core/`; `make app-package-test` runs their tests.
+- `macapp/Packages/` holds local Swift packages the app imports: `WorkroomDomain` (models such as `HostDescriptor`), `WorkroomVCS` (the local git engine behind `LocalVCSProviding`), `WorkroomWire`, `WorkroomSystem`, `DaemonConnection`, `HostDrivers` (container, boxd and exe.dev drivers), `DesignSystem` (`ThemeTokens` and shared UI) and `SyntaxHighlighting`. Search there too when a type is missing from `Core/`; `make app-package-test` runs their tests.
 - `macapp/WorkroomAppTests/` and `WorkroomAppUITests/` contain app tests.
 - `cmd/` contains the CLI's Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`. The Go module root is the repository root (`go.mod`, `main.go`).
-- `vcs/` is the Rust workspace for the `wr-agent` daemon (terminal sessions, VCS and File services) and its git read crates.
+- `vcs/` is the Rust workspace for the `workroomd` daemon (terminal sessions, VCS and File services) and its git read crates.
 - `docs/` contains supporting documentation.
 - `docs-site/` is the user documentation, served by Codaset at `codaset.dev/workroom/docs`. Its format contract is `docs-site/README.md`; `make docs-check` checks it.
 
@@ -28,7 +28,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting. `make app-check` runs both, in that order.
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
-- `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `wr-agent` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p wr-agent --test <name>"`. No `PATH` changes needed.
+- `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `workroomd` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p workroomd --test <name>"`. No `PATH` changes needed.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.96.1.
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
 

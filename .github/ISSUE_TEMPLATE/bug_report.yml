@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in the Workroom app, the workroom CLI or the wr-agent daemon does not work.
+description: Something in the Workroom app, the workroom CLI or the workroomd daemon does not work.
 labels: ["bug", "needs-triage"]
 body:
   - type: markdown

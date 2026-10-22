@@ -22,7 +22,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   private let sceneOnly: Set<String> = ["Updater", "WhatsNewService", "RemoteStateModel"]
 
   /// How each type is supplied, since several arrive through an owner rather than by their own name
-  /// (`store.notifications`, `sessions.agentManager`) — matching on the type alone would report those
+  /// (`store.notifications`, `sessions.codingAgentManager`) — matching on the type alone would report those
   /// as missing while they are injected.
   ///
   /// A NEW environment object has no entry here, which fails the test rather than passing silently:
@@ -31,7 +31,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "AppStore": ".environmentObject(store)",
     "NotificationCenterStore": "store.notifications",
     "TerminalSessions": ".environmentObject(sessions)",
-    "TerminalCodingAgentManager": "sessions.agentManager",
+    "TerminalCodingAgentManager": "sessions.codingAgentManager",
     "CodingAgentUsageMonitor": "CodingAgentUsageMonitor.shared",
     "ClaudeUsageBridge": "ClaudeUsageBridge.shared",
   ]

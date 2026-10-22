@@ -1,11 +1,11 @@
-import AgentConnection
+import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire
 
-/// The first `HostDriver`: a Linux container running sshd and a supervised `wr-agent`
+/// The first `HostDriver`: a Linux container running sshd and a supervised `workroomd`
 /// (`vcs/scripts/ssh-fixture`, #228), reached over plain ssh-stdio. It is the test fixture for
 /// the remote path, and its ssh transport (`exec`, `attachCommand`) is the one a real
 /// ssh-reachable driver shares (`BoxdHostDriver`, #256).
@@ -24,7 +24,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     public let identityFile: String
     /// The public half of `identityFile`, which the entrypoint writes to `authorized_keys`.
     public let publicKey: String
-    public let agentSocket: String
+    public let daemonSocket: String
     /// `key=value` labels on every container and image made, so whoever started the fixture can
     /// sweep up what a crashed test left (run.sh does).
     public let labels: [String]
@@ -36,14 +36,14 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     /// Which runtime's CLI `runtime` is: Docker's, or Apple's `container` (#309).
     public var dialect: Dialect
     /// CPUs and memory (`4G`) each container gets, or nil for the runtime's own default. Apple's is
-    /// 1 GB per container VM, too little for a compiler or an agent; Docker's containers share its
+    /// 1 GB per container VM, too little for a compiler or a daemon; Docker's containers share its
     /// VM's.
     public var cpus: Int?
     public var memory: String?
 
     public init(
       runtime: URL, image: String, user: String, identityFile: String, publicKey: String,
-      agentSocket: String, labels: [String], context: String? = nil, dialect: Dialect = .docker,
+      daemonSocket: String, labels: [String], context: String? = nil, dialect: Dialect = .docker,
       cpus: Int? = nil, memory: String? = nil
     ) {
       self.runtime = runtime
@@ -51,7 +51,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
       self.user = user
       self.identityFile = identityFile
       self.publicKey = publicKey
-      self.agentSocket = agentSocket
+      self.daemonSocket = daemonSocket
       self.labels = labels
       self.context = context
       self.dialect = dialect
@@ -298,7 +298,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
       hosts[id] = SSHTransport.Host(
         address: record.address, port: record.port, user: record.user,
         identityFile: provisioning.identityFile, hostKey: record.hostKey,
-        agentSocket: provisioning.agentSocket)
+        daemonSocket: provisioning.daemonSocket)
       provisioned[id] = Provisioned(container: Self.containerName(id), image: record.image)
       destroyed.remove(id)
     }
@@ -649,7 +649,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
         hosts[id] = SSHTransport.Host(
           address: "127.0.0.1", port: Int(port), user: provisioning.user,
           identityFile: provisioning.identityFile, hostKey: hostKey,
-          agentSocket: provisioning.agentSocket)
+          daemonSocket: provisioning.daemonSocket)
         provisioned[id] = Provisioned(container: container, image: nil)
       }
       try await awaitLogin(.remote(id))
@@ -760,7 +760,8 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   public func openStream(to host: HostID) async throws -> HostStream {
     let (id, target) = try target(host)
     return try SSHTransport.exec(
-      SSHTransport.relayCommand(binary: target.agentBinary, socket: target.agentSocket), on: target,
+      SSHTransport.relayCommand(binary: target.daemonBinary, socket: target.daemonSocket),
+      on: target,
       in: directory.appendingPathComponent(id.uuidString), purpose: .connection)
   }
 

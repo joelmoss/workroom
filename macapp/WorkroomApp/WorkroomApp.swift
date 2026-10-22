@@ -14,7 +14,7 @@ struct WorkroomApp: App {
   @StateObject private var updater = Updater()
   // The shared instances, so a detached pane's window can inject the SAME objects (issue #172):
   // environment does not cross an `NSHostingView`, so that window cannot inherit these from the scene.
-  @StateObject private var agentUsage = CodingAgentUsageMonitor.shared
+  @StateObject private var codingAgentUsage = CodingAgentUsageMonitor.shared
   @StateObject private var claudeUsageBridge = ClaudeUsageBridge.shared
   /// Fetches release notes for the "What's New" dialog (shown automatically on the first launch
   /// after an update). One instance shared across windows; presentation is owned window-side,
@@ -95,7 +95,7 @@ struct WorkroomApp: App {
       RootWindow(seed: seed ?? .launch)
         .environmentObject(updater)
         .environmentObject(whatsNew)
-        .environmentObject(agentUsage)
+        .environmentObject(codingAgentUsage)
         .environmentObject(claudeUsageBridge)
     }
     // The taller single-row title bar (with AppKit centering the traffic lights in it — the
@@ -116,7 +116,7 @@ struct WorkroomApp: App {
     Settings {
       SettingsView()
         .environmentObject(updater)
-        .environmentObject(agentUsage)
+        .environmentObject(codingAgentUsage)
         .environmentObject(claudeUsageBridge)
     }
 
@@ -211,7 +211,7 @@ struct RootWindow: View {
       .environmentObject(store)
       .environmentObject(store.notifications)
       .environmentObject(store.terminals)
-      .environmentObject(store.terminals.agentManager)
+      .environmentObject(store.terminals.codingAgentManager)
       .environmentObject(store.remoteState)
       .focusedSceneValue(store)
       .frame(minWidth: 900, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
@@ -363,7 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // Not under test (`AppEnvironment.current.isTestProcess`): it would replace the developer's real agent.
     if !AppEnvironment.current.isTestProcess {
       // Hand an older running agent to the bundled one (#230), before panes are likely to attach.
-      MainActor.assumeIsolated { AgentHandOff.start() }
+      MainActor.assumeIsolated { DaemonHandOff.start() }
       // Remote panes reattach on wake and network changes, not a minute later.
       MainActor.assumeIsolated { RemoteLinkMonitor.shared.start() }
     }

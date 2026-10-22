@@ -1,5 +1,5 @@
-import AgentConnection
 import AppKit
+import DaemonConnection
 import DesignSystem
 import SwiftUI
 import WorkroomVCS

@@ -1,11 +1,11 @@
-import AgentConnection
+import DaemonConnection
 import Darwin
 import Foundation
 import WorkroomSystem
 import WorkroomVCS
 
 /// Which host holds the files, and — when the repository is registered — where its shared
-/// repository lives (sent to wr-agent as `shared_root`, which its File service still accepts).
+/// repository lives (sent to workroomd as `shared_root`, which its File service still accepts).
 /// Deliberately NOT a `RepositoryContext`: listing an unregistered directory must work too, and a
 /// context only comes from a registration or a repository probe.
 struct FileContext: Hashable, Sendable {
@@ -15,7 +15,7 @@ struct FileContext: Hashable, Sendable {
 
 /// Listing, raw reads and change notification for one repository's files, on whichever host holds
 /// them. The seam beside `VCSProviding`: native on this machine when no agent serves the request,
-/// wr-agent otherwise.
+/// workroomd otherwise.
 protocol FileProviding: Sendable {
   var context: FileContext { get }
 
@@ -73,8 +73,8 @@ struct NativeFileProvider: FileProviding {
 
   /// Read one regular file under `root`, verifying the DESCRIPTOR rather than the path.
   ///
-  /// The wr-agent's `read_file` does the same thing on its side and this must stay in step with it:
-  /// `AgentFileIntegrationTests.assertContainmentMatrix` runs one matrix against both. Checking a path
+  /// The workroomd's `read_file` does the same thing on its side and this must stay in step with it:
+  /// `DaemonFileIntegrationTests.assertContainmentMatrix` runs one matrix against both. Checking a path
   /// and then opening it
   /// leaves a window where the path is swapped for a link out of the root, and a plain open of a FIFO
   /// blocks forever — the two things the old client-side `isContained`/`readWorkingFile` could not

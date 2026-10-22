@@ -278,12 +278,12 @@ final class TerminalSessionsTests: XCTestCase {
     view.onTitleChange?("✳ Claude Code")
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
     XCTAssertEqual(s.tabs(for: target).first?.title, "✳ Claude Code")
-    XCTAssertEqual(activeAgent(in: s), .claude)
+    XCTAssertEqual(activeCodingAgent(in: s), .claude)
 
     // Later title repaints while waiting or working must not hide quota.
     view.onTitleChange?("✻ Planning…")
     XCTAssertEqual(s.tabs(for: target).first?.title, "✻ Planning…")
-    XCTAssertEqual(activeAgent(in: s), .claude)
+    XCTAssertEqual(activeCodingAgent(in: s), .claude)
 
     // Only an OSC 9;4 progress report drives the spinner: working → running…
     view.handleProgressReport(true)
@@ -294,7 +294,7 @@ final class TerminalSessionsTests: XCTestCase {
     // …and idle (REMOVE) → not running, even though "claude" is still the title.
     view.handleProgressReport(false)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
-    XCTAssertEqual(activeAgent(in: s), .claude, "OSC progress does not end the agent command")
+    XCTAssertEqual(activeCodingAgent(in: s), .claude, "OSC progress does not end the agent command")
   }
 
   func testCommandFinishedClearsProgress() {
@@ -389,7 +389,7 @@ final class TerminalSessionsTests: XCTestCase {
     // …and finishing the command falls back to the default "Terminal N".
     view.handleCommandFinished(rawExitCode: 0)
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
-    XCTAssertNil(activeAgent(in: s), "command_finished removes quota immediately")
+    XCTAssertNil(activeCodingAgent(in: s), "command_finished removes quota immediately")
   }
 
   func testActiveAgentsIncludeBackgroundTargetsAndDeduplicateProviders() {
@@ -408,14 +408,14 @@ final class TerminalSessionsTests: XCTestCase {
     claude.foregroundProcessNameForTesting = "claude"
     claude.onTitleChange?("Claude")
     sessions.addTab(for: other)  // The focused tab is an ordinary shell.
-    XCTAssertEqual(sessions.activeAgentBackends, [.codex, .claude])
+    XCTAssertEqual(sessions.activeCodingAgentBackends, [.codex, .claude])
 
     first.handleCommandFinished(rawExitCode: 0)
-    XCTAssertEqual(sessions.activeAgentBackends, [.codex, .claude])
+    XCTAssertEqual(sessions.activeCodingAgentBackends, [.codex, .claude])
     second.handleCommandFinished(rawExitCode: 0)
-    XCTAssertEqual(sessions.activeAgentBackends, [.claude])
+    XCTAssertEqual(sessions.activeCodingAgentBackends, [.claude])
     claude.handleCommandFinished(rawExitCode: 0)
-    XCTAssertTrue(sessions.activeAgentBackends.isEmpty)
+    XCTAssertTrue(sessions.activeCodingAgentBackends.isEmpty)
   }
 
   func testCodexAgentSurvivesProviderTitleRepaint() {
@@ -425,16 +425,16 @@ final class TerminalSessionsTests: XCTestCase {
 
     view.foregroundProcessNameForTesting = "codex"
     view.onTitleChange?("Implement the requested changes")
-    XCTAssertEqual(activeAgent(in: s), .codex)
+    XCTAssertEqual(activeCodingAgent(in: s), .codex)
 
     view.onTitleChange?("Reviewing files")
-    XCTAssertEqual(activeAgent(in: s), .codex)
+    XCTAssertEqual(activeCodingAgent(in: s), .codex)
 
     view.handleCommandFinished(rawExitCode: 0)
-    XCTAssertNil(activeAgent(in: s))
+    XCTAssertNil(activeCodingAgent(in: s))
   }
 
-  /// The curated tool favicon (issue #141) is a broader, data-driven sibling of `activeAgentBackend`
+  /// The curated tool favicon (issue #141) is a broader, data-driven sibling of `activeCodingAgentBackend`
   /// — same latch-until-`command_finished` lifecycle, same first-wins semantics. Modeled directly on
   /// `testCodexAgentSurvivesProviderTitleRepaint` above.
   func testRecognizedToolLatchesSurvivesRepaintAndClears() {
@@ -1474,9 +1474,9 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(s.split(for: target))
   }
 
-  private func activeAgent(in sessions: TerminalSessions) -> CodingAgentBackend? {
+  private func activeCodingAgent(in sessions: TerminalSessions) -> CodingAgentBackend? {
     guard case .terminal(let state)? = sessions.tabs(for: target).first?.content else { return nil }
-    return state.activeAgentBackend
+    return state.activeCodingAgentBackend
   }
 }
 
@@ -1883,7 +1883,7 @@ final class RemotePaneFooterTests: XCTestCase {
       hosts: [
         host: .init(
           address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
-          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+          hostKey: "ssh-ed25519 AAAA", daemonSocket: "/s")
       ], directory: FileManager.default.temporaryDirectory)
     PersistentSessionService.shared.registerRemoteSession(
       session, on: .remote(host), via: driver, workingDirectory: "/home/w")

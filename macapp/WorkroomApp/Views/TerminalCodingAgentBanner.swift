@@ -47,7 +47,7 @@ struct TerminalCodingAgentBanner: View {
     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor, lineWidth: 1))
     .padding(8)
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("terminal.agentBanner")
+    .accessibilityIdentifier("terminal.codingAgentBanner")
   }
 
   @ViewBuilder private var leadingIcon: some View {

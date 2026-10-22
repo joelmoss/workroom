@@ -8,7 +8,7 @@ impl Repo {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "wr-agent-git-{}-{}",
+            "workroomd-git-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -412,8 +412,8 @@ fn conflict_working_patch_uses_head_and_materialized_markers() {
 }
 
 /// Older apps decode a commit's jj-era fields non-optionally and accept the `Ancestor` ref kind
-/// (#266 kept both on the wire for app/agent skew). Dropping either breaks every history read from
-/// an older app talking to this agent.
+/// (#266 kept both on the wire for app/daemon skew). Dropping either breaks every history read from
+/// an older app talking to this daemon.
 #[test]
 fn commits_still_carry_the_jj_era_fields_older_apps_decode() {
     let repo = Repo::new();

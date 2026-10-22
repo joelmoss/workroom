@@ -206,7 +206,7 @@ extension AppStore {
       hostLayouts.revisions[targetID] = held?.hostRevision
       let keepsNoLayouts: Bool
       switch error {
-      case AgentLayoutError.unsupported, VCSError.backendVersion: keepsNoLayouts = true
+      case DaemonLayoutError.unsupported, VCSError.backendVersion: keepsNoLayouts = true
       default: keepsNoLayouts = false
       }
       if keepsNoLayouts {

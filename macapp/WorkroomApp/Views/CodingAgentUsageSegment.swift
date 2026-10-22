@@ -41,7 +41,7 @@ struct CodingAgentUsageSegment: View {
   /// Whether the account label is drawn; the pane footer drops it before anything else.
   var showsLabel = true
   let now: Date
-  @EnvironmentObject var agentUsage: CodingAgentUsageMonitor
+  @EnvironmentObject var codingAgentUsage: CodingAgentUsageMonitor
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @State private var usageDetailPinned = false
   @State private var confirmingClaudeUsage = false
@@ -57,7 +57,7 @@ struct CodingAgentUsageSegment: View {
         Button("Enable") {
           do {
             try claudeUsageBridge.enable()
-            agentUsage.refresh()
+            codingAgentUsage.refresh()
           } catch {
             claudeBridgeError = error.localizedDescription
           }
@@ -107,7 +107,7 @@ struct CodingAgentUsageSegment: View {
       .help("Enable Claude usage")
       .accessibilityElement(children: .ignore)
       .accessibilityLabel("Enable Claude usage")
-      .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
+      .accessibilityIdentifier("terminal.statusBar.codingAgentUsage.enableClaude")
 
     case .reading(let snapshot, let label, _, _):
       let spoken = Self.quotaAccessibilityLabel(snapshot, accountLabel: label, now: now)
@@ -135,7 +135,7 @@ struct CodingAgentUsageSegment: View {
       .help(spoken)
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(spoken)
-      .accessibilityIdentifier("terminal.statusBar.agentUsage")
+      .accessibilityIdentifier("terminal.statusBar.codingAgentUsage")
       .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) { detail }
 
     case .unavailable(let label, _, let reason):
@@ -156,7 +156,7 @@ struct CodingAgentUsageSegment: View {
       .help("\(label) usage unavailable")
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(Self.unavailableAccessibilityLabel(accountLabel: label, reason: reason))
-      .accessibilityIdentifier("terminal.statusBar.agentUsage.unavailable")
+      .accessibilityIdentifier("terminal.statusBar.codingAgentUsage.unavailable")
       .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) { detail }
     }
   }
@@ -166,7 +166,7 @@ struct CodingAgentUsageSegment: View {
   private var detail: some View {
     CodingAgentUsagePopover(item: item, now: now)
       .frame(width: CodingAgentUsageDetailView.popoverWidth)
-      .onAppear { agentUsage.poll() }
+      .onAppear { codingAgentUsage.poll() }
   }
 
   // MARK: Presentation rules
@@ -302,7 +302,7 @@ struct CodingAgentUsageSegment: View {
 /// The window footer's usage (#480): every item, fitted as one row. All segments step their bars
 /// down together; if the row still doesn't fit, trailing Claude accounts collapse into a "+N" chip.
 struct CodingAgentUsageRow: View {
-  @EnvironmentObject var agentUsage: CodingAgentUsageMonitor
+  @EnvironmentObject var codingAgentUsage: CodingAgentUsageMonitor
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @ObservedObject private var registry = WindowRegistry.shared
   @Default(.claudeSessionSeen) private var claudeSessionSeen
@@ -320,8 +320,8 @@ struct CodingAgentUsageRow: View {
     TimelineView(.periodic(from: .now, by: 60)) { context in
       let now = context.date
       let items = CodingAgentUsageSegment.items(
-        monitor: agentUsage, bridgeState: claudeUsageBridge.state,
-        claudeSeen: claudeSessionSeen || registry.activeAgentBackends.contains(.claude),
+        monitor: codingAgentUsage, bridgeState: claudeUsageBridge.state,
+        claudeSeen: claudeSessionSeen || registry.activeCodingAgentBackends.contains(.claude),
         enableDeclined: claudeUsageDeclined)
       ViewThatFits(in: .horizontal) {
         ForEach(Self.variants(claudeAccounts: items.filter(\.isClaudeAccount).count), id: \.self) {
@@ -330,8 +330,9 @@ struct CodingAgentUsageRow: View {
         }
       }
     }
-    .task { agentUsage.refresh() }
-    .onChange(of: registry.activeAgentBackends.contains(.claude), initial: true) { _, running in
+    .task { codingAgentUsage.refresh() }
+    .onChange(of: registry.activeCodingAgentBackends.contains(.claude), initial: true) {
+      _, running in
       if running, !claudeSessionSeen { claudeSessionSeen = true }
     }
   }
@@ -399,7 +400,7 @@ struct CodingAgentUsageRow: View {
 struct CodingAgentUsageOverflowChip: View {
   let hidden: [CodingAgentUsageItem]
   let now: Date
-  @EnvironmentObject var agentUsage: CodingAgentUsageMonitor
+  @EnvironmentObject var codingAgentUsage: CodingAgentUsageMonitor
   @State private var open = false
   private let theme = ThemeService.shared
 
@@ -409,7 +410,7 @@ struct CodingAgentUsageOverflowChip: View {
       .foregroundStyle(theme.tokens.fgMuted)
       .help("\(hidden.count) more Claude accounts")
       .accessibilityLabel("\(hidden.count) more Claude accounts")
-      .accessibilityIdentifier("terminal.statusBar.agentUsage.more")
+      .accessibilityIdentifier("terminal.statusBar.codingAgentUsage.more")
       .popover(isPresented: $open, arrowEdge: .bottom) {
         ScrollView {
           VStack(alignment: .leading, spacing: 0) {
@@ -421,7 +422,7 @@ struct CodingAgentUsageOverflowChip: View {
         }
         .frame(width: CodingAgentUsageDetailView.popoverWidth)
         .frame(maxHeight: 480)
-        .onAppear { agentUsage.poll() }
+        .onAppear { codingAgentUsage.poll() }
       }
   }
 }
@@ -431,7 +432,7 @@ struct CodingAgentUsageOverflowChip: View {
 struct CodingAgentUsagePopover: View {
   let item: CodingAgentUsageItem
   let now: Date
-  @EnvironmentObject var agentUsage: CodingAgentUsageMonitor
+  @EnvironmentObject var codingAgentUsage: CodingAgentUsageMonitor
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @State private var removeError: String?
   private let theme = ThemeService.shared
@@ -474,7 +475,7 @@ struct CodingAgentUsagePopover: View {
           Button("Repair") {
             do {
               try claudeUsageBridge.repair()
-              agentUsage.refresh()
+              codingAgentUsage.refresh()
             } catch {
               removeError = error.localizedDescription
             }
@@ -484,7 +485,7 @@ struct CodingAgentUsagePopover: View {
           Button("Remove") {
             do {
               try claudeUsageBridge.disable()
-              agentUsage.refresh()
+              codingAgentUsage.refresh()
             } catch {
               removeError = error.localizedDescription
             }
@@ -492,13 +493,13 @@ struct CodingAgentUsagePopover: View {
           .help("Remove Workroom's Claude status-line bridge and restore your own status line")
         }
         Button {
-          agentUsage.refresh()
-          agentUsage.poll()
+          codingAgentUsage.refresh()
+          codingAgentUsage.poll()
         } label: {
           Image(systemName: "arrow.clockwise")
         }
         .buttonStyle(.borderless)
-        .disabled(agentUsage.isPolling)
+        .disabled(codingAgentUsage.isPolling)
         .help("Refresh")
         .accessibilityLabel("Refresh")
       }
@@ -546,7 +547,7 @@ struct CodingAgentUsagePopover: View {
   }
 
   private var status: String {
-    if agentUsage.isPolling { return "Updating…" }
+    if codingAgentUsage.isPolling { return "Updating…" }
     guard let snapshot else { return "No reading yet" }
     return "Updated \(CodingAgentUsageSegment.age(of: snapshot, now: now))"
   }
@@ -557,14 +558,14 @@ struct CodingAgentUsagePopover: View {
 struct PaneUsageSlot: View {
   let backend: CodingAgentBackend
   let claudeProfile: PaneClaudeProfile?
-  @EnvironmentObject var agentUsage: CodingAgentUsageMonitor
+  @EnvironmentObject var codingAgentUsage: CodingAgentUsageMonitor
   @Default(.usageInPaneFooter) private var showsUsage
 
   var body: some View {
     if showsUsage {
       TimelineView(.periodic(from: .now, by: 60)) { context in
         if let item = Self.item(
-          backend: backend, claudeProfile: claudeProfile, monitor: agentUsage)
+          backend: backend, claudeProfile: claudeProfile, monitor: codingAgentUsage)
         {
           ViewThatFits(in: .horizontal) {
             CodingAgentUsageSegment(

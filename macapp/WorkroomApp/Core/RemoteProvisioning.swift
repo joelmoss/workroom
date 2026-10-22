@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Foundation
 import HostDrivers
 import WorkroomDomain
@@ -23,7 +23,7 @@ enum RemoteProvisioning {
   struct Environment: Sendable {
     let driver: any HostDriver
     /// The agent's socket on each host of `driver`, which puts the agent's binary beside it.
-    let agentSocket: String
+    let daemonSocket: String
     /// The Mac's own GitHub token (`gh`), for a workroom whose git goes through the Mac's credential
     /// relay (#309), or nil on a remote provider's host, whose git credentials are the provider's.
     var gitHubToken: (@Sendable () async throws -> String)? = nil
@@ -34,27 +34,27 @@ enum RemoteProvisioning {
     /// (exe.dev's GitHub integration), or nil where it can't or needn't.
     var grantRepository: (@Sendable (GitHubRepository) async throws -> Void)?
     /// A connection to the agent on a host, bootstrapping one there first.
-    var connect: @Sendable (HostID) async throws -> AgentVCSConnection
+    var connect: @Sendable (HostID) async throws -> DaemonVCSConnection
 
     init(
-      driver: any HostDriver, agentSocket: String,
+      driver: any HostDriver, daemonSocket: String,
       gitHubToken: (@Sendable () async throws -> String)? = nil,
       credentialHint: String? = nil,
       grantRepository: (@Sendable (GitHubRepository) async throws -> Void)? = nil,
-      connect: (@Sendable (HostID) async throws -> AgentVCSConnection)? = nil
+      connect: (@Sendable (HostID) async throws -> DaemonVCSConnection)? = nil
     ) {
       self.driver = driver
-      self.agentSocket = agentSocket
+      self.daemonSocket = daemonSocket
       self.gitHubToken = gitHubToken
       self.credentialHint = credentialHint
       self.grantRepository = grantRepository
       self.connect =
         connect ?? { host in
-          try await AgentBootstrap.connect(host: host, driver: driver, socket: agentSocket)
+          try await DaemonBootstrap.connect(host: host, driver: driver, socket: daemonSocket)
         }
     }
 
-    var agentBinary: String { AgentInstall.binary(besideSocket: agentSocket) }
+    var daemonBinary: String { DaemonInstall.binary(besideSocket: daemonSocket) }
   }
 
   /// A workroom's host, serving requests over `connection`.
@@ -62,7 +62,7 @@ enum RemoteProvisioning {
     let host: HostID
     let path: String
     let branch: String
-    let connection: AgentVCSConnection
+    let connection: DaemonVCSConnection
     /// Whether its git takes credentials from the Mac's relay (#309).
     let relayed: Bool
   }
@@ -100,7 +100,7 @@ enum RemoteProvisioning {
   /// argument a process list shows, in no URL git stores, and in no file: an `Authorization`
   /// header for github.com only, which is how GitHub takes a token over https. An ssh-form origin
   /// is rewritten to https so the header reaches it, as the relay's own git config does after
-  /// (`wr-agent credential relay`).
+  /// (`workroomd credential relay`).
   static func cloneEnvironment(token: String) -> [String: String] {
     let credentials = Data("x-access-token:\(token)".utf8).base64EncodedString()
     return [
@@ -137,7 +137,7 @@ enum RemoteProvisioning {
       header = cloneEnvironment(token: try await gitHubToken())
     }
     let host = try await environment.driver.create()
-    var connection: AgentVCSConnection?
+    var connection: DaemonVCSConnection?
     do {
       try await checkpoint(host)
       ProvisioningProgress.reportStep?(.connect)
@@ -299,7 +299,7 @@ enum RemoteProvisioning {
   /// run go to `judge` first, and ones this Mac has not approved never run (#363). It never throws.
   static func runScript(
     _ script: Script, workroom name: String, at path: String, hostKind: String,
-    rootScript: URL?, agentBinary: String, on host: HostID, driver: any HostDriver,
+    rootScript: URL?, daemonBinary: String, on host: HostID, driver: any HostDriver,
     judge: ScriptJudge,
     onStart: @Sendable () -> Void = {}, onLine: @escaping @Sendable (String) -> Void,
     timeout: TimeInterval = scriptTimeout, slack: TimeInterval = 30
@@ -331,11 +331,11 @@ enum RemoteProvisioning {
         return failed("couldn't check the host for \(scriptPath) (exit \(found.status)): \(said)")
       }
       let command =
-        "\(q(agentBinary)) run-script --dir \(q(path)) --timeout \(Int(timeout))"
+        "\(q(daemonBinary)) run-script --dir \(q(path)) --timeout \(Int(timeout))"
         + " --env \(q("WORKROOM_NAME=\(name)")) --env \(q("WORKROOM_PATH=\(path)"))"
         + " --env \(q("WORKROOM_HOST=\(hostKind)")) -- \(q(scriptPath))"
       onStart()
-      let said = AgentSaid()
+      let said = DaemonSaid()
       let lines = LineSplitter { line in
         said.note(line)
         onLine(line)
@@ -463,7 +463,7 @@ enum RemoteProvisioning {
   }
 
   /// What `run-script` itself reported about the script: its own stderr lines, which name it.
-  private final class AgentSaid: @unchecked Sendable {
+  private final class DaemonSaid: @unchecked Sendable {
     private let lock = NSLock()
     private var timedOutSeen = false
     private var notStartedSeen = false
@@ -471,7 +471,7 @@ enum RemoteProvisioning {
     var notStarted: Bool { lock.withLock { notStartedSeen } }
 
     func note(_ line: String) {
-      guard line.hasPrefix("wr-agent run-script: ") else { return }
+      guard line.hasPrefix("workroomd run-script: ") else { return }
       lock.withLock {
         if line.contains(" timed out after ") { timedOutSeen = true }
         if line.contains(" could not be started: ") { notStartedSeen = true }
@@ -519,7 +519,7 @@ enum RemoteProvisioning {
   /// carry the clone's token header (`cloneEnvironment`).
   static func git(
     _ args: [String], in directory: String, environment extra: [String: String] = [:],
-    on connection: AgentVCSConnection, step: ProvisioningProgress.Step? = nil
+    on connection: DaemonVCSConnection, step: ProvisioningProgress.Step? = nil
   ) async throws -> String {
     let log = step.flatMap { step in
       ProvisioningProgress.log.map { log in { @Sendable (text: String) in log(step, text) } }
@@ -528,12 +528,12 @@ enum RemoteProvisioning {
       "$ git "
         + args.map { $0.contains(where: \.isWhitespace) ? PosixShell.quoted($0) : $0 }
         .joined(separator: " "))
-    var request = AgentCommandRunner.request(
+    var request = DaemonCommandRunner.request(
       "git", args, in: directory, timeout: gitTimeout, stdin: nil, network: true,
       host: connection.host)
     request.env.merge(extra) { _, new in new }
     let reply = try await connection.request(request, timeout: gitTimeout + 15)
-    let result = try AgentVCSReply<AgentExecResult>.decode(reply)
+    let result = try DaemonVCSReply<DaemonExecResult>.decode(reply)
     if let log {
       for line in (result.stdout + "\n" + result.stderr).split(separator: "\n") {
         log(String(line))

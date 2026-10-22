@@ -713,7 +713,7 @@ struct PaneLeafView: View {
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @EnvironmentObject var store: AppStore
   /// The inline terminal agent (issue #49); its per-tab state drives the auto-diagnose opt-in dialog.
-  @EnvironmentObject var agentManager: TerminalCodingAgentManager
+  @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   let title: String
   let focused: Bool
   let multiPane: Bool
@@ -848,12 +848,12 @@ struct PaneLeafView: View {
     .confirmationDialog(
       "Auto-diagnose failures from now on?",
       isPresented: Binding(
-        get: { agentManager.autoOptInPromptTab == tabID },
-        set: { if !$0 { agentManager.respondToAutoOptIn(enable: false) } }),
+        get: { codingAgentManager.autoOptInPromptTab == tabID },
+        set: { if !$0 { codingAgentManager.respondToAutoOptIn(enable: false) } }),
       titleVisibility: .visible
     ) {
-      Button("Auto-diagnose") { agentManager.respondToAutoOptIn(enable: true) }
-      Button("Not now", role: .cancel) { agentManager.respondToAutoOptIn(enable: false) }
+      Button("Auto-diagnose") { codingAgentManager.respondToAutoOptIn(enable: true) }
+      Button("Not now", role: .cancel) { codingAgentManager.respondToAutoOptIn(enable: false) }
     } message: {
       Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
     }

@@ -6,13 +6,13 @@
 #   WR_HOST_IMAGE=<image> vcs/scripts/ssh-fixture/host-image-test.sh   # test a built image (#309)
 #
 # run.sh only ever builds FIXTURE=1, so nothing else exercises the paths only this variant takes:
-# the `[ "$FIXTURE" = 1 ] || exit 0` steps, the `wr-agen[t]` COPY with no agent in the context, and
-# the entrypoint's agent and fake-GitHub guards. Built from this directory as it is, exactly as the
+# the `[ "$FIXTURE" = 1 ] || exit 0` steps, the `wr-agen[t]` COPY with no daemon in the context, and
+# the entrypoint's daemon and fake-GitHub guards. Built from this directory as it is, exactly as the
 # make target builds it, so the context has no agent. Then it checks that sshd serves and that none
 # of the fixture's pieces made it in.
 #
 # Each check looks for something being absent, which a renamed path would satisfy without testing
-# anything. So a control comes first: the fixture variant, with an agent, where every one of them
+# anything. So a control comes first: the fixture variant, with a daemon, where every one of them
 # must be found. A check the control does not trip has gone stale against the Dockerfile or the
 # entrypoint.
 set -euo pipefail
@@ -32,24 +32,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The context must hold no agent, or the COPY's tolerance of a missing one goes untested. `-L` too:
+# The context must hold no daemon, or the COPY's tolerance of a missing one goes untested. `-L` too:
 # `-e` follows a symlink, so a dangling one would get past it.
-if [ -e "$HERE/wr-agent" ] || [ -L "$HERE/wr-agent" ]; then
-  echo "error: $HERE/wr-agent exists; the image must build without one" >&2
+if [ -e "$HERE/workroomd" ] || [ -L "$HERE/workroomd" ]; then
+  echo "error: $HERE/workroomd exists; the image must build without one" >&2
   exit 1
 fi
 
 # As run.sh, WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags, for the host's build;
 # WR_FIXTURE_CONTROL_BUILD_FLAGS, the same for the control's. Separate, because two exports to one
 # cache scope replace each other. No FIXTURE build arg for the host: the make target passes none,
-# so the Dockerfile's default is what ships. The control's agent only has to exist; the supervisor
+# so the Dockerfile's default is what ships. The control's daemon only has to exist; the supervisor
 # restarting it is harmless.
 read -r -a BUILD_FLAGS <<< "${WR_FIXTURE_BUILD_FLAGS:-}"
 read -r -a CONTROL_BUILD_FLAGS <<< "${WR_FIXTURE_CONTROL_BUILD_FLAGS:-}"
 mkdir "$STAGE/control"
 cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" \
   "$HERE/git-credential-fixture" "$STAGE/control/"
-printf '#!/bin/sh\nexit 0\n' > "$STAGE/control/wr-agent"
+printf '#!/bin/sh\nexit 0\n' > "$STAGE/control/workroomd"
 "$RUNTIME" build --quiet --tag "$CONTROL" --build-arg FIXTURE=1 \
   ${CONTROL_BUILD_FLAGS[@]+"${CONTROL_BUILD_FLAGS[@]}"} "$STAGE/control" >/dev/null
 # WR_HOST_IMAGE names an image already built, to test it rather than build one (#309): CI tests the
@@ -102,8 +102,8 @@ PIECES=(
   "python3"                     'command -v python3 >/dev/null || exit 1'
   "fixture certificate"         'test -e /etc/workroom-fixture'
   "fixture origin"              'test -e /srv/origin.git'
-  "agent in the image"          'test -e /usr/local/bin/wr-agent'
-  "agent installed at boot"     'test -e /run/workroom/wr-agent'
+  "daemon in the image"          'test -e /usr/local/bin/workroomd'
+  "daemon installed at boot"     'test -e /run/workroom/workroomd'
   "github.com mapping"          "grep -qx '127\.0\.0\.1 github\.com' /etc/hosts"
   "git trusting the fixture CA" 'git config --system --get-regexp sslCAInfo >/dev/null'
   "git asking the fixture helper" 'git config --system --get-regexp "credential\..*helper" >/dev/null'
@@ -193,25 +193,25 @@ if [ "$failed" = 1 ]; then
   fail "$NAME" "the host image carries fixture pieces or lacks what a host needs"
 fi
 
-# A workroom-host boots with no agent and waits for the app's (#231, #253): the supervisor must
-# start one pushed after boot. Every other test boots with an agent already installed, so a
+# A workroom-host boots with no daemon and waits for the app's (#231, #253): the supervisor must
+# start one pushed after boot. Every other test boots with a daemon already installed, so a
 # supervisor that only starts when there is one at boot would pass them all. The stub stands in
-# for the agent: it records the arguments it was started with and stays up. Renamed into place,
+# for the daemon: it records the arguments it was started with and stays up. Renamed into place,
 # as the app installs its own.
 "$RUNTIME" exec -u workroom "$NAME" sh -c '
   printf "#!/bin/sh\necho \"\$*\" > /run/workroom/stub-started\nexec sleep 300\n" \
-    > /run/workroom/.wr-agent.new
-  chmod 700 /run/workroom/.wr-agent.new
-  mv /run/workroom/.wr-agent.new /run/workroom/wr-agent'
+    > /run/workroom/.workroomd.new
+  chmod 700 /run/workroom/.workroomd.new
+  mv /run/workroom/.workroomd.new /run/workroom/workroomd'
 started=""
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   started="$("$RUNTIME" exec "$NAME" cat /run/workroom/stub-started 2>/dev/null)" && break
   sleep 0.5
 done
 case "$started" in
-  "serve --socket /run/workroom/agent.sock "*) echo "ok: $NAME: agent pushed after boot started" ;;
+  "serve --socket /run/workroom/workroomd.sock "*) echo "ok: $NAME: daemon pushed after boot started" ;;
   *)
     unchecked=0
-    fail "$NAME" "the supervisor never started an agent pushed after boot (got: '$started')"
+    fail "$NAME" "the supervisor never started a daemon pushed after boot (got: '$started')"
     ;;
 esac

@@ -20,7 +20,7 @@ enum CodingAgentErrorKind: Equatable, Sendable {
   /// No claude, which runs the diagnosis, but codex is there for Investigate.
   case cliNotFound
   /// Neither claude nor codex is installed.
-  case noAgentCLI
+  case noCodingAgentCLI
   case notAuthenticated
   case timedOut
   case emptyOutput
@@ -58,7 +58,7 @@ enum CodingAgentBannerState: Equatable, Sendable {
   /// pick codex.
   var claudeMissing: Bool {
     switch self {
-    case .failure(_, .cliNotFound), .failure(_, .noAgentCLI): return true
+    case .failure(_, .cliNotFound), .failure(_, .noCodingAgentCLI): return true
     default: return false
     }
   }
@@ -110,16 +110,18 @@ final class TerminalCodingAgentManager: ObservableObject {
   init(
     runner: CodingAgentRunning = CodingAgentRunner(),
     featureEnabled: @escaping () -> Bool = { true },
-    autoDiagnoseEnabled: @escaping () -> Bool = { Defaults[.terminalAgentAutoDiagnose] },
-    redactSecrets: @escaping () -> Bool = { Defaults[.terminalAgentRedactSecrets] },
+    autoDiagnoseEnabled: @escaping () -> Bool = { Defaults[.terminalCodingAgentAutoDiagnose] },
+    redactSecrets: @escaping () -> Bool = { Defaults[.terminalCodingAgentRedactSecrets] },
     model: @escaping () -> String? = {
-      let value = Defaults[.terminalAgentModel]
+      let value = Defaults[.terminalCodingAgentModel]
       return value.isEmpty ? nil : value
     },
-    hasPromptedAutoOptIn: @escaping () -> Bool = { Defaults[.terminalAgentAutoDiagnosePrompted] },
+    hasPromptedAutoOptIn: @escaping () -> Bool = {
+      Defaults[.terminalCodingAgentAutoDiagnosePrompted]
+    },
     persistAutoOptIn: @escaping (Bool) -> Void = { enable in
-      Defaults[.terminalAgentAutoDiagnosePrompted] = true
-      if enable { Defaults[.terminalAgentAutoDiagnose] = true }
+      Defaults[.terminalCodingAgentAutoDiagnosePrompted] = true
+      if enable { Defaults[.terminalCodingAgentAutoDiagnose] = true }
     },
     now: @escaping () -> Date = Date.init,
     cooldown: TimeInterval = 20,
@@ -267,7 +269,8 @@ final class TerminalCodingAgentManager: ObservableObject {
       resolved =
         CodingAgentPrompt.parse(envelopeJSON: stdout).map { .ready(failure, $0) }
         ?? .failure(failure, .malformed)
-    case .cliNotFound: resolved = .failure(failure, codexInstalled ? .cliNotFound : .noAgentCLI)
+    case .cliNotFound:
+      resolved = .failure(failure, codexInstalled ? .cliNotFound : .noCodingAgentCLI)
     case .notAuthenticated: resolved = .failure(failure, .notAuthenticated)
     case .timedOut: resolved = .failure(failure, .timedOut)
     // The workroom's folder is gone, not a real exit code — see `CodingAgentRunOutcome.launchFailed`.

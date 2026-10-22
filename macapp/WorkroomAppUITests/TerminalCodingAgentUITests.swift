@@ -7,7 +7,7 @@ import XCTest
 /// exit trailer) → manager → `CodingAgentPrompt.parse` → the diagnosis surfaces in the detail-panel status
 /// bar (and a ✦ badge on the tab).
 ///
-/// Hermetic: `-WorkroomUITestAgentStub` enables the agent with a STUB backend that returns a canned
+/// Hermetic: `-WorkroomUITestCodingAgentStub` enables the agent with a STUB backend that returns a canned
 /// diagnosis, so the test never hits `claude`/`codex` (no network, no cost) — only the *capture* and
 /// *UI* are real. The canned summary ("UITEST diagnosis…") is asserted.
 final class TerminalCodingAgentUITests: XCTestCase {
@@ -19,7 +19,7 @@ final class TerminalCodingAgentUITests: XCTestCase {
   private func launchedApp(runCommand: String) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
-    app.launchArguments += ["-WorkroomUITestAgentStub", "1"]
+    app.launchArguments += ["-WorkroomUITestCodingAgentStub", "1"]
     app.launchArguments += ["-WorkroomUITestRunCommand", runCommand]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()

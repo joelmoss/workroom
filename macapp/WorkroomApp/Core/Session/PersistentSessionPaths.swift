@@ -8,14 +8,14 @@ import Foundation
 /// Fallback: `/tmp/workroom-<uid>` only when the preferred path exceeds `sun_path`.
 ///
 /// Everything here takes a `SessionBackend` explicitly, with no default, because there is no such
-/// thing as "the" backend: during the migration the Swift daemon still owns the sessions it
-/// created while the agent owns the new ones, and which helper a path belongs to is a property of
+/// thing as "the" backend: during the migration the Swift helper still owns the sessions it
+/// created while the daemon owns the new ones, and which helper a path belongs to is a property of
 /// the SESSION. A default here would silently answer for the wrong one.
 ///
 /// The two must never meet — distinct binaries and, more importantly, distinct socket names, so
 /// neither can end up bound to the other's socket.
 enum PersistentSessionPaths {
-  /// The Swift daemon's socket name, kept as-is so an installed build's existing sessions are
+  /// The Swift helper's socket name, kept as-is so an installed build's existing sessions are
   /// still found after this change. `SessionBackend.socketFileName` is the general answer.
   static let socketFileName = "session.sock"
   static let sunPathLimit = 104
@@ -36,14 +36,14 @@ enum PersistentSessionPaths {
     }
   }
 
-  /// The Linux agent the app bundles for `architecture` (`uname -m` on the host: `aarch64` or
-  /// `x86_64`), for pushing to a remote host (`AgentBootstrap`, #231). Put in
-  /// `Contents/Resources` by `build-agent.sh`, sealed as a resource rather than codesigned. Nil
+  /// The Linux daemon the app bundles for `architecture` (`uname -m` on the host: `aarch64` or
+  /// `x86_64`), for pushing to a remote host (`DaemonBootstrap`, #231). Put in
+  /// `Contents/Resources` by `build-daemon.sh`, sealed as a resource rather than codesigned. Nil
   /// only for a bundle missing that file.
-  static func linuxAgentURL(architecture: String) -> URL? {
+  static func linuxDaemonURL(architecture: String) -> URL? {
     guard
       let url = Bundle.main.resourceURL?.appendingPathComponent(
-        "wr-agent-linux-\(architecture)"),
+        "workroomd-linux-\(architecture)"),
       FileManager.default.isReadableFile(atPath: url.path)
     else { return nil }
     return url
@@ -53,7 +53,7 @@ enum PersistentSessionPaths {
     fileManager: FileManager = .default,
     backend: SessionBackend
   ) throws -> String {
-    if let directory = UITestFixture.liveAgentDirectory {
+    if let directory = UITestFixture.liveDaemonDirectory {
       try prepareDirectory(URL(fileURLWithPath: directory), fileManager: fileManager)
       return directory + "/" + backend.socketFileName
     }
@@ -82,7 +82,7 @@ enum PersistentSessionPaths {
   /// Application Support path is too long (an unusually long username/home directory), and that
   /// length comes entirely from the username, not the bundle id, so adding it here costs nothing
   /// against `sunPathLimit`. Without it, Workroom/Workroom Dev/Workroom Nightly would share one
-  /// `/tmp` socket and fight over the same daemon whenever any of them falls back to this path.
+  /// `/tmp` socket and fight over the same helper whenever any of them falls back to this path.
   static func fallbackSocketPath(
     userID: uid_t = getuid(),
     fileManager: FileManager = .default,

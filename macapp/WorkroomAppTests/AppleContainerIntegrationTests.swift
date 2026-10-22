@@ -83,7 +83,7 @@ final class AppleContainerIntegrationTests: XCTestCase {
       runtime: runtime, image: image, user: RemoteWorkrooms.user, identityFile: key.path,
       publicKey: try String(contentsOf: key.appendingPathExtension("pub"), encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines),
-      agentSocket: RemoteWorkrooms.agentSocket, labels: [label], dialect: .apple)
+      daemonSocket: RemoteWorkrooms.daemonSocket, labels: [label], dialect: .apple)
   }
 
   private func onHost(_ driver: ContainerHostDriver, _ host: HostID, _ command: String)

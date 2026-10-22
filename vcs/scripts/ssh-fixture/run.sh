@@ -2,18 +2,18 @@
 #
 # Runs the remote-path tests over real ssh, into a container (issue #228).
 #
-#   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> [command...]
+#   vcs/scripts/ssh-fixture/run.sh <linux workroomd> [command...]
 #
-# The argument is a Linux wr-agent for the CONTAINER's architecture, built the way the app bundles
-# it: static musl, with terminal-state. CI passes the one its `agent-linux` job just built. On an
+# The argument is a Linux workroomd for the CONTAINER's architecture, built the way the app bundles
+# it: static musl, with terminal-state. CI passes the one its `daemon-linux` job just built. On an
 # Apple Silicon Mac with Docker, build one with:
 #
-#   cargo zigbuild --manifest-path vcs/Cargo.toml --release -p wr-agent \
+#   cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroomd \
 #     --features terminal-state --target aarch64-unknown-linux-musl
 #
 # (with rustup's toolchain and the pinned Zig first on PATH; see test-linux.sh for why).
 #
-# What it does: builds the fixture image around that agent, starts it with a per-run client key,
+# What it does: builds the fixture image around that daemon, starts it with a per-run client key,
 # pins the container's host key out of band, and runs the ignored `over_ssh_*` tests in
 # remote_transport.rs against it with BatchMode ssh. The tests run on THIS machine; only the agent
 # and sshd are in the container, as they will be on a real remote host.
@@ -21,19 +21,19 @@
 # Given a command, it runs that instead, with the fixture's whereabouts in WR_SSH_FIXTURE_*. The
 # app's tests take them from there, run from the repository root:
 #
-#   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> \
+#   vcs/scripts/ssh-fixture/run.sh <linux workroomd> \
 #     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/RemoteHostIntegrationTests
 #
 # xcodebuild hands a test only the variables prefixed TEST_RUNNER_, so each is exported twice.
 set -euo pipefail
 
-AGENT="${1:?usage: run.sh <path to a Linux wr-agent for the container architecture>}"
+DAEMON="${1:?usage: run.sh <path to a Linux workroomd for the container architecture>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VCS_DIR="$(cd "$HERE/../.." && pwd)"
 RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
 NAME="wr-ssh-fixture-$$"
 # Fixed by entrypoint.sh.
-SOCKET="/run/workroom/agent.sock"
+SOCKET="/run/workroom/workroomd.sock"
 SCREENS="/home/workroom/.local/state/workroom/screens"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/wr-ssh-fixture.XXXXXX")"
@@ -57,18 +57,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp "$AGENT" "$STAGE/wr-agent"
+cp "$DAEMON" "$STAGE/workroomd"
 cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" \
   "$HERE/git-credential-fixture" "$STAGE/"
 # By image ID, not a tag: a tag is shared, and another run building it between here and `run` below
-# would swap in a different agent. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
+# would swap in a different daemon. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.
 read -r -a BUILD_FLAGS <<< "${WR_FIXTURE_BUILD_FLAGS:-}"
 IMAGE="$("$RUNTIME" build --quiet --build-arg FIXTURE=1 ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE")"
 
-# The agent must run in there at all: an ELF for the wrong architecture would otherwise surface as
+# The daemon must run in there at all: an ELF for the wrong architecture would otherwise surface as
 # a supervisor restarting it forever and a relay that never connects.
-echo "ssh-fixture: $("$RUNTIME" run --rm --entrypoint wr-agent "$IMAGE" protocol | head -1)"
+echo "ssh-fixture: $("$RUNTIME" run --rm --entrypoint workroomd "$IMAGE" protocol | head -1)"
 
 ssh-keygen -q -t ed25519 -N '' -C wr-ssh-fixture -f "$STAGE/id_ed25519"
 "$RUNTIME" run --detach --init --name "$NAME" --publish 127.0.0.1::22 \
@@ -111,7 +111,7 @@ EOF
 
 # Up means sshd answers AND the supervisor has the agent serving: `list` handshakes with it.
 for attempt in $(seq 1 100); do
-  if ssh -F "$STAGE/ssh_config" fixture wr-agent list --socket "$SOCKET" >/dev/null 2>&1; then
+  if ssh -F "$STAGE/ssh_config" fixture workroomd list --socket "$SOCKET" >/dev/null 2>&1; then
     break
   fi
   if [ "$attempt" = 100 ]; then
@@ -122,14 +122,14 @@ for attempt in $(seq 1 100); do
   sleep 0.2
 done
 
-# AGENT: the ELF itself, for the tests of the bootstrap that pushes it (#231). The app's tests
-# take it as their bundled agent. CONTAINER,
+# DAEMON: the ELF itself, for the tests of the bootstrap that pushes it (#231). The app's tests
+# take it as their bundled daemon. CONTAINER,
 # RUNTIME and SCREENS: for the test that reboots the box (#232). IMAGE, RUNTIME_PATH, PUBLIC_KEY
 # and LABEL: for the app's tests that provision containers of their own from the image (#252),
 # and CLONE_TOKEN for the image's GitHub (fake-github.py).
 CLONE_TOKEN="$("$RUNTIME" exec "$NAME" cat /etc/workroom-fixture/clone-token)"
 for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
-  "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "AGENT=$STAGE/wr-agent" \
+  "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "DAEMON=$STAGE/workroomd" \
   "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS" "IMAGE=$IMAGE" \
   "RUNTIME_PATH=$(command -v "$RUNTIME")" "PUBLIC_KEY=$(cat "$STAGE/id_ed25519.pub")" \
   "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN"; do
@@ -138,9 +138,9 @@ done
 
 shift
 if [ "$#" -eq 0 ]; then
-  # One thread: the tests share one agent, and the supervisor test kills it.
+  # One thread: the tests share one daemon, and the supervisor test kills it.
   cd "$VCS_DIR"
-  set -- cargo test -p wr-agent --test remote_transport -- --ignored --test-threads=1
+  set -- cargo test -p workroomd --test remote_transport -- --ignored --test-threads=1
 fi
 if ! "$@"; then
   echo "error: the ssh fixture tests failed; the container's log:" >&2

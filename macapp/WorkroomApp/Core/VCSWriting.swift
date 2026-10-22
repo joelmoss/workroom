@@ -56,7 +56,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// resolved against this disk, nor shares a queue with a local repository at the same path.
   var host: HostID = .local
   /// Where the classifier's disk facts come from for a repository on a remote host: that host's
-  /// agent (`AgentVCSConnection.stat`). Nil for a local repository, which reads this Mac's disk.
+  /// agent (`DaemonVCSConnection.stat`). Nil for a local repository, which reads this Mac's disk.
   var stat: (@Sendable (_ paths: [String], _ read: [String]) async throws -> DiskSnapshot)?
 
   var refTimeout: TimeInterval = 5

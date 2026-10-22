@@ -22,10 +22,10 @@ struct TerminalTabStrip: View {
   @ObservedObject var sessions: TerminalSessions
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
-  @EnvironmentObject var agentManager: TerminalCodingAgentManager
+  @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The tab whose ✦ agent popover is open.
-  @State private var agentPopoverTab: TerminalTab.ID?
+  @State private var codingAgentPopoverTab: TerminalTab.ID?
   /// The live drop-into-pane preview, shared with `PaneTreeView` via the coordinator.
   @Binding var chipPaneDrag: PaneDragState?
   /// The pane-local point for a chip drag at a global location, or nil when the cursor is still over
@@ -153,13 +153,13 @@ struct TerminalTabStrip: View {
             amount: draggedWidth + tabSpacing)
         // A ✦ badge marks any tab with a live diagnosis (issue #49) — the per-tab signal that
         // complements the active tab's diagnosis shown in the detail-panel status bar.
-        let agentBadge = agentManager.banners[tab.id] != nil
+        let codingAgentBadge = codingAgentManager.banners[tab.id] != nil
         TerminalTabChip(
           tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
           isDragging: isDragging, hasActivity: hasActivity, runState: runState,
           showLeadingSeparator: showsLeadingSeparator(at: index, groupOf: groupOf),
           isGrouped: groupOf[tab.id] != nil,
-          agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id },
+          codingAgentBadge: codingAgentBadge, onCodingAgentTap: { codingAgentPopoverTab = tab.id },
           statusLines: ProgramStatusPresentation.tooltipLines(
             for: tab, of: target, hosts: programStatus.hosts)
         ) {
@@ -171,10 +171,10 @@ struct TerminalTabStrip: View {
         }
         .popover(
           isPresented: Binding(
-            get: { agentPopoverTab == tab.id },
-            set: { if !$0 { agentPopoverTab = nil } })
+            get: { codingAgentPopoverTab == tab.id },
+            set: { if !$0 { codingAgentPopoverTab = nil } })
         ) {
-          agentPopover(for: tab)
+          codingAgentPopover(for: tab)
         }
         .onHover { inside in
           if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
@@ -436,23 +436,23 @@ struct TerminalTabStrip: View {
   }
 
   /// The ✦ agent popover for a tab (inline presentation): the diagnosis + its actions, off the grid.
-  @ViewBuilder private func agentPopover(for tab: TerminalTab) -> some View {
-    if let state = agentManager.banners[tab.id] {
+  @ViewBuilder private func codingAgentPopover(for tab: TerminalTab) -> some View {
+    if let state = codingAgentManager.banners[tab.id] {
       TerminalCodingAgentBanner(
         state: state,
-        onDiagnose: { agentManager.diagnose(tab: tab.id, target: target.id) },
+        onDiagnose: { codingAgentManager.diagnose(tab: tab.id, target: target.id) },
         onInsertFix: { fix in
           tab.surface?.sendText(fix)
-          agentPopoverTab = nil
+          codingAgentPopoverTab = nil
         },
         onInvestigate: {
           _ = store.startInvestigate(bannerState: state, target: target, surface: tab.surface)
-          agentManager.dismiss(tab: tab.id)
-          agentPopoverTab = nil
+          codingAgentManager.dismiss(tab: tab.id)
+          codingAgentPopoverTab = nil
         },
         onDismiss: {
-          agentManager.dismiss(tab: tab.id)
-          agentPopoverTab = nil
+          codingAgentManager.dismiss(tab: tab.id)
+          codingAgentPopoverTab = nil
         }
       )
       .frame(width: 360)
@@ -481,8 +481,8 @@ private struct TerminalTabChip: View {
   /// overrunning it (the bracket hugs the chip run, so a full-bleed pill would cover the border).
   let isGrouped: Bool
   /// A ✦ badge marking an available inline-agent diagnosis (issue #49); tapping opens its popover.
-  var agentBadge: Bool = false
-  var onAgentTap: () -> Void = {}
+  var codingAgentBadge: Bool = false
+  var onCodingAgentTap: () -> Void = {}
   /// What the program in this terminal reports, or why nothing does (#358): the tooltip's lines
   /// below the title.
   var statusLines: [String] = []
@@ -520,7 +520,7 @@ private struct TerminalTabChip: View {
   private var chipAccessibilityLabel: String {
     var parts = [tab.title]
     if let tool = tab.recognizedTool { parts.append(tool.displayName) }
-    if agentBadge { parts.append("Diagnosis available") }
+    if codingAgentBadge { parts.append("Diagnosis available") }
     // A run tab's value stays its run state (asserted exactly), so its OSC 9;4 ERROR goes here.
     if runState != nil, tab.isProgressFailed { parts.append("a command reported an error") }
     // The value says the waiting kind; the label adds only that the link is down (#358).
@@ -556,15 +556,15 @@ private struct TerminalTabChip: View {
     // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
       // Inline-agent diagnosis available (issue #49): a ✦ badge that opens the diagnosis popover.
-      if agentBadge {
-        Button(action: onAgentTap) {
+      if codingAgentBadge {
+        Button(action: onCodingAgentTap) {
           Image(systemName: "sparkles")
             .font(.system(size: 10))
             .foregroundStyle(theme.tokens.accent)
         }
         .buttonStyle(.plain)
         .help("Show the diagnosis for this command")
-        .accessibilityIdentifier("terminal.agentBadge")
+        .accessibilityIdentifier("terminal.codingAgentBadge")
         .accessibilityLabel("Diagnosis available")
       }
       // Leading state dot for the run tab (#7): green play while the command runs, dim play once it
@@ -731,8 +731,8 @@ private struct TerminalTabChip: View {
     // so VoiceOver can open the diagnosis without a mouse. Same reasoning applies to the nested ✕,
     // which is still unreachable — see the TODOS entry.
     .accessibilityActions {
-      if agentBadge {
-        Button("Show diagnosis") { onAgentTap() }
+      if codingAgentBadge {
+        Button("Show diagnosis") { onCodingAgentTap() }
       }
     }
     // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to

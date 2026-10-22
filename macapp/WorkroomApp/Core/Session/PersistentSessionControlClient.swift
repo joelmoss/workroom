@@ -1,11 +1,11 @@
-import AgentConnection
+import DaemonConnection
 import Darwin
 import Foundation
 import WorkroomWire
 
-/// What a daemon said about a session it was asked to account for.
+/// What a helper said about a session it was asked to account for.
 ///
-/// Three states rather than a `Bool`, because "the daemon does not hold this" and "the daemon did
+/// Three states rather than a `Bool`, because "the helper does not hold this" and "the helper did
 /// not answer" demand opposite routing decisions and a `Bool` cannot tell them apart. See
 /// `PersistentSessionControlClient.ownership(identifier:)`.
 enum SessionOwnership {
@@ -15,7 +15,7 @@ enum SessionOwnership {
   case unreachable
 }
 
-/// One-shot list/info/kill client for the session daemon. Used by the app; the helper
+/// One-shot list/info/kill client for the session helper. Used by the app; the helper
 /// binary has its own copy for `workroom-session list` / `kill`.
 struct PersistentSessionControlClient {
   let socketPath: String
@@ -27,12 +27,12 @@ struct PersistentSessionControlClient {
     } ?? []
   }
 
-  /// Whether the daemon holds this session — **distinguishing "it said no" from "it never
+  /// Whether the helper holds this session — **distinguishing "it said no" from "it never
   /// answered"**, which `info` cannot.
   ///
   /// `transact` returns nil for a connect failure, a write failure, an EOF, a 2-second timeout AND
   /// a reply that simply names no session. Folding all of those into "not owned" is what let a
-  /// slow daemon route one of its own live sessions to the agent, which creates on first attach —
+  /// slow helper route one of its own live sessions to the daemon, which creates on first attach —
   /// so the user's running shell was orphaned and the pane showed a fresh one.
   ///
   /// Implemented on top of `transact` unchanged: the closure never returns nil for an answer it
@@ -49,11 +49,11 @@ struct PersistentSessionControlClient {
     }
     switch outcome {
     // A failed CONNECT is a definitive "nobody is holding this", not ambiguity — and reading it as
-    // ambiguity was a live bug. The daemon installs no SIGTERM handler and unlinks its socket only
+    // ambiguity was a live bug. The helper installs no SIGTERM handler and unlinks its socket only
     // on the graceful path (`SessionDaemon.swift:167`), so any `pkill` — which is what
     // `make app-run` does — leaves `session.sock` behind. `existingSocketPath` then finds the file
     // and we ask; `connect` gets ECONNREFUSED. Folding that into `unreachable` pinned EVERY
-    // session to a daemon that was not running.
+    // session to a helper that was not running.
     case .noListener: return .notOwned
     case .answered(let ownership): return ownership ?? .unreachable
     case .silent: return .unreachable
@@ -65,7 +65,7 @@ struct PersistentSessionControlClient {
   /// Read by `ownership` alone; `transact` flattens it back to `T?` for the callers that only ever
   /// wanted an answer or nothing. The distinction lives HERE rather than in a second `connect(2)`
   /// from the caller: a probe that opens its own connection first consumes one accept, which is
-  /// invisible against the real daemon (it accepts in a loop) and breaks anything that accepts
+  /// invisible against the real helper (it accepts in a loop) and breaks anything that accepts
   /// once — including this project's own test fakes.
   private enum Exchange<T> {
     /// Connected and got a frame. The payload is what `parse` made of it, which may be nil.
@@ -122,9 +122,9 @@ struct PersistentSessionControlClient {
     let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return .silent }
     defer { close(descriptor) }
-    // A daemon that hangs up mid-write must fail the write, not kill the app. Set before `connect`:
-    // see `AgentVCSConnection.noSignalOnWrite`.
-    AgentVCSConnection.noSignalOnWrite(descriptor)
+    // A helper that hangs up mid-write must fail the write, not kill the app. Set before `connect`:
+    // see `DaemonVCSConnection.noSignalOnWrite`.
+    DaemonVCSConnection.noSignalOnWrite(descriptor)
 
     guard var address = Self.address(for: socketPath) else { return .noListener }
     let connected = withUnsafePointer(to: &address) { pointer in
@@ -152,7 +152,7 @@ struct PersistentSessionControlClient {
       let ready = poll(&pollfd, 1, 100)
       // This socket is blocking (never put in non-blocking mode), so `read` MUST be gated on
       // poll actually reporting the descriptor readable — otherwise a wedged or unresponsive
-      // daemon on the other end makes `read` block indefinitely, bypassing the 2-second deadline
+      // helper on the other end makes `read` block indefinitely, bypassing the 2-second deadline
       // entirely (the deadline is only re-checked BETWEEN iterations, never inside a blocking
       // call). Callers await this from `reap()`, which now gates workroom/project deletion on it
       // completing — a hang here would silently stall deletion forever, not just this one call.

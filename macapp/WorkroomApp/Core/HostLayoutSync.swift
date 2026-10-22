@@ -2,13 +2,13 @@ import Foundation
 import WorkroomWire
 import os
 
-/// Where a remote workroom's layout is kept: its host's agent (`AgentLayoutService`), or a fake.
+/// Where a remote workroom's layout is kept: its host's agent (`DaemonLayoutService`), or a fake.
 protocol HostLayoutStore: Sendable {
-  func get(_ key: String) async throws -> AgentLayout
+  func get(_ key: String) async throws -> DaemonLayout
   func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64
 }
 
-extension AgentLayoutService: HostLayoutStore {}
+extension DaemonLayoutService: HostLayoutStore {}
 
 /// What a Mac restores for a remote workroom when it opens it, and what it remembers about the
 /// host's copy (#255, D4).
@@ -50,7 +50,7 @@ enum HostLayoutSync {
     held: TargetSession?, key: String, targetID: String, store: HostLayoutStore
   ) async throws -> HostLayoutResolution {
     var answer = try await store.get(key)
-    let newer = { (answer: AgentLayout) in
+    let newer = { (answer: DaemonLayout) in
       answer.blob.map { HostLayout.decode($0, targetID: targetID) } == .newer
     }
     if newer(answer) {
@@ -65,7 +65,7 @@ enum HostLayoutSync {
         let revision = try await store.put(
           key, expected: 0, blob: try HostLayout.encode(held, key: key))
         return HostLayoutResolution(session: held, revision: revision)
-      } catch AgentLayoutError.stale {
+      } catch DaemonLayoutError.stale {
         answer = try await store.get(key)
         if newer(answer) {
           return HostLayoutResolution(session: held, revision: answer.revision, readOnly: true)
@@ -110,7 +110,7 @@ enum HostLayoutSync {
       do {
         let revision = try await store.put(key, expected: expected, blob: blob)
         return HostLayoutResolution(session: held, revision: revision)
-      } catch AgentLayoutError.stale(let current) {
+      } catch DaemonLayoutError.stale(let current) {
         // Another Mac wrote first. A newer build's layout is never written over (D5), whoever
         // reads it first, and a layout that could not be read is not taken to be an older one.
         guard let answer = try? await store.get(key) else {

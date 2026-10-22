@@ -10,7 +10,7 @@
 # one Xcode built into its own DerivedData. Nothing else may: every workroom now builds its own id
 # under the same process name (dev-identity.sh), so the `pkill -x "Workroom Dev"` this replaces also
 # SIGTERMed other workrooms' dev apps, their unit-test hosts and their XCUITest apps mid-run, and
-# its `pkill -f "Workroom Dev.app/Contents/MacOS/wr-agent"` ended every workroom's terminal sessions.
+# its `pkill -f "Workroom Dev.app/Contents/MacOS/workroomd"` ended every workroom's terminal sessions.
 #
 # SIGTERM throughout, as before: the app's SIGTERM handler is what flushes its session and stops its
 # run commands gracefully (WorkroomApp.swift, installSigtermHandler).
@@ -32,12 +32,12 @@ bundle_id() {
   plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null
 }
 
-# The bundle id whose socket a `wr-agent serve` listens on, read from its `--socket` argument:
-# `…/Application Support/<id>/sessions/agent.sock`, or PersistentSessionPaths' fallback
-# `/tmp/workroom-<uid>-<id>/agent.sock`. Fails for any other shape. A hand-off keeps the arguments.
+# The bundle id whose socket a `workroomd serve` listens on, read from its `--socket` argument:
+# `…/Application Support/<id>/sessions/workroomd.sock`, or PersistentSessionPaths' fallback
+# `/tmp/workroom-<uid>-<id>/workroomd.sock`. Fails for any other shape. A hand-off keeps the arguments.
 served_id() {
   case "$1" in
-    "wr-agent serve "*"--socket "*) ;;
+    "workroomd serve "*"--socket "*) ;;
     *) return 1 ;;
   esac
   socket="${1#*--socket }"
@@ -74,7 +74,7 @@ stopped_helpers=""
 # `-ww`: never truncate the command, which is where the path is. The COMMAND column is argv, so a
 # process only counts when argv[0] is itself the executable inside a bundle: the part before the
 # first `/Contents/MacOS/` must be an existing `<name>.app` directory. That keeps out a process
-# that merely mentions such a path in its arguments (`tail -f …/wr-agent.log`).
+# that merely mentions such a path in its arguments (`tail -f …/workroomd.log`).
 if [ -n "${STOP_DEV_APP_PS:-}" ]; then
   processes="$(cat -- "$STOP_DEV_APP_PS")"
 else
@@ -98,13 +98,13 @@ while read -r pid cmdline; do
       [ "$(bundle_id "$owner")" = "$want" ] || continue
       apps="$apps $pid"
       ;;
-    wr-agent | "wr-agent "* | workroom-session | "workroom-session "*)
+    workroomd | "workroomd "* | workroom-session | "workroom-session "*)
       # A helper belongs to the id whose socket it serves, and that is not always the id of the
-      # bundle its binary lives in: an agent runs whichever copy spawned it or last handed it off,
+      # bundle its binary lives in: a daemon runs whichever copy spawned it or last handed it off,
       # so one still serving the plain id can run from a workroom's bundle that has since been
       # rebuilt under the workroom's own id — and stopping it would end the project checkout's
-      # sessions. Only `wr-agent serve` names its socket; anything else (a pane's attach client,
-      # an old Swift daemon) goes by its bundle.
+      # sessions. Only `workroomd serve` names its socket; anything else (a pane's attach client,
+      # an old Swift helper) goes by its bundle.
       served="$(served_id "$executable")" || served="$(bundle_id "$owner")" || served=""
       [ "$served" = "$want" ] || continue
       helper="${executable%% *}"

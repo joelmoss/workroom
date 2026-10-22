@@ -97,9 +97,9 @@ final class RepositoryRouter: @unchecked Sendable {
       }
     #endif
     return RepositoryRouter(
-      localReader: { try await LocalAgentVCS.shared.reader(context: $0) },
-      localWriter: { try await LocalAgentVCS.shared.writer(context: $0) },
-      localFiles: { try await LocalAgentVCS.shared.files(context: $0) },
+      localReader: { try await LocalDaemonVCS.shared.reader(context: $0) },
+      localWriter: { try await LocalDaemonVCS.shared.writer(context: $0) },
+      localFiles: { try await LocalDaemonVCS.shared.files(context: $0) },
       connectRemote: { try await RemoteHosts.shared.ensureConnected($0) })
   }()
   private let lock = NSLock()
@@ -122,7 +122,7 @@ final class RepositoryRouter: @unchecked Sendable {
   private let connectRemote: (@Sendable (HostID) async throws -> Void)?
 
   /// Production routers share app-wide host connections. Tests can retain native local providers
-  /// or inject an isolated agent without starting a service against the user's session socket.
+  /// or inject an isolated daemon without starting a service against the user's session socket.
   init(
     connections: HostConnectionManager = .shared,
     localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)? = nil,
@@ -255,7 +255,7 @@ final class RepositoryRouter: @unchecked Sendable {
       do {
         return try await localReader(context)
       } catch VCSError.backendVersion(_) {
-        // A still-running pre-upgrade agent (kept alive because it may own terminals) has no VCS
+        // A still-running pre-upgrade daemon (kept alive because it may own terminals) has no VCS
         // service at all — never replaced, so this is not transient. Serve the read natively
         // rather than leaving every local repository unavailable until the user restarts it.
         return try reader(context: context)
@@ -273,11 +273,11 @@ final class RepositoryRouter: @unchecked Sendable {
   ///
   /// Registered or not: an unregistered repository lists and reads exactly as a registered one.
   ///
-  /// **A local host never loses its files to its agent.** A local file is readable without one, so when
-  /// the agent cannot be obtained — missing from the bundle, failed to start, too old for the File
+  /// **A local host never loses its files to its daemon.** A local file is readable without one, so when
+  /// the daemon cannot be obtained — missing from the bundle, failed to start, too old for the File
   /// service (`VCSError.backendVersion`; it is kept alive because it may own terminals, so that is not
   /// transient) — the answer is a provider that lists and reads natively (`UnavailableFileProvider`
-  /// inside a `LocalFallbackFileProvider`), and when a working agent fails mid-request at the transport
+  /// inside a `LocalFallbackFileProvider`), and when a working daemon fails mid-request at the transport
   /// level, the same idempotent request is re-run natively. See `LocalFallbackFileProvider` for exactly
   /// which failures fall back. Only cancellation propagates.
   ///
@@ -294,15 +294,15 @@ final class RepositoryRouter: @unchecked Sendable {
     }
     let native = NativeFileProvider(context: context, runner: runner)
     guard let localFiles else { return native }
-    let agent: FileProviding
+    let daemon: FileProviding
     do {
-      agent = try await localFiles(context)
+      daemon = try await localFiles(context)
     } catch is CancellationError {
       throw CancellationError()
     } catch {
-      agent = UnavailableFileProvider(context: context, reason: "\(error)")
+      daemon = UnavailableFileProvider(context: context, reason: "\(error)")
     }
-    return LocalFallbackFileProvider(primary: agent, fallback: native)
+    return LocalFallbackFileProvider(primary: daemon, fallback: native)
   }
 
   private func registeredEntry(for location: RepositoryLocation) throws -> Entry {
@@ -361,16 +361,16 @@ final class RepositoryRouter: @unchecked Sendable {
       do {
         reader = try await localReader(context)
       } catch VCSError.backendVersion(_) {
-        // See the matching fallback in `reader(for:)`: a pre-upgrade agent with no VCS service.
+        // See the matching fallback in `reader(for:)`: a pre-upgrade daemon with no VCS service.
         reader = try self.reader(context: context)
       }
     } else {
       reader = try self.reader(context: context)
     }
     guard location.host == .local else { return try remoteWriter(context, reader) }
-    // Local writes route through the same agent connection reads already use — mirroring
-    // `reader(for:)` above — and fall back to a native `CLIVCSWriter` only when the agent predates
-    // the write service (`VCSError.backendVersion`, from `AgentVCSConnection.writer`'s capability
+    // Local writes route through the same daemon connection reads already use — mirroring
+    // `reader(for:)` above — and fall back to a native `CLIVCSWriter` only when the daemon predates
+    // the write service (`VCSError.backendVersion`, from `DaemonVCSConnection.writer`'s capability
     // check). The fallback only ever fires before any write is attempted, never mid-operation:
     // obtaining a writer here does not execute anything.
     if let localWriter {

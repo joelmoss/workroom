@@ -74,7 +74,7 @@ takes its hosts' environment from `RemoteHosts.Deletion`. Give `AppStore` a seam
 
 **Priority:** P3 (deferred in /ship review, 2026-10-06).
 
-### Tell a Mac its pane is sized for another Mac (wr-agent, macapp) — #255 follow-up
+### Tell a Mac its pane is sized for another Mac (workroomd, macapp) — #255 follow-up
 
 **What:** When another client owns a session's size, tell every attached client who owns it, and
 show a quiet "sized for another Mac, type to take over" marker on the non-owner's pane (or
@@ -93,7 +93,7 @@ the owner; have the pane show the marker while it is not the owner. Design follo
 
 **Priority:** P2 (chosen in the #255 eng review, 2026-10-05)
 
-### Remote workroom layouts: the review's deferred edge cases (macapp, wr-agent) — #255 review follow-up
+### Remote workroom layouts: the review's deferred edge cases (macapp, workroomd) — #255 review follow-up
 
 **What:** Two cases the pre-landing `/review` of `feat/255-cross-machine-reattach` found and
 deferred (2026-10-05). Neither loses data from a single window.
@@ -343,12 +343,12 @@ enumerate remote refs cheaply, and its doc explains why the symref row must be d
 
 ## P3 — VCS engine, diffs, and status
 
-### Remove the jj-era wire fields (macapp, wr-agent, wr-vcs-model) — #266 follow-up
+### Remove the jj-era wire fields (macapp, workroomd, wr-vcs-model) — #266 follow-up
 
 **What:** Remove the jj-era wire fields once no supported app or agent still sends or expects them:
-`shared_root`, `barrier_root` and `backend` on wr-agent VCS/File/exec requests; `Commit.change_id`,
+`shared_root`, `barrier_root` and `backend` on workroomd VCS/File/exec requests; `Commit.change_id`,
 `is_working_copy`, `is_root`, `change_offset`, `divergent_siblings` and `RefKind::Ancestor` in
-wr-vcs-model and the app's `AgentCommit`/ref decoding.
+wr-vcs-model and the app's `DaemonCommit`/ref decoding.
 
 **Why:** They carry nothing after #266; they exist only so an older app and a newer agent (or the
 reverse) keep decoding each other.
@@ -360,15 +360,15 @@ to the bundled agent (on for Nightly and Dev only, commit 26b9d881) is on for st
 
 **Context / how to start:** #266 kept them deliberately (`Request`/`ExecRequest` are
 `deny_unknown_fields`; older apps decode the Commit fields non-optionally); each is marked with a
-`ponytail:` comment. Start at `vcs/crates/wr-agent/src/vcs.rs` `Request`/`ExecRequest`,
-`vcs/crates/wr-agent/src/file.rs` `Request`, `macapp/WorkroomApp/Core/AgentVCSReader.swift`
-`AgentCommit`, and `vcs/crates/wr-vcs-model/src/lib.rs` `Commit`.
+`ponytail:` comment. Start at `vcs/crates/workroomd/src/vcs.rs` `Request`/`ExecRequest`,
+`vcs/crates/workroomd/src/file.rs` `Request`, `macapp/WorkroomApp/Core/DaemonVCSReader.swift`
+`DaemonCommit`, and `vcs/crates/wr-vcs-model/src/lib.rs` `Commit`.
 
 **Depends on / blocked by:** #266 landing; stable hand-off or a protocol version gate.
 
 **Priority:** P3 — cleanup, no user-visible effect.
 
-### One OS watcher per subscription duplicates watches across windows (wr-agent) — #211 accepted shortcut
+### One OS watcher per subscription duplicates watches across windows (workroomd) — #211 accepted shortcut
 
 **What:** share one OS watcher per canonical root across subscriptions and connections, fanning events
 into per-subscription coalescers.
@@ -390,7 +390,7 @@ agent lands.
 
 **Priority:** P3 — no cost on the only platform it ships on today.
 
-### Listings above the 4 MiB capture ceiling fail instead of paginating (macapp + wr-agent) — #211 follow-up
+### Listings above the 4 MiB capture ceiling fail instead of paginating (macapp + workroomd) — #211 follow-up
 
 **What:** raise the listing-specific cap (the reply ceiling is 16 MiB) or paginate `list`, so very
 large repositories get a tree instead of a "too many files to list" failure.
@@ -490,7 +490,7 @@ rewrite touches the whole diff UI (regression surface).
 
 ## P3 — Terminal, panes, and focus
 
-### Hand-off by snapshot when both agents share an engine sha (wr-agent) — #462/#463 follow-up
+### Hand-off by snapshot when both agents share an engine sha (workroomd) — #462/#463 follow-up
 
 **What:** Carry each session through a hand-off as a libghostty snapshot instead of VT when the new
 binary reports the same engine sha, falling back to VT otherwise.
@@ -505,29 +505,29 @@ that rule.
 
 **Priority:** P3, effort M. **Depends on:** #462/#463 landing (ADR 0051).
 
-### Shell integration for macOS's built-in `/bin/bash` (wr-agent, macapp)
+### Shell integration for macOS's built-in `/bin/bash` (workroomd, macapp)
 
 **What:** give Apple's `/bin/bash` (3.2) Ghostty's shell integration: OSC 133 command marks and
 OSC 7 cwd, so the inline agent, the command-end title reset and cwd tracking work there.
 
 **Why:** today it gets none, in persistent panes and in libghostty's own. Apple's bash ignores the
-`ENV` startup path the integration uses, so `wr-agent` now starts it as a plain login shell, as
+`ENV` startup path the integration uses, so `workroomd` now starts it as a plain login shell, as
 Ghostty does (`detectShell` in `src/termio/shell_integration.zig`). Homebrew bash 4.4+ is
 unaffected.
 
 **Context:** `--rcfile` does not apply to a login shell, so a fix needs another way in, such as a
 `PROMPT_COMMAND` hook set from the environment. Probed 2026-10-14: `ghostty.bash` sourced from an
 rcfile under bash 3.2 does report correct `133;D` exit codes, so the script itself works there.
-Start at `vcs/crates/wr-agent/src/shell.rs` (`bash_integration`). Upstream declines it, so the
+Start at `vcs/crates/workroomd/src/shell.rs` (`bash_integration`). Upstream declines it, so the
 libghostty path would stay without it.
 
 **Priority:** P3, effort M.
 
-### Agent bootstrap (#231): two review findings the /ship pass deferred (macapp, wr-agent)
+### Agent bootstrap (#231): two review findings the /ship pass deferred (macapp, workroomd)
 
 **What:** Two items the #231 review raised and the branch did not take.
-1. `wr-agent hand-off` exit 92 covers both "nothing listening" and "accepted but did not greet in
-   5 s"; `install.sh` and `AgentBootstrap` tell them apart by the CLI's stderr wording
+1. `workroomd hand-off` exit 92 covers both "nothing listening" and "accepted but did not greet in
+   5 s"; `install.sh` and `DaemonBootstrap` tell them apart by the CLI's stderr wording
    (`no agent listening`). Give did-not-greet its own exit code in `run_hand_off` and branch on it.
 2. `ContainerHostDriver.shellQuoted` is a one-line forwarder to `PosixShell.quoted` (~14 call
    sites, plus `PersistentSessionService`); two older copies exist in `CommandLineInstaller` and
@@ -536,7 +536,7 @@ libghostty path would stay without it.
 **Why:** 1 changes behaviour (a CLI wording change would silently read a dead socket as a live
 agent); 2 is duplication.
 
-**How to start:** 1 in `vcs/crates/wr-agent/src/cli/hand_off.rs` (`run_hand_off`, the 92 arms) with the
+**How to start:** 1 in `vcs/crates/workroomd/src/cli/hand_off.rs` (`run_hand_off`, the 92 arms) with the
 fixture's `over_ssh_the_bootstrap_*` test; 2 is mechanical.
 
 **Priority:** P3, effort S each.
@@ -802,7 +802,7 @@ sweep stage.
 **What:** An upstream GhosttyKit apprt program-status action. The app's own terminal ignores
 `.program_status`, so non-daemon panes (run commands, fixture panes, and every pane while the agent
 is unavailable and panes fall back to a plain shell) never get OSC 7501. An upstream
-apprt action would cover them; daemon-backed panes still need wr-agent for reattach and remote.
+apprt action would cover them; daemon-backed panes still need workroomd for reattach and remote.
 
 **Why:** #358 shows "needs you" only for daemon-backed panes.
 

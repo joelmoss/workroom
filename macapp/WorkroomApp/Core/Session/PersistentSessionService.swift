@@ -35,8 +35,8 @@ final class PersistentSessionService {
 
   /// How long a quit waits for close kills that are REMOTE: a remote kill on a host that cannot be
   /// reached can take as long as an ssh connect (#283), and a quit must not wait that out with no
-  /// sign of why. Local kills are not bounded by it: they end within the agent control client's own
-  /// deadlines, and a slow local daemon is no reason to leave a closed pane's shell running.
+  /// sign of why. Local kills are not bounded by it: they end within the daemon control client's own
+  /// deadlines, and a slow local helper is no reason to leave a closed pane's shell running.
   static let closeKillQuitBudget: Duration = .seconds(5)
 
   /// Waits for every close kill still in flight: every local one, and remote ones until `deadline`.
@@ -58,9 +58,9 @@ final class PersistentSessionService {
   }
 
   /// One socket path per backend. They deliberately differ, so these must never be conflated —
-  /// the daemon's sessions and the agent's are reached through different files.
+  /// the helper's sessions and the daemon's are reached through different files.
   private var resolvedSocketPaths: [SessionBackend: String] = [:]
-  /// Where new sessions go, once resolved. Cached because resolving it RUNS the agent to check it
+  /// Where new sessions go, once resolved. Cached because resolving it RUNS the daemon to check it
   /// works, and that answer does not change within a launch.
   ///
   /// **Nil has two meanings here and `lastProbeAt` is what separates them.** `preferred()` returns
@@ -68,16 +68,16 @@ final class PersistentSessionService {
   /// "not asked yet". Using nil for both — as this did while `preferred()` was non-Optional —
   /// silently un-caches exactly the case that most needs caching: the probe is a `Process()` with a
   /// 2-second deadline run SYNCHRONOUSLY ON THE MAIN ACTOR during terminal creation
-  /// (`SessionBackendProbe.runProtocolCommand`), so a hung agent costs 2s per access, and `backend`
+  /// (`SessionBackendProbe.runProtocolCommand`), so a hung daemon costs 2s per access, and `backend`
   /// is read once or more per pane. An eight-pane restore would freeze for ~16s.
   private var cachedPreferred: SessionBackend?
   /// When the last probe ran, or nil if it never has. A SUCCESSFUL answer is cached for the launch
-  /// — the agent does not become unavailable once it has answered — but a nil answer is retried
+  /// — the daemon does not become unavailable once it has answered — but a nil answer is retried
   /// after `probeRetryInterval`.
   ///
   /// Latching nil forever was worse than what it replaced. Before this change a failed probe cached
-  /// `.swiftDaemon`, and the daemon could still be STARTED, so a transient failure degraded to
-  /// daemon-backed persistence; now it degrades to no persistence at all, for the rest of the
+  /// `.legacySessionHelper`, and the helper could still be STARTED, so a transient failure degraded to
+  /// helper-backed persistence; now it degrades to no persistence at all, for the rest of the
   /// launch, with no way back short of quitting. The probe is a `Process()` with a 2-second
   /// watchdog, so load, resource exhaustion or a slow first exec of a freshly-updated binary are
   /// all enough to trip it once. Re-probing on a cooldown keeps the fix for the real problem — the
@@ -87,7 +87,7 @@ final class PersistentSessionService {
   private var isReprobing = false
   /// When a helper last failed to ANSWER, per backend.
   ///
-  /// `ownership` has its own 2-second deadline and, unlike the agent probe, it is asked once per
+  /// `ownership` has its own 2-second deadline and, unlike the daemon probe, it is asked once per
   /// SESSION with no shared answer — so a helper that accepts and then stalls cost N x 2s for N
   /// panes, serially, on the main actor. That is the same arithmetic the probe cooldown exists to
   /// stop, applied to the query the probe cooldown does not cover. A helper that could not answer
@@ -122,22 +122,22 @@ final class PersistentSessionService {
     let host: HostID
     let driver: any HostTerminalDriver
     let workingDirectory: String
-    /// What its attach tells the host's agent about it (#255).
+    /// What its attach tells the host's daemon about it (#255).
     var metadata: [(key: String, value: String)] = []
   }
 
-  /// How the agent's health is measured. Injected so a test can drive the unhealthy path without
-  /// a real `wr-agent` to break.
+  /// How the daemon's health is measured. Injected so a test can drive the unhealthy path without
+  /// a real `workroomd` to break.
   private let probe: @Sendable (SessionBackend) -> SessionBackendAvailability
-  /// What the shipped daemon says about a session, or nil to ask a real one over its socket.
+  /// What the shipped helper says about a session, or nil to ask a real one over its socket.
   /// Injected for the same reason, and separately: the two answers combine, and the case that
-  /// matters most (unhealthy agent, daemon-owned session) needs both driven at once.
+  /// matters most (unhealthy daemon, helper-owned session) needs both driven at once.
   private let ownershipOverride: ((UUID) -> SessionOwnership)?
   /// Monotonic seconds, for the probe cooldown. `systemUptime` rather than `Date()` so a clock
   /// adjustment cannot make the cooldown never expire.
   private let now: () -> Double
   /// Ends a session on its host (#283), connecting to the host first if need be. Throws when the
-  /// host cannot be reached; false when its agent did not acknowledge the kill.
+  /// host cannot be reached; false when its daemon did not acknowledge the kill.
   private let endRemote: (UUID, HostID) async throws -> Bool
   /// A host's service connection as it changes (`HostConnectionManager.updates(for:)`), which a
   /// closed pane's unended session waits on to be ended again (#293).
@@ -163,7 +163,7 @@ final class PersistentSessionService {
       // The container runtime the host is on, Docker's or Apple's, isn't on this Mac (#253, #309),
       // so there is no host for the session to be running on, and nothing to stop.
       // Reported as ended, rather than as a close that left something running. "No runtime" is no
-      // runtime CLI where the app looks for one, which a daemon still running behind a moved CLI
+      // runtime CLI where the app looks for one, which a helper still running behind a moved CLI
       // would defeat. Off the main actor: it looks at the file system.
       let noRuntime = await Task.detached { RemoteHosts.shared.runtimeIsMissing(for: host) }.value
       if noRuntime { return true }
@@ -197,8 +197,8 @@ final class PersistentSessionService {
   ///
   /// The probe is a `Process()` with a 2-second watchdog, and this runs on the main actor during
   /// terminal creation. Making the FIRST one async would cost the common case its persistence —
-  /// the healthy agent answers in milliseconds, and a pane that opened before the answer arrived
-  /// would be a plain shell for no reason. Making the RETRIES synchronous costs a broken agent a
+  /// the healthy daemon answers in milliseconds, and a pane that opened before the answer arrived
+  /// would be a plain shell for no reason. Making the RETRIES synchronous costs a broken daemon a
   /// >=2s frozen main actor once per cooldown window, for the life of the launch, which is Sentry's
   /// AppHang threshold in a repo that has spent this month fixing AppHangs.
   ///
@@ -220,7 +220,7 @@ final class PersistentSessionService {
 
   /// Re-probe off the main actor and publish the answer back onto it.
   ///
-  /// `probe` is called on a detached task, so a hung agent burns its 2 seconds somewhere nobody is
+  /// `probe` is called on a detached task, so a hung daemon burns its 2 seconds somewhere nobody is
   /// waiting. Only a SUCCESS is written back: a second nil would just re-arm the same cooldown that
   /// `backend` already set before starting this.
   private func reprobeInBackground() {
@@ -239,24 +239,24 @@ final class PersistentSessionService {
 
   /// Which helper owns an EXISTING session, or where a new one should go.
   ///
-  /// This is the whole migration. A session the Swift daemon is already holding stays with the
-  /// daemon — it owns that pty and cannot hand it over — so it keeps running until the user closes
-  /// it. Everything new goes to the agent. Nobody has to choose, and nothing is taken away
+  /// This is the whole migration. A session the Swift helper is already holding stays with the
+  /// helper — it owns that pty and cannot hand it over — so it keeps running until the user closes
+  /// it. Everything new goes to the daemon. Nobody has to choose, and nothing is taken away
   /// mid-use.
   ///
   /// **Resolved once per session and remembered.** It used to re-probe on every call, and one pane
-  /// asks twice — `attachCommand` for the binary, `launchEnvironment` for the socket. A daemon that
+  /// asks twice — `attachCommand` for the binary, `launchEnvironment` for the socket. A helper that
   /// answered the first inside its 2-second deadline and missed the second handed libghostty
-  /// `workroom-session attach` pointed at `agent.sock`: the Swift daemon then binds the agent's
-  /// socket, which `SessionBackend` says cannot happen by construction, and every agent session
+  /// `workroom-session attach` pointed at `workroomd.sock`: the Swift helper then binds the daemon's
+  /// socket, which `SessionBackend` says cannot happen by construction, and every daemon session
   /// becomes unlistable. One answer per session is what makes the pair consistent.
   ///
-  /// Returns **nil when the owner is genuinely unknown** — see `owner(preferred:daemon:)`. Nil is
+  /// Returns **nil when the owner is genuinely unknown** — see `owner(preferred:helper:)`. Nil is
   /// not cached, so a later reattach re-probes rather than being stuck with a transient answer.
   func backend(forSession sessionID: UUID) -> SessionBackend? {
     if let known = owners[sessionID] { return known }
     let resolved = resolveOwner(sessionID)
-    // An UNKNOWN answer is deliberately not cached: it is a transient condition (a daemon that
+    // An UNKNOWN answer is deliberately not cached: it is a transient condition (a helper that
     // was mid-shutdown, briefly wedged, or losing a race), and remembering it would pin the pane
     // to a plain shell for the rest of the launch. A later reattach re-probes and can succeed.
     if let resolved { owners[sessionID] = resolved }
@@ -264,31 +264,31 @@ final class PersistentSessionService {
   }
 
   /// The ambiguity branch this used to carry is gone, because the state it guarded is now
-  /// unreachable. It fired when new sessions were routed at the DAEMON — the old fallback for a
-  /// failed agent probe — and answered nil rather than send `workroom-session attach` at an id the
-  /// daemon had never held, which the daemon creates rather than refuses. `preferred()` no longer
-  /// names the daemon under any condition, so a failed probe now yields nil directly and the same
-  /// safety falls out of `owner(preferred:daemon:)` with nothing special to say.
+  /// unreachable. It fired when new sessions were routed at the HELPER — the old fallback for a
+  /// failed daemon probe — and answered nil rather than send `workroom-session attach` at an id the
+  /// helper had never held, which the helper creates rather than refuses. `preferred()` no longer
+  /// names the helper under any condition, so a failed probe now yields nil directly and the same
+  /// safety falls out of `owner(preferred:helper:)` with nothing special to say.
   private func resolveOwner(_ sessionID: UUID) -> SessionBackend? {
-    let daemon = daemonOwnership(sessionID)
-    // **A wedged retired daemon must not veto a session the live agent holds.** `.unreachable`
+    let helper = helperOwnership(sessionID)
+    // **A wedged retired helper must not veto a session the live daemon holds.** `.unreachable`
     // resolves to nil, and nil blocks `endSession` — which `reap` gates deleting a workroom
-    // directory on (issue #7) — so a v2.0.0 daemon that accepts and then stalls made healthy
-    // AGENT sessions unkillable and their workrooms undeletable. The daemon's opinion only needs
-    // to win for ids the agent does not hold, so ask the agent before accepting the veto.
-    if case .unreachable = daemon, case .owned = ownership(of: sessionID, in: .rustAgent) {
-      return .rustAgent
+    // directory on (issue #7) — so a v2.0.0 helper that accepts and then stalls made healthy
+    // DAEMON sessions unkillable and their workrooms undeletable. The helper's opinion only needs
+    // to win for ids the daemon does not hold, so ask the daemon before accepting the veto.
+    if case .unreachable = helper, case .owned = ownership(of: sessionID, in: .daemon) {
+      return .daemon
     }
-    return Self.owner(preferred: backend, daemon: daemon)
+    return Self.owner(preferred: backend, helper: helper)
   }
 
-  /// Which helper a session belongs to, given where new sessions go and what the daemon said —
+  /// Which helper a session belongs to, given where new sessions go and what the helper said —
   /// or **nil when the answer is genuinely unknown**.
   ///
-  /// An earlier version of this resolved `unreachable` to the daemon, on the reasoning that
-  /// guessing wrong toward the daemon merely fails loudly ("no such session") while guessing wrong
-  /// toward the agent forks a duplicate pty. **That premise was false.** The Swift daemon creates
-  /// on attach exactly as the agent does — `SessionDaemon.handleAttach` ends
+  /// An earlier version of this resolved `unreachable` to the helper, on the reasoning that
+  /// guessing wrong toward the helper merely fails loudly ("no such session") while guessing wrong
+  /// toward the daemon forks a duplicate pty. **That premise was false.** The Swift helper creates
+  /// on attach exactly as the daemon does — `SessionDaemon.handleAttach` ends
   /// `create(request: request, connection: connection)` for an id it does not hold — so BOTH
   /// directions silently fork a second shell and orphan the first. There is no loud direction, so
   /// there is no safe guess.
@@ -301,26 +301,26 @@ final class PersistentSessionService {
   /// `nonisolated` because it touches no state — the probe is the caller's job, and a pure rule
   /// should not need the main actor to evaluate.
   /// `preferred` is itself Optional now: nil means no backend can take a NEW session. It only
-  /// reaches the answer through `.notOwned`, so a daemon that CLAIMS the session still resolves to
-  /// the daemon even when nothing else can run — which is the whole point of keeping the attach
+  /// reaches the answer through `.notOwned`, so a helper that CLAIMS the session still resolves to
+  /// the helper even when nothing else can run — which is the whole point of keeping the attach
   /// client, and the case an earlier draft of this change broke.
-  nonisolated static func owner(preferred: SessionBackend?, daemon: SessionOwnership)
+  nonisolated static func owner(preferred: SessionBackend?, helper: SessionOwnership)
     -> SessionBackend?
   {
-    switch daemon {
-    case .owned: return .swiftDaemon
+    switch helper {
+    case .owned: return .legacySessionHelper
     case .notOwned: return preferred
     case .unreachable: return nil
     }
   }
 
-  /// What the shipped daemon says about this session.
+  /// What the shipped helper says about this session.
   ///
-  /// `notOwned` — not merely "no answer" — when there is no daemon socket at all: that is the
-  /// steady state once the migration has drained, and it must not push every session at a daemon
+  /// `notOwned` — not merely "no answer" — when there is no helper socket at all: that is the
+  /// steady state once the migration has drained, and it must not push every session at a helper
   /// that is not running.
-  private func daemonOwnership(_ sessionID: UUID) -> SessionOwnership {
-    ownership(of: sessionID, in: .swiftDaemon)
+  private func helperOwnership(_ sessionID: UUID) -> SessionOwnership {
+    ownership(of: sessionID, in: .legacySessionHelper)
   }
 
   /// What a specific helper says about a session.
@@ -331,7 +331,7 @@ final class PersistentSessionService {
   private func ownership(of sessionID: UUID, in backend: SessionBackend) -> SessionOwnership {
     // A helper that just failed to answer is not asked again for every remaining pane. The answer
     // is the same `.unreachable` it would have given, arrived at without a second 2-second wait —
-    // which is what a window of panes opening against one wedged daemon would otherwise cost,
+    // which is what a window of panes opening against one wedged helper would otherwise cost,
     // serially, on the main actor.
     //
     // **Above the test override on purpose.** The override replaces the round trip, not the policy
@@ -395,49 +395,49 @@ final class PersistentSessionService {
   /// is `attachCommand(forSession:)`, which routes per session. The distinction is the bug this
   /// change was written around twice: gating a RESTORED pane on this answer discards its id before
   /// anything asks who owns it (`TerminalPersistentSessionPolicy`), and gating the attach itself on
-  /// it strands every daemon-owned pane whenever the agent is unhealthy.
+  /// it strands every helper-owned pane whenever the daemon is unhealthy.
   var isAvailable: Bool { socketPath != nil && binaryPath != nil }
 
   /// Whether a session is still there to attach TO, asked immediately before attaching.
-  enum DaemonSessionState: Equatable {
+  enum HelperSessionState: Equatable {
     case attachable
-    /// The daemon answered, and it does not hold this session. Attaching would make it CREATE one.
+    /// The helper answered, and it does not hold this session. Attaching would make it CREATE one.
     case gone
   }
 
-  /// Re-ask the retired daemon whether it still holds this session, right before we attach to it.
+  /// Re-ask the retired helper whether it still holds this session, right before we attach to it.
   ///
   /// **The failure this prevents is the one that looks like success.** `SessionDaemon.handleAttach`
   /// — in the shipped v2.0.0 binary, which cannot be changed — ends in
   /// `create(request:connection:)` for an id it does not hold. So when a session's shell has exited
-  /// but this launch still has `.swiftDaemon` cached for it, attaching does not fail: the daemon
+  /// but this launch still has `.legacySessionHelper` cached for it, attaching does not fail: the helper
   /// silently forks a brand new shell and hands it over. The user sees a fresh prompt where their
   /// build was running, with nothing to distinguish it from a successful reattach.
   ///
   /// Asking again is what closes it. Ownership is otherwise resolved once per session and cached
   /// for the launch (a pane asks twice and the two answers must agree), and that cache is correct
   /// for routing — but it long outlives the session it describes. A lost session's cached owner is
-  /// dropped, so the attach re-resolves to the agent, whose `--no-create` attach shows it ended.
+  /// dropped, so the attach re-resolves to the daemon, whose `--no-create` attach shows it ended.
   ///
   /// **`.unreachable` proceeds, deliberately.** It means we could not ask, not that the session is
-  /// gone, and the substitution needs the daemon to be RESPONSIVE enough to answer "not mine" and
-  /// then create. A daemon too wedged to reply is also too wedged to fork anything, so attaching
+  /// gone, and the substitution needs the helper to be RESPONSIVE enough to answer "not mine" and
+  /// then create. A helper too wedged to reply is also too wedged to fork anything, so attaching
   /// cannot produce the wrong result — and refusing would throw away a session that is probably
   /// still there.
   ///
-  /// What it does not close: the daemon can still answer `.owned` here and lose the session before
+  /// What it does not close: the helper can still answer `.owned` here and lose the session before
   /// the attach lands. That race is narrow and cannot be closed from this side of the socket.
   @discardableResult
-  func confirmBeforeAttach(sessionID: UUID, wasRestored: Bool) -> DaemonSessionState {
+  func confirmBeforeAttach(sessionID: UUID, wasRestored: Bool) -> HelperSessionState {
     // A freshly minted id has never existed anywhere, so create-on-attach is the WANTED behaviour
     // and asking would refuse every new pane. Only an id carried over from a previous launch can
     // name a session that has since died.
     guard wasRestored else { return .attachable }
-    // The agent, local or remote, is asked in the attach itself (`--no-create`): one request, so
-    // the answer cannot go stale between the question and the attach. Only the retired daemon's
+    // The daemon, local or remote, is asked in the attach itself (`--no-create`): one request, so
+    // the answer cannot go stale between the question and the attach. Only the retired helper's
     // client has no such flag.
     if isRemote(sessionID) { return .attachable }
-    guard let owner = backend(forSession: sessionID), owner == .swiftDaemon else {
+    guard let owner = backend(forSession: sessionID), owner == .legacySessionHelper else {
       return .attachable
     }
     switch ownership(of: sessionID, in: owner) {
@@ -449,8 +449,8 @@ final class PersistentSessionService {
       owners.removeValue(forKey: sessionID)
       logger.error(
         """
-        session \(sessionID.uuidString, privacy: .public) is no longer held by the daemon; \
-        attaching through the agent instead, because the shipped daemon would create a new shell
+        session \(sessionID.uuidString, privacy: .public) is no longer held by the helper; \
+        attaching through the daemon instead, because the shipped helper would create a new shell
         """)
       return .gone
     }
@@ -465,13 +465,13 @@ final class PersistentSessionService {
   /// notification from the relay: libghostty drops all but one desktop notification a second,
   /// app-wide, so after a reboot every restored pane but the first would have said nothing.
   func willReplaceRestoredSession(_ sessionID: UUID, wasRestored: Bool) -> Bool {
-    guard wasRestored, !isRemote(sessionID), backend(forSession: sessionID) == .rustAgent else {
+    guard wasRestored, !isRemote(sessionID), backend(forSession: sessionID) == .daemon else {
       return false
     }
-    switch ownership(of: sessionID, in: .rustAgent) {
+    switch ownership(of: sessionID, in: .daemon) {
     case .owned: return false
-    // No agent socket answers `.notOwned`: after a reboot nothing it held survived. A socket that
-    // does not answer is most likely an agent that died and left it; mid-hand-off is the rare
+    // No daemon socket answers `.notOwned`: after a reboot nothing it held survived. A socket that
+    // does not answer is most likely a daemon that died and left it; mid-hand-off is the rare
     // case where that guess costs a needless notice.
     case .notOwned, .unreachable: return true
     }
@@ -583,9 +583,9 @@ final class PersistentSessionService {
       socketPath(for: owner) != nil
     else { return nil }
     let command = path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
-    // A restored id the agent no longer holds is refused rather than silently created; the relay
+    // A restored id the daemon no longer holds is refused rather than silently created; the relay
     // then says the session ended and creates a new one under the same id (`attach.rs`, #459).
-    return restored && owner == .rustAgent ? command + " --no-create" : command
+    return restored && owner == .daemon ? command + " --no-create" : command
   }
 
   func launchEnvironment(
@@ -599,13 +599,13 @@ final class PersistentSessionService {
   ) -> [(key: String, value: String)] {
     // None for a pane on a remote host: its command carries the session's variables to the host
     // itself (`HostTerminalDriver.attachCommand`), and a `WORKROOM_SESSION_*` left in this pane's
-    // environment would point a local `wr-agent` typed there at a session it cannot reach.
+    // environment would point a local `workroomd` typed there at a session it cannot reach.
     if isRemote(sessionID) { return [] }
     // Socket and binary must both come from the helper that owns THIS session, or the relay is
     // pointed at one implementation while being told to use the other's socket.
     // `WORKROOM_SESSION_BINARY` used to be set here. Its only reader was the attach client's
-    // `executablePath()`, which existed only to re-exec itself as `workroom-session daemon` when no
-    // daemon answered — a path this build no longer has. The Rust agent's env contract never read
+    // `executablePath()`, which existed only to re-exec itself as `workroom-session helper` when no
+    // helper answered — a path this build no longer has. The Rust daemon's env contract never read
     // it (`WORKROOM_SESSION_{ID,SOCKET,SHELL,CWD,COMMAND,RESOURCES}` only), so it was left written
     // by the app and read by nothing.
     guard
@@ -636,8 +636,8 @@ final class PersistentSessionService {
     socketPath: String, backend: SessionBackend
   ) -> any SessionControlPlane & Sendable {
     switch backend {
-    case .swiftDaemon: return PersistentSessionControlClient(socketPath: socketPath)
-    case .rustAgent: return AgentControlClient(socketPath: socketPath)
+    case .legacySessionHelper: return PersistentSessionControlClient(socketPath: socketPath)
+    case .daemon: return DaemonControlClient(socketPath: socketPath)
     }
   }
 
@@ -663,8 +663,8 @@ final class PersistentSessionService {
 
   /// Every live session, from both helpers.
   ///
-  /// Merged rather than taken from one: during the migration the daemon still holds the sessions
-  /// it created and the agent holds the new ones, and a caller deciding what to tear down must see
+  /// Merged rather than taken from one: during the migration the helper still holds the sessions
+  /// it created and the daemon holds the new ones, and a caller deciding what to tear down must see
   /// all of them or it will orphan whatever it could not see.
   func liveSessions() async -> [SessionDescriptor] {
     let clients = liveControlPlanes()
@@ -679,8 +679,8 @@ final class PersistentSessionService {
     // socket that cannot know it. Its host answers for it; this build has no channel for that yet.
     if isRemote(sessionID) { return .unreachable }
     // Routed by OWNER, with no gate on the preferred backend's socket. That gate was left over
-    // from before per-session routing and inverted the drain: with the agent preferred but no
-    // `agent.sock` yet, every session the daemon still owned reported `.unreachable` — and the
+    // from before per-session routing and inverted the drain: with the daemon preferred but no
+    // `workroomd.sock` yet, every session the helper still owned reported `.unreachable` — and the
     // close, delete and quit paths built on this then returned without killing them.
     // `controlPlane(forSession:)` already resolves an EXISTING socket for the owning backend.
     guard let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
@@ -699,7 +699,7 @@ final class PersistentSessionService {
 
   /// At most this many remote kills in flight per host (#283). Closing a workroom closes every pane
   /// at once, and that many kills together would fill the host connection's 32 request slots and
-  /// be refused unsent. Bounded rather than one at a time: the host's agent ends each on a thread
+  /// be refused unsent. Bounded rather than one at a time: the host's daemon ends each on a thread
   /// of its own, and one kill whose reply never comes must not hold up every close behind it.
   static let remoteKillsPerHost = 8
   private var remoteKillsInFlight: [HostID: Int] = [:]
@@ -731,8 +731,8 @@ final class PersistentSessionService {
   @discardableResult
   func endSession(sessionID: UUID) async -> Bool {
     // Never routed to a local helper, which would be asked to kill an id it does not hold: its
-    // host's agent ends it (#283). If that fails the registration STAYS: the session is still
-    // running there, and without it a retry would ask the local agent (which "kills" an id it never
+    // host's daemon ends it (#283). If that fails the registration STAYS: the session is still
+    // running there, and without it a retry would ask the local daemon (which "kills" an id it never
     // held) and a reattach would open a new session on this Mac.
     if let remote = remoteSessions[sessionID] {
       // Its pane is closing, so nothing here holds the host any more, whatever the kill finds.
@@ -765,7 +765,7 @@ final class PersistentSessionService {
       return true
     }
     // Resolved ONCE. Going through `controlPlane(forSession:)` as well would re-enter
-    // `backend(forSession:)`, and an unknown owner is deliberately not cached — so a silent daemon
+    // `backend(forSession:)`, and an unknown owner is deliberately not cached — so a silent helper
     // cost two full 2-second probes back to back, on the main actor, during teardown. That is the
     // same double-resolution this change exists to remove, reintroduced one layer up.
     guard let owner = backend(forSession: sessionID) else {
@@ -780,7 +780,7 @@ final class PersistentSessionService {
     }
     let client = controlPlane(socketPath: socketPath, backend: owner)
     // `notice`, which the log store keeps: a session that vanished has to be told apart from one
-    // this app ended. The agent logs the same kill with this process's pid (`agent.log`).
+    // this app ended. The daemon logs the same kill with this process's pid (`workroomd.log`).
     logger.notice("ending persistent session \(sessionID.uuidString, privacy: .public)")
     // Resolved above, via `backend(forSession:)`, then forgotten: this session is over, and
     // holding its owner would outlive the thing it describes.

@@ -85,7 +85,7 @@ make_bundle() {
 EOF
   # From the probed copy, not from `$SLEEP` — see `runnable` above for why a plain copy is not
   # guaranteed to execute. An embedded signature travels with the bytes, so copying it is enough.
-  for exe in "Workroom Dev" wr-agent workroom-session; do
+  for exe in "Workroom Dev" workroomd workroom-session; do
     cp "$SLEEP_COPY" "$app/Contents/MacOS/$exe"
   done
 }
@@ -124,13 +124,13 @@ make_bundle "$TMP/other" "com.developwithstyle.workroom.dev.wr-quiet-fern-0a1b2c
 
 THIS="$TMP/this/Workroom Dev.app/Contents/MacOS"
 spawn "$THIS/Workroom Dev" 301; this_app=$spawned
-spawn "$THIS/wr-agent" 302; this_agent=$spawned
+spawn "$THIS/workroomd" 302; this_agent=$spawned
 spawn "$THIS/workroom-session" 303; this_daemon=$spawned
 spawn "$TMP/xcode/Workroom Dev.app/Contents/MacOS/Workroom Dev" 304; xcode_app=$spawned
 spawn "$TMP/other/Workroom Dev.app/Contents/MacOS/Workroom Dev" 305; other_app=$spawned
-spawn "$TMP/other/Workroom Dev.app/Contents/MacOS/wr-agent" 306; other_agent=$spawned
+spawn "$TMP/other/Workroom Dev.app/Contents/MacOS/workroomd" 306; other_agent=$spawned
 # Mentions this bundle's agent in its arguments without being it.
-spawn sh -c 'sleep 307' "$THIS/wr-agent"; bystander=$spawned
+spawn sh -c 'sleep 307' "$THIS/workroomd"; bystander=$spawned
 
 sleep 0.3
 out="$(sh "$SCRIPT" "$TMP/this/Workroom Dev.app" 2>&1)"
@@ -141,15 +141,15 @@ if [ $status -ne 0 ]; then
   fails=$((fails + 1))
 fi
 expect_dead "$this_app" "this checkout's app"
-expect_dead "$this_agent" "this checkout's wr-agent"
+expect_dead "$this_agent" "this checkout's workroomd"
 expect_dead "$this_daemon" "this checkout's workroom-session"
 expect_dead "$xcode_app" "another copy with the same bundle id"
 expect_alive "$other_app" "another workroom's app (different bundle id)"
-expect_alive "$other_agent" "another workroom's wr-agent (different bundle id)"
+expect_alive "$other_agent" "another workroom's workroomd (different bundle id)"
 expect_alive "$bystander" "a process that only mentions the bundle path in its arguments"
 case "$out" in
-  *"Stopping persisted Workroom Dev wr-agent (its panes will come back empty)"*) ;;
-  *) echo "FAIL: no notice for the stopped wr-agent; got: $out"; fails=$((fails + 1)) ;;
+  *"Stopping persisted Workroom Dev workroomd (its panes will come back empty)"*) ;;
+  *) echo "FAIL: no notice for the stopped workroomd; got: $out"; fails=$((fails + 1)) ;;
 esac
 case "$out" in
   *"Stopping persisted Workroom Dev workroom-session"*) ;;
@@ -174,13 +174,13 @@ OTHER="$TMP/other/Workroom Dev.app/Contents/MacOS"
 SUPPORT="/Users/someone/Library/Application Support"
 cat >"$TMP/table" <<EOF
 101 $THIS/Workroom Dev
-102 $THIS/wr-agent serve --socket $SUPPORT/$DEV_ID/sessions/agent.sock
-103 $THIS/wr-agent serve --socket /tmp/workroom-501-$PLAIN_ID/agent.sock --handoff /tmp/table
-104 $OTHER/wr-agent serve --socket /tmp/workroom-501-$DEV_ID/agent.sock --idle-timeout never
-105 $THIS/wr-agent attach --session 6f1c2d
+102 $THIS/workroomd serve --socket $SUPPORT/$DEV_ID/sessions/workroomd.sock
+103 $THIS/workroomd serve --socket /tmp/workroom-501-$PLAIN_ID/workroomd.sock --handoff /tmp/table
+104 $OTHER/workroomd serve --socket /tmp/workroom-501-$DEV_ID/workroomd.sock --idle-timeout never
+105 $THIS/workroomd attach --session 6f1c2d
 106 $OTHER/Workroom Dev
-107 $THIS/wr-agent serve --socket /somewhere/else/agent.sock
-108 $OTHER/wr-agent serve --socket $SUPPORT/$OTHER_ID/sessions/agent.sock
+107 $THIS/workroomd serve --socket /somewhere/else/workroomd.sock
+108 $OTHER/workroomd serve --socket $SUPPORT/$OTHER_ID/sessions/workroomd.sock
 EOF
 got="$(STOP_DEV_APP_PS="$TMP/table" STOP_DEV_APP_DRY_RUN=1 \
   sh "$SCRIPT" "$TMP/this/Workroom Dev.app" | sed -n 's/^stop //p' | sort -n | tr '\n' ' ')"

@@ -59,8 +59,8 @@ maintainer follows.
 - **Xcode 27.1**, the version CI, Nightly and Release build with.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
-- **Rust** (rustup `stable`) — the app build compiles the embedded `wr-agent` from the `vcs/` workspace
-  (`macapp/Scripts/build-agent.sh`). A universal release build also needs the
+- **Rust** (rustup `stable`) — the app build compiles the embedded `workroomd` from the `vcs/` workspace
+  (`macapp/Scripts/build-daemon.sh`). A universal release build also needs the
   `x86_64`/`aarch64-apple-darwin` targets.
 - **Go 1.25+** (the module targets `go 1.25.7`; CI and the maintainer build with Go 1.26) — the app
   embeds the CLI engine at build time, so a Go toolchain must be on `PATH`.
@@ -101,7 +101,7 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 | --- | --- |
 | **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+; Release builds are universal, arm64 and x86_64) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm`, Metal-rendered) |
-| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); agent-routed reads and writes via the Rust `wr-agent` |
+| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); agent-routed reads and writes via the Rust `workroomd` |
 | **Syntax highlighting** | [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + tree-sitter grammars |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.6 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |
@@ -172,7 +172,7 @@ workroom/
 │   ├── updater/             # `workroom update`: GitHub release check + binary swap
 │   └── errs/                # Shared error sentinels + machine codes + exit codes
 ├── macapp/                  # ★ The macOS app (SwiftUI) — the product; see macapp/AGENTS.md & macapp/README.md
-├── vcs/                     # Rust workspace: the wr-agent daemon + git read crates
+├── vcs/                     # Rust workspace: the workroomd daemon + git read crates
 ├── scripts/workroom_setup   # This repo's own example setup hook
 ├── testdata/fixtures/       # Setup/teardown scripts used by Go tests
 ├── testdata/contracts/      # Golden --json envelopes, checked by cmd's Go tests and decoded by the app's tests
@@ -194,11 +194,11 @@ SwiftUI app. The core loop:
    target persists for the session.
 3. **Terminal I/O** surfaces libghostty/OSC callbacks app-wide — title (OSC 0/2), command-finished
    (OSC 133), busy/progress (OSC 9;4), and notifications (OSC) drive tab/sidebar animation, badges,
-   the inspector, and desktop banners. Program status (OSC 7501) is the exception: `wr-agent` keeps
+   the inspector, and desktop banners. Program status (OSC 7501) is the exception: `workroomd` keeps
    it and the app subscribes to it per host ([docs/program-status.md](docs/program-status.md),
    [ADR 0050](docs/adr/0050-program-status-service.md)).
 4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch)
-   goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and `wr-agent` for
+   goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and `workroomd` for
    agent-routed projects — both mapped to app-native models, no CLI text parsing.
 5. **Mutations** (create/delete workroom, add/remove project) call the bundled Go CLI via
    `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
@@ -316,7 +316,7 @@ failed" and offer cleanup.
    Before it runs, the file is gated as setup is (#363): an unapproved one stops the delete with
    nothing removed (`ScriptNotTrusted`, exit 3) unless a terminal approves it. On a remote workroom
    the app reads the host's copy and asks the CLI to judge it (`trust status --stdin`) before
-   `wr-agent run-script`, for setup and teardown alike.
+   `workroomd run-script`, for setup and teardown alike.
 4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
    **The branch is intentionally left intact.**
 5. **Update config:** remove the workroom entry. The project stays registered even with no
@@ -420,7 +420,7 @@ install.
 
 The Xcode build runs `macapp/Scripts/build-helper.sh` as a phase, which compiles the Go CLI and
 embeds it in the app bundle — so a Go toolchain must be on `PATH` when building the app. The app
-targets also build the embedded `wr-agent` (`macapp/Scripts/build-agent.sh`), which needs a Rust
+targets also build the embedded `workroomd` (`macapp/Scripts/build-daemon.sh`), which needs a Rust
 toolchain on `PATH`; a universal release build additionally needs the two Apple targets. See [`macapp/README.md`](macapp/README.md) and
 [`macapp/AGENTS.md`](macapp/AGENTS.md) for the full architecture, the VCS core, the libghostty
 integration notes (`macapp/QA-libghostty.md`), and signing details.
@@ -542,7 +542,7 @@ and every PR against either:
   CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=
   ```
 
-  It also runs the few Rust tests that only mean something on macOS: `wr-agent`'s `pty::tests`
+  It also runs the few Rust tests that only mean something on macOS: `workroomd`'s `pty::tests`
   and its stale-socket relay tests. macOS sets a new socket's close-on-exec flag in a second call,
   and those tests cover what a child spawned in between inherits. Everything else in Rust stays on
   the `rust` job.

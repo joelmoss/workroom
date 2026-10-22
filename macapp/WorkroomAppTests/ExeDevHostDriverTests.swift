@@ -1,5 +1,5 @@
-import AgentConnection
 import CryptoKit
+import DaemonConnection
 import HostDrivers
 import WorkroomSystem
 import WorkroomVCS
@@ -263,7 +263,7 @@ final class ExeDevHostDriverTests: XCTestCase {
     let driver = driver(exe)
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: driver.agentSocket,
+      driver: driver, daemonSocket: driver.daemonSocket,
       grantRepository: { repository in
         try await driver.grantGitHub(
           host: repository.host, owner: repository.owner, name: repository.name)

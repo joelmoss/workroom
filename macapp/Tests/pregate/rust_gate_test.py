@@ -2,7 +2,7 @@
 """The `vcs/` Rust lane for gstack's pre-gate (`.gstack/pregate.json`).
 
 CI's rust job is `make vcs-lint` (rustfmt, clippy, rustdoc) plus `make vcs-test` (the workspace
-tests, then wr-agent with `terminal-state`), both on the pinned toolchain. Without this lane the
+tests, then workroomd with `terminal-state`), both on the pinned toolchain. Without this lane the
 pre-gate stopped on any change under `vcs/` or the fixtures the Rust tests read. See
 app_gate_test.py for why this is a Python file. Not a test of its own; nothing else runs it.
 

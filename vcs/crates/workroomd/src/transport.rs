@@ -1,0 +1,420 @@
+//! What the daemon is served over.
+//!
+//! The driver contract in the design doc is deliberately **a bidirectional byte stream**, not an
+//! ssh endpoint: `ssh host workroomd serve --stdio` satisfies it, and so does a provider SDK's exec
+//! or attach call, or a WebSocket. Without a stream-shaped contract the SDK-only sandbox platforms
+//! cannot be drivers at all.
+//!
+//! So the daemon must not know what it is talking over. The requirement is exactly this: something
+//! that yields a reader and a writer usable from different threads, because the pty pump writes
+//! while the command loop blocks on read.
+//!
+//! **This is what makes the remote path testable without a remote.** A pair of pipes satisfies it,
+//! so the whole protocol — handshake, multiplexing, session lifecycle, repaint — can be exercised
+//! over a non-socket transport in-process, with no container, no ssh and no provider. What a
+//! container is still needed for is the genuinely remote part: another machine, its own process
+//! space, a real ssh hop.
+
+use std::io::{self, Read, Write};
+use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
+
+/// Ends a connection from a thread that is not the one reading it.
+///
+/// `handle_connection` learns the peer is gone by its read returning, so a thread that only WRITES
+/// (a watch subscription pushing events) cannot end the connection by itself: a failed write would
+/// otherwise leave the reader parked on a stream nobody is listening to. Calling this makes that
+/// read return, which runs the connection's normal teardown — and the client, seeing its transport
+/// drop, reconnects into a fresh generation instead of showing a panel that silently stopped updating.
+pub type Closer = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// A bidirectional stream the daemon can serve one connection over.
+pub trait Transport {
+    type Reader: Read + Send + 'static;
+    type Writer: Write + Send + 'static;
+
+    /// Split into halves usable from different threads.
+    fn split(self) -> io::Result<(Self::Reader, Self::Writer)>;
+
+    /// A handle that ends this connection from any thread. Taken BEFORE `split`, which consumes
+    /// the transport.
+    ///
+    /// The default does nothing, which is honest for a transport that cannot be closed from the
+    /// outside (stdio, a pipe pair): there the evicting thread still drops its own subscription, and
+    /// the peer finds out when its next write fails.
+    fn closer(&self) -> Closer {
+        std::sync::Arc::new(|| {})
+    }
+
+    /// Who is on the other end, for the daemon's log (`crate::log`): which process asked for a
+    /// session to be killed is the first thing a lost session raises.
+    fn peer(&self) -> String {
+        "the stream's peer".into()
+    }
+}
+
+impl Transport for UnixStream {
+    type Reader = UnixStream;
+    type Writer = UnixStream;
+
+    fn peer(&self) -> String {
+        match peer_pid(self) {
+            Some(pid) => format!("pid {pid}"),
+            None => "an unknown local process".into(),
+        }
+    }
+
+    fn split(self) -> io::Result<(UnixStream, UnixStream)> {
+        let writer = self.try_clone()?;
+        // Same reason as `FdStream::writer`: a client that stops reading must not wedge the daemon.
+        let _ = writer.set_write_timeout(Some(WRITE_TIMEOUT));
+        Ok((self, writer))
+    }
+
+    fn closer(&self) -> Closer {
+        // A clone shares the socket, so shutting it down wakes the reader on the original.
+        let handle = self.try_clone().ok();
+        std::sync::Arc::new(move || {
+            if let Some(handle) = &handle {
+                let _ = handle.shutdown(std::net::Shutdown::Both);
+            }
+        })
+    }
+}
+
+/// stdin and stdout — the shape `ssh host workroomd serve --stdio` produces, and the one a
+/// provider's exec channel produces too.
+///
+/// Takes the descriptors rather than `io::stdin()`/`io::stdout()` because those are globally
+/// locked and line-buffered: the buffering would hold terminal output until a newline appeared,
+/// which for a full-screen program is never.
+pub struct StdioTransport;
+
+impl Transport for StdioTransport {
+    type Reader = FdStream;
+    type Writer = FdStream;
+
+    fn split(self) -> io::Result<(FdStream, FdStream)> {
+        Ok((FdStream::stdin(), FdStream::writer(libc::STDOUT_FILENO)))
+    }
+}
+
+/// How long a write may keep retrying before the peer is treated as gone.
+///
+/// A remote client that stops reading must not be able to wedge the daemon. Without a bound the
+/// pipe or socket buffer fills, the write blocks forever, and the connection thread never notices
+/// the stop flag — the daemon hangs holding a session nobody can reach. Ten seconds is far longer
+/// than any transient stall and far shorter than forever.
+pub const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Unbuffered I/O on a borrowed descriptor.
+///
+/// Borrowed, not owned: closing stdin or stdout out from under the process on drop would break
+/// whatever else is using them, and the descriptors outlive this anyway.
+pub struct FdStream {
+    fd: RawFd,
+    /// Set on writers so a stalled peer cannot block the daemon indefinitely. Readers stay
+    /// blocking: waiting for a client that has nothing to say is exactly what they should do.
+    bounded_writes: bool,
+    /// Set on stdin, which can be the same open file as stdout: a tty, or an exec channel that is
+    /// one socket. `writer` makes stdout non-blocking, and with it such a stdin, whose reads then
+    /// return `WouldBlock` when there is nothing yet. This reader waits for input instead, as a
+    /// blocking one would; taking `WouldBlock` for the end of input hangs up on a live client.
+    waits: bool,
+}
+
+impl FdStream {
+    pub fn new(fd: RawFd) -> FdStream {
+        FdStream {
+            fd,
+            bounded_writes: false,
+            waits: false,
+        }
+    }
+
+    /// stdin, read so that it still waits for input once `writer` has set up stdout.
+    pub fn stdin() -> FdStream {
+        FdStream {
+            fd: libc::STDIN_FILENO,
+            bounded_writes: false,
+            waits: true,
+        }
+    }
+
+    /// A writer that gives up rather than blocking forever on a peer that stopped reading.
+    pub fn writer(fd: RawFd) -> FdStream {
+        let stream = FdStream {
+            fd,
+            bounded_writes: true,
+            waits: false,
+        };
+        // Best effort: if this fails the write simply blocks as before, which is no worse than
+        // the behaviour this replaces.
+        let _ = set_nonblocking(&stream);
+        stream
+    }
+}
+
+impl Read for FdStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            // SAFETY: the pointer and length come from one live `&mut [u8]`, so the kernel writes
+            // only inside it. A stale descriptor fails with EBADF.
+            let n = unsafe {
+                libc::read(
+                    self.fd,
+                    buffer.as_mut_ptr() as *mut libc::c_void,
+                    buffer.len(),
+                )
+            };
+            if n >= 0 {
+                return Ok(n as usize);
+            }
+            let error = io::Error::last_os_error();
+            if !self.waits || error.kind() != io::ErrorKind::WouldBlock {
+                return Err(error);
+            }
+            let mut ready = libc::pollfd {
+                fd: self.fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one live pollfd, and the count passed is 1.
+            unsafe { libc::poll(&mut ready, 1, -1) };
+        }
+    }
+}
+
+impl Write for FdStream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let deadline = std::time::Instant::now() + WRITE_TIMEOUT;
+        loop {
+            // SAFETY: the pointer and length come from one live `&[u8]`, which write only reads.
+            let n =
+                unsafe { libc::write(self.fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
+            if n >= 0 {
+                return Ok(n as usize);
+            }
+            let error = io::Error::last_os_error();
+            let retryable = matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            );
+            if !self.bounded_writes || !retryable {
+                return Err(error);
+            }
+            if std::time::Instant::now() >= deadline {
+                // The peer has not read anything for WRITE_TIMEOUT. Report it gone rather than
+                // waiting longer: the caller ends the connection, and the session survives for
+                // whoever reconnects.
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "peer stopped reading",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A transport built from two pipes, for testing the daemon over something that is not a socket.
+///
+/// A pipe is the honest stand-in for a remote stream: it has no message boundaries, no `SO_*`
+/// options, and it can be chunked anywhere — the same properties an ssh hop or an exec channel
+/// has, and the ones a unix socket quietly hides.
+pub struct PipeTransport {
+    reader: FdStream,
+    writer: FdStream,
+}
+
+/// Both ends of a pipe pair: what the daemon serves over, and what a test drives it with.
+pub struct PipePair {
+    pub daemon: PipeTransport,
+    pub client_reader: FdStream,
+    pub client_writer: FdStream,
+}
+
+impl PipeTransport {
+    /// Two pipes wired as a duplex: the client writes what the daemon reads, and vice versa.
+    pub fn pair() -> io::Result<PipePair> {
+        let (to_daemon_read, to_daemon_write) = pipe()?;
+        let (to_client_read, to_client_write) = pipe()?;
+        Ok(PipePair {
+            daemon: PipeTransport {
+                reader: FdStream::new(to_daemon_read),
+                writer: FdStream::writer(to_client_write),
+            },
+            client_reader: FdStream::new(to_client_read),
+            client_writer: FdStream::new(to_daemon_write),
+        })
+    }
+}
+
+impl Transport for PipeTransport {
+    type Reader = FdStream;
+    type Writer = FdStream;
+
+    fn split(self) -> io::Result<(FdStream, FdStream)> {
+        Ok((self.reader, self.writer))
+    }
+}
+
+/// A pipe whose ends are close-on-exec.
+///
+/// CLOEXEC is load-bearing, not hygiene. The daemon forks a pty child for every session, and a
+/// descriptor without it is inherited by that child — so the shell ends up holding a duplicate of
+/// the transport's write end, and the daemon's read NEVER sees EOF when the client disconnects. The
+/// connection thread then waits forever on a link the client has already dropped, which is the one
+/// thing a remote daemon must not do.
+///
+/// `pipe2(O_CLOEXEC)` would be atomic but does not exist on macOS, so this sets the flag after the
+/// fact. The window between the two is harmless here: the daemon forks pty children only in
+/// response to a client request, which cannot arrive before this function has returned.
+fn pipe() -> io::Result<(RawFd, RawFd)> {
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe writes.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    for fd in fds {
+        // SAFETY: `fd` is one of the two this function just created; F_GETFD takes integers.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        // SAFETY: as above, for F_SETFD.
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            let error = io::Error::last_os_error();
+            // SAFETY: both descriptors are this function's own, and returning the error means
+            // nothing else ever sees them.
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+            return Err(error);
+        }
+    }
+    Ok((fds[0], fds[1]))
+}
+
+/// Makes reads on this descriptor return `WouldBlock` instead of waiting.
+///
+/// A blocking read on a pipe with no data and a live writer waits forever, which silently defeats
+/// any deadline the caller thinks it has — a test that reads with a timeout will hang instead of
+/// failing. The daemon's own pty reads are non-blocking for the same reason.
+pub fn set_nonblocking(stream: &FdStream) -> io::Result<()> {
+    // SAFETY: F_GETFL takes and returns plain integers; a stale descriptor only fails.
+    let flags = unsafe { libc::fcntl(stream.fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above, for F_SETFL.
+    if unsafe { libc::fcntl(stream.fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Closes a descriptor, to end a test's side of a transport.
+pub fn close(stream: &FdStream) {
+    // SAFETY: `close` takes no pointers. Its one caller, remote_transport.rs, closes a stream it
+    // made and does not use it afterwards.
+    unsafe { libc::close(stream.fd) };
+}
+
+impl AsRawFd for FdStream {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
+}
+
+/// The pid of the process at the other end of a local socket, as the kernel recorded it at connect.
+fn peer_pid(stream: &UnixStream) -> Option<i32> {
+    use std::os::unix::io::AsRawFd;
+    #[cfg(target_os = "macos")]
+    {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        // SAFETY: the option value is `pid` and `len` is its exact size, so the kernel writes at
+        // most that many bytes into it.
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&mut pid as *mut libc::pid_t).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `ucred` is plain old data, for which all zeroes is a valid value.
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: the option value is `cred` and `len` is its exact size.
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut cred as *mut libc::ucred).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(cred.pid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = stream;
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pipe_pair_carries_bytes_both_ways() {
+        let pair = PipeTransport::pair().expect("pair");
+        let (mut daemon_reader, mut daemon_writer) = pair.daemon.split().expect("split");
+        let mut client_reader = pair.client_reader;
+        let mut client_writer = pair.client_writer;
+
+        client_writer.write_all(b"to the daemon").expect("write");
+        let mut buffer = [0u8; 32];
+        let n = daemon_reader.read(&mut buffer).expect("read");
+        assert_eq!(&buffer[..n], b"to the daemon");
+
+        daemon_writer.write_all(b"to the client").expect("write");
+        let n = client_reader.read(&mut buffer).expect("read");
+        assert_eq!(&buffer[..n], b"to the client");
+    }
+
+    /// A pipe has no message boundaries: a write can arrive split, which is the property that
+    /// makes it a fair stand-in for a remote stream rather than a convenience.
+    #[test]
+    fn reads_can_be_shorter_than_writes() {
+        let pair = PipeTransport::pair().expect("pair");
+        let (mut daemon_reader, _writer) = pair.daemon.split().expect("split");
+        let mut client_writer = pair.client_writer;
+
+        client_writer.write_all(b"0123456789").expect("write");
+        let mut small = [0u8; 4];
+        let n = daemon_reader.read(&mut small).expect("read");
+        assert_eq!(n, 4, "a small buffer takes a prefix, not the whole write");
+        assert_eq!(&small, b"0123");
+    }
+
+    #[test]
+    fn closing_the_far_end_reports_eof() {
+        let pair = PipeTransport::pair().expect("pair");
+        let (mut daemon_reader, _writer) = pair.daemon.split().expect("split");
+        close(&pair.client_writer);
+        let mut buffer = [0u8; 8];
+        assert_eq!(daemon_reader.read(&mut buffer).expect("read"), 0);
+    }
+}

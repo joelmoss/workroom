@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import HostDrivers
 import WorkroomDomain
 import WorkroomSystem
@@ -11,14 +11,14 @@ import XCTest
 /// with the container runtime. Skipped unless run through the fixture
 /// script, which builds the image and says where it is:
 ///
-///   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> \
+///   vcs/scripts/ssh-fixture/run.sh <linux workroomd> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/ContainerProvisioningIntegrationTests
 final class ContainerProvisioningIntegrationTests: XCTestCase {
   private var directory: URL!
   /// This test's own label, beside the run's, so what it left is told apart from other tests'.
   private var label: String!
   private var runtime: URL!
-  private var connections: [AgentVCSConnection] = []
+  private var connections: [DaemonVCSConnection] = []
 
   override func setUp() {
     super.setUp()
@@ -57,7 +57,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
       runtime: override ?? runtime, image: try need("WR_SSH_FIXTURE_IMAGE"),
       user: try need("WR_SSH_FIXTURE_USER"), identityFile: try need("WR_SSH_FIXTURE_IDENTITY"),
       publicKey: try need("WR_SSH_FIXTURE_PUBLIC_KEY"),
-      agentSocket: try need("WR_SSH_FIXTURE_SOCKET"),
+      daemonSocket: try need("WR_SSH_FIXTURE_SOCKET"),
       labels: [try need("WR_SSH_FIXTURE_LABEL"), label])
   }
 
@@ -106,7 +106,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
 
     let base = try await driver.create()
-    let connection = try await AgentVCSConnection.connect(
+    let connection = try await DaemonVCSConnection.connect(
       host: base, stream: try await driver.openStream(to: base))
     connections.append(connection)
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 1)
@@ -157,7 +157,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     let second = try await driver.create()
 
     for host in [first, second] {
-      let connection = try await AgentVCSConnection.connect(
+      let connection = try await DaemonVCSConnection.connect(
         host: host, stream: try await driver.openStream(to: host))
       connections.append(connection)
     }

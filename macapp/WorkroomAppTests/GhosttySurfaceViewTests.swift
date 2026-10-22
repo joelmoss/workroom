@@ -323,7 +323,7 @@ final class RemotePaneReconnectTests: XCTestCase {
         hosts: [
           host: .init(
             address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
-            hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+            hostKey: "ssh-ed25519 AAAA", daemonSocket: "/s")
         ], directory: directory)
     let hostDirectory = directory.appendingPathComponent(host.uuidString)
     try FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)

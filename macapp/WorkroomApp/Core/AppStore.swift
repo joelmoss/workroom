@@ -1,6 +1,6 @@
-import AgentConnection
 import AppKit
 import Combine
+import DaemonConnection
 import Defaults
 import Foundation
 import OSLog
@@ -1947,7 +1947,7 @@ final class AppStore: ObservableObject {
         // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
         let target = workroom.target(inProject: project.path)
         terminals.ensureTab(for: target)
-        if let title = UITestFixture.usageAgentTitle {
+        if let title = UITestFixture.usageCodingAgentTitle {
           terminals.tabs(for: target).first?.surface?.onTitleChange?(title)
         }
         // Oversized tab title for the pane title bar's truncation tests (issue #150). Same route as

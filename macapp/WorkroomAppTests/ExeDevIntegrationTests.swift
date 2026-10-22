@@ -23,7 +23,7 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
     guard ProcessInfo.processInfo.environment["WR_EXEDEV_TESTS"] == "1" else {
       throw XCTSkip("set TEST_RUNNER_WR_EXEDEV_TESTS=1 to run these on exe.dev")
     }
-    guard PersistentSessionPaths.linuxAgentURL(architecture: "x86_64") != nil else {
+    guard PersistentSessionPaths.linuxDaemonURL(architecture: "x86_64") != nil else {
       throw XCTSkip("this build bundles no Linux agent")
     }
     directory = FileManager.default.temporaryDirectory.appendingPathComponent(

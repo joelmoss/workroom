@@ -11,7 +11,7 @@ final class CodingAgentUsageUITests: XCTestCase {
   ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1", "-ApplePersistenceIgnoreState", "YES"]
-    if let agent { app.launchArguments += ["-WorkroomUITestUsageAgent", agent] }
+    if let agent { app.launchArguments += ["-WorkroomUITestUsageCodingAgent", agent] }
     if let terminalTabs {
       app.launchArguments += ["-WorkroomUITestTerminalTabs", String(terminalTabs)]
     }
@@ -32,7 +32,7 @@ final class CodingAgentUsageUITests: XCTestCase {
     XCTAssertTrue(app.descendants(matching: .any)["window.footer"].exists)
     XCTAssertTrue(app.buttons["activityBar.settings"].exists)
     XCTAssertTrue(app.buttons["activityBar.notifications"].exists)
-    XCTAssertFalse(app.descendants(matching: .any)["terminal.statusBar.agentUsage"].exists)
+    XCTAssertFalse(app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage"].exists)
 
     let settingsButton = app.buttons["activityBar.settings"]
     XCTAssertTrue(settingsButton.waitForExistence(timeout: 15))
@@ -41,16 +41,16 @@ final class CodingAgentUsageUITests: XCTestCase {
     XCTAssertTrue(settings.firstMatch.waitForExistence(timeout: 8))
   }
 
-  /// One launch with `-WorkroomUITestUsageAgent codex`, as an ordered chain: the footer's label and
+  /// One launch with `-WorkroomUITestUsageCodingAgent codex`, as an ordered chain: the footer's label and
   /// accessibility detail, the detail popover (opened, then closed), a split (which must neither
   /// duplicate nor resize the window's provider quota controls), and last a second window, which
   /// shows the running agent from the first. New Window is last because it makes
   /// `app.windows.firstMatch` ambiguous.
   func testCodexQuotaLabelPopoverSplitAndSecondWindow() {
     let app = launchedApp(agent: "codex")
-    let usage = app.descendants(matching: .any)["terminal.statusBar.agentUsage"]
+    let usage = app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage"]
     let usageSegments = app.descendants(matching: .any).matching(
-      identifier: "terminal.statusBar.agentUsage")
+      identifier: "terminal.statusBar.codingAgentUsage")
     XCTAssertTrue(usage.waitForExistence(timeout: 15))
 
     // Step 1: both quota windows and the accessibility detail.
@@ -70,7 +70,7 @@ final class CodingAgentUsageUITests: XCTestCase {
     // numbers live.
     usage.click()
 
-    let detail = app.descendants(matching: .any)["terminal.statusBar.agentUsage.detail"]
+    let detail = app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage.detail"]
     XCTAssertTrue(detail.waitForExistence(timeout: 5))
 
     // Assert on the ROWS, and on their `value` rather than their `label` — two separate XCUITest
@@ -125,7 +125,7 @@ final class CodingAgentUsageUITests: XCTestCase {
   func testClaudeOffersOptInWithoutChangingDeveloperSettings() {
     let app = launchedApp(agent: "claude")
     let enable = app.descendants(matching: .any)[
-      "terminal.statusBar.agentUsage.enableClaude"]
+      "terminal.statusBar.codingAgentUsage.enableClaude"]
     XCTAssertTrue(enable.waitForExistence(timeout: 15))
     enable.click()
     XCTAssertTrue(app.buttons["Enable"].waitForExistence(timeout: 5))
@@ -137,9 +137,9 @@ final class CodingAgentUsageUITests: XCTestCase {
   func testDetectedAgentWithoutSnapshotShowsNothingUntilItsFirstReading() {
     let app = launchedApp(agent: "codex", usageUnavailable: true)
     XCTAssertTrue(app.descendants(matching: .any)["window.footer"].waitForExistence(timeout: 15))
-    XCTAssertFalse(app.descendants(matching: .any)["terminal.statusBar.agentUsage"].exists)
+    XCTAssertFalse(app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage"].exists)
     XCTAssertFalse(
-      app.descendants(matching: .any)["terminal.statusBar.agentUsage.unavailable"].exists)
+      app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage.unavailable"].exists)
   }
 
   func testNonAgentTabKeepsRunningAgentQuotaSegment() {
@@ -147,12 +147,13 @@ final class CodingAgentUsageUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "terminal.tab.Codex").firstMatch
       .click()
     XCTAssertTrue(
-      app.descendants(matching: .any)["terminal.statusBar.agentUsage"].waitForExistence(timeout: 15)
+      app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage"].waitForExistence(
+        timeout: 15)
     )
     app.descendants(matching: .any).matching(identifier: "terminal.tab.Terminal 2").firstMatch
       .click()
     XCTAssertTrue(
-      app.descendants(matching: .any)["terminal.statusBar.agentUsage"].waitForExistence(
+      app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage"].waitForExistence(
         timeout: 5))
   }
 }

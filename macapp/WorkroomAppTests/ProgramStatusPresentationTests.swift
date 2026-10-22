@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import XCTest
 
 @testable import Workroom

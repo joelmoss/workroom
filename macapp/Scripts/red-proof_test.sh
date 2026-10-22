@@ -5,7 +5,7 @@
 set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-# A named template, because template-less BSD `mktemp -d` ignores $TMPDIR (see build-agent_test.sh).
+# A named template, because template-less BSD `mktemp -d` ignores $TMPDIR (see build-daemon_test.sh).
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/red-proof_test.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 

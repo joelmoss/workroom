@@ -38,7 +38,7 @@ struct CodingAgentUsageDetailView: View {
     }
     .padding(Self.horizontalPadding)
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("terminal.statusBar.agentUsage.detail")
+    .accessibilityIdentifier("terminal.statusBar.codingAgentUsage.detail")
     .onReceive(Timer.publish(every: Self.refreshInterval, on: .main, in: .common).autoconnect()) {
       time in
       currentTime = time

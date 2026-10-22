@@ -18,7 +18,7 @@ struct ClaudeAccountUsage: Equatable, Sendable {
   let unavailableReason: String?
 }
 
-/// What wr-agent said about a pane's Claude profile (#480).
+/// What workroomd said about a pane's Claude profile (#480).
 enum PaneClaudeProfile: Equatable, Sendable {
   /// The foreground's `CLAUDE_CONFIG_DIR`, empty when unset.
   case reported(String)

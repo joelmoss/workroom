@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Foundation
 import WorkroomSystem
 import WorkroomWire
@@ -19,28 +19,28 @@ public enum SSHTransport {
     /// The host's public key, `<type> <base64>`, delivered out of band. It is the only key ssh
     /// accepts, and a mismatch fails closed: `BatchMode` cannot prompt to accept a new one.
     public let hostKey: String
-    /// The supervised agent's socket on the host.
-    public let agentSocket: String
+    /// The supervised daemon's socket on the host.
+    public let daemonSocket: String
 
-    /// The agent's binary, beside its socket: what the app installs there (`AgentBootstrap`,
+    /// The daemon's binary, beside its socket: what the app installs there (`DaemonBootstrap`,
     /// #231), the supervisor starts, and the relay and the attach run. One directory per host,
     /// the socket's 0700 one, so the file has the socket's protection (design doc, the hand-off
     /// trust model: the socket is the boundary).
     public init(
       address: String, port: Int, user: String, identityFile: String, hostKey: String,
-      agentSocket: String
+      daemonSocket: String
     ) {
       self.address = address
       self.port = port
       self.user = user
       self.identityFile = identityFile
       self.hostKey = hostKey
-      self.agentSocket = agentSocket
+      self.daemonSocket = daemonSocket
     }
 
-    public var agentBinary: String { AgentInstall.binary(besideSocket: agentSocket) }
-    /// Ghostty's terminfo and shell integration, which the bootstrap puts beside the agent (#239).
-    public var resources: String { AgentInstall.resources(besideSocket: agentSocket) }
+    public var daemonBinary: String { DaemonInstall.binary(besideSocket: daemonSocket) }
+    /// Ghostty's terminfo and shell integration, which the bootstrap puts beside the daemon (#239).
+    public var resources: String { DaemonInstall.resources(besideSocket: daemonSocket) }
   }
 
   /// Runs `command` on `host` over ssh, with the host's `ssh_config` and `known_hosts` written to
@@ -89,14 +89,14 @@ public enum SSHTransport {
   ) throws -> String {
     attachCommand(
       via: try route(to: host, in: hostDirectory), in: hostDirectory,
-      agentSocket: host.agentSocket, session: session, workingDirectory: workingDirectory,
+      daemonSocket: host.daemonSocket, session: session, workingDirectory: workingDirectory,
       restored: restored, metadata: metadata)
   }
 
   /// The command a pane runs to attach to `session` over `route`, keeping ssh's log in
   /// `hostDirectory`.
   public static func attachCommand(
-    via route: Route, in hostDirectory: URL, agentSocket: String, session: UUID,
+    via route: Route, in hostDirectory: URL, daemonSocket: String, session: UUID,
     workingDirectory: String, restored: Bool, metadata: [(key: String, value: String)] = []
   ) -> String {
     // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
@@ -110,8 +110,8 @@ public enum SSHTransport {
         "-E", log, "-o", "PermitLocalCommand=yes", "-o", "LocalCommand=printf '\\0338\\033[J'",
         "-t", route.destination,
         remoteAttachCommand(
-          binary: AgentInstall.binary(besideSocket: agentSocket), session: session,
-          socket: agentSocket, resources: AgentInstall.resources(besideSocket: agentSocket),
+          binary: DaemonInstall.binary(besideSocket: daemonSocket), session: session,
+          socket: daemonSocket, resources: DaemonInstall.resources(besideSocket: daemonSocket),
           workingDirectory: workingDirectory, restored: restored, metadata: metadata),
       ]
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
@@ -198,7 +198,7 @@ public enum SSHTransport {
 
   /// What runs on the host, in the pty ssh allocates there.
   ///
-  /// The session contract is the environment `wr-agent attach` reads, set with `env` because ssh
+  /// The session contract is the environment `workroomd attach` reads, set with `env` because ssh
   /// carries none of the pane's own. Deliberately absent: the shell (the host's own login shell
   /// applies).
   ///
@@ -217,12 +217,12 @@ public enum SSHTransport {
   /// shell; the pane's working directory does not, because libghostty takes an OSC 7 report only
   /// from its own host.
   ///
-  /// A host with no agent installed yet (rebooted from tmpfs, or never bootstrapped) has no
+  /// A host with no daemon installed yet (rebooted from tmpfs, or never bootstrapped) has no
   /// binary to run, and the shell's 127 for that would read as the session's own exit. It exits
   /// 255 instead, ssh's own status for a lost link, which the app answers by attaching again with
   /// backoff: by then the bootstrap, which nothing orders panes after, has installed it.
   /// `metadata`'s workroom and title go in under the same variables a local pane's attach gets
-  /// (`SessionMetadataKey.environmentVariables`), which the host's agent keeps (#255). Nothing
+  /// (`SessionMetadataKey.environmentVariables`), which the host's daemon keeps (#255). Nothing
   /// else does: the project is this Mac's path, which the host neither keeps nor needs, and an ssh
   /// command line is visible to everything on the host.
   public static func remoteAttachCommand(
@@ -245,7 +245,7 @@ public enum SSHTransport {
         names[entry.key].flatMap { entry.value.isEmpty ? nil : "\($0)=\(entry.value)" }
       }
     return "test -x \(shellQuoted(binary)) || { echo "
-      + shellQuoted("workroom: no agent is installed at \(binary) yet") + " >&2; exit 255; }; "
+      + shellQuoted("workroom: no daemon is installed at \(binary) yet") + " >&2; exit 255; }; "
       + "if test -r \(shellQuoted(resources + "/terminfo/x/xterm-ghostty")); then set -- "
       + integrated.map(shellQuoted).joined(separator: " ")
       + "; else unset WORKROOM_SESSION_RESOURCES GHOSTTY_SHELL_FEATURES; "
@@ -257,7 +257,7 @@ public enum SSHTransport {
   public static let alias = "workroom-host"
 
   /// The command ssh runs on the host, quoted for the remote shell. The installed binary by its
-  /// path: a host has no `wr-agent` on its PATH, only what the bootstrap put beside the socket.
+  /// path: a host has no `workroomd` on its PATH, only what the bootstrap put beside the socket.
   public static func relayCommand(binary: String, socket: String) -> String {
     shellQuoted(binary) + " relay --socket " + shellQuoted(socket)
   }
@@ -283,7 +283,7 @@ public enum SSHTransport {
   public static func writeConfiguration(for host: Host, in directory: URL) throws -> URL {
     for (name, value) in [
       ("address", host.address), ("user", host.user), ("identity file", host.identityFile),
-      ("host key", host.hostKey), ("agent socket", host.agentSocket),
+      ("host key", host.hostKey), ("daemon socket", host.daemonSocket),
     ] {
       guard !value.isEmpty, !value.contains(where: { $0.isNewline || $0 == "\"" || $0 == "\0" })
       else {
@@ -293,9 +293,9 @@ public enum SSHTransport {
     guard (1...65535).contains(host.port) else {
       throw HostDriverError.invalidConfiguration("port \(host.port) is out of range")
     }
-    // The agent's binary is derived from it (`agentBinary`), and run by path from any cwd.
-    guard host.agentSocket.hasPrefix("/") else {
-      throw HostDriverError.invalidConfiguration("agent socket must be an absolute path")
+    // The daemon's binary is derived from it (`daemonBinary`), and run by path from any cwd.
+    guard host.daemonSocket.hasPrefix("/") else {
+      throw HostDriverError.invalidConfiguration("daemon socket must be an absolute path")
     }
     let key = host.hostKey.split(separator: " ")
     guard key.count >= 2 else {
