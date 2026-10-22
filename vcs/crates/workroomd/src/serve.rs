@@ -93,9 +93,37 @@ pub fn acquire_instance_lock(socket: &Path) -> Result<InstanceLock, ServeError> 
     Ok(InstanceLock { file })
 }
 
+/// How often `serve` touches its lock and log (`Daemon::keep_fresh`): far inside the three days
+/// macOS's `tmp_cleaner` gives a /tmp file nobody touches (#528).
+pub const FRESHEN_EVERY: Duration = Duration::from_secs(3600);
+
+/// The files a serving daemon keeps fresh, by descriptor, and how often.
+struct Freshen {
+    lock: std::os::unix::io::RawFd,
+    log: std::os::unix::io::RawFd,
+    every: Duration,
+}
+
+/// Sets each regular file's access and modification times to now, through its descriptor: by
+/// descriptor, it is the file this process holds even when a hand-off handed it over, and a
+/// terminal or pipe in place of a log is left alone.
+fn touch(files: &[std::os::unix::io::RawFd]) {
+    for &fd in files {
+        // SAFETY: fstat writes only into `stat`, and both calls take a descriptor by number, which
+        // fails cleanly if it is not open.
+        unsafe {
+            let mut stat: libc::stat = std::mem::zeroed();
+            if libc::fstat(fd, &mut stat) == 0 && (stat.st_mode & libc::S_IFMT) == libc::S_IFREG {
+                libc::futimens(fd, std::ptr::null());
+            }
+        }
+    }
+}
+
 pub struct Daemon {
     pub sessions: SessionStore,
     connections: Arc<AtomicUsize>,
+    freshen: Option<Freshen>,
 }
 
 impl Default for Daemon {
@@ -109,7 +137,21 @@ impl Daemon {
         Self {
             sessions: SessionStore::new(),
             connections: Arc::new(AtomicUsize::new(0)),
+            freshen: None,
         }
+    }
+
+    /// While `run` serves, touches `lock` and `log` every `every`, so a cleaner that deletes files
+    /// nobody has touched for days never takes them (#528): macOS's `tmp_cleaner`, for a daemon in
+    /// the /tmp socket fallback, where the lock is opened once and never written, and a quiet
+    /// daemon's log can sit for days.
+    pub fn keep_fresh(
+        &mut self,
+        lock: std::os::unix::io::RawFd,
+        log: std::os::unix::io::RawFd,
+        every: Duration,
+    ) {
+        self.freshen = Some(Freshen { lock, log, every });
     }
 
     /// Serves on a bound listener until idle. Returns when no session and no client has existed
@@ -124,7 +166,18 @@ impl Daemon {
         listener.set_nonblocking(true)?;
         let mut idle_since = Some(Instant::now());
         let mut result = Ok(());
+        // First at once: a lock taken over by hand-off, or one left by a daemon that idled out, can
+        // already be days old. Then by the wall clock, not `Instant`: on macOS that stops while the
+        // Mac sleeps, and launchd runs a missed `tmp_cleaner` the moment it wakes. A clock set back
+        // reads as due.
+        let mut freshened: Option<std::time::SystemTime> = None;
         loop {
+            if let Some(freshen) = &self.freshen
+                && freshened.is_none_or(|at| at.elapsed().map_or(true, |e| e >= freshen.every))
+            {
+                touch(&[freshen.lock, freshen.log]);
+                freshened = Some(std::time::SystemTime::now());
+            }
             // During a hand-off a new client waits in the backlog for the next program
             // (`crate::handoff::accepting`), rather than being accepted and dropped at the exec.
             if !crate::handoff::accepting() {
@@ -1079,6 +1132,108 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn aged(path: &Path) {
+        let days = std::time::SystemTime::now() - Duration::from_secs(10 * 24 * 3600);
+        std::fs::File::options()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_accessed(days)
+                    .set_modified(days),
+            )
+            .unwrap();
+    }
+
+    fn modified_ago(path: &Path) -> Duration {
+        let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+        std::time::SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default()
+    }
+
+    /// Runs an idle daemon for 400 ms with `lock` and a log kept fresh `every`, from files ten days
+    /// old, and returns how long ago each file was last modified. With `age_again`, both files are
+    /// set ten days back once more 150 ms in, after the first touch, so only a later one freshens them.
+    fn serve_kept_fresh(
+        name: &str,
+        every: Duration,
+        age_again: bool,
+        take_lock: impl FnOnce(&Path) -> InstanceLock,
+    ) -> (Duration, Duration) {
+        let dir = std::env::temp_dir().join(format!("wr-fresh-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("workroomd");
+        let lock = take_lock(&socket);
+        let log_path = crate::log::log_path(&socket);
+        let log = std::fs::File::create(&log_path).unwrap();
+        aged(&socket.with_extension("lock"));
+        aged(&log_path);
+
+        let mut daemon = Daemon::new();
+        daemon.keep_fresh(lock.fd(), log.as_raw_fd(), every);
+        let listener = bind(&socket).unwrap();
+        let ager = age_again.then(|| {
+            let files = [socket.with_extension("lock"), log_path.clone()];
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                files.iter().for_each(|file| aged(file));
+            })
+        });
+        daemon
+            .run(listener, &socket, Duration::from_millis(400))
+            .unwrap();
+        if let Some(ager) = ager {
+            ager.join().unwrap();
+        }
+
+        let ages = (
+            modified_ago(&socket.with_extension("lock")),
+            modified_ago(&log_path),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        ages
+    }
+
+    /// macOS's `tmp_cleaner` deletes /tmp files untouched for three days (#528). A daemon's lock is
+    /// never written after it is taken, and a quiet one's log can sit for days: the serve loop
+    /// touches both through the descriptors it holds, every interval, logged lines or not.
+    #[test]
+    fn a_serving_daemon_keeps_its_lock_and_log_fresh() {
+        let (lock, log) = serve_kept_fresh("taken", Duration::from_millis(50), true, |socket| {
+            acquire_instance_lock(socket).expect("lock")
+        });
+        assert!(
+            lock < Duration::from_secs(60),
+            "lock last modified {lock:?} ago"
+        );
+        assert!(
+            log < Duration::from_secs(60),
+            "log last modified {log:?} ago"
+        );
+    }
+
+    /// A daemon that took over by hand-off holds the lock the program before it took, adopted from
+    /// the hand-off table, and keeps that one fresh too, from the moment it serves: an inherited lock
+    /// can already be days old, and must not wait out an interval before its first touch.
+    #[test]
+    fn a_daemon_that_took_over_by_hand_off_keeps_the_lock_it_inherited_fresh() {
+        let (lock, _) = serve_kept_fresh("adopted", FRESHEN_EVERY, false, |socket| {
+            let taken = acquire_instance_lock(socket).expect("lock");
+            // SAFETY: a fresh duplicate of the open lock file, owned by nothing else, as a
+            // hand-off table's lock is; the original is closed, as the program before exits.
+            let inherited = unsafe { InstanceLock::adopt(libc::dup(taken.fd())) };
+            drop(taken);
+            inherited
+        });
+        assert!(
+            lock < Duration::from_secs(60),
+            "lock last modified {lock:?} ago"
+        );
     }
 
     /// The descriptor list must match what `SessionDescriptor.decodeList` expects, byte for byte,
