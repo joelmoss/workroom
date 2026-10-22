@@ -1,4 +1,4 @@
-# Agent Git reads. gix supplies history, refs and object content; owning-host Git supplies exact
+# Daemon Git reads. gix supplies history, refs and object content; owning-host Git supplies exact
 # patches and counts with matching comparison/configuration. The original log spike remains a bin.
 #
 # `default-features = false` is deliberate: the point of preferring gix over git2-rs is that the tree stays free of C-linking

@@ -32,8 +32,8 @@ packages:
     path: Packages/WorkroomVCS
   WorkroomSystem:
     path: Packages/WorkroomSystem
-  AgentConnection:
-    path: Packages/AgentConnection
+  DaemonConnection:
+    path: Packages/DaemonConnection
   HostDrivers:
     path: Packages/HostDrivers
   DesignSystem:
@@ -43,7 +43,7 @@ packages:
   SyntaxHighlighting:
     path: Packages/SyntaxHighlighting
   # git backend: SwiftGitX (libgit2, pure-Swift). Local repositories are read here; the bundled
-  # wr-agent serves the same reads over its VCS service. Both feed one VCSProviding model layer.
+  # workroomd serves the same reads over its VCS service. Both feed one VCSProviding model layer.
   SwiftGitX:
     url: https://github.com/ibrahimcetin/SwiftGitX
     exactVersion: "0.4.0"
@@ -132,10 +132,10 @@ targets:
         type: folder
         buildPhase: resources
       # The agent bootstrap's far-side scripts (issue #231): what the app runs on a remote host to
-      # probe for, install and hand off to the Linux wr-agent it bundles. Folder reference → copied
-      # to Contents/Resources/agent-bootstrap; AgentBootstrap loads them from Bundle.main. Files
+      # probe for, install and hand off to the Linux workroomd it bundles. Folder reference → copied
+      # to Contents/Resources/daemon-bootstrap; DaemonBootstrap loads them from Bundle.main. Files
       # rather than Swift strings so the Rust ssh-fixture test can run the same ones.
-      - path: Resources/agent-bootstrap
+      - path: Resources/daemon-bootstrap
         type: folder
         buildPhase: resources
       # What a provider driver runs on a new base to set it up (issue #256, shared since #259): the
@@ -165,7 +165,7 @@ targets:
       - package: WorkroomDomain
       - package: WorkroomVCS
       - package: WorkroomSystem
-      - package: AgentConnection
+      - package: DaemonConnection
       - package: HostDrivers
       - package: WorkroomWire
       - target: workroom-session
@@ -340,13 +340,13 @@ targets:
         # it with the same identity. See Scripts/embed-session-helper.sh.
         basedOnDependencyAnalysis: false
         script: '"${SRCROOT}/Scripts/embed-session-helper.sh"'
-      - name: Build & embed wr-agent
-        # The Rust agent that owns every new persistent session (issue #154). Lands in
+      - name: Build & embed workroomd
+        # The Rust daemon that owns every new persistent session (issue #154). Lands in
         # Contents/MacOS beside workroom-session, which survives only as the attach client for
-        # sessions an older build's daemon still holds. See Scripts/build-agent.sh and
+        # sessions an older build's Swift helper still holds. See Scripts/build-daemon.sh and
         # Core/Session/SessionBackend.swift.
         basedOnDependencyAnalysis: false
-        script: '"${SRCROOT}/Scripts/build-agent.sh"'
+        script: '"${SRCROOT}/Scripts/build-daemon.sh"'
       - name: Symlink ghostty -> app binary
         # Ghostty's bundled shell integration calls "$GHOSTTY_BIN_DIR/ghostty" +ssh-cache, and the
         # engine sets GHOSTTY_BIN_DIR to the running executable's directory — i.e. Contents/MacOS.
@@ -383,7 +383,7 @@ targets:
       - package: WorkroomDomain
       - package: WorkroomVCS
       - package: WorkroomSystem
-      - package: AgentConnection
+      - package: DaemonConnection
       - package: HostDrivers
       - package: WorkroomWire
     settings:
@@ -400,7 +400,7 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workroom Dev.app/Contents/MacOS/Workroom Dev"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
-  # Detached PTY daemon + attach client. Lives in Contents/MacOS so it can outlive the app.
+  # The legacy session helper's attach client. Lives in Contents/MacOS so it can outlive the app.
   workroom-session:
     type: tool
     platform: macOS

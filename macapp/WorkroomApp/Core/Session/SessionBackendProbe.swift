@@ -9,10 +9,10 @@ import Foundation
 /// change) passes `isAvailable` and then fails at the worst moment — with a terminal on screen.
 ///
 /// So the probe executes the helper's cheapest self-describing subcommand and requires a parseable
-/// answer. `wr-agent protocol` prints the protocol version it speaks, which is both a liveness
+/// answer. `workroomd protocol` prints the protocol version it speaks, which is both a liveness
 /// check and the compatibility check the versioned handshake needs.
 ///
-/// **This is deliberately not the socket handshake — yet.** Once `wr-agent serve` owns ptys, the
+/// **This is deliberately not the socket handshake — yet.** Once `workroomd serve` owns ptys, the
 /// stronger probe is to connect, exchange `Hello`, and negotiate, because that also exercises the
 /// socket path and permissions. Until `serve` exists there is nothing to connect to, and running
 /// the binary is the honest check available today. The result type does not change when it is
@@ -22,7 +22,7 @@ enum SessionBackendProbe {
   static let timeout: TimeInterval = 2
 
   /// `locate` is injected rather than defaulted-to-nil because `nil` cannot mean both "use the
-  /// normal lookup" and "there is no binary". It did, and once `wr-agent` was actually bundled the
+  /// normal lookup" and "there is no binary". It did, and once `workroomd` was actually bundled the
   /// two readings diverged: a test asking for the not-bundled case silently got the real binary
   /// and executed it.
   static func probe(
@@ -32,10 +32,10 @@ enum SessionBackendProbe {
   ) -> SessionBackendAvailability {
     guard let resolved = locate(backend) else { return .notBundled }
 
-    // The Swift daemon predates any self-describing subcommand, and adding one to a binary being
+    // The Swift helper predates any self-describing subcommand, and adding one to a binary being
     // retired is not worth a release. Its presence is the same check the shipped code already
     // trusts, so report it ready and keep the meaningful probe for the thing being introduced.
-    guard backend == .rustAgent else { return .ready(version: "bundled") }
+    guard backend == .daemon else { return .ready(version: "bundled") }
 
     do {
       let (status, output) = try run(resolved)
@@ -51,7 +51,7 @@ enum SessionBackendProbe {
     }
   }
 
-  /// Reads the version out of `wr-agent protocol`'s first line ("protocol 1 (minimum supported 1)").
+  /// Reads the version out of `workroomd protocol`'s first line ("protocol 1 (minimum supported 1)").
   /// Tolerant of trailing detail by design — the contract is the leading token, so the binary can
   /// add to that line without the app needing a matching release.
   static func parseProtocolVersion(_ output: String) -> Int? {
@@ -92,7 +92,7 @@ enum SessionBackendProbe {
     // only at EOF — when every writer has closed stdout — so a helper that starts and then hangs
     // with the pipe open blocks here forever and the timeout below is never reached. This runs
     // synchronously on the main actor during terminal creation, so that is a frozen app rather
-    // than a fall back to the Swift daemon.
+    // than a fall back to the Swift helper.
     //
     // A watchdog rather than a read with a timeout: killing the process closes its end of the
     // pipe, which is what makes the blocking read return. Same shape as `ShellEnvironment`'s probe

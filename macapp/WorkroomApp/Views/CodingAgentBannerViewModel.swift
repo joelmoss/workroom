@@ -19,9 +19,11 @@ struct CodingAgentBannerViewModel: Equatable {
   let showsInvestigate: Bool
   let showsDismiss: Bool
 
-  /// `investigateSetting` is the "Investigate with" setting (`terminalAgentBackend`).
-  init(state: CodingAgentBannerState, investigateSetting: String = Defaults[.terminalAgentBackend])
-  {
+  /// `investigateSetting` is the "Investigate with" setting (`terminalCodingAgentBackend`).
+  init(
+    state: CodingAgentBannerState,
+    investigateSetting: String = Defaults[.terminalCodingAgentBackend]
+  ) {
     switch state {
     case .awaitingDiagnose(let failure):
       style = .awaiting
@@ -90,7 +92,7 @@ struct CodingAgentBannerViewModel: Equatable {
   static func message(for kind: CodingAgentErrorKind) -> String {
     switch kind {
     case .cliNotFound: return "Claude Code CLI not found — it runs the diagnosis"
-    case .noAgentCLI: return "No agent CLI found — install Claude Code or Codex"
+    case .noCodingAgentCLI: return "No agent CLI found — install Claude Code or Codex"
     case .notAuthenticated: return "Agent not signed in — run `claude login`"
     case .timedOut: return "Diagnosis timed out"
     case .emptyOutput: return "No diagnosis returned"
@@ -104,7 +106,7 @@ struct CodingAgentBannerViewModel: Equatable {
   static func isRetryable(_ kind: CodingAgentErrorKind) -> Bool {
     switch kind {
     case .timedOut, .emptyOutput, .malformed, .other: return true
-    case .cliNotFound, .noAgentCLI, .notAuthenticated: return false
+    case .cliNotFound, .noCodingAgentCLI, .notAuthenticated: return false
     }
   }
 }

@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -276,7 +276,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
       stdin: Data?
     ) async -> CommandResult {
       if args.contains("--intent-to-add") {
-        return AgentCommandRunner.outcomeUnknown(HostConnectionError.connectionLost)
+        return DaemonCommandRunner.outcomeUnknown(HostConnectionError.connectionLost)
       }
       return await real.run(executable, args, in: directory, timeout: timeout, stdin: stdin)
     }

@@ -1,0 +1,1817 @@
+//! Versioned VCS requests over Service::Vcs. Capability negotiation is separate from the terminal
+//! greeting. Each nonzero stream is one request. Reply JSON is chunked; the first payload byte is
+//! 0 for continuation, 1 for final. Maximum assembled reply is 16MiB. Requests are never replayed.
+use crate::rpc::{MAX_RESPONSE, PartialRequests, Permit, SharedWriter, reassemble, send};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
+use wr_protocol::envelope::{Envelope, Service};
+use wr_protocol::reply::Reply;
+use wr_vcs_model::{self as model, VcsError};
+
+const MAX_HISTORY_LIMIT: usize = 10000;
+/// The exec service's wire version, reported in `capabilities` so a client can tell a capable daemon
+/// from one that predates the service. A version, not a count — see the `capabilities` reply.
+///
+/// 3 added what a REMOTE host's writes need (#229): `host_environment`, `barrier_root` (since
+/// ignored), and the `stat` request. 2 added chunked request reassembly; 1 accepted only
+/// single-envelope requests.
+const EXEC_SERVICE_VERSION: u32 = 3;
+/// `CLIVCSWriter.commitTimeout` (Swift) is 600s, the longest legitimate write timeout. Bounds a
+/// hostile/buggy request from wedging an exec thread indefinitely; the 32-slot `ACTIVE` permit
+/// already bounds concurrency, this bounds duration.
+const MAX_EXEC_TIMEOUT_MS: u64 = 610_000;
+/// The ceiling must stay above `CLIVCSWriter.commitTimeout` (600s), or the transport would cut a
+/// legitimate commit short — one with a slow `pre-commit` hook — before its own limit applied, and
+/// the failure would read as a transport fault rather than the timeout it is. Checked at COMPILE
+/// time: a lowered ceiling is a build error, not a test that someone runs later.
+const _: () = assert!(MAX_EXEC_TIMEOUT_MS > 600_000);
+/// Per-stream cap, matching `StatusCommandRunner.maxBytes`'s default on the Swift side.
+const MAX_EXEC_STREAM: usize = 4 * 1024 * 1024;
+
+/// `file::listing_environment` over an explicit variable set, so the scrub and the pins can be tested
+/// without mutating this process's own environment — which other tests' child processes inherit.
+pub(crate) fn scrubbed_environment(
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(String, String)> {
+    const SCRUBBED: [&str; 7] = [
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ];
+    let mut env: BTreeMap<String, String> = vars
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
+    env.retain(|key, _| !SCRUBBED.contains(&key.as_str()));
+    for (key, value) in [
+        ("GIT_OPTIONAL_LOCKS", "0"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("LC_ALL", "C"),
+    ] {
+        env.insert(key.into(), value.into());
+    }
+    env.into_iter().collect()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    version: u32,
+    #[serde(default)]
+    root: Option<String>,
+    /// Accepted and ignored: the app still sends a repository's shared root, which only the
+    /// removed jj backend read.
+    ///
+    /// ponytail: kept only so `deny_unknown_fields` does not reject the app's request. Prune
+    /// once a protocol gate or a stable hand-off covers app/daemon skew (see TODOS.md).
+    #[serde(default, rename = "shared_root")]
+    _shared_root: Option<String>,
+    /// Must still be present on a read, as before. Only `git` is a backend now: a request naming
+    /// `jj` fails to deserialize and is answered with the per-request error reply.
+    #[serde(default)]
+    backend: Option<Backend>,
+    method: String,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    base: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Backend {
+    Git,
+}
+
+/// A write command, run to completion and reported back raw — argv, cwd, stdin and timeout in;
+/// exit code, stdout, stderr, `timed_out`, `signaled` out. Every request-building, output-parsing
+/// and failure-classification decision (`CLIVCSWriter.classify`/`.classifyCommit`, the pathspec
+/// and refspec injection defenses, the retry/abort taxonomy) stays in Swift and sees exactly the
+/// bytes it would see from a local `git` — this is deliberately NOT a reimplementation of
+/// commit/push/pull semantics.
+///
+/// One untouched classifier is necessary for criterion 2 ("typed failures... match pre-daemon
+/// behavior exactly") and was not sufficient: a review found it reached OPPOSITE verdicts because
+/// the two paths fed it different input. Identical output needs three things, all now true —
+/// the child sees the same environment (`env_clear` below), a missing tool exits 127 rather than
+/// failing to spawn (`/usr/bin/env`), and a transport failure is not reported as "never ran"
+/// (`DaemonCommandRunner.outcomeUnknown`). An outcome-unknown result is its own
+/// `VCSRemoteFailure`/`VCSCommitFailure` case, and its recovery follows idempotence
+/// (`VCSSyncPresenter.retryAction`): a lost push or pull offers `.fetch`, which resolves the doubt,
+/// a lost fetch or rebase abort offers itself, and a lost commit offers no action at all.
+///
+/// **The child's environment is the request's `env`, wholesale** (`env_clear` in `run_exec`), never
+/// this daemon's own. workroomd is "negotiated with, never replaced", so its inherited environment is
+/// a snapshot of whichever app launch first spawned it; a daemon-routed commit was picking up that
+/// snapshot's `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME` and authoring under a stale identity. A key
+/// allowlist could not fix it — what git reads for identity, config, signing and hooks is
+/// open-ended — so `StatusCommandRunner.childEnvironment` builds one map for both paths.
+///
+/// **`args` is unvalidated and the `git` `executable` enum is NOT a containment boundary.**
+/// `git` with arbitrary argv is arbitrary code execution (`-c alias.x='!…'`, `-c core.hooksPath=…`,
+/// `--exec-path`), the request's `PATH` decides which binary resolves, and `GIT_SSH_COMMAND` and the
+/// config paths in `env` are further routes. That is acceptable only because the sole transport
+/// today is a same-user unix socket, where every reachable caller could already spawn a shell
+/// itself. Any transport that is not that — Phase 3's remote relay above all — must authenticate its
+/// peer to SHELL grade, not repository grade, before carrying this service.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecRequest {
+    version: u32,
+    kind: ExecKind,
+    executable: Executable,
+    args: Vec<String>,
+    dir: String,
+    timeout_ms: u64,
+    /// Latin-1 (ISO 8859-1), not UTF-8: a pathspec payload is NUL-separated and paths are not
+    /// guaranteed valid UTF-8, so decoding this as UTF-8 (or sending it as a JSON byte-number array,
+    /// ~3-4x larger on the wire for ordinary text) would either corrupt or bloat it. Latin-1 is a
+    /// total bijection over every byte 0x00-0xFF, so `DaemonCommandRunner.swift`'s
+    /// `String(data:encoding:.isoLatin1)` never fails and `latin1_bytes` below is its exact inverse
+    /// — every byte round-trips, at roughly the original size for ordinary text.
+    #[serde(default)]
+    stdin: Option<String>,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
+    /// Set by the app for a REMOTE host (#229): `env` is then only policy pins, and the child's
+    /// environment is built from this daemon's own, which is the host's (`host_environment`). The
+    /// app sends nothing from the Mac there: its `HOME` and `PATH` name nothing on this machine, and
+    /// its `SSH_AUTH_SOCK` and git identity are the user's Mac credentials.
+    #[serde(default)]
+    host_environment: bool,
+    /// Accepted and ignored: an older app names the shared root of a jj repository whose
+    /// working-copy barrier the daemon should hold across the command. There is no barrier now.
+    ///
+    /// ponytail: kept only so `deny_unknown_fields` does not reject an older app's request. Prune
+    /// once a protocol gate or a stable hand-off covers app/daemon skew (see TODOS.md).
+    #[serde(default, rename = "barrier_root")]
+    _barrier_root: Option<String>,
+}
+
+/// The child environment for a remote host: this daemon's own, which is the host's, with the file
+/// service's scrub and pins (`scrubbed_environment`, so the two host-side paths agree), no graphical
+/// prompt helper, and the request's pins on top.
+///
+/// ssh is kept from prompting WITHOUT setting `GIT_SSH_COMMAND`, which would outrank a repository's
+/// own `core.sshCommand`, the usual home of a deploy key, and so replace the host's ssh for every
+/// repository on it. It cannot prompt anyway: `SSH_ASKPASS_REQUIRE=never` rules out a helper, and a
+/// supervised agent has no terminal for one. A `GIT_SSH_COMMAND` the host sets itself is kept and
+/// gets `BatchMode`, as the app does locally (`StatusCommandRunner.networkEnvironment`).
+///
+/// Built from `vars_os`, not `vars`, which panics on one variable that is not UTF-8 and would take
+/// the exec thread down before it replied.
+fn host_environment(
+    own: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    pins: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut env: std::collections::BTreeMap<String, String> =
+        scrubbed_environment(own).into_iter().collect();
+    env.remove("SSH_ASKPASS");
+    env.remove("DISPLAY");
+    env.extend(pins);
+    if let Some(ssh) = env
+        .get("GIT_SSH_COMMAND")
+        .map(|command| command.trim().to_string())
+        .filter(|command| !command.is_empty())
+    {
+        env.insert("GIT_SSH_COMMAND".into(), format!("{ssh} -o BatchMode=yes"));
+    }
+    env.insert("SSH_ASKPASS_REQUIRE".into(), "never".into());
+    env
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExecKind {
+    Exec,
+}
+
+/// Filesystem facts for the app's write-failure classifier (`CLIVCSWriter`), which reads a
+/// repository's git directory to tell a parked rebase, a leftover lock file or the last fetch. On a
+/// remote host that directory is here, so the app asks for the facts and keeps every decision on
+/// its own side (#229): one classifier, fed the same facts either way. Added with exec version 3.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatRequest {
+    version: u32,
+    kind: StatKind,
+    /// Absolute paths. What exists there, whether it is a directory, and when it was modified.
+    paths: Vec<String>,
+    /// Paths among `paths` whose text to return as well, when a small regular file: a worktree's
+    /// `.git` is a file that names its git directory.
+    #[serde(default)]
+    read: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StatKind {
+    Stat,
+}
+
+/// Far more than the dozen paths one classification asks about, and small enough that a request
+/// cannot turn this into a filesystem walk.
+const MAX_STAT_PATHS: usize = 64;
+/// A worktree's `.git` file is one line.
+const MAX_STAT_TEXT: u64 = 4096;
+
+fn stat(request: StatRequest) -> model::Result<Value> {
+    let StatRequest {
+        version,
+        kind: StatKind::Stat,
+        paths,
+        read,
+    } = request;
+    if version != 1 {
+        return Err(VcsError::BackendVersion(
+            "unsupported VCS service version".into(),
+        ));
+    }
+    if paths.len() > MAX_STAT_PATHS {
+        return Err(io("too many paths in one stat request"));
+    }
+    let entries = paths
+        .iter()
+        .map(|path| {
+            // One path this cannot take (relative, or with a `..` from an unstandardized `gitdir:`
+            // or a hook's message) reads as absent, as a missing file would, rather than failing the
+            // whole request and taking every other fact with it.
+            let Ok(target) = absolute(path) else {
+                return Ok(json!({ "path": path, "exists": false, "is_dir": false,
+                                  "modified_at": null, "text": null }));
+            };
+            // Follows links, as `FileManager.fileExists` does for the same question in the app.
+            let metadata = std::fs::metadata(&target).ok();
+            let text = metadata
+                .as_ref()
+                .filter(|m| read.contains(path) && m.is_file() && m.len() <= MAX_STAT_TEXT)
+                .and_then(|_| std::fs::read_to_string(&target).ok());
+            let modified = metadata
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_secs_f64());
+            Ok(json!({
+                "path": path,
+                "exists": metadata.is_some(),
+                "is_dir": metadata.as_ref().is_some_and(|m| m.is_dir()),
+                "modified_at": modified,
+                "text": text,
+            }))
+        })
+        .collect::<model::Result<Vec<Value>>>()?;
+    Ok(json!({ "entries": entries }))
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Executable {
+    Git,
+}
+impl Executable {
+    fn as_str(self) -> &'static str {
+        match self {
+            Executable::Git => "git",
+        }
+    }
+}
+
+pub(crate) fn io(error: impl std::fmt::Display) -> VcsError {
+    VcsError::Io(error.to_string())
+}
+fn required(value: &Option<String>) -> model::Result<&str> {
+    value
+        .as_deref()
+        .ok_or_else(|| io("missing request parameter"))
+}
+pub(crate) fn absolute(value: &str) -> model::Result<PathBuf> {
+    if !value.starts_with('/')
+        || value.contains('\0')
+        || value.split('/').any(|s| s == "." || s == "..")
+    {
+        return Err(io("invalid absolute repository path"));
+    }
+    Ok(PathBuf::from(value))
+}
+pub(crate) fn relative(value: &str) -> model::Result<&str> {
+    if value.is_empty()
+        || value.starts_with('/')
+        || value.contains('\0')
+        || value.split('/').any(|s| s == "." || s == "..")
+    {
+        return Err(io("invalid relative file path"));
+    }
+    Ok(value)
+}
+
+pub fn execute(bytes: &[u8]) -> Value {
+    // `kind` distinguishes an exec request from the existing read `Request`; its absence (every
+    // read request in the wild, and every request before this field existed) means "read", so the
+    // wire format already spoken by `DaemonVCSReader` is untouched.
+    let result = serde_json::from_slice::<Value>(bytes)
+        .map_err(io)
+        .and_then(|value| match value.get("kind").and_then(Value::as_str) {
+            Some("exec") => serde_json::from_value::<ExecRequest>(value)
+                .map_err(io)
+                .and_then(exec),
+            Some("stat") => serde_json::from_value::<StatRequest>(value)
+                .map_err(io)
+                .and_then(stat),
+            _ => serde_json::from_value::<Request>(value)
+                .map_err(io)
+                .and_then(read),
+        });
+    json!(Reply::new(1, result))
+}
+
+pub(crate) struct Captured {
+    pub(crate) stdout: Vec<u8>,
+    /// `stdout` was cut at the stream cap: the child wrote more than was kept. A truncated capture
+    /// can end mid-line, or mid-filename, so a consumer that parses it must not treat it as whole.
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) exit_code: i32,
+    pub(crate) timed_out: bool,
+    pub(crate) signaled: bool,
+}
+
+/// Drain a pipe to EOF on its own thread (mirrors `StatusCommandRunner.readCapped`): a blocking
+/// read is safe here because it runs off the thread that watches for timeout/exit, and keeps
+/// draining past `cap` so the child can never block on a full pipe buffer.
+///
+/// Publishes into a shared sink rather than returning, so `run_exec` can take what has drained so
+/// far WITHOUT joining this thread. That matters because this thread can block forever: a
+/// descendant that inherited the pipe (an ssh `ControlPersist` master, a daemonising credential
+/// helper, gpg-daemon auto-launched by `commit -S`) holds the write end open after the child is
+/// reaped, and `setsid` puts it outside the process group `run_exec` signals.
+fn drain_capped(source: impl Read, cap: usize, sink: &Mutex<Vec<u8>>) {
+    drain_capped_flagged(source, cap, sink, &AtomicBool::new(false));
+}
+
+/// `drain_capped`, also raising `overflowed` the moment a byte is dropped for lack of room. A
+/// stream that ends EXACTLY at `cap` does not raise it, so the flag means "something was lost",
+/// never "the buffer is full".
+fn drain_capped_flagged(
+    mut source: impl Read,
+    cap: usize,
+    sink: &Mutex<Vec<u8>>,
+    overflowed: &AtomicBool,
+) {
+    let mut chunk = [0u8; 65536];
+    loop {
+        match source.read(&mut chunk) {
+            Ok(0) => return,
+            Ok(count) => {
+                let mut collected = sink.lock().unwrap_or_else(|e| e.into_inner());
+                let take = cap.saturating_sub(collected.len()).min(count);
+                collected.extend_from_slice(&chunk[..take]);
+                if take < count {
+                    overflowed.store(true, Ordering::Release);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        }
+    }
+}
+
+/// Every descendant of `pid`, snapshotted with its start time via [`crate::process::descendants`] —
+/// the same walk `session::terminate` uses to reach a `setsid` grandchild, and split from the
+/// killing for a reason that file did not need to face: this must be SNAPSHOTTED WHILE THE PARENT
+/// IS STILL ALIVE.
+///
+/// A descendant that calls `setsid` leaves the process group, so `kill(-pid, …)` never reaches it —
+/// but it keeps its real ppid until its parent dies, so the walk finds it right up to that moment.
+/// Once the parent is reaped the orphan re-parents to init and both handles are gone: the group it
+/// left, and a lineage that no longer leads back to us. Walking the tree at KILL time therefore
+/// finds nothing, which is the hole native's `killTree` also has — it is called at `timeout + 2`,
+/// by which point a `git` that exited on SIGTERM has long been reaped.
+///
+/// So the walk happens when SIGTERM is sent, and the recorded descendants are what gets checked and
+/// SIGKILLed later. `pid <= 1` is refused outright: `process::descendants` does not special-case
+/// init the way this call site must not — `pid` is always a freshly spawned child's own pid, but a
+/// SIGKILL aimed at init's whole descendant tree is the worst outcome a bug here could have.
+pub(crate) fn descendants(pid: i32) -> Vec<crate::process::Descendant> {
+    if pid <= 1 {
+        return Vec::new();
+    }
+    crate::process::descendants(&[pid])
+}
+
+/// SIGKILL whichever recorded descendants are still the SAME process, checked with
+/// [`crate::process::Descendant::is_running`] rather than by bare pid — the identity check
+/// `session::terminate` already applies before its own SIGKILL sweep.
+///
+/// Without it this call carried a PID-reuse window strictly worse than native's: these pids were
+/// read at SIGTERM time and this runs roughly two seconds later, long enough on a busy machine for
+/// a descendant to exit and its number to be handed to something unrelated. `is_running` compares
+/// the process's start time against the one recorded at the snapshot, so a pid whose occupant has
+/// changed reads as not-running and is left alone — the small, unavoidable window native accepts is
+/// only "the pid exited and nothing new has it yet", never "the pid now names someone else".
+pub(crate) fn kill_recorded(descendants: &[crate::process::Descendant]) {
+    for descendant in descendants.iter().filter(|d| d.is_running()) {
+        // SAFETY: `kill` takes no pointers; `is_running` is the pid-reuse guard described above.
+        unsafe { libc::kill(descendant.pid, libc::SIGKILL) };
+    }
+}
+
+/// How long to keep trying to reap a process we have SIGKILLed before giving up on it. SIGKILL
+/// cannot be caught, so this is generous for the normal case; it exists for the abnormal one, where
+/// the leader is unkillable (uninterruptible I/O) and the alternative is blocking this thread — and
+/// therefore holding one of the 32 shared `ACTIVE` permits — forever.
+pub(crate) const REAP_GRACE: Duration = Duration::from_secs(2);
+
+/// Test shorthand for `run_exec_with`.
+#[cfg(test)]
+fn run_exec(
+    dir: &Path,
+    executable: &str,
+    args: &[String],
+    timeout: Duration,
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> model::Result<Captured> {
+    run_exec_with(dir, executable, args, timeout, stdin, env)
+}
+
+/// Run `executable` to completion, capturing everything a `StatusCommandRunning` conformer needs
+/// to classify the outcome exactly as the native path would. Mirrors `StatusCommandRunner.run`'s
+/// SIGTERM-then-grace-then-SIGKILL shape (`CLIVCSWriter.commitTimeout`'s doc: "Killing a commit is
+/// categorically more dangerous than killing a fetch" — an immediate SIGKILL denies a `post-commit`
+/// hook the chance to exit cleanly and can leave `index.lock` behind).
+pub(crate) fn run_exec_with(
+    dir: &Path,
+    executable: &str,
+    args: &[String],
+    timeout: Duration,
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> model::Result<Captured> {
+    // `/usr/bin/env <executable>`, byte-for-byte what native does
+    // (`StatusCommandRunner.run`: `proc.executableURL = /usr/bin/env`). Not a style choice — it is
+    // what makes a MISSING tool exit 127 (`env` ran and searched PATH) instead of failing to spawn.
+    // Spawning the program directly made that an Io error, which the client reported as
+    // `launchFailed`, the value whose own doc reserves it for "nothing ran" and warns it would
+    // "misdiagnose a deleted workroom as a missing git/gh". Mapping `ErrorKind::NotFound` to 127
+    // by hand could not fix it either: `posix_spawn` returns ENOENT for a missing cwd AND a missing
+    // executable, so the two stay indistinguishable. Letting `env` do the lookup makes 127/126 its
+    // real exit codes, and narrows a spawn failure here to the cases that genuinely never ran — a
+    // vanished cwd, or `/usr/bin/env` itself being absent.
+    let mut command = Command::new("/usr/bin/env");
+    command
+        .arg(executable)
+        .current_dir(dir)
+        .args(args)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        // `env_clear` first, then adopt the request's map wholesale: the child must see EXACTLY the
+        // environment `StatusCommandRunner.childEnvironment` built in the app, never this daemon's
+        // own. workroomd is "negotiated with, never replaced", so its inherited environment is a
+        // snapshot of whichever app launch first spawned it — a daemon-routed commit was picking up
+        // that snapshot's `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME` and authoring under a stale
+        // identity. A key allowlist could not fix that: what git reads for identity, config,
+        // signing and hooks is open-ended. That one function also applies this codebase's subprocess
+        // baseline (`GIT_OPTIONAL_LOCKS`, `GIT_TERMINAL_PROMPT`, `LC_ALL=C`, and the removal of
+        // `GIT_EXTERNAL_DIFF` and the `GIT_DIR` family) so both paths get it from one place.
+        .env_clear()
+        .envs(env.iter().copied());
+    // Set last so no request environment can widen it: git must not discover an ANCESTOR
+    // repository from `dir` (see `ceiling_directories`).
+    if let Some(ceiling) = wr_vcs_git::diff::ceiling_directories(dir) {
+        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    }
+    let mut child = command.spawn().map_err(io)?;
+
+    if let Some(payload) = stdin {
+        let mut handle = child.stdin.take().expect("piped stdin");
+        let payload = payload.to_vec();
+        // Off the waiting thread: a payload larger than the pipe buffer blocks until the child
+        // drains it, and the child may not start reading until after argv parsing.
+        std::thread::spawn(move || {
+            let _ = handle.write_all(&payload);
+            // `handle` drops here, closing the write end so the child sees EOF.
+        });
+    }
+
+    let stdout_pipe = child.stdout.take().expect("piped stdout");
+    let stderr_pipe = child.stderr.take().expect("piped stderr");
+    let out_sink = Arc::new(Mutex::new(Vec::new()));
+    let err_sink = Arc::new(Mutex::new(Vec::new()));
+    let out_overflow = Arc::new(AtomicBool::new(false));
+    let out = {
+        let sink = Arc::clone(&out_sink);
+        let overflow = Arc::clone(&out_overflow);
+        std::thread::spawn(move || {
+            drain_capped_flagged(stdout_pipe, MAX_EXEC_STREAM, &sink, &overflow)
+        })
+    };
+    let err = {
+        let sink = Arc::clone(&err_sink);
+        std::thread::spawn(move || drain_capped(stderr_pipe, MAX_EXEC_STREAM, &sink))
+    };
+
+    let pid = child.id() as i32;
+    let start = Instant::now();
+    let mut timed_out = false;
+    let mut sent_term = false;
+    let mut sent_kill = false;
+    let mut killed_at: Option<Instant> = None;
+    // Recorded at SIGTERM time, used at SIGKILL time — see `descendants`' doc for why it cannot be
+    // walked at the point of the kill.
+    let mut recorded: Vec<crate::process::Descendant> = Vec::new();
+    // `None` ⇒ we killed it and it never became reapable within `REAP_GRACE`. Reported rather than
+    // waited on: this used to be `break 'wait child.wait()`, an UNBOUNDED wait, and a child that had
+    // left the process group never received the SIGKILL above it, so that wait had nothing to wait
+    // for. Codex reproduced 4.1s on a 100ms timeout with one `os.setpgid`.
+    let status = 'wait: loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            break 'wait Some(status);
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            timed_out = true;
+            if !sent_term {
+                sent_term = true;
+                // Snapshot BEFORE signalling: SIGTERM may reap the leader within microseconds, and
+                // an orphaned `setsid` descendant is unreachable from that moment on.
+                recorded = descendants(pid);
+                // SAFETY: `kill` takes no pointers; `-pid` is the group the child leads.
+                unsafe { libc::kill(-pid, libc::SIGTERM) };
+            } else if elapsed >= timeout + Duration::from_secs(2) {
+                if !sent_kill {
+                    sent_kill = true;
+                    // Recorded tree first, then group: the tree reaches a descendant that left the
+                    // group, the group reaches one that spawned after the snapshot.
+                    kill_recorded(&recorded);
+                    // SAFETY: as for the SIGTERM above.
+                    unsafe { libc::kill(-pid, libc::SIGKILL) };
+                    killed_at = Some(Instant::now());
+                } else if killed_at.is_some_and(|at| at.elapsed() >= REAP_GRACE) {
+                    break 'wait None;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // Two independent jobs, deliberately not fused. Fusing them (escalate only while a reader is
+    // still running) let a timed-out descendant survive: if it redirects stdout/stderr, both readers
+    // finish, the drain loop exits, and the SIGKILL never fires — leaving it free to keep modifying
+    // the repository after this result releases the caller's gate.
+    //
+    // 1. Timeout escalation. The wait loop above already SIGKILLs when the LEADER outlives the
+    //    grace; this covers the leader exiting promptly on SIGTERM while group members do not. The
+    //    remaining grace is honoured rather than skipped — `git` can exit on SIGTERM while a
+    //    hook is still cleaning up, and cutting that short can leave hook-owned locks behind
+    //    (`CLIVCSWriter.commitTimeout`: "Killing a commit is categorically more dangerous than
+    //    killing a fetch"). Never on a normal exit: killing the group because a reader thread has
+    //    not been scheduled yet would kill a hook's legitimate background work, measured at ~1.5% of
+    //    successful large-output runs.
+    //
+    //    It first SIGKILLs the descendants recorded before the SIGTERM (`kill_recorded`, which
+    //    skips any whose start time changed, so a reused pid is never signalled) — that is what
+    //    reaches one that `setsid`ed out of the group — and then the process group itself. The group
+    //    signal, like native's `ProcessTree.killTree` at `timeout + 2`, still names a leader pid that
+    //    has already been reaped, the same small PID-reuse window.
+    if timed_out && !sent_kill {
+        let kill_at = start + timeout + Duration::from_secs(2);
+        while Instant::now() < kill_at {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The recorded set, not a fresh walk: the leader is already reaped on this path, so
+        // `pgrep -P` would find nothing — the orphan re-parented to init the moment its parent died.
+        // This is the branch the snapshot exists for.
+        kill_recorded(&recorded);
+        // SAFETY: `kill` takes no pointers; the reaped-leader pid-reuse window is the one above.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+    // 2. Drain bound, mirroring `StatusCommandRunner`'s `_ = drain.wait(timeout: .now() + 2)` and
+    //    for the reason its comment gives: a descendant that inherited the pipe can hold the write
+    //    end open after the child is reaped, so joining unconditionally would block forever. Forever
+    //    is not merely a hung request here — this thread is the one `dispatch` spawned, so its
+    //    `Permit` never drops, one of the 32 `ACTIVE` slots shared with every read leaks, and
+    //    `is_busy()` stays true so the daemon never idle-exits either. After the deadline we take
+    //    what drained and DETACH the readers; each exits on its own when the descendant finally
+    //    closes the pipe, writing into a sink nobody reads. That costs a thread and up to 4 MiB per
+    //    occurrence, which is bounded per call and vastly better than leaking a permit.
+    let drained_by = Instant::now() + Duration::from_secs(2);
+    while !(out.is_finished() && err.is_finished()) && Instant::now() < drained_by {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let take = |sink: &Mutex<Vec<u8>>| {
+        std::mem::take(&mut *sink.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    // Unreapable after SIGKILL: report what a killed process reports rather than blocking on it.
+    // `timed_out` is already true on this path (nothing else reaches it), so the client classifies
+    // this as `VCSRemoteFailure.timedOut` exactly as it would a child we did manage to reap — the
+    // outcome is the same fact, and the ONLY difference is whether this thread waited forever to
+    // state it. Deliberately not `outcomeUnknown`: we know what happened to this command.
+    //
+    // The handle is moved to a detached thread rather than dropped: Rust's `Child::drop` does not
+    // wait, so dropping it here would leave a zombie nothing ever reaps. Mirrors the drain detach
+    // below — one parked thread that ends whenever the process finally does.
+    let Some(status) = status else {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Ok(Captured {
+            stdout: take(&out_sink),
+            stdout_truncated: out_overflow.load(Ordering::Acquire),
+            stderr: take(&err_sink),
+            exit_code: 137,
+            timed_out: true,
+            signaled: true,
+        });
+    };
+    Ok(Captured {
+        stdout: take(&out_sink),
+        stdout_truncated: out_overflow.load(Ordering::Acquire),
+        stderr: take(&err_sink),
+        // Never -1: that value IS `CommandResult.launchFailed` in Swift ("nothing ran"), and a
+        // process that got this far demonstrably ran. `code()` is None only when signaled, and a
+        // signaled status always carries a signal number, so the fallback is unreachable — pinned
+        // to 128+SIGKILL (the shell's own convention) rather than to a Swift sentinel.
+        exit_code: status
+            .code()
+            .unwrap_or_else(|| status.signal().unwrap_or(137)),
+        timed_out,
+        signaled: status.signal().is_some(),
+    })
+}
+
+/// Headroom left for everything in an exec reply that is not the two captured streams: the keys,
+/// the exit code, the two booleans, the envelope framing, and JSON's own punctuation. Generous on
+/// purpose — the cost of over-reserving is a few KiB of output, the cost of under-reserving is the
+/// whole reply being replaced by an error.
+pub(crate) const EXEC_REPLY_RESERVE: usize = 64 * 1024;
+
+/// An UPPER BOUND on what this text costs once JSON-escaped, which is what `MAX_RESPONSE` bounds.
+///
+/// A bound, not an exact count: serde emits `\b` (0x08) and `\f` (0x0C) as two bytes where this
+/// charges six. Over-estimating is the safe direction — it truncates fractionally early and can
+/// never overflow the ceiling — and getting it exact would mean tracking serde's escape table here,
+/// which is a coupling worth more than the handful of bytes it buys.
+///
+/// The expansion is why the two caps could not both be satisfied: a control byte serializes as
+/// `\u0001`, six bytes for one, so two streams at `MAX_EXEC_STREAM` (4 MiB each) reach 48 MiB of
+/// wire form against a 16 MiB ceiling. Codex reproduced it with 3 MiB of `0x01`.
+pub(crate) fn escaped_len(text: &str) -> usize {
+    text.chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        })
+        .sum()
+}
+
+/// The longest prefix of `text` whose escaped form fits `budget`, cut on a character boundary.
+///
+/// Head rather than tail, matching `drain_capped` and native's `StatusCommandRunner.readCapped`:
+/// git puts the line that classifies a failure first, and a tail-truncated stderr would lose
+/// it. Silent, also matching those two — the markers `CLIVCSWriter.classify` matches live in this
+/// text, so injecting a "truncated" notice here could only create a false positive.
+fn truncate_to_escaped_budget(text: &str, budget: usize) -> &str {
+    let mut used = 0;
+    for (index, c) in text.char_indices() {
+        let cost = match c {
+            '"' | '\\' | '\n' | '\r' | '\t' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        };
+        if used + cost > budget {
+            return &text[..index];
+        }
+        used += cost;
+    }
+    text
+}
+
+/// The exact inverse of `DaemonCommandRunner.swift`'s `String(data:encoding:.isoLatin1)` — see
+/// `ExecRequest.stdin`'s doc. Every `char` a Latin-1-decoded string can contain is U+0000-U+00FF
+/// by construction; a value outside that range means the client sent something else, so this
+/// rejects rather than silently truncates it.
+fn latin1_bytes(text: &str) -> model::Result<Vec<u8>> {
+    text.chars()
+        .map(|c| u8::try_from(c as u32).map_err(|_| io("stdin is not Latin-1")))
+        .collect()
+}
+
+/// Cut the two captured streams down to what fits one reply, returning them unchanged when they
+/// already do — which is every ordinary command.
+///
+/// A function for `exec_timeout`'s reason: the test that covers it must call the code the reply is
+/// actually built from, not a copy of the arithmetic.
+fn bound_exec_streams<'a>(stdout: &'a str, stderr: &'a str) -> (&'a str, &'a str) {
+    let budget = MAX_RESPONSE - EXEC_REPLY_RESERVE;
+    if escaped_len(stdout) + escaped_len(stderr) <= budget {
+        return (stdout, stderr);
+    }
+    let err_budget = escaped_len(stderr).min(budget / 2);
+    (
+        truncate_to_escaped_budget(stdout, budget - err_budget),
+        truncate_to_escaped_budget(stderr, err_budget),
+    )
+}
+
+/// The deadline `run_exec` is given for a requested `timeout_ms`.
+///
+/// A function rather than an inline `clamp` so a test can assert the REAL expression: a test that
+/// rewrites the clamp for itself stays green when the clamp is deleted from here, which is exactly
+/// what the first version of its test did.
+fn exec_timeout(timeout_ms: u64) -> Duration {
+    Duration::from_millis(timeout_ms.clamp(1, MAX_EXEC_TIMEOUT_MS))
+}
+
+fn exec(request: ExecRequest) -> model::Result<Value> {
+    let ExecRequest {
+        version,
+        kind: ExecKind::Exec,
+        executable,
+        args,
+        dir,
+        timeout_ms,
+        stdin,
+        env,
+        host_environment: from_host,
+        _barrier_root: _,
+    } = request;
+    if version != 1 {
+        return Err(VcsError::BackendVersion(
+            "unsupported VCS service version".into(),
+        ));
+    }
+    let dir = absolute(&dir)?;
+    let timeout = exec_timeout(timeout_ms);
+    let env = if from_host {
+        host_environment(std::env::vars_os(), env)
+    } else {
+        env
+    };
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let stdin = stdin.as_deref().map(latin1_bytes).transpose()?;
+    let captured = run_exec_with(
+        &dir,
+        executable.as_str(),
+        &args,
+        timeout,
+        stdin.as_deref(),
+        &env,
+    )?;
+    let stdout = String::from_utf8_lossy(&captured.stdout);
+    let stderr = String::from_utf8_lossy(&captured.stderr);
+    // Truncate HERE rather than letting `send` refuse the reply. `send`'s blanket
+    // `PartialData` replacement is right for a read — half a history is not a history — but for an
+    // exec it threw away the exit status of a command that ran to completion, reporting a known
+    // outcome as an unknown one. Native truncates the output and still classifies; so does this.
+    //
+    // stderr gets first call on the budget: it is what `CLIVCSWriter.classify` matches on, so losing
+    // it turns a diagnosable failure into `.other` with git's own words missing. stdout takes the
+    // slack, which in practice is nearly all of it — stderr is tiny on every ordinary command.
+    let (stdout, stderr) = bound_exec_streams(&stdout, &stderr);
+    Ok(json!({
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": captured.exit_code,
+        "timed_out": captured.timed_out,
+        "signaled": captured.signaled,
+    }))
+}
+
+fn read(request: Request) -> model::Result<Value> {
+    if request.version != 1 {
+        return Err(VcsError::BackendVersion(
+            "unsupported VCS service version".into(),
+        ));
+    }
+    if request.method == "capabilities" {
+        // `exec` is the exec service's own version, NOT a method count. The count it replaced
+        // (`writes: 8`) described a CLIENT-side Swift protocol: workroomd implements one generic
+        // exec service and has never had eight write methods to report. Nothing here could keep
+        // that number true, and the client compared it for equality — so adding a ninth method to
+        // that Swift protocol, a change this side fully supports, silently dropped every user to
+        // native writes with no log line.
+        //
+        // The highest version this daemon speaks. `exec` rejects anything but 1 today; a future
+        // version bumps this and decides then whether it still accepts 1.
+        return Ok(json!({"version": 1, "reads": 9, "exec": EXEC_SERVICE_VERSION}));
+    }
+    if request.limit.is_some_and(|limit| limit > MAX_HISTORY_LIMIT) {
+        return Err(VcsError::PartialData(format!(
+            "history request exceeds {MAX_HISTORY_LIMIT} commits"
+        )));
+    }
+    let root = absolute(required(&request.root)?)?;
+    // Required as before; only `git` deserializes (see `Backend`), so nothing below varies on it.
+    request.backend.ok_or_else(|| io("missing backend"))?;
+    let path = request.path.as_deref().map(relative).transpose()?;
+    let rev = request.revision.as_deref();
+    let param = |value: Option<&str>| {
+        value
+            .map(str::to_owned)
+            .ok_or_else(|| io("missing request parameter"))
+    };
+    let working = match request.base.as_deref() {
+        None | Some("working_copy") => true,
+        Some("parent") => false,
+        _ => return Err(io("invalid working base")),
+    };
+    let value =
+        match request.method.as_str() {
+            "log" => serde_json::to_value(wr_vcs_git::log_page(
+                &root,
+                request.limit.unwrap_or(100).min(MAX_HISTORY_LIMIT),
+            )?),
+            "changeset" => serde_json::to_value(wr_vcs_git::changeset(&root, &param(rev)?)?),
+            "current_ref" => serde_json::to_value(wr_vcs_git::current_ref(&root)?),
+            "working_status" => serde_json::to_value(wr_vcs_git::diff::working_status(&root)?),
+            "file_diff" => {
+                let change = wr_vcs_git::changeset(&root, &param(rev)?)?;
+                serde_json::to_value(wr_vcs_git::diff::committed_patch(
+                    &root,
+                    &change.commit,
+                    &param(path)?,
+                )?)
+            }
+            "working_file_diff" if working => {
+                serde_json::to_value(wr_vcs_git::diff::working_patch(&root, &param(path)?)?)
+            }
+            "file_content" => serde_json::to_value(wr_vcs_git::file_content(
+                &root,
+                &param(rev)?,
+                &param(path)?,
+                false,
+            )?),
+            "commit_parent_file_content" => serde_json::to_value(wr_vcs_git::file_content(
+                &root,
+                &param(rev)?,
+                &param(path)?,
+                true,
+            )?),
+            "working_base_file_content" if working => serde_json::to_value(
+                wr_vcs_git::file_content(&root, "HEAD", &param(path)?, false)?,
+            ),
+            _ => return Err(VcsError::UnsupportedRepo("unsupported VCS read".into())),
+        };
+    value.map_err(io)
+}
+
+pub fn dispatch(partial: &mut PartialRequests, envelope: &Envelope, writer: &SharedWriter) {
+    if envelope.stream == 0 {
+        return;
+    }
+    // Before the permit: a non-final chunk does no work and must not hold one of the 32 slots for
+    // however long the rest of the request takes to arrive. The permit is taken when the request is
+    // COMPLETE, which is when it starts costing something.
+    let bytes = match reassemble(partial, envelope) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return,
+        Err(error) => {
+            send(
+                writer,
+                Service::Vcs,
+                envelope.stream,
+                json!(Reply::error(1, error)),
+            );
+            return;
+        }
+    };
+    let Some(permit) = Permit::acquire() else {
+        send(
+            writer,
+            Service::Vcs,
+            envelope.stream,
+            json!(Reply::error(1, VcsError::LockContention)),
+        );
+        return;
+    };
+    let writer = Arc::clone(writer);
+    let stream = envelope.stream;
+    std::thread::spawn(move || {
+        let _permit = permit;
+        send(&writer, Service::Vcs, stream, execute(&bytes));
+    });
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use crate::rpc::is_busy;
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+    use wr_protocol::envelope::{EnvelopeDecoder, Hello};
+    use wr_protocol::frame::{Frame, FrameKind};
+
+    #[test]
+    fn version_and_path_errors_are_explicit() {
+        assert!(
+            execute(br#"{"version":99,"method":"capabilities"}"#)
+                .get("error")
+                .is_some()
+        );
+        assert_eq!(
+            execute(br#"{"version":1,"method":"capabilities"}"#)["result"]["reads"],
+            9
+        );
+        for root in ["relative", "/tmp/../other", "/tmp/./other", "/tmp/\0other"] {
+            let request = json!({"version":1,"method":"log","backend":"git","root":root});
+            assert!(
+                execute(&serde_json::to_vec(&request).unwrap())
+                    .get("error")
+                    .is_some()
+            );
+        }
+        // The jj backend is gone: naming it fails to parse and is answered per request, not by
+        // special handling.
+        let request =
+            json!({"version":1,"method":"log","backend":"jj","root":"/definitely-absent"});
+        assert!(
+            execute(&serde_json::to_vec(&request).unwrap())
+                .get("error")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_stream_that_ends_exactly_at_the_cap_is_not_flagged_but_one_byte_over_is() {
+        let exact = Mutex::new(Vec::new());
+        let flag = AtomicBool::new(false);
+        drain_capped_flagged([7u8; 10].as_slice(), 10, &exact, &flag);
+        assert_eq!(exact.lock().unwrap().len(), 10);
+        assert!(!flag.load(Ordering::Acquire));
+        let over = Mutex::new(Vec::new());
+        drain_capped_flagged([7u8; 11].as_slice(), 10, &over, &flag);
+        assert_eq!(over.lock().unwrap().len(), 10);
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    /// A VCS request that is slow in flight must block neither control frames nor disconnect, and
+    /// must keep `is_busy()` true until the work itself ends. The request is a real `git` exec that
+    /// a shell alias holds until the test releases it (capped, so a failed test cannot leave it
+    /// running for long).
+    #[test]
+    fn a_slow_vcs_request_does_not_block_control_or_disconnect() {
+        let root = git_repo("slow-request");
+        let release = std::env::temp_dir().join(format!("wr-vcs-release-{}", std::process::id()));
+        let _ = std::fs::remove_file(&release);
+        let hold = format!(
+            "!i=0; while [ ! -e {} ] && [ $i -lt 400 ]; do sleep 0.02; i=$((i+1)); done",
+            release.display()
+        );
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            crate::serve::handle_connection(server, crate::session::SessionStore::new())
+        });
+        client.write_all(&Hello::current("test").encode()).unwrap();
+        let mut hello = Vec::new();
+        while Hello::decode(&hello).unwrap().is_none() {
+            let mut byte = [0];
+            client.read_exact(&mut byte).unwrap();
+            hello.push(byte[0]);
+        }
+        let request = exec_request(&root, "git", &["-c", &format!("alias.hold={hold}"), "hold"]);
+        client
+            .write_all(&Envelope::new(Service::Vcs, 7, request).encode())
+            .unwrap();
+        client
+            .write_all(
+                &Envelope::new(
+                    Service::Control,
+                    0,
+                    Frame::control(FrameKind::List).encode(),
+                )
+                .encode(),
+            )
+            .unwrap();
+        let mut decoder = EnvelopeDecoder::new();
+        loop {
+            let mut bytes = [0; 4096];
+            let count = client.read(&mut bytes).unwrap();
+            assert!(count > 0);
+            decoder.push(&bytes[..count]);
+            if let Some(reply) = decoder.next_envelope().unwrap() {
+                assert_eq!(reply.service, Service::Control);
+                break;
+            }
+        }
+        // The control reply arrived while the exec is still held, and the daemon counts it as work.
+        assert!(is_busy());
+        drop(client);
+        worker.join().unwrap().unwrap();
+        // Disconnect returned with the request still running; it ends only once released.
+        assert!(is_busy());
+        std::fs::write(&release, b"").unwrap();
+        // Judged from the one reading that saw it idle: another test's permit (a File request
+        // refused busy holds one for microseconds) may land after it, and a second reading would
+        // see that instead.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let released = loop {
+            if !is_busy() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(released);
+        let _ = std::fs::remove_file(&release);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Test-side inverse of `latin1_bytes`, standing in for `DaemonCommandRunner.swift`'s
+    /// `String(data:encoding:.isoLatin1)`.
+    fn latin1_string(bytes: &[u8]) -> String {
+        bytes.iter().map(|&b| b as char).collect()
+    }
+
+    #[test]
+    fn latin1_bytes_is_the_exact_inverse_of_latin1_string_for_every_byte_value() {
+        let all_bytes: Vec<u8> = (0..=255).collect();
+        assert_eq!(latin1_bytes(&latin1_string(&all_bytes)).unwrap(), all_bytes);
+    }
+
+    fn git_repo(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("wr-vcs-exec-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "user.email", "test@example.com"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        root
+    }
+
+    fn exec_request(dir: &Path, executable: &str, args: &[&str]) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "version": 1,
+            "kind": "exec",
+            "executable": executable,
+            "args": args,
+            "dir": dir.to_str().unwrap(),
+            "timeout_ms": 5000,
+        }))
+        .unwrap()
+    }
+
+    /// A folder that is not itself a repository (a workspace Jujutsu left, or a broken empty
+    /// `.git`) inside another repository: git there must not discover the ANCESTOR and act on it,
+    /// even when the request's own environment tries to widen the ceiling.
+    #[test]
+    fn exec_never_discovers_an_ancestor_repository() {
+        let root = git_repo("ceiling");
+        let control = execute(&exec_request(
+            &root,
+            "git",
+            &["rev-parse", "--show-toplevel"],
+        ));
+        assert_eq!(control["result"]["exit_code"], 0, "control: {control}");
+        let inner = root.join("inner");
+        std::fs::create_dir_all(inner.join(".git")).unwrap();
+        let mut request: Value = serde_json::from_slice(&exec_request(
+            &inner,
+            "git",
+            &["rev-parse", "--show-toplevel"],
+        ))
+        .unwrap();
+        request["env"] = json!({
+            "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+            "GIT_CEILING_DIRECTORIES": "/nonexistent",
+        });
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(
+            reply["result"]["stderr"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not a git repository"),
+            "git found the ancestor: {reply}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The ceiling is the parent of the RESOLVED directory: a symlinked workroom whose link sits
+    /// in a different folder from its target must not leave the target's parent open.
+    #[test]
+    fn exec_through_a_symlinked_directory_still_stops_at_its_real_root() {
+        let root = git_repo("ceiling-link");
+        let real = root.join("plain").join("proj");
+        std::fs::create_dir_all(real.join(".git")).unwrap();
+        let links = root.join("links");
+        std::fs::create_dir_all(&links).unwrap();
+        std::os::unix::fs::symlink(&real, links.join("proj")).unwrap();
+        let reply = execute(&exec_request(
+            &links.join("proj"),
+            "git",
+            &["rev-parse", "--show-toplevel"],
+        ));
+        assert!(
+            reply["result"]["stderr"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not a git repository"),
+            "git found the ancestor through the link: {reply}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exec_runs_a_real_command_and_reports_its_own_output() {
+        let root = git_repo("basic");
+        let reply = execute(&exec_request(
+            &root,
+            "git",
+            &["rev-parse", "--is-inside-work-tree"],
+        ));
+        let result = &reply["result"];
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(result["timed_out"], false);
+        assert_eq!(result["signaled"], false);
+        assert!(result["stdout"].as_str().unwrap().trim() == "true");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exec_captures_a_failing_commands_exit_code_and_stderr() {
+        let root = git_repo("failing");
+        let reply = execute(&exec_request(
+            &root,
+            "git",
+            &["rev-parse", "--verify", "bogus-ref"],
+        ));
+        let result = &reply["result"];
+        assert_eq!(result["exit_code"], 128);
+        assert!(!result["stderr"].as_str().unwrap().is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exec_rejects_an_executable_outside_the_git_allowlist() {
+        let root = git_repo("disallowed");
+        // `jj` was allowed before its removal; an older app naming it now gets an error reply.
+        for executable in ["sh", "jj"] {
+            let request = json!({
+                "version": 1, "kind": "exec", "executable": executable, "args": ["--version"],
+                "dir": root.to_str().unwrap(), "timeout_ms": 1000,
+            });
+            let reply = execute(&serde_json::to_vec(&request).unwrap());
+            assert!(reply.get("error").is_some(), "{executable}: {reply}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `stdin` round-trips via Latin-1 specifically so invalid-UTF-8 bytes (e.g. a raw pathspec
+    /// entry from a non-Mac-originated filename) survive the wire exactly — decoding as UTF-8 would
+    /// have silently replaced them with U+FFFD, corrupting the commit rather than failing loudly.
+    #[test]
+    fn exec_stdin_preserves_bytes_that_are_not_valid_utf8() {
+        let root = git_repo("stdin-binary");
+        let payload: Vec<u8> = vec![0x66, 0x6f, 0x6f, 0xff, 0xfe, 0x00, 0x62, 0x61, 0x72];
+        assert!(
+            String::from_utf8(payload.clone()).is_err(),
+            "fixture must be invalid UTF-8"
+        );
+        let command = json!({
+            "version": 1, "kind": "exec", "executable": "git",
+            "args": ["hash-object", "--stdin"], "dir": root.to_str().unwrap(), "timeout_ms": 5000,
+            "stdin": latin1_string(&payload),
+        });
+        let reply = execute(&serde_json::to_vec(&command).unwrap());
+        let result = &reply["result"];
+        assert_eq!(result["exit_code"], 0);
+        let expected = Command::new("git")
+            .args(["hash-object", "--stdin"])
+            .current_dir(&root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                child.stdin.take().unwrap().write_all(&payload)?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert_eq!(
+            result["stdout"].as_str().unwrap().trim(),
+            String::from_utf8_lossy(&expected.stdout).trim()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exec_times_out_and_kills_a_wedged_process_within_the_sigterm_grace() {
+        let root = git_repo("timeout");
+        let start = Instant::now();
+        let captured = run_exec(
+            &root,
+            "sleep",
+            &["30".into()],
+            Duration::from_millis(100),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!(captured.timed_out);
+        assert!(captured.signaled);
+        // SIGTERM at 100ms, grace to 2.1s, SIGKILL — must not run anywhere near the full 30s sleep.
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An older app still names a `barrier_root` on every remote command. It is accepted and
+    /// ignored: the command runs normally on a git repository.
+    #[test]
+    fn an_exec_naming_a_barrier_root_from_an_older_app_still_runs() {
+        let root = git_repo("barrier-root-git");
+        let mut request: Value =
+            serde_json::from_slice(&exec_request(&root, "git", &["status"])).unwrap();
+        request["barrier_root"] = json!(root.to_str().unwrap());
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert_eq!(reply["result"]["exit_code"], 0, "{reply}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The app still sends `shared_root` on every read (a jj-era field the daemon now ignores), and
+    /// `Request` is `deny_unknown_fields`: dropping or renaming the ignored field would reject every
+    /// read from a registered repository.
+    #[test]
+    fn a_read_naming_a_shared_root_still_runs() {
+        let root = git_repo("shared-root-read");
+        let request = json!({"version":1,"method":"current_ref","backend":"git","root":root,"shared_root":root});
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(reply.get("result").is_some(), "{reply}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The facts the app's classifier reads from a git directory (#229), for a path that is a
+    /// directory, a file whose text was asked for, and one that is not there.
+    #[test]
+    fn stat_reports_what_is_at_each_path() {
+        let root = git_repo("stat");
+        let git = root.join(".git");
+        std::fs::write(root.join("pointer"), "gitdir: /elsewhere\n").unwrap();
+        let request = json!({
+            "version": 1,
+            "kind": "stat",
+            "paths": [git, root.join("pointer"), git.join("rebase-merge")],
+            "read": [root.join("pointer")],
+        });
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        let entries = reply["result"]["entries"].as_array().expect("entries");
+        assert_eq!(entries[0]["exists"], true);
+        assert_eq!(entries[0]["is_dir"], true);
+        assert!(entries[0]["modified_at"].as_f64().unwrap() > 0.0);
+        assert_eq!(entries[0]["text"], Value::Null, "text was not asked for");
+        assert_eq!(entries[1]["is_dir"], false);
+        assert_eq!(entries[1]["text"], "gitdir: /elsewhere\n");
+        assert_eq!(entries[2]["exists"], false);
+        assert_eq!(entries[2]["modified_at"], Value::Null);
+
+        let relative = json!({"version": 1, "kind": "stat", "paths": ["relative/path", git]});
+        let reply = execute(&serde_json::to_vec(&relative).unwrap());
+        assert_eq!(reply["result"]["entries"][0]["exists"], false, "{reply}");
+        assert_eq!(
+            reply["result"]["entries"][1]["exists"], true,
+            "one bad path spoiled the rest"
+        );
+        let many: Vec<String> = (0..=MAX_STAT_PATHS).map(|i| format!("/tmp/{i}")).collect();
+        let too_many = json!({"version": 1, "kind": "stat", "paths": many});
+        assert!(execute(&serde_json::to_vec(&too_many).unwrap())["error"].is_object());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn capabilities_reports_the_read_count_and_the_exec_service_version() {
+        let reply = execute(br#"{"version":1,"method":"capabilities"}"#);
+        assert_eq!(reply["result"]["reads"], 9);
+        // A VERSION, not a count of anything. The client requires `>=` its own, so this must never
+        // become a number that describes the caller's side — that was the defect it replaced.
+        assert_eq!(reply["result"]["exec"], EXEC_SERVICE_VERSION);
+        assert!(
+            reply["result"].get("writes").is_none(),
+            "the method count is gone; nothing here could keep it true"
+        );
+    }
+
+    /// The child's environment is EXACTLY the request's map — nothing of the daemon's own leaks
+    /// through. This is the property that keeps a daemon-routed commit from being authored under
+    /// the stale identity of whichever app launch first spawned this daemon; a key allowlist could
+    /// not provide it, because what git reads for identity, config, signing and hooks is
+    /// open-ended. `env` (not in the git allowlist) goes through `run_exec` directly, bypassing
+    /// `exec`'s executable restriction, specifically to observe what reaches the child.
+    #[test]
+    fn run_exec_replaces_the_daemons_environment_with_the_requests() {
+        // A variable this process already has and the request does not set. Inherited rather than
+        // set here: changing the environment of a test process whose other tests run on other
+        // threads is unsound, which is why `set_var` is `unsafe` as of edition 2024.
+        let request = [
+            "PATH",
+            "SSH_AUTH_SOCK",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_CEILING_DIRECTORIES",
+        ];
+        let (inherited, _) = std::env::vars()
+            .find(|(key, _)| !request.contains(&key.as_str()))
+            .expect("the test process has a variable the request does not set");
+        let root = git_repo("run-exec-env");
+        let captured = run_exec(
+            &root,
+            "env",
+            &[],
+            Duration::from_secs(5),
+            None,
+            &[
+                ("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                ("SSH_AUTH_SOCK", "/tmp/allowed.sock"),
+                ("GIT_AUTHOR_EMAIL", "fresh@example.com"),
+            ],
+        )
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&captured.stdout);
+        assert!(stdout.contains("SSH_AUTH_SOCK=/tmp/allowed.sock"));
+        assert!(stdout.contains("GIT_AUTHOR_EMAIL=fresh@example.com"));
+        // The daemon's own environment must not reach the child at all.
+        let leaked = format!("{inherited}=");
+        assert!(
+            !stdout.lines().any(|line| line.starts_with(&leaked)),
+            "{inherited} reached the child"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A remote host's child environment (#229): the host's own, less what could point git at
+    /// another repository or let ssh prompt, with the app's pins on top.
+    #[test]
+    fn a_host_environment_is_the_hosts_own_with_the_pins_on_top_and_ssh_unable_to_prompt() {
+        let pairs = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let os = |pairs: Vec<(String, String)>| {
+            pairs
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect::<Vec<(std::ffi::OsString, std::ffi::OsString)>>()
+        };
+        let own = pairs(&[
+            ("HOME", "/home/workroom"),
+            ("PATH", "/usr/bin:/bin"),
+            ("GIT_DIR", "/elsewhere/.git"),
+            ("SSH_ASKPASS", "/usr/bin/ask"),
+            ("LC_ALL", "fr_FR.UTF-8"),
+            ("GIT_SSH_COMMAND", "ssh -i /home/workroom/.ssh/deploy"),
+        ]);
+        let pins = pairs(&[("LC_ALL", "C"), ("GIT_TERMINAL_PROMPT", "0")])
+            .into_iter()
+            .collect();
+        let env = host_environment(os(own).into_iter(), pins);
+        assert_eq!(env["HOME"], "/home/workroom");
+        assert_eq!(env["PATH"], "/usr/bin:/bin");
+        assert!(!env.contains_key("GIT_DIR"));
+        assert!(!env.contains_key("SSH_ASKPASS"));
+        assert_eq!(env["LC_ALL"], "C", "a pin outranks the host's value");
+        assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
+        assert_eq!(
+            env["GIT_SSH_COMMAND"],
+            "ssh -i /home/workroom/.ssh/deploy -o BatchMode=yes"
+        );
+        assert_eq!(env["SSH_ASKPASS_REQUIRE"], "never");
+
+        // With none of its own, it gets none: set, it would outrank a repository's
+        // `core.sshCommand`, where a deploy key usually lives.
+        let bare = host_environment(std::iter::empty(), Default::default());
+        assert!(!bare.contains_key("GIT_SSH_COMMAND"));
+        assert_eq!(bare["SSH_ASKPASS_REQUIRE"], "never");
+
+        // A variable that is not UTF-8 is dropped, not a panic.
+        use std::os::unix::ffi::OsStringExt;
+        let latin1 = vec![(
+            std::ffi::OsString::from("LEGACY"),
+            std::ffi::OsString::from_vec(vec![0xe9]),
+        )];
+        let env = host_environment(latin1.into_iter(), Default::default());
+        assert!(!env.contains_key("LEGACY"));
+    }
+
+    /// The regression that motivated bounding the drain: a child that exits promptly while leaving
+    /// a BACKGROUND descendant holding its stdout must not hold the exec thread (and with it one of
+    /// the 32 `ACTIVE` permits) for the descendant's lifetime. Before the bound, this returned in
+    /// ~4s instead of ~0s, and each occurrence leaked a permit permanently.
+    #[test]
+    fn exec_does_not_wait_on_a_descendant_that_outlives_the_child() {
+        let root = git_repo("run-exec-straggler");
+        let started = Instant::now();
+        let captured = run_exec(
+            &root,
+            "sh",
+            &["-c".to_string(), "sleep 5 & echo done; exit 0".to_string()],
+            Duration::from_secs(30),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(captured.exit_code, 0);
+        assert!(!captured.timed_out);
+        assert!(String::from_utf8_lossy(&captured.stdout).contains("done"));
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "run_exec waited {elapsed:?} on a background descendant"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Native spawns `/usr/bin/env git`, so a missing tool exits 127 and `CLIVCSWriter.classify`
+    /// answers `.toolMissing`. Spawning the program directly used to raise an Io error instead,
+    /// which the client reported as `launchFailed` — the value whose own doc reserves it for
+    /// "nothing ran" and warns it would "misdiagnose a deleted workroom as a missing git/gh".
+    #[test]
+    fn exec_reports_a_missing_tool_as_127_not_a_service_error() {
+        let root = git_repo("run-exec-missing");
+        let empty = root.join("empty-bin");
+        std::fs::create_dir_all(&empty).unwrap();
+        let captured = run_exec(
+            &root,
+            "git",
+            &["status".to_string()],
+            Duration::from_secs(5),
+            None,
+            &[("PATH", empty.to_str().unwrap())],
+        )
+        .unwrap();
+        assert_eq!(captured.exit_code, 127);
+        assert!(!captured.signaled);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A vanished working directory stays a service error — that IS "nothing ran", and conflating
+    /// it with 127 is the mirror of the bug above.
+    #[test]
+    fn exec_reports_a_vanished_directory_as_an_error_not_127() {
+        let root = git_repo("run-exec-gone");
+        let missing = root.join("not-there");
+        let failed = run_exec(
+            &missing,
+            "git",
+            &["status".to_string()],
+            Duration::from_secs(5),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        );
+        assert!(failed.is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The clamp is the only thing between a client's `timeout_ms` and a thread that waits on it,
+    /// and both ends of it matter: 0 would make every command time out before it started, and an
+    /// unbounded value would park an `ACTIVE` permit for as long as the caller asked. Calls
+    /// `exec_timeout`, the function `exec` uses, so deleting the clamp reddens this.
+    #[test]
+    fn the_exec_timeout_clamp_holds_at_both_ends() {
+        // `exec_timeout` itself, not a copy of its arithmetic — the whole point of extracting it.
+        let clamp = exec_timeout;
+        // Zero is raised to 1ms, never passed through: a 0ms deadline kills the child immediately.
+        assert_eq!(clamp(0), Duration::from_millis(1));
+        assert_eq!(clamp(1), Duration::from_millis(1));
+        assert_eq!(clamp(u64::MAX), Duration::from_millis(MAX_EXEC_TIMEOUT_MS));
+        assert_eq!(
+            clamp(MAX_EXEC_TIMEOUT_MS + 1),
+            Duration::from_millis(MAX_EXEC_TIMEOUT_MS)
+        );
+        // In range, it is the caller's value untouched.
+        assert_eq!(clamp(5_000), Duration::from_millis(5_000));
+    }
+
+    /// The exec envelope carries its OWN version, and it is checked before anything is spawned. The
+    /// read path's guard is covered by `version_and_path_errors_are_explicit`; this is the write
+    /// path's, and it has to fail as `BackendVersion` specifically — `RepositoryRouter` keys its
+    /// fall-back-to-native decision on that case, so any other error would strand the user instead.
+    #[test]
+    fn an_exec_request_with_an_unsupported_version_is_refused_before_spawning() {
+        let root = git_repo("exec-version");
+        let request = json!({
+            "version": 2,
+            "kind": "exec",
+            "executable": "git",
+            // A command with an observable side effect: if the guard ever moves after the spawn,
+            // this file appears and the assertion below catches it.
+            "args": ["init", "-q", "spawned-anyway"],
+            "dir": root.to_str().unwrap(),
+            "timeout_ms": 5000,
+        });
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(
+            reply["error"]["BackendVersion"].as_str().is_some(),
+            "expected BackendVersion, got {reply}"
+        );
+        assert!(
+            !root.join("spawned-anyway").exists(),
+            "the child ran anyway"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Two separate properties, and the second is the one that matters. The cap bounds what is
+    /// KEPT; the loop must go on reading past it, because the child writes into a pipe whose buffer
+    /// is ~64 KiB — stop reading and the child blocks on write forever, which is a hang, not a
+    /// truncation. `StatusCommandRunner.readCapped` has the same shape for the same reason.
+    #[test]
+    fn drain_capped_bounds_what_it_keeps_and_still_reads_to_eof() {
+        // A source larger than the cap AND larger than any pipe buffer.
+        let cap = 1024;
+        let source = vec![b'x'; 256 * 1024];
+        let sink = Mutex::new(Vec::new());
+        drain_capped(source.as_slice(), cap, &sink);
+        assert_eq!(sink.lock().unwrap().len(), cap, "the cap did not hold");
+
+        // Drained to EOF through a REAL pipe, which is where refusing to read past the cap would
+        // deadlock rather than merely truncate. The writer completes only if the reader kept going.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let payload = vec![b'y'; 512 * 1024];
+        let expected = payload.len();
+        let pump = std::thread::spawn(move || {
+            std::io::Write::write_all(&mut writer, &payload).unwrap();
+            expected
+        });
+        let piped = Mutex::new(Vec::new());
+        drain_capped(reader, cap, &piped);
+        assert_eq!(
+            pump.join().unwrap(),
+            expected,
+            "the writer never finished, so the reader stopped short of EOF"
+        );
+        assert_eq!(piped.lock().unwrap().len(), cap);
+    }
+
+    /// The rejection branch, which the round-trip test above cannot reach: every byte 0x00-0xFF is
+    /// representable, so only a client that sent something OTHER than a Latin-1-decoded string gets
+    /// here. Refusing is the point — truncating a pathspec payload would stage the wrong files.
+    #[test]
+    fn latin1_bytes_rejects_a_character_outside_the_byte_range() {
+        for text in ["\u{0100}", "é\u{20AC}", "ok-then-\u{1F600}"] {
+            assert!(
+                latin1_bytes(text).is_err(),
+                "accepted a non-Latin-1 payload: {text:?}"
+            );
+        }
+        // The boundary either side, to pin where the rejection starts.
+        assert!(latin1_bytes("\u{00FF}").is_ok());
+        assert!(latin1_bytes("\u{0100}").is_err());
+    }
+
+    /// The gap against native, which `ProcessTree.killTree` has covered since it was written ("helpers
+    /// spawned by git/gh can outlive the parent") and the daemon did not: a DESCENDANT that calls
+    /// `setsid` leaves the process group, so `kill(-pid, …)` never reaches it. It then goes on
+    /// running — and, if it inherited the pipes, holding this request's readers open — after the
+    /// result has released the caller's gate.
+    ///
+    /// The leader itself cannot escape: `run_exec` sets `process_group(0)`, which makes it a group
+    /// leader, and `setsid` is EPERM for a group leader. So the descendant is the whole of the gap,
+    /// and asserting the leader's timing would prove nothing.
+    ///
+    /// ENVIRONMENT: needs a real process table. Under a sandbox that hides other processes, `pgrep`
+    /// returns nothing, the snapshot comes back empty and this fails in a way indistinguishable from
+    /// the bug — measured, not guessed. If it fails, check `descendants()` sees anything at all
+    /// before believing the kill path is broken.
+    #[test]
+    fn exec_kills_a_descendant_that_escaped_the_process_group() {
+        let root = git_repo("setsid-escape");
+        let marker = root.join("still-alive");
+        // The grandchild leaves the group, waits out the whole escalation, and only THEN writes.
+        // If it is still alive at that point the marker appears, which is the failure this catches.
+        let program = format!(
+            "import os,sys,time\n\
+             if os.fork() == 0:\n\
+             \x20   os.setsid()\n\
+             \x20   time.sleep(6)\n\
+             \x20   open({:?}, 'w').close()\n\
+             \x20   sys.exit(0)\n\
+             time.sleep(30)\n",
+            marker.to_str().unwrap()
+        );
+        let captured = run_exec(
+            &root,
+            "python3",
+            &["-c".into(), program],
+            // Not 100ms: python's own start-up is ~50ms and the fork follows it, so a tighter
+            // deadline races the grandchild into existence and the snapshot finds an empty tree —
+            // which looks exactly like the bug this asserts against.
+            Duration::from_millis(1500),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        )
+        .unwrap();
+        assert!(captured.timed_out, "the timeout was not reported");
+
+        // Past the grandchild's own sleep, so its write would have happened by now if it survived.
+        std::thread::sleep(Duration::from_secs(6));
+        assert!(
+            !marker.exists(),
+            "a setsid descendant outlived the kill and kept running"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `descendants` must never walk init's own tree — a SIGKILL aimed at pid 1's descendants is
+    /// the worst outcome a bug here could have — and must terminate on a pid nothing can have.
+    #[test]
+    fn the_descendant_walk_refuses_init_and_terminates() {
+        assert!(descendants(0).is_empty());
+        assert!(descendants(1).is_empty());
+        assert!(descendants(-1).is_empty());
+        assert!(descendants(i32::MAX).is_empty());
+        // Killing an empty set is a no-op, not a signal to the current process group.
+        kill_recorded(&[]);
+    }
+
+    /// LOW 1: the bug this whole identity check exists for. `kill_recorded` used to SIGKILL by bare
+    /// pid, so a descendant that exited during the SIGTERM-to-SIGKILL grace period and whose pid was
+    /// handed to something else would be killed in its place. A `Descendant` whose recorded start
+    /// time cannot match anything real (`u64::MAX`) reproduces exactly that shape — the number is
+    /// right, the process behind it is not — without needing to actually win a real pid-reuse race.
+    #[test]
+    fn kill_recorded_never_signals_a_pid_whose_start_time_has_changed() {
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        let impostor = crate::process::Descendant {
+            pid,
+            started: u64::MAX,
+        };
+        kill_recorded(&[impostor]);
+        // Give a real SIGKILL time to land before checking: without the identity check this reaps
+        // almost immediately.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "kill_recorded signalled a pid it no longer identifies"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// The two caps could not both be satisfied: `MAX_EXEC_STREAM` allows 4 MiB per stream, and a
+    /// control byte JSON-escapes to six, so two full streams reach 48 MiB against `MAX_RESPONSE`'s
+    /// 16 MiB ceiling. `send` then replaced the WHOLE reply with `PartialData` — discarding the exit
+    /// status of a command that ran to completion and reporting a known outcome as an unknown one.
+    ///
+    /// Codex's repro, 3 MiB of `0x01`.
+    #[test]
+    fn a_huge_control_heavy_reply_keeps_its_exit_status() {
+        let root = git_repo("huge-output");
+        // 3 MiB of 0x01 on stdout, then a non-zero exit — the two facts that must both survive.
+        let program = "import sys; sys.stdout.write('\\x01' * (3 * 1024 * 1024)); sys.exit(3)";
+        // `run_exec` directly rather than `execute`: the executable allowlist is git only, and
+        // neither will emit 3 MiB of control bytes on demand. The reply's wire size is then asserted
+        // against the same budget `exec` applies, which is the contract under test.
+        let captured = run_exec(
+            &root,
+            "python3",
+            &["-c".into(), program.into()],
+            Duration::from_secs(30),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        )
+        .unwrap();
+        assert_eq!(captured.exit_code, 3, "the child's own exit code was lost");
+        assert_eq!(captured.stdout.len(), 3 * 1024 * 1024);
+
+        // `bound_exec_streams` is what `exec` builds its reply from, so deleting the bounding from
+        // `exec` reddens this — the previous version re-implemented the arithmetic here and stayed
+        // green against its own reverted fix.
+        let stdout = String::from_utf8_lossy(&captured.stdout);
+        let stderr = String::from_utf8_lossy(&captured.stderr);
+        assert!(
+            escaped_len(&stdout) > MAX_RESPONSE - EXEC_REPLY_RESERVE,
+            "the fixture no longer exceeds the budget, so this proves nothing"
+        );
+        let (kept, kept_err) = bound_exec_streams(&stdout, &stderr);
+        let reply = json!({
+            "version": 1,
+            "result": {
+                "stdout": kept,
+                "stderr": kept_err,
+                "exit_code": captured.exit_code,
+                "timed_out": captured.timed_out,
+                "signaled": captured.signaled,
+            }
+        });
+        let wire = serde_json::to_vec(&reply).unwrap();
+        assert!(
+            wire.len() <= MAX_RESPONSE,
+            "reply is {} bytes, over the {MAX_RESPONSE} ceiling",
+            wire.len()
+        );
+        // Truncated, not emptied: the user still gets everything that fits.
+        assert!(!kept.is_empty(), "truncation threw the whole stream away");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The budget accounting itself, away from multi-MiB fixtures.
+    ///
+    /// `escaped_len` is an upper BOUND, so the assertions below are `>=` against serde except for
+    /// the classes where the two agree exactly. `\b` and `\f` are the whole of the difference and
+    /// are asserted as over-estimates rather than quietly omitted from the sample.
+    #[test]
+    fn escaped_length_bounds_the_expansion_it_is_used_to_budget() {
+        // A control byte costs six on the wire, a quote two, plain ASCII one.
+        assert_eq!(escaped_len("\u{0001}"), 6);
+        assert_eq!(escaped_len("\""), 2);
+        assert_eq!(escaped_len("\n"), 2);
+        assert_eq!(escaped_len("abc"), 3);
+        // Exact for everything but `\b`/`\f`, and never UNDER serde's real cost for anything —
+        // which is the only property the budget depends on.
+        for sample in [
+            "\u{0001}\u{0002}",
+            "a\"b\\c",
+            "plain",
+            "tab\there",
+            "é",
+            "\u{007F}",
+        ] {
+            assert_eq!(
+                escaped_len(sample),
+                serde_json::to_string(sample).unwrap().len() - 2,
+                "escaped_len disagrees with serde for {sample:?}"
+            );
+        }
+        for sample in ["\u{0008}", "\u{000C}", "a\u{0008}b"] {
+            assert!(
+                escaped_len(sample) >= serde_json::to_string(sample).unwrap().len() - 2,
+                "escaped_len UNDER-counts {sample:?}, which could overflow the ceiling"
+            );
+        }
+
+        // Truncation never exceeds the budget and never splits a character.
+        assert_eq!(
+            truncate_to_escaped_budget("\u{0001}\u{0001}", 6),
+            "\u{0001}"
+        );
+        assert_eq!(truncate_to_escaped_budget("\u{0001}", 5), "");
+        assert_eq!(truncate_to_escaped_budget("abc", 99), "abc");
+        // A multi-byte character is kept whole or dropped whole — a split would panic on the slice.
+        assert_eq!(truncate_to_escaped_budget("é", 1), "");
+        assert_eq!(truncate_to_escaped_budget("aé", 2), "a");
+    }
+
+    #[test]
+    fn a_listing_environment_scrubs_repository_overrides_and_pins_the_locale() {
+        let vars = [
+            ("GIT_DIR", "/elsewhere"),
+            ("GIT_EXTERNAL_DIFF", "/bin/evil"),
+            ("LC_ALL", "fr_FR.UTF-8"),
+            ("HOME", "/home/someone"),
+        ]
+        .map(|(key, value)| (key.into(), value.into()));
+        let env: BTreeMap<_, _> = scrubbed_environment(vars.into_iter()).into_iter().collect();
+        assert!(!env.contains_key("GIT_DIR"));
+        assert!(!env.contains_key("GIT_EXTERNAL_DIFF"));
+        assert_eq!(env["LC_ALL"], "C");
+        assert_eq!(env["GIT_OPTIONAL_LOCKS"], "0");
+        assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
+        assert_eq!(
+            env["HOME"], "/home/someone",
+            "everything else passes through"
+        );
+    }
+}

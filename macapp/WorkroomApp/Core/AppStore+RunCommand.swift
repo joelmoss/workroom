@@ -295,7 +295,7 @@ extension AppStore {
   /// supervisor's in-band exit trailer has rendered (so the snapshot includes the last output lines,
   /// not whatever had painted when the out-of-band `.status` file landed).
   private func diagnoseRunFailure(target: TerminalTarget, tab: TerminalTab.ID, exitCode: Int32) {
-    guard terminals.agentManager.isEnabled,
+    guard terminals.codingAgentManager.isEnabled,
       case .terminal(let s)? = terminals.tab(tab, for: target)?.content
     else { return }
     let view = s.view
@@ -318,7 +318,7 @@ extension AppStore {
         output: RunCaptureSupport.extractOutput(fromSurface: surfaceText) ?? "",
         isRunTab: true,
         isRemote: false)
-      terminals.agentManager.commandFinished(tab: tab, target: target.id, failure: failure)
+      terminals.codingAgentManager.commandFinished(tab: tab, target: target.id, failure: failure)
     }
   }
 
@@ -391,11 +391,11 @@ extension AppStore {
   @discardableResult
   func startInvestigate(
     bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?,
-    agentSetting: String = Defaults[.terminalAgentBackend]
+    codingAgentSetting: String = Defaults[.terminalCodingAgentBackend]
   ) -> TerminalTab {
     let cwd = surface?.lastKnownCwd ?? target.path
     let agent = CodingAgentBackend.forInvestigate(
-      setting: agentSetting, claudeMissing: bannerState.claudeMissing)
+      setting: codingAgentSetting, claudeMissing: bannerState.claudeMissing)
     let command = CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: agent)
     let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
     investigateTabs[tab.id] = target.id

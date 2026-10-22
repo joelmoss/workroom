@@ -8,10 +8,10 @@
 #
 # Why per checkout. Almost everything a running "Workroom Dev" owns is keyed by its bundle id, not
 # by where it was built: its preferences domain, its session helper's socket under
-# Application Support/<bundle id>/ (and so which wr-agent it hands off to, #230), its saved session,
+# Application Support/<bundle id>/ (and so which workroomd it hands off to, #230), its saved session,
 # and what LaunchServices and XCUITest treat as "that app is already running". Two workrooms of
 # this repo building one id therefore share all of it: a dev app launched from one workroom hands
-# the shared agent over to its own wr-agent build under the other's panes, a UI-test quit in one
+# the shared daemon over to its own workroomd build under the other's panes, a UI-test quit in one
 # ends the other's persisted sessions, and `open` on one bundle activates the other's running copy.
 # A distinct id per workroom separates all of that at once; see
 # docs/designs/parallel-workroom-testing.md.

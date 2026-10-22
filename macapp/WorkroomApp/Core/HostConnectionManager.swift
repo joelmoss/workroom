@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Foundation
 import WorkroomSystem
 import WorkroomVCS
@@ -15,10 +15,10 @@ protocol HostServiceConnection: Sendable {
   /// which the router answers by falling back to native reads for a LOCAL host.
   func files(context: FileContext) throws -> FileProviding
   /// The port-forwarding service on this connection (issue #208). Concrete rather than behind a
-  /// protocol of its own: only a wr-agent has one, and a second implementer would be a second agent
+  /// protocol of its own: only a workroomd has one, and a second implementer would be a second agent
   /// — at which point the protocol can be extracted with a caller to justify it. Throws
   /// `VCSError.backendVersion` when the peer predates the service.
-  func forwarding() throws -> AgentForwardService
+  func forwarding() throws -> DaemonForwardService
   /// The working directory of terminal `session` on this host, or nil when the host holds no such
   /// session (#239). Concrete for the same reason `forwarding()` is.
   func workingDirectory(of session: UUID) async throws -> String?
@@ -31,7 +31,7 @@ protocol HostServiceConnection: Sendable {
   func ping() async throws
   /// Each remote workroom's pane layout, kept on its host (#255). Throws `VCSError.backendVersion`
   /// when the peer predates the service.
-  func layouts() throws -> AgentLayoutService
+  func layouts() throws -> DaemonLayoutService
   /// Program status (#358): subscribe to every session's records on this host.
   func subscribeProgramStatus(
     onEvent: @escaping @Sendable (ProgramStatusEvent) -> Void
@@ -48,7 +48,7 @@ extension HostServiceConnection {
     throw HostConnectionError.serviceUnavailable("Host has no file service.")
   }
 
-  func forwarding() throws -> AgentForwardService {
+  func forwarding() throws -> DaemonForwardService {
     throw HostConnectionError.serviceUnavailable("Host has no port-forwarding service.")
   }
 
@@ -68,7 +68,7 @@ extension HostServiceConnection {
     throw HostConnectionError.serviceUnavailable("Host cannot be pinged.")
   }
 
-  func layouts() throws -> AgentLayoutService {
+  func layouts() throws -> DaemonLayoutService {
     throw VCSError.backendVersion("Host has no layout service.")
   }
 
@@ -258,7 +258,7 @@ actor HostConnectionManager {
   /// The lease is returned with the service because the one failure that matters — the connection
   /// ending — reaches every live stream through the connection itself but not the LISTENER, which
   /// its owner drops by comparing this lease against `updates(for:)`.
-  func forwarding(host: HostID) throws -> (Lease, AgentForwardService) {
+  func forwarding(host: HostID) throws -> (Lease, DaemonForwardService) {
     let (lease, connection) = try connected(host)
     return (lease, try connection.forwarding())
   }
@@ -283,12 +283,12 @@ actor HostConnectionManager {
 
   /// Not lease-tracked either: a layout is read once, and a write names the revision it read, so a
   /// later connection cannot apply a stale one. Never connects.
-  func layouts(host: HostID) throws -> AgentLayoutService {
+  func layouts(host: HostID) throws -> DaemonLayoutService {
     try connected(host).1.layouts()
   }
 
   /// The connection program status subscribes on (#358). Never connects: `ProgramStatusMonitor`
-  /// acquires through `LocalAgentVCS` or `RemoteWorkrooms` first.
+  /// acquires through `LocalDaemonVCS` or `RemoteWorkrooms` first.
   func programStatus(host: HostID) throws -> any HostServiceConnection {
     try connected(host).1
   }

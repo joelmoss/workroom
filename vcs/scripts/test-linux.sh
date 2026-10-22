@@ -1,10 +1,10 @@
 #!/bin/bash
 #
-# Runs the agent's test suite against a LINUX target, from any host.
+# Runs the daemon's test suite against a LINUX target, from any host.
 #
 #   vcs/scripts/test-linux.sh [--features terminal-state]
 #
-# Why this exists: the agent's pty, its `/proc` introspection and its socket handling are the parts
+# Why this exists: the daemon's pty, its `/proc` introspection and its socket handling are the parts
 # most likely to differ between Darwin and Linux, and a bug that only appears on one of them has
 # already happened — an output pump that never noticed a closed socket, which macOS hid because the
 # shell happened to emit a prompt.
@@ -34,7 +34,7 @@ done
 # On Linux the whole question is moot: run them.
 if [ "$(uname -s)" = "Linux" ]; then
   echo "test-linux: running natively"
-  exec cargo test -p wr-agent ${FEATURES[@]+"${FEATURES[@]}"}
+  exec cargo test -p workroomd ${FEATURES[@]+"${FEATURES[@]}"}
 fi
 
 # The Linux artifact is a fully STATIC musl binary — no glibc, no distro userland — so anything
@@ -94,7 +94,7 @@ fi
 # `rustup target list --installed` cheerfully listed the target, because that target belongs to a
 # different compiler. `rustup run stable cargo` does NOT fix it: cargo-zigbuild re-invokes `cargo`
 # from PATH, and the child finds Homebrew's again. The PATH is the thing that has to change.
-# macapp/Scripts/build-agent.sh documents the same trap.
+# macapp/Scripts/build-daemon.sh documents the same trap.
 if [ -x "$HOME/.cargo/bin/cargo" ]; then
   PATH="$HOME/.cargo/bin:$PATH"
   export PATH
@@ -140,7 +140,7 @@ trap 'rm -rf "$STAGE"' EXIT
 
 # Ask cargo WHICH binaries are tests rather than guessing from filenames.
 #
-# Guessing does not work: `deps/` holds two `wr_agent-<hash>` files — the lib's test binary and
+# Guessing does not work: `deps/` holds two `workroomd-<hash>` files — the lib's test binary and
 # another artifact of the same crate name — plus every previous build's leftovers. An earlier
 # version of this script picked the newest by mtime and ran the ordinary binary, which printed its
 # usage text and exited 0, reporting success while running no tests at all.
@@ -150,7 +150,7 @@ trap 'rm -rf "$STAGE"' EXIT
 # Stderr to a log rather than /dev/null: cargo's JSON goes to stdout, but so does every reason the
 # build FAILED go to stderr — discarding it turned "cargo-zigbuild cannot find zig" into a silent
 # exit 1 with nothing printed at all.
-cargo zigbuild -p wr-agent ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" --tests \
+cargo zigbuild -p workroomd ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" --tests \
   --message-format=json 2>"$STAGE/build.log" \
   | python3 -c '
 import json, os, shutil, sys
@@ -169,7 +169,7 @@ for line in sys.stdin:
     if not exe:
         continue
     # Name by target AND kind. Naming by target alone is not enough and silently loses tests:
-    # the lib and the bin are BOTH called "wr-agent", so one overwrote the other in staging and
+    # the lib and the bin are BOTH called "workroomd", so one overwrote the other in staging and
     # the lib suite — 63 tests — vanished while the run still reported success.
     kind = "_".join(msg["target"].get("kind", [])) or "bin"
     name = "{}__{}".format(msg["target"]["name"].replace("-", "_"), kind)
@@ -196,13 +196,13 @@ if ! grep -q . "$STAGE/.manifest" 2>/dev/null; then
 fi
 echo "test-linux: staged $(tr '\n' ' ' < "$STAGE/.manifest")"
 
-# The agent binary itself, for the integration tests: WR_AGENT_BIN overrides the absolute host path
+# The daemon binary itself, for the integration tests: WORKROOMD_BIN overrides the absolute host path
 # cargo bakes in at compile time, which does not exist inside the container.
-if ! cargo zigbuild -p wr-agent ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" >/dev/null; then
-  echo "error: building the agent binary for $TARGET failed." >&2
+if ! cargo zigbuild -p workroomd ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" >/dev/null; then
+  echo "error: building the daemon binary for $TARGET failed." >&2
   exit 1
 fi
-cp "target/${TARGET}/debug/wr-agent" "$STAGE/wr-agent"
+cp "target/${TARGET}/debug/workroomd" "$STAGE/workroomd"
 
 # `-scm` rather than `-slim`: the file-service tests `git init` their fixtures, and slim has no git.
 IMAGE="${WR_LINUX_IMAGE:-docker.io/library/buildpack-deps:stable-scm}"
@@ -212,8 +212,8 @@ echo "test-linux: running on $RUNTIME ($IMAGE)"
 "$RUNTIME" run --rm \
   --volume "$STAGE:/tests" \
   --volume "$VCS_DIR:$VCS_DIR:ro" \
-  --env WR_AGENT_BIN=/tests/wr-agent \
-  --env "WR_AGENT_HAS_TERMINAL_STATE=${WR_AGENT_HAS_TERMINAL_STATE:-}" \
+  --env WORKROOMD_BIN=/tests/workroomd \
+  --env "WORKROOMD_HAS_TERMINAL_STATE=${WORKROOMD_HAS_TERMINAL_STATE:-}" \
   --env "WR_TEST_SHELL=/bin/sh" \
   "$IMAGE" \
   /bin/sh -c 'set -e

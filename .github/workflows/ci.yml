@@ -113,8 +113,8 @@ jobs:
         run: go test ./...
 
   # The whole Rust workspace's format, lint and test gates — the only job that runs them for every
-  # crate (the agent jobs below cover wr-agent alone). Its own Linux job rather than a step in
-  # `app`: off the macOS critical path, Linux minutes are 10x cheaper, and it tests the agent away
+  # crate (the daemon jobs below cover workroomd alone). Its own Linux job rather than a step in
+  # `app`: off the macOS critical path, Linux minutes are 10x cheaper, and it tests the daemon away
   # from Apple targets.
   rust:
     runs-on: ubuntu-latest
@@ -154,9 +154,9 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps
 
-      # This already covers wr-agent, and covers it on LINUX — the workspace has no
+      # This already covers workroomd, and covers it on LINUX — the workspace has no
       # `default-members`, so every member's unit and integration tests run here. That matters
-      # because the agent's pty, /proc introspection and socket code are the parts most likely to
+      # because the daemon's pty, /proc introspection and socket code are the parts most likely to
       # differ between Darwin and Linux, and a bug that only shows up on one of them has already
       # happened once (an output pump that never noticed a closed socket, which macOS hid).
       - name: Test
@@ -165,7 +165,7 @@ jobs:
   # The shadow terminal, which is what makes a reattaching client see its screen. Separate from
   # `rust` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
   # checkout, and the rest of the workspace should not wait on either.
-  agent-terminal-state:
+  daemon-terminal-state:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -203,22 +203,22 @@ jobs:
 
       - name: Clippy
         run: |
-          cargo clippy --manifest-path vcs/Cargo.toml -p wr-agent \
+          cargo clippy --manifest-path vcs/Cargo.toml -p workroomd \
             --features terminal-state --all-targets -- -D warnings
 
-      # WR_AGENT_HAS_TERMINAL_STATE tells the integration tests the agent under test was built
+      # WORKROOMD_HAS_TERMINAL_STATE tells the integration tests the daemon under test was built
       # with the feature, so the repaint and scrollback assertions run instead of skipping. Without
       # it they would pass by skipping and this job would prove nothing.
       - name: Test
         env:
-          WR_AGENT_HAS_TERMINAL_STATE: "1"
-        run: cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state
+          WORKROOMD_HAS_TERMINAL_STATE: "1"
+        run: cargo test --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state
 
-  # The Linux agents Workroom.app ships for remote hosts (issue #227), built the way the app bundle
+  # The Linux daemons Workroom.app ships for remote hosts (issue #227), built the way the app bundle
   # builds them (cargo-zigbuild, static musl, terminal-state) and then RUN. The Mac-side check in
-  # build-agent_test.sh can only see that each ELF is static and the right arch, not that it starts.
+  # build-daemon_test.sh can only see that each ELF is static and the right arch, not that it starts.
   # aarch64 runs under qemu-user, which needs no sysroot for a static binary.
-  agent-linux:
+  daemon-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -239,7 +239,7 @@ jobs:
           rustup toolchain install 1.96.1 --profile minimal --target "$TARGET"
           rustup default 1.96.1
 
-      # Pinned by version AND checksum, as in `agent-terminal-state`. cargo-zigbuild links with it
+      # Pinned by version AND checksum, as in `daemon-terminal-state`. cargo-zigbuild links with it
       # and libghostty-vt is built with it.
       - name: Install Zig
         uses: ./.github/actions/install-zig
@@ -248,7 +248,7 @@ jobs:
           archive: x86_64-linux
           sha256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 
-      # Its own key per arch. Sharing `agent-terminal-state`'s key would restore that job's glibc
+      # Its own key per arch. Sharing `daemon-terminal-state`'s key would restore that job's glibc
       # prefix, count as a hit, never save the musl one, and rebuild it on every run.
       - name: Cache libghostty-vt
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -280,12 +280,12 @@ jobs:
 
       - name: Build
         run: |
-          cargo zigbuild --manifest-path vcs/Cargo.toml --release -p wr-agent \
+          cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroomd \
             --features terminal-state --target "$TARGET"
 
       - name: Check
         run: |
-          bin="vcs/target/$TARGET/release/wr-agent"
+          bin="vcs/target/$TARGET/release/workroomd"
           file "$bin"
           file -b "$bin" | grep -q 'statically linked'
           run=""
@@ -309,7 +309,7 @@ jobs:
       # The persistent remote path over real ssh (issue #228): this ELF, supervised in a container
       # with sshd, driven from the runner by the ignored `over_ssh_*` tests in remote_transport.rs.
       # x86_64 only, because the runner is x86_64: the aarch64 ELF would need an emulated container.
-      # Bounded, because an agent that wedges mid-reply would hang an ssh call with no deadline of
+      # Bounded, because a daemon that wedges mid-reply would hang an ssh call with no deadline of
       # its own, and the job's default timeout is six hours. BUILDX_BUILDER, because a plain
       # `docker build` keeps the default `docker` driver, which cannot export a cache, even after the
       # step above created a docker-container builder. `--load`, because that builder does not put
@@ -322,7 +322,7 @@ jobs:
           WR_FIXTURE_BUILD_FLAGS: >-
             --load --cache-from type=gha,scope=ssh-fixture
             --cache-to type=gha,mode=max,scope=ssh-fixture
-        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/wr-agent"
+        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroomd"
 
       # The `workroom-host` image (`make remote-host-image`, FIXTURE=0) an app's remote workrooms
       # run on (#253). The step above only builds FIXTURE=1, so this is the only check on
@@ -344,7 +344,7 @@ jobs:
         run: vcs/scripts/ssh-fixture/host-image-test.sh
 
   # The same `workroom-host` check on arm64, which is what the image runs as on an Apple Silicon
-  # Mac's Docker (#299). Its own job on a native arm64 runner: agent-linux is x86_64 for both legs,
+  # Mac's Docker (#299). Its own job on a native arm64 runner: daemon-linux is x86_64 for both legs,
   # and an emulated build would run apt under QEMU. No build cache and no Rust: the script needs
   # only Docker and ssh, which the runner image has.
   host-image-arm64:
@@ -416,9 +416,9 @@ jobs:
       - name: Lint (swift-format --strict)
         run: make app-lint
 
-      # The app bundles `wr-agent`, and the bundled build links libghostty-vt so a reattaching
-      # pane can be repainted — see macapp/Scripts/build-agent.sh. That needs a Zig toolchain on
-      # this runner too, pinned by version AND checksum for the same reason the Linux agent job
+      # The app bundles `workroomd`, and the bundled build links libghostty-vt so a reattaching
+      # pane can be repainted — see macapp/Scripts/build-daemon.sh. That needs a Zig toolchain on
+      # this runner too, pinned by version AND checksum for the same reason the Linux daemon job
       # pins it: an unpinned toolchain silently changes the emulator the app ships against.
       - name: Install Zig
         uses: ./.github/actions/install-zig
@@ -427,9 +427,9 @@ jobs:
           archive: aarch64-macos
           sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
 
-      # The Debug build bundles the Linux agents too (#227), cross-built by build-agent.sh with
+      # The Debug build bundles the Linux daemons too (#227), cross-built by build-daemon.sh with
       # cargo-zigbuild and the Zig above.
-      - name: Add rustup targets (Linux agents)
+      - name: Add rustup targets (Linux daemons)
         run: rustup target add --toolchain stable aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 
       - name: Cache cargo-zigbuild
@@ -443,7 +443,7 @@ jobs:
         if: steps.zigbuild.outputs.cache-hit != 'true'
         run: cargo install cargo-zigbuild --locked --version 0.23.4
 
-      # Keyed on the pinned engine sha, as in `agent-terminal-state`: a bump refetches and
+      # Keyed on the pinned engine sha, as in `daemon-terminal-state`: a bump refetches and
       # rebuilds, nothing else does.
       - name: Cache libghostty-vt
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -451,13 +451,13 @@ jobs:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
-      # Xcode builds the bundled wr-agent (Scripts/build-agent.sh) on the stable toolchain, the
+      # Xcode builds the bundled workroomd (Scripts/build-daemon.sh) on the stable toolchain, the
       # macOS tests below build it again in debug, and all of it is cached here, the workspace's
-      # own artifacts included: without them wr-agent was rebuilt in release for all three targets
+      # own artifacts included: without them workroomd was rebuilt in release for all three targets
       # on every run, 38s + 1m41 + 1m44 one after another (measured 2026-10-18, run 39115663007).
       # Cargo's fingerprints then find it up to date on a run that touched nothing under vcs/, and
       # rebuild what a commit did touch. That needs the build script's inputs stable too:
-      # WR_AGENT_BUILD on the Test step below. vcs/.built-from is the index of the checkout the
+      # WORKROOMD_BUILD on the Test step below. vcs/.built-from is the index of the checkout the
       # artifacts were built from, written after the tests (see the Restore source mtimes step).
       #
       # Restore and save are split, and the key ends in the commit, so each master push saves the
@@ -469,19 +469,19 @@ jobs:
       # which nothing in target/ is reusable; it also bounds how far target/ can grow with stale
       # dependency versions, since nothing here prunes them. The prefixes are built in a step
       # because the ship pregate's secret scanner reads a long literal `key:` line as a credential
-      # (and `app-agent-v<N>` as entropy, hence no `v`).
+      # (and `app-daemon-v<N>` as entropy, hence no `v`).
       - name: Cargo cache key
         id: rust
         env:
           CARGO_LOCK: ${{ hashFiles('vcs/Cargo.lock') }}
         shell: bash
         run: |
-          toolchain="app-agent-8-$RUNNER_OS-$RUNNER_ARCH-$(rustc +stable -V | awk '{print $2}')"
+          toolchain="app-daemon-8-$RUNNER_OS-$RUNNER_ARCH-$(rustc +stable -V | awk '{print $2}')"
           echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
           echo "lock=$toolchain-$CARGO_LOCK" >> "$GITHUB_OUTPUT"
 
       # `path` must stay identical to the save step's: it is part of the cache's version.
-      - name: Restore cargo cache (agent)
+      - name: Restore cargo cache (daemon)
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -568,7 +568,7 @@ jobs:
       # branch's, a master push after one whose run failed. The step after the tests records that
       # checkout's index (path, mode and blob of every file) in the cached directory. An index, not
       # a commit: a PR run builds GitHub's merge commit, which the next push's checkout does not
-      # have. No record means no cargo cache was restored (every app-agent-8 entry carries one), so
+      # have. No record means no cargo cache was restored (every app-daemon-8 entry carries one), so
       # there is nothing stale to guard and landing times alone are safe. Only vcs/, cargo's inputs:
       # the Xcode build dir this run saves is built against these mtimes, and a Swift file left at
       # now would be recompiled by every later run, which gives it its landing time again.
@@ -606,11 +606,11 @@ jobs:
       # style so xcodebuild won't provision against Apple's servers. Lets the non-sandboxed
       # app build and the unit tests launch their host app. (`make app-test` also builds.)
       #
-      # WR_AGENT_BUILD: the agent's build number, normally the commit's own time, read by its
+      # WORKROOMD_BUILD: the daemon's build number, normally the commit's own time, read by its
       # build.rs from .git/HEAD; a constant here so that script's inputs don't change with every
-      # commit, which rebuilt wr-agent for all three targets on every run (~3 min, measured
-      # 2026-10-18) however warm the cargo cache. Nothing in these tests reads the built agent's
-      # number (AgentBootstrapTests parses fixture strings), and no host ever sees a CI build.
+      # commit, which rebuilt workroomd for all three targets on every run (~3 min, measured
+      # 2026-10-18) however warm the cargo cache. Nothing in these tests reads the built daemon's
+      # number (DaemonBootstrapTests parses fixture strings), and no host ever sees a CI build.
       # As an xcodebuild build setting, not a step `env:`: the build service that runs the script
       # phases does not get this step's environment (run 39133476315 showed none of it), while
       # every build setting is exported to them.
@@ -621,11 +621,11 @@ jobs:
       - name: Test
         run: >-
           make app-test APP_TEST_DIAGNOSTICS=
-          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM= WR_AGENT_BUILD=1"
+          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM= WORKROOMD_BUILD=1"
 
       # What the cargo cache was built from, saved with it by the last step: the Restore source
       # mtimes step diffs the next checkout against it.
-      - name: Record the checkout the agent cache was built from
+      - name: Record the checkout the daemon cache was built from
         run: mkdir -p vcs/.built-from && git ls-files -s -z > vcs/.built-from/index
 
       # Parallel xcodebuild prints NO assertion text — just a `Failing tests:` list — so a red run
@@ -655,21 +655,21 @@ jobs:
       # `apple_bash_is_not_left_in_posix_mode` cover the Apple `/bin/bash` skip, which exists only
       # on macOS. These filters are an allowlist: a new macOS-only test must be added here.
       # CARGO_INCREMENTAL=0: incremental state would only bloat the cached target/ (rust-cache,
-      # which cached it before, set the same for the whole job). WR_AGENT_BUILD as on the Test
+      # which cached it before, set the same for the whole job). WORKROOMD_BUILD as on the Test
       # step, or build.rs reruns for every commit and the debug crate rebuilds each run; none of
       # these tests reads the build number (only the hand-off tests do, on Linux).
-      - name: Test (agent descriptor inheritance, macOS)
+      - name: Test (daemon descriptor inheritance, macOS)
         env:
           CARGO_INCREMENTAL: "0"
-          WR_AGENT_BUILD: "1"
+          WORKROOMD_BUILD: "1"
         run: |
-          cargo test --manifest-path vcs/Cargo.toml -p wr-agent --lib -- pty::tests process::tests shell::tests
-          cargo test --manifest-path vcs/Cargo.toml -p wr-agent --test attach_falls_back_to_a_shell -- --exact \
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --lib -- pty::tests process::tests shell::tests
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test attach_falls_back_to_a_shell -- --exact \
             apple_bash_is_not_left_in_posix_mode
-          cargo test --manifest-path vcs/Cargo.toml -p wr-agent --test remote_transport -- --exact \
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test remote_transport -- --exact \
             a_stale_socket_stays_stale_while_children_are_spawned \
-            a_relay_with_no_agent_fails_fast_and_says_so
-          cargo test --manifest-path vcs/Cargo.toml -p wr-agent --test exception_ports
+            a_relay_with_no_daemon_fails_fast_and_says_so
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test exception_ports
 
       # Last, so only a green job saves; master pushes only (see the restore steps). Under the key
       # the restore computed, as Package.resolved and Cargo.lock may be rewritten by the build. An
@@ -681,7 +681,7 @@ jobs:
           path: macapp/DerivedData/Build
           key: ${{ steps.xcbuild.outputs.cache-primary-key }}
 
-      - name: Save cargo cache (agent)
+      - name: Save cargo cache (daemon)
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -704,7 +704,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Full history, for the tags: agent-protocol_test.sh reads the latest stable release's app
+      # Full history, for the tags: daemon-protocol_test.sh reads the latest stable release's app
       # protocol at its tag, and fails in a clone without them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -734,35 +734,35 @@ jobs:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
-      # The target directory build-agent_test.sh builds into (BUILD_AGENT_TEST_TARGET_DIR on the test
-      # step below); without one the test compiles from scratch in vcs/target/build-agent-test. Not
+      # The target directory build-daemon_test.sh builds into (BUILD_DAEMON_TEST_TARGET_DIR on the test
+      # step below); without one the test compiles from scratch in vcs/target/build-daemon-test. Not
       # `vcs/target` itself, for the reason the test gives. The key changed with the directory: an exact hit
       # on the old entry would never save the new one.
-      - name: Cache cargo (agent)
+      - name: Cache cargo (daemon)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: vcs -> build-agent-target
-          key: app-scripts-build-agent
+          workspaces: vcs -> build-daemon-target
+          key: app-scripts-build-daemon
 
-      # `build-agent_test.sh`'s universal cases need BOTH darwin targets installed and skip
+      # `build-daemon_test.sh`'s universal cases need BOTH darwin targets installed and skip
       # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
       # run 34783566140: "SKIP universal cases (rustup targets not installed)" followed by
-      # "build-agent_test: OK". The wr-agent half of the guard below had therefore never run on a
+      # "build-daemon_test: OK". The workroomd half of the guard below had therefore never run on a
       # PR, only on nightly/release, which install these before `make app-release`.
       #
       # Its Go sibling has no such gate (Go cross-compiles with no extra install), which is why the
       # asymmetry went unnoticed: `build-helper_test.sh` really was exercising the multi-arch path
-      # on every PR while `build-agent_test.sh` quietly was not.
+      # on every PR while `build-daemon_test.sh` quietly was not.
       #
       # `--toolchain stable` explicitly, because that is the toolchain the test's own
       # `rustup target list --installed --toolchain stable` query checks. A bare `rustup target add`
       # installs into the DEFAULT toolchain, which would leave the query — and so the skip —
       # unchanged if the default is ever not `stable`.
       #
-      # The musl targets and cargo-zigbuild are the same gap for the Linux agents (#227): without
-      # them the Linux case skips, and build-agent.sh's Linux branch would first run on a nightly.
-      # `agent-linux` does not cover it, because it calls `cargo zigbuild` directly.
-      - name: Add rustup targets (for the universal-arch and Linux-agent script tests)
+      # The musl targets and cargo-zigbuild are the same gap for the Linux daemons (#227): without
+      # them the Linux case skips, and build-daemon.sh's Linux branch would first run on a nightly.
+      # `daemon-linux` does not cover it, because it calls `cargo zigbuild` directly.
+      - name: Add rustup targets (for the universal-arch and Linux-daemon script tests)
         run: |
           rustup target add --toolchain stable x86_64-apple-darwin aarch64-apple-darwin \
             aarch64-unknown-linux-musl x86_64-unknown-linux-musl
@@ -781,12 +781,12 @@ jobs:
         run: cargo install cargo-zigbuild --locked --version 0.23.4
 
       # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
-      # exercise build-helper.sh's / build-agent.sh's multi-arch path — the branch whose absence
+      # exercise build-helper.sh's / build-daemon.sh's multi-arch path — the branch whose absence
       # shipped an arm64-only CLI inside every universal .app. These run them directly with
       # ARCHS="arm64 x86_64".
       - name: Test (build + channel helper scripts)
         env:
-          BUILD_AGENT_TEST_TARGET_DIR: ${{ github.workspace }}/vcs/build-agent-target
+          BUILD_DAEMON_TEST_TARGET_DIR: ${{ github.workspace }}/vcs/build-daemon-target
         run: make app-test-scripts
 
   # Publishes docs-site/ once master's CI is green: asks Codaset's CI to test the docs at this commit
@@ -796,7 +796,7 @@ jobs:
   # the next green one, instead of waiting for another docs change.
   docs-deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [workflows, cli, rust, agent-terminal-state, agent-linux, host-image-arm64, app-packages, app, app-scripts]
+    needs: [workflows, cli, rust, daemon-terminal-state, daemon-linux, host-image-arm64, app-packages, app, app-scripts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

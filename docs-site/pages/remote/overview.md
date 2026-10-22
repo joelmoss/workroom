@@ -32,7 +32,7 @@ A remote workroom is always a workroom of a project that is on your Mac. You can
 
 ## What runs where
 
-Workroom starts a small program, `wr-agent`, on every host. It keeps your terminal sessions running, and answers the questions the inspector asks about the repository: history, changes and files.
+Workroom starts a small program, `workroomd`, on every host. It keeps your terminal sessions running, and answers the questions the inspector asks about the repository: history, changes and files.
 
 Your terminals are sessions on the host, not processes on your Mac. A dev server or a coding agent keeps running when you quit Workroom, close the window or lose your network. When you come back, your tabs attach to the same sessions. See [Reconnecting](reconnecting.md).
 

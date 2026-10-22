@@ -119,14 +119,16 @@ final class MultiWindowTests: XCTestCase {
     codex.onTitleChange?("Codex")
     claude.foregroundProcessNameForTesting = "claude"
     claude.onTitleChange?("Claude")
-    for _ in 0..<20 where registry.activeAgentBackends != [.codex, .claude] { await Task.yield() }
-    XCTAssertEqual(registry.activeAgentBackends, [.codex, .claude])
+    for _ in 0..<20 where registry.activeCodingAgentBackends != [.codex, .claude] {
+      await Task.yield()
+    }
+    XCTAssertEqual(registry.activeCodingAgentBackends, [.codex, .claude])
 
     codex.handleCommandFinished(rawExitCode: 0)
-    for _ in 0..<20 where registry.activeAgentBackends != [.claude] { await Task.yield() }
-    XCTAssertEqual(registry.activeAgentBackends, [.claude])
+    for _ in 0..<20 where registry.activeCodingAgentBackends != [.claude] { await Task.yield() }
+    XCTAssertEqual(registry.activeCodingAgentBackends, [.claude])
     registry.unregister(window: secondWindow)
-    XCTAssertTrue(registry.activeAgentBackends.isEmpty)
+    XCTAssertTrue(registry.activeCodingAgentBackends.isEmpty)
     registry.unregister(window: firstWindow)
   }
 

@@ -38,8 +38,8 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
   ///
   /// `isAvailable` answers for the backend a NEW session would go to. A RESTORED pane already has
   /// an id naming a session some helper may still be holding, and running that id through the same
-  /// gate discarded it before anything could ask who owned it — so an unhealthy agent silently
-  /// stranded every session the Swift daemon was still holding, one layer above the fix that was
+  /// gate discarded it before anything could ask who owned it — so an unhealthy daemon silently
+  /// stranded every session the Swift helper was still holding, one layer above the fix that was
   /// supposed to prevent exactly that. Keeping the id is safe: if nothing can attach to it,
   /// `attachCommand` returns nil and the pane opens a plain shell anyway.
   func testARestoredSessionSurvivesAnUnavailableHelper() {

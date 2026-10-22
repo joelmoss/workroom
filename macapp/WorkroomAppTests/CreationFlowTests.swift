@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Foundation
 import HostDrivers
 import WorkroomDomain
@@ -9,7 +9,7 @@ import XCTest
 
 /// A create's pane against `AppStore` (#483): where it opens, how it lands, how it ends, and what
 /// its failures offer. Local creates run against a fake CLI; remote ones against a fake CLI, a fake
-/// driver and a `FakeAgent` for the host's git, through `remoteCreateServices`.
+/// driver and a `FakeDaemon` for the host's git, through `remoteCreateServices`.
 @MainActor
 final class CreationFlowTests: XCTestCase {
   private let projectPath = "/private/var/tmp/wr-creation-flow"
@@ -519,14 +519,14 @@ final class CreationFlowTests: XCTestCase {
   /// seam=none; no_claim=what the check's error says
   func testContinueWithoutScriptGoesOnWhenTheTrustCheckCantBeAnswered() async throws {
     let project = try projectWithASetupScript()
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
     store.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let scripts = Counter()
     let checks = Counter()
-    var services = services(driver: FakeDriver(), agent: agent)
+    var services = services(driver: FakeDriver(), daemon: daemon)
     services.trustStatus = { _, _, _ in
       checks.add()
       if checks.count > 1 { throw WorkroomCLIError.timedOut }
@@ -655,10 +655,10 @@ final class CreationFlowTests: XCTestCase {
   /// host clones from GitHub; fails_when=no notice, or it stops to ask as a local create does;
   /// no_claim=trust status itself (the Go tests)
   func testARemoteCreateSaysWhatLocalWorkItLeavesOut() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    var services = services(driver: FakeDriver(), agent: agent)
+    var services = services(driver: FakeDriver(), daemon: daemon)
     services.trustStatus = { _, _, _ in
       TrustStatus(trusted: true, scripts: [], localWork: UntrustedSetupCLI.work)
     }
@@ -852,7 +852,7 @@ final class CreationFlowTests: XCTestCase {
     var destroys: Int { lock.withLock { destroyed } }
     init(destroyFails: Bool = false) { self.destroyFails = destroyFails }
 
-    var agentSocket: String { "/home/boxd/.workroom/agent.sock" }
+    var daemonSocket: String { "/home/boxd/.workroom/workroomd.sock" }
     func create() async throws -> HostID { .remote(UUID()) }
     func destroy(_ host: HostID) async throws {
       lock.withLock { destroyed += 1 }
@@ -891,7 +891,7 @@ final class CreationFlowTests: XCTestCase {
     #"{"stdout":"","stderr":"","exit_code":0,"timed_out":false,"signaled":false}"#
 
   private func services(
-    driver: any HostTerminalDriver, agent: FakeAgent?, setup: (any RemoteSetup)? = nil,
+    driver: any HostTerminalDriver, daemon: FakeDaemon?, setup: (any RemoteSetup)? = nil,
     plans: Counter = Counter(), hosts: Counter = Counter(),
     gitHubToken: (@Sendable () async throws -> String)? = nil,
     grantRepository: (@Sendable (GitHubRepository) async throws -> Void)? = nil
@@ -907,14 +907,14 @@ final class CreationFlowTests: XCTestCase {
       setupNeeded: { _ in setup },
       host: { _ in
         hosts.add()
-        guard let agent else { throw HostDriverError.provisioning("no host") }
-        let socket = agent.socketPath
+        guard let daemon else { throw HostDriverError.provisioning("no host") }
+        let socket = daemon.socketPath
         return RemoteCreateHost(
           key: .boxd(org: "acme", account: "u"), driver: driver,
           environment: RemoteProvisioning.Environment(
-            driver: driver, agentSocket: driver.agentSocket, gitHubToken: gitHubToken,
+            driver: driver, daemonSocket: driver.daemonSocket, gitHubToken: gitHubToken,
             grantRepository: grantRepository,
-            connect: { host in try await AgentVCSConnection.connect(host: host, socketPath: socket)
+            connect: { host in try await DaemonVCSConnection.connect(host: host, socketPath: socket)
             }
           ))
       })
@@ -933,7 +933,7 @@ final class CreationFlowTests: XCTestCase {
   func testAnUnapprovedSetupScriptStopsARemoteCreateBeforeAnyMachine() async throws {
     let hosts = Counter()
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    var services = services(driver: FakeDriver(), agent: nil, hosts: hosts)
+    var services = services(driver: FakeDriver(), daemon: nil, hosts: hosts)
     services.trustStatus = { _, _, _ in
       TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
     }
@@ -951,11 +951,11 @@ final class CreationFlowTests: XCTestCase {
   /// row the checklist had moved on to; fails_when=the failure lands on account or image;
   /// no_claim=a real provider (a fake grant refuses)
   func testARefusedRepositoryGrantFailsTheRepositoryRow() async throws {
-    let agent = try FakeAgent(version: 4)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4)
+    defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.remoteCreateServices = services(
-      driver: FakeDriver(), agent: agent,
+      driver: FakeDriver(), daemon: daemon,
       grantRepository: { _ in throw HostDriverError.provisioning("o/r is not shared") })
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
@@ -968,14 +968,14 @@ final class CreationFlowTests: XCTestCase {
   /// Value: protects=AC 10 and O2 solo, a remote create failing in `clone` keeps its pane, the git
   /// error in the clone row's log, and Try Again, with its machine rolled back; fails_when=the
   /// reload prunes the pane, the log is lost, or the machine stays; no_claim=a real host (a fake
-  /// driver and FakeAgent stand in)
+  /// driver and FakeDaemon stand in)
   func testARemoteCreateFailingInCloneKeepsItsPaneAndLog() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitFails)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitFails)
+    defer { daemon.stop() }
     let cli = RemoteFakeCLI(projectPath: projectPath)
     let driver = FakeDriver()
     let store = remoteStore(cli)
-    store.remoteCreateServices = services(driver: driver, agent: agent)
+    store.remoteCreateServices = services(driver: driver, daemon: daemon)
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
 
@@ -1002,10 +1002,10 @@ final class CreationFlowTests: XCTestCase {
   /// Value: protects=O2 in a split, the rolled-back pane stays beside its anchor; fails_when=the
   /// reload prunes the split leaf; no_claim=a real host
   func testARemoteCreateFailingInCloneKeepsItsSplitPane() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitFails)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitFails)
+    defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(), agent: agent)
+    store.remoteCreateServices = services(driver: FakeDriver(), daemon: daemon)
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
 
@@ -1020,10 +1020,10 @@ final class CreationFlowTests: XCTestCase {
   /// pane and record for Delete; fails_when=the pane goes back to provisional or leftBehind is
   /// lost; no_claim=a real host
   func testARemoteCreateThatLeavesItsMachineKeepsItsWorkroomPane() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitFails)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitFails)
+    defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(destroyFails: true), agent: agent)
+    store.remoteCreateServices = services(driver: FakeDriver(destroyFails: true), daemon: daemon)
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
 
@@ -1042,11 +1042,11 @@ final class CreationFlowTests: XCTestCase {
   /// fails_when=a step is out of order or left running, or the pane is lost; no_claim=a driver's
   /// own machine steps (the fake reports none)
   func testARemoteCreateLandsInItsPaneAndEnds() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(), agent: agent)
-    // The run waits for Done: a create against the fake agent ends within one poll of the
+    store.remoteCreateServices = services(driver: FakeDriver(), daemon: daemon)
+    // The run waits for Done: a create against the fake daemon ends within one poll of the
     // run's start, so watching `creationRuns` for it mid-flight is a race.
     store.closesFinishedCreations = { false }
 
@@ -1087,16 +1087,16 @@ final class CreationFlowTests: XCTestCase {
   /// Value: protects=a remote create runs its setup script on the host after the checkout, under
   /// the shared "Run setup script" row with its lines, while the workroom is still undeletable
   /// (C2), and lands when it passes; fails_when=the script is skipped, runs once the workroom can be
-  /// deleted, or its lines miss the row; no_claim=a real host (RemoteScriptTests runs the agent)
+  /// deleted, or its lines miss the row; no_claim=a real host (RemoteScriptTests runs the daemon)
   func testARemoteCreateRunsItsSetupScriptBeforeItCanBeDeleted() async throws {
     let project = try projectWithASetupScript()
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
     store.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let call = ScriptCall()
-    var services = services(driver: FakeDriver(), agent: agent)
+    var services = services(driver: FakeDriver(), daemon: daemon)
     services.script = { [weak store] request in
       call.request = request
       call.undeletable = !(store?.creatingWorkrooms.isEmpty ?? true)
@@ -1129,13 +1129,13 @@ final class CreationFlowTests: XCTestCase {
   /// fails_when=the retry stops on the same check again, or the script runs; no_claim=a real host
   func testContinueWithoutScriptMakesARemoteWorkroomWithoutRunningIt() async throws {
     let project = try projectWithASetupScript()
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
     store.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let scripts = Counter()
-    var services = services(driver: FakeDriver(), agent: agent)
+    var services = services(driver: FakeDriver(), daemon: daemon)
     services.trustStatus = { _, _, _ in
       TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
     }
@@ -1164,8 +1164,8 @@ final class CreationFlowTests: XCTestCase {
   /// no_claim=a real host
   func testARemoteSetupFailureKeepsTheWorkroomAndItsMachine() async throws {
     let project = try projectWithASetupScript()
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let cli = RemoteFakeCLI(projectPath: project.path)
     let driver = FakeDriver()
     let store = makeStore(cli)
@@ -1173,7 +1173,7 @@ final class CreationFlowTests: XCTestCase {
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let why =
       "setup script failed: /home/boxd/r/scripts/workroom_setup returned a non-zero exit code"
-    var services = services(driver: driver, agent: agent)
+    var services = services(driver: driver, daemon: daemon)
     services.script = { request in
       request.onStart()
       return .failed(why)
@@ -1196,12 +1196,12 @@ final class CreationFlowTests: XCTestCase {
   /// (RemoteScriptTests)
   func testARemoteSetupThatFailsBeforeItsScriptStartsFailsItsOwnRow() async throws {
     let project = try projectWithASetupScript()
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
     store.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
-    var services = services(driver: FakeDriver(), agent: agent)
+    var services = services(driver: FakeDriver(), daemon: daemon)
     services.script = { _ in .failed("setup script failed: couldn't reach the host") }
     store.remoteCreateServices = services
 
@@ -1222,14 +1222,14 @@ final class CreationFlowTests: XCTestCase {
     FileManager.default.createFile(
       atPath: dir.appendingPathComponent(".worktreeinclude").path, contents: Data(".env\n".utf8))
     defer { try? FileManager.default.removeItem(at: dir) }
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let driver = FakeDriver()
     let store = makeStore(RemoteFakeCLI(projectPath: dir.path))
     let project = Project(path: dir.path, vcs: "git", workrooms: [])
     store.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
-    store.remoteCreateServices = services(driver: driver, agent: agent)
+    store.remoteCreateServices = services(driver: driver, daemon: daemon)
     // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.
     store.closesFinishedCreations = { false }
 
@@ -1250,12 +1250,12 @@ final class CreationFlowTests: XCTestCase {
   /// fails_when=the sheet replaces the pane, the repository is checked twice, or a second create
   /// starts; no_claim=the sheet's own steps
   func testTheSetupSheetHoldsTheRunAndCreateCarriesItOn() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let plans = Counter()
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.remoteCreateServices = services(
-      driver: FakeDriver(), agent: agent, setup: FakeSetup(), plans: plans)
+      driver: FakeDriver(), daemon: daemon, setup: FakeSetup(), plans: plans)
 
     let task = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
     await waitUntil({ store.pendingRemoteSetup != nil }, "the setup sheet never came up")
@@ -1279,7 +1279,7 @@ final class CreationFlowTests: XCTestCase {
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.selectedTargetID = .root(project: projectPath)
     store.remoteCreateServices = services(
-      driver: FakeDriver(), agent: nil, setup: FakeSetup(), hosts: hosts)
+      driver: FakeDriver(), daemon: nil, setup: FakeSetup(), hosts: hosts)
 
     let task = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
     await waitUntil({ store.pendingRemoteSetup != nil }, "the setup sheet never came up")
@@ -1302,7 +1302,7 @@ final class CreationFlowTests: XCTestCase {
     AppStore.announceCreation = { heard.append($0) }
     defer { AppStore.announceCreation = post }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(), agent: nil, setup: FakeSetup())
+    store.remoteCreateServices = services(driver: FakeDriver(), daemon: nil, setup: FakeSetup())
 
     let boxd = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
     await waitUntil({ store.pendingRemoteSetup != nil }, "boxd's sheet never came up")
@@ -1350,8 +1350,8 @@ final class CreationFlowTests: XCTestCase {
   /// fails_when=a present image reads as pulled, or a pull reads as skipped; no_claim=a real runtime
   /// (a stub script stands in for docker)
   func testAnImageAlreadyHereIsSkippedWithItsReason() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     for present in [true, false] {
       let driver = ContainerHostDriver(
         hosts: [:],
@@ -1360,9 +1360,9 @@ final class CreationFlowTests: XCTestCase {
         provisioning: ContainerHostDriver.Provisioning(
           runtime: try stubRuntime(inspect: present ? 0 : 1), image: "workroom-host",
           user: RemoteWorkrooms.user, identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
-          agentSocket: RemoteWorkrooms.agentSocket, labels: ["workroom.provisioner=test"]))
+          daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"]))
       let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-      store.remoteCreateServices = services(driver: driver, agent: agent)
+      store.remoteCreateServices = services(driver: driver, daemon: daemon)
 
       await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
 
@@ -1380,8 +1380,8 @@ final class CreationFlowTests: XCTestCase {
   /// `machine`, rows that describe something else; no_claim=a real gh or runtime (a throwing
   /// closure and a stub script stand in)
   func testAContainerCreateWithoutTheMacsTokenFailsItsRepositoryStep() async throws {
-    let agent = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
-    defer { agent.stop() }
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
     let driver = ContainerHostDriver(
       hosts: [:],
       directory: FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -1389,10 +1389,10 @@ final class CreationFlowTests: XCTestCase {
       provisioning: ContainerHostDriver.Provisioning(
         runtime: try stubRuntime(inspect: 1), image: "workroom-host",
         user: RemoteWorkrooms.user, identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
-        agentSocket: RemoteWorkrooms.agentSocket, labels: ["workroom.provisioner=test"]))
+        daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"]))
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.remoteCreateServices = services(
-      driver: driver, agent: agent, gitHubToken: { throw RemoteWorkrooms.Failure.signedOut })
+      driver: driver, daemon: daemon, gitHubToken: { throw RemoteWorkrooms.Failure.signedOut })
 
     await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
 
@@ -1410,7 +1410,7 @@ final class CreationFlowTests: XCTestCase {
       let hosts = Counter()
       let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
       store.remoteCreateServices = services(
-        driver: FakeDriver(), agent: nil, setup: FakeSetup(), hosts: hosts)
+        driver: FakeDriver(), daemon: nil, setup: FakeSetup(), hosts: hosts)
 
       let a = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
       await waitUntil({ store.pendingRemoteSetup != nil }, "the setup sheet never came up")

@@ -822,7 +822,7 @@ final class RunCommandTests: XCTestCase {
     let bannerState = investigateBanner(t)
 
     let tab = store.startInvestigate(
-      bannerState: bannerState, target: t, surface: nil, agentSetting: "auto")
+      bannerState: bannerState, target: t, surface: nil, codingAgentSetting: "auto")
 
     XCTAssertEqual(captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState))
     XCTAssertEqual(store.investigateTabs[tab.id], t.id)
@@ -834,7 +834,8 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let bannerState = investigateBanner(t)
 
-    store.startInvestigate(bannerState: bannerState, target: t, surface: nil, agentSetting: "codex")
+    store.startInvestigate(
+      bannerState: bannerState, target: t, surface: nil, codingAgentSetting: "codex")
 
     XCTAssertEqual(
       captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: .codex))
@@ -849,7 +850,8 @@ final class RunCommandTests: XCTestCase {
     }
     let missing = CodingAgentBannerState.failure(failure, .cliNotFound)
 
-    store.startInvestigate(bannerState: missing, target: t, surface: nil, agentSetting: "auto")
+    store.startInvestigate(
+      bannerState: missing, target: t, surface: nil, codingAgentSetting: "auto")
 
     XCTAssertEqual(
       captured.last, CodingAgentPrompt.investigateCommandLine(for: missing, agent: .codex))

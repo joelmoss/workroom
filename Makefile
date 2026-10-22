@@ -79,29 +79,29 @@ vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	cargo fmt --manifest-path vcs/Cargo.toml --all -- --check && \
 	cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings && \
-	cargo clippy --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --all-targets -- -D warnings && \
+	cargo clippy --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state --all-targets -- -D warnings && \
 	RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps && \
-	RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --no-deps
+	RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state --no-deps
 
 # Extra `cargo test` arguments for vcs-test, given to both runs: a package, a test target or a name
-# filter, e.g. `make vcs-test VCS_TEST_FLAGS="-p wr-agent --test attach_survives_detach"`.
+# filter, e.g. `make vcs-test VCS_TEST_FLAGS="-p workroomd --test attach_survives_detach"`.
 VCS_TEST_FLAGS ?=
 
-# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), then wr-agent
-# with terminal-state (`agent-terminal-state`). WR_AGENT_HAS_TERMINAL_STATE makes the repaint and
+# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), then workroomd
+# with terminal-state (`daemon-terminal-state`). WORKROOMD_HAS_TERMINAL_STATE makes the repaint and
 # scrollback tests run instead of skipping. The second run needs Zig, which build-ghostty-vt.sh
 # gets from mise.
 #
 # The feature build gets its own target dir (one extra full build the first time, cached after):
-# in the shared one the feature flip rebuilt wr-agent in place on every run, 286s against 109s
+# in the shared one the feature flip rebuilt workroomd in place on every run, 286s against 109s
 # (measured 2026-10-18). Not concurrently, as CI's two jobs run: on one machine the doubled load
 # failed tests that wait a fixed time for a shell or checker (2 of 6 runs, 0 of 3 serially).
-vcs-test: ## Test the Rust workspace, then wr-agent with terminal-state, as CI does (VCS_TEST_FLAGS=)
+vcs-test: ## Test the Rust workspace, then workroomd with terminal-state, as CI does (VCS_TEST_FLAGS=)
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	cargo test --manifest-path vcs/Cargo.toml $(VCS_TEST_FLAGS) && \
-	CARGO_TARGET_DIR=vcs/target/terminal-state WR_AGENT_HAS_TERMINAL_STATE=1 \
-	  cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state $(VCS_TEST_FLAGS)
+	CARGO_TARGET_DIR=vcs/target/terminal-state WORKROOMD_HAS_TERMINAL_STATE=1 \
+	  cargo test --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state $(VCS_TEST_FLAGS)
 
 # --- macOS app (macapp/) ---
 
@@ -117,7 +117,7 @@ APP_UITEST_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppU
 
 # Each workroom of this repo builds its own Debug identity, so several can build, test and run the
 # dev app at once. Everything a running "Workroom Dev" owns is keyed by its bundle id — preferences,
-# its session helper's socket (and so which wr-agent it hands off to), its saved session, and what
+# its session helper's socket (and so which workroomd it hands off to), its saved session, and what
 # LaunchServices and XCUITest treat as "that app is already running" — so two workrooms building one
 # id shared all of it. A workroom (a linked git worktree) gets
 # `com.developwithstyle.workroom.dev.wr-<name>-<hash>`; the project's own checkout keeps the plain
@@ -274,19 +274,19 @@ app-identity: ## Print the bundle id this checkout's Debug build gets (one per w
 remote-host-image: ## Build the `workroom-host` image an app's remote workrooms run on (Docker, #253)
 	docker build --tag workroom-host vcs/scripts/ssh-fixture
 
-remote-host-image-test: ## Build the `workroom-host` image, without its tag, and smoke-test it: sshd serves and is hardened, no fixture pieces, a pushed agent starts (#288)
+remote-host-image-test: ## Build the `workroom-host` image, without its tag, and smoke-test it: sshd serves and is hardened, no fixture pieces, a pushed daemon starts (#288)
 	vcs/scripts/ssh-fixture/host-image-test.sh
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol, exe.dev git setup, test summary, red proof, restore mtime)
+app-test-scripts: ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, exe.dev git setup, test summary, red proof, restore mtime)
 	sh macapp/Scripts/build-helper_test.sh
-	sh macapp/Scripts/build-agent_test.sh
+	sh macapp/Scripts/build-daemon_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
 	sh macapp/Scripts/appcast-feed_test.sh
 	sh macapp/Scripts/test-invariants_test.sh
-	sh macapp/Scripts/agent-protocol_test.sh
+	sh macapp/Scripts/daemon-protocol_test.sh
 	sh macapp/Scripts/exedev-github_test.sh
 	sh macapp/Scripts/dev-identity_test.sh
 	sh macapp/Scripts/stop-dev-app_test.sh

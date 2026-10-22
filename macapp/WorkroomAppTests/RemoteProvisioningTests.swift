@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import HostDrivers
 import WorkroomDomain
 import WorkroomVCS
@@ -45,32 +45,32 @@ final class RemoteProvisioningHostKindTests: XCTestCase {
 /// through the relay (#309); a remote provider's, whatever the provider gave its host.
 final class RemoteProvisioningCredentialsTests: XCTestCase {
   /// A connection the sequence reaches and then loses, so the git it runs fails at once.
-  private static let lostConnection: @Sendable (HostID) async throws -> AgentVCSConnection = {
+  private static let lostConnection: @Sendable (HostID) async throws -> DaemonVCSConnection = {
     host in
-    let fake = try FakeAgent(version: 4)
+    let fake = try FakeDaemon(version: 4)
     defer { fake.stop() }
-    return try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
+    return try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
   }
 
   private func environment(
     gitHubToken: (@Sendable () async throws -> String)?, credentialHint: String? = nil,
     driver: any HostDriver = CountingDriver(),
-    connect: @escaping @Sendable (HostID) async throws -> AgentVCSConnection = lostConnection
+    connect: @escaping @Sendable (HostID) async throws -> DaemonVCSConnection = lostConnection
   ) -> RemoteProvisioning.Environment {
     RemoteProvisioning.Environment(
-      driver: driver, agentSocket: RemoteWorkrooms.agentSocket, gitHubToken: gitHubToken,
+      driver: driver, daemonSocket: RemoteWorkrooms.daemonSocket, gitHubToken: gitHubToken,
       credentialHint: credentialHint, connect: connect)
   }
 
-  /// Every git command a host's agent is asked to run succeeds.
+  /// Every git command a host's daemon is asked to run succeeds.
   private static let gitSucceeds =
     #"{"stdout":"","stderr":"","exit_code":0,"timed_out":false,"signaled":false}"#
 
-  private static func connecting(to fake: FakeAgent)
+  private static func connecting(to fake: FakeDaemon)
     -> @Sendable (HostID) async throws
-    -> AgentVCSConnection
+    -> DaemonVCSConnection
   {
-    { host in try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath) }
+    { host in try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath) }
   }
 
   private func provision(
@@ -114,7 +114,7 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   /// A container workroom takes the Mac's token: relayed, and git told to start from origin's
   /// default branch.
   func testAContainerWorkroomClonesWithTheMacsTokenAndEndsRelayed() async throws {
-    let fake = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    let fake = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
     defer { fake.stop() }
     let driver = CountingDriver()
     let checkpoints = CheckpointLog()
@@ -151,9 +151,9 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   /// Value: protects=the clone and checkout rows show `$ git …` and git's output, and no line
   /// carries the Mac's token or the extraHeader; fails_when=git's commands go unlogged, land under
   /// the wrong step, or the clone environment is logged; no_claim=the drivers' own command logs
-  /// (HostDrivers' ProvisioningLogTests); a FakeAgent stands in for the host's git
+  /// (HostDrivers' ProvisioningLogTests); a FakeDaemon stands in for the host's git
   func testTheCreateLogShowsGitCommandsAndNeverTheToken() async throws {
-    let fake = try FakeAgent(
+    let fake = try FakeDaemon(
       version: 4,
       execResult:
         #"{"stdout":"","stderr":"Cloning into 'p'...","exit_code":0,"timed_out":false,"signaled":false}"#
@@ -190,7 +190,7 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   // other test provisions a remote provider's host; seam=none
   /// A remote provider's host clones with the provider's own credentials: git is given none.
   func testARemoteProvidersWorkroomClonesWithNothingFromTheMac() async throws {
-    let fake = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    let fake = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
     defer { fake.stop() }
 
     let instance = try await RemoteProvisioning.provision(
@@ -210,7 +210,7 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   // preflight, so the clone's failure is where the user learns it; seam=none
   /// A clone that fails says git's own words, then the provider's fix, and removes the machine.
   func testAFailedCloneOnAProviderSaysHowToGiveItGitHubAccess() async throws {
-    let fake = try FakeAgent(
+    let fake = try FakeDaemon(
       version: 4,
       execResult:
         #"{"stdout":"","stderr":"fatal: could not read Username","exit_code":128,"timed_out":false,"signaled":false}"#
@@ -234,7 +234,7 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   // Value: protects=a host that exists is recorded before anything else runs on it, and a record
   // that fails undoes the create without connecting; fails_when=the first checkpoint moves outside
   // the rollback, or after connect; why_new=nothing else fails the host's own record; seam=none
-  /// The host is recorded the moment it exists: a record that fails removes it, before any agent is
+  /// The host is recorded the moment it exists: a record that fails removes it, before any daemon is
   /// reached.
   func testAHostThatCannotBeRecordedIsRemovedBeforeAnythingRunsOnIt() async throws {
     let driver = CountingDriver()
@@ -256,7 +256,7 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     XCTAssertEqual(connects.take(), [], "an unrecorded host was used")
   }
 
-  private func execs(of fake: FakeAgent) throws -> [[String: Any]] {
+  private func execs(of fake: FakeDaemon) throws -> [[String: Any]] {
     try fake.receivedExecs.map {
       try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
     }
@@ -470,7 +470,7 @@ final class RemoteIncludeTests: XCTestCase {
 }
 
 /// A workroom's setup and teardown scripts on a remote host (`RemoteProvisioning.runScript`): the
-/// "host" is this Mac's shell, and the agent is this build's own, so `run-script` really runs.
+/// "host" is this Mac's shell, and the daemon is this build's own, so `run-script` really runs.
 final class RemoteScriptTests: XCTestCase {
   private struct ShellHost: HostDriver {
     var execFails = false
@@ -509,10 +509,10 @@ final class RemoteScriptTests: XCTestCase {
     .appendingPathComponent("testdata/script-env")
 
   private var scratch: URL!
-  private var agent: String!
+  private var daemon: String!
 
   override func setUpWithError() throws {
-    agent = try XCTUnwrap(PersistentSessionPaths.binaryURL(for: .rustAgent), "no wr-agent").path
+    daemon = try XCTUnwrap(PersistentSessionPaths.binaryURL(for: .daemon), "no workroomd").path
     // Real paths: the script compares `pwd -P` with them, and /var is a symlink on macOS.
     let made = FileManager.default.temporaryDirectory
       .appendingPathComponent("remote-script-\(UUID().uuidString)")
@@ -548,7 +548,7 @@ final class RemoteScriptTests: XCTestCase {
   ) async -> RemoteProvisioning.ScriptRun {
     await RemoteProvisioning.runScript(
       script, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
-      agentBinary: agent, on: .local, driver: driver, judge: judge, onStart: { lines.start() },
+      daemonBinary: daemon, on: .local, driver: driver, judge: judge, onStart: { lines.start() },
       onLine: { lines.add($0) })
   }
 
@@ -713,11 +713,11 @@ final class RemoteScriptTests: XCTestCase {
     XCTAssertEqual(lines.starts, 0, "the script ran")
   }
 
-  /// Value: protects=a script's own 124, 126 and 255 are worded as its exit, not as the agent's
+  /// Value: protects=a script's own 124, 126 and 255 are worded as its exit, not as the daemon's
   /// timeout or a script that couldn't start, while 255 also names a dropped link; fails_when=the
-  /// app reads a status alone as the agent's report; no_claim=a real timeout (the Rust and fixture
+  /// app reads a status alone as the daemon's report; no_claim=a real timeout (the Rust and fixture
   /// tests cover that)
-  func testAScriptsOwnExitIsNotTakenForTheAgentsReport() async throws {
+  func testAScriptsOwnExitIsNotTakenForTheDaemonsReport() async throws {
     let path = "\(checkout)/scripts/workroom_setup"
     for (code, want) in [
       (124, "\(path) returned a non-zero exit code"),
@@ -740,7 +740,7 @@ final class RemoteScriptTests: XCTestCase {
       to: "checkout/scripts/workroom_setup")
     let result = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
-      agentBinary: agent, on: .local, driver: ShellHost(), judge: Self.approveAll,
+      daemonBinary: daemon, on: .local, driver: ShellHost(), judge: Self.approveAll,
       onLine: { _ in }, timeout: 1, slack: 2)
     let path = "\(checkout)/scripts/workroom_setup"
     XCTAssertEqual(

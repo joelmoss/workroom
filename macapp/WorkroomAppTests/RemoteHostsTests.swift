@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Defaults
 import HostDrivers
 import WorkroomDomain
@@ -993,7 +993,7 @@ final class RemoteHostsTests: XCTestCase {
       provisioning: ContainerHostDriver.Provisioning(
         runtime: runtime, image: "workroom-host", user: RemoteWorkrooms.user,
         identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
-        agentSocket: RemoteWorkrooms.agentSocket, labels: ["workroom.provisioner=test"],
+        daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"],
         context: context, dialect: dialect))
   }
 
@@ -1183,14 +1183,14 @@ final class RemoteHostsTests: XCTestCase {
           driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
           org: "acme", account: "usr_1"),
         .boxd(org: "acme", account: "usr_1"),
-        BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket
+        BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket
       ),
       (
         HostDescriptor(
           driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
           id: UUID(), account: "me@x.dev"),
         .exeDev(account: "me@x.dev"),
-        ExeDevHostDriver.Configuration().agentSocket
+        ExeDevHostDriver.Configuration().daemonSocket
       ),
     ]
     for row in rows {
@@ -1209,8 +1209,8 @@ final class RemoteHostsTests: XCTestCase {
       let deletion = try XCTUnwrap(try remote.environment(toDelete: [row.host]))
       XCTAssertEqual(asked.keys, [row.key], "\(row.key)")
       let environment = try XCTUnwrap(deletion.environment(for: row.host))
-      XCTAssertEqual(environment.agentSocket, row.socket, "\(row.key)")
-      XCTAssertNotEqual(environment.agentSocket, RemoteWorkrooms.agentSocket, "\(row.key)")
+      XCTAssertEqual(environment.daemonSocket, row.socket, "\(row.key)")
+      XCTAssertNotEqual(environment.daemonSocket, RemoteWorkrooms.daemonSocket, "\(row.key)")
       XCTAssertNil(
         environment.gitHubToken, "\(row.key): a remote host's git never borrows the Mac's gh")
       // Value: protects=a provider's failed clone says how to give its host GitHub access;
@@ -1365,7 +1365,7 @@ final class RemoteHostsTests: XCTestCase {
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
+      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
       connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1411,7 +1411,7 @@ final class RemoteHostsTests: XCTestCase {
       let grants = Grants()
       let driver = MachineDriver(made: UUID())
       let environment = RemoteProvisioning.Environment(
-        driver: driver, agentSocket: "/agent.sock",
+        driver: driver, daemonSocket: "/workroomd.sock",
         grantRepository: { asked in
           XCTAssertTrue(recorded.all.isEmpty, "granted after the create reserved its name")
           grants.add(asked)
@@ -1449,16 +1449,16 @@ final class RemoteHostsTests: XCTestCase {
   func testARelayedWorkroomIsRecordedAsSuch() async throws {
     let made = UUID()
     let driver = MachineDriver(made: made)
-    let fake = try FakeAgent(
+    let fake = try FakeDaemon(
       version: 4,
       execResult: #"{"stdout":"","stderr":"","exit_code":0,"timed_out":false,"signaled":false}"#)
     defer { fake.stop() }
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
+      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
       gitHubToken: { "gho_mac" },
       connect: { host in
-        try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
+        try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
       })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1496,7 +1496,7 @@ final class RemoteHostsTests: XCTestCase {
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket)
+      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket)
     let recorded = Recorded()
     let forgot = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1533,7 +1533,7 @@ final class RemoteHostsTests: XCTestCase {
     let driver = MachineDriver(made: made, destroyFails: true)
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
+      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
       connect: { _ in throw HostDriverError.provisioning("no agent") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -2306,7 +2306,7 @@ final class RemoteHostsTests: XCTestCase {
       RemoteProvisioning.Environment(
         driver: Self.driver(
           runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker),
-        agentSocket: RemoteWorkrooms.agentSocket)
+        daemonSocket: RemoteWorkrooms.daemonSocket)
     }
     let keys = [
       RemoteHosts.DriverKey(runtime: .docker),

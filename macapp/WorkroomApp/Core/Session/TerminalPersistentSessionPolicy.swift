@@ -9,8 +9,8 @@ enum TerminalPersistentSessionPolicy {
   /// created in, so it goes false whenever that backend cannot run — and a pane RESTORED from a
   /// previous launch already has an id naming a session some helper may still be holding. Running
   /// that id through the same gate threw it away before anything could ask who owned it, which is
-  /// precisely the case the attach-only shim exists for: an unhealthy agent stranded every session
-  /// the Swift daemon was still holding. An id the pane already has is a fact about the past, not a
+  /// precisely the case the attach-only shim exists for: an unhealthy daemon stranded every session
+  /// the Swift helper was still holding. An id the pane already has is a fact about the past, not a
   /// request for a new resource.
   ///
   /// Keeping the id when nothing can attach to it is harmless: `attachCommand(forSession:)` returns
@@ -20,8 +20,8 @@ enum TerminalPersistentSessionPolicy {
     isAvailable: Bool,
     isRunCommand: Bool,
     hasExistingSession: Bool,
-    // A fixture pane is a plain shell, unless the launch gave it a scratch agent of its own.
-    isFixture: Bool = AppEnvironment.current.isFixture && UITestFixture.liveAgentDirectory == nil
+    // A fixture pane is a plain shell, unless the launch gave it a scratch daemon of its own.
+    isFixture: Bool = AppEnvironment.current.isFixture && UITestFixture.liveDaemonDirectory == nil
   ) -> Bool {
     (isAvailable || hasExistingSession) && !isRunCommand && !isFixture
   }

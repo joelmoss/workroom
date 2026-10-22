@@ -1,5 +1,5 @@
-import AgentConnection
 import CryptoKit
+import DaemonConnection
 import Darwin
 import HostDrivers
 import WorkroomVCS
@@ -8,27 +8,27 @@ import XCTest
 
 @testable import Workroom
 
-/// A driver's stream with no ssh in it: `wr-agent relay` to a local agent, carried over a
+/// A driver's stream with no ssh in it: `workroomd relay` to a local daemon, carried over a
 /// socketpair exactly as ssh carries it. Runs wherever `make app-test` does, so CI covers the
 /// transport's plumbing; the ssh leg is `RemoteHostIntegrationTests`, against the container.
 final class HostStreamTests: XCTestCase {
-  private var agents: [AgentHarness] = []
+  private var daemons: [DaemonHarness] = []
 
   override func tearDown() {
-    for agent in agents { agent.stop() }
-    agents.removeAll()
+    for daemon in daemons { daemon.stop() }
+    daemons.removeAll()
     super.tearDown()
   }
 
-  private func agent() throws -> AgentHarness {
-    let agent = try AgentHarness.start()
-    agents.append(agent)
-    return agent
+  private func daemon() throws -> DaemonHarness {
+    let daemon = try DaemonHarness.start()
+    daemons.append(daemon)
+    return daemon
   }
 
   private func relay(to socket: String) throws -> HostStream {
     try HostStream.spawn(
-      try AgentHarness.binaryURL(), ["relay", "--socket", socket], environment: [:],
+      try DaemonHarness.binaryURL(), ["relay", "--socket", socket], environment: [:],
       handshakeTimeout: 5, purpose: .connection)
   }
 
@@ -43,12 +43,13 @@ final class HostStreamTests: XCTestCase {
   private static func exited(_ pid: Int32) -> Bool { kill(pid, 0) == -1 && errno == ESRCH }
 
   func testRequestsAnswerThroughARelayedStream() async throws {
-    let socket = try agent().socketPath
+    let socket = try daemon().socketPath
     let host = HostID.remote(UUID())
-    let connection = try await AgentVCSConnection.connect(host: host, stream: try relay(to: socket))
+    let connection = try await DaemonVCSConnection.connect(
+      host: host, stream: try relay(to: socket))
     // `connect` already negotiated; this proves the stream keeps carrying traffic after it.
-    let reply = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
-    XCTAssertEqual(try AgentVCSReply<AgentVCSCapabilities>.decode(reply).version, 1)
+    let reply = try await connection.request(DaemonVCSRequest(method: "capabilities"), timeout: 5)
+    XCTAssertEqual(try DaemonVCSReply<DaemonVCSCapabilities>.decode(reply).version, 1)
     await connection.close()
   }
 
@@ -56,12 +57,12 @@ final class HostStreamTests: XCTestCase {
   /// in flight to notice it. Without the parent closing its copy of the child's end, the pair never
   /// reads EOF and this waits forever.
   func testACarrierThatDiesIsALostConnection() async throws {
-    let socket = try agent().socketPath
+    let socket = try daemon().socketPath
     let host = HostID.remote(UUID())
     let stream = try relay(to: socket)
     let manager = HostConnectionManager()
     _ = try await manager.connect(host: host) {
-      try await AgentVCSConnection.connect(host: host, stream: stream)
+      try await DaemonVCSConnection.connect(host: host, stream: stream)
     }
     let connected = await manager.snapshot(for: host).status
     XCTAssertEqual(connected, .connected)
@@ -72,26 +73,26 @@ final class HostStreamTests: XCTestCase {
 
   /// A closed connection must not leave its ssh behind.
   func testClosingTheConnectionEndsTheCarrier() async throws {
-    let socket = try agent().socketPath
+    let socket = try daemon().socketPath
     let stream = try relay(to: socket)
-    let connection = try await AgentVCSConnection.connect(host: .remote(UUID()), stream: stream)
+    let connection = try await DaemonVCSConnection.connect(host: .remote(UUID()), stream: stream)
     let pid = stream.processIdentifier
     await connection.close()
     let ended = await eventually { Self.exited(pid) }
     XCTAssertTrue(ended, "the carrier outlived its connection")
   }
 
-  /// No agent is the relay's own diagnosis, surfaced as it said it: nothing on a remote host can
-  /// be respawned, so `connectionLost` (which `LocalAgentVCS` answers by spawning an agent) would
+  /// No daemon is the relay's own diagnosis, surfaced as it said it: nothing on a remote host can
+  /// be respawned, so `connectionLost` (which `LocalDaemonVCS` answers by spawning a daemon) would
   /// be the wrong error and would lose the reason.
-  func testARelayWithNoAgentFailsWithItsOwnReason() async throws {
+  func testARelayWithNoDaemonFailsWithItsOwnReason() async throws {
     let missing = "/tmp/wr-none-\(UUID().uuidString.prefix(8)).sock"
     let stream = try relay(to: missing)
     do {
-      _ = try await AgentVCSConnection.connect(host: .remote(UUID()), stream: stream)
+      _ = try await DaemonVCSConnection.connect(host: .remote(UUID()), stream: stream)
       XCTFail("connected to nothing")
     } catch HostConnectionError.serviceUnavailable(let detail) {
-      XCTAssertTrue(detail.contains("no agent listening"), detail)
+      XCTAssertTrue(detail.contains("no daemon listening"), detail)
     }
     let ended = await eventually { Self.exited(stream.processIdentifier) }
     XCTAssertTrue(ended)
@@ -103,7 +104,7 @@ final class HostStreamTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: directory) }
     let host = SSHTransport.Host(
       address: "127.0.0.1", port: 2222, user: "workroom", identityFile: "/keys/id",
-      hostKey: "ssh-ed25519 AAAAC3Nza", agentSocket: "/run/workroom/agent.sock")
+      hostKey: "ssh-ed25519 AAAAC3Nza", daemonSocket: "/run/workroom/workroomd.sock")
     let config = try String(
       contentsOf: SSHTransport.writeConfiguration(for: host, in: directory),
       encoding: .utf8)
@@ -125,7 +126,7 @@ final class HostStreamTests: XCTestCase {
   func testAConfigurationValueCannotInjectADirective() {
     let host = SSHTransport.Host(
       address: "127.0.0.1\n  ProxyCommand touch /tmp/owned", port: 22, user: "workroom",
-      identityFile: "/keys/id", hostKey: "ssh-ed25519 AAAA", agentSocket: "/run/a.sock")
+      identityFile: "/keys/id", hostKey: "ssh-ed25519 AAAA", daemonSocket: "/run/a.sock")
     XCTAssertThrowsError(
       try SSHTransport.writeConfiguration(
         for: host, in: FileManager.default.temporaryDirectory))
@@ -137,20 +138,20 @@ final class HostStreamTests: XCTestCase {
   func testARemotePanesCommandCarriesTheSessionAndNothingOfTheMacs() throws {
     let session = UUID()
     let fresh = SSHTransport.remoteAttachCommand(
-      binary: "/run/workroom/wr-agent", session: session, socket: "/run/workroom/agent.sock",
+      binary: "/run/workroom/workroomd", session: session, socket: "/run/workroom/workroomd.sock",
       resources: "/run/workroom/ghostty", workingDirectory: "/home/w/it's here", restored: false)
     XCTAssertEqual(
       fresh,
-      "test -x '/run/workroom/wr-agent' || { echo "
-        + "'workroom: no agent is installed at /run/workroom/wr-agent yet' >&2; exit 255; }; "
+      "test -x '/run/workroom/workroomd' || { echo "
+        + "'workroom: no daemon is installed at /run/workroom/workroomd yet' >&2; exit 255; }; "
         + "if test -r '/run/workroom/ghostty/terminfo/x/xterm-ghostty'; then set -- "
         + "'TERM=xterm-ghostty' 'TERMINFO=/run/workroom/ghostty/terminfo' "
         + "'WORKROOM_SESSION_RESOURCES=/run/workroom/ghostty' "
         + "'GHOSTTY_SHELL_FEATURES=cursor,sudo,title'; else unset WORKROOM_SESSION_RESOURCES "
         + "GHOSTTY_SHELL_FEATURES; set -- 'TERM=xterm-256color'; fi; "
         + "'env' \"$@\" 'WORKROOM_SESSION_ID=\(session.uuidString)' "
-        + "'WORKROOM_SESSION_SOCKET=/run/workroom/agent.sock' "
-        + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/wr-agent' 'attach' "
+        + "'WORKROOM_SESSION_SOCKET=/run/workroom/workroomd.sock' "
+        + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/workroomd' 'attach' "
         + "'--no-spawn'")
     let restored = SSHTransport.remoteAttachCommand(
       binary: "/b", session: session, socket: "/s", resources: "/r", workingDirectory: "/w",
@@ -158,7 +159,7 @@ final class HostStreamTests: XCTestCase {
     XCTAssertTrue(restored.hasSuffix("'--no-spawn' '--no-create'"), restored)
 
     // The session's workroom and title go with it, under the variables a local pane's attach gets,
-    // so the host's agent can tag the session for any Mac to find (#255). The project, a path on
+    // so the host's daemon can tag the session for any Mac to find (#255). The project, a path on
     // this Mac, is not: an ssh command line is visible to everything on the host.
     let tagged = SSHTransport.remoteAttachCommand(
       binary: "/b", session: session, socket: "/s", resources: "/r", workingDirectory: "/w",
@@ -185,7 +186,7 @@ final class HostStreamTests: XCTestCase {
       hosts: [
         id: .init(
           address: "127.0.0.1", port: 2222, user: "workroom", identityFile: "/keys/id",
-          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+          hostKey: "ssh-ed25519 AAAA", daemonSocket: "/s")
       ], directory: directory)
     let command = try driver.attachCommand(
       to: .remote(id), session: session, workingDirectory: "/w", restored: true)
@@ -212,7 +213,7 @@ final class HostStreamTests: XCTestCase {
       hosts: [
         id: .init(
           address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
-          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+          hostKey: "ssh-ed25519 AAAA", daemonSocket: "/s")
       ], directory: directory)
     let session = UUID()
     let attach = try SessionBackendProbe.run(
@@ -363,7 +364,7 @@ final class HostStreamTests: XCTestCase {
 
   /// A remote session is routed to its driver, not to a local helper: its command is the driver's,
   /// the pane's own environment carries no session variables, and a restored pane is not asked
-  /// about locally (the host's agent answers that, in the attach).
+  /// about locally (the host's daemon answers that, in the attach).
   @MainActor
   func testARemoteSessionIsRoutedToItsDriverNotALocalHelper() async throws {
     let service = PersistentSessionService(
@@ -380,7 +381,7 @@ final class HostStreamTests: XCTestCase {
       hosts: [
         host: .init(
           address: "127.0.0.1", port: 2222, user: "workroom", identityFile: "/keys/id",
-          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+          hostKey: "ssh-ed25519 AAAA", daemonSocket: "/s")
       ], directory: directory)
     let session = UUID()
     service.registerRemoteSession(
@@ -554,24 +555,24 @@ final class HostStreamTests: XCTestCase {
 
   /// The binary is derived from the socket and run by path from any cwd, so a relative socket is
   /// refused before anything is written.
-  func testARelativeAgentSocketIsRefused() {
+  func testARelativeDaemonSocketIsRefused() {
     let host = SSHTransport.Host(
       address: "127.0.0.1", port: 22, user: "workroom", identityFile: "/keys/id",
-      hostKey: "ssh-ed25519 AAAA", agentSocket: "run/agent.sock")
+      hostKey: "ssh-ed25519 AAAA", daemonSocket: "run/workroomd.sock")
     XCTAssertThrowsError(
       try SSHTransport.writeConfiguration(
         for: host, in: FileManager.default.temporaryDirectory)
     ) {
       XCTAssertEqual(
         $0 as? HostDriverError,
-        .invalidConfiguration("agent socket must be an absolute path"))
+        .invalidConfiguration("daemon socket must be an absolute path"))
     }
   }
 
-  /// A remote pane's command, run by a shell: with no agent installed it exits 255, ssh's status
+  /// A remote pane's command, run by a shell: with no daemon installed it exits 255, ssh's status
   /// for a lost link, which the app reattaches on, and says why; with one it runs the attach.
-  func testARemotePanesCommandExits255UntilAnAgentIsInstalled() throws {
-    let missing = "/nonexistent-\(UUID().uuidString.prefix(8))/wr-agent"
+  func testARemotePanesCommandExits255UntilADaemonIsInstalled() throws {
+    let missing = "/nonexistent-\(UUID().uuidString.prefix(8))/workroomd"
     let absent = try SessionBackendProbe.run(
       URL(fileURLWithPath: "/bin/sh"),
       arguments: [
@@ -581,7 +582,7 @@ final class HostStreamTests: XCTestCase {
           restored: true),
       ], timeout: 5)
     XCTAssertEqual(absent.status, 255)
-    XCTAssertTrue(absent.output.contains("no agent is installed at \(missing)"), absent.output)
+    XCTAssertTrue(absent.output.contains("no daemon is installed at \(missing)"), absent.output)
     let present = try SessionBackendProbe.run(
       URL(fileURLWithPath: "/bin/sh"),
       arguments: [
@@ -601,8 +602,8 @@ final class HostStreamTests: XCTestCase {
       "wr-set-\(UUID().uuidString.prefix(8))")
     defer { try? FileManager.default.removeItem(at: root) }
     let resources = root.appendingPathComponent("ghostty")
-    // Stands in for the agent: prints what it was started with.
-    let binary = root.appendingPathComponent("wr-agent")
+    // Stands in for the daemon: prints what it was started with.
+    let binary = root.appendingPathComponent("workroomd")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     try Data(
       "#!/bin/sh\necho \"TERM=$TERM TERMINFO=${TERMINFO-} RESOURCES=${WORKROOM_SESSION_RESOURCES-} FEATURES=${GHOSTTY_SHELL_FEATURES-}\"\n"
@@ -650,15 +651,15 @@ final class HostStreamTests: XCTestCase {
     }
   }
 
-  /// The installed binary by its path, beside the socket (#231): a host has no `wr-agent` on its
+  /// The installed binary by its path, beside the socket (#231): a host has no `workroomd` on its
   /// PATH.
   func testTheRelayCommandRunsTheInstalledBinaryAndQuotesForTheRemoteShell() {
     let host = SSHTransport.Host(
       address: "h", port: 22, user: "u", identityFile: "/k", hostKey: "ssh-ed25519 AAAA",
-      agentSocket: "/run/it's here/a.sock")
-    XCTAssertEqual(host.agentBinary, "/run/it's here/wr-agent")
+      daemonSocket: "/run/it's here/a.sock")
+    XCTAssertEqual(host.daemonBinary, "/run/it's here/workroomd")
     XCTAssertEqual(
-      SSHTransport.relayCommand(binary: host.agentBinary, socket: host.agentSocket),
-      "'/run/it'\\''s here/wr-agent' relay --socket '/run/it'\\''s here/a.sock'")
+      SSHTransport.relayCommand(binary: host.daemonBinary, socket: host.daemonSocket),
+      "'/run/it'\\''s here/workroomd' relay --socket '/run/it'\\''s here/a.sock'")
   }
 }

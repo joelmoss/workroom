@@ -1,0 +1,60 @@
+# The unified daemon: one binary serving both local and remote workrooms.
+#
+#   `workroomd serve`  owns ptys and services
+#   `workroomd attach` is the relay libghostty forks as its `config.command`
+#
+# Mirrors today's shipped `workroom-session daemon|attach` shape deliberately — that shape is
+# already debugged, and one binary means the frame codec exists once rather than being duplicated
+# in Swift and Rust indefinitely. See docs/designs/remote-workrooms.md, Phase 1.
+#
+# VCS reads are a service over wr-vcs-git. The backend library stays behind that crate; the daemon
+# owns request framing and capability negotiation.
+[package]
+name = "workroomd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+# Only for the pty and process layers: forkpty, tcgetpgrp, sysctl, proc_pidinfo. No async runtime
+# and no C libraries beyond libc itself, except ring (below), so the tree stays as free of native
+# deps as the VCS crates are.
+libc = "0.2"
+serde = { workspace = true }
+serde_json = "1"
+# Filesystem change notification for the File service (FSEvents on macOS, inotify on Linux).
+notify = "8"
+# SHA-256 for the layout store's file names (`layout.rs`). ring compiles its own C and assembly,
+# which cargo-zigbuild handles for the musl targets.
+ring = "0.17"
+wr-protocol = { path = "../wr-protocol" }
+wr-vcs-git = { path = "../wr-vcs-git" }
+wr-vcs-model = { path = "../wr-vcs-model" }
+
+[dev-dependencies]
+# The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
+# dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
+libc = "0.2"
+
+[features]
+# Links libghostty-vt so the daemon keeps a shadow copy of each session's screen, which is what
+# lets a reattaching client be repainted rather than arriving at a blank terminal.
+#
+# OFF by default, deliberately: it pulls a pinned Zig toolchain, a Ghostty checkout and libclang
+# (for bindgen) into the build. Everything else in this crate builds with cargo alone, and that
+# stays true for anyone who is not working on terminal state. Turn it on with
+# `cargo build -p workroomd --features terminal-state`; scripts/build-ghostty-vt.sh supplies the
+# library and is invoked by build.rs.
+terminal-state = ["dep:bindgen"]
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }
+
+[[bin]]
+name = "workroomd"
+path = "src/main.rs"

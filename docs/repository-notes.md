@@ -14,7 +14,7 @@ Workroom manages development workrooms (isolated project copies) using Git workt
   workroom names, and stores config at `~/.config/workroom/config.json`.
 
 The app's structured **VCS engine** reads git through SwiftGitX (libgit2), with the `vcs/` Rust
-workspace (the `wr-agent` daemon and its git read crates) serving agent-routed reads and writes. It's
+workspace (the `workroomd` daemon and its git read crates) serving agent-routed reads and writes. It's
 app-only and separate from this Go CLI; see `macapp/AGENTS.md` → "VCS core".
 
 When working on the app, start with `macapp/AGENTS.md`; the rest of this file covers the Go CLI.

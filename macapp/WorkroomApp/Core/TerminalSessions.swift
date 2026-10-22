@@ -1,5 +1,5 @@
-import AgentConnection
 import AppKit
+import DaemonConnection
 import Defaults
 import HostDrivers
 import WorkroomDomain
@@ -106,7 +106,7 @@ struct TerminalTab: Identifiable {
   var needsAttention: Bool { indicator == .blocked }
 
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
-  /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
+  /// #141) — a broader, data-driven sibling of `activeCodingAgentBackend`, latched/cleared identically.
   /// Always nil for content tabs.
   var recognizedTool: RecognizedTool? {
     if case .terminal(let s) = content { return s.activeTool }
@@ -364,15 +364,15 @@ struct TerminalState {
   /// The agent identified from the PTY foreground process (or conservatively from shell title as a
   /// fallback for multiplexed sessions). Providers repaint OSC titles while they run, so this is
   /// deliberately latched until `command_finished` instead of being derived from `liveTitle`.
-  var activeAgentBackend: CodingAgentBackend?
-  /// The running Claude's profile as wr-agent reported it, read once when the agent starts in a
-  /// daemon-backed pane and cleared with `activeAgentBackend` (#480). Nil until read, and never
+  var activeCodingAgentBackend: CodingAgentBackend?
+  /// The running Claude's profile as workroomd reported it, read once when the agent starts in a
+  /// daemon-backed pane and cleared with `activeCodingAgentBackend` (#480). Nil until read, and never
   /// read for a remote or fallback pane.
   var claudeProfile: PaneClaudeProfile?
   /// Reject recovery metadata if the command ended while the helper query was in flight.
   var commandFinishGeneration = 0
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
-  /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
+  /// #141) — a broader, data-driven sibling of `activeCodingAgentBackend`, latched/cleared identically.
   var activeTool: RecognizedTool?
   /// The surface's latest reported cwd (`GHOSTTY_ACTION_PWD` via shell integration), mirrored here as
   /// observable state so the detail-panel status bar shows the live directory (issue #49). Nil until
@@ -639,7 +639,7 @@ final class TerminalSessions: ObservableObject {
 
   /// The inline terminal agent (issue #49). Owned here so the per-tab callbacks can feed it; injected
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
-  let agentManager: TerminalCodingAgentManager
+  let codingAgentManager: TerminalCodingAgentManager
 
   /// Where a remote pane's host-side working directory is asked for (#239). Settable for tests.
   var hostConnections: HostConnectionManager = .shared
@@ -654,12 +654,12 @@ final class TerminalSessions: ObservableObject {
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
     // so the XCUITest sees the banner; otherwise the normal opt-in, default-off real runner.
-    if UITestFixture.agentStub {
-      agentManager = TerminalCodingAgentManager(
-        runner: StubCodingAgentRunner(envelope: UITestFixture.agentStubEnvelope),
+    if UITestFixture.codingAgentStub {
+      codingAgentManager = TerminalCodingAgentManager(
+        runner: StubCodingAgentRunner(envelope: UITestFixture.codingAgentStubEnvelope),
         featureEnabled: { true }, autoDiagnoseEnabled: { true })
     } else {
-      agentManager = TerminalCodingAgentManager()
+      codingAgentManager = TerminalCodingAgentManager()
     }
     // The OS-appearance observer that used to live here now belongs to `ThemeService` — one owner
     // for the whole app rather than one per window (WORKROOM-3R).
@@ -788,10 +788,10 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Includes hidden targets, background tabs, and panes popped into their own windows.
-  var activeAgentBackends: Set<CodingAgentBackend> {
+  var activeCodingAgentBackends: Set<CodingAgentBackend> {
     Set(
       tabsByTarget.values.flatMap { $0.values }.compactMap { tab in
-        if case .terminal(let state) = tab.content { return state.activeAgentBackend }
+        if case .terminal(let state) = tab.content { return state.activeCodingAgentBackend }
         return nil
       })
   }
@@ -1672,7 +1672,7 @@ final class TerminalSessions: ObservableObject {
       focused: focusedTabByTarget[target.id], counter: counts[target.id] ?? ids.count,
       detached: Dictionary(
         uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }),
-      agent: Dictionary(uniqueKeysWithValues: ids.map { ($0, agentManager.handOff($0)) }))
+      agent: Dictionary(uniqueKeysWithValues: ids.map { ($0, codingAgentManager.handOff($0)) }))
     for id in ids {
       detachedTabIDs.remove(id)
       activityPulses[id] = nil
@@ -1714,7 +1714,7 @@ final class TerminalSessions: ObservableObject {
     }
     for id in handOff.detached.keys { detachedTabIDs.insert(id) }
     for (id, agent) in handOff.agent {
-      agentManager.adopt(id, banner: agent.banner, failure: agent.failure)
+      codingAgentManager.adopt(id, banner: agent.banner, failure: agent.failure)
     }
     if !merging {
       splitsByTarget[target.id] = handOff.splits.isEmpty ? nil : handOff.splits
@@ -1879,7 +1879,7 @@ final class TerminalSessions: ObservableObject {
     if wasFocused { setFocused(successor, for: target.id) }
     recency.forgetPanes([tabID])  // after the successor is picked, before anyone else looks
     reconcileOcclusion(for: target)
-    agentManager.tabClosed(tabID)
+    codingAgentManager.tabClosed(tabID)
     onEvent?(.tabsRemoved(target.id, [tabID]))
   }
 
@@ -1916,7 +1916,7 @@ final class TerminalSessions: ObservableObject {
     recency.forgetPanes(removedIDs)
     counts[id] = nil
     for removed in removedIDs {
-      agentManager.tabClosed(removed)
+      codingAgentManager.tabClosed(removed)
     }
     if !removedIDs.isEmpty { onEvent?(.tabsRemoved(id, removedIDs)) }
   }
@@ -1982,14 +1982,14 @@ final class TerminalSessions: ObservableObject {
     // Read once, for the agent and the tool alike: a second live PID read is a TOCTOU gap where the
     // foreground process could differ between the two reads (review finding).
     let foregroundExecutableName = s.view.foregroundExecutableName
-    let detectedAgent =
+    let detectedCodingAgent =
       CodingAgentProcessRecognition.backend(forProcessName: foregroundExecutableName)
       ?? CodingAgentTitleRecognition.backend(for: trimmed)
     let detectedTool =
       ToolLogoRegistry.tool(forExecutableName: foregroundExecutableName)
       ?? ToolLogoRegistry.tool(forTitle: trimmed)
     guard
-      s.liveTitle != trimmed || (s.activeAgentBackend == nil && detectedAgent != nil)
+      s.liveTitle != trimmed || (s.activeCodingAgentBackend == nil && detectedCodingAgent != nil)
         || (s.activeTool == nil && detectedTool != nil)
     else {
       return
@@ -2005,16 +2005,16 @@ final class TerminalSessions: ObservableObject {
     {
       recordUnrecognizedTool(rawName)
     }
-    let claudeStarted = s.activeAgentBackend == nil && detectedAgent == .claude
+    let claudeStarted = s.activeCodingAgentBackend == nil && detectedCodingAgent == .claude
     mutateTerminalState(tabID, target: target) {
       $0.liveTitle = trimmed
-      if $0.activeAgentBackend == nil { $0.activeAgentBackend = detectedAgent }
+      if $0.activeCodingAgentBackend == nil { $0.activeCodingAgentBackend = detectedCodingAgent }
       if $0.activeTool == nil { $0.activeTool = detectedTool }
     }
     if claudeStarted { readClaudeProfile(forTab: tabID, target: target) }
   }
 
-  /// Ask wr-agent which Claude profile the pane's new `claude` runs with (#480), so the pane footer
+  /// Ask workroomd which Claude profile the pane's new `claude` runs with (#480), so the pane footer
   /// can show that account's usage. Its session list is otherwise read only at launch, so this is
   /// the one moment it is asked again. Only a local daemon-backed pane can be asked: a remote one
   /// runs on a host whose login cannot be matched to a local account, and a fallback pane has no
@@ -2033,7 +2033,8 @@ final class TerminalSessions: ObservableObject {
       let descriptor = live.first { $0.identifier.uuid == session }
       self.mutateTerminalState(tabID, target: target) {
         // The command may have ended, or another started, while the list was in flight.
-        guard $0.commandFinishGeneration == generation, $0.activeAgentBackend == .claude else {
+        guard $0.commandFinishGeneration == generation, $0.activeCodingAgentBackend == .claude
+        else {
           return
         }
         $0.claudeProfile = Self.claudeProfile(from: descriptor)
@@ -2076,11 +2077,11 @@ final class TerminalSessions: ObservableObject {
   private func handleCommandFinished(
     forTab tabID: TerminalTab.ID, target: TerminalTarget.ID, exitCode: Int32? = nil
   ) {
-    notifyAgentOfCommandFinish(tabID: tabID, target: target, exitCode: exitCode)
+    notifyCodingAgentOfCommandFinish(tabID: tabID, target: target, exitCode: exitCode)
     mutateTerminalState(tabID, target: target) {
       $0.commandFinishGeneration += 1
       $0.liveTitle = nil
-      $0.activeAgentBackend = nil
+      $0.activeCodingAgentBackend = nil
       $0.claudeProfile = nil
       $0.activeTool = nil
       $0.progressActive = nil
@@ -2129,16 +2130,16 @@ final class TerminalSessions: ObservableObject {
   /// Captures synchronously — we're in the runtime callback before the next prompt renders, so
   /// `readCommandRegion()` returns the just-finished command's output (the A4 race fix, Swift-side).
   /// Gated on the feature flag so the screen read never runs when the agent is off.
-  private func notifyAgentOfCommandFinish(
+  private func notifyCodingAgentOfCommandFinish(
     tabID: TerminalTab.ID, target: TerminalTarget.ID, exitCode: Int32?
   ) {
-    guard agentManager.isEnabled,
+    guard codingAgentManager.isEnabled,
       let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content
     else { return }
     // Success and interrupts classify as `.skip` whatever was captured, so don't read the screen
     // for them: it is the whole scrollback, on the main thread, on every command (WORKROOM-3S).
     guard let exitCode, !FailureClassifier.boringExitCodes.contains(exitCode) else {
-      agentManager.commandFinished(tab: tabID, target: target, failure: nil)
+      codingAgentManager.commandFinished(tab: tabID, target: target, failure: nil)
       return
     }
     let view = s.view
@@ -2150,7 +2151,7 @@ final class TerminalSessions: ObservableObject {
       output: view.readCommandRegion() ?? "",
       isRunTab: view.isRunCommandSurface,
       isRemote: s.sessionID.map(sessionService.isRemote) ?? false)
-    agentManager.commandFinished(tab: tabID, target: target, failure: failure)
+    codingAgentManager.commandFinished(tab: tabID, target: target, failure: failure)
   }
 
   /// Apply an OSC 9;4 progress report (issue #28 follow-up). `active` is false only for the REMOVE state
@@ -2684,14 +2685,14 @@ final class TerminalSessions: ObservableObject {
           do {
             path = try await files.resolve(path: onHost)
           } catch FileServiceError.failed(let message)
-            where message == AgentFileProvider.unknownMethod
+            where message == DaemonFileProvider.unknownMethod
           {
             // An agent from before `resolve`: probe the lexical path, as every agent did before
             // #327. Any other failure (busy, unreadable, a loop) skips the candidate below, since
             // the lexical path is the wrong file whenever the host's answer would differ.
           } catch FileServiceError.failed(let message)
-            where message.hasPrefix(AgentFileProvider.resolveTimedOut)
-            || message == AgentFileProvider.resolveWalksBusy
+            where message.hasPrefix(DaemonFileProvider.resolveTimedOut)
+            || message == DaemonFileProvider.resolveWalksBusy
           {
             // The path walk hung on a mount, or earlier ones still are (#334). The other
             // candidates would resolve the same prefix or open through the same link, so nothing
@@ -2705,8 +2706,8 @@ final class TerminalSessions: ObservableObject {
         do {
           _ = try await files.read(path: path, symlinks: .followWithinRoot, maxBytes: 1)
         } catch FileServiceError.tooLarge {} catch FileServiceError.failed(let message)
-          where message.hasPrefix(AgentFileProvider.readOpenTimedOut)
-          || message == AgentFileProvider.filesystemOperationsBusy
+          where message.hasPrefix(DaemonFileProvider.readOpenTimedOut)
+          || message == DaemonFileProvider.filesystemOperationsBusy
         {
           // Another candidate could open through the same hung mount, so don't spend another
           // deadline or leave another filesystem worker behind for this click.
@@ -2794,14 +2795,14 @@ final class TerminalSessions: ObservableObject {
         // The local PTY belongs to the attach helper, so foreground-process recognition cannot
         // see the agent after a restart. Recover it from the helper's live command metadata;
         // screen repaint alone need not replay the shell's original command title.
-        if state.activeAgentBackend == nil,
+        if state.activeCodingAgentBackend == nil,
           generations[tab.id]?.sessionID == sessionID,
           generations[tab.id]?.generation == state.commandFinishGeneration,
           let command = descriptor.value(forMetadataKey: "command"),
           let backend = CodingAgentProcessRecognition.backend(forProcessName: command)
         {
           mutateTerminalState(tab.id, target: target) {
-            $0.activeAgentBackend = backend
+            $0.activeCodingAgentBackend = backend
             if $0.liveTitle == nil { $0.liveTitle = command }
             // The same list carries the Claude profile (#480), so no second request is needed.
             if backend == .claude { $0.claudeProfile = Self.claudeProfile(from: descriptor) }

@@ -15,7 +15,7 @@
   break the theme picker. Its provenance is recorded separately in `themes/SOURCE.md` +
   `themes/CHECKSUMS`, and it is deliberately NOT covered by the `CHECKSUMS` file in this directory.
 
-**`CHECKSUMS` is also the remote set's key (#239).** `AgentBootstrap` pushes exactly the files it
+**`CHECKSUMS` is also the remote set's key (#239).** `DaemonBootstrap` pushes exactly the files it
 lists, and `CHECKSUMS` itself, to a remote host so its panes get the same terminfo and integration,
 and it pushes again whenever the hash of `CHECKSUMS` differs from the host's, or the host's set no
 longer checks out against it (`probe.sh` runs `sha256sum -c CHECKSUMS` there, and compares the

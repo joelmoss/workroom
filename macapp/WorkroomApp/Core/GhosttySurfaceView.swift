@@ -464,7 +464,7 @@ final class GhosttySurfaceView: NSView {
   /// Configure libghostty to spawn a session helper for a background session.
   ///
   /// Returns whether it set `config.command` — not strictly "a session was attached". A restored
-  /// session that has since ended gets `wr-agent attach --no-create`, which tells the user so and
+  /// session that has since ended gets `workroomd attach --no-create`, which tells the user so and
   /// starts a new session in its place, or a plain shell if even that fails. The
   /// caller only uses the result to decide
   /// whether to install a run command, and a pane with a persistent session is never a run-command
@@ -477,11 +477,11 @@ final class GhosttySurfaceView: NSView {
     // No session was requested for this pane — not a failure, nothing to log.
     guard let persistentSessionID else { return false }
 
-    // Ask the retired daemon once more, before committing to an attach, whether it still holds
+    // Ask the retired Swift helper once more, before committing to an attach, whether it still holds
     // this. It CREATES a session on attach for an id it does not hold, so a cached ownership answer
     // that has outlived its session would turn a reattach into a brand new shell with nothing to
     // mark it as one. A lost one drops its cached owner, so the attach below re-resolves to the
-    // agent, whose `--no-create` attach shows the session ended and starts a new one in its place.
+    // daemon, whose `--no-create` attach shows the session ended and starts a new one in its place.
     // See `confirmBeforeAttach`.
     PersistentSessionService.shared.confirmBeforeAttach(
       sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored)
@@ -492,8 +492,8 @@ final class GhosttySurfaceView: NSView {
     }
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
     // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
-    // for the backend a NEW session would go to, so it goes false whenever the agent is unhealthy
-    // — which is precisely when a session the retired Swift daemon still holds most needs reaching.
+    // for the backend a NEW session would go to, so it goes false whenever the daemon is unhealthy
+    // — which is precisely when a session the retired Swift helper still holds most needs reaching.
     // Gating here rejected those panes before `attachCommand` could route them, defeating the
     // attach-only client in its own use case. `attachCommand(forSession:)` already answers nil when
     // the owning backend has no binary, so the global check bought nothing on this path.

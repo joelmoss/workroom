@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Defaults
 import Foundation
 import HostDrivers
@@ -163,7 +163,7 @@ enum RemoteWorkrooms {
     return sharedHostBuilds.contains(own) && sharedHostBuilds.contains(theirs)
   }
   /// Fixed by the host image's entrypoint (`vcs/scripts/ssh-fixture/entrypoint.sh`).
-  static let agentSocket = AgentInstall.defaultSocket
+  static let daemonSocket = DaemonInstall.defaultSocket
   static let user = "workroom"
 
   /// The image a new container host runs (#309): the hidden `remoteHostImage` override, else the published
@@ -492,7 +492,7 @@ enum RemoteWorkrooms {
     let host: HostID
     let key: RemoteHosts.DriverKey
     let driver: any HostTerminalDriver
-    let agentBinary: String
+    let daemonBinary: String
     /// The project root's copy, on this Mac, for a checkout without one.
     let rootScript: URL?
     /// Judges the bytes that would run (#363).
@@ -523,7 +523,7 @@ enum RemoteWorkrooms {
     return await RemoteProvisioning.runScript(
       request.script, workroom: request.workroom, at: request.path,
       hostKind: RemoteProvisioning.hostKind(request.key), rootScript: request.rootScript,
-      agentBinary: request.agentBinary, on: request.host, driver: request.driver,
+      daemonBinary: request.daemonBinary, on: request.host, driver: request.driver,
       judge: request.judge, onStart: request.onStart, onLine: request.onLine)
   }
 
@@ -585,7 +585,7 @@ enum RemoteWorkrooms {
       let run = await teardown.run(
         ScriptRequest(
           script: .teardown, workroom: name, path: teardown.path, host: box, key: key,
-          driver: driver, agentBinary: environment.agentBinary, rootScript: teardown.rootScript,
+          driver: driver, daemonBinary: environment.daemonBinary, rootScript: teardown.rootScript,
           judge: teardown.judge, onLine: teardown.onLine))
       switch run {
       case .failed(let why): throw Failure.teardownScriptFailed(why)
@@ -741,9 +741,9 @@ final class RemoteHosts: @unchecked Sendable {
   private let connectHost: (@Sendable (HostID) async throws -> Void)?
   /// Sets up a relayed host's credential relay on its connection; nil in the app.
   private let relayHost: (@Sendable (HostID) async throws -> Void)?
-  /// `connect`'s agent connection, bootstrap included; nil in the app (`AgentBootstrap.connect`).
-  private let connectAgent:
-    (@Sendable (HostID, any HostTerminalDriver) async throws -> AgentVCSConnection)?
+  /// `connect`'s agent connection, bootstrap included; nil in the app (`DaemonBootstrap.connect`).
+  private let connectDaemon:
+    (@Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
   /// What boxd says of a boxd host (`BoxdHostDriver.presence`); nil in the app.
   private let presenceSeam: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)?
@@ -768,7 +768,9 @@ final class RemoteHosts: @unchecked Sendable {
     )? =
       nil,
     relayHost: (@Sendable (HostID) async throws -> Void)? = nil,
-    connectAgent: (@Sendable (HostID, any HostTerminalDriver) async throws -> AgentVCSConnection)? =
+    connectDaemon: (
+      @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection
+    )? =
       nil,
     presence: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)? = nil,
     pendingIn: URL? = RemoteHosts.pendingIn
@@ -777,7 +779,7 @@ final class RemoteHosts: @unchecked Sendable {
     self.presenceSeam = presence
     self.connectHost = connectHost
     self.relayHost = relayHost
-    self.connectAgent = connectAgent
+    self.connectDaemon = connectDaemon
     self.isConnected = isConnected
     self.startHost = startHost
     self.now = now
@@ -1050,7 +1052,7 @@ final class RemoteHosts: @unchecked Sendable {
     // host's never do: it must fetch and push with the Mac closed, so it takes the provider's own.
     let driver = try driver(key)
     let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: driver.agentSocket,
+      driver: driver, daemonSocket: driver.daemonSocket,
       gitHubToken: key.isRemoteProvider ? nil : CredentialRelay.gitHubToken,
       credentialHint: key.place.credentialHint,
       grantRepository: (driver as? ExeDevHostDriver).map { exeDev in
@@ -1112,10 +1114,10 @@ final class RemoteHosts: @unchecked Sendable {
   /// first. One already there is kept.
   func connect(_ host: HostID, driver: any HostTerminalDriver) async throws {
     _ = try await HostConnectionManager.shared.connectIfDisconnected(host: host) {
-      [connectAgent] in
-      if let connectAgent { return try await connectAgent(host, driver) }
-      return try await AgentBootstrap.connect(
-        host: host, driver: driver, socket: driver.agentSocket)
+      [connectDaemon] in
+      if let connectDaemon { return try await connectDaemon(host, driver) }
+      return try await DaemonBootstrap.connect(
+        host: host, driver: driver, socket: driver.daemonSocket)
     }
     // A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the
     // connection, and its secret with this launch, so it is set up again on every connect. A
@@ -1139,7 +1141,7 @@ final class RemoteHosts: @unchecked Sendable {
           let held = try driver ?? heldDriver(host)
           try await CredentialRelay.shared.install(
             on: host, driver: held,
-            agentBinary: AgentInstall.binary(besideSocket: held.agentSocket))
+            daemonBinary: DaemonInstall.binary(besideSocket: held.daemonSocket))
         }
         _ = lock.withLock { relayPending.removeValue(forKey: id) }
         return
@@ -1457,7 +1459,7 @@ final class RemoteHosts: @unchecked Sendable {
       user: RemoteWorkrooms.user, identityFile: key.path,
       publicKey: try String(contentsOf: key.appendingPathExtension("pub"), encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines),
-      agentSocket: RemoteWorkrooms.agentSocket,
+      daemonSocket: RemoteWorkrooms.daemonSocket,
       // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
       labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: target.context,
       dialect: runtimeKind == .docker ? .docker : .apple, cpus: resources.cpus,

@@ -3,7 +3,7 @@ import WorkroomWire
 
 /// Become an ordinary shell, because this relay could not deliver the session it was sent for.
 ///
-/// The mirror of `wr-agent`'s `fall_back_to_shell`, and it exists for exactly the same reason: the
+/// The mirror of `workroomd`'s `fall_back_to_shell`, and it exists for exactly the same reason: the
 /// app chooses session-or-plain-shell BEFORE it forks anything — `applyPersistentSession` either
 /// hands libghostty this command or lets it open a shell — and `config.wait_after_command` is
 /// false, so a relay that exits leaves a pane with no shell in it at all. No error is readable

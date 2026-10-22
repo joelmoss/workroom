@@ -1,21 +1,21 @@
 # The ssh container fixture for the persistent remote path (issue #228): a Linux box with sshd, a
-# supervised wr-agent and nothing else Workroom-specific. The cheapest real driver, and CI for it.
+# supervised workroomd and nothing else Workroom-specific. The cheapest real driver, and CI for it.
 #
 # Two variants, chosen by FIXTURE:
-# - FIXTURE=1, which run.sh builds with the agent under test in the build context: the test
+# - FIXTURE=1, which run.sh builds with the daemon under test in the build context: the test
 #   fixture, with its own GitHub (fake-github.py) answering for github.com, a credential helper
 #   for it standing in for a provider's own (git-credential-fixture), and a repository to clone
 #   (#252).
 # - FIXTURE=0 (`make remote-host-image`, tagged `workroom-host`): the host a Nightly app's
 #   remote workrooms run on, on the Mac's own Docker (#253). It talks to the real github.com and
-#   has no agent baked in: the app installs its own on first connect (#231), and the supervisor
+#   has no daemon baked in: the app installs its own on first connect (#231), and the supervisor
 #   below waits until it has.
 #   host-image-test.sh (`make remote-host-image-test`, #288) smoke-tests this variant in CI.
 FROM debian:bookworm-slim
 ARG FIXTURE=0
 
 # git: the VCS test reads a real repository through the relay. procps: pgrep, for the tests that
-# find the supervised agent. ca-certificates: git over https to GitHub. python3 and openssl: the
+# find the supervised daemon. ca-certificates: git over https to GitHub. python3 and openssl: the
 # fixture's GitHub (#252).
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -56,7 +56,7 @@ RUN [ "$FIXTURE" = 1 ] || exit 0; \
  && git config --system credential.https://github.com.helper /usr/local/bin/git-credential-fixture \
  && echo ghs_fixture_clone_token_0123456789 > /etc/workroom-fixture/clone-token
 
-# `wr-agen[t]`: a pattern, so a context without an agent (FIXTURE=0) copies the rest.
+# `wr-agen[t]`: a pattern, so a context without a daemon (FIXTURE=0) copies the rest.
 COPY --chmod=755 wr-agen[t] entrypoint.sh identity.sh fake-github.py git-credential-fixture \
   /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

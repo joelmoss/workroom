@@ -20,7 +20,7 @@ struct TerminalStatusBar: View {
   /// cwd, run state or diagnosis, only the branch.
   let state: TerminalState?
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var agentManager: TerminalCodingAgentManager
+  @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
   /// button can know whether it's actually showing anything.
   @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
@@ -40,7 +40,7 @@ struct TerminalStatusBar: View {
   private var isRunTab: Bool { state != nil && store.runTabID(for: target.id) == tabID }
 
   private var diagnosis: CodingAgentBannerState? {
-    state == nil ? nil : agentManager.banners[tabID]
+    state == nil ? nil : codingAgentManager.banners[tabID]
   }
 
   var body: some View {
@@ -65,7 +65,7 @@ struct TerminalStatusBar: View {
       // The running agent's usage (#480). Before the detached-sessions button, so nothing trailing
       // moves when it comes and goes, and lowest priority, so it gives way before cwd or branch. Not
       // in a remote pane: its agent bills the host's login, which this Mac's readings may not be.
-      if let state, let backend = state.activeAgentBackend, !target.isRemoteWorkroom {
+      if let state, let backend = state.activeCodingAgentBackend, !target.isRemoteWorkroom {
         PaneUsageSlot(backend: backend, claudeProfile: state.claudeProfile)
           .layoutPriority(-1)
       }
@@ -266,18 +266,18 @@ struct TerminalStatusBar: View {
     .popover(isPresented: $showingDiagnosis, arrowEdge: .bottom) {
       TerminalCodingAgentBanner(
         state: bannerState,
-        onDiagnose: { agentManager.diagnose(tab: tabID, target: target.id) },
+        onDiagnose: { codingAgentManager.diagnose(tab: tabID, target: target.id) },
         onInsertFix: { fix in
           state?.view.sendText(fix)
           showingDiagnosis = false
         },
         onInvestigate: {
           _ = store.startInvestigate(bannerState: bannerState, target: target, surface: state?.view)
-          agentManager.dismiss(tab: tabID)
+          codingAgentManager.dismiss(tab: tabID)
           showingDiagnosis = false
         },
         onDismiss: {
-          agentManager.dismiss(tab: tabID)
+          codingAgentManager.dismiss(tab: tabID)
           showingDiagnosis = false
         }
       )

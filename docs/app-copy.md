@@ -9,7 +9,7 @@ Developers who use git every day. Name things exactly, in git's own words: origi
 worktree, uncommitted changes, 4 commits ahead, detached HEAD. A precise term they already know
 beats a friendly paraphrase they have to translate back.
 
-Workroom's own internals are a different matter: the user never meets wr-agent, a session backend
+Workroom's own internals are a different matter: the user never meets workroomd, a session backend
 or an error sentinel, so copy names what they see instead (the terminal, the remote machine).
 
 ## Voice

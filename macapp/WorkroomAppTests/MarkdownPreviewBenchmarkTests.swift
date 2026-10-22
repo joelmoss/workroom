@@ -444,7 +444,7 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
       IsMd -- yes --> Parse[Parse] --> Sanitize[Sanitize] --> Paint[Paint]
       IsMd -- no --> Plain[Plain text]
       subgraph Remote
-        Agent[wr-agent] --> Pty[(pty)]
+        Agent[workroomd] --> Pty[(pty)]
       end
       Paint -.-> Agent
     ```
@@ -452,7 +452,7 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
     ```mermaid
     sequenceDiagram
       participant App
-      participant Agent as wr-agent
+      participant Agent as workroomd
       participant Host as Remote host
       App->>Agent: attach(session)
       Agent->>Host: ssh

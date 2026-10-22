@@ -37,7 +37,7 @@ enum CodingAgentBackend: String, Sendable, CaseIterable {
   }
 
   /// The agent the Investigate button opens, from the "Investigate with" setting
-  /// (`terminalAgentBackend`: `auto`, `claude` or `codex`). Auto is claude, else codex; whether claude
+  /// (`terminalCodingAgentBackend`: `auto`, `claude` or `codex`). Auto is claude, else codex; whether claude
   /// is missing comes from the diagnosis itself, which runs claude and ends `.cliNotFound` without it.
   static func forInvestigate(setting: String, claudeMissing: Bool) -> CodingAgentBackend {
     switch setting {

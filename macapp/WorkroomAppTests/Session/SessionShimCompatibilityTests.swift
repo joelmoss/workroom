@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Workroom
 
-/// The attach-only `workroom-session` against the daemon it actually has to talk to: the one
+/// The attach-only `workroom-session` against the helper it actually has to talk to: the one
 /// shipped in **v2.0.0**, pinned as a binary fixture.
 ///
 /// **Why a pinned binary and not a fake.** The obvious cheap version of this test is a stub that
@@ -28,7 +28,7 @@ private enum CompatibilityFixtureError: Error {
 
 final class SessionShimCompatibilityTests: XCTestCase {
   private var directory: URL!
-  private var daemon: Process?
+  private var helper: Process?
 
   override func setUpWithError() throws {
     try super.setUpWithError()
@@ -38,30 +38,30 @@ final class SessionShimCompatibilityTests: XCTestCase {
   }
 
   override func tearDownWithError() throws {
-    if let daemon, daemon.isRunning {
-      daemon.terminate()
-      daemon.waitUntilExit()
+    if let helper, helper.isRunning {
+      helper.terminate()
+      helper.waitUntilExit()
     }
-    daemon = nil
+    helper = nil
     try? FileManager.default.removeItem(at: directory)
     try super.tearDownWithError()
   }
 
-  /// The property the shim exists for: a session created by the v2.0.0 daemon, whose creating
+  /// The property the shim exists for: a session created by the v2.0.0 helper, whose creating
   /// client has since gone away, is reattachable by THIS build — and the reattaching client is
   /// handed the output the shell produced before it existed.
   ///
   /// Asserting on the replayed marker rather than on "no error" is deliberate. A client that
   /// connects, fails the handshake and exits quietly would pass a liveness check; only bytes that
-  /// originated in the old daemon's pty prove the session was really reached.
-  func testReattachesASessionTheShippedDaemonHolds() throws {
-    let socketPath = try startShippedDaemon()
+  /// originated in the old helper's pty prove the session was really reached.
+  func testReattachesASessionTheShippedHelperHolds() throws {
+    let socketPath = try startShippedHelper()
     let sessionID = SessionIdentifier(UUID())
     let marker = "SHIM-COMPAT-\(UUID().uuidString.prefix(8))"
     let sentinel = directory.appendingPathComponent("printed").path
 
     // Created by the SHIPPED client, then detached: `/dev/null` on stdin ends it immediately while
-    // the daemon keeps the pty, which is exactly the state a user's machine is left in when they
+    // the helper keeps the pty, which is exactly the state a user's machine is left in when they
     // quit an older build of the app.
     let creator = try run(
       Self.shippedBinaryURL, arguments: ["attach"],
@@ -79,20 +79,20 @@ final class SessionShimCompatibilityTests: XCTestCase {
     }
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: sentinel),
-      "the v2.0.0 daemon never ran the session's command; nothing to replay")
+      "the v2.0.0 helper never ran the session's command; nothing to replay")
 
     let output = try attachWithCurrentBuild(sessionID: sessionID, socketPath: socketPath)
 
     XCTAssertTrue(
       output.contains(marker),
       """
-      the attach-only client did not receive the v2.0.0 daemon's REPLAY for a session it holds — \
+      the attach-only client did not receive the v2.0.0 helper's REPLAY for a session it holds — \
       the marker was already printed before this client connected. A user updating with a terminal \
       open would come back to a blank pane. Got: \(output.suffix(400))
       """)
   }
 
-  /// **Typing.** The reattach test above proves bytes flow from the daemon to the pane; this one
+  /// **Typing.** The reattach test above proves bytes flow from the helper to the pane; this one
   /// proves they flow the other way, which is the half a user notices within a second of coming
   /// back to a restored terminal.
   ///
@@ -100,7 +100,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
   /// what was typed locally without it ever reaching the session, which is exactly the failure
   /// worth catching.
   func testTypingInTheReattachedPaneReachesTheV2Session() throws {
-    let socketPath = try startShippedDaemon()
+    let socketPath = try startShippedHelper()
     let session = try startShellSession(on: socketPath)
     let sentinel = directory.appendingPathComponent("typed").path
 
@@ -109,13 +109,13 @@ final class SessionShimCompatibilityTests: XCTestCase {
     defer { attached.terminate() }
     XCTAssertTrue(
       attached.text().contains(session.marker),
-      "this client got a session the daemon made for it, not the one already running")
+      "this client got a session the helper made for it, not the one already running")
     attached.type("touch \(sentinel)\n")
 
     XCTAssertTrue(
       waitForFile(at: sentinel),
       """
-      keystrokes did not reach a session the v2.0.0 daemon holds. The pane repaints and then \
+      keystrokes did not reach a session the v2.0.0 helper holds. The pane repaints and then \
       ignores the user. got: \(attached.text().suffix(400))
       """)
   }
@@ -127,7 +127,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
   /// two are one `if` apart in the same function — so the ordinary end of a terminal gets a test
   /// beside the failures.
   func testTheV2SessionsExitStatusBecomesTheClientsExitStatus() throws {
-    let socketPath = try startShippedDaemon()
+    let socketPath = try startShippedHelper()
     let session = try startShellSession(on: socketPath)
 
     let attached = try attachInteractively(
@@ -135,7 +135,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     defer { attached.terminate() }
     XCTAssertTrue(
       attached.text().contains(session.marker),
-      "this client got a session the daemon made for it, not the one already running")
+      "this client got a session the helper made for it, not the one already running")
     attached.type("exit 7\n")
 
     XCTAssertTrue(
@@ -172,7 +172,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     // this one — a shell that ignores SIGPIPE does not end a pipeline when its reader closes.
     let previousSIGPIPE = signal(SIGPIPE, SIG_IGN)
     defer { signal(SIGPIPE, previousSIGPIPE) }
-    let socketPath = try startShippedDaemon()
+    let socketPath = try startShippedHelper()
     let session = try startShellSession(on: socketPath)
     let sentinel = directory.appendingPathComponent("after-death").path
 
@@ -183,8 +183,8 @@ final class SessionShimCompatibilityTests: XCTestCase {
       attached.text().contains(session.marker), "never reattached, so this proves nothing")
 
     // The relay is live and pumping. Take the helper out from under it.
-    daemon?.terminate()
-    daemon?.waitUntilExit()
+    helper?.terminate()
+    helper?.waitUntilExit()
 
     let deadline = Date().addingTimeInterval(10)
     while Date() < deadline, !attached.text().contains("lost the connection") {
@@ -211,31 +211,31 @@ final class SessionShimCompatibilityTests: XCTestCase {
   }
 
   /// **The control plane, not just the pty.** `list`, `info` and `kill` are how the app enumerates
-  /// and tears down sessions, and this build sends all three at a daemon it can never recompile.
+  /// and tears down sessions, and this build sends all three at a helper it can never recompile.
   ///
   /// `ownership(identifier:)` is in here on purpose: it is the newest method on the protocol —
   /// added because `list()` folds "no reply" into `[]` — and it is the one the reattach guard
-  /// consults before letting a pane attach. Its answer against the REAL v2.0.0 daemon is the thing
+  /// consults before letting a pane attach. Its answer against the REAL v2.0.0 helper is the thing
   /// that decides whether a user's terminal is reconnected or replaced.
-  func testTheControlPlaneStillWorksAgainstTheShippedDaemon() throws {
-    let socketPath = try startShippedDaemon()
+  func testTheControlPlaneStillWorksAgainstTheShippedHelper() throws {
+    let socketPath = try startShippedHelper()
     let session = try startShellSession(on: socketPath)
     let client = PersistentSessionControlClient(socketPath: socketPath)
 
     let listed = client.list()
     XCTAssertTrue(
       listed.contains { $0.identifier == session.identifier },
-      "this build's `list` could not see a session the v2.0.0 daemon is holding: \(listed)")
+      "this build's `list` could not see a session the v2.0.0 helper is holding: \(listed)")
     XCTAssertEqual(client.info(identifier: session.identifier)?.identifier, session.identifier)
     guard case .owned = client.ownership(identifier: session.identifier) else {
-      return XCTFail("the daemon holds this session but did not claim it, so a reattach is refused")
+      return XCTFail("the helper holds this session but did not claim it, so a reattach is refused")
     }
 
     XCTAssertTrue(
       client.kill(identifier: session.identifier),
-      "the v2.0.0 daemon refused this build's `kill`; closing a pane would leave the pty behind")
+      "the v2.0.0 helper refused this build's `kill`; closing a pane would leave the pty behind")
 
-    // Killed, then gone: the daemon reaps asynchronously, so poll rather than assert on the next
+    // Killed, then gone: the helper reaps asynchronously, so poll rather than assert on the next
     // line and call a race a regression.
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
@@ -249,7 +249,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
       return XCTFail(
         """
         a killed session still reads as owned, so a pane would attach to it — and the v2.0.0 \
-        daemon creates on attach, which silently replaces the user's shell with a fresh one.
+        helper creates on attach, which silently replaces the user's shell with a fresh one.
         """)
     }
   }
@@ -258,10 +258,10 @@ final class SessionShimCompatibilityTests: XCTestCase {
   /// anywhere that exercised it, and the one most likely to be broken by an edit to
   /// `WorkroomWire` made for the app's own control client.
   ///
-  /// Driven straight against the SHIPPED daemon rather than a rebuilt one, so it measures the
+  /// Driven straight against the SHIPPED helper rather than a rebuilt one, so it measures the
   /// agreement that actually matters: what this tree encodes against what v2.0.0 decodes.
-  func testTheShippedDaemonRefusesAFutureProtocolVersion() throws {
-    let socketPath = try startShippedDaemon()
+  func testTheShippedHelperRefusesAFutureProtocolVersion() throws {
+    let socketPath = try startShippedHelper()
     var client = try SessionTestClient.connect(socketPath: socketPath)
     defer { client.closeConnection() }
 
@@ -284,8 +284,8 @@ final class SessionShimCompatibilityTests: XCTestCase {
 
   /// The current version is accepted by the same peer. Without this, the test above passes just as
   /// well when EVERY version is refused — which is what a real encoding break looks like.
-  func testTheShippedDaemonAcceptsTheCurrentProtocolVersion() throws {
-    let socketPath = try startShippedDaemon()
+  func testTheShippedHelperAcceptsTheCurrentProtocolVersion() throws {
+    let socketPath = try startShippedHelper()
     var client = try SessionTestClient.connect(socketPath: socketPath)
     defer { client.closeConnection() }
 
@@ -309,9 +309,9 @@ final class SessionShimCompatibilityTests: XCTestCase {
 
   /// The retirement itself, asserted against the shipped binary rather than against the source.
   ///
-  /// `workroom-session daemon` started a pty daemon in v2.0.0. This build must not: every new
-  /// session belongs to `wr-agent`, and a daemon started now would hold none of the sessions this
-  /// client exists to reach — it would bind the socket the OLD daemon's sessions live on and
+  /// `workroom-session helper` started a pty helper in v2.0.0. This build must not: every new
+  /// session belongs to `workroomd`, and a helper started now would hold none of the sessions this
+  /// client exists to reach — it would bind the socket the OLD helper's sessions live on and
   /// answer for none of them.
   func testTheDaemonSubcommandIsGone() throws {
     let socketPath = directory.appendingPathComponent("never.sock").path
@@ -324,7 +324,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     XCTAssertFalse(
       FileManager.default.fileExists(atPath: socketPath),
       """
-      this build bound a daemon socket. The pty daemon is retired: a new one would take the socket \
+      this build bound a helper socket. The pty helper is retired: a new one would take the socket \
       the sessions this client reattaches to are reached through, and hold none of them.
       """)
 
@@ -337,9 +337,9 @@ final class SessionShimCompatibilityTests: XCTestCase {
 
   /// Nothing listening at all: the session the client was asked to reach is gone.
   ///
-  /// **The elapsed bound is the real assertion.** `connect` used to spawn a daemon and wait for it
+  /// **The elapsed bound is the real assertion.** `connect` used to spawn a helper and wait for it
   /// to bind — 3 cycles of 50 × 20ms, three times over, ~9.2s of a pane showing nothing before the
-  /// user was told anything. With no daemon to start there is nothing to wait for, and the budget
+  /// user was told anything. With no helper to start there is nothing to wait for, and the budget
   /// is ~0.8s. A regression that restores the wait cannot be seen any other way: the exit code and
   /// the message are the same either way.
   func testAttachWithNothingListeningFailsFastAndStartsNothing() throws {
@@ -508,7 +508,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
   /// let all three tests in this file stop running indefinitely while the suite stayed green. That
   /// is precisely the wire-compatibility claim the whole change rests on, and `make app-test` does
   /// not print a summary under Xcode 26, so nobody would notice.
-  private func startShippedDaemon() throws -> String {
+  private func startShippedHelper() throws -> String {
     guard FileManager.default.fileExists(atPath: Self.shippedBinaryURL.path) else {
       throw XCTSkip("v2.0.0 fixture not present at \(Self.shippedBinaryURL.path)")
     }
@@ -517,34 +517,34 @@ final class SessionShimCompatibilityTests: XCTestCase {
       throw CompatibilityFixtureError.unusable
     }
     let socketPath = directory.appendingPathComponent("s.sock").path
-    daemon = try run(
+    helper = try run(
       Self.shippedBinaryURL,
       arguments: ["daemon", "--socket", socketPath, "--idle-timeout", "30000"],
       environment: [:])
 
-    // Ready means accepting, not bound: the daemon's `bind()` creates the socket file before
+    // Ready means accepting, not bound: the helper's `bind()` creates the socket file before
     // its `listen()`, and a connect in that window is refused (errno 61), which flaked these
-    // tests under a parallel `make app-test`. The probe sends no frame; the daemon sees EOF.
+    // tests under a parallel `make app-test`. The probe sends no frame; the helper sees EOF.
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
       if let probe = try? SessionTestClient.connect(socketPath: socketPath) {
         probe.closeConnection()
         return socketPath
       }
-      if let daemon, !daemon.isRunning { break }
+      if let helper, !helper.isRunning { break }
       Thread.sleep(forTimeInterval: 0.02)
     }
-    let status = daemon.map { $0.isRunning ? "still running" : "exited \($0.terminationStatus)" }
+    let status = helper.map { $0.isRunning ? "still running" : "exited \($0.terminationStatus)" }
     XCTFail(
       """
-      the pinned v2.0.0 daemon never accepted on \(socketPath) (\(status ?? "not started")). \
+      the pinned v2.0.0 helper never accepted on \(socketPath) (\(status ?? "not started")). \
       The fixture is present, so this is the compatibility subject failing, not a missing test dependency — \
       do not downgrade it to a skip.
       """)
     throw CompatibilityFixtureError.unusable
   }
 
-  /// Runs THIS build's attach client against the shipped daemon, holding stdin open with a pipe so
+  /// Runs THIS build's attach client against the shipped helper, holding stdin open with a pipe so
   /// the client stays attached long enough to be served, and returns everything it wrote.
   private func attachWithCurrentBuild(
     sessionID: SessionIdentifier, socketPath: String
@@ -575,11 +575,11 @@ final class SessionShimCompatibilityTests: XCTestCase {
 
     // Wait for the reattach to actually produce something, then for it to stop producing, rather
     // than for a fixed three seconds. A flat sleep is wrong in both directions: it is three seconds
-    // of test time on every run, and on a loaded machine it is still not enough — the daemon has to
+    // of test time on every run, and on a loaded machine it is still not enough — the helper has to
     // accept, look the session up and replay its buffer before a single byte is due.
     let settled = Self.waitForOutputToSettle(collected, lock: lock)
     XCTAssertTrue(
-      settled, "the shipped daemon sent nothing within \(Self.attachCeiling)s of the attach")
+      settled, "the shipped helper sent nothing within \(Self.attachCeiling)s of the attach")
     input.fileHandleForWriting.closeFile()
     process.waitUntilExit()
     output.fileHandleForReading.readabilityHandler = nil
@@ -619,7 +619,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     return lastLength > 0
   }
 
-  /// A session on the shipped daemon running a plain `/bin/sh` on its pty, created by the SHIPPED
+  /// A session on the shipped helper running a plain `/bin/sh` on its pty, created by the SHIPPED
   /// client and then detached — the state a user's machine is in after they quit an older build.
   private func startShellSession(on socketPath: String) throws -> ShellSession {
     let sessionID = SessionIdentifier(UUID())
@@ -629,18 +629,18 @@ final class SessionShimCompatibilityTests: XCTestCase {
       Self.shippedBinaryURL, arguments: ["attach"],
       environment: attachEnvironment(
         sessionID: sessionID, socketPath: socketPath,
-        // Print, touch, then `exec sh`. The marker goes into the daemon's replay buffer, the
+        // Print, touch, then `exec sh`. The marker goes into the helper's replay buffer, the
         // sentinel proves the pty is up and running commands before a second client attaches, and
         // the `exec` leaves that same pty owned by an ordinary shell to type at.
         command: "sh -c 'echo \(marker); touch \(ready); exec /bin/sh'"))
     creator.waitUntilExit()
     XCTAssertTrue(
       waitForFile(at: ready),
-      "the v2.0.0 daemon never started a shell for this session; there is nothing to type at")
+      "the v2.0.0 helper never started a shell for this session; there is nothing to type at")
     return ShellSession(identifier: sessionID, marker: marker)
   }
 
-  /// A session the shipped daemon holds, plus the marker that proves a later attach REPLAYED it.
+  /// A session the shipped helper holds, plus the marker that proves a later attach REPLAYED it.
   ///
   /// The marker is not decoration. `SessionDaemon.handleAttach` creates a session for an id it does
   /// not hold, so an attach that silently missed would still hand the test a working shell — one it
@@ -679,11 +679,11 @@ final class SessionShimCompatibilityTests: XCTestCase {
     try process.run()
 
     // Type only once the session has repainted. Bytes written before the client finishes its
-    // handshake are relayed into a socket the daemon is not reading yet, and the test would be
+    // handshake are relayed into a socket the helper is not reading yet, and the test would be
     // measuring the race rather than the feature.
     XCTAssertTrue(
       Self.waitForOutputToSettle(client.collected, lock: client.lock),
-      "the shipped daemon sent nothing within \(Self.attachCeiling)s of the attach")
+      "the shipped helper sent nothing within \(Self.attachCeiling)s of the attach")
     return client
   }
 

@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import HostDrivers
 import WorkroomDomain
 import WorkroomVCS
@@ -355,7 +355,7 @@ final class RemoteTeardownTests: XCTestCase {
   private final class Driver: HostTerminalDriver, @unchecked Sendable {
     let log: Log
     init(_ log: Log) { self.log = log }
-    var agentSocket: String { "/home/boxd/.workroom/agent.sock" }
+    var daemonSocket: String { "/home/boxd/.workroom/workroomd.sock" }
     func create() async throws -> HostID { .remote(UUID()) }
     func destroy(_ host: HostID) async throws { log.add("destroy") }
     func openStream(to host: HostID) async throws -> HostStream {
@@ -405,7 +405,8 @@ final class RemoteTeardownTests: XCTestCase {
     let driver = Driver(log)
     try await RemoteWorkrooms.delete(
       "w", host: host,
-      environment: RemoteProvisioning.Environment(driver: driver, agentSocket: driver.agentSocket),
+      environment: RemoteProvisioning.Environment(
+        driver: driver, daemonSocket: driver.daemonSocket),
       recorder: recorder(log), teardown: teardown)
   }
 
@@ -530,7 +531,7 @@ final class RemoteTeardownTests: XCTestCase {
   /// connect under way, replaces an older agent and puts a relayed host's credentials up) before
   /// anything runs, and a failed connect is a failed script; fails_when=the script runs without
   /// connecting, or a failed connect passes; no_claim=the join, bootstrap and relay themselves
-  /// (RemoteHostsTests and AgentBootstrap's tests)
+  /// (RemoteHostsTests and DaemonBootstrap's tests)
   func testTheScriptConnectsFirstAndAFailedConnectIsAFailure() async {
     let log = Log()
     let driver = Driver(log)
@@ -543,7 +544,7 @@ final class RemoteTeardownTests: XCTestCase {
     let result = await RemoteWorkrooms.runScript(
       RemoteWorkrooms.ScriptRequest(
         script: .teardown, workroom: "w", path: "/home/boxd/r", host: .remote(UUID()),
-        key: boxd, driver: driver, agentBinary: "/wr-agent", rootScript: nil,
+        key: boxd, driver: driver, daemonBinary: "/workroomd", rootScript: nil,
         judge: RemoteScriptTests.approveAll, onLine: { _ in }),
       hosts: hosts)
     guard case .failed(let why) = result else { return XCTFail("a failed connect passed") }
@@ -566,7 +567,7 @@ final class RemoteTeardownTests: XCTestCase {
     _ = await RemoteWorkrooms.runScript(
       RemoteWorkrooms.ScriptRequest(
         script: .teardown, workroom: "w", path: "/r", host: .remote(UUID()),
-        key: docker, driver: Driver(log), agentBinary: "/wr-agent",
+        key: docker, driver: Driver(log), daemonBinary: "/workroomd",
         rootScript: nil, judge: RemoteScriptTests.approveAll, onLine: { _ in }),
       hosts: hosts)
     XCTAssertEqual(log.all, ["start", "connect"])

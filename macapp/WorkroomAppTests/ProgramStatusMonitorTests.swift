@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import WorkroomVCS
 import XCTest
 

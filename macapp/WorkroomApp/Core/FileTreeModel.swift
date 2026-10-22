@@ -308,7 +308,7 @@ final class FileTreeModel: ObservableObject {
   }
 
   /// git listing is allowed without registration. WHERE the listing runs — this process, or
-  /// wr-agent — is `router.files`'s decision.
+  /// workroomd — is `router.files`'s decision.
   static func list(
     location: RepositoryLocation, runner: StatusCommandRunning,
     router: RepositoryRouter = .shared

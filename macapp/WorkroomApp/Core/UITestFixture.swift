@@ -1,5 +1,5 @@
-import AgentConnection
 import AppKit
+import DaemonConnection
 import Defaults
 import DesignSystem
 import Foundation
@@ -32,7 +32,7 @@ enum UITestFixture {
   /// fixture mode permanently: fake projects instead of the user's real `~/.config/workroom`,
   /// `applyFixtureDefaults` overwriting their inspector and diff-mode preferences on every launch,
   /// and `.terminateNow` on quit skipping the graceful run-command teardown — with no in-app way
-  /// back out. Several flags (`agentStub`, `forceWhatsNew`, `updateAvailableVersion`) are read
+  /// back out. Several flags (`codingAgentStub`, `forceWhatsNew`, `updateAvailableVersion`) are read
   /// WITHOUT consulting `fixtureFlag`, so gating `fixtureFlag` alone would not have been enough; the gate
   /// belongs on the reads.
   ///
@@ -61,12 +61,12 @@ enum UITestFixture {
     enabled ? UserDefaults.standard.string(forKey: key) : nil
   }
 
-  /// `-WorkroomUITestLiveAgent <dir>`: fixture panes attach through a REAL `wr-agent` whose socket
+  /// `-WorkroomUITestLiveDaemon <dir>`: fixture panes attach through a REAL `workroomd` whose socket
   /// is in `<dir>`, and program status (#358) follows it, so a UI test drives the whole path —
   /// agent, service, monitor, indicators, alerts — with no agent, session or config of the
   /// developer's touched. Nil, as normal, keeps fixture panes plain shells and the monitor off.
-  static var liveAgentDirectory: String? {
-    guard let directory = text("WorkroomUITestLiveAgent"), !directory.isEmpty else { return nil }
+  static var liveDaemonDirectory: String? {
+    guard let directory = text("WorkroomUITestLiveDaemon"), !directory.isEmpty else { return nil }
     return directory
   }
 
@@ -462,19 +462,19 @@ enum UITestFixture {
   /// fixture path so a test can address its row by id without matching a neighbour.
   static let conflictedFilePath = "app/models/merge_me.rb"
 
-  /// When set (`-WorkroomUITestAgentStub 1`), the inline terminal agent (issue #49) is enabled with
+  /// When set (`-WorkroomUITestCodingAgentStub 1`), the inline terminal agent (issue #49) is enabled with
   /// a STUB backend that returns a canned diagnosis — so the XCUITest exercises the REAL capture +
   /// banner end-to-end (failure → `readCommandRegion`/`readFullSurface` → classify → manager →
   /// parse → banner render) with no network and no cost. Pairs with auto-diagnose so no click is
   /// needed to surface the banner.
-  static var agentStub: Bool {
-    flag("WorkroomUITestAgentStub")
+  static var codingAgentStub: Bool {
+    flag("WorkroomUITestCodingAgentStub")
   }
 
   /// A provider title to seed into the fixture's first terminal, for quota-footer XCUITests. This is
   /// a model-only fixture: no real agent is launched and no developer usage files are read.
-  static var usageAgentTitle: String? {
-    switch text("WorkroomUITestUsageAgent") {
+  static var usageCodingAgentTitle: String? {
+    switch text("WorkroomUITestUsageCodingAgent") {
     case "claude": return "Claude Code"
     case "codex": return "Codex"
     default: return nil
@@ -483,7 +483,8 @@ enum UITestFixture {
 
   static var usageSnapshot: CodingAgentQuotaSnapshot? {
     guard !flag("WorkroomUITestUsageUnavailable") else { return nil }
-    guard let title = usageAgentTitle, let backend = CodingAgentTitleRecognition.backend(for: title)
+    guard let title = usageCodingAgentTitle,
+      let backend = CodingAgentTitleRecognition.backend(for: title)
     else {
       return nil
     }
@@ -513,14 +514,14 @@ enum UITestFixture {
 
   /// The canned claude `--output-format json` envelope the stub agent returns. Its inner JSON is the
   /// compact diagnosis the XCUITest asserts on (a recognisable `UITEST` summary + a safe fix).
-  static let agentStubEnvelope: String = {
+  static let codingAgentStubEnvelope: String = {
     let inner =
       #"{\"summary\":\"UITEST diagnosis: port already in use\",\"fix\":\"kill $(lsof -ti:3000)\"}"#
     return #"{"type":"result","is_error":false,"result":"\#(inner)"}"#
   }()
 
   /// The summary text the stub produces — queried by the XCUITest as the banner's headline.
-  static let agentStubSummary = "UITEST diagnosis: port already in use"
+  static let codingAgentStubSummary = "UITEST diagnosis: port already in use"
 
   /// When set (`-WorkroomUITestUpdateAvailable 1`), `Updater` seeds a fake available-update version so
   /// the toolbar "Update" pill renders for visual QA without a live Sparkle update.
@@ -1378,7 +1379,7 @@ struct FixtureVCSProvider: LocalVCSProviding {
   }
 }
 
-/// The inline agent backend used under `-WorkroomUITestAgentStub`: returns a canned envelope with no
+/// The inline agent backend used under `-WorkroomUITestCodingAgentStub`: returns a canned envelope with no
 /// network, so the XCUITest exercises the real capture + banner without hitting `claude`/`codex`.
 struct StubCodingAgentRunner: CodingAgentRunning {
   let envelope: String

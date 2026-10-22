@@ -7,7 +7,7 @@ import os
 /// The Mac's end of the git credential relay for a local container workroom (#309), which has no
 /// provider to give it GitHub access: it takes the user's own `gh` sign-in on this Mac.
 ///
-/// Its agent's `wr-agent credential` dials a port on its own box's loopback (`port(for:)`), which
+/// Its agent's `workroomd credential` dials a port on its own box's loopback (`port(for:)`), which
 /// `ReverseForwardRegistry` carries over the app's connection to a listener here, on this Mac's
 /// loopback. A connection sends the workroom's secret, then git's request; it is answered from
 /// `gh auth git-credential get`, for `https://github.com` only. The secret is what keeps another
@@ -348,16 +348,16 @@ final class CredentialRelay: @unchecked Sendable {
   // MARK: Hosts
 
   /// Has host `id`'s agent ask this Mac for git's credentials: its listener carried here, and
-  /// `wr-agent credential relay` run there with this launch's secret. Run on every connect: the
+  /// `workroomd credential relay` run there with this launch's secret. Run on every connect: the
   /// listener goes with the connection, and the secret with the launch.
   @MainActor
-  func install(on host: HostID, driver: any HostDriver, agentBinary: String) async throws {
+  func install(on host: HostID, driver: any HostDriver, daemonBinary: String) async throws {
     guard case .remote(let id) = host else { return }
     // Listening first, so a listener that can't be made fails here rather than in the registry.
     _ = try localPort()
     try await registry().open(workroom: id, host: host)
     let command =
-      SSHTransport.shellQuoted(agentBinary)
+      SSHTransport.shellQuoted(daemonBinary)
       + " credential relay --port \(Self.port(for: id))"
     let (status, output) = try await driver.exec(command, on: host).communicate(
       Data((try secret(for: id) + "\n").utf8), timeout: 30)
@@ -382,7 +382,8 @@ final class CredentialRelay: @unchecked Sendable {
       transport: transport, port: { Self.port(for: $0) },
       target: { [weak self] in (try? self?.localPort()) ?? 0 },
       failure: {
-        HostDriverError.provisioning("the workroom's agent couldn't relay git's credentials: \($0)")
+        HostDriverError.provisioning(
+          "the workroom's daemon couldn't relay git's credentials: \($0)")
       })
     lock.withLock { forwards = made }
     return made

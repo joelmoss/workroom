@@ -85,7 +85,7 @@ apart.
 
 ## Which terminals support it
 
-Every terminal whose shell runs under `wr-agent`, which is every workroom terminal, on this Mac and
+Every terminal whose shell runs under `workroomd`, which is every workroom terminal, on this Mac and
 on remote hosts, once the host's agent speaks protocol 8 or later. The agent, not the terminal you
 see, keeps the status, so it survives closing the window, relaunching Workroom, an app update and a
 second Mac attaching to the same session.
@@ -112,7 +112,7 @@ keeps the last result; the next long command replaces it.
 - Whichever came last shows. If a program reports after the command ended, the older command
   result is hidden; a command that ends after a program's finished or failed mark hides that mark.
   A program's waiting or working mark always stays.
-- Only terminals whose shell runs under `wr-agent` show it. Run tabs and fallback panes don't
+- Only terminals whose shell runs under `workroomd` show it. Run tabs and fallback panes don't
   (#476).
 - A command still running when Workroom hands its agent off on an update leaves no result.
 
@@ -184,8 +184,8 @@ To check the whole path without Claude Code (no account, no API turn), run
 below: it probes, waits for Enter as a prompt, then works, asks for permission (`--question` for a
 question), posts Claude's own alert 6 s later, and finishes when you press Enter again. `--auto`
 runs it unattended (`MOCK_STEP` paces it, `MOCK_HOLD` keeps the request and the finished turn up);
-the agent's tests use it that way, and so does `ProgramStatusLiveAgentUITests`, which runs it in a
-fixture pane attached through a scratch agent of its own (`-WorkroomUITestLiveAgent <dir>`) and
+the agent's tests use it that way, and so does `ProgramStatusLiveDaemonUITests`, which runs it in a
+fixture pane attached through a scratch agent of its own (`-WorkroomUITestLiveDaemon <dir>`) and
 checks the marks, the alert, the merge of Claude's own alert, ⇧⌘M and the focused-terminal case.
 
 ## What Claude Code sends
@@ -221,7 +221,7 @@ sends only OSC 9;4.
   OSC 133, another program's notification in that pane (a build's, say) is dropped too.
 
 - **Run commands and other non-daemon panes** never show program status: only a terminal whose
-  shell runs under `wr-agent` has an agent to keep it (see `TODOS.md`).
+  shell runs under `workroomd` has an agent to keep it (see `TODOS.md`).
 - **A long-running program can relay someone else's request.** A program that never probed alerts
   once it stays running in the foreground, and that cannot tell a relay (`ssh`, `mosh`, `tmux`,
   which is how Codex on another machine reaches you) from `tail -f` on a raw recording, or a `cat`
@@ -256,11 +256,11 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 
 | What | Where |
 |---|---|
-| Answering the probe | `vcs/crates/wr-agent/src/terminal.rs` (`PROBE_REPLY`): the shadow terminal answers it |
-| Record rules, command results (#473), unprobed programs | `vcs/crates/wr-agent/src/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
+| Answering the probe | `vcs/crates/workroomd/src/terminal.rs` (`PROBE_REPLY`): the shadow terminal answers it |
+| Record rules, command results (#473), unprobed programs | `vcs/crates/workroomd/src/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
 | The service: subscribe, `seen`, `clear` | `program_status.rs`: `Hub` publishes, `dispatch` answers |
-| `wr-agent program-status` | `vcs/crates/wr-agent/src/cli/program_status.rs` |
-| Wire records, app side | `Packages/AgentConnection/Sources/AgentConnection/ProgramStatusWire.swift`; requests in `AgentVCSConnection.swift`; shared fixtures in `testdata/program-status/` |
+| `workroomd program-status` | `vcs/crates/workroomd/src/cli/program_status.rs` |
+| Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonVCSConnection.swift`; shared fixtures in `testdata/program-status/` |
 | Per-host subscriptions, stale clock, reconnect, rollup per session | `WorkroomApp/Core/ProgramStatusMonitor.swift` (`ProgramStatusMonitor.shared`, `ProgramStatusRollup`, `seen`) |
 | Which mark a tab shows | `WorkroomApp/Core/TerminalSessions.swift` (`programStatus`, the tab's `indicator`) |
 | Tooltip and VoiceOver wording | `WorkroomApp/Core/ProgramStatusPresentation.swift` |
@@ -272,17 +272,17 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 | Dock badge, menu bar | `DockBadge.swift` (applied from `WindowRegistry`), `MenuBarController.swift`, `WorkroomApp/Views/MenuBarNotificationsView.swift` |
 | Clear Status | `clearProgramStatus` in `TerminalSessions.swift`; menu items in `TerminalTabStrip` and `ProjectSidebar` |
 | Settings | `DefaultsKeys.swift` (`notifyWhenTerminalNeedsMe`, `notifyWhenTurnFinishes`), `WorkroomApp/Views/SettingsView.swift` |
-| Tests | Rust: `vcs/crates/wr-agent/tests/program_status.rs`. App: `ProgramStatusMonitorTests`, `ProgramStatusAlertsTests`, `ProgramStatusConnectionTests`, `ProgramStatusPresentationTests`, `NotificationRoutingTests`, `NotificationStoreTests`. UI: `ProgramStatusUITests`, `ProgramStatusLiveAgentUITests` |
+| Tests | Rust: `vcs/crates/workroomd/tests/program_status.rs`. App: `ProgramStatusMonitorTests`, `ProgramStatusAlertsTests`, `ProgramStatusConnectionTests`, `ProgramStatusPresentationTests`, `NotificationRoutingTests`, `NotificationStoreTests`. UI: `ProgramStatusUITests`, `ProgramStatusLiveDaemonUITests` |
 
 ## Troubleshooting
 
-`wr-agent program-status` prints what the agent holds for every session: whether its program is
+`workroomd program-status` prints what the agent holds for every session: whether its program is
 reporting, its records, whether this agent keeps terminal state at all, and how many probe replies
 it could not deliver. `--json` prints the same with a `schema_version`. Run it on the host the
-terminal runs on (on this Mac it is inside the app bundle, `Contents/MacOS/wr-agent`).
+terminal runs on (on this Mac it is inside the app bundle, `Contents/MacOS/workroomd`).
 
-The agent logs subscribers, dropped replies, evictions and truncations to `agent.log` beside its
-socket: on this Mac `~/Library/Application Support/<bundle id>/sessions/agent.log`, on a remote host
+The agent logs subscribers, dropped replies, evictions and truncations to `workroomd.log` beside its
+socket: on this Mac `~/Library/Application Support/<bundle id>/sessions/workroomd.log`, on a remote host
 beside the agent's socket there. The app logs a host going stale and coming back under the `program-status`
 category (`log stream --predicate 'category == "program-status"'`).
 

@@ -46,7 +46,7 @@ func fail(_ message: String) -> Never {
 
 /// `daemon` is deliberately absent. This binary is an attach-only CLIENT: it connects to a daemon
 /// an app at or before v2.0.0 left running and relays a session it already holds. It cannot start
-/// one, and starting one would serve no session that exists — every new session goes to `wr-agent`.
+/// one, and starting one would serve no session that exists — every new session goes to `workroomd`.
 /// See `docs/designs/remote-workrooms.md`.
 func usage() -> Never {
   fail(

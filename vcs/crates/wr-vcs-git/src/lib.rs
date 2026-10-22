@@ -1,4 +1,4 @@
-//! Agent-side Git history. Repository handles never cross threads; each request opens its own.
+//! Daemon-side Git history. Repository handles never cross threads; each request opens its own.
 //! Patch and count reads use the owning host's Git, with one comparison policy (see `diff`).
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;

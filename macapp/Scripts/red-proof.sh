@@ -35,7 +35,7 @@ if [ "$count" != 1 ]; then
   exit 2
 fi
 
-# A named template, because template-less BSD `mktemp` ignores $TMPDIR (see build-agent_test.sh).
+# A named template, because template-less BSD `mktemp` ignores $TMPDIR (see build-daemon_test.sh).
 backup="$(mktemp "${TMPDIR:-/tmp}/red-proof.XXXXXX")" || exit 2
 log="$(mktemp "${TMPDIR:-/tmp}/red-proof-log.XXXXXX")" || exit 2
 cp -p "$file" "$backup" || exit 2

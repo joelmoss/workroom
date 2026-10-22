@@ -26,7 +26,7 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
     guard environment["WR_BOXD_TESTS"] == "1" else {
       throw XCTSkip("set TEST_RUNNER_WR_BOXD_TESTS=1 to run these on boxd")
     }
-    guard PersistentSessionPaths.linuxAgentURL(architecture: "x86_64") != nil else {
+    guard PersistentSessionPaths.linuxDaemonURL(architecture: "x86_64") != nil else {
       throw XCTSkip("this build bundles no Linux agent")
     }
     cli = URL(

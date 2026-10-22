@@ -197,14 +197,14 @@ private final class WatchCore: @unchecked Sendable {
         deliver([], overflow: true, generation: generation)
         gap = false
       }
-      var endedByAgent = false
+      var endedByDaemon = false
       subscription: for await event in events {
         guard current(generation) else { break subscription }
         switch event {
         case .changed(let paths, let overflow):
           deliver(paths, overflow: overflow, generation: generation)
         case .ended:
-          endedByAgent = true
+          endedByDaemon = true
           break subscription
         case .lost:
           break subscription
@@ -215,7 +215,7 @@ private final class WatchCore: @unchecked Sendable {
       // failed). Subscribing straight back would spin one watch/unwatch round trip per iteration for
       // as long as that stays true, so it waits; a lost connection does not, because reconnecting is
       // the whole point.
-      if endedByAgent { try? await Task.sleep(for: .seconds(1)) }
+      if endedByDaemon { try? await Task.sleep(for: .seconds(1)) }
       // The subscription is over, however it ended. Whatever happened while nothing was watching is
       // unknown, and is reported once when the next watch (agent or fallback) is live.
       gap = true

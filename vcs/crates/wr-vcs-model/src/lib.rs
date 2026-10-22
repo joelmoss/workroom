@@ -1,6 +1,6 @@
 //! Domain types for Workroom's VCS reads — the durable core.
 //!
-//! Free of any VCS library on purpose: `wr-vcs-git` produces these shapes and `wr-agent` serves them
+//! Free of any VCS library on purpose: `wr-vcs-git` produces these shapes and `workroomd` serves them
 //! as JSON. The SwiftUI app maps them into its own Swift models rather than binding the UI to this
 //! wire format directly.
 
@@ -81,7 +81,7 @@ pub struct Commit {
     pub short_id: String,
     // ponytail: change_id, is_working_copy, is_root, change_offset and divergent_siblings are
     // jj-era fields git always leaves empty. They stay on the wire because older apps decode them
-    // non-optionally (`AgentCommit`) and a host's agent can be newer than the app talking to it;
+    // non-optionally (`DaemonCommit`) and a host's daemon can be newer than the app talking to it;
     // prune once a protocol gate or stable hand-off covers that skew (TODOS.md).
     pub change_id: Option<String>,
     pub summary: String,

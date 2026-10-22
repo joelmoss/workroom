@@ -1,5 +1,5 @@
-import AgentConnection
 import CryptoKit
+import DaemonConnection
 import Foundation
 import WorkroomSystem
 import WorkroomVCS
@@ -40,7 +40,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     public var account: String?
     /// The agent's socket on every host, on the home disk: the agent's binary is installed beside
     /// it, and `/run` is a tmpfs (spike).
-    public var agentSocket: String
+    public var daemonSocket: String
     /// Where the supervisor has the agent keep each session's last screen (#232).
     public var screens: String
     /// The user's ssh-agent socket, or nil for none. Their `IdentityAgent`, if set, wins.
@@ -48,13 +48,13 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
     public init(
       prefix: String = "workroom", account: String? = nil,
-      agentSocket: String = "\(ExeDevHostDriver.stateDirectory)/agent/agent.sock",
+      daemonSocket: String = "\(ExeDevHostDriver.stateDirectory)/daemon/workroomd.sock",
       screens: String = "\(ExeDevHostDriver.stateDirectory)/screens",
       sshAgent: String? = ExeDevHostDriver.userSSHAgent()
     ) {
       self.prefix = prefix
       self.account = account
-      self.agentSocket = agentSocket
+      self.daemonSocket = daemonSocket
       self.screens = screens
       self.sshAgent = sshAgent
     }
@@ -72,7 +72,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   public static let gatewayFingerprint = "SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo"
 
   public let configuration: Configuration
-  public var agentSocket: String { configuration.agentSocket }
+  public var daemonSocket: String { configuration.daemonSocket }
   /// Where each host's attach logs are kept.
   public let directory: URL
   private let runner: any StatusCommandRunning
@@ -120,7 +120,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       try await ProvisioningProgress.step(.setup) {
         let command =
           "sudo sh -s -- "
-          + [Self.user, configuration.agentSocket, configuration.screens]
+          + [Self.user, configuration.daemonSocket, configuration.screens]
           .map(PosixShell.quoted).joined(separator: " ")
         try await setUp(
           command, on: .remote(id), stdin: Data(try HostSetup.systemdScript().utf8),
@@ -827,7 +827,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     let id = try id(of: host)
     return try SSHTransport.exec(
       SSHTransport.relayCommand(
-        binary: AgentInstall.binary(besideSocket: agentSocket), socket: agentSocket),
+        binary: DaemonInstall.binary(besideSocket: daemonSocket), socket: daemonSocket),
       via: route(id, spawned: true), purpose: .connection)
   }
 
@@ -844,7 +844,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     try FileManager.default.createDirectory(
       at: hostDirectory(id), withIntermediateDirectories: true)
     return SSHTransport.attachCommand(
-      via: route(id, spawned: false), in: hostDirectory(id), agentSocket: agentSocket,
+      via: route(id, spawned: false), in: hostDirectory(id), daemonSocket: daemonSocket,
       session: session,
       workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }

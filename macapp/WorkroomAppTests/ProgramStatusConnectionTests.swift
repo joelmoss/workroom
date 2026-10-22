@@ -1,9 +1,9 @@
-import AgentConnection
+import DaemonConnection
 import XCTest
 
 @testable import Workroom
 
-/// `Service::ProgramStatus` on the shared agent connection (#358), against `FakeAgent`.
+/// `Service::ProgramStatus` on the shared agent connection (#358), against `FakeDaemon`.
 final class ProgramStatusConnectionTests: XCTestCase {
   private let session = UUID()
 
@@ -19,9 +19,10 @@ final class ProgramStatusConnectionTests: XCTestCase {
   /// Events reach the subscriber, and an event this build cannot read neither reaches it nor fails
   /// the connection: VCS keeps answering after it.
   func testEventsReachTheSubscriberAndAnUnreadableOneIsDropped() async throws {
-    let fake = try FakeAgent(version: 8, programStatusResult: #"{"available":true}"#)
+    let fake = try FakeDaemon(version: 8, programStatusResult: #"{"available":true}"#)
     defer { fake.stop() }
-    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    let connection = try await DaemonVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
     let received = AsyncStream<ProgramStatusEvent>.makeStream()
     let availability = try await connection.subscribeProgramStatus {
       received.continuation.yield($0)
@@ -38,27 +39,29 @@ final class ProgramStatusConnectionTests: XCTestCase {
     }
     XCTAssertEqual(id, session)
     XCTAssertEqual(records.map(\.state), [.blocked])
-    _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+    _ = try await connection.request(DaemonVCSRequest(method: "capabilities"), timeout: 5)
     await connection.close()
   }
 
   /// A protocol-7 agent drops a ProgramStatus envelope unanswered, so it is never sent one.
   func testAnOlderAgentIsUnsupportedAndNeverSentAnEnvelope() async throws {
-    let fake = try FakeAgent(version: 7, programStatusResult: #"{"available":true}"#)
+    let fake = try FakeDaemon(version: 7, programStatusResult: #"{"available":true}"#)
     defer { fake.stop() }
-    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    let connection = try await DaemonVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
     let availability = try await connection.subscribeProgramStatus { _ in }
     XCTAssertEqual(availability, .unsupported)
-    _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+    _ = try await connection.request(DaemonVCSRequest(method: "capabilities"), timeout: 5)
     XCTAssertFalse(fake.receivedServices.contains(7))
     await connection.close()
   }
 
   func testAnAgentWithoutTerminalStateIsUnavailableWithItsReason() async throws {
-    let fake = try FakeAgent(
+    let fake = try FakeDaemon(
       version: 8, programStatusResult: #"{"available":false,"reason":"no terminal-state"}"#)
     defer { fake.stop() }
-    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    let connection = try await DaemonVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
     let availability = try await connection.subscribeProgramStatus { _ in }
     XCTAssertEqual(availability, .unavailable("no terminal-state"))
     await connection.close()
@@ -67,8 +70,9 @@ final class ProgramStatusConnectionTests: XCTestCase {
   /// The agent going away hands the subscriber `.lost`, so the monitor keeps the host's records,
   /// marks them stale after the grace and reconnects.
   func testADroppedLinkHandsTheSubscriberLost() async throws {
-    let fake = try FakeAgent(version: 8, programStatusResult: #"{"available":true}"#)
-    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    let fake = try FakeDaemon(version: 8, programStatusResult: #"{"available":true}"#)
+    let connection = try await DaemonVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
     let lost = expectation(description: "lost")
     _ = try await connection.subscribeProgramStatus { event in
       if event == .lost { lost.fulfill() }

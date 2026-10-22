@@ -9,18 +9,18 @@ final class HostLayoutSyncTests: XCTestCase {
   /// A host's layouts: revision-checked puts, and a hook to let "another Mac" write in between.
   private final class FakeHost: HostLayoutStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var layouts: [String: AgentLayout] = [:]
+    private var layouts: [String: DaemonLayout] = [:]
     private(set) var puts = 0
-    var refuse: AgentLayoutError?
+    var refuse: DaemonLayoutError?
     /// Runs once, just before the next put is checked: another Mac's write landing first.
     var beforePut: ((FakeHost) -> Void)?
 
     func seed(_ key: String, revision: UInt64, blob: String) {
-      lock.withLock { layouts[key] = AgentLayout(revision: revision, blob: blob) }
+      lock.withLock { layouts[key] = DaemonLayout(revision: revision, blob: blob) }
     }
 
-    func get(_ key: String) async throws -> AgentLayout {
-      lock.withLock { layouts[key] ?? AgentLayout(revision: 0, blob: nil) }
+    func get(_ key: String) async throws -> DaemonLayout {
+      lock.withLock { layouts[key] ?? DaemonLayout(revision: 0, blob: nil) }
     }
 
     func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
@@ -33,8 +33,8 @@ final class HostLayoutSyncTests: XCTestCase {
         puts += 1
         if let refuse { throw refuse }
         let current = layouts[key]?.revision ?? 0
-        guard current == expected else { throw AgentLayoutError.stale(revision: current) }
-        layouts[key] = AgentLayout(revision: current + 1, blob: blob)
+        guard current == expected else { throw DaemonLayoutError.stale(revision: current) }
+        layouts[key] = DaemonLayout(revision: current + 1, blob: blob)
         return current + 1
       }
     }
@@ -147,10 +147,10 @@ final class HostLayoutSyncTests: XCTestCase {
 
     final class AlwaysMoves: HostLayoutStore, @unchecked Sendable {
       var puts = 0
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 0, blob: nil) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 0, blob: nil) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts += 1
-        throw AgentLayoutError.stale(revision: expected + 1)
+        throw DaemonLayoutError.stale(revision: expected + 1)
       }
     }
     let busy = AlwaysMoves()
@@ -228,12 +228,12 @@ final class HostLayoutSyncTests: XCTestCase {
   func testARetryIsNotMadeWhenTheLayoutThatBeatItCannotBeRead() async {
     final class Unreadable: HostLayoutStore, @unchecked Sendable {
       var puts = 0
-      func get(_ key: String) async throws -> AgentLayout {
-        throw AgentLayoutError.failed("no request slot")
+      func get(_ key: String) async throws -> DaemonLayout {
+        throw DaemonLayoutError.failed("no request slot")
       }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts += 1
-        guard expected == 2 else { throw AgentLayoutError.stale(revision: 2) }
+        guard expected == 2 else { throw DaemonLayoutError.stale(revision: 2) }
         return 3
       }
     }

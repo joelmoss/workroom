@@ -92,10 +92,10 @@ actor RepositoryWriteGate {
       // accident. It holds for a local writer because a `Process` inside `runBlocking` cannot
       // observe Swift cancellation and simply runs on. An agent-routed write DOES observe it:
       // without the shield, cancelling returns immediately and releases this tail while
-      // wr-agent's `git commit` is still running, so the next same-project write starts on top of
+      // workroomd's `git commit` is still running, so the next same-project write starts on top of
       // it and hits `index.lock`.
       //
-      // Deliberately here and not in `AgentCommandRunner`: the gate is the thing that must
+      // Deliberately here and not in `DaemonCommandRunner`: the gate is the thing that must
       // outlive the child. Shielding inside the runner instead covered every command it forwards,
       // including `remoteState`'s ungated reads, so a superseded refresh squatted one of the
       // connection's 32 shared slots until the agent answered.

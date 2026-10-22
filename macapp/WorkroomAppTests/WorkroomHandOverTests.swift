@@ -271,13 +271,13 @@ final class WorkroomHandOverTests: XCTestCase {
     let failure = FailedCommand(
       command: "make", cwd: "/p/a", exitCode: 2, shell: "zsh", output: "boom", isRunTab: false,
       isRemote: false)
-    origin.terminals.agentManager.adopt(tab.id, banner: .loading(failure), failure: failure)
+    origin.terminals.codingAgentManager.adopt(tab.id, banner: .loading(failure), failure: failure)
 
     origin.moveWorkroom(sid, to: destination)
 
-    XCTAssertNil(origin.terminals.agentManager.banners[tab.id])
+    XCTAssertNil(origin.terminals.codingAgentManager.banners[tab.id])
     XCTAssertEqual(
-      destination.terminals.agentManager.banners[tab.id], .awaitingDiagnose(failure),
+      destination.terminals.codingAgentManager.banners[tab.id], .awaitingDiagnose(failure),
       "the diagnosis the move cancelled is offered again")
   }
 

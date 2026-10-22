@@ -124,14 +124,14 @@ extension Defaults.Keys {
 
   /// Inline terminal agent (issue #49): always on — a failed command can be diagnosed by the local
   /// `claude`/`codex` CLI and a fix suggested in the pane's status bar. (No enable toggle; automatic
-  /// vs manual diagnosis is `terminalAgentAutoDiagnose`.)
+  /// vs manual diagnosis is `terminalCodingAgentAutoDiagnose`.)
   /// When on, an eligible failure diagnoses automatically; otherwise the status bar waits for a click.
   /// Set the first time the user accepts the "auto-diagnose next time?" prompt.
-  static let terminalAgentAutoDiagnose = Key<Bool>(
+  static let terminalCodingAgentAutoDiagnose = Key<Bool>(
     "terminalAgentAutoDiagnose", default: false, suite: .app)
   /// Whether the one-time "auto-diagnose from now on?" prompt has been shown (after the first manual
   /// Diagnose). Prevents re-asking on every manual diagnosis.
-  static let terminalAgentAutoDiagnosePrompted = Key<Bool>(
+  static let terminalCodingAgentAutoDiagnosePrompted = Key<Bool>(
     "terminalAgentAutoDiagnosePrompted", default: false, suite: .app)
   /// Coding-agent usage in every window's footer (#480). On by default.
   static let usageInWindowFooter = Key<Bool>("usageInWindowFooter", default: true, suite: .app)
@@ -144,15 +144,15 @@ extension Defaults.Keys {
   /// offering the status-line bridge, and Settings ▸ AI Agents ▸ Usage offers it instead.
   static let claudeUsageDeclined = Key<Bool>("claudeUsageDeclined", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
-  static let terminalAgentRedactSecrets = Key<Bool>(
+  static let terminalCodingAgentRedactSecrets = Key<Bool>(
     "terminalAgentRedactSecrets", default: true, suite: .app)
   /// Preferred agent backend: "auto" (claude, else codex), "claude", or "codex".
-  static let terminalAgentBackend = Key<String>(
+  static let terminalCodingAgentBackend = Key<String>(
     "terminalAgentBackend", default: "auto", suite: .app)
   /// Model for the inline (no-tools) diagnosis. A fast, cheap model is plenty for a bounded
   /// error diagnosis and avoids the user's default (often Opus) running on every failure. Empty =
   /// let the CLI pick its default. (Issue #49 cost optimisation.)
-  static let terminalAgentModel = Key<String>(
+  static let terminalCodingAgentModel = Key<String>(
     "terminalAgentModel", default: "claude-haiku-4-5-20251001", suite: .app)
 
   /// The docked right inspector's remembered column width. `.inspector` resets to its `ideal`

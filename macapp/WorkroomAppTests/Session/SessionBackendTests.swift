@@ -23,49 +23,49 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertEqual(names.count, SessionBackend.allCases.count)
   }
 
-  /// The Swift daemon's socket name is a stored-data contract: an installed build has sessions
+  /// The Swift helper's socket name is a stored-data contract: an installed build has sessions
   /// live on `session.sock` right now, and renaming it would orphan them on upgrade.
-  func testSwiftDaemonKeepsItsShippedSocketName() {
-    XCTAssertEqual(SessionBackend.swiftDaemon.socketFileName, "session.sock")
-    XCTAssertEqual(SessionBackend.swiftDaemon.binaryName, "workroom-session")
+  func testSwiftHelperKeepsItsShippedSocketName() {
+    XCTAssertEqual(SessionBackend.legacySessionHelper.socketFileName, "session.sock")
+    XCTAssertEqual(SessionBackend.legacySessionHelper.binaryName, "workroom-session")
   }
 
   /// The property the whole migration rests on: a session created by one helper is never reachable
-  /// through the other, so a draining daemon and a running agent can't fight over one socket.
+  /// through the other, so a draining helper and a running daemon can't fight over one socket.
   func testSocketPathsDifferPerBackend() throws {
-    let daemon = try PersistentSessionPaths.preferredSocketPath(backend: .swiftDaemon)
-    let agent = try PersistentSessionPaths.preferredSocketPath(backend: .rustAgent)
-    XCTAssertNotEqual(daemon, agent)
-    XCTAssertTrue(daemon.hasSuffix("session.sock"))
-    XCTAssertTrue(agent.hasSuffix("agent.sock"))
+    let helper = try PersistentSessionPaths.preferredSocketPath(backend: .legacySessionHelper)
+    let daemon = try PersistentSessionPaths.preferredSocketPath(backend: .daemon)
+    XCTAssertNotEqual(helper, daemon)
+    XCTAssertTrue(helper.hasSuffix("session.sock"))
+    XCTAssertTrue(daemon.hasSuffix("workroomd.sock"))
   }
 
   /// The fallback path exists for long home directories; it must keep the separation too, or the
   /// collision returns for exactly the users least able to diagnose it.
   func testFallbackSocketPathsAlsoDifferPerBackend() throws {
-    let daemon = try PersistentSessionPaths.fallbackSocketPath(backend: .swiftDaemon)
-    let agent = try PersistentSessionPaths.fallbackSocketPath(backend: .rustAgent)
-    XCTAssertNotEqual(daemon, agent)
+    let helper = try PersistentSessionPaths.fallbackSocketPath(backend: .legacySessionHelper)
+    let daemon = try PersistentSessionPaths.fallbackSocketPath(backend: .daemon)
+    XCTAssertNotEqual(helper, daemon)
   }
 
   // MARK: - Choosing where a new session goes
 
-  /// New sessions go to the agent when it works. Nobody is asked, and nothing is stored.
-  func testNewSessionsPreferTheAgentWhenItIsHealthy() {
+  /// New sessions go to the daemon when it works. Nobody is asked, and nothing is stored.
+  func testNewSessionsPreferTheDaemonWhenItIsHealthy() {
     let backend = SessionBackend.preferred { _ in .ready(version: "protocol 1") }
-    XCTAssertEqual(backend, .rustAgent)
+    XCTAssertEqual(backend, .daemon)
   }
 
-  /// REGRESSION. This asserted the opposite — that a failed agent probe fell back to the daemon —
+  /// REGRESSION. This asserted the opposite — that a failed daemon probe fell back to the helper —
   /// and that fallback is exactly what the attach-only change removes. `workroom-session` can no
-  /// longer start a daemon, so routing a NEW session there would hand libghostty an attach command
+  /// longer start a helper, so routing a NEW session there would hand libghostty an attach command
   /// for a session nobody holds: a blank pane, then exit 92, and no plain-shell fallback, because
   /// that decision is made before the command is ever spawned. Nowhere is the correct answer, and
   /// the caller opens a plain shell instead.
   ///
   /// Both failure shapes are asserted: `notBundled` is a packaging fact, `unhealthy` a runtime one,
   /// and only the second can appear in a shipped build.
-  func testNewSessionsGoNowhereWhenTheAgentCannotRun() {
+  func testNewSessionsGoNowhereWhenTheDaemonCannotRun() {
     XCTAssertNil(SessionBackend.preferred { _ in .notBundled })
     XCTAssertNil(SessionBackend.preferred { _ in .unhealthy(reason: "exited 127") })
   }
@@ -73,13 +73,13 @@ final class SessionBackendTests: XCTestCase {
   /// Raw values are a stored-data contract for logs and diagnostics, even though no preference
   /// stores them any more.
   func testRawValuesAreStable() {
-    XCTAssertEqual(SessionBackend.swiftDaemon.rawValue, "swift")
-    XCTAssertEqual(SessionBackend.rustAgent.rawValue, "rust")
+    XCTAssertEqual(SessionBackend.legacySessionHelper.rawValue, "swift")
+    XCTAssertEqual(SessionBackend.daemon.rawValue, "rust")
   }
 
   // MARK: - The migration
 
-  /// Nothing persists a backend choice. A stored one would go stale the moment a daemon exited or
+  /// Nothing persists a backend choice. A stored one would go stale the moment a helper exited or
   /// an upgrade landed, and would send the app to a helper that is not holding the session.
   func testNoBackendChoiceIsStored() throws {
     let source = try String(
@@ -98,7 +98,7 @@ final class SessionBackendTests: XCTestCase {
 
   func testProbeReportsNotBundledWhenTheBinaryIsAbsent() {
     let result = SessionBackendProbe.probe(
-      .rustAgent,
+      .daemon,
       locate: { _ in nil },
       run: {
         _ in
@@ -112,7 +112,7 @@ final class SessionBackendTests: XCTestCase {
 
   func testProbeReportsReadyOnAParseableVersion() {
     let result = SessionBackendProbe.probe(
-      .rustAgent,
+      .daemon,
       locate: { _ in URL(fileURLWithPath: "/x") },
       run: {
         _ in (0, "protocol 1 (minimum supported 1)\ngreeting 21 bytes: [57]\n")
@@ -125,7 +125,7 @@ final class SessionBackendTests: XCTestCase {
   /// The failure a file-existence check cannot see, and the one a rollback decision needs.
   func testProbeReportsUnhealthyOnANonZeroExit() {
     let result = SessionBackendProbe.probe(
-      .rustAgent,
+      .daemon,
       locate: { _ in URL(fileURLWithPath: "/x") },
       run: {
         _ in (127, "")
@@ -136,7 +136,7 @@ final class SessionBackendTests: XCTestCase {
 
   func testProbeReportsUnhealthyOnUnrecognisedOutput() {
     let result = SessionBackendProbe.probe(
-      .rustAgent,
+      .daemon,
       locate: { _ in URL(fileURLWithPath: "/x") },
       run: {
         _ in (0, "dyld: Library not loaded\n")
@@ -150,7 +150,7 @@ final class SessionBackendTests: XCTestCase {
       var errorDescription: String? { "bad CPU type" }
     }
     let result = SessionBackendProbe.probe(
-      .rustAgent,
+      .daemon,
       locate: { _ in URL(fileURLWithPath: "/x") },
       run: {
         _ in throw Boom()
@@ -176,7 +176,7 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertFalse(ranDuringRun, "main-queue work ran while the probe waited for its helper")
   }
 
-  /// The version line may grow detail; the contract is its leading token only, so the agent can
+  /// The version line may grow detail; the contract is its leading token only, so the daemon can
   /// say more without needing a matching app release.
   func testVersionParsingToleratesExtraDetail() {
     XCTAssertEqual(SessionBackendProbe.parseProtocolVersion("protocol 4 (min 2) extra"), 4)
@@ -186,14 +186,14 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertNil(SessionBackendProbe.parseProtocolVersion(""))
   }
 
-  /// The daemon has no self-describing subcommand and is not getting one — it is being retired.
-  func testSwiftDaemonIsNotExecutedByTheProbe() {
+  /// The helper has no self-describing subcommand and is not getting one — it is being retired.
+  func testSwiftHelperIsNotExecutedByTheProbe() {
     let result = SessionBackendProbe.probe(
-      .swiftDaemon,
+      .legacySessionHelper,
       locate: { _ in URL(fileURLWithPath: "/x") },
       run: {
         _ in
-        XCTFail("the shipped daemon must not be executed to answer a health question")
+        XCTFail("the shipped helper must not be executed to answer a health question")
         return (0, "")
       }
     )

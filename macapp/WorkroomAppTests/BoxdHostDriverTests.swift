@@ -81,7 +81,7 @@ final class BoxdHostDriverTests: XCTestCase {
 
   func testTheSetupScriptShipsInTheBundle() throws {
     let script = try HostSetup.systemdScript()
-    XCTAssertTrue(script.contains("workroom-agent.service"))
+    XCTAssertTrue(script.contains("workroom-daemon.service"))
   }
 
   // MARK: Failures, with the CLI stubbed

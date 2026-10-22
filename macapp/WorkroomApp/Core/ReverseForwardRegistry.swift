@@ -16,7 +16,7 @@ final class ReverseForwardRegistry {
   /// `HostConnectionManager`: the shape `PortForwardingModel.Transport` set.
   struct Transport {
     var forwarding:
-      @Sendable (HostID) async throws -> (HostConnectionManager.Lease, AgentForwardService)
+      @Sendable (HostID) async throws -> (HostConnectionManager.Lease, DaemonForwardService)
     var updates: @Sendable (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
 
     static let live = Transport(
@@ -156,7 +156,7 @@ final class ReverseForwardRegistry {
 
   /// One `listen`, answered or timed out. A refused listener is stopped before it is returned.
   private func listen(
-    _ service: AgentForwardService, port: UInt16, to target: UInt16, _ workroom: UUID,
+    _ service: DaemonForwardService, port: UInt16, to target: UInt16, _ workroom: UUID,
     _ lease: HostConnectionManager.Lease
   ) async -> Result<ReverseForward, ReverseForward.Refusal> {
     let ready = ListenOutcome()
@@ -246,7 +246,7 @@ private final class ListenOutcome: @unchecked Sendable {
   func wait(_ timeout: Duration) async -> String? {
     let timer = Task { [weak self] in
       try? await Task.sleep(for: timeout)
-      self?.resolve("the agent did not answer the listen request")
+      self?.resolve("the daemon did not answer the listen request")
     }
     defer { timer.cancel() }
     return await withCheckedContinuation { continuation in

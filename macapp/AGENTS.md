@@ -66,7 +66,7 @@ you touch the Makefile or the test launch paths:
 - **One Debug identity per workroom.** In a workroom (a linked git worktree) `make` builds `com.developwithstyle.workroom.dev.wr-<name>-<hash>`
   (`Scripts/dev-identity.sh` → `WORKROOM_DEV_ID_SUFFIX` → the Debug bundle id in `project.yml`); the
   project's own checkout keeps the plain id. Everything keyed by bundle id — preferences, the
-  session helpers' sockets (so its own `wr-agent`), the saved session, "already running" — is then
+  session helpers' sockets (so its own `workroomd`), the saved session, "already running" — is then
   the workroom's own. Every xcodebuild that builds the app must pass `$(APP_ID_FLAGS)`; Xcode-driven
   builds don't, and build the plain id.
 - **One GUI session per Mac.** `make app-test` runs its tests holding `Scripts/gui-lock.py` shared,
@@ -78,7 +78,7 @@ Within one workroom it is still one `make app-*` at a time: they share its Deriv
 `make app-run` stops only copies of its own identity (`Scripts/stop-dev-app.sh`) — never kill the
 app by name, since every workroom's app, test host and XCUITest app is called "Workroom Dev".
 
-## VCS core (SwiftGitX git + wr-agent)
+## VCS core (SwiftGitX git + workroomd)
 
 Workroom is git-only. VCS data reaches the app two ways, behind
 one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the first brick):
@@ -86,10 +86,10 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
 - **Local reads → SwiftGitX (libgit2), pure Swift.** `GitProvider` wraps SwiftGitX and implements
   `LocalVCSProviding`. No Rust bridge or xcframework. (An all-Rust core with gix was tried and
   dropped: gix bought no real unification and libgit2 is the more complete git engine.)
-- **Agent-routed reads and writes → `wr-agent`.** The `vcs/` Rust workspace holds the `wr-agent`
+- **Agent-routed reads and writes → `workroomd`.** The `vcs/` Rust workspace holds the `workroomd`
   daemon (terminal sessions, VCS and File services) and its git read crates (`wr-vcs-git`,
-  `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `AgentVCSReader` /
-  `AgentVCSConnection`.
+  `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `DaemonVCSReader` /
+  `DaemonVCSConnection`.
 
 **Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
 in `project.yml`, URL + version identical to SwiftGitX's own dependency so SwiftPM sees one package
@@ -142,20 +142,20 @@ serializer that every commit, fetch, push and pull goes through (`CLIVCSWriter.g
 the raw, untimed call as the operation and wrap the gate in `withTimeout`, never the reverse (see the
 type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
 
-## Terminal sessions: `wr-agent` (Rust) and the daemon it replaces
+## Terminal sessions: `workroomd` (Rust) and the daemon it replaces
 
 A pane's shell outlives the pane, so the app does not own the pty — a **session helper** does, and
-the app attaches to it. New sessions all go to `wr-agent`; the Swift `workroom-session` in this build only
+the app attaches to it. New sessions all go to `workroomd`; the Swift `workroom-session` in this build only
 attaches to older daemons that are still running (issue #154):
 
-- **`wr-agent`** (`vcs/crates/wr-agent`, Rust) — where every NEW session goes. One binary,
+- **`workroomd`** (`vcs/crates/workroomd`, Rust) — where every NEW session goes. One binary,
   `serve | attach`, multiplexing services over one stream with a versioned envelope
   (`service:u8 | stream:u32 | length:u32 | payload`). It keeps a **shadow terminal** (libghostty-vt,
   behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
   rather than a byte replay. A newer app does not kill a running agent: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
-  (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`, #230), in every build; see
-  the module comment in `vcs/crates/wr-agent/src/handoff.rs` for the mechanics, and ADR 0009 for
+  (`DaemonHandOff.start()`, protocol 6, `workroomd hand-off`, #230), in every build; see
+  the module comment in `vcs/crates/workroomd/src/handoff.rs` for the mechanics, and ADR 0009 for
   why.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — attach-only now. The `daemon`
   subcommand is gone, so this build cannot start one; the tool only attaches to daemons an app at or
@@ -163,15 +163,15 @@ attaches to older daemons that are still running (issue #154):
   live pty over.
 
 **A restored remote pane can show its last screen instead of a fresh shell (#232).** When a host's
-supervisor opts in (`wr-agent serve --screens <dir>`), the agent keeps each session's last screen on
+supervisor opts in (`workroomd serve --screens <dir>`), the agent keeps each session's last screen on
 disk and, after a reboot kills the shells, answers a reattach for a session it no longer holds with
 that screen plus a bottom-row notice rather than the usual fresh shell. The app needs no code for
 this: the notice arrives as ordinary VT bytes over the same reattach path `terminal-state` already
-repaints from. See the module comment in `vcs/crates/wr-agent/src/screens.rs` for the
+repaints from. See the module comment in `vcs/crates/workroomd/src/screens.rs` for the
 write/prune/restore mechanics, and ADR 0031 for why. The supervisor boxd and exe.dev hosts run
 (`Resources/host-setup/systemd.sh`) passes `--screens`, as does the ssh fixture's.
 
-**The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.rustAgent`, or nil
+**The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.daemon`, or nil
 when the agent fails its probe (there is no fallback to the daemon, which this build cannot start); `PersistentSessionService.backend(forSession:)` resolves each EXISTING
 session to whichever helper owns it. Two rules there are load-bearing and were both got wrong once:
 the answer is resolved **once per session and cached** (a pane asks twice — `attachCommand` for the
@@ -185,30 +185,30 @@ same id and orphans the user's shell. A failed `connect` is NOT an unanswered pr
 nothing is listening, which is a definitive "not owned" (the daemon leaves a stale `session.sock`
 behind on any `pkill`, so this case is common, not exotic).
 
-**Building it.** `macapp/Scripts/build-agent.sh` is a build phase, mirroring `build-helper.sh` (the
+**Building it.** `macapp/Scripts/build-daemon.sh` is a build phase, mirroring `build-helper.sh` (the
 Go CLI): it iterates `ARCHS`, so a universal Release build produces both slices and `lipo`s them. The
 built binary is staged beside `$DEST` and **renamed into place, never written over it** — a running
 agent executes that file, and macOS SIGKILLs a process whose signed binary changes under it ("Code
 Signature Invalid"); writing in place used to kill every Dev session, and any hand-off (#230), on
-each rebuild. `build-agent_test.sh` guards both that loop — the same regression once shipped an
+each rebuild. `build-daemon_test.sh` guards both that loop — the same regression once shipped an
 arm64-only CLI inside 23 universal betas — and the rename (a hard link stands in for the running
 binary, and a rebuild must leave it unwritten); the cross cases need `rustup target add
 x86_64-apple-darwin aarch64-apple-darwin`, which CI installs. `terminal-state` is **not optional for
 the app**: without it a reattaching pane repaints blank, which only shows up after a
-quit-and-relaunch. `wr-agent protocol` reports `terminal-state yes|no`, and the build test asserts it
+quit-and-relaunch. `workroomd protocol` reports `terminal-state yes|no`, and the build test asserts it
 against the shipped binary.
 
-**Linux agents (issue #227).** Every build also puts a static musl `wr-agent` per
-Linux arch in `Contents/Resources/wr-agent-linux-{aarch64,x86_64}`, for pushing to remote hosts.
+**Linux agents (issue #227).** Every build also puts a static musl `workroomd` per
+Linux arch in `Contents/Resources/workroomd-linux-{aarch64,x86_64}`, for pushing to remote hosts.
 Both arches ship always, whatever `ARCHS` says, because a remote box's arch has nothing to do with
 the Mac's. They are not codesigned; the app's signature seals them as resources. Debug builds them
 too, since every build offers remote workrooms. Building them needs `cargo install
 cargo-zigbuild --locked` and `rustup target add aarch64-unknown-linux-musl
 x86_64-unknown-linux-musl`, which the CI and release workflows install. `release.sh` asserts both ELFs are
 present and static, and the `agent-linux` CI job runs `protocol` on each under Linux.
-`AgentBootstrap.connect` (#231) pushes the matching one to a remote host on first connect, beside
+`DaemonBootstrap.connect` (#231) pushes the matching one to a remote host on first connect, beside
 the agent's socket, and hands the running agent off to it; the far side is
-`Resources/agent-bootstrap/{probe,install,resources}.sh`, run through `HostDriver.exec`. The same
+`Resources/daemon-bootstrap/{probe,install,resources}.sh`, run through `HostDriver.exec`. The same
 connect pushes Ghostty's terminfo and shell integration beside the agent (#239), so a remote pane
 runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
@@ -255,8 +255,8 @@ user's boxd `git` integration, and an exe.dev VM an exe.dev GitHub integration p
 answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
 `Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
 that fails says the provider's fix (`RemoteWorkrooms.Place.credentialHint`). A local container's git
-asks the Mac's own `gh` through `CredentialRelay` (#309), whose agent side is `wr-agent credential`
-(`vcs/crates/wr-agent/src/credential.rs`). A new user's first exe.dev create walks them through
+asks the Mac's own `gh` through `CredentialRelay` (#309), whose agent side is `workroomd credential`
+(`vcs/crates/workroomd/src/credential.rs`). A new user's first exe.dev create walks them through
 exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
 `make app-run-exedev-fresh`.
 
@@ -382,7 +382,7 @@ So: name the neighbouring property before pushing (the lock hold, the client's p
 caller now does with an error it never saw before), and test it.
 
 **3. An independent adversarial pass is required here, not optional.** For any change to
-`Core/Session/`, `VCSProviding`/`VCSWriting` routing, or `vcs/crates/wr-agent`, dispatch a reviewer
+`Core/Session/`, `VCSProviding`/`VCSWriting` routing, or `vcs/crates/workroomd`, dispatch a reviewer
 that did not write the code and give it the diff, the intent, and an evidence gate. Every defect
 listed above was found that way; none was found by re-reading.
 
@@ -403,7 +403,7 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
 - **Before proposing a perf guard that skips unchanged work**, or checking what a `ghostty_surface_*`
   call does, read `docs/macapp-perf-facts.md`: Observation and libghostty already skip some of it.
 - **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomVCS`, `WorkroomWire`,
-  `WorkroomSystem`, `AgentConnection`, `HostDrivers`, `DesignSystem`, `SyntaxHighlighting`), each in
+  `WorkroomSystem`, `DaemonConnection`, `HostDrivers`, `DesignSystem`, `SyntaxHighlighting`), each in
   Swift 6 language mode with its own tests, run by `make app-package-test` rather than
   `make app-test`. A file that names a package's type imports that package itself; nothing
   re-exports one. A package depends on Foundation (AppKit and SwiftUI too, for `DesignSystem`), its

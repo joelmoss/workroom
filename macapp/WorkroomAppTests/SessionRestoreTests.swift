@@ -61,21 +61,23 @@ final class SessionRestoreTests: XCTestCase {
         metadata: [SessionEnvironmentEntry(key: "command", value: command)])
 
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) { [] }
-      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "lost sessions must not restore usage")
+      XCTAssertTrue(
+        sessions.activeCodingAgentBackends.isEmpty, "lost sessions must not restore usage")
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) { [descriptor] }
       let expected: Set<CodingAgentBackend> =
         command == "claude" ? [.claude] : command == "codex" ? [.codex] : []
-      XCTAssertEqual(sessions.activeAgentBackends, expected, command)
+      XCTAssertEqual(sessions.activeCodingAgentBackends, expected, command)
       XCTAssertFalse(sessions.isRunning(forTargetID: target.id), "recovery must not imply activity")
       tab.surface?.handleCommandFinished(rawExitCode: 0)
-      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "agent exit must clear recovered usage")
+      XCTAssertTrue(
+        sessions.activeCodingAgentBackends.isEmpty, "agent exit must clear recovered usage")
 
       // A provider title may arrive before discovery completes; keep it and recover recognition.
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) {
         tab.surface?.onTitleChange?("✻ Planning…")
         return [descriptor]
       }
-      XCTAssertEqual(sessions.activeAgentBackends, expected)
+      XCTAssertEqual(sessions.activeCodingAgentBackends, expected)
       XCTAssertEqual(sessions.tabs(for: target).first?.title, "✻ Planning…")
       tab.surface?.handleCommandFinished(rawExitCode: 0)
 
@@ -84,7 +86,8 @@ final class SessionRestoreTests: XCTestCase {
         tab.surface?.handleCommandFinished(rawExitCode: 0)
         return [descriptor]
       }
-      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "must not resurrect an exited agent")
+      XCTAssertTrue(
+        sessions.activeCodingAgentBackends.isEmpty, "must not resurrect an exited agent")
 
       // Reassigning this same pane during discovery must not apply another session's metadata.
       var reassigned = sessions.tabs(for: target).first!
@@ -98,7 +101,8 @@ final class SessionRestoreTests: XCTestCase {
         sessions.replace(reassigned, for: target)
         return [descriptor]
       }
-      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "must not hydrate a reassigned pane")
+      XCTAssertTrue(
+        sessions.activeCodingAgentBackends.isEmpty, "must not hydrate a reassigned pane")
     }
   }
 
@@ -718,10 +722,10 @@ final class SessionRestoreTests: XCTestCase {
   func testAStaleCopyWhoseHostDidNotAnswerNeverRetriesOverIt() async throws {
     final class MovedHost: HostLayoutStore, @unchecked Sendable {
       var puts = 0
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 9, blob: nil) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 9, blob: nil) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts += 1
-        guard expected == 9 else { throw AgentLayoutError.stale(revision: 9) }
+        guard expected == 9 else { throw DaemonLayoutError.stale(revision: 9) }
         return 10
       }
     }
@@ -765,10 +769,10 @@ final class SessionRestoreTests: XCTestCase {
   func testAnUnansweredWorkroomNeverWritesOverALayoutItNeverRead() async throws {
     final class MovedHost: HostLayoutStore, @unchecked Sendable {
       var puts = 0
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 5, blob: nil) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 5, blob: nil) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts += 1
-        guard expected == 5 else { throw AgentLayoutError.stale(revision: 5) }
+        guard expected == 5 else { throw DaemonLayoutError.stale(revision: 5) }
         return 6
       }
     }
@@ -827,9 +831,9 @@ final class SessionRestoreTests: XCTestCase {
           key: "x")
         self.delay = delay
       }
-      func get(_ key: String) async throws -> AgentLayout {
+      func get(_ key: String) async throws -> DaemonLayout {
         try await Task.sleep(nanoseconds: delay)
-        return AgentLayout(revision: 3, blob: blob)
+        return DaemonLayout(revision: 3, blob: blob)
       }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         expected + 1
@@ -899,10 +903,10 @@ final class SessionRestoreTests: XCTestCase {
   func testAWorkroomMovedToAnotherHostNeverWritesOverItsLayout() async throws {
     final class FullHost: HostLayoutStore, @unchecked Sendable {
       var puts: [UInt64] = []
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 9, blob: nil) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 9, blob: nil) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts.append(expected)
-        guard expected == 9 else { throw AgentLayoutError.stale(revision: 9) }
+        guard expected == 9 else { throw DaemonLayoutError.stale(revision: 9) }
         return 10
       }
     }
@@ -950,11 +954,11 @@ final class SessionRestoreTests: XCTestCase {
   func testAWriteToAWorkroomsOldHostIsNotTakenAsTheNewOnes() async throws {
     final class SlowHost: HostLayoutStore, @unchecked Sendable {
       var puts: [UInt64] = []
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 9, blob: nil) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 9, blob: nil) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts.append(expected)
         try await Task.sleep(nanoseconds: 200_000_000)
-        guard expected == 3 else { throw AgentLayoutError.stale(revision: 9) }
+        guard expected == 3 else { throw DaemonLayoutError.stale(revision: 9) }
         return 4
       }
     }
@@ -1004,7 +1008,7 @@ final class SessionRestoreTests: XCTestCase {
   /// the layout may already have been written there, so the workroom is not treated as unanswered.
   func testALateSessionListKeepsTheResolvedLayout() async throws {
     final class EmptyHost: HostLayoutStore, @unchecked Sendable {
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 0, blob: nil) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 0, blob: nil) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         expected + 1
       }
@@ -1051,7 +1055,7 @@ final class SessionRestoreTests: XCTestCase {
     for paneFirst in [false, true] {
       let saved = AppStore.hostLayoutStore
       AppStore.hostLayoutStore = { _ in
-        throw AgentLayoutError.unsupported("this agent keeps no layouts")
+        throw DaemonLayoutError.unsupported("this agent keeps no layouts")
       }
       defer { AppStore.hostLayoutStore = saved }
       let workroom = Workroom(
@@ -1094,10 +1098,10 @@ final class SessionRestoreTests: XCTestCase {
       let seed: String
       var puts: [UInt64] = []
       init(seed: String) { self.seed = seed }
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 1, blob: seed) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 1, blob: seed) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts.append(expected)
-        guard expected == 1 else { throw AgentLayoutError.stale(revision: 1) }
+        guard expected == 1 else { throw DaemonLayoutError.stale(revision: 1) }
         return 2
       }
     }
@@ -1141,11 +1145,11 @@ final class SessionRestoreTests: XCTestCase {
   func testAChangeBehindAnUnansweredWriteIsSentAfterIt() async throws {
     final class SlowMovedHost: HostLayoutStore, @unchecked Sendable {
       var puts = 0
-      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 5, blob: nil) }
+      func get(_ key: String) async throws -> DaemonLayout { DaemonLayout(revision: 5, blob: nil) }
       func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
         puts += 1
         try await Task.sleep(nanoseconds: 100_000_000)
-        throw AgentLayoutError.stale(revision: 5)
+        throw DaemonLayoutError.stale(revision: 5)
       }
     }
     let host = SlowMovedHost()
@@ -1211,12 +1215,12 @@ final class SessionRestoreTests: XCTestCase {
     let none: (TerminalTarget.ID) -> Bool = { _ in false }
     let this: (TerminalTarget.ID) -> Bool = { [target] in $0 == target.id }
     await sessions.materializeLivePersistentSessions(reattaches: none) { [descriptor] }
-    XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "a gated pane was reattached")
+    XCTAssertTrue(sessions.activeCodingAgentBackends.isEmpty, "a gated pane was reattached")
 
     await sessions.materializeLivePersistentSessions(reattaches: this) {
       [descriptor]
     }
-    XCTAssertEqual(sessions.activeAgentBackends, [.claude])
+    XCTAssertEqual(sessions.activeCodingAgentBackends, [.claude])
   }
 
   /// The app lets a target's panes reattach only while it is local and opens here: not a missing

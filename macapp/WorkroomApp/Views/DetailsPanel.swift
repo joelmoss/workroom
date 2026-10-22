@@ -213,7 +213,7 @@ private struct PortsSection: View {
         Text(
           model.forwards.contains(where: \.reconnects)
             ? "Not connected. A forward reconnects when it is used."
-            : "No agent is connected."
+            : "No daemon is connected."
         )
         .font(.caption2).foregroundStyle(.secondary)
       }

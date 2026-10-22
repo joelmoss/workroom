@@ -89,7 +89,7 @@ final class WindowRegistry: ObservableObject {
   /// Combined unread notification count across every window — drives the menu-bar label + Dock badge
   /// (issue #70). `@Published` so the `MenuBarExtra` label re-renders as any window's count changes.
   @Published private(set) var aggregateUnread = 0
-  @Published private(set) var activeAgentBackends: Set<CodingAgentBackend> = []
+  @Published private(set) var activeCodingAgentBackends: Set<CodingAgentBackend> = []
 
   init() {
     // Track the active workroom window. Only registered windows update `lastActiveStore`, so the quit
@@ -171,7 +171,7 @@ final class WindowRegistry: ObservableObject {
       let entry = Entry(window: window, store: store)
       entry.sessionObservation = store.terminals.objectWillChange.sink { [weak self] _ in
         // Published terminal state is still the old value during objectWillChange.
-        Task { @MainActor in self?.recomputeActiveAgents() }
+        Task { @MainActor in self?.recomputeActiveCodingAgents() }
       }
       entries.append(entry)
     }
@@ -199,7 +199,7 @@ final class WindowRegistry: ObservableObject {
     Task { @MainActor in
       assignWindowNumberIfNeeded(store)
       recomputeBadge()
-      recomputeActiveAgents()
+      recomputeActiveCodingAgents()
     }
   }
 
@@ -220,7 +220,7 @@ final class WindowRegistry: ObservableObject {
     store(for: window)?.detachedPanes.closeAll()
     entries.removeAll { $0.window === window || $0.window == nil }
     recomputeBadge()
-    recomputeActiveAgents()
+    recomputeActiveCodingAgents()
     // Without this a closed window is never noticed, and comes back on the next launch. The quit
     // freeze is what stops the same signal erasing the session as windows close during termination.
     SessionCoordinator.shared.markDirty()
@@ -305,11 +305,11 @@ final class WindowRegistry: ObservableObject {
 
   // MARK: Aggregation
 
-  private func recomputeActiveAgents() {
+  private func recomputeActiveCodingAgents() {
     let agents = allStores.reduce(into: Set<CodingAgentBackend>()) {
-      $0.formUnion($1.terminals.activeAgentBackends)
+      $0.formUnion($1.terminals.activeCodingAgentBackends)
     }
-    if agents != activeAgentBackends { activeAgentBackends = agents }
+    if agents != activeCodingAgentBackends { activeCodingAgentBackends = agents }
   }
 
   /// Mirror the *combined* unread count across all windows onto the menu-bar label + Dock badge

@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import HostDrivers
 import WorkroomDomain
 import WorkroomVCS
@@ -29,14 +29,14 @@ struct LiveProvider {
   var restartKeepsHostKey = true
 
   var home: String { "/home/\(user)" }
-  var socket: String { driver.agentSocket }
+  var socket: String { driver.daemonSocket }
 }
 
 /// The cases every real provider must pass alike, apart from how long creation takes (#259's
 /// parity criterion). A provider's suite subclasses this, makes its `LiveProvider`, and calls each
 /// case from a `test…` method of its own; none of these is a test by itself.
 class ProviderParityTestCase: XCTestCase {
-  var connections: [AgentVCSConnection] = []
+  var connections: [DaemonVCSConnection] = []
 
   override func tearDown() async throws {
     for connection in connections { await connection.close() }
@@ -63,8 +63,8 @@ class ProviderParityTestCase: XCTestCase {
     ]
   }
 
-  func connect(_ provider: LiveProvider, _ host: HostID) async throws -> AgentVCSConnection {
-    let connection = try await AgentBootstrap.connect(
+  func connect(_ provider: LiveProvider, _ host: HostID) async throws -> DaemonVCSConnection {
+    let connection = try await DaemonBootstrap.connect(
       host: host, driver: provider.driver, socket: provider.socket, handOff: false)
     connections.append(connection)
     return connection
@@ -107,7 +107,7 @@ class ProviderParityTestCase: XCTestCase {
     let user: String
     static let cloneToken = "ghs_fixture_clone_token_0123456789"
 
-    var agentSocket: String { driver.agentSocket }
+    var daemonSocket: String { driver.daemonSocket }
     func destroy(_ host: HostID) async throws { try await driver.destroy(host) }
     func openStream(to host: HostID) async throws -> HostStream {
       try await driver.openStream(to: host)
@@ -192,11 +192,11 @@ class ProviderParityTestCase: XCTestCase {
   /// The provisioning sequence over `driver`, as the app runs it for a remote provider: Workroom
   /// gives the host no credential.
   func environment(_ driver: any HostDriver) -> RemoteProvisioning.Environment {
-    let socket = driver.agentSocket
+    let socket = driver.daemonSocket
     return RemoteProvisioning.Environment(
-      driver: driver, agentSocket: socket,
+      driver: driver, daemonSocket: socket,
       connect: { host in
-        try await AgentBootstrap.connect(
+        try await DaemonBootstrap.connect(
           host: host, driver: driver, socket: socket, handOff: false)
       })
   }

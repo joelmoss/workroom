@@ -89,7 +89,7 @@ microphone pair. Terminals keep running under the session helper the previous ve
 started, and new terminals do too while that helper lives, so an update does not change which
 app instance macOS attributes them to. The helper stays alive while Workroom is open, so if
 voice input does not prompt after an update, close every terminal, quit Workroom, wait about
-half a minute (or until `pgrep -f 'wr-agent serve'` shows the helper has exited), then
+half a minute (or until `pgrep -f 'workroomd serve'` shows the helper has exited), then
 relaunch. If it still fails, check System Settings › Privacy & Security ›
 Microphone for the Workroom entry.
 
@@ -177,7 +177,7 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
   `~/Library/Application Support/Workroom/<bundle id>/session.json` — scoped by bundle id so
   Workroom, Workroom Dev and Workroom Nightly never restore each other's windows. Deleting that file
   is always safe: the app then launches as it would on a fresh install. Ordinary workroom shells
-  reattach via the bundled session helper — `wr-agent`
+  reattach via the bundled session helper — `workroomd`
   for anything created since the migration, and the older `workroom-session` for sessions that
   helper is still holding, resolved per session so nothing is taken away mid-use. A pane whose
   session has ended opens a new one in its remembered directory, says so in a toast over the pane, and

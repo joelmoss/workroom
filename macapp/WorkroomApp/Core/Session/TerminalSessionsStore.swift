@@ -1,7 +1,7 @@
 import Foundation
 import WorkroomWire
 
-/// Live daemon sessions filtered to those no tab owns, keyed by workroom. Multiple status bars
+/// Live helper sessions filtered to those no tab owns, keyed by workroom. Multiple status bars
 /// (split panes, multiple windows on different workrooms) share this one instance, so the list
 /// must stay per-workroom rather than a single flat array — otherwise whichever workroom's button
 /// refreshed last overwrites what every OTHER workroom's button renders.

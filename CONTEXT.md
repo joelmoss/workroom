@@ -1,10 +1,10 @@
 # Workroom
 
-Workroom is a native macOS app for working on several branches of a git project at once. Each branch gets its own workroom, a git worktree with its own terminals, history and diffs. A Go CLI is the engine under the app, and a Rust daemon, wr-agent, keeps terminal sessions alive and serves version control and file reads, on this Mac or on a remote host.
+Workroom is a native macOS app for working on several branches of a git project at once. Each branch gets its own workroom, a git worktree with its own terminals, history and diffs. A Go CLI is the engine under the app, and a Rust daemon, workroomd, keeps terminal sessions alive and serves version control and file reads, on this Mac or on a remote host.
 
 ## Naming rules
 
-- **Agent** means wr-agent and nothing else. Claude and Codex are **coding agents**; Swift type names for them say `CodingAgent`, never bare `Agent` (`CodingAgentRunner`, `TerminalCodingAgentManager`).
+- **Agent** means workroomd and nothing else. Claude and Codex are **coding agents**; Swift type names for them say `CodingAgent`, never bare `Agent` (`CodingAgentRunner`, `TerminalCodingAgentManager`).
 - **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base. Provider-facing names (boxd and exe.dev call theirs machines and VMs) and older code keep their words; new names say host.
 - **Base** means a base branch only. It no longer names a machine that remote workrooms are derived from.
 - Use the terms below in code, issues, tests and docs. A name that is not here either belongs to one of the contexts below or is a gap to add.
@@ -31,7 +31,7 @@ The branch a new workroom starts from, set per project or for all projects.
 _Avoid_: Base (alone)
 
 **Setup script**, **Teardown script**:
-The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted, on every kind of workroom: the Go CLI runs them locally, the app runs them on a remote workroom's host through `wr-agent run-script`. A failed teardown stops the delete; **Delete Anyway** deletes without it.
+The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted, on every kind of workroom: the Go CLI runs them locally, the app runs them on a remote workroom's host through `workroomd run-script`. A failed teardown stops the delete; **Delete Anyway** deletes without it.
 
 **Trusted script**:
 A setup or teardown script whose exact contents this Mac has approved, recorded per project. Workroom runs no other script, except a root copy that git ignores, which never arrives by a pull. A changed script needs approving again.
@@ -79,7 +79,7 @@ The strip along the bottom of a pane about that pane alone: its tab's live state
 _Avoid_: Status bar, terminal footer
 
 **Session**:
-A persistent pseudo-terminal held by wr-agent, so a pane's shell outlives the pane, the window and the app.
+A persistent pseudo-terminal held by workroomd, so a pane's shell outlives the pane, the window and the app.
 
 **Surface**:
 The libghostty view that renders a tab's terminal.
@@ -91,10 +91,10 @@ Reconnecting a pane to a session that is still running and repainting its screen
 A command the user sets to run in a workroom, such as `npm start`, started in a tab.
 
 **Program status**:
-What the program in a session (Claude Code, say) reports about itself over OSC 7501: working, waiting on the user, finished or failed. wr-agent keeps it per session and the app shows it as a mark; not progress (OSC 9;4), which only says a command is busy.
+What the program in a session (Claude Code, say) reports about itself over OSC 7501: working, waiting on the user, finished or failed. workroomd keeps it per session and the app shows it as a mark; not progress (OSC 9;4), which only says a command is busy.
 
 **Command result**:
-How the last long shell command in a session ended, passed or failed, as the shell reports it. wr-agent keeps it beside program status and the app shows it with the same finished and failed marks; not program status, which the program reports about itself.
+How the last long shell command in a session ended, passed or failed, as the shell reports it. workroomd keeps it beside program status and the app shows it with the same finished and failed marks; not program status, which the program reports about itself.
 
 ## Remote hosts
 
@@ -125,19 +125,19 @@ A loopback port on the host of a container workroom, or of a workroom on an SSH 
 
 ## Agent connection
 
-Owns the wr-agent wire protocol, its transport and its hand-off. The Mac's end of the connection is the app; the far end is wr-agent.
+Owns the workroomd wire protocol, its transport and its hand-off. The Mac's end of the connection is the app; the far end is workroomd.
 
-**wr-agent**:
+**workroomd**:
 The Rust daemon that holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream. "Agent" on its own means this and nothing else.
 
 **Service**:
-One capability a wr-agent serves over its stream, such as terminal sessions, version control or file reads.
+One capability a workroomd serves over its stream, such as terminal sessions, version control or file reads.
 
 **Hand-off**:
-Replacing a running wr-agent's program with a newer binary in place, keeping its process and every session.
+Replacing a running workroomd's program with a newer binary in place, keeping its process and every session.
 
 **Bootstrap**:
-Putting the bundled Linux wr-agent, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older agent off to it. It runs on every connect; the host's supervisor starts the agent.
+Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older agent off to it. It runs on every connect; the host's supervisor starts the agent.
 
 ## Coding agents
 
@@ -162,7 +162,7 @@ _Avoid_: cswap account, slot (for the account itself)
 
 **Claude profile**:
 The config directory a running Claude Code uses, the default one or one cswap made; it decides which Claude account that Claude bills.
-_Avoid_: Config dir, session (wr-agent's term)
+_Avoid_: Config dir, session (workroomd's term)
 
 ## App shell
 

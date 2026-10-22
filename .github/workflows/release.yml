@@ -92,8 +92,8 @@ jobs:
           brew untap aws/tap
           brew install xcodegen create-dmg getsentry/tools/sentry-cli
 
-      # The bundled `wr-agent` links libghostty-vt so a reattaching pane can be repainted, which
-      # needs Zig — pinned by version AND checksum, as ci.yml's agent job pins it: an unpinned
+      # The bundled `workroomd` links libghostty-vt so a reattaching pane can be repainted, which
+      # needs Zig — pinned by version AND checksum, as ci.yml's daemon job pins it: an unpinned
       # toolchain silently changes the terminal emulator the app ships against. Universal builds
       # need the library for BOTH darwin architectures; the cache holds one prefix per (sha, arch).
       - name: Install Zig
@@ -107,14 +107,14 @@ jobs:
           mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
           echo "$HOME/.zig" >> "$GITHUB_PATH"
 
-      # Scripts/build-agent.sh builds wr-agent per darwin arch and lipos the slices for the universal
+      # Scripts/build-daemon.sh builds workroomd per darwin arch and lipos the slices for the universal
       # app. Homebrew rust can't cross-compile, so ensure rustup has both darwin targets.
-      - name: Add Rust darwin targets (universal wr-agent)
+      - name: Add Rust darwin targets (universal workroomd)
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
-      # The app bundle carries a static Linux wr-agent per arch for remote hosts (issue #227),
-      # cross-built by build-agent.sh with cargo-zigbuild and the Zig installed above.
-      - name: Add Linux agent toolchain
+      # The app bundle carries a static Linux workroomd per arch for remote hosts (issue #227),
+      # cross-built by build-daemon.sh with cargo-zigbuild and the Zig installed above.
+      - name: Add Linux daemon toolchain
         run: |
           rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl
           cargo install cargo-zigbuild --locked --version 0.23.4

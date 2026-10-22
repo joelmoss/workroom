@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -623,7 +623,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(resolved, .init(path: "nested/file.rb", line: 4, column: nil))
 
     sessions.remoteFiles = provider(failing: [
-      "link/../file.rb": FileServiceError.failed(AgentFileProvider.unknownMethod)
+      "link/../file.rb": FileServiceError.failed(DaemonFileProvider.unknownMethod)
     ])
     let older = await sessions.remoteFile("link/../file.rb", cwd: nil, target: target)
     XCTAssertEqual(older, .init(path: "file.rb", line: nil, column: nil))
@@ -664,7 +664,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     sessions.remoteFiles = provider(
       failing: [
         "file.rb:4": FileServiceError.failed(
-          AgentFileProvider.filesystemOperationsBusy)
+          DaemonFileProvider.filesystemOperationsBusy)
       ])
     let busyRead = await sessions.remoteFile("file.rb:4", cwd: nil, target: target)
     XCTAssertNil(busyRead, "a click probed another candidate after file opens reached their cap")
@@ -678,7 +678,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
         files: ["link/file.rb": Data("x\n".utf8)],
         failing: [
           "link/file.rb:12/../t.rb": FileServiceError.failed(
-            AgentFileProvider.resolveWalksBusy)
+            DaemonFileProvider.resolveWalksBusy)
         ])
     }
     let busy = await sessions.remoteFile("link/file.rb:12/../t.rb", cwd: nil, target: target)

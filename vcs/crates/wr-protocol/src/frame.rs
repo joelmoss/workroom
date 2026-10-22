@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 
 /// Frame kinds, matching `SessionFrameKind`'s raw values exactly. The numbering is grouped
-/// deliberately — `0x0*` client→agent, `0x1*` agent→client, `0x2*` control, `0x3*` control
+/// deliberately — `0x0*` client→daemon, `0x1*` daemon→client, `0x2*` control, `0x3*` control
 /// replies — and the gaps are room to grow within a group without renumbering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -38,8 +38,8 @@ pub enum FrameKind {
     /// that sends another request without waiting for this can still see the session (#283).
     Kill = 0x23,
     KillAll = 0x24,
-    /// Replace this agent's program with another binary, keeping every session (#230). Payload:
-    /// `force:u8`, then the binary's absolute path. See `wr_agent::handoff`.
+    /// Replace this daemon's program with another binary, keeping every session (#230). Payload:
+    /// `force:u8`, then the binary's absolute path. See `workroomd::handoff`.
     HandOff = 0x25,
 
     Sessions = 0x31,

@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Foundation
 import OSLog
 import WorkroomVCS
@@ -129,10 +129,10 @@ final class ProgramStatusMonitor: ObservableObject {
   private(set) var sessions: [UUID: ProgramStatusSession] = [:]
   @Published private(set) var hosts: [HostID: HostState] = [:]
 
-  /// Connects `host` and returns its connection: `LocalAgentVCS` for this Mac, which may start the
+  /// Connects `host` and returns its connection: `LocalDaemonVCS` for this Mac, which may start the
   /// agent, and `RemoteHosts` for a remote one, which never wakes a sleeping box.
   var connect: @Sendable (HostID) async throws -> any HostServiceConnection = { host in
-    if host == .local { return try await LocalAgentVCS.shared.programStatus() }
+    if host == .local { return try await LocalDaemonVCS.shared.programStatus() }
     try await RemoteHosts.shared.ensureConnected(host)
     return try await HostConnectionManager.shared.programStatus(host: host)
   }
@@ -185,9 +185,9 @@ final class ProgramStatusMonitor: ObservableObject {
 
   /// False in a test process or a fixture launch, which must never reach the developer's agent:
   /// tests drive their own monitor, and the fixture seeds records straight in (`seed`). A fixture
-  /// launch with a scratch agent of its own (`UITestFixture.liveAgentDirectory`) does watch it.
+  /// launch with a scratch agent of its own (`UITestFixture.liveDaemonDirectory`) does watch it.
   var watchesHosts =
-    !AppEnvironment.current.isTestProcess || UITestFixture.liveAgentDirectory != nil
+    !AppEnvironment.current.isTestProcess || UITestFixture.liveDaemonDirectory != nil
 
   /// Starts following `host`, once.
   func watch(_ host: HostID) {

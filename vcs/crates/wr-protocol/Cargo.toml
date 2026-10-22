@@ -8,9 +8,9 @@ repository.workspace = true
 [lints]
 workspace = true
 
-# The agent's wire: the multiplex envelope and the session frame, with their version constants.
-# No I/O and nothing beyond the error and serialize derives, so anything that speaks to an agent
-# can link it without the agent's own dependencies.
+# The daemon's wire: the multiplex envelope and the session frame, with their version constants.
+# No I/O and nothing beyond the error and serialize derives, so anything that speaks to a daemon
+# can link it without the daemon's own dependencies.
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }

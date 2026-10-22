@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Darwin
 import Foundation
 import WorkroomSystem
@@ -8,26 +8,26 @@ import WorkroomVCS
 /// (design doc, Phase 3). `create` makes each workroom's host: there is no base to derive from
 /// (a derive measured slower than a fresh machine on boxd, 2026-10-10).
 ///
-/// **Every driver must authenticate its peer as strongly as a shell login.** The agent's exec
+/// **Every driver must authenticate its peer as strongly as a shell login.** The daemon's exec
 /// service runs `git` with arbitrary arguments, which is arbitrary code execution, so a stream
 /// that reaches an agent is a shell whatever it is called. ssh meets that bar; an SDK exec or a
 /// WebSocket driver must show it does before it counts as a driver.
 public protocol HostDriver: Sendable {
-  /// The supervised agent's socket on this driver's hosts: what the bootstrap installs the agent
+  /// The supervised daemon's socket on this driver's hosts: what the bootstrap installs the daemon
   /// beside, and the relay and the attach connect to. A remote provider's is on the host's home
   /// disk, so its binary and screens survive a stop (#259).
-  var agentSocket: String { get }
+  var daemonSocket: String { get }
   /// Provisions a workroom's host.
   func create() async throws -> HostID
   /// Takes down a host.
   func destroy(_ host: HostID) async throws
-  /// A byte stream to the agent on `host`, for
-  /// `AgentVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
-  /// `AgentBootstrap.connect` runs the bootstrap first (#231), which is what puts an agent there.
+  /// A byte stream to the daemon on `host`, for
+  /// `DaemonVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
+  /// `DaemonBootstrap.connect` runs the bootstrap first (#231), which is what puts a daemon there.
   /// Spawned as a `.connection`, which `connect` takes over (`HostStream.handOff`).
   func openStream(to host: HostID) async throws -> HostStream
   /// Runs `command`, a line for the host's shell, as a one-off exchange (`HostStream.communicate`)
-  /// rather than a connection, for what the agent bootstrap runs before there is an agent to talk
+  /// rather than a connection, for what the daemon bootstrap runs before there is a daemon to talk
   /// to (#231). For ssh it is the remote command; an SDK driver runs it through the provider's exec
   /// call. The stream must be spawned as an `.exchange`, which `communicate` requires: its stdout
   /// is the stream, its stdin a socket of its own that `communicate` closes for EOF (#305).
@@ -49,7 +49,7 @@ extension HostDriver {
   }
 
   /// Runs `check`, a line for `host`'s shell, until it exits 0: up to `tries` times, 400 ms apart,
-  /// for a wait on a machine coming up (its name, its identity, its agent). A machine mid-reboot
+  /// for a wait on a machine coming up (its name, its identity, its daemon). A machine mid-reboot
   /// refuses or holds the connection; neither is the answer, but the last one is what the failure
   /// says. A cancel ends the wait at once (#259: shared by every provider driver).
   public func poll(
@@ -85,12 +85,12 @@ extension HostDriver {
 
   /// The container image's socket (`vcs/scripts/ssh-fixture/entrypoint.sh`), for a driver that
   /// doesn't say otherwise.
-  public var agentSocket: String { AgentInstall.defaultSocket }
+  public var daemonSocket: String { DaemonInstall.defaultSocket }
 }
 
 /// What a provider driver runs on a new host to set it up.
 public enum HostSetup {
-  /// `Resources/host-setup/systemd.sh`: the identity unit and the agent's supervisor, for a machine
+  /// `Resources/host-setup/systemd.sh`: the identity unit and the daemon's supervisor, for a machine
   /// that runs systemd (boxd, exe.dev).
   public static func systemdScript() throws -> String { try script("systemd") }
 
@@ -110,17 +110,17 @@ public enum HostSetup {
 ///
 /// Not a fifth `HostDriver` method, and not `openStream`: a pane is a process libghostty spawns and
 /// wires to its own pty, and a socketpair made in this process cannot become one. So the driver
-/// hands over a command instead. For ssh that is `ssh -t <host> wr-agent attach …`, the far side's
+/// hands over a command instead. For ssh that is `ssh -t <host> workroomd attach …`, the far side's
 /// attach client running in the pty ssh allocates there. An SDK-exec driver has no such command,
 /// and would need a local bridge process: a Phase 4 question (design doc, Phase 3).
 public protocol HostTerminalDriver: HostDriver {
   /// The command a pane runs to attach to `session` on `host`, starting in `workingDirectory` if
   /// the session is new. `restored` for a pane reattaching after a relaunch or a lost link: the
   /// session must already exist there, and if it has ended the pane says so rather than showing a
-  /// fresh one that looks like it (`wr-agent attach --no-create`).
+  /// fresh one that looks like it (`workroomd attach --no-create`).
   ///
   /// `metadata` is what the app says about the session (`SessionMetadataKey`): its workroom and
-  /// title travel to the host's agent with the attach, so any Mac can find the session (#255).
+  /// title travel to the host's daemon with the attach, so any Mac can find the session (#255).
   func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
     metadata: [(key: String, value: String)]

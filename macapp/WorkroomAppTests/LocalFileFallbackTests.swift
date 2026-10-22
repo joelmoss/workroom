@@ -1,13 +1,13 @@
-import AgentConnection
+import DaemonConnection
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
 
 @testable import Workroom
 
-/// What a LOCAL host does when its agent fails. Native listing and reading are the fallback for a
-/// transport-level failure of an idempotent request; a real answer from a healthy agent is never
-/// second-guessed; and a persistently absent agent must not cost every call a spawn-and-handshake wait.
+/// What a LOCAL host does when its daemon fails. Native listing and reading are the fallback for a
+/// transport-level failure of an idempotent request; a real answer from a healthy daemon is never
+/// second-guessed; and a persistently absent daemon must not cost every call a spawn-and-handshake wait.
 final class LocalFileFallbackTests: XCTestCase {
   private let location = try! RepositoryLocation.remote(host: UUID(), path: "/private/tmp")
 
@@ -17,8 +17,8 @@ final class LocalFileFallbackTests: XCTestCase {
   private struct Scripted: FileProviding {
     let context: FileContext
     var listing: Result<CommandResult, Error> = .success(
-      CommandResult(stdout: "agent", stderr: "", exitCode: 0, timedOut: false))
-    var content: Result<Data, Error> = .success(Data("agent".utf8))
+      CommandResult(stdout: "daemon", stderr: "", exitCode: 0, timedOut: false))
+    var content: Result<Data, Error> = .success(Data("daemon".utf8))
 
     func list() async throws -> CommandResult { try listing.get() }
     func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
@@ -57,9 +57,9 @@ final class LocalFileFallbackTests: XCTestCase {
     }
   }
 
-  /// A healthy agent's answer is the answer. Re-running these natively would either repeat the same
-  /// verdict or, worse, override a refusal the agent enforced on purpose.
-  func testASemanticAnswerFromAHealthyAgentIsNeverRetriedNatively() async {
+  /// A healthy daemon's answer is the answer. Re-running these natively would either repeat the same
+  /// verdict or, worse, override a refusal the daemon enforced on purpose.
+  func testASemanticAnswerFromAHealthyDaemonIsNeverRetriedNatively() async {
     let answers: [Error] = [
       FileServiceError.refused("outside the repository root"), FileServiceError.tooLarge,
       FileServiceError.notFound("gone"), FileServiceError.listingTruncated,
@@ -85,11 +85,11 @@ final class LocalFileFallbackTests: XCTestCase {
     }
   }
 
-  func testAHealthyAgentIsUsedAndCancellationPropagates() async throws {
+  func testAHealthyDaemonIsUsedAndCancellationPropagates() async throws {
     let healthy = LocalFallbackFileProvider(
       primary: Scripted(context: context), fallback: native("native"))
     let listing = try await healthy.list()
-    XCTAssertEqual(listing.stdout, "agent")
+    XCTAssertEqual(listing.stdout, "daemon")
 
     let cancelled = LocalFallbackFileProvider(
       primary: Scripted(
@@ -102,12 +102,12 @@ final class LocalFileFallbackTests: XCTestCase {
     } catch { XCTAssertTrue(error is CancellationError) }
   }
 
-  /// A dead agent must not cost every file call a spawn-and-handshake wait: after a failed
+  /// A dead daemon must not cost every file call a spawn-and-handshake wait: after a failed
   /// acquisition, the FILE service fails fast for the cooldown (VCS reads and writes are unaffected —
   /// they never consult it).
   func testAFailedAcquisitionMakesFilesFailFastForTheCooldown() async throws {
     let attempts = Attempts()
-    let agent = LocalAgentVCS(
+    let daemon = LocalDaemonVCS(
       manager: HostConnectionManager(),
       resolveSocketPath: {
         attempts.count += 1
@@ -118,15 +118,15 @@ final class LocalFileFallbackTests: XCTestCase {
     let context = FileContext(location: root, sharedLocation: nil)
 
     do {
-      _ = try await agent.files(context: context)
-      XCTFail("no agent can be reached")
+      _ = try await daemon.files(context: context)
+      XCTFail("no daemon can be reached")
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.local)) }
     XCTAssertEqual(attempts.count, 1)
 
     let started = Date()
     do {
-      _ = try await agent.files(context: context)
-      XCTFail("still no agent")
+      _ = try await daemon.files(context: context)
+      XCTFail("still no daemon")
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.local)) }
     XCTAssertEqual(attempts.count, 1, "inside the cooldown nothing is attempted")
     XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)

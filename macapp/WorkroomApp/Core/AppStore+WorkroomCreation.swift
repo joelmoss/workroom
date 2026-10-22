@@ -676,7 +676,7 @@ extension AppStore {
     let request = RemoteWorkrooms.ScriptRequest(
       script: .setup, workroom: created.name, path: created.instance.path,
       host: created.instance.host, key: host.key, driver: host.driver,
-      agentBinary: host.environment.agentBinary,
+      daemonBinary: host.environment.daemonBinary,
       rootScript: URL(fileURLWithPath: run.project.path + "/scripts/workroom_setup"),
       judge: Self.judge(.setup, in: run.project.path, cli: cli),
       onStart: { onMain { run.begin(step) } },

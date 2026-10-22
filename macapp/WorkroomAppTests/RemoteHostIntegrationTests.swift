@@ -1,4 +1,4 @@
-import AgentConnection
+import DaemonConnection
 import Darwin
 import HostDrivers
 import WorkroomVCS
@@ -11,14 +11,14 @@ import XCTest
 /// into the container fixture, driven by the real Swift clients. Skipped unless run through the
 /// fixture script, which starts the container and says where it is:
 ///
-///     vcs/scripts/ssh-fixture/run.sh <linux wr-agent> \
+///     vcs/scripts/ssh-fixture/run.sh <linux workroomd> \
 ///       make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/RemoteHostIntegrationTests
 ///
 /// The macOS CI runners have no Docker, so CI covers the stream without ssh (`HostStreamTests`)
 /// and the ssh leg from Rust (`remote_transport.rs`, on the Linux runner).
 final class RemoteHostIntegrationTests: XCTestCase {
   private var directory: URL!
-  private var connections: [AgentVCSConnection] = []
+  private var connections: [DaemonVCSConnection] = []
 
   override func setUp() {
     super.setUp()
@@ -36,9 +36,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
   private struct Fixture {
     let config: String
     let host: SSHTransport.Host
-    /// The Linux agent the fixture was built around: what the bootstrap tests push as the app's
+    /// The Linux daemon the fixture was built around: what the bootstrap tests push as the app's
     /// bundled one, since a Debug build carries none.
-    let agent: URL
+    let daemon: URL
   }
 
   private func fixture() throws -> Fixture {
@@ -57,16 +57,16 @@ final class RemoteHostIntegrationTests: XCTestCase {
         user: try need("WR_SSH_FIXTURE_USER"),
         identityFile: try need("WR_SSH_FIXTURE_IDENTITY"),
         hostKey: try need("WR_SSH_FIXTURE_HOST_KEY"),
-        agentSocket: try need("WR_SSH_FIXTURE_SOCKET")),
-      agent: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_AGENT")))
+        daemonSocket: try need("WR_SSH_FIXTURE_SOCKET")),
+      daemon: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_DAEMON")))
   }
 
   private func connect(_ host: SSHTransport.Host) async throws -> (
-    AgentVCSConnection, UUID
+    DaemonVCSConnection, UUID
   ) {
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: host], directory: directory)
-    let connection = try await AgentVCSConnection.connect(
+    let connection = try await DaemonVCSConnection.connect(
       host: .remote(id), stream: try await driver.openStream(to: .remote(id)))
     connections.append(connection)
     return (connection, id)
@@ -200,7 +200,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(found, .init(path: "lib/only-here.rb", line: 1, column: nil))
     let missing = await sessions.remoteFile("nowhere.rb", cwd: "\(path)/lib", target: target)
     XCTAssertNil(missing)
-    // A parent traversal goes to the agent's `resolve`, which takes `..`; `read`, which refuses
+    // A parent traversal goes to the daemon's `resolve`, which takes `..`; `read`, which refuses
     // any `..`, is only ever sent the path that answer names.
     let parent = await sessions.remoteFile("../file", cwd: "\(path)/lib", target: target)
     XCTAssertEqual(parent, .init(path: "file", line: nil, column: nil))
@@ -304,12 +304,12 @@ final class RemoteHostIntegrationTests: XCTestCase {
     }
   }
 
-  /// The supervised agent's pid on the fixture, by argv0: the installed binary, or the staged
-  /// file a hand-off exec'd. Not `pkill -x wr-agent`, which misses the latter.
-  private static let supervisedAgent = "pgrep -f '^/run/workroom/wr-agent[^ ]* serve'"
+  /// The supervised daemon's pid on the fixture, by argv0: the installed binary, or the staged
+  /// file a hand-off exec'd. Not `pkill -x workroomd`, which misses the latter.
+  private static let supervisedDaemon = "pgrep -f '^/run/workroom/workroomd[^ ]* serve'"
 
-  /// A "bundled" agent for a bootstrap test: a file written beside the fixture's ELF.
-  private func bundledAgent(named name: String, _ contents: Data) throws -> URL {
+  /// A "bundled" daemon for a bootstrap test: a file written beside the fixture's ELF.
+  private func bundledDaemon(named name: String, _ contents: Data) throws -> URL {
     let url = directory.appendingPathComponent(name)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try contents.write(to: url)
@@ -317,52 +317,52 @@ final class RemoteHostIntegrationTests: XCTestCase {
     return url
   }
 
-  /// The app's first connect to a host with no agent (#231): the bootstrap installs the one this
+  /// The app's first connect to a host with no daemon (#231): the bootstrap installs the one this
   /// build bundles for the host's architecture, the supervisor starts it, and the services answer
-  /// through it. The fixture models the host by having its installed agent removed and killed;
+  /// through it. The fixture models the host by having its installed daemon removed and killed;
   /// its supervisor then idles until something is installed.
-  func testAHostWithNoAgentGetsThisBuildInstalledAndConnects() async throws {
+  func testAHostWithNoDaemonGetsThisBuildInstalledAndConnects() async throws {
     let fixture = try fixture()
     try onHost(
       fixture,
-      "rm -f /run/workroom/wr-agent; \(Self.supervisedAgent.replacingOccurrences(of: "pgrep", with: "pkill")) || true"
+      "rm -f /run/workroom/workroomd; \(Self.supervisedDaemon.replacingOccurrences(of: "pgrep", with: "pkill")) || true"
     )
     let gone = Date().addingTimeInterval(10)
-    while try onHost(fixture, "\(Self.supervisedAgent) || true") != "", Date() < gone {
+    while try onHost(fixture, "\(Self.supervisedDaemon) || true") != "", Date() < gone {
       Thread.sleep(forTimeInterval: 0.2)
     }
-    XCTAssertEqual(try onHost(fixture, "\(Self.supervisedAgent) || true"), "")
+    XCTAssertEqual(try onHost(fixture, "\(Self.supervisedDaemon) || true"), "")
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
-    let outcome = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in fixture.agent }, handOff: true)
+    let outcome = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
     XCTAssertTrue(outcome.pushed)
-    XCTAssertEqual(outcome.agent, .installed)
-    let connection = try await AgentBootstrap.connect(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in fixture.agent }, handOff: true)
+    XCTAssertEqual(outcome.daemon, .installed)
+    let connection = try await DaemonBootstrap.connect(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
     connections.append(connection)
     _ = try await connection.sessions()
   }
 
   /// Connecting again with the same build pushes nothing: the probe finds the file, and the
-  /// running agent answers that it is current. Self-contained, whatever an earlier test left
+  /// running daemon answers that it is current. Self-contained, whatever an earlier test left
   /// running: the first `ensure` gets the host to this build, the second is the one measured.
   func testConnectingAgainWithTheSameBuildPushesNothing() async throws {
     let fixture = try fixture()
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
-    _ = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in fixture.agent }, handOff: true)
-    let again = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in fixture.agent }, handOff: true)
+    _ = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
+    let again = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
     XCTAssertEqual(
       again,
       .init(
-        architecture: again.architecture, pushed: false, agent: .current, resources: .current))
+        architecture: again.architecture, pushed: false, daemon: .current, resources: .current))
   }
 
   /// A remote pane is a Ghostty terminal with the shell integration once the bootstrap has pushed
@@ -373,9 +373,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let fixture = try fixture()
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
-    let outcome = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in fixture.agent }, handOff: true)
+    let outcome = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
     XCTAssertTrue(
       outcome.resources == .pushed || outcome.resources == .current,
       String(describing: outcome.resources))
@@ -407,8 +407,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertFalse(fallback.contains("\u{1b}]133;"), fallback)
   }
 
-  /// A remote pane's footer follows its shell through the host's agent (#239): libghostty drops the
-  /// shell's own OSC 7 because its host is not this Mac, so the service connection asks the agent
+  /// A remote pane's footer follows its shell through the host's daemon (#239): libghostty drops the
+  /// shell's own OSC 7 because its host is not this Mac, so the service connection asks the daemon
   /// for the session list, and the directory it names is where the shell is on the host.
   func testTheHostsAgentReportsWhereARemotePanesShellIs() async throws {
     let fixture = try fixture()
@@ -460,7 +460,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       held: layout, key: key, targetID: "wr|/Users/a/app|w", store: try macA.layouts())
     XCTAssertEqual(seeded.revision, 1)
 
-    let macB = try await AgentVCSConnection.connect(
+    let macB = try await DaemonVCSConnection.connect(
       host: .remote(id), stream: try await driver.openStream(to: .remote(id)))
     connections.append(macB)
     let resolved = try await HostLayoutSync.resolve(
@@ -508,21 +508,21 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertNil(listed, "the host still lists the session")
   }
 
-  /// A newer app reconnecting (#231): the host's agent is handed off to the pushed binary (#230)
+  /// A newer app reconnecting (#231): the host's daemon is handed off to the pushed binary (#230)
   /// with an attached pane's shell, its pid and its exit code intact. The pane's link ends with
   /// the exec and it exits 255, which is what the app reattaches on; the pane that comes back is
   /// repainted by the new program and reaches the same shell.
   func testANewerAppHandsOffAndAnAttachedPaneComesBack() async throws {
     let fixture = try fixture()
     // The same ELF with a byte appended: the loader ignores it, and both hashes notice.
-    let newer = try bundledAgent(
-      named: "wr-agent-newer", try Data(contentsOf: fixture.agent) + Data("\n".utf8))
+    let newer = try bundledDaemon(
+      named: "workroomd-newer", try Data(contentsOf: fixture.daemon) + Data("\n".utf8))
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
     // Whatever build is there, get it to the fixture's ELF first, so the hand-off below is real.
-    _ = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in fixture.agent }, handOff: true)
+    _ = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
     let session = UUID()
     let first = try Pane(
       command: driver.attachCommand(
@@ -535,10 +535,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
       before.range(of: #"PID=\d+"#, options: .regularExpression).map { String(before[$0]) },
       before)
 
-    let outcome = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in newer }, handOff: true)
-    XCTAssertEqual(outcome.agent, .handedOff)
+    let outcome = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in newer }, handOff: true)
+    XCTAssertEqual(outcome.daemon, .handedOff)
     XCTAssertTrue(outcome.pushed)
     XCTAssertEqual(first.exitCode(within: 10), 255)
 
@@ -556,17 +556,17 @@ final class RemoteHostIntegrationTests: XCTestCase {
   }
 
   /// Refuse rather than kill (#231): a pushed binary that fails the restore check leaves the old
-  /// agent running, with its sessions, and the app connects to it. Here the binary runs on the
-  /// host (`protocol` answers, and `hand-off` asks, both handed to the installed agent) but its
-  /// `handoff-check` fails, so the agent refuses it.
-  func testABinaryThatFailsItsCheckLeavesTheOldAgentRunningAndConnects() async throws {
+  /// daemon running, with its sessions, and the app connects to it. Here the binary runs on the
+  /// host (`protocol` answers, and `hand-off` asks, both handed to the installed daemon) but its
+  /// `handoff-check` fails, so the daemon refuses it.
+  func testABinaryThatFailsItsCheckLeavesTheOldDaemonRunningAndConnects() async throws {
     let fixture = try fixture()
-    let broken = try bundledAgent(
-      named: "wr-agent-broken",
+    let broken = try bundledDaemon(
+      named: "workroomd-broken",
       Data(
         """
         #!/bin/sh
-        case $1 in protocol|hand-off) exec /run/workroom/wr-agent "$@" ;; esac
+        case $1 in protocol|hand-off) exec /run/workroom/workroomd "$@" ;; esac
         exit 1
 
         """.utf8))
@@ -574,27 +574,27 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
     // Whatever build an earlier test left there, the fixture's ELF first: the file check below
     // must not depend on test order.
-    _ = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in fixture.agent }, handOff: true)
-    let agentBefore = try onHost(fixture, Self.supervisedAgent)
-    let outcome = try await AgentBootstrap.ensure(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in broken }, handOff: true)
+    _ = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
+    let agentBefore = try onHost(fixture, Self.supervisedDaemon)
+    let outcome = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in broken }, handOff: true)
     XCTAssertTrue(outcome.pushed)
-    guard case .keptOlder(let why) = outcome.agent else { return XCTFail("\(outcome)") }
+    guard case .keptOlder(let why) = outcome.daemon else { return XCTFail("\(outcome)") }
     XCTAssertTrue(why.hasPrefix("refused: ") && why.contains("cannot restore"), why)
-    XCTAssertEqual(try onHost(fixture, Self.supervisedAgent), agentBefore)
+    XCTAssertEqual(try onHost(fixture, Self.supervisedDaemon), agentBefore)
     // The same pid is also what a hand-off keeps, so the file is what tells the two apart.
     XCTAssertEqual(
-      try onHost(fixture, "sha256sum < /run/workroom/wr-agent | cut -c1-64"),
-      try AgentBootstrap.digest(of: fixture.agent))
+      try onHost(fixture, "sha256sum < /run/workroom/workroomd | cut -c1-64"),
+      try DaemonBootstrap.digest(of: fixture.daemon))
     // Nothing staged is left where the supervisor starts from.
     XCTAssertEqual(
-      try onHost(fixture, "ls /run/workroom/wr-agent.new.* 2>/dev/null || echo none"), "none")
-    let connection = try await AgentBootstrap.connect(
-      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
-      agent: { _ in broken }, handOff: true)
+      try onHost(fixture, "ls /run/workroom/workroomd.new.* 2>/dev/null || echo none"), "none")
+    let connection = try await DaemonBootstrap.connect(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in broken }, handOff: true)
     connections.append(connection)
     _ = try await connection.sessions()
   }
@@ -650,7 +650,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
           identityFile: host.identityFile,
           hostKey:
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC0nRhoYeGd6b8Mfv4tSxS3ZcKMCaskZ+1vDLvIn1RPM",
-          agentSocket: host.agentSocket)
+          daemonSocket: host.daemonSocket)
       ], directory: directory)
     let session = UUID()
     let pane = try Pane(
@@ -664,8 +664,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
   }
 
   /// A restored pane whose session ended on the host says so, and is never a fresh session passed
-  /// off as the old one: the host's agent refuses to create it (`--no-create`). Nor is it a shell
-  /// of the attach client's own (#255, D7): one would be no agent session, invisible to any other
+  /// off as the old one: the host's daemon refuses to create it (`--no-create`). Nor is it a shell
+  /// of the attach client's own (#255, D7): one would be no daemon session, invisible to any other
   /// Mac and gone with the link, so what is typed into the pane reaches nothing.
   func testARestoredPaneWhoseSessionEndedSaysSoAndStartsNoShell() throws {
     let fixture = try fixture()
@@ -688,7 +688,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let fixture = try fixture()
     let path = try repository(fixture)
     let (connection, _) = try await connect(fixture.host)
-    let result = await AgentCommandRunner(connection: connection).runNetwork(
+    let result = await DaemonCommandRunner(connection: connection).runNetwork(
       "git", ["-c", "alias.environment=!env", "environment"], in: path, timeout: 20)
     XCTAssertEqual(result.exitCode, 0, result.stderr)
     let environment = Dictionary(
@@ -721,7 +721,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let host = SSHTransport.Host(
       address: fixture.host.address, port: fixture.host.port, user: fixture.host.user,
       identityFile: fixture.host.identityFile, hostKey: impostor,
-      agentSocket: fixture.host.agentSocket)
+      daemonSocket: fixture.host.daemonSocket)
     let started = ContinuousClock.now
     do {
       _ = try await connect(host)
@@ -732,19 +732,19 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertLessThan(ContinuousClock.now - started, .seconds(10))
   }
 
-  /// The supervised agent is reached, not started: the relay fails fast with its own reason when
+  /// The supervised daemon is reached, not started: the relay fails fast with its own reason when
   /// nothing listens at the socket the host was configured with.
-  func testAHostWithNoAgentAtItsSocketSaysSo() async throws {
+  func testAHostWithNoDaemonAtItsSocketSaysSo() async throws {
     let fixture = try fixture()
     let host = SSHTransport.Host(
       address: fixture.host.address, port: fixture.host.port, user: fixture.host.user,
       identityFile: fixture.host.identityFile, hostKey: fixture.host.hostKey,
-      agentSocket: "/run/workroom/nothing.sock")
+      daemonSocket: "/run/workroom/nothing.sock")
     do {
       _ = try await connect(host)
-      XCTFail("connected to an agent that is not there")
+      XCTFail("connected to a daemon that is not there")
     } catch HostConnectionError.serviceUnavailable(let detail) {
-      XCTAssertTrue(detail.contains("no agent listening"), detail)
+      XCTAssertTrue(detail.contains("no daemon listening"), detail)
     }
   }
 }
