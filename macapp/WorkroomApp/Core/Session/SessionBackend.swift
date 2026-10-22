@@ -46,7 +46,8 @@ enum SessionBackend: String, CaseIterable, Sendable {
     switch self {
     case .legacySessionHelper: return "session.sock"
     // No longer than `agent.sock`, so no path that fit before the rename (#525) is pushed past
-    // `sun_path` into /tmp, where macOS's cleaner deletes the daemon's lock after three days (#528).
+    // `sun_path` into /tmp, where macOS's cleaner deletes files nobody touches for three days (the
+    // daemon keeps its own lock and log fresh there since #528, but an older one may not).
     // Its lock and log are `workroomd.lock` and `workroomd.log`. A host's socket is `workroomd.sock`.
     case .daemon: return "workroomd"
     }

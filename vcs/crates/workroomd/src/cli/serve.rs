@@ -56,7 +56,7 @@ pub fn run_serve(
     let digest = handoff::own_binary()
         .and_then(|path| handoff::digest(&path))
         .ok();
-    let daemon = Daemon::new();
+    let mut daemon = Daemon::new();
     let (lock, listener) = match handoff {
         Some(table) => match adopt(&daemon, &table) {
             Ok(carried) => {
@@ -135,6 +135,8 @@ pub fn run_serve(
         digest,
         arguments: std::env::args_os().skip(1).collect(),
     });
+    // The lock this program holds, taken or carried over by a hand-off, and the log stderr is.
+    daemon.keep_fresh(lock.fd(), libc::STDERR_FILENO, serve::FRESHEN_EVERY);
     match daemon.run(listener, &socket, timeout) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
