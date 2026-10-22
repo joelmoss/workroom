@@ -1716,6 +1716,10 @@ fn read_session(
 ) {
     let mut buffer = [0u8; READ_CHUNK];
     loop {
+        // Wait OUTSIDE the lock, read under it. A blocked wait holding the attachment lock would
+        // stall every attach and every hand-off freeze until the shell next spoke. A failed wait
+        // is not acted on here: the read below sees the same condition and classifies it.
+        let _ = pty.wait_readable();
         // Read UNDER the attachment lock, and write to the shadow before releasing it. A byte
         // then leaves the pty only while this lock is held and is in the shadow by the time it is
         // released, so whoever holds every session's lock (`SessionStore::frozen`) holds a shadow
@@ -1853,13 +1857,10 @@ fn read_session(
             }
             // `Interrupted` is not a failure — a signal arriving mid-read is ordinary, and the
             // agent takes SIGWINCH and SIGCHLD. Treated as fatal it ended the reader on a read
-            // that had not actually failed.
+            // that had not actually failed. Nothing to say yet: back to `wait_readable`.
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::Interrupted =>
-            {
-                std::thread::sleep(Duration::from_millis(5));
-            }
+                    || e.kind() == std::io::ErrorKind::Interrupted => {}
             // A genuinely fatal read. The session goes with the reader: this was the one exit that
             // did not remove it from the store, so the entry outlived the only thread that drains
             // it — `list` still advertised it, `attach` still succeeded, and nothing read the pty

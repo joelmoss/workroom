@@ -177,7 +177,15 @@ impl Agent {
                             break;
                         }
                     }
-                    std::thread::sleep(Duration::from_millis(25));
+                    // Sleep until a client connects, waking once a second to re-check idleness:
+                    // polling the listener every 25 ms cost 40 wakeups a second for nothing.
+                    let mut descriptor = libc::pollfd {
+                        fd: listener.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // SAFETY: one live pollfd, for the listener this loop owns.
+                    unsafe { libc::poll(&mut descriptor, 1, 1000) };
                 }
                 // An accept failure (descriptor exhaustion, say) ends the agent.
                 Err(e) => {

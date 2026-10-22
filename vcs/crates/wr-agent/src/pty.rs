@@ -316,6 +316,24 @@ impl Pty {
         (group > 0).then_some(group)
     }
 
+    /// Blocks until `read` has something to say: output, or the child gone (a hang-up is
+    /// readable too). The reader sleeps here between bursts instead of polling the master on a
+    /// timer, which cost every idle session 200 wakeups a second. `Interrupted` is returned as
+    /// such; the caller just reads, and a read that would block comes back here.
+    pub fn wait_readable(&self) -> std::io::Result<()> {
+        let mut descriptor = libc::pollfd {
+            fd: self.master,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one live pollfd, for a master descriptor open while `self` is.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, -1) };
+        if ready < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Non-blocking; `Ok(0)` means the child has gone.
     pub fn read(&self, buffer: &mut [u8]) -> std::io::Result<usize> {
         // SAFETY: the pointer and length come from one live `&mut [u8]`, so the kernel writes only
@@ -669,6 +687,46 @@ mod tests {
         .expect("spawn");
         let output = read_until(&pty, "hello-from-pty", Duration::from_secs(5));
         assert!(output.contains("hello-from-pty"), "got {output:?}");
+    }
+
+    /// `wait_readable` sleeps through a quiet child and wakes for its output, and wakes again when
+    /// the child is gone, so a reader that blocks on it never misses the end of a session.
+    #[test]
+    fn wait_readable_wakes_for_output_and_for_the_end() {
+        let pty = spawn(
+            OsStr::new("/bin/sh"),
+            &[OsString::from("-c"), OsString::from("sleep 0.3; echo late")],
+            &env(),
+            None,
+            80,
+            24,
+        )
+        .expect("spawn");
+        let started = Instant::now();
+        pty.wait_readable().expect("wait for output");
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "woke before the child spoke"
+        );
+        let output = read_until(&pty, "late", Duration::from_secs(5));
+        assert!(output.contains("late"), "got {output:?}");
+        // The child exits after its echo: the master reads as ended, and the wait says so too.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut buffer = [0u8; 64];
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "the end of the child never became readable"
+            );
+            pty.wait_readable().expect("wait for the end");
+            match pty.read(&mut buffer) {
+                Ok(0) => break,
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("unexpected read failure: {e}"),
+            }
+        }
     }
 
     /// The reason the self-pipe exists. Without it this spawn "succeeds" and the session closes
