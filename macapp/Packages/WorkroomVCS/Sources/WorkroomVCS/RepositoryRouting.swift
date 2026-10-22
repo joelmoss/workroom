@@ -17,6 +17,8 @@ public enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError,
   case asleep(HostID)
   /// A boxd machine boxd says is not found: deleted, or in another org or account (#356).
   case gone(HostID)
+  /// A host an older Nightly made before the daemon was renamed (#525), which has to be made again.
+  case olderLayout(HostID)
   case registrationRequired
 
   public var description: String { errorDescription ?? "Repository unavailable" }
@@ -26,8 +28,15 @@ public enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError,
     "The box is asleep, or boxd could not say (check the boxd CLI and `boxd auth`). Open the "
     + "workroom to reach it."
 
+  /// What a host with the pre-#525 layout tells the user, wherever it is met: a connect, and a
+  /// pane's attach (`DaemonInstall.formerLayoutMessage`).
+  public static let olderLayoutMessage =
+    "This workroom's host was set up by an older Workroom Nightly, before its daemon was renamed "
+    + "workroomd. Delete the workroom and create it again."
+
   public var errorDescription: String? {
     switch self {
+    case .olderLayout: return Self.olderLayoutMessage
     case .invalidPath(let path): return "Invalid repository path: \(path)"
     case .mixedHosts: return "Working and shared repositories must be on the same host."
     case .unavailable: return "Repository service unavailable."

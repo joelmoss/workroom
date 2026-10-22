@@ -83,6 +83,10 @@ enum DaemonBootstrap {
     case installFailed(String)
     /// This build is missing a script: a packaging bug, never a host's condition.
     case missingScript(String)
+    /// The host was made by an older Nightly or Dev build, before the daemon was renamed (#525):
+    /// its supervisor only starts `wr-agent`, which this build can't change, so the workroom has
+    /// to be made again (eng review D3).
+    case olderLayout
 
     var errorDescription: String? {
       switch self {
@@ -92,6 +96,7 @@ enum DaemonBootstrap {
       case .transportFailed(let detail): return "Could not reach the host's daemon: \(detail)"
       case .installFailed(let detail): return "Could not install the daemon: \(detail)"
       case .missingScript(let name): return "This build has no daemon-bootstrap/\(name).sh."
+      case .olderLayout: return DaemonInstall.formerLayoutMessage
       }
     }
   }
@@ -150,9 +155,11 @@ enum DaemonBootstrap {
       script: "probe", on: host, driver: driver, input: nil,
       arguments: [binary, socket, handOff ? "1" : "0"]
         + architectures.map { bundled[$0]?.digest ?? "-" } + [
-          DaemonInstall.resources(besideSocket: socket)
+          DaemonInstall.resources(besideSocket: socket),
+          DaemonInstall.formerBinary(besideSocket: socket),
         ])
     let report = try parseProbe(probe.output)
+    if report.former { throw Error.olderLayout }
     // A probe cut off part way (its hand-off is the long step) would read as "not asked".
     guard probe.status == 0 else {
       throw Error.transportFailed("the probe did not finish (exit \(probe.status))")
@@ -338,6 +345,8 @@ enum DaemonBootstrap {
     /// The installed daemon's build number (`workroomd protocol`'s `build-number`), or nil when there
     /// is none, it predates build numbers, or it would not run (#255).
     var build: UInt64? = nil
+    /// No daemon there, but a pre-#525 `wr-agent` is: an older Nightly's host (`olderLayout`).
+    var former = false
   }
 
   /// The probe's five lines. Anything not prefixed `WRB ` is whatever the host's shell startup
@@ -368,7 +377,8 @@ enum DaemonBootstrap {
       system: host[0], architecture: host[1],
       installed: installed == nil || installed == "none" ? nil : installed,
       resources: resources == "none" ? nil : resources, handOff: handOff,
-      build: fields["build"]?.first.flatMap { UInt64($0) })
+      build: fields["build"]?.first.flatMap { UInt64($0) },
+      former: fields["former"]?.first == "yes")
   }
 
   /// The install's outcome words, and whether the supervisor started the daemon (nil when that was

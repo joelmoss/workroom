@@ -142,7 +142,10 @@ final class HostStreamTests: XCTestCase {
       resources: "/run/workroom/ghostty", workingDirectory: "/home/w/it's here", restored: false)
     XCTAssertEqual(
       fresh,
-      "test -x '/run/workroom/workroomd' || { echo "
+      "if ! test -e '/run/workroom/workroomd' && test -x '/run/workroom/wr-agent'; then echo "
+        + "'workroom: This workroom'\\''s host was set up by an older Workroom Nightly, before its "
+        + "daemon was renamed workroomd. Delete the workroom and create it again.' >&2; exit 1; fi; "
+        + "test -x '/run/workroom/workroomd' || { echo "
         + "'workroom: no daemon is installed at /run/workroom/workroomd yet' >&2; exit 255; }; "
         + "if test -r '/run/workroom/ghostty/terminfo/x/xterm-ghostty'; then set -- "
         + "'TERM=xterm-ghostty' 'TERMINFO=/run/workroom/ghostty/terminfo' "
@@ -592,6 +595,30 @@ final class HostStreamTests: XCTestCase {
           workingDirectory: "/w", restored: false),
       ], timeout: 5)
     XCTAssertEqual(present.status, 0, present.output)
+  }
+
+  /// A remote pane on a host an older Nightly made before the daemon was renamed (#525): the old
+  /// `wr-agent` is there and `workroomd` is not, so it says to recreate the workroom and ends
+  /// rather than exit 255, which would reattach forever (eng review D3).
+  func testARemotePaneOnAnOldLayoutHostSaysToRecreateTheWorkroom() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-old-\(UUID().uuidString.prefix(8))")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let socket = root.appendingPathComponent("workroomd.sock").path
+    let former = DaemonInstall.formerBinary(besideSocket: socket)
+    try Data("#!/bin/sh\nexit 0\n".utf8).write(to: URL(fileURLWithPath: former))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: former)
+    let result = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"),
+      arguments: [
+        "-c",
+        SSHTransport.remoteAttachCommand(
+          binary: DaemonInstall.binary(besideSocket: socket), session: UUID(), socket: socket,
+          resources: "/r", workingDirectory: "/w", restored: true),
+      ], timeout: 5)
+    XCTAssertEqual(result.status, 1, result.output)
+    XCTAssertTrue(result.output.contains(DaemonInstall.formerLayoutMessage), result.output)
   }
 
   /// A remote pane's terminal, run by a shell (#239): `xterm-ghostty` with the shell integration

@@ -126,6 +126,23 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     XCTAssertEqual(running, .init(architecture: "aarch64", pushed: false, daemon: .current))
   }
 
+  /// A host an older Nightly made before the daemon was renamed (#525) has `wr-agent` and no
+  /// `workroomd`, and its supervisor only ever starts the old name. Nothing is pushed, and the
+  /// connect fails saying to recreate the workroom (eng review D3).
+  func testTheRealProbeRefusesAHostWithTheOldLayout() async throws {
+    let host = try localHost()
+    let old = URL(fileURLWithPath: DaemonInstall.formerBinary(besideSocket: host.socket))
+    try FileManager.default.copyItem(at: try standIn(), to: old)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: old.path)
+    do {
+      _ = try await ensure(host, bundling: try standIn())
+      XCTFail("an old-layout host was bootstrapped")
+    } catch DaemonBootstrap.Error.olderLayout {
+    }
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: host.binary), "nothing is pushed to an old host")
+  }
+
   func testTheRealScriptsHandANewerBuildOffToTheRunningDaemon() async throws {
     let host = try localHost()
     try preinstall(try standIn(), on: host)

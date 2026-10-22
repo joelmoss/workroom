@@ -244,7 +244,12 @@ public enum SSHTransport {
       + metadata.compactMap { entry in
         names[entry.key].flatMap { entry.value.isEmpty ? nil : "\($0)=\(entry.value)" }
       }
-    return "test -x \(shellQuoted(binary)) || { echo "
+    // A host an older Nightly made before the rename (#525) has only `wr-agent`, and its supervisor
+    // starts only that, so attaching again could never succeed: it says so and ends (D3).
+    let former = DaemonInstall.formerBinary(besideSocket: socket)
+    return "if ! test -e \(shellQuoted(binary)) && test -x \(shellQuoted(former)); then echo "
+      + shellQuoted("workroom: " + DaemonInstall.formerLayoutMessage) + " >&2; exit 1; fi; "
+      + "test -x \(shellQuoted(binary)) || { echo "
       + shellQuoted("workroom: no daemon is installed at \(binary) yet") + " >&2; exit 255; }; "
       + "if test -r \(shellQuoted(resources + "/terminfo/x/xterm-ghostty")); then set -- "
       + integrated.map(shellQuoted).joined(separator: " ")
