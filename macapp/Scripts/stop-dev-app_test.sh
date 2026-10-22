@@ -166,7 +166,7 @@ fi
 expect_alive "$other_app" "another workroom's app, on the second run"
 
 # Which id a session helper belongs to: the one its socket names, whichever bundle its binary lives
-# in, since an agent runs the copy that spawned it or last handed it off. Checked against a synthetic
+# in, since a daemon runs the copy that spawned it or last handed it off. Checked against a synthetic
 # process table: a copy of `sleep` cannot carry `serve --socket …` arguments and stay alive.
 PLAIN_ID="com.developwithstyle.workroom.dev"
 OTHER_ID="com.developwithstyle.workroom.dev.wr-quiet-fern-0a1b2c"

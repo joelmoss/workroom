@@ -78,11 +78,11 @@ struct PersistentSessionControlClient {
 
   /// The `sockaddr_un` for a path, or nil when the path cannot fit one.
   ///
-  /// Shared by `canConnect` and `transact` so the length rule — bytes EXCLUDING the NUL, matching
-  /// `SessionSocket.makeAddress` and `PersistentSessionPaths.resolveSocketPath` — is written once.
-  /// It was got wrong here before by one byte, which let a 103-byte path attach fine while every
-  /// list/kill/cleanup through this client silently failed.
-  private static func address(for socketPath: String) -> sockaddr_un? {
+  /// Shared by `transact` and `PersistentSessionPaths.answers` so the length rule — bytes EXCLUDING
+  /// the NUL, matching `SessionSocket.makeAddress` and `PersistentSessionPaths.resolveSocketPath` —
+  /// is written once. It was got wrong here before by one byte, which let a 103-byte path attach
+  /// fine while every list/kill/cleanup through this client silently failed.
+  static func address(for socketPath: String) -> sockaddr_un? {
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
     let path = Array(socketPath.utf8CString)

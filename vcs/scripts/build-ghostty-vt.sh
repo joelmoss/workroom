@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Builds `libghostty-vt` — Ghostty's terminal emulator as a standalone C library — for one target,
-# and caches the result. The agent links it to keep a shadow copy of every session's screen, which
+# and caches the result. workroomd links it to keep a shadow copy of every session's screen, which
 # is what lets a reattaching client be repainted instead of arriving at a blank terminal.
 #
 #   ./build-ghostty-vt.sh [--target <triple>] [--print-prefix]

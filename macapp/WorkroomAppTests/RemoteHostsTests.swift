@@ -92,19 +92,23 @@ final class RemoteHostsTests: XCTestCase {
 
   /// A host an older Nightly made before the daemon was renamed (#525) is refused by the bootstrap,
   /// and the refusal keeps its words through the connect, so the workroom says to recreate it
-  /// rather than "Repository service unavailable" (eng review D3).
+  /// rather than "Repository service unavailable" (eng review D3), and the status sweep's reads
+  /// inside the backoff keep saying so rather than flip to "unavailable" between probes.
   func testAnOldLayoutHostSaysToRecreateTheWorkroom() async throws {
     let host = HostID.remote(UUID())
+    let instant = ContinuousClock.now
     let remote = RemoteHosts(
       connectHost: { _ in throw DaemonBootstrap.Error.olderLayout }, isConnected: { _ in false },
-      startHost: { _ in }, now: { ContinuousClock.now })
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("an old-layout host connected")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .olderLayout(host))
-      XCTAssertEqual(
-        (error as? LocalizedError)?.errorDescription, DaemonInstall.formerLayoutMessage)
+      startHost: { _ in }, now: { instant })
+    for attempt in ["the probe", "a read inside the backoff"] {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("an old-layout host connected (\(attempt))")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, .olderLayout(host), attempt)
+        XCTAssertEqual(
+          (error as? LocalizedError)?.errorDescription, DaemonInstall.formerLayoutMessage, attempt)
+      }
     }
   }
 
