@@ -6,9 +6,9 @@
 #   WR_HOST_IMAGE=<image> vcs/scripts/ssh-fixture/host-image-test.sh   # test a built image (#309)
 #
 # run.sh only ever builds FIXTURE=1, so nothing else exercises the paths only this variant takes:
-# the `[ "$FIXTURE" = 1 ] || exit 0` steps, the `wr-agen[t]` COPY with no daemon in the context, and
+# the `[ "$FIXTURE" = 1 ] || exit 0` steps, the `workroom[d]` COPY with no daemon in the context, and
 # the entrypoint's daemon and fake-GitHub guards. Built from this directory as it is, exactly as the
-# make target builds it, so the context has no agent. Then it checks that sshd serves and that none
+# make target builds it, so the context has no daemon. Then it checks that sshd serves and that none
 # of the fixture's pieces made it in.
 #
 # Each check looks for something being absent, which a renamed path would satisfy without testing

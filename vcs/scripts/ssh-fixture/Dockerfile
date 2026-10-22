@@ -56,7 +56,7 @@ RUN [ "$FIXTURE" = 1 ] || exit 0; \
  && git config --system credential.https://github.com.helper /usr/local/bin/git-credential-fixture \
  && echo ghs_fixture_clone_token_0123456789 > /etc/workroom-fixture/clone-token
 
-# `wr-agen[t]`: a pattern, so a context without a daemon (FIXTURE=0) copies the rest.
-COPY --chmod=755 wr-agen[t] entrypoint.sh identity.sh fake-github.py git-credential-fixture \
+# `workroom[d]`: a pattern, so a context without a daemon (FIXTURE=0) copies the rest.
+COPY --chmod=755 workroom[d] entrypoint.sh identity.sh fake-github.py git-credential-fixture \
   /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

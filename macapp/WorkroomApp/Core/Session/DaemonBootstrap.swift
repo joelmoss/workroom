@@ -444,15 +444,21 @@ enum DaemonBootstrap {
 
   /// The build number a bundled daemon was built with, read out of its bytes rather than by running
   /// it: the bundled daemons are Linux binaries the Mac cannot run. The daemon keeps it as the
-  /// marker `WORKROOMD-BUILD:<number>;` (`handoff::BUILD_MARKER`). 0 when there is none, which orders
-  /// below every numbered build.
+  /// marker `WORKROOMD-BUILD:<number>;` (`handoff::BUILD_MARKER`). The first match that reads as one
+  /// counts: the prefix alone can sit ahead of it in a linked binary. 0 when there is none, which
+  /// orders below every numbered build.
   static func buildNumber(in data: Data) -> UInt64 {
     let marker = Data("WORKROOMD-BUILD:".utf8)
-    guard let start = data.range(of: marker)?.upperBound else { return 0 }
-    let digits = data[start...].prefix { (0x30...0x39).contains($0) }
-    guard data.index(start, offsetBy: digits.count) < data.endIndex,
-      data[data.index(start, offsetBy: digits.count)] == UInt8(ascii: ";")
-    else { return 0 }
-    return UInt64(String(decoding: digits, as: UTF8.self)) ?? 0
+    var searched = data.startIndex..<data.endIndex
+    while let found = data.range(of: marker, in: searched) {
+      let start = found.upperBound
+      let digits = data[start...].prefix { (0x30...0x39).contains($0) }
+      let end = data.index(start, offsetBy: digits.count)
+      if !digits.isEmpty, end < data.endIndex, data[end] == UInt8(ascii: ";") {
+        return UInt64(String(decoding: digits, as: UTF8.self)) ?? 0
+      }
+      searched = start..<data.endIndex
+    }
+    return 0
   }
 }
