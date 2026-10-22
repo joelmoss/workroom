@@ -621,6 +621,33 @@ final class HostStreamTests: XCTestCase {
     XCTAssertTrue(result.output.contains(DaemonInstall.formerLayoutMessage), result.output)
   }
 
+  // Value: protects=a host holding both a daemon and a leftover wr-agent still attaches;
+  // fails_when=the attach refusal drops its `! test -e <binary>` guard and refuses every host that kept wr-agent;
+  // why_new=the test above has no workroomd, so it cannot tell a guarded refusal from an unguarded one; seam=none; no_claim=none
+  func testAHostWithADaemonAndALeftoverOldBinaryStillAttaches() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-both-\(UUID().uuidString.prefix(8))")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let socket = root.appendingPathComponent("workroomd.sock").path
+    for path in [
+      DaemonInstall.formerBinary(besideSocket: socket), DaemonInstall.binary(besideSocket: socket),
+    ] {
+      try Data("#!/bin/sh\nexit 0\n".utf8).write(to: URL(fileURLWithPath: path))
+      try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+    }
+    let result = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"),
+      arguments: [
+        "-c",
+        SSHTransport.remoteAttachCommand(
+          binary: DaemonInstall.binary(besideSocket: socket), session: UUID(), socket: socket,
+          resources: "/r", workingDirectory: "/w", restored: false),
+      ], timeout: 5)
+    XCTAssertEqual(result.status, 0, result.output)
+    XCTAssertFalse(result.output.contains(DaemonInstall.formerLayoutMessage), result.output)
+  }
+
   /// A remote pane's terminal, run by a shell (#239): `xterm-ghostty` with the shell integration
   /// once the host holds the resource set, and `xterm-256color` without it on a host that does
   /// not, as before the set was pushed.
