@@ -87,17 +87,14 @@ enum PersistentSessionPaths {
     let preferred = try
       (preferredSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
       .deletingLastPathComponent
-    // As `resolveSocketPath` always has, a fallback that can't be made (another user owns that
-    // name in /tmp) only matters when the preferred path is too long to use.
-    let fallback: String?
-    do {
-      fallback = try (fallbackSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
+    // The fallback is made only when the new name doesn't fit here, as `resolveSocketPath` does, so
+    // one another user owns in /tmp can't stop the daemon. No daemon was ever started there when it
+    // fits: `agent.sock` is the shorter name, so it fit here too.
+    let fallback =
+      (preferred + "/" + SessionBackend.daemon.socketFileName).utf8.count < sunPathLimit
+      ? nil
+      : try (fallbackSocketPath(fileManager: fileManager, backend: .daemon) as NSString)
         .deletingLastPathComponent
-    } catch {
-      guard (preferred + "/" + SessionBackend.daemon.socketFileName).utf8.count < sunPathLimit
-      else { throw error }
-      fallback = nil
-    }
     return daemonSocket(
       preferredDirectory: preferred, fallbackDirectory: fallback, answers: answers)
   }

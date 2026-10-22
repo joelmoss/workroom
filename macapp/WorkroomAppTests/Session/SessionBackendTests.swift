@@ -44,11 +44,17 @@ final class SessionBackendTests: XCTestCase {
   }
 
   /// A /tmp fallback that can't be made private (another user on the Mac owns its name) doesn't
-  /// stop the daemon when Application Support is short enough, as before the rename.
-  func testAFallbackThatCannotBeMadeDoesNotStopTheDaemon() throws {
-    // A short Application Support, so the preferred path fits whatever this Mac's home and bundle.
+  /// stop the daemon when Application Support is short enough, as before the rename; when it is
+  /// too long, that fallback's error is what the caller sees.
+  func testAFallbackThatCannotBeMadeStopsTheDaemonOnlyWhenItIsNeeded() throws {
+    // Its own Application Support, so the preferred path's length doesn't hang on this Mac's.
     final class FallbackOwnedByAnotherUser: FileManager {
-      let support = URL(fileURLWithPath: "/tmp/wrs-\(UUID().uuidString.prefix(6))")
+      let support: URL
+      init(supportNameLength: Int) {
+        support = URL(
+          fileURLWithPath: "/tmp/wrs-" + String(repeating: "s", count: supportNameLength))
+        super.init()
+      }
       override func url(
         for directory: FileManager.SearchPathDirectory, in domain: FileManager.SearchPathDomainMask,
         appropriateFor url: URL?, create shouldCreate: Bool
@@ -60,12 +66,18 @@ final class SessionBackendTests: XCTestCase {
         try super.setAttributes(attributes, ofItemAtPath: path)
       }
     }
-    let files = FallbackOwnedByAnotherUser()
-    defer { try? FileManager.default.removeItem(at: files.support) }
-    let socket = try PersistentSessionPaths.daemonSocket(fileManager: files)
+    let short = FallbackOwnedByAnotherUser(supportNameLength: 6)
+    defer { try? FileManager.default.removeItem(at: short.support) }
+    let socket = try PersistentSessionPaths.daemonSocket(fileManager: short)
     XCTAssertNil(socket.live)
-    XCTAssertTrue(socket.path.hasPrefix(files.support.path + "/"), socket.path)
+    XCTAssertTrue(socket.path.hasPrefix(short.support.path + "/"), socket.path)
     XCTAssertTrue(socket.path.hasSuffix("/sessions/workroomd.sock"), socket.path)
+
+    let long = FallbackOwnedByAnotherUser(supportNameLength: PersistentSessionPaths.sunPathLimit)
+    defer { try? FileManager.default.removeItem(at: long.support) }
+    XCTAssertThrowsError(try PersistentSessionPaths.daemonSocket(fileManager: long)) {
+      XCTAssertEqual(($0 as? CocoaError)?.code, .fileWriteNoPermission)
+    }
   }
 
   /// A stable user's daemon, started by v2.1.0, is found on `agent.sock` and used as it is: its
