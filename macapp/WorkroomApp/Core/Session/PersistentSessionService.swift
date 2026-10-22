@@ -247,7 +247,7 @@ final class PersistentSessionService {
   /// **Resolved once per session and remembered.** It used to re-probe on every call, and one pane
   /// asks twice — `attachCommand` for the binary, `launchEnvironment` for the socket. A helper that
   /// answered the first inside its 2-second deadline and missed the second handed libghostty
-  /// `workroom-session attach` pointed at `daemon.sock`: the Swift helper then binds the daemon's
+  /// `workroom-session attach` pointed at the daemon's socket: the Swift helper then binds the daemon's
   /// socket, which `SessionBackend` says cannot happen by construction, and every daemon session
   /// becomes unlistable. One answer per session is what makes the pair consistent.
   ///
@@ -685,7 +685,7 @@ final class PersistentSessionService {
     if isRemote(sessionID) { return .unreachable }
     // Routed by OWNER, with no gate on the preferred backend's socket. That gate was left over
     // from before per-session routing and inverted the drain: with the daemon preferred but no
-    // `daemon.sock` yet, every session the helper still owned reported `.unreachable` — and the
+    // daemon socket yet, every session the helper still owned reported `.unreachable` — and the
     // close, delete and quit paths built on this then returned without killing them.
     // `controlPlane(forSession:)` already resolves an EXISTING socket for the owning backend.
     guard let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
@@ -785,7 +785,7 @@ final class PersistentSessionService {
     }
     let client = controlPlane(socketPath: socketPath, backend: owner)
     // `notice`, which the log store keeps: a session that vanished has to be told apart from one
-    // this app ended. The daemon logs the same kill with this process's pid (`daemon.log`).
+    // this app ended. The daemon logs the same kill with this process's pid (`workroomd.log`).
     logger.notice("ending persistent session \(sessionID.uuidString, privacy: .public)")
     // Resolved above, via `backend(forSession:)`, then forgotten: this session is over, and
     // holding its owner would outlive the thing it describes.

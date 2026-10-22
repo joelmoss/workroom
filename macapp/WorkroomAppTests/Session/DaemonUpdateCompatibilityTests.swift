@@ -5,7 +5,7 @@ import XCTest
 @testable import Workroom
 
 /// The update every stable user makes (#525): Workroom v2.1.0 left its daemon running as `wr-agent`
-/// on `agent.sock`, holding their terminals, and this build is `workroomd` on `daemon.sock`.
+/// on `agent.sock`, holding their terminals, and this build is `workroomd`, on a socket of that name.
 /// Tested against that daemon itself, pinned as `Fixtures/wr-agent-v2.1.0` (lifted unmodified from
 /// the v2.1.0 app, sha256 c2f48815…), for the reason `SessionShimCompatibilityTests` pins v2.0.0's
 /// helper: a stand-in built from this tree moves with it and cannot catch the drift.

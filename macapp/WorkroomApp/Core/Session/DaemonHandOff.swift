@@ -40,7 +40,7 @@ enum DaemonHandOff {
       let socket = PersistentSessionService.shared.existingSocketPath(for: .daemon)
     else { return }
     // Logged at the start too, so the hand-off's window can be placed beside what the daemon's own
-    // log (`daemon.log`) says happened to each session meanwhile.
+    // log (`workroomd.log`) says happened to each session meanwhile.
     logger.notice("daemon hand-off: asking the daemon to become \(binary.path, privacy: .public)")
     Task.detached(priority: .userInitiated) {
       let result = run(binary: binary, socket: socket)

@@ -282,7 +282,7 @@ it could not deliver. `--json` prints the same with a `schema_version`. Run it o
 terminal runs on (on this Mac it is inside the app bundle, `Contents/MacOS/workroomd`).
 
 The daemon logs subscribers, dropped replies, evictions and truncations to the log beside its
-socket: on this Mac `~/Library/Application Support/<bundle id>/sessions/daemon.log`, on a remote host
+socket: on this Mac `~/Library/Application Support/<bundle id>/sessions/workroomd.log`, on a remote host
 beside the daemon's socket there. The app logs a host going stale and coming back under the `program-status`
 category (`log stream --predicate 'category == "program-status"'`).
 
