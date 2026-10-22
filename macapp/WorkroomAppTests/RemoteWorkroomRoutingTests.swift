@@ -180,6 +180,21 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertEqual(status.aggregateWeight, 1, "a gone machine must mark its project")
   }
 
+  // Value: protects=a host an older Nightly made (#525) shows its own words on the row and marks its project, not the generic "unavailable";
+  // fails_when=the resolver's .olderLayout catch goes (falls into .unavailable) or .olderLayout drops out of the weighted failures;
+  // why_new=RemoteHostsTests stops at the thrown .olderLayout and nothing maps it to the status the Changes panel reads; seam=none; no_claim=the panel's text itself (private view)
+  func testAnOlderLayoutHostReadsAsOlderLayoutNotUnavailable() async throws {
+    let router = RepositoryRouter(connectRemote: { throw RepositoryRoutingError.olderLayout($0) })
+    let remote = try RepositoryLocation.remote(host: UUID(), path: path)
+    router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
+
+    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
+
+    XCTAssertEqual(status.failure, .olderLayout)
+    XCTAssertNil(status.dirty)
+    XCTAssertEqual(status.aggregateWeight, 1, "an old-layout host must mark its project")
+  }
+
   /// A target names its repository by host: a reachable remote one by its host's location, and one
   /// it can't reach by none, so a viewer never reads its path on this Mac.
   func testATargetResolvesItsRemoteLocationFromItsHost() throws {

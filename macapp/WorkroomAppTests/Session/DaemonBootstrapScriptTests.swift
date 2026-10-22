@@ -143,6 +143,20 @@ final class DaemonBootstrapScriptTests: XCTestCase {
       FileManager.default.fileExists(atPath: host.binary), "nothing is pushed to an old host")
   }
 
+  // Value: protects=a host with a current workroomd and a leftover wr-agent connects normally;
+  // fails_when=the probe's `[ ! -e "$binary" ]` guard goes and every host that kept wr-agent is refused;
+  // why_new=the refusal test above has no workroomd on the host; seam=none; no_claim=none
+  func testTheRealProbeDoesNotRefuseAHostThatHasADaemonAndAnOldBinary() async throws {
+    let host = try localHost()
+    let build = try standIn()
+    try preinstall(build, on: host)
+    let old = URL(fileURLWithPath: DaemonInstall.formerBinary(besideSocket: host.socket))
+    try FileManager.default.copyItem(at: build, to: old)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: old.path)
+    let outcome = try await ensure(host, bundling: build)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: false, daemon: .installed))
+  }
+
   func testTheRealScriptsHandANewerBuildOffToTheRunningDaemon() async throws {
     let host = try localHost()
     try preinstall(try standIn(), on: host)
