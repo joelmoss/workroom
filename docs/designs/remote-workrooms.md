@@ -2950,9 +2950,10 @@ disagreement passes every test on either side alone while presenting as an empty
    as the fixture. See Provider Decision. Residual risk is vendor maturity, not selection. Which
    provider becomes the *second* driver is open, and the agnosticism claim is unverifiable until one
    exists (OQ18).
-4. **What does a remote "Run command" tab do?** Run tabs are explicitly never persistent
-   (`TerminalPersistentSessionPolicy`), a local-only assumption a remote dev server probably
-   invalidates.
+4. **What does a remote "Run command" tab do? ANSWERED — 2026-10-23 (#522, ADR 0058).** It runs
+   on the workroom's host, its supervisor inside a daemon session there, and like every run tab,
+   local or remote, it now survives quit. The old "run tabs are never persistent" rule
+   (`TerminalPersistentSessionPolicy`) was an accident of build order, not a decision.
 5. **The Quick Terminal bypasses `TerminalSessions`** and builds a bare `GhosttySurfaceView`.
    Presumably local forever — but decide it rather than inherit it.
 6. **Non-GitHub remotes.** Now the *primary* credential problem (premise 6), since GitHub needs no
