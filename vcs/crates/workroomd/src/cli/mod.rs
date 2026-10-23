@@ -27,6 +27,14 @@ pub fn flag(args: &[String], name: &str) -> Option<String> {
     args.get(index + 1).cloned()
 }
 
+/// Every value given for a repeatable flag, in order.
+pub fn flags(args: &[String], name: &str) -> Vec<String> {
+    args.windows(2)
+        .filter(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
 /// Hands this process's crashes, and those of everything it starts, back to the kernel (#329).
 ///
 /// The app's crash reporter (Sentry) takes the app's crashes through a Mach exception port, and

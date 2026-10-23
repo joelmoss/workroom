@@ -188,9 +188,18 @@ public enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   /// is still there, named by what the driver called it. `host`, when the driver can name it, is
   /// the host it made, so the caller can record it for a later delete to take down (#356).
   case leftBehind(cause: String, leftover: [String], host: HostID? = nil)
+  /// A container made by a build before #308, reached over ssh, which this build doesn't speak.
+  /// Only Nightly and Dev builds made them; they are made again rather than migrated.
+  case olderContainer
+
+  /// What a container made by an older build says, wherever it is met.
+  public static let olderContainerMessage =
+    "This workroom's container was made by an older build of Workroom, which this build can't "
+    + "open. Delete it and create it again."
 
   public var errorDescription: String? {
     switch self {
+    case .olderContainer: return Self.olderContainerMessage
     case .unknownHost: return "This driver has no such host."
     case .notImplemented(let what): return "\(what) is not implemented yet."
     case .invalidConfiguration(let detail): return "Invalid host configuration: \(detail)"
