@@ -73,7 +73,7 @@ If a program left a request behind, for example because it crashed in the middle
 
 Marks work in terminals on remote hosts too. When Workroom loses its link to a host, the marks stay with a small clock beside them, and the tooltip says they may be out of date until Workroom reconnects. **Clear Status** waits for the link as well.
 
-Run tabs and other panes that do not run under Workroom's background helper never show program status.
+Panes that do not run under Workroom's background helper, such as Investigate tabs, never show program status. In Workroom 2.1.0 that includes run tabs; in Nightly a run tab runs under the helper, so it shows program status too.
 
 ### For program authors
 

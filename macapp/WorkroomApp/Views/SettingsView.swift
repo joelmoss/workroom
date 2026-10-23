@@ -528,9 +528,9 @@ private struct TerminalSettingsPane: View {
         }
         Text(
           "Terminals keep running in the background after you quit, and reattach when you "
-            + "relaunch Workroom. Closing a terminal ends it. Run commands and the Quick Terminal "
-            + "are never kept. Stopping detached terminals ends every one no open tab is "
-            + "attached to."
+            + "relaunch Workroom. Closing a terminal ends it. Run commands keep running too, "
+            + "unless you choose to stop them when you quit, and the Quick Terminal is never "
+            + "kept. Stopping detached terminals ends every one no open tab is attached to."
         )
         .font(.caption)
         .foregroundStyle(.secondary)

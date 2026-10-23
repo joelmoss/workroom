@@ -62,7 +62,7 @@ Log out and back in so apps you open from the Dock see the new shell, then open 
 
 ## Terminals that outlive their tabs
 
-A terminal's shell is held by a background helper, not by its tab. That is why terminals keep running when you quit Workroom, and reattach when you open it again. Closing a terminal ends it. Run commands and the Quick Terminal are never kept.
+A terminal's shell is held by a background helper, not by its tab. That is why terminals keep running when you quit Workroom, and reattach when you open it again. Closing a terminal ends it. In Nightly, run commands are kept too, unless you choose to stop them when you quit (see [Quitting with a run going](#quitting-with-a-run-going)). The Quick Terminal is never kept.
 
 > [!NOTE]
 > In Workroom 2.1.0 this was a setting named **Persist sessions**. Nightly removed the setting, and terminals always survive a quit.
@@ -96,7 +96,24 @@ In Workroom 2.1.0 these are in a **Run** menu, and going to the run terminal is 
 
 The workroom's title bar and the root row in the sidebar have the same buttons. While a run is going, the title bar shows **Restart** and **Stop**. **Stop** sends the command Ctrl-C and waits for it to exit. If it has not exited after about six seconds, Workroom force-quits it.
 
-The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state. If a run ends or fails while you are looking at another tab or workroom, a toast tells you. Run commands stop when you quit Workroom.
+The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state. If a run ends or fails while you are looking at another tab or workroom, a toast tells you. In Workroom 2.1.0, run commands stop when you quit Workroom.
+
+### Quitting with a run going {nightly}
+
+A run command is held by the background helper, as a terminal is, so it can keep running after you quit. The first time you quit with a run going, Workroom asks whether to keep your dev servers running or stop them, and remembers your answer. Change it in **Settings ▸ General ▸ When quitting with dev servers running**: **Ask**, **Keep running** or **Stop**. An update always keeps them running, whatever you chose.
+
+When you open Workroom again, each run's tab comes back where you left it:
+
+- A run that is still going reattaches, with no toast.
+- A run you stopped comes back stopped, with its output. Press Run to start it again.
+- A run that exited or failed while Workroom was closed comes back stopped, with the toast that says how it ended.
+- A run that ended because your Mac or its host restarted comes back stopped, and says so. Nothing starts by itself.
+
+If Workroom's background helper isn't running, the run tab says so and runs nothing. Press Run to try again.
+
+### Run on a remote workroom {nightly}
+
+On a remote or container workroom, the run command runs on the workroom's host, in its directory there, in the host user's login shell. Run, Stop and Restart work as they do on your Mac. A run started on one Mac shows on another that opens the same workroom: pressing Run there shows the run that's going rather than starting a second one. To reach a container's dev server from your Mac, forward its port. See [Port forwarding](../remote/port-forwarding.md).
 
 ## Quick Terminal
 

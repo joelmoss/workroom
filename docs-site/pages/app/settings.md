@@ -16,6 +16,14 @@ Settings that belong to one project, such as its run command, are in [Project Se
 
 **Workroom ▸ Confirm Before Quitting** in the menu is the same switch.
 
+### Quitting with dev servers running {nightly}
+
+| Setting | What it does |
+| --- | --- |
+| **When quitting with dev servers running** | What quitting does to run commands that are still going. **Ask** (the default) asks the first time and keeps your answer. **Keep running** leaves them going, and their tabs reattach when you reopen Workroom. **Stop** stops each one as Stop does. An update always keeps them running. |
+
+The question appears whether or not **Confirm before quitting** is on. See [Quitting with a run going](terminals-and-tabs.md#quitting-with-a-run-going).
+
 ### New Workrooms {nightly}
 
 | Setting | What it does |
@@ -59,7 +67,7 @@ In Workroom 2.1.0 there is no Notifications pane. **Show notifications in the me
 
 ### Stop Detached Terminals… {nightly}
 
-The **Stop Detached Terminals…** button counts the background terminals that no open tab is attached to and asks before it stops them. The note under it explains that terminals keep running after you quit, reattach when you relaunch, and that run commands and the Quick Terminal are never kept. See [Terminals and tabs](terminals-and-tabs.md#detached-sessions).
+The **Stop Detached Terminals…** button counts the background terminals that no open tab is attached to and asks before it stops them. The note under it explains that terminals keep running after you quit and reattach when you relaunch, that run commands do too unless you choose to stop them, and that the Quick Terminal is never kept. See [Terminals and tabs](terminals-and-tabs.md#detached-sessions).
 
 In Workroom 2.1.0 this pane has a **Persist sessions** switch instead, and terminals only survive a quit while it is on.
 
