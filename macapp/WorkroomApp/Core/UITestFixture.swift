@@ -73,8 +73,8 @@ enum UITestFixture {
   /// Once the app is gone, end its scratch daemon (`liveDaemonDirectory`), every process still
   /// naming that directory (a run session's supervisor), and the directory. Nothing else can:
   /// `XCUIApplication.terminate()` skips the app's quit path, the runner cannot spawn a process,
-  /// and a parked run session keeps the daemon from idling out (#533). Only a `/tmp` directory, so
-  /// a stray flag can never `rm -rf` anything else.
+  /// and a parked run session keeps the daemon from idling out (#533). Only a `/tmp/wr-` path, the
+  /// shape `useScratchDaemon()` passes, so a flag naming some other directory is left alone.
   static func endLiveDaemonWhenTheAppExits() {
     guard let directory = liveDaemonDirectory, directory.hasPrefix("/tmp/wr-") else { return }
     let watcher = Process()
