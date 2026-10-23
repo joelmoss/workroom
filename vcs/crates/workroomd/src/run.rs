@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::session::{SessionId, SessionStore};
 
@@ -16,6 +16,10 @@ use crate::session::{SessionId, SessionStore};
 /// it read the file itself, and a stop or a crash should show at once. A run's file is one short
 /// line, and a Mac or a host runs a handful.
 const POLL: Duration = Duration::from_millis(150);
+
+/// How long the watcher keeps polling after a wake with every run finished: the status a create or
+/// a signal leads to is written within a moment, but not before the wake.
+const WAKE_GRACE: Duration = Duration::from_secs(5);
 
 /// Set in the attach environment, to `1`, for a session that is a run command rather than a
 /// shell. One of the session's own variables, so its shell never sees it.
@@ -62,17 +66,22 @@ pub fn spawn_watcher(sessions: SessionStore) {
         .name("runs".into())
         .spawn(move || {
             let mut published = HashMap::new();
+            // Polled until here whatever the statuses say: a run just created or signalled has a
+            // new status on its way that the file does not show yet.
+            let mut poll_until = Instant::now();
             loop {
-                // Counted before the tick looks, so a run created between the look and the wait
-                // still wakes it.
-                let seen = sessions.runs_created();
-                tick(&sessions, &dir, &mut published);
-                if sessions.run_session_ids().is_empty() {
-                    // Nothing to publish: sleep until there is, rather than tick an empty map
-                    // seven times a second (the daemon's whole idle cost, 2026-10-23).
-                    sessions.wait_for_run_created(seen);
-                } else {
+                // Counted before the tick looks, so a run created or signalled between the look
+                // and the wait still wakes it.
+                let seen = sessions.runs_wake();
+                let running = tick(&sessions, &dir, &mut published);
+                if running || Instant::now() < poll_until {
                     std::thread::sleep(POLL);
+                } else {
+                    // Every run has finished, or there is none: sleep until one is created or
+                    // signalled, rather than read finished runs' files seven times a second (an
+                    // idle daemon's whole cost with a stopped run tab open, 2026-10-23).
+                    sessions.wait_for_runs_wake(seen);
+                    poll_until = Instant::now() + WAKE_GRACE;
                 }
             }
         });
@@ -82,7 +91,8 @@ pub fn spawn_watcher(sessions: SessionStore) {
 }
 
 /// One pass: each live run's status, published when it changed, and the files of runs that ended.
-fn tick(sessions: &SessionStore, dir: &Path, published: &mut HashMap<SessionId, String>) {
+/// Whether any live run is still running, or has no status yet, so the next pass is owed soon.
+fn tick(sessions: &SessionStore, dir: &Path, published: &mut HashMap<SessionId, String>) -> bool {
     let live = sessions.run_session_ids();
     for &id in &live {
         let Ok(raw) = std::fs::read_to_string(status_file(dir, id)) else {
@@ -104,6 +114,17 @@ fn tick(sessions: &SessionStore, dir: &Path, published: &mut HashMap<SessionId, 
         }
         alive
     });
+    live.iter()
+        .any(|id| published.get(id).is_none_or(|status| still_running(status)))
+}
+
+/// Whether a supervisor's status line can still change on its own: `running <pid>` or
+/// `restarting …` can, `exited …` and `stopped …` only after a signal (`run_supervisor.sh`).
+fn still_running(status: &str) -> bool {
+    !matches!(
+        status.split_whitespace().next(),
+        Some("exited") | Some("stopped")
+    )
 }
 
 /// Removes every status file in `dir`, and every temporary one its supervisor left, whose session
@@ -121,5 +142,22 @@ fn remove_stale(dir: &Path, live: &[SessionId]) {
         if !kept.contains(&name) {
             let _ = std::fs::remove_file(entry.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::still_running;
+
+    /// The watcher polls a run whose status can still change on its own and sleeps on one that
+    /// only a signal moves; a run without a status yet is polled.
+    #[test]
+    fn a_finished_run_is_not_polled_and_a_running_one_is() {
+        assert!(still_running("running 11853"));
+        assert!(still_running("restarting 2"));
+        assert!(still_running(""));
+        assert!(!still_running("exited 0 3"));
+        assert!(!still_running("exited 130 1"));
+        assert!(!still_running("stopped 1"));
     }
 }
