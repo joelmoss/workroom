@@ -72,6 +72,28 @@ final class RunStatusUITests: XCTestCase {
       "a non-zero exit shows the failed run icon (#79); got \(runTabChip(app).value ?? "<nil>")")
   }
 
+  /// A running run session keeps its daemon from idling out, and the runner cannot end either, so
+  /// the app's own watcher must: once the app is gone, so is the scratch directory, which the
+  /// watcher removes last, after ending the daemon and the run (#533).
+  func testTheScratchDaemonIsGoneOnceTheAppQuits() {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestRunCommand", "sleep 30"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    let scratch = app.useScratchDaemon()
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    startRun(app)
+    XCTAssertTrue(app.buttons["runCommand.stop"].waitForExistence(timeout: 15), "the run started")
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: scratch), "the run's daemon lives in \(scratch)")
+
+    app.terminate()
+    XCTAssertTrue(
+      poll(timeout: 15) { !FileManager.default.fileExists(atPath: scratch) },
+      "the app's exit left its scratch daemon behind in \(scratch)")
+  }
+
   /// A run that exits 0 is a success, not a failure: no failed icon (the chip settles on stopped).
   func testCleanExitDoesNotShowFailedIndicator() {
     let app = launchedApp(runCommand: "sleep 1; exit 0")
