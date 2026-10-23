@@ -1547,11 +1547,6 @@ impl SessionStore {
     }
 }
 
-/// Whether the pty's child has actually exited, reaping it if so.
-///
-/// `WNOHANG`, because the read can end a moment before the exit is reapable and telling the client
-/// promptly matters more than the exact status. A negative return is `ECHILD` — already reaped by
-/// someone else, which is equally gone.
 /// How often a run session's reader looks in on its supervisor while its pty is quiet.
 const RUN_EXIT_POLL: Duration = Duration::from_millis(250);
 
@@ -1577,6 +1572,11 @@ fn child_exited(pid: i32) -> bool {
     rc != 0 || unsafe { info.si_pid() } != 0
 }
 
+/// Whether the pty's child has actually exited, reaping it if so.
+///
+/// `WNOHANG`, because the read can end a moment before the exit is reapable and telling the client
+/// promptly matters more than the exact status. A negative return is `ECHILD` — already reaped by
+/// someone else, which is equally gone.
 fn child_gone(pid: i32, status: &mut i32) -> bool {
     if pid <= 0 {
         return true;
