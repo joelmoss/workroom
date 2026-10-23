@@ -13,7 +13,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean docs-check docs-cli docs-preview \
         app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
-        app-check remote-host-image remote-host-image-test actions-lint vcs-lint vcs-test
+        app-check actions-lint vcs-lint vcs-test
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -305,12 +305,6 @@ app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queue
 
 app-identity: ## Print the bundle id this checkout's Debug build gets (one per workroom)
 	@echo "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)"
-
-remote-host-image: ## Build the `workroom-host` image an app's remote workrooms run on (Docker, #253)
-	docker build --tag workroom-host vcs/scripts/ssh-fixture
-
-remote-host-image-test: ## Build the `workroom-host` image, without its tag, and smoke-test it: sshd serves and is hardened, no fixture pieces, a pushed daemon starts (#288)
-	vcs/scripts/ssh-fixture/host-image-test.sh
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
