@@ -15,7 +15,8 @@ old="${1:?usage: daemon-handoff-check.sh <old workroomd binary> <new workroomd b
 new="${2:?usage: daemon-handoff-check.sh <old workroomd binary> <new workroomd binary>}"
 new="$(cd "$(dirname "$new")" && pwd)/$(basename "$new")"  # hand-off wants an absolute path
 
-work="$(mktemp -d /tmp/wrcheck.XXXXXX)"
+# Not under /tmp, where a daemon looks every second (see daemon-idle-bench.sh).
+work="$(mktemp -d "${TMPDIR:-/tmp}/wrcheck.XXXXXX")"
 pids=()
 daemon=
 cleanup() {

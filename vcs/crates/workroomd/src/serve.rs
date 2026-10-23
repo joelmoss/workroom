@@ -223,6 +223,10 @@ impl Daemon {
         // reads as due.
         let mut freshened: Option<std::time::SystemTime> = None;
         let wake = idle_wake();
+        // Only a /tmp daemon has files a cleaner takes, and only it must look at the wall clock
+        // soon after a wake (`poll_timeout`).
+        let in_tmp = self.freshen.is_some()
+            && (socket.starts_with("/tmp") || socket.starts_with("/private/tmp"));
         loop {
             if let Some(freshen) = &self.freshen
                 && freshened.is_none_or(|at| at.elapsed().map_or(true, |e| e >= freshen.every))
@@ -295,11 +299,7 @@ impl Daemon {
                         });
                         until = Some(until.map_or(next, |u| u.min(next)));
                     }
-                    let mut timeout =
-                        until.map_or(-1, |u| i32::try_from(u.as_millis()).unwrap_or(i32::MAX));
-                    if wake.read < 0 && !(0..=1000).contains(&timeout) {
-                        timeout = 1000; // no pipe: look every second, as before
-                    }
+                    let timeout = poll_timeout(until, wake.read >= 0, in_tmp);
                     // Sleep until a client connects or something ends (`wake_idle`): polling the
                     // listener every 25 ms cost 40 wakeups a second for nothing, and looking once
                     // a second was every wakeup an idle daemon had left.
@@ -329,6 +329,21 @@ impl Daemon {
         }
         let _ = std::fs::remove_file(socket);
         result
+    }
+}
+
+/// The accept loop's `poll` timeout in milliseconds, -1 for none: until the next deadline, or
+/// until something happens. A second at most without a wake pipe, as the loop looked before it
+/// had one; and a second at most for a daemon in /tmp, because `poll` does not count the time a
+/// Mac sleeps. Its freshen deadline is on the wall clock, and launchd runs a missed `tmp_cleaner`
+/// the moment the Mac wakes: after days asleep, an hour-long timeout would leave the lock and log
+/// for the cleaner to delete, and another daemon could then take the socket (#528).
+fn poll_timeout(until: Option<Duration>, pipe: bool, in_tmp: bool) -> i32 {
+    let timeout = until.map_or(-1, |u| i32::try_from(u.as_millis()).unwrap_or(i32::MAX));
+    if (!pipe || in_tmp) && !(0..=1000).contains(&timeout) {
+        1000
+    } else {
+        timeout
     }
 }
 
@@ -1392,6 +1407,28 @@ mod tests {
         }
         served.join().unwrap().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A daemon in /tmp looks at least once a second, so a Mac waking from days asleep freshens its
+    /// lock and log before `tmp_cleaner` can take them; any other daemon sleeps until something
+    /// happens or its next deadline.
+    /// Value: protects=the /tmp lock is touched within a second of a wake; fails_when=a /tmp daemon sleeps on an hour-long freshen timeout; why_new=no test looked at the timeout; seam=none; no_claim=poll's clock across a real sleep (can't be slept in a test)
+    #[test]
+    fn a_tmp_daemon_looks_every_second_and_others_sleep_until_due() {
+        let hour = Some(Duration::from_secs(3600));
+        assert_eq!(poll_timeout(hour, true, true), 1000, "a /tmp daemon");
+        assert_eq!(poll_timeout(hour, true, false), 3_600_000, "elsewhere");
+        assert_eq!(
+            poll_timeout(None, true, false),
+            -1,
+            "nothing due, nothing kept"
+        );
+        assert_eq!(poll_timeout(None, false, false), 1000, "no wake pipe");
+        assert_eq!(
+            poll_timeout(Some(Duration::from_millis(300)), true, true),
+            300,
+            "a sooner deadline still wins"
+        );
     }
 
     /// The commonest way a daemon's last session goes: its shell exits on its own, with no client

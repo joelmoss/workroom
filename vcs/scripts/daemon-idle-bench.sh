@@ -17,8 +17,10 @@ bin="${1:?usage: daemon-idle-bench.sh <workroomd binary> [seconds=60] [sessions=
 secs="${2:-60}"
 sessions="${3:-4}"
 
-# A short socket path: a Unix socket path is limited to about 100 bytes.
-work="$(mktemp -d /tmp/wrbench.XXXXXX)"
+# Not under /tmp: a daemon there looks every second, as the socket fallback must (serve.rs
+# `poll_timeout`), and this measures the usual daemon. $TMPDIR keeps the socket path well under
+# the ~100 bytes a Unix socket path allows.
+work="$(mktemp -d "${TMPDIR:-/tmp}/wrbench.XXXXXX")"
 sock="$work/d.sock"
 pids=()
 cleanup() {
