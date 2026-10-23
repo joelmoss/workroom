@@ -103,6 +103,19 @@ vcs-test: ## Test the Rust workspace, then workroomd with terminal-state, as CI 
 	CARGO_TARGET_DIR=vcs/target/terminal-state WORKROOMD_HAS_TERMINAL_STATE=1 \
 	  cargo test --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state $(VCS_TEST_FLAGS)
 
+# What an idle daemon costs (vcs/scripts/daemon-idle-bench.sh): a release workroomd on its own
+# socket with DAEMON_BENCH_SESSIONS idle shells for DAEMON_BENCH_SECS, its CPU time and context
+# switches read from outside. Compare a run before a daemon change with one after. macOS only.
+# DAEMON_OLD=<binary> also runs vcs/scripts/daemon-handoff-check.sh from that build to this one.
+DAEMON_BENCH_SECS ?= 60
+DAEMON_BENCH_SESSIONS ?= 4
+vcs-bench-daemon: ## Measure an idle workroomd's CPU and wakeups (release build) [DAEMON_BENCH_SECS= DAEMON_BENCH_SESSIONS= DAEMON_OLD=]
+	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-bench-daemon needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
+	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
+	cargo build --manifest-path vcs/Cargo.toml --release -p workroomd && \
+	vcs/scripts/daemon-idle-bench.sh vcs/target/release/workroomd $(DAEMON_BENCH_SECS) $(DAEMON_BENCH_SESSIONS) && \
+	if [ -n "$(DAEMON_OLD)" ]; then vcs/scripts/daemon-handoff-check.sh "$(DAEMON_OLD)" vcs/target/release/workroomd; fi
+
 # --- macOS app (macapp/) ---
 
 # The Debug product is "Workroom Dev" (distinct bundle id + name) so it runs alongside the
