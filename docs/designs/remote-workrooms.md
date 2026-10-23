@@ -1862,15 +1862,16 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       `--init`, with `--restart unless-stopped`: Docker restarts a daemon that exits, which retires
       the entrypoint's loop. The image's own ENTRYPOINT and CMD don't run, as with the
       devcontainers CLI's default `overrideCommand`; the daemon could start them as a child later.
-    - **Getting the daemon in.** A read-only bind mount of a folder on the Mac holding the bundled
-      daemon, on both runtimes: Apple's `container` can't copy into a created container, and one
-      path serves both (Docker's `create`, `cp`, `start` works too). A new build is written into
-      that folder and handed off to. Apple's has no restart policy, so the existing start-on-open
+    - **Getting the daemon in.** Docker: `docker cp` into the created container before `start`,
+      and again before a hand-off. Apple: a read-only bind mount of the app's own folder, since its
+      `container` can't copy into a created container. A bind mount isn't used on Docker: Docker
+      Desktop's file sharing may exclude /Users (it did on the owner's Mac, 2026-09-24), and Colima
+      and OrbStack differ. Apple's has no restart policy, so the existing start-on-open
       (`startIfStopped`) stands in for Docker's restart.
     - **Configuration.** The Development Containers spec, which `DevContainerPorts` already reads
-      for `forwardPorts`: `image` or `build`, `mounts`, `containerEnv`, `remoteUser`, `runArgs`. A
-      project without the file gets a default image and a setting to choose another. `features`
-      need a Docker build and a shell in the image, and come later.
+      for `forwardPorts`: `image` or `build`, `features`, `mounts`, `containerEnv`, `remoteUser`,
+      `runArgs`, `workspaceFolder` and the lifecycle commands. A project without the file gets the
+      default image (below) and a per-Mac setting to choose another.
     - **What the image must have:** git (the clone and the daemon's VCS service run it) and a shell
       for panes. No sshd, distro or libc requirement: the daemon is a static musl binary.
 
@@ -1899,9 +1900,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 
     What it costs:
     - The bootstrap's install path. `probe.sh`/`install.sh` assume a shell, `sha256sum` and a
-      stage-then-rename beside the socket. The container driver would instead put a new build in
-      place in the bind-mounted folder from the Mac and point `hand-off --binary` at it, keeping
-      the rule that only a checked binary is where the restart runs from.
+      stage-then-rename beside the socket. The container driver instead puts a new build in place
+      from the Mac (`docker cp`, or Apple's mounted folder), checks it runs (`workroomd protocol`)
+      and points `hand-off --binary` at it. The ssh drivers keep the scripts.
     - Pane status (#392). `lastAttach` and `hostRefusedLastAttach` read ssh's exit status; `docker
       exec` uses 125–127 for its own failures and needs its own mapping.
     - Two daemon fixes the probe found. `serve` doesn't create its socket's folder (the entrypoint
@@ -1916,7 +1917,51 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     keeping ssh and layering a static ssh server onto the user's image (it ships a second Linux
     artifact and still needs a shell), and `FROM workroom-host` (Debian only, a Dockerfile per
     user). Stable waits for this: it ships no container workrooms on `workroom-host` (owner,
-    2026-10-23).
+    2026-10-23). "Removes `workroom-host`" means the FIXTURE=0 image and its publishing: the ssh
+    fixture (FIXTURE=1, `run.sh`) stays, since the boxd, exe.dev and ssh drivers' tests run on it.
+
+    Decided in the eng review (owner, 2026-10-23; review record in the gstack project folder):
+    - **Features are in** (D2): OCI fetch from the registry, options as environment, `dependsOn`
+      and `installsAfter` order, a generated Dockerfile built on both runtimes, after a probe that
+      Apple's `container build` runs it. New files: `ContainerExecTransport.swift`,
+      `DevContainerConfig.swift` (replacing `DevContainerPorts.swift`), `DevContainerFeatures.swift`;
+      `ContainerHostDriver` keeps the lifecycle behind an explicit `create(spec:)` (D3).
+    - **One revision.** A create resolves one base SHA at the fetch; devcontainer.json, its
+      Dockerfile and build context come from that SHA, and the new branch starts at it, so a push
+      during a long build can't split the config from the checkout.
+    - **Trust** (D4): devcontainer.json runs only once this Mac approved its exact bytes, in the
+      ADR 0054 store with the same Approve and Continue Without (which uses the default image). A
+      Dockerfile or feature it pulls in is not covered, as ADR 0054 says for what a script calls.
+    - **Lifecycle commands** (D5, D6, D12): `initializeCommand` runs on the Mac before the build;
+      `onCreateCommand`, `updateContentCommand` and `postCreateCommand` run once after the clone and
+      "Copy local files", before `scripts/workroom_setup`, each a creation row, as the remote user
+      through `workroomd run-script`; `postStartCommand` runs on the first connect after each daemon
+      start (the daemon reports a start id), first at the end of the create; `postAttachCommand` is
+      not run.
+    - **Users and folders.** The container runs as `remoteUser` (spec default: the image's user,
+      else root); the socket folder and the path to `workspaceFolder` are made as root and owned by
+      that user before the daemon serves or the clone runs. `workspaceMount` is ignored: each
+      workroom clones into `workspaceFolder` (default `/workspaces/<repo>`). Right after start, a
+      check for git and the user's shell fails the create with the missing one named.
+    - **Config changes** (D7): a changed devcontainer.json or Dockerfile applies to workrooms made
+      after it. The container records the config digest it was built from, and the Details pane
+      says when the repository's is newer. No Rebuild: the checkout lives in the container.
+    - **Default image** (D8): `mcr.microsoft.com/devcontainers/base:ubuntu` pinned by digest
+      (Ubuntu 26.04, user `vscode` with passwordless sudo, git, zsh, curl, no Node), nothing added.
+      No agent CLI ships in it; their login inside containers is #532.
+    - **Only devcontainer.json overrides** (D9): a lone or root Dockerfile is ignored, as the spec
+      has it.
+    - **Keys Workroom can't honour** (D10): `workspaceMount`, `runArgs` on Apple,
+      `postAttachCommand`, `hostRequirements`, `appPort`, "host:port" forwards and unknown keys
+      leave the create going with one warning row naming each; a `dockerComposeFile` config is
+      refused with Continue With Default Image.
+    - **Regression contract** (D11): the ssh drivers' suite is untouched and green; every container
+      integration test but the identity one is ported to the exec transport on a stock image, with
+      one assertion each for port forwards, the credential relay, run tabs, setup and teardown
+      scripts and reattach after wake; a container made before this gets "made by an older build,
+      create it again".
+    - **Accepted cost:** each open pane keeps one runtime CLI process: `container exec` measured
+      26 MB RSS against 2.7 MB for a connecting `ssh` (Docker's CLI to be measured).
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits
