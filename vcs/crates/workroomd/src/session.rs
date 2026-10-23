@@ -987,15 +987,16 @@ impl SessionStore {
                 None
             }
         };
+        // The repaint read the shadow, which re-inflates its compressed history: the screens
+        // thread compresses it again on its next pass, even when this client claimed no size or
+        // its connection dropped mid-repaint.
+        self.screens_work.raise();
         // Checked after the lock is released, so the early `return None` above leaves nothing
         // registered and nothing half-owned.
         if !painted {
             return Err(SessionError::RepaintFailed(id.to_hyphenated()));
         }
         apply_size(&pty, &shadow, &attached, size, &self.screens_work);
-        // The repaint read the shadow, which re-inflates its compressed history: the screens
-        // thread compresses it again on its next pass, even when this client claimed no size.
-        self.screens_work.raise();
 
         let sessions = self.sessions.lock().expect("session store poisoned");
         let session = sessions
@@ -4098,11 +4099,18 @@ mod tests {
             .write(b"something to repaint\r\n");
 
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Broken)));
+        let before = store.screens_work();
         let result = store.attach(id(73), writer, 1, 80, 24);
 
         assert!(
             matches!(result, Err(SessionError::RepaintFailed(_))),
             "a client that cannot take its repaint must not be attached, got {result:?}"
+        );
+        // The failed repaint still read, and so re-inflated, the shadow's history.
+        assert_ne!(
+            store.screens_work(),
+            before,
+            "a failed repaint did not wake the screens thread to compress again"
         );
         assert!(
             !store.list()[0].attached,
