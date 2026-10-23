@@ -29,6 +29,9 @@ var (
 	// project's base: a remote create's, which starts from origin's branch ("" is its default).
 	trustBase    string
 	trustBaseSet bool
+	// trustDevcontainer judges the devcontainer.json a container create from trustBase would use
+	// too (#308).
+	trustDevcontainer bool
 )
 
 // trustCmd approves a project's setup and teardown scripts by their exact bytes (#363).
@@ -49,10 +52,10 @@ var trustCmd = &cobra.Command{
 		for i, sc := range scripts {
 			switch {
 			case sc.Exempt:
-				lines = append(lines, fmt.Sprintf("scripts/%s is ignored by git, so it needs no approval.", sc.Name))
+				lines = append(lines, fmt.Sprintf("%s is ignored by git, so it needs no approval.", sc.File))
 				continue
 			case sc.Trusted:
-				lines = append(lines, fmt.Sprintf("scripts/%s is already approved.", sc.Name))
+				lines = append(lines, fmt.Sprintf("%s is already approved.", sc.File))
 				continue
 			}
 			// The bytes came on stdin from a caller that has shown them, or no one is here to ask.
@@ -62,7 +65,7 @@ var trustCmd = &cobra.Command{
 					return err
 				}
 				if !ok {
-					lines = append(lines, fmt.Sprintf("scripts/%s was left unapproved.", sc.Name))
+					lines = append(lines, fmt.Sprintf("%s was left unapproved.", sc.File))
 					continue
 				}
 			}
@@ -81,7 +84,7 @@ var trustCmd = &cobra.Command{
 				return err
 			}
 			scripts[i].Trusted = true
-			lines = append(lines, ui.Green(fmt.Sprintf("Approved scripts/%s %s.", sc.Name, sc.OriginLabel())))
+			lines = append(lines, ui.Green(fmt.Sprintf("Approved %s %s.", sc.File, sc.OriginLabel())))
 		}
 		if jsonOutput {
 			return writeJSONSuccess(os.Stdout, "trust", map[string]any{"scripts": scriptsJSON(scripts)})
@@ -126,7 +129,7 @@ var trustStatusCmd = &cobra.Command{
 				case sc.Trusted:
 					state = ui.Green("approved")
 				}
-				fmt.Printf("scripts/%s %s: %s\n", sc.Name, sc.OriginLabel(), state)
+				fmt.Printf("%s %s: %s\n", sc.File, sc.OriginLabel(), state)
 			}
 			for _, line := range absentScripts(scripts) {
 				fmt.Println(line)
@@ -179,15 +182,20 @@ func judgedScripts() (*workroom.Service, string, []workroom.Script, vcs.LocalWor
 	}
 	if trustStdin == "" {
 		var scripts []workroom.Script
-		if trustBaseSet {
-			scripts, work, err = svc.ProjectScriptsFrom(dir, trustBase)
-		} else {
+		switch {
+		case trustBaseSet:
+			scripts, work, err = svc.ProjectScriptsFrom(dir, trustBase, trustDevcontainer)
+		case trustDevcontainer:
+			return nil, "", nil, work, fmt.Errorf("--devcontainer judges a container create's file, so it needs --base")
+		default:
 			scripts, work, err = svc.ProjectScripts(dir)
 		}
 		return svc, dir, scripts, work, err
 	}
-	if trustStdin != workroom.SetupScript && trustStdin != workroom.TeardownScript {
-		return nil, "", nil, work, fmt.Errorf("--stdin takes %s or %s, not %q", workroom.SetupScript, workroom.TeardownScript, trustStdin)
+	switch trustStdin {
+	case workroom.SetupScript, workroom.TeardownScript, workroom.DevContainer:
+	default:
+		return nil, "", nil, work, fmt.Errorf("--stdin takes %s, %s or %s, not %q", workroom.SetupScript, workroom.TeardownScript, workroom.DevContainer, trustStdin)
 	}
 	text, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -242,6 +250,8 @@ func init() {
 		_ = c.Flags().MarkHidden("stdin")
 		c.Flags().StringVar(&trustBase, "base", "", "Judge the setup script at this branch, on origin unless it names a remote (\"\" is origin's default), in place of the project's base (used by the desktop app)")
 		_ = c.Flags().MarkHidden("base")
+		c.Flags().BoolVar(&trustDevcontainer, "devcontainer", false, "Judge the devcontainer.json a container create from --base would use too (used by the desktop app)")
+		_ = c.Flags().MarkHidden("devcontainer")
 		c.PreRun = func(cmd *cobra.Command, _ []string) { trustBaseSet = cmd.Flags().Changed("base") }
 	}
 	trustCmd.AddCommand(trustStatusCmd)
@@ -251,11 +261,11 @@ func init() {
 // approveScript shows sc, a script this Mac has not approved, on out, and asks whether to approve
 // and run it.
 func approveScript(out io.Writer, sc workroom.Script) (bool, error) {
-	fmt.Fprintln(out, ui.Yellow(fmt.Sprintf("scripts/%s %s has not been approved on this Mac.", sc.Name, sc.OriginLabel())))
-	panel := ui.NewLogPanel(out, "scripts/"+sc.Name)
+	fmt.Fprintln(out, ui.Yellow(fmt.Sprintf("%s %s has not been approved on this Mac.", sc.File, sc.OriginLabel())))
+	panel := ui.NewLogPanel(out, sc.File)
 	_, _ = io.WriteString(panel, visibleText(sc.Text))
 	panel.Close(true)
-	return askConfirm(fmt.Sprintf("Approve scripts/%s and run it?", sc.Name))
+	return askConfirm(fmt.Sprintf("Approve %s and run it?", sc.File))
 }
 
 // visibleText is text as a person must read it before approving it: every character the terminal

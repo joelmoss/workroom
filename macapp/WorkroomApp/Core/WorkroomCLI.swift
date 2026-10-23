@@ -258,8 +258,9 @@ protocol WorkroomCLIProtocol: Sendable {
   func includeArchive(project: String, output: String) async throws -> IncludeArchive
   /// The scripts `project` would run next, judged against this Mac's approvals (#363), with the
   /// setup script at `base` after a fetch (`origin/<branch>`, or "" for origin's default): the
-  /// branch a remote create checks out, which can differ from a local create's.
-  func trustStatus(project: String, base: String) async throws -> TrustStatus
+  /// branch a remote create checks out, which can differ from a local create's. With
+  /// `devcontainer`, the devcontainer.json a container create would use is judged too (#308).
+  func trustStatus(project: String, base: String, devcontainer: Bool) async throws -> TrustStatus
   /// Judges `text` as `project`'s script `name` (`workroom_setup`, `workroom_teardown`): a host's
   /// copy, which the CLI can't read itself.
   func judgeScript(_ name: String, text: Data, project: String) async throws -> ScriptTrust
@@ -328,7 +329,7 @@ extension WorkroomCLIProtocol {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "setBaseBranch is not faked")
   }
 
-  func trustStatus(project: String, base: String) async throws -> TrustStatus {
+  func trustStatus(project: String, base: String, devcontainer: Bool) async throws -> TrustStatus {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "trustStatus is not faked")
   }
 
@@ -432,11 +433,11 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
   /// `trust status`, which fetches the project's base as a create does, so it gets a create's
   /// environment and bound.
-  func trustStatus(project: String, base: String) async throws -> TrustStatus {
+  func trustStatus(project: String, base: String, devcontainer: Bool) async throws -> TrustStatus {
     await ShellEnvironment.refresh()
     let result = try await run(
-      ["trust", "status", "--json", "--project", project, "--base", base], timeout: 120,
-      userInitiated: true)
+      ["trust", "status", "--json", "--project", project, "--base", base]
+        + (devcontainer ? ["--devcontainer"] : []), timeout: 120, userInitiated: true)
     return try decodeTrust(TrustStatus.self, from: result)
   }
 

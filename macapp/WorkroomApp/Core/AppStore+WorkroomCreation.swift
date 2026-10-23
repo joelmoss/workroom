@@ -201,7 +201,7 @@ extension AppStore {
     _ run: CreationRun, _ script: ScriptTrust, at startCommit: String? = nil
   ) {
     run.awaitApproval(of: script, at: startCommit)
-    Self.announceCreation("scripts/\(script.name) needs approving")
+    Self.announceCreation("\(script.displayFile) needs approving")
     presentSetupApproval(run)
   }
 
@@ -245,12 +245,12 @@ extension AppStore {
     }
     // The message first: setting it clears what the rest set.
     errorMessage = CreationPanePresentation.setupApprovalMessage(for: run, script: script)
-    errorTitle = "Approve the setup script?"
+    errorTitle = script.isDevContainer ? "Approve the dev container?" : "Approve the setup script?"
     errorLog = script.visibleText
     errorScriptName = script.name
+    let confirmation = CreationPanePresentation.skipConfirmation(for: script)
     errorAction = ErrorAction(
-      label: "Continue Without Script…", destructive: false,
-      confirmation: CreationPanePresentation.skipConfirmation(scriptName: script.name)
+      label: "\(confirmation.button)…", destructive: false, confirmation: confirmation
     ) { [weak self] in Task { await self?.skipSetupScript(run) } }
     // A stale sheet (the run approved or replaced since) cancels nothing.
     errorCancel = ErrorAction(label: "Cancel Creation") { [weak self] in
@@ -278,11 +278,18 @@ extension AppStore {
   }
 
   /// Continue Without Script, once confirmed, on a create its setup script stopped: the create
-  /// continues, in the same pane, without that script. Nothing is approved, so the next create asks
-  /// again.
+  /// continues, in the same pane, without that script. For a devcontainer.json it is Continue With
+  /// Default Image: the container create continues without the file. Nothing is approved, so the
+  /// next create asks again.
   func skipSetupScript(_ run: CreationRun) async {
-    guard creationRuns[run.id] === run, case .scriptNotTrusted = run.outcome else { return }
-    await retryCreation(run, skipsSetup: true, startCommit: run.askedAt)
+    guard creationRuns[run.id] === run, case .scriptNotTrusted(let script) = run.outcome else {
+      return
+    }
+    if script.isDevContainer {
+      await retryCreation(run, skipsDevContainer: true, startCommit: run.askedAt)
+    } else {
+      await retryCreation(run, skipsSetup: true, startCommit: run.askedAt)
+    }
   }
 
   /// The setup script row's reason on a create that skipped it, as the CLI words it.
@@ -311,8 +318,8 @@ extension AppStore {
   /// `startCommit`, the start point it was asked at: the new run continues from there, fetching
   /// nothing, and keeps `run`'s fetch row (ADR 0059).
   func retryCreation(
-    _ run: CreationRun, skipsSetup: Bool? = nil, start: CreationStart? = nil,
-    startCommit: String? = nil
+    _ run: CreationRun, skipsSetup: Bool? = nil, skipsDevContainer: Bool? = nil,
+    start: CreationStart? = nil, startCommit: String? = nil
   ) async {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
@@ -323,8 +330,8 @@ extension AppStore {
       previousSelection: run.previousSelection,
       hasSetupScript: Self.hasSetupScript(project),
       hasIncludeFile: Self.hasIncludeFile(project), skipsSetup: skipsSetup ?? run.skipsSetup,
-      start: start, startCommit: startCommit,
-      carriedFetch: startCommit == nil ? nil : run.fetchStep)
+      skipsDevContainer: skipsDevContainer ?? run.skipsDevContainer, start: start,
+      startCommit: startCommit, carriedFetch: startCommit == nil ? nil : run.fetchStep)
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)
@@ -536,13 +543,27 @@ extension AppStore {
       let plan = try await services.plan(self, run.project)
       defaultNotUsed = plan.defaultNotUsed
       // Before any machine is made, so a script this Mac won't run never costs a paid host (#363).
-      // A create skipping the script doesn't need it judged, so it isn't stopped when that can't be
-      // told; it then only goes without the local-work notice.
+      // A container create judges its devcontainer.json the same way (#308, eng review D4), unless
+      // it goes on the default image. A create needing neither judged isn't stopped when that can't
+      // be told; it then only goes without the local-work notice.
+      let judgesDevContainer: Bool
+      if case .container = place {
+        judgesDevContainer = !run.skipsDevContainer
+      } else {
+        judgesDevContainer = false
+      }
       let status =
-        run.skipsSetup
-        ? (try? await services.trustStatus(self, run.project, plan))
+        run.skipsSetup && !judgesDevContainer
+        ? (try? await services.trustStatus(self, run.project, plan, false))
           ?? TrustStatus(trusted: true, scripts: [])
-        : try await services.trustStatus(self, run.project, plan)
+        : try await services.trustStatus(self, run.project, plan, judgesDevContainer)
+      // The file that decides the image first: it is what the create reads first.
+      if judgesDevContainer, let config = status.scripts.first(where: { $0.isDevContainer }),
+        !config.trusted
+      {
+        refuseCreation(run, config)
+        return
+      }
       if !run.skipsSetup,
         let script = status.scripts.first(where: {
           $0.name == RemoteProvisioning.Script.setup.fileName && !$0.trusted
@@ -873,11 +894,13 @@ struct RemoteCreateServices {
   }
   /// The CLI's `trust status` at the origin branch the plan checks out: the setup script a create
   /// would run, judged against this Mac's approvals (#363), and the local work that start leaves
-  /// out. A test's fakes approve every script and find no local work unless they say.
-  var trustStatus: @MainActor (AppStore, Project, RemoteCreatePlan) async throws -> TrustStatus = {
-    _, _, _ in
-    TrustStatus(trusted: true, scripts: [])
-  }
+  /// out. Its last argument judges the devcontainer.json a container create would use too (#308).
+  /// A test's fakes approve every script and find no local work unless they say.
+  var trustStatus:
+    @MainActor (AppStore, Project, RemoteCreatePlan, Bool) async throws -> TrustStatus = {
+      _, _, _, _ in
+      TrustStatus(trusted: true, scripts: [])
+    }
 
   static var live: RemoteCreateServices {
     RemoteCreateServices(
@@ -900,10 +923,11 @@ struct RemoteCreateServices {
         return RemoteCreateHost(key: key, driver: driver, environment: environment)
       },
       script: { request in await RemoteWorkrooms.runScript(request) },
-      trustStatus: { store, project, plan in
+      trustStatus: { store, project, plan, devcontainer in
         // origin named, so a branch like `release/1.0` is never read as a remote's.
         let base = plan.startBranch.map { "origin/\($0)" } ?? ""
-        return try await store.cli.trustStatus(project: project.path, base: base)
+        return try await store.cli.trustStatus(
+          project: project.path, base: base, devcontainer: devcontainer)
       })
   }
 }

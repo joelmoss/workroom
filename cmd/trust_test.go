@@ -174,8 +174,10 @@ type statusEnvelope struct {
 	Trusted bool `json:"trusted"`
 	Scripts []struct {
 		Name    string `json:"name"`
+		File    string `json:"file"`
 		Origin  string `json:"origin"`
 		SHA256  string `json:"sha256"`
+		Text    string `json:"text"`
 		Trusted bool   `json:"trusted"`
 		Exempt  bool   `json:"exempt"`
 	} `json:"scripts"`
@@ -666,5 +668,114 @@ func TestTrustLeavesADeclinedScriptUnapprovedAndRejectsOtherStdinNames(t *testin
 	projects, _ = mustConfig(t).AllProjects()
 	if len(projects[project].TrustedScripts) != 0 {
 		t.Fatalf("recorded %v", projects[project].TrustedScripts)
+	}
+}
+
+// devcontainerProject is a registered project with no setup script whose base commit ships a
+// devcontainer.json at path.
+func devcontainerProject(t *testing.T, path, body string) (project string) {
+	t.Helper()
+	home := contractHomeDir(t)
+	project = gitRepo(t, filepath.Join(home, "src", "app"))
+	if path != "" {
+		writeRootFile(t, project, path, body)
+		run(t, project, "git", "add", path)
+		run(t, project, "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "add "+path)
+	}
+	if err := mustConfig(t).AddProject(project, "git"); err != nil {
+		t.Fatal(err)
+	}
+	return project
+}
+
+// Value: protects=a container create judges the base commit's devcontainer.json by its exact
+// bytes, as a setup script is (eng review D4), and only when asked; fails_when=the file is not
+// judged, is judged without --devcontainer, or is shown under the wrong path; why_new=no config
+// file was judged before #308; seam=none; no_claim=what the file pulls in (Dockerfile, features)
+func TestTrustStatusJudgesTheDevcontainerConfigWhenAsked(t *testing.T) {
+	body := `{"image": "mcr.microsoft.com/devcontainers/base:ubuntu"}`
+	project := devcontainerProject(t, ".devcontainer/devcontainer.json", body)
+
+	if code, env := trustStatus(t, project, "--base", ""); code != 0 || len(env.Scripts) != 0 {
+		t.Fatalf("without --devcontainer: exit %d, %+v", code, env)
+	}
+	code, env := trustStatus(t, project, "--base", "", "--devcontainer")
+	if code != 1 || env.Trusted || len(env.Scripts) != 1 {
+		t.Fatalf("with --devcontainer: exit %d, %+v", code, env)
+	}
+	got := env.Scripts[0]
+	sum := sha256.Sum256([]byte(body))
+	if got.Name != "devcontainer" || got.File != ".devcontainer/devcontainer.json" || got.Origin != "base" ||
+		got.SHA256 != hex.EncodeToString(sum[:]) || got.Text != body || got.Trusted || got.Exempt {
+		t.Fatalf("judged %+v", got)
+	}
+
+	withStdin(t, body)
+	if r := runCLI(t, "trust", "--json", "--project", project, "--stdin", "devcontainer"); r.code != 0 {
+		t.Fatalf("trust: exit %d %s", r.code, r.stdout)
+	}
+	if code, env := trustStatus(t, project, "--base", "", "--devcontainer"); code != 0 || !env.Scripts[0].Trusted {
+		t.Fatalf("after trust: exit %d, %+v", code, env)
+	}
+
+	// One changed byte, pulled into the base, needs approving again.
+	writeRootFile(t, project, ".devcontainer/devcontainer.json", body+"\n")
+	run(t, project, "git", "-c", "commit.gpgsign=false", "commit", "-q", "-am", "change")
+	if code, env := trustStatus(t, project, "--base", "", "--devcontainer"); code != 1 || env.Scripts[0].Trusted {
+		t.Fatalf("changed: exit %d, %+v", code, env)
+	}
+
+	if r := runCLI(t, "untrust", "--project", project); r.code != 0 {
+		t.Fatalf("untrust: exit %d", r.code)
+	}
+	projects, _ := mustConfig(t).AllProjects()
+	if len(projects[project].TrustedScripts) != 0 {
+		t.Fatalf("untrust left %v", projects[project].TrustedScripts)
+	}
+}
+
+// The spec's places, in its order: the folder's file first, else the one at the root; none is no
+// entry, not an error.
+func TestTheDevcontainerConfigIsFoundWhereTheSpecLooks(t *testing.T) {
+	project := devcontainerProject(t, ".devcontainer.json", `{"image": "a"}`)
+	if _, env := trustStatus(t, project, "--base", "", "--devcontainer"); len(env.Scripts) != 1 ||
+		env.Scripts[0].File != ".devcontainer.json" {
+		t.Fatalf("root file: %+v", env)
+	}
+	writeRootFile(t, project, ".devcontainer/devcontainer.json", `{"image": "b"}`)
+	run(t, project, "git", "add", ".devcontainer")
+	run(t, project, "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "folder")
+	if _, env := trustStatus(t, project, "--base", "", "--devcontainer"); len(env.Scripts) != 1 ||
+		env.Scripts[0].File != ".devcontainer/devcontainer.json" {
+		t.Fatalf("folder file: %+v", env)
+	}
+
+	none := devcontainerProject(t, "", "")
+	if code, env := trustStatus(t, none, "--base", "", "--devcontainer"); code != 0 || len(env.Scripts) != 0 {
+		t.Fatalf("none: exit %d, %+v", code, env)
+	}
+}
+
+// A devcontainer.json only the root has, and git ignores, can't arrive by a pull: it needs no
+// approval (ADR 0054's rule for scripts). An untracked one git doesn't ignore does.
+func TestAGitignoredRootDevcontainerConfigIsExempt(t *testing.T) {
+	project := devcontainerProject(t, "", "")
+	writeRootFile(t, project, ".devcontainer/devcontainer.json", `{"image": "local"}`)
+	if code, env := trustStatus(t, project, "--base", "", "--devcontainer"); code != 1 || len(env.Scripts) != 1 ||
+		env.Scripts[0].Origin != "root" || env.Scripts[0].Exempt {
+		t.Fatalf("untracked: exit %d, %+v", code, env)
+	}
+	writeRootFile(t, project, ".gitignore", ".devcontainer/\n")
+	if code, env := trustStatus(t, project, "--base", "", "--devcontainer"); code != 0 || !env.Scripts[0].Exempt ||
+		!env.Scripts[0].Trusted {
+		t.Fatalf("ignored: exit %d, %+v", code, env)
+	}
+}
+
+// A setup script names its file too, so a caller can show either kind the same way.
+func TestAJudgedScriptNamesItsFile(t *testing.T) {
+	_, project := trustProject(t, "echo hi\n")
+	if _, env := trustStatus(t, project); len(env.Scripts) != 1 || env.Scripts[0].File != "scripts/workroom_setup" {
+		t.Fatalf("%+v", env)
 	}
 }
