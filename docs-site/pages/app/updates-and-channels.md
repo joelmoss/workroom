@@ -17,7 +17,7 @@ Workroom checks for updates in the background and tells you when one is ready. T
 
 ### Updating keeps your terminals {nightly}
 
-Next to the **Update** button, a short note scrolls past: Safe to update: workroom terminals keep running. Run commands and the Quick Terminal stop. Terminals in your workrooms keep their sessions across the update. A run command stops when you quit, and the Quick Terminal has no session to keep.
+Next to the **Update** button, a short note scrolls past: Safe to update: workroom terminals and run commands keep running. The Quick Terminal stops. Terminals and run commands in your workrooms keep their sessions across the update, whatever you chose for quitting with dev servers running. The Quick Terminal has no session to keep.
 
 ## Release channels
 

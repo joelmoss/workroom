@@ -70,7 +70,7 @@ Workroom's durable distinction is parallel development context: each task gets a
 2. Make every workroom's identity and current state immediately legible.
 3. Keep the terminal central while bringing navigation, review, and status into the same working context.
 4. Preserve developer control: use real repositories, directories, branches, scripts, and external editors rather than hiding them behind proprietary abstractions.
-5. Never imply that a planned or adjacent capability already exists. Background sessions always persist ordinary workroom shells across restarts; run-command tabs and the quick terminal do not.
+5. Never imply that a planned or adjacent capability already exists. Background sessions always persist ordinary workroom shells across restarts, and run-command tabs too unless the user chooses to stop them at quit (ADR 0058, Nightly first); the quick terminal does not.
 
 ## Accessibility & Inclusion
 
