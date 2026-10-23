@@ -12,6 +12,7 @@
 
 use std::ffi::{CString, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
+use std::time::Duration;
 
 /// Signals reset to their default in the child. A pty child inheriting the daemon's dispositions
 /// would ignore the signals a terminal is expected to act on — a shell that cannot be interrupted
@@ -321,17 +322,26 @@ impl Pty {
     /// timer, which cost every idle session 200 wakeups a second. `Interrupted` is returned as
     /// such; the caller just reads, and a read that would block comes back here.
     pub fn wait_readable(&self) -> std::io::Result<()> {
+        self.poll_readable(-1).map(|_| ())
+    }
+
+    /// As `wait_readable`, giving up after `timeout`: whether `read` has something to say.
+    pub fn wait_readable_within(&self, timeout: Duration) -> std::io::Result<bool> {
+        self.poll_readable(i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX))
+    }
+
+    fn poll_readable(&self, timeout_ms: i32) -> std::io::Result<bool> {
         let mut descriptor = libc::pollfd {
             fd: self.master,
             events: libc::POLLIN,
             revents: 0,
         };
         // SAFETY: one live pollfd, for a master descriptor open while `self` is.
-        let ready = unsafe { libc::poll(&mut descriptor, 1, -1) };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
         if ready < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(())
+        Ok(ready > 0)
     }
 
     /// Non-blocking; `Ok(0)` means the child has gone.

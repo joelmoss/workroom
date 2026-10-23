@@ -1552,6 +1552,31 @@ impl SessionStore {
 /// `WNOHANG`, because the read can end a moment before the exit is reapable and telling the client
 /// promptly matters more than the exact status. A negative return is `ECHILD` — already reaped by
 /// someone else, which is equally gone.
+/// How often a run session's reader looks in on its supervisor while its pty is quiet.
+const RUN_EXIT_POLL: Duration = Duration::from_millis(250);
+
+/// Whether `pid` has exited, without reaping it: `child_gone` reaps it as the session is removed,
+/// under `TERMINATING`, so a hand-off never carries a session whose shell is already reaped.
+fn child_exited(pid: i32) -> bool {
+    if pid <= 0 {
+        return true;
+    }
+    // SAFETY: an all-zero `siginfo_t` is a valid value; `waitid` writes only into it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is live for the call; `pid` is this pty's own child.
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    // With nothing to report, `WNOHANG` leaves `si_pid` zero; an error means it is reaped already.
+    // SAFETY: `info` was zeroed, then written only by `waitid`.
+    rc != 0 || unsafe { info.si_pid() } != 0
+}
+
 fn child_gone(pid: i32, status: &mut i32) -> bool {
     if pid <= 0 {
         return true;
@@ -1798,11 +1823,28 @@ fn read_session(
     hub: Arc<Hub>,
 ) {
     let mut buffer = [0u8; READ_CHUNK];
+    // A run session ends when its supervisor does, even while something it left behind holds the
+    // pty open. On Linux a master reads EIO only once every holder of the slave has closed it, so
+    // a server its launcher forked out of the run's process group, which `sweep_run_session` is
+    // there to end, would otherwise keep the session, and so itself, alive (#522, R8). macOS
+    // reports the end as soon as the supervisor exits.
+    let run = store.lock().is_ok_and(|store| {
+        store.get(&id).is_some_and(|session| {
+            session.number == number && crate::run::is_run(&session.metadata)
+        })
+    });
+    let mut supervisor_exited = false;
     loop {
         // Wait OUTSIDE the lock, read under it. A blocked wait holding the attachment lock would
         // stall every attach and every hand-off freeze until the shell next spoke. A failed wait
         // is not acted on here: the read below sees the same condition and classifies it.
-        let _ = pty.wait_readable();
+        if run {
+            if let Ok(false) = pty.wait_readable_within(RUN_EXIT_POLL) {
+                supervisor_exited = child_exited(pty.child_pid());
+            }
+        } else {
+            let _ = pty.wait_readable();
+        }
         // Read UNDER the attachment lock, and write to the shadow before releasing it. A byte
         // then leaves the pty only while this lock is held and is in the shadow by the time it is
         // released, so whoever holds every session's lock (`SessionStore::frozen`) holds a shadow
@@ -1860,9 +1902,12 @@ fn read_session(
         // stops the rest of this loop from having to know that — and matching only on EOF meant
         // the branch below never ran on Linux at all, while macOS exercised it and made the code
         // look correct. Found by running the suite in a Linux container.
+        // A run's supervisor that has gone, with nothing left to read, ends it too: see `run`.
         let ended = match &read {
             Ok(0) => true,
-            Err(e) => matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EBADF)),
+            Err(e) => {
+                matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EBADF)) || supervisor_exited
+            }
             _ => false,
         };
 
@@ -3864,5 +3909,41 @@ mod tests {
         );
         assert_eq!(exit_code(libc::SIGHUP), 128 + 1);
         assert_eq!(exit_code(0o177), 0, "stopped is not an exit");
+    }
+
+    /// A run's reader looks in on its supervisor without reaping it (#522), so the end it then
+    /// takes still reaps it under `TERMINATING` and reports the code it exited with.
+    #[test]
+    fn a_child_seen_to_have_exited_is_left_for_the_end_to_reap() {
+        let mut live = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn");
+        assert!(
+            !child_exited(live.id() as i32),
+            "a live child has not exited"
+        );
+        let _ = live.kill();
+        let _ = live.wait();
+
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("spawn");
+        let pid = child.id() as i32;
+        assert!(
+            until(Instant::now() + Duration::from_secs(5), || child_exited(
+                pid
+            )
+            .then_some(()))
+            .is_some(),
+            "the exit is seen"
+        );
+        assert!(child_exited(pid), "and seen again: it was not reaped");
+        let mut status = 0;
+        assert!(child_gone(pid, &mut status));
+        assert_eq!(exit_code(status), 7, "the end still gets its code");
+        // `child_gone` reaped it already; this only lets go of the handle.
+        let _ = child.wait();
     }
 }
