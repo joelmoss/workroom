@@ -368,12 +368,13 @@ final class DaemonVCSProtocolTests: XCTestCase {
   /// declared a second time, in a second language. Checked against the shipped binary's own report
   /// so a bump on one side alone fails here rather than as a dead service.
   func testTheClientsProtocolConstantsMatchTheShippedDaemon() throws {
-    XCTAssertEqual(DaemonHandshake.protocolVersion, 8)
+    XCTAssertEqual(DaemonHandshake.protocolVersion, 9)
     XCTAssertEqual(DaemonHandshake.minVCSVersion, 2)
     XCTAssertEqual(DaemonHandshake.minFileVersion, 3)
     XCTAssertEqual(DaemonHandshake.minForwardVersion, 5)
     XCTAssertEqual(DaemonHandshake.minLayoutVersion, 7)
     XCTAssertEqual(DaemonHandshake.minProgramStatusVersion, 8)
+    XCTAssertEqual(DaemonHandshake.minRunVersion, 9)
     let process = Process()
     process.executableURL = try DaemonHarness.binaryURL()
     process.arguments = ["protocol"]
