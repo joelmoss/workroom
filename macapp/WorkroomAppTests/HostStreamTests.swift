@@ -143,8 +143,8 @@ final class HostStreamTests: XCTestCase {
     XCTAssertEqual(
       fresh,
       "if ! test -e '/run/workroom/workroomd' && test -x '/run/workroom/wr-agent'; then echo "
-        + "'workroom: This workroom'\\''s host was set up by an older Workroom Nightly, before its "
-        + "daemon was renamed workroomd. Delete the workroom and create it again.' >&2; exit 1; fi; "
+        + "'workroom: This workroom'\\''s host was set up by an older Workroom Nightly, which this "
+        + "build can'\\''t open. Delete the workroom and create it again.' >&2; exit 1; fi; "
         + "test -x '/run/workroom/workroomd' || { echo "
         + "'workroom: no daemon is installed at /run/workroom/workroomd yet' >&2; exit 255; }; "
         + "if test -r '/run/workroom/ghostty/terminfo/x/xterm-ghostty'; then set -- "

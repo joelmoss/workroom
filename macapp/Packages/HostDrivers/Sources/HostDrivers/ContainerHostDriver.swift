@@ -92,10 +92,13 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
 
   /// How a host is reached: one handed in over ssh (the ssh fixture, and the path boxd and exe.dev
   /// share, which its tests run through this driver), or a container this driver made, through its
-  /// runtime's `exec` (#308), as `user`, its daemon on `socket`.
+  /// runtime's `exec` (#308), as `user`, its daemon on `socket`. `older` is a container made before
+  /// #308, reached over ssh, as its record says: it can be destroyed, and reaching it throws
+  /// `olderContainer`.
   private enum Reach {
     case ssh(SSHTransport.Host)
     case exec(user: String, socket: String)
+    case older(ContainerHostRecord)
   }
 
   /// What a container is made from (#308): the image, run as `user`, with the container settings a
@@ -172,6 +175,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     guard case .remote(let id) = host, let reach = lock.withLock({ hosts[id] }) else {
       throw HostDriverError.unknownHost(host)
     }
+    if case .older = reach { throw HostDriverError.olderContainer }
     return (id, reach)
   }
 
@@ -368,6 +372,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   /// every one stopped after a reboot. Only for a workroom the user opens (`RemoteHosts.activate`),
   /// never for a background probe, which would start every container the app knows.
   public func startIfStopped(_ host: HostID) async throws {
+    _ = try reach(host)
     guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
       throw HostDriverError.unknownHost(host)
     }
@@ -390,18 +395,23 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   public func record(of host: HostID) -> ContainerHostRecord? {
     guard case .remote(let id) = host else { return nil }
     return lock.withLock {
-      guard case .exec(let user, _) = hosts[id], let made = provisioned[id] else { return nil }
-      return ContainerHostRecord(user: user, image: made.image, context: provisioning?.context)
+      guard let made = provisioned[id] else { return nil }
+      switch hosts[id] {
+      case .exec(let user, _):
+        return ContainerHostRecord(user: user, image: made.image, context: provisioning?.context)
+      case .older(let record): return record
+      case .ssh, nil: return nil
+      }
     }
   }
 
   /// Takes a host an earlier launch made back on (#253), as its `record` describes it, so it can
   /// be reached and destroyed as if this driver had made it. Whether its container is still there
-  /// is found out by using it. A container made before #308, reached over ssh, is refused: its
-  /// image's entrypoint is the ssh one, which this build doesn't speak.
+  /// is found out by using it. A container made before #308, reached over ssh, is taken on only to
+  /// be destroyed: its image's entrypoint is the ssh one, which this build doesn't speak, so
+  /// reaching it throws `olderContainer` and its workroom says to make it again.
   public func adopt(_ id: UUID, _ record: ContainerHostRecord) throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Adopting a host") }
-    guard record.hostKey == nil else { throw HostDriverError.olderContainer }
     // `destroy` removes it by this, with `--force`: a config edited by hand must not name an image
     // that is not an older derive's commit.
     if let image = record.image, !Self.isImageID(image) {
@@ -414,7 +424,9 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
           + (provisioning.context ?? "(current)"))
     }
     lock.withLock {
-      hosts[id] = .exec(user: record.user, socket: Self.containerSocket)
+      hosts[id] =
+        record.hostKey == nil
+        ? .exec(user: record.user, socket: Self.containerSocket) : .older(record)
       provisioned[id] = Provisioned(container: Self.containerName(id), image: record.image)
       destroyed.remove(id)
     }
