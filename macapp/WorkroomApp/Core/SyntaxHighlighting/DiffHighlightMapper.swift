@@ -79,6 +79,17 @@ enum DiffHighlightMapper {
 
     let defaultColor = Color(nsColor: tokens.nsFg)
     let emphasisBg = side == .new ? tokens.diffAddEmphasisBg : tokens.diffRemoveEmphasisBg
+    // Use the base syntax colour on added lines too (not the contrast-nudged one): the add tint is
+    // light, so the same palette as context stays legible — and matching context is what reads as
+    // "syntax highlighting is preserved on changed lines" (GitHub-style). Looked up once per
+    // capture name; nil when the theme has no colour for it.
+    var colors: [String: Color?] = [:]
+    func color(for capture: String) -> Color? {
+      if let cached = colors[capture] { return cached }
+      let color = tokens.syntaxColor(forCapture: capture)
+      colors[capture] = color
+      return color
+    }
     var result: [Int: AttributedString] = [:]
 
     for hunk in diff.hunks {
@@ -101,55 +112,43 @@ enum DiffHighlightMapper {
         guard idx >= 0, idx < lineCount else { continue }
 
         // Changed-since-diff guard: the file's line must still be exactly the diff's line text.
-        let fileLineText = String(decoding: bytes[lineStart[idx]..<lineEnd[idx]], as: UTF8.self)
-        guard fileLineText == line.text else { continue }
+        guard line.text.utf8.elementsEqual(bytes[lineStart[idx]..<lineEnd[idx]]) else { continue }
 
-        var attr = AttributedString()
-        var cursor = lineStart[idx]
-
-        // The intra-line change emphasis for this line, as a file-global byte range.
-        let emphasis: Range<Int>? = lineEmphasis.map {
-          (lineStart[idx] + $0.lowerBound)..<(lineStart[idx] + $0.upperBound)
-        }
-
-        func emit(_ range: Range<Int>, _ fg: Color, _ bg: Color?) {
-          guard range.lowerBound < range.upperBound else { return }
-          var run = AttributedString(String(decoding: bytes[range], as: UTF8.self))
-          run.foregroundColor = fg
-          if let bg { run.backgroundColor = bg }
-          attr.append(run)
-        }
-
-        // Append a foreground run, splitting it at the emphasis boundaries so the changed bytes get
-        // the deeper background tint. Called with ascending ranges, so the sub-runs stay ordered.
-        // Each sub-range is bounds-checked *before* constructing it — `a..<b` traps when `a > b`,
-        // which happens whenever the run lies entirely before or after the emphasis range.
-        func appendRun(_ range: Range<Int>, _ color: Color) {
-          let lo = range.lowerBound
-          let hi = range.upperBound
-          guard lo < hi else { return }
-          guard let emphasis else { return emit(lo..<hi, color, nil) }
-          let beforeHi = min(hi, emphasis.lowerBound)
-          if lo < beforeHi { emit(lo..<beforeHi, color, nil) }
-          let inLo = max(lo, emphasis.lowerBound)
-          let inHi = min(hi, emphasis.upperBound)
-          if inLo < inHi { emit(inLo..<inHi, color, emphasisBg) }
-          let afterLo = max(lo, emphasis.upperBound)
-          if afterLo < hi { emit(afterLo..<hi, color, nil) }
-        }
-
-        for span in buckets[idx] {
-          if span.byteRange.lowerBound > cursor {
-            appendRun(cursor..<span.byteRange.lowerBound, defaultColor)
+        // One string for the line, the default colour throughout, then the spans recoloured and
+        // the emphasis tinted over it. Byte offsets become string positions by one forward walk
+        // over the scalars per line (spans ascend); the emphasis gets a walk of its own, as it may
+        // start before the last span ended. (Appending a run per colour change cost six times
+        // this at the 2000-line cap.)
+        var attr = AttributedString(line.text)
+        attr.foregroundColor = defaultColor
+        let scalars = line.text.unicodeScalars
+        var index = scalars.startIndex
+        var byte = lineStart[idx]
+        func advance(to target: Int) {
+          while byte < target, index < scalars.endIndex {
+            byte += scalars[index].utf8.count
+            index = scalars.index(after: index)
           }
-          // Use the base syntax colour on added lines too (not the contrast-nudged one): the add
-          // tint is light, so the same palette as context stays legible — and matching context is
-          // what reads as "syntax highlighting is preserved on changed lines" (GitHub-style).
-          let color = tokens.syntaxColor(forCapture: span.capture) ?? defaultColor
-          appendRun(max(span.byteRange.lowerBound, cursor)..<span.byteRange.upperBound, color)
-          cursor = max(cursor, span.byteRange.upperBound)
         }
-        if cursor < lineEnd[idx] { appendRun(cursor..<lineEnd[idx], defaultColor) }
+        for span in buckets[idx] {
+          advance(to: span.byteRange.lowerBound)
+          let start = index
+          advance(to: span.byteRange.upperBound)
+          guard start < index, let color = color(for: span.capture),
+            let range = Range(start..<index, in: attr)
+          else { continue }
+          attr[range].foregroundColor = color
+        }
+        if let lineEmphasis {
+          index = scalars.startIndex
+          byte = lineStart[idx]
+          advance(to: lineStart[idx] + lineEmphasis.lowerBound)
+          let start = index
+          advance(to: lineStart[idx] + lineEmphasis.upperBound)
+          if start < index, let range = Range(start..<index, in: attr) {
+            attr[range].backgroundColor = emphasisBg
+          }
+        }
 
         result[lineNumber] = attr
       }

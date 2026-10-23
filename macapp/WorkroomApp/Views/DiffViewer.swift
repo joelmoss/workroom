@@ -466,14 +466,16 @@ struct DiffViewer: View {
       highlightedLines = [:]
       return
     }
-    // Parse + resolve captures off the main actor — CPU-bound, bounded by the byte cap.
-    let spans = await Task.detached(priority: .utility) {
-      SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
+    // Parse, resolve captures and build the per-line strings off the main actor — CPU-bound,
+    // bounded by the byte cap and the diff's line cap.
+    let tokens = theme.tokens
+    let additionEmphasis = emphasis.additions
+    let lines = await Task.detached(priority: .utility) {
+      let spans = SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
+      return DiffHighlightMapper.attributedLines(
+        diff: diff, content: content, spans: spans, tokens: tokens,
+        additionEmphasis: additionEmphasis)
     }.value
-    guard !Task.isCancelled, activeHighlightKey == key else { return }
-    let lines = DiffHighlightMapper.attributedLines(
-      diff: diff, content: content, spans: spans, tokens: theme.tokens,
-      additionEmphasis: emphasis.additions)
     guard !Task.isCancelled, activeHighlightKey == key else { return }
     highlightedLines = lines
 
@@ -485,13 +487,15 @@ struct DiffViewer: View {
       AppEnvironment.current.isFixture
       ? nil : await repositoryFileContent(old: true)
     guard !Task.isCancelled, activeHighlightKey == key, let oldContent else { return }
-    let oldSpans = await Task.detached(priority: .utility) {
-      SyntaxHighlighter.shared.spans(for: oldContent, grammar: grammar)
+    let deletionEmphasis = emphasis.deletions
+    let oldLines = await Task.detached(priority: .utility) {
+      let oldSpans = SyntaxHighlighter.shared.spans(for: oldContent, grammar: grammar)
+      return DiffHighlightMapper.attributedLines(
+        diff: diff, content: oldContent, spans: oldSpans, tokens: tokens,
+        side: .old, deletionEmphasis: deletionEmphasis)
     }.value
     guard !Task.isCancelled, activeHighlightKey == key else { return }
-    highlightedOldLines = DiffHighlightMapper.attributedLines(
-      diff: diff, content: oldContent, spans: oldSpans, tokens: theme.tokens,
-      side: .old, deletionEmphasis: emphasis.deletions)
+    highlightedOldLines = oldLines
   }
 
   // MARK: Diff body

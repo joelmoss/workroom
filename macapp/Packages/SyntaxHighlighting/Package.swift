@@ -14,22 +14,16 @@ let package = Package(
   ],
   dependencies: [
     // --- Syntax highlighting (issue: tree-sitter diff highlighting, phase 1 editor foundation) ---
-    // SwiftTreeSitter is the Swift wrapper over the tree-sitter C runtime: Language/Parser/Query +
-    // the resource-bundle query loader (`LanguageConfiguration(_:name:)` finds each grammar's
-    // `TreeSitter{name}_TreeSitter{name}` bundle and loads its `queries/highlights.scm`). Pinned
-    // EXACT — the C ABI between the runtime and the pinned grammars must not drift under us.
-    .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter", exact: "0.25.0"),
-    // The tree-sitter C runtime. Pulled transitively by SwiftTreeSitter, but declared explicitly so we
-    // can `import TreeSitter` for the `TSInputEncodingUTF8` constant (SwiftTreeSitter exposes the
-    // `TSInputEncoding` type in its API but does not re-export the C module's enum constants). Pinned
-    // to the version SwiftTreeSitter 0.25.0 resolves, so there's no second copy of the runtime.
+    // The tree-sitter C runtime, used directly: parser, query and cursor. (The SwiftTreeSitter
+    // wrapper was dropped in 2026-10: its match iteration cost four times the C cursor, and its
+    // bundle search misfired under a hosted test.) Pinned EXACT — the C ABI between the runtime and
+    // the pinned grammars must not drift under us.
     .package(url: "https://github.com/tree-sitter/tree-sitter", exact: "0.25.10"),
     // Each grammar ships a `Package.swift` whose library target (`dependencies: []`) compiles only
     // `src/parser.c` (+ `src/scanner.c` for external-scanner grammars) and copies `queries/` as a
     // resource bundle. Their own (test-only) SwiftTreeSitter dependency is pruned by SPM, so we link
-    // just the C product and supply SwiftTreeSitter ourselves. Pinned by EXACT COMMIT (the generated
-    // parser's ABI is tied to the runtime above). TreeSitterBash carries an external scanner — the
-    // lane-A packaging proof.
+    // just the C product. Pinned by EXACT COMMIT (the generated parser's ABI is tied to the runtime
+    // above). TreeSitterBash carries an external scanner — the lane-A packaging proof.
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-json",
       revision: "001c28d7a29832b06b0e831ec77845553c89b56d"),
@@ -92,7 +86,6 @@ let package = Package(
     .target(
       name: "SyntaxHighlighting",
       dependencies: [
-        .product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"),
         .product(name: "TreeSitter", package: "tree-sitter"),
         .product(name: "TreeSitterJSON", package: "tree-sitter-json"),
         .product(name: "TreeSitterBash", package: "tree-sitter-bash"),

@@ -13,7 +13,7 @@ import SwiftUI
 /// Derivation mirrors muxy's `MuxyTheme.Snapshot`. When no theme resolves (first launch before a
 /// theme is applied, or a deleted file), the fallbacks are the macOS system colours, so the chrome
 /// degrades to the pre-theming native look rather than crashing.
-public struct ThemeTokens {
+public struct ThemeTokens: Sendable {
   // Bases.
   public let nsBg: NSColor
   public let nsFg: NSColor

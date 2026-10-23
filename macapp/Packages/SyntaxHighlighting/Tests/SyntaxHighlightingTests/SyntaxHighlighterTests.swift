@@ -55,7 +55,8 @@ final class SyntaxHighlighterTests: XCTestCase {
       .ruby: "def foo\n  1\nend\n",
       .javascript: "const x = 1\n",
       .typescript: "const x: number = 1\n",
-      .tsx: "const e = <div className=\"a\">hi</div>\n",
+      // The bundled TSX query covers types only (JSX itself is left plain), so give it one.
+      .tsx: "const e: Foo = <div className=\"a\">hi</div>\n",
       .python: "def foo():\n    return 1\n",
       .json: "{ \"a\": 1 }\n",
       .yaml: "name: workroom\nport: 42\n",
@@ -75,6 +76,35 @@ final class SyntaxHighlighterTests: XCTestCase {
         "grammar \(grammar.rawValue) produced no spans — query bundle \(grammar.queryBundleName) "
           + "or parser/scanner likely not wired")
     }
+  }
+
+  /// Query predicates gate their patterns: Python's `((identifier) @constant (#match? @constant
+  /// "^[A-Z][A-Z_]*$"))` colours `BAR` a constant and leaves `bar` alone. Also the `#eq?` and
+  /// negated forms, through JavaScript's `require` and Ruby's.
+  func testPredicatesGateTheirPatterns() {
+    let python = "bar = 1\nBAR = 2\n"
+    let spans = SyntaxHighlighter.shared.spans(for: python, grammar: .python)
+    XCTAssertNotEqual(capture(at: 0, in: spans), "constant", "`bar` fails the #match? predicate")
+    XCTAssertEqual(capture(at: 8, in: spans), "constant", "`BAR` passes it")
+
+    let javascript = "require('x')\nrequired('x')\n"
+    let js = SyntaxHighlighter.shared.spans(for: javascript, grammar: .javascript)
+    XCTAssertEqual(capture(at: 0, in: js), "function.builtin", "#eq? @function.builtin \"require\"")
+    XCTAssertEqual(capture(at: 13, in: js), "function", "`required` fails the #eq?")
+  }
+
+  /// tree-sitter-sql writes its number predicates with Lua's `%d`; a literal `%d` would match no
+  /// digit and every SQL number would fall back to the string colour. (Its float pattern's `\.`
+  /// reaches the regex as a bare `.`, so an integer may come out `float`; both colour as numbers.)
+  func testSQLNumbersStayNumbers() {
+    let spans = SyntaxHighlighter.shared.spans(for: "SELECT 42, 1.5, 'x' FROM t;\n", grammar: .sql)
+    XCTAssertTrue(["number", "float"].contains(capture(at: 7, in: spans)), "42 is a number")
+    XCTAssertEqual(capture(at: 11, in: spans), "float", "1.5 is a float")
+    XCTAssertEqual(capture(at: 16, in: spans), "string", "'x' is not")
+  }
+
+  private func capture(at byte: Int, in spans: [HighlightSpan]) -> String? {
+    spans.first { $0.byteRange.contains(byte) }?.capture
   }
 
   // MARK: - Captures cache key

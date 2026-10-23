@@ -186,6 +186,43 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(empty.length, 0)
   }
 
+  /// Spans are UTF-8 byte ranges; the string is UTF-16. Text before a span that is wider in
+  /// bytes than in UTF-16 units (`é` is 2 bytes, 1 unit; the emoji 4 bytes, 2 units) must not
+  /// shift where the colour lands.
+  @MainActor func testNsAttributedStringMapsBytesToUTF16AcrossMultibyteText() {
+    let tokens = ThemeService.shared.tokens
+    let content = "é🙂 let x"  // `let` is bytes 7..<10 and UTF-16 units 4..<7
+    let s = FileHighlightMapper.nsAttributedString(
+      content: content, spans: [HighlightSpan(byteRange: 7..<10, capture: "keyword")],
+      tokens: tokens, font: PlainFileViewer.font)
+    let keyword = s.attribute(.foregroundColor, at: 4, effectiveRange: nil) as? NSColor
+    XCTAssertNotEqual(keyword, tokens.nsFg, "`l` of `let` is recoloured")
+    XCTAssertEqual(
+      s.attribute(.foregroundColor, at: 6, effectiveRange: nil) as? NSColor, keyword,
+      "`t` of `let` too")
+    XCTAssertEqual(
+      s.attribute(.foregroundColor, at: 3, effectiveRange: nil) as? NSColor, tokens.nsFg,
+      "the space before it is not")
+    XCTAssertEqual(
+      s.attribute(.foregroundColor, at: 7, effectiveRange: nil) as? NSColor, tokens.nsFg,
+      "nor the space after")
+  }
+
+  /// `highlighted` parses and builds the string away from the main actor, and hands back nothing
+  /// for content the grammar leaves plain, so the viewer keeps the string it already shows.
+  @MainActor func testHighlightedRecolorsOrKeepsPlain() async {
+    let tokens = ThemeService.shared.tokens
+    let s = await FileHighlightMapper.highlighted(
+      content: "let x = 1", grammar: .swift, tokens: tokens, font: PlainFileViewer.font)
+    XCTAssertEqual(s?.string, "let x = 1")
+    XCTAssertNotEqual(
+      s?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, tokens.nsFg,
+      "`let` is a keyword, recoloured away from the default")
+    let plain = await FileHighlightMapper.highlighted(
+      content: "   \n", grammar: .swift, tokens: tokens, font: PlainFileViewer.font)
+    XCTAssertNil(plain, "no captures ⇒ nil, the caller keeps its plain string")
+  }
+
   @MainActor func testNsAttributedStringRecolorsCapturedSpan() {
     let tokens = ThemeService.shared.tokens
     let content = "let x = 1"  // recolor bytes 0..<3 ("let") as a keyword
