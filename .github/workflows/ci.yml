@@ -326,41 +326,6 @@ jobs:
             --cache-to type=gha,mode=max,scope=ssh-fixture
         run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroomd"
 
-      # The `workroom-host` image (`make remote-host-image`, FIXTURE=0) an app's remote workrooms
-      # run on (#253). The step above only builds FIXTURE=1, so this is the only check on
-      # the variant's own paths (#288). It builds twice: a FIXTURE=1 control, whose apt layer is the
-      # one the step above caches under `ssh-fixture`, so it only reads that scope; then the host,
-      # under its own scope. Never one scope for both: a second export replaces the first.
-      # Not skipped when the ssh fixture step fails, since it needs nothing that step makes, only the
-      # buildx builder above; when that never came up, an earlier step failed and this would only add
-      # a second, confusing failure.
-      - name: workroom-host image
-        if: ${{ !cancelled() && matrix.arch == 'x86_64' && steps.buildx.outcome == 'success' }}
-        timeout-minutes: 10
-        env:
-          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
-          WR_FIXTURE_CONTROL_BUILD_FLAGS: --load --cache-from type=gha,scope=ssh-fixture
-          WR_FIXTURE_BUILD_FLAGS: >-
-            --load --cache-from type=gha,scope=workroom-host
-            --cache-to type=gha,mode=max,scope=workroom-host,ignore-error=true
-        run: vcs/scripts/ssh-fixture/host-image-test.sh
-
-  # The same `workroom-host` check on arm64, which is what the image runs as on an Apple Silicon
-  # Mac's Docker (#299). Its own job on a native arm64 runner: daemon-linux is x86_64 for both legs,
-  # and an emulated build would run apt under QEMU. No build cache and no Rust: the script needs
-  # only Docker and ssh, which the runner image has.
-  host-image-arm64:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: workroom-host image (arm64)
-        run: vcs/scripts/ssh-fixture/host-image-test.sh
-
   # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app host,
   # so `make app-test` never sees them. Their own job, beside `app` rather than a step of it: the
   # step took 8 of that job's 21 minutes (measured 2026-10-18) and needs nothing the app build
@@ -798,7 +763,7 @@ jobs:
   # the next green one, instead of waiting for another docs change.
   docs-deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [workflows, cli, rust, daemon-terminal-state, daemon-linux, host-image-arm64, app-packages, app, app-scripts]
+    needs: [workflows, cli, rust, daemon-terminal-state, daemon-linux, app-packages, app, app-scripts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
