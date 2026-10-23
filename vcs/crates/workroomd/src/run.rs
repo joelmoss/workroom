@@ -66,27 +66,50 @@ pub fn spawn_watcher(sessions: SessionStore) {
         .name("runs".into())
         .spawn(move || {
             let mut published = HashMap::new();
-            // Polled until here whatever the statuses say: a run just created or signalled has a
-            // new status on its way that the file does not show yet.
-            let mut poll_until = Instant::now();
+            let mut grace = Grace {
+                counted: sessions.runs_wake(),
+                until: Instant::now(),
+            };
             loop {
                 // Counted before the tick looks, so a run created or signalled between the look
                 // and the wait still wakes it.
                 let seen = sessions.runs_wake();
+                grace.count(seen, Instant::now());
                 let running = tick(&sessions, &dir, &mut published);
-                if running || Instant::now() < poll_until {
+                if running || grace.polling(Instant::now()) {
                     std::thread::sleep(POLL);
                 } else {
                     // Every run has finished, or there is none: sleep until one is created or
                     // signalled, rather than read finished runs' files seven times a second (an
                     // idle daemon's whole cost with a stopped run tab open, 2026-10-23).
                     sessions.wait_for_runs_wake(seen);
-                    poll_until = Instant::now() + WAKE_GRACE;
                 }
             }
         });
     if let Err(e) = spawned {
         eprintln!("workroomd: run sessions' state will not be published: no thread for it: {e}");
+    }
+}
+
+/// How long the watcher polls whatever the statuses say: `WAKE_GRACE` after the last create or
+/// signal it counted, since that run has a new status on its way that its file does not show yet.
+/// Counted on every pass, not only after a wait: a restart while the watcher is still polling
+/// for the one before must get its own grace, or the watcher can sleep on the old "stopped".
+struct Grace {
+    counted: u64,
+    until: Instant,
+}
+
+impl Grace {
+    fn count(&mut self, seen: u64, now: Instant) {
+        if seen != self.counted {
+            self.counted = seen;
+            self.until = now + WAKE_GRACE;
+        }
+    }
+
+    fn polling(&self, now: Instant) -> bool {
+        now < self.until
     }
 }
 
@@ -147,7 +170,35 @@ fn remove_stale(dir: &Path, live: &[SessionId]) {
 
 #[cfg(test)]
 mod tests {
-    use super::still_running;
+    use super::{Grace, WAKE_GRACE, still_running};
+    use std::time::{Duration, Instant};
+
+    /// A restart counted while the watcher still polls for the signal before it gets a grace of
+    /// its own. The supervisor takes a moment to answer a signal, so without it the watcher can
+    /// stop polling on the old "stopped" and show a running command as stopped.
+    /// Value: protects=a run signalled near the end of an earlier grace is still polled; fails_when=only a wait starts a grace; why_new=no test drove the watcher's grace; seam=none; no_claim=the loop's wiring of count and polling
+    #[test]
+    fn a_signal_counted_while_polling_gets_its_own_grace() {
+        let start = Instant::now();
+        let mut grace = Grace {
+            counted: 1,
+            until: start,
+        };
+        assert!(!grace.polling(start), "nothing counted yet");
+        grace.count(2, start);
+        let late = start + WAKE_GRACE - Duration::from_millis(100);
+        assert!(grace.polling(late));
+        grace.count(3, late);
+        assert!(
+            grace.polling(start + WAKE_GRACE + Duration::from_millis(100)),
+            "a signal counted while polling got no grace"
+        );
+        grace.count(3, start + WAKE_GRACE * 2);
+        assert!(
+            !grace.polling(start + WAKE_GRACE * 2),
+            "nothing new counted, yet still polling"
+        );
+    }
 
     /// The watcher polls a run whose status can still change on its own and sleeps on one that
     /// only a signal moves; a run without a status yet is polled.
