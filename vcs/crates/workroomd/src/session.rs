@@ -1827,19 +1827,24 @@ fn read_session(
     // pty open. On Linux a master reads EIO only once every holder of the slave has closed it, so
     // a server its launcher forked out of the run's process group, which `sweep_run_session` is
     // there to end, would otherwise keep the session, and so itself, alive (#522, R8). macOS
-    // reports the end as soon as the supervisor exits.
+    // reports the end as soon as the supervisor exits. Looked in on every `RUN_EXIT_POLL` whether
+    // or not the pty is quiet, since a leftover that logs more often would otherwise keep it from
+    // ever being looked at.
     let run = store.lock().is_ok_and(|store| {
         store.get(&id).is_some_and(|session| {
             session.number == number && crate::run::is_run(&session.metadata)
         })
     });
     let mut supervisor_exited = false;
+    let mut looked_in = Instant::now();
     loop {
         // Wait OUTSIDE the lock, read under it. A blocked wait holding the attachment lock would
         // stall every attach and every hand-off freeze until the shell next spoke. A failed wait
         // is not acted on here: the read below sees the same condition and classifies it.
         if run {
-            if let Ok(false) = pty.wait_readable_within(RUN_EXIT_POLL) {
+            let quiet = matches!(pty.wait_readable_within(RUN_EXIT_POLL), Ok(false));
+            if quiet || looked_in.elapsed() >= RUN_EXIT_POLL {
+                looked_in = Instant::now();
                 supervisor_exited = child_exited(pty.child_pid());
             }
         } else {
@@ -1902,14 +1907,14 @@ fn read_session(
         // stops the rest of this loop from having to know that — and matching only on EOF meant
         // the branch below never ran on Linux at all, while macOS exercised it and made the code
         // look correct. Found by running the suite in a Linux container.
-        // A run's supervisor that has gone, with nothing left to read, ends it too: see `run`.
-        let ended = match &read {
-            Ok(0) => true,
-            Err(e) => {
-                matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EBADF)) || supervisor_exited
-            }
-            _ => false,
-        };
+        // A run's supervisor that has gone ends it too (see `run`), whatever is still to read: that
+        // is what it left behind, which `sweep_run_session` is about to end.
+        let ended = supervisor_exited
+            || match &read {
+                Ok(0) => true,
+                Err(e) => matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EBADF)),
+                _ => false,
+            };
 
         // A read saying "ended" is not proof, so confirm it against the CHILD before tearing a
         // session down. macOS returns a transient `read == 0` on a freshly forked master while the
