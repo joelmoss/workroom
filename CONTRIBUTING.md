@@ -102,7 +102,7 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 | **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+; Release builds are universal, arm64 and x86_64) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm`, Metal-rendered) |
 | **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); daemon-routed reads and writes via the Rust `workroomd` |
-| **Syntax highlighting** | [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + tree-sitter grammars |
+| **Syntax highlighting** | [tree-sitter](https://github.com/tree-sitter/tree-sitter) C runtime + grammars |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.6 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |
 | **App build tooling** | [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`project.yml` → `.xcodeproj`) |
@@ -212,7 +212,7 @@ SwiftUI app. The core loop:
 
 Key dependencies: **libghostty-spm** (terminal), **SwiftGitX**
 (VCS reading), **Sparkle** (update), **Sentry** (crash reporting), **Defaults** (preferences), and
-**SwiftTreeSitter** + grammars (syntax highlighting). The app is **non-sandboxed** with the
+the **tree-sitter** C runtime + grammars (syntax highlighting). The app is **non-sandboxed** with the
 **hardened runtime** enabled (it spawns `git`/`workroom` and opens arbitrary directories), and
 registers a global `⌘§` hotkey via Carbon. The embedded Go helper is built and signed during the
 Xcode build by `macapp/Scripts/build-helper.sh` and placed under `Contents/Resources/` (not
