@@ -19,10 +19,17 @@ binary=$1
 socket=$2
 handoff=$3
 
-if ! "$binary" protocol > /dev/null 2>&1; then
-  echo "WRB outcome does-not-run"
-  exit 1
-fi
+# Tried for 3 s: a file the Mac renames into Apple's mounted folder reads as missing in a running
+# container for about a second (its runtime caches the name; 1.5.0, measured).
+tries=0
+until "$binary" protocol > /dev/null 2>&1; do
+  tries=$((tries + 1))
+  if [ "$tries" -ge 10 ]; then
+    echo "WRB outcome does-not-run"
+    exit 1
+  fi
+  sleep 0.3
+done
 
 outcome=installed
 listening=no

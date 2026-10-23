@@ -198,11 +198,14 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     return true
   }
 
-  /// A container from the provisioned image, as the image's own user: a create with no
-  /// devcontainer.json to say otherwise.
+  /// A container from the provisioned image, as the provisioned user, else the image's own: a
+  /// create with no spec to say otherwise. The app makes its containers from a spec
+  /// (`create(spec:)`); this is the generic `HostDriver` create the provisioning tests use.
   public func create() async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
-    return try await create(spec: ContainerSpec(image: provisioning.image))
+    return try await create(
+      spec: ContainerSpec(
+        image: provisioning.image, user: provisioning.user.isEmpty ? nil : provisioning.user))
   }
 
   /// A container made from `spec` (#308), its image pulled first when this runtime hasn't it.
@@ -325,11 +328,9 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       }
       throw HostDriverError.unknownHost(host)
     }
-    if provisioning?.dialect == .apple {
-      _ = try await runtime(["delete", "--force", made.container])
-    } else {
-      _ = try await runtime(["rm", "--force", "--volumes", made.container])
-      if let image = made.image { _ = try await runtime(["rmi", "--force", image]) }
+    try await removeContainer(made.container)
+    if provisioning?.dialect != .apple, let image = made.image {
+      _ = try await runtime(["rmi", "--force", image])
     }
     lock.withLock {
       hosts[id] = nil
@@ -500,7 +501,11 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
         // Without `--force`: an image any container was run from is in use, and stays, so a
         // `known` host this driver has not adopted keeps its image too.
         do { _ = try await runtime(["rmi", image]) } catch {
-          failed.append("image \(image): \(error.localizedDescription)")
+          // Docker's refusal for an image in use, by a container or as another image's base (a
+          // devcontainer.json's build, #308), is that rule working, not a failure.
+          let said = error.localizedDescription
+          guard !said.contains("conflict: unable to delete") else { continue }
+          failed.append("image \(image): \(said)")
         }
       }
     } catch { failed.append("listing images: \(error.localizedDescription)") }
@@ -817,11 +822,9 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
         hosts[id] = nil
         provisioned[id] = nil
       }
-      let remove =
-        apple ? ["delete", "--force", container] : ["rm", "--force", "--volumes", container]
       let removal = await Task { () -> String? in
         do {
-          _ = try await self.runtime(remove)
+          try await self.removeContainer(container)
           return nil
         } catch { return "container \(container): \(error.localizedDescription)" }
       }.value
@@ -829,6 +832,22 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
       guard let removal else { throw error }
       throw HostDriverError.leftBehind(cause: error.localizedDescription, leftover: [removal])
+    }
+  }
+
+  /// Removes `container`, and its anonymous volumes on Docker. One already gone is removed: a
+  /// create whose `create` failed made none, and Apple's `delete --force` says "not found" where
+  /// Docker's `rm --force` says nothing (Apple's 1.5.0, measured).
+  private func removeContainer(_ container: String) async throws {
+    let apple = provisioning?.dialect == .apple
+    do {
+      _ = try await runtime(
+        apple ? ["delete", "--force", container] : ["rm", "--force", "--volumes", container])
+    } catch {
+      let said = error.localizedDescription.lowercased()
+      guard ["not found", "notfound", "no such container"].contains(where: said.contains) else {
+        throw error
+      }
     }
   }
 

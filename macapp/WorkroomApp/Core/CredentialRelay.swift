@@ -349,9 +349,12 @@ final class CredentialRelay: @unchecked Sendable {
 
   /// Has host `id`'s daemon ask this Mac for git's credentials: its listener carried here, and
   /// `workroomd credential relay` run there with this launch's secret. Run on every connect: the
-  /// listener goes with the connection, and the secret with the launch.
+  /// listener goes with the connection, and the secret with the launch. Its file goes beside
+  /// `socket` (#308): a container's daemon binary is in a folder the remote user can't write.
   @MainActor
-  func install(on host: HostID, driver: any HostDriver, daemonBinary: String) async throws {
+  func install(
+    on host: HostID, driver: any HostDriver, daemonBinary: String, socket: String? = nil
+  ) async throws {
     guard case .remote(let id) = host else { return }
     // Listening first, so a listener that can't be made fails here rather than in the registry.
     _ = try localPort()
@@ -359,6 +362,7 @@ final class CredentialRelay: @unchecked Sendable {
     let command =
       SSHTransport.shellQuoted(daemonBinary)
       + " credential relay --port \(Self.port(for: id))"
+      + (socket.map { " --socket \(SSHTransport.shellQuoted($0))" } ?? "")
     let (status, output) = try await driver.exec(command, on: host).communicate(
       Data((try secret(for: id) + "\n").utf8), timeout: 30)
     guard status == 0 else {

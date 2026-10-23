@@ -184,18 +184,32 @@ pub fn configure_git(git: impl Fn() -> Command, helper: &str) -> io::Result<()> 
 }
 
 /// The helper string git runs for `binary`: `!` makes git run it with the shell, so a path with
-/// spaces survives, and git appends `get`, `store` or `erase`.
-pub fn helper_command(binary: &Path) -> String {
-    let path = binary.to_string_lossy().replace('\'', r"'\''");
-    format!("!'{path}' credential")
+/// spaces survives, and git appends `get`, `store` or `erase`. With `socket`, the helper reads the
+/// relay file from beside it (`directory`).
+pub fn helper_command(binary: &Path, socket: Option<&Path>) -> String {
+    let quote = |path: &Path| path.to_string_lossy().replace('\'', r"'\''");
+    match socket {
+        Some(socket) => format!(
+            "!'{}' credential --socket '{}'",
+            quote(binary),
+            quote(socket)
+        ),
+        None => format!("!'{}' credential", quote(binary)),
+    }
 }
 
-/// Where the daemon keeps its relay file: beside its own binary, in the socket's 0700 directory.
-pub fn directory() -> io::Result<PathBuf> {
-    let exe = std::env::current_exe()?;
-    exe.parent()
+/// Where the daemon keeps its relay file: the socket's 0700 directory. Beside its own binary when
+/// no socket is named, which is the same directory on an ssh host; a container's binary is in a
+/// root-owned folder of its own (#308), so the relay names the socket there.
+pub fn directory(socket: Option<&Path>) -> io::Result<PathBuf> {
+    let beside = match socket {
+        Some(socket) => socket.to_path_buf(),
+        None => std::env::current_exe()?,
+    };
+    beside
+        .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| io::Error::other("the daemon's binary has no directory"))
+        .ok_or_else(|| io::Error::other("the daemon's socket has no directory"))
 }
 
 // MARK: - Files
@@ -236,12 +250,33 @@ mod tests {
     #[test]
     fn the_helper_command_survives_spaces_and_quotes_in_the_path() {
         assert_eq!(
-            helper_command(Path::new("/home/me/.workroom/workroomd")),
+            helper_command(Path::new("/home/me/.workroom/workroomd"), None),
             "!'/home/me/.workroom/workroomd' credential"
         );
         assert_eq!(
-            helper_command(Path::new("/a b/it's/workroomd")),
+            helper_command(Path::new("/a b/it's/workroomd"), None),
             r"!'/a b/it'\''s/workroomd' credential"
+        );
+        assert_eq!(
+            helper_command(
+                Path::new("/.workroom/bin/workroomd"),
+                Some(Path::new("/run/it's/workroomd.sock"))
+            ),
+            r"!'/.workroom/bin/workroomd' credential --socket '/run/it'\''s/workroomd.sock'"
+        );
+    }
+
+    /// A container's relay file goes beside its socket, not its binary (#308): the binary's
+    /// folder is root's, and on Apple's runtime a read-only mount.
+    #[test]
+    fn the_relay_file_goes_beside_the_socket_it_is_given() {
+        assert_eq!(
+            directory(Some(Path::new("/run/workroom/workroomd.sock"))).unwrap(),
+            PathBuf::from("/run/workroom")
+        );
+        assert_eq!(
+            directory(None).unwrap(),
+            std::env::current_exe().unwrap().parent().unwrap()
         );
     }
 }

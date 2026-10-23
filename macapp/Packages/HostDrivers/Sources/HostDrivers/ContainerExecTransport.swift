@@ -62,9 +62,17 @@ public enum ContainerExecTransport {
     -> HostStream
   {
     try HostStream.spawn(
-      target.runtime, arguments(target, tty: false, command: ["sh", "-c", command]),
+      target.runtime, arguments(target, tty: false, command: ["sh", "-c", ownHome + command]),
       environment: environment, handshakeTimeout: 20, purpose: purpose)
   }
+
+  /// Sets `HOME` to the remote user's, from the container's passwd file, ahead of a command: Docker's
+  /// `exec -u` sets it, Apple's doesn't (1.5.0 gives a non-root user `/`, measured), and the
+  /// lifecycle commands, the scripts and `~` in a path need it. Shell builtins and `id` only.
+  static let ownHome = """
+    me=$(id -u); while IFS=: read -r _ _ uid _ _ dir _; do \
+    [ "$uid" = "$me" ] && { HOME=$dir; export HOME; break; }; done < /etc/passwd 2>/dev/null;
+    """
 
   /// The daemon's relay, by path: the service stream.
   public static func openStream(on target: Target) throws -> HostStream {
@@ -98,7 +106,7 @@ public enum ContainerExecTransport {
       [target.runtime.path]
       + arguments(
         target, tty: true,
-        command: ["sh", "-c", ContainerHostDriver.postStartWait + "; " + script])
+        command: ["sh", "-c", ownHome + ContainerHostDriver.postStartWait + "; " + script])
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + exec)
       .map(PosixShell.quoted).joined(separator: " ")
   }

@@ -58,8 +58,31 @@ final class ContainerExecTransportTests: XCTestCase {
       try asked,
       [
         "--context", "orbstack", "exec", "-i", "-u", "vscode", "workroom-abc", "sh", "-c",
-        "echo hi",
+        ContainerExecTransport.ownHome + "echo hi",
       ])
+  }
+
+  /// The remote user's HOME, from the passwd file, ahead of the command: Apple's `exec -u` leaves
+  /// a non-root user's at `/`.
+  func testTheCommandRunsWithTheUsersOwnHome() throws {
+    let passwd = "root:x:0:0:root:/root:/bin/sh\nvscode:x:\(getuid()):1000::/home/vscode:/bin/zsh\n"
+    let file = directory.appendingPathComponent("passwd")
+    try passwd.write(to: file, atomically: true, encoding: .utf8)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = [
+      "-c",
+      ContainerExecTransport.ownHome.replacingOccurrences(of: "/etc/passwd", with: file.path)
+        + "echo \"$HOME\"",
+    ]
+    process.environment = ["HOME": "/", "PATH": "/usr/bin:/bin"]
+    let output = Pipe()
+    process.standardOutput = output
+    try process.run()
+    process.waitUntilExit()
+    XCTAssertEqual(
+      String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+      "/home/vscode\n")
   }
 
   /// Apple's CLI takes the same `exec` flags, and has no contexts.
@@ -68,7 +91,12 @@ final class ContainerExecTransportTests: XCTestCase {
     _ = try await ContainerExecTransport.exec(
       "true", on: target(runtime, dialect: .apple), purpose: .exchange
     ).communicate(nil, timeout: 10)
-    XCTAssertEqual(try asked, ["exec", "-i", "-u", "vscode", "workroom-abc", "sh", "-c", "true"])
+    XCTAssertEqual(
+      try asked,
+      [
+        "exec", "-i", "-u", "vscode", "workroom-abc", "sh", "-c",
+        ContainerExecTransport.ownHome + "true",
+      ])
   }
 
   /// The service stream is the daemon's relay, run by path, with no shell in between.
@@ -114,7 +142,9 @@ final class ContainerExecTransportTests: XCTestCase {
     XCTAssertTrue(args.last?.contains("WORKROOM_SESSION_CWD=/workspaces/app") ?? false)
     XCTAssertTrue(args.last?.contains("attach") ?? false)
     // First, in the container, it waits for a postStartCommand not yet run since the start (#308).
-    XCTAssertTrue(args.last?.hasPrefix(ContainerHostDriver.postStartWait + "; ") ?? false)
+    XCTAssertTrue(
+      args.last?.hasPrefix(
+        ContainerExecTransport.ownHome + ContainerHostDriver.postStartWait + "; ") ?? false)
     XCTAssertEqual(ContainerExecTransport.lastAttach(of: session, in: directory), .finished)
   }
 
