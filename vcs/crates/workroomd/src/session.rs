@@ -431,9 +431,9 @@ pub struct SessionStore {
     /// Where run sessions keep their status files (`crate::run`), when this store serves a
     /// socket (`keep_runs`). A store without one refuses run sessions.
     runs: Arc<OnceLock<PathBuf>>,
-    /// Raised for each run session created: what the runs watcher (`crate::run`) sleeps on while
-    /// there is no run session to publish.
-    runs_created: Arc<Wake>,
+    /// Raised when a run session is created or signalled: what the runs watcher (`crate::run`)
+    /// sleeps on while no run session has a status left to publish.
+    runs_wake: Arc<Wake>,
     /// Raised when a screen may have changed or a session has gone (output, a resize,
     /// `mark_changed`, the reader's end): what the screens thread (`crate::screens`) sleeps on
     /// instead of ticking every two seconds of an idle daemon.
@@ -638,15 +638,15 @@ impl SessionStore {
         self.runs.get().map(PathBuf::as_path)
     }
 
-    /// How many run sessions have been created here so far. Read before looking for live ones, so
-    /// `wait_for_run_created` cannot miss one created in between.
-    pub(crate) fn runs_created(&self) -> u64 {
-        self.runs_created.seen()
+    /// How often a run session has been created or signalled so far. Read before looking at the
+    /// runs, so `wait_for_runs_wake` cannot miss one created or signalled in between.
+    pub(crate) fn runs_wake(&self) -> u64 {
+        self.runs_wake.seen()
     }
 
-    /// Blocks until a run session is created after `runs_created` returned `seen`.
-    pub(crate) fn wait_for_run_created(&self, seen: u64) {
-        self.runs_created.wait_past(seen);
+    /// Blocks until a run session is created or signalled after `runs_wake` returned `seen`.
+    pub(crate) fn wait_for_runs_wake(&self, seen: u64) {
+        self.runs_wake.wait_past(seen);
     }
 
     /// How often a screen may have changed or a session gone so far. Read before a pass over the
@@ -697,6 +697,8 @@ impl SessionStore {
         if unsafe { libc::kill(session.pty.child_pid(), number) } != 0 {
             return Err(RunSignalError::Failed(std::io::Error::last_os_error()));
         }
+        // The supervisor is about to write a new status; the watcher may be asleep on a finished one.
+        self.runs_wake.raise();
         Ok(())
     }
 
@@ -791,7 +793,7 @@ impl SessionStore {
         // against this very lock.
         drop(sessions);
         if is_run {
-            self.runs_created.raise();
+            self.runs_wake.raise();
         }
         crate::note!(
             "session {} started: shell pid {}",
@@ -2509,21 +2511,21 @@ mod tests {
         store.kill_all();
     }
 
-    /// The runs watcher sleeps on `wait_for_run_created` while the map holds no run session; a run
+    /// The runs watcher sleeps on `wait_for_runs_wake` while the map holds no run session; a run
     /// session's creation wakes it, a shell's does not.
     #[test]
     fn a_run_session_wakes_the_runs_watcher_and_a_shell_does_not() {
         let store = SessionStore::new();
-        let seen = store.runs_created();
+        let seen = store.runs_wake();
         let args = [OsString::from("-c"), OsString::from("sleep 2")];
         let e = env();
         store.create(spec(id(93), &args, &e)).expect("a shell");
-        assert_eq!(store.runs_created(), seen, "a shell is not a run");
+        assert_eq!(store.runs_wake(), seen, "a shell is not a run");
 
         let (done, woke) = std::sync::mpsc::channel();
         let waiting = store.clone();
         std::thread::spawn(move || {
-            waiting.wait_for_run_created(seen);
+            waiting.wait_for_runs_wake(seen);
             let _ = done.send(());
         });
         assert!(
