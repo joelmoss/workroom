@@ -12,7 +12,7 @@ import XCTest
 /// fixture's to prove (`RemoteHostIntegrationTests`, and the Rust `over_ssh_*` tests in CI).
 final class DaemonBootstrapTests: XCTestCase {
   /// A driver whose `exec` runs a local shell that swallows stdin and prints a canned answer.
-  private final class StubDriver: HostDriver, @unchecked Sendable {
+  private class StubDriver: HostDriver, @unchecked Sendable {
     struct Answer {
       let output: String
       var status: Int32 = 0
@@ -46,6 +46,27 @@ final class DaemonBootstrapTests: XCTestCase {
           String(answer.status),
         ],
         environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    }
+  }
+
+  /// A container's driver (#308): it places the daemon itself, and logs what it placed and settled.
+  private final class PlacingStub: StubDriver, DaemonPlacingDriver, @unchecked Sendable {
+    let staged: Bool
+    private(set) var placed: [URL] = []
+    private(set) var settled: [(path: String, keep: Bool)] = []
+
+    init(_ answers: [Answer], staged: Bool = true) {
+      self.staged = staged
+      super.init(answers)
+    }
+
+    func daemonPath(on host: HostID) -> String? { "/.workroom/bin/workroomd" }
+    func placeDaemon(_ binary: URL, on host: HostID) async throws -> (path: String, staged: Bool) {
+      placed.append(binary)
+      return staged ? ("/.workroom/bin/workroomd.new.1", true) : ("/.workroom/bin/workroomd", false)
+    }
+    func settleDaemon(_ staged: String, keep: Bool, on host: HostID) async throws {
+      settled.append((staged, keep))
     }
   }
 
@@ -96,6 +117,65 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertEqual(
       DaemonInstall.formerBinary(besideSocket: "/run/workroom/workroomd.sock"),
       "/run/workroom/wr-agent")
+  }
+
+  /// A container holding another build (#308): its driver stages this one, placed.sh checks it
+  /// runs and hands off to it, and only then is it moved into place; the probe looked at the
+  /// entrypoint, and nothing crossed the exec.
+  func testAContainerHoldingAnotherBuildHasThisOnePlacedAndHandedOff() async throws {
+    let driver = PlacingStub([
+      probe(installed: String(repeating: "0", count: 64), handOff: "none"),
+      .init(output: "WRB outcome handed-off\n"),
+    ])
+    let outcome = try await ensure(driver)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, daemon: .handedOff))
+    XCTAssertTrue(driver.commands[0].contains("'probe' '/.workroom/bin/workroomd' "))
+    XCTAssertEqual(driver.placed, [agentFile])
+    XCTAssertTrue(
+      driver.commands[1].hasSuffix(
+        "'placed' '/.workroom/bin/workroomd.new.1' '/run/workroom/workroomd.sock' '1'"),
+      driver.commands[1])
+    XCTAssertEqual(driver.settled.map(\.path), ["/.workroom/bin/workroomd.new.1"])
+    XCTAssertEqual(driver.settled.map(\.keep), [true])
+  }
+
+  /// A staged daemon the running one refused, or that doesn't run, is removed, and the running one
+  /// kept; one placed in place (Apple's mount) has nothing to settle. An image without sha256sum
+  /// can't be compared with, so it is placed again rather than left as it is.
+  func testAContainersRefusedDaemonIsRemovedAndAnUnhashableOneIsPlaced() async throws {
+    let refused = PlacingStub([
+      probe(installed: String(repeating: "0", count: 64), handOff: "none"),
+      .init(output: "WRB outcome refused sessions are busy\n", status: 1),
+    ])
+    let kept = try await ensure(refused)
+    XCTAssertEqual(kept.daemon, .keptOlder("refused: sessions are busy"))
+    XCTAssertEqual(refused.settled.map(\.keep), [false])
+
+    let broken = PlacingStub([
+      probe(installed: String(repeating: "0", count: 64), handOff: "none"),
+      .init(output: "WRB outcome does-not-run\n", status: 1),
+    ])
+    let old = try await ensure(broken)
+    XCTAssertEqual(
+      old.daemon, .keptOlder("the install failed: the bundled daemon does not run on this host"))
+    XCTAssertEqual(broken.settled.map(\.keep), [false])
+
+    let mounted = PlacingStub(
+      [probe(installed: "unknown", handOff: "none"), .init(output: "WRB outcome current\n")],
+      staged: false)
+    let current = try await ensure(mounted)
+    XCTAssertEqual(current, .init(architecture: "aarch64", pushed: true, daemon: .current))
+    XCTAssertEqual(mounted.placed, [agentFile])
+    XCTAssertTrue(mounted.settled.isEmpty)
+  }
+
+  /// A container already holding this build is placed nothing: the probe's hand-off settles it.
+  func testAContainerHoldingThisBuildIsPlacedNothing() async throws {
+    let driver = PlacingStub([probe(installed: digest, handOff: "0 current")])
+    let outcome = try await ensure(driver)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: false, daemon: .current))
+    XCTAssertTrue(driver.placed.isEmpty)
+    XCTAssertEqual(driver.commands.count, 1)
   }
 
   func testAHostWithNoDaemonGetsOneInstalledAndTheSupervisorStartsIt() async throws {
@@ -539,7 +619,7 @@ final class DaemonBootstrapTests: XCTestCase {
 
   /// The scripts ship in the bundle, and parse.
   func testTheFarSideScriptsAreBundledAndParse() throws {
-    for name in ["probe", "install", "resources"] {
+    for name in ["probe", "install", "placed", "resources"] {
       let script = try DaemonBootstrap.script(named: name)
       XCTAssertTrue(script.hasPrefix("#!/bin/sh\n"), name)
       let (status, output) = try SessionBackendProbe.run(

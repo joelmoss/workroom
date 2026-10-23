@@ -24,6 +24,12 @@ import os
 /// even while the old daemon lives. A refusal leaves the old daemon running, and the app connects to
 /// it over the versioned envelope.
 ///
+/// A container the app made is the exception (#308, `DaemonPlacingDriver`): its daemon is its
+/// entrypoint, in a root-owned folder outside the socket's, which the remote user can't write. So
+/// its runtime puts the binary there (Docker copies it in beside the running one, Apple's mounts it
+/// from this Mac), and a third script (`placed.sh`) does the install's checks on it in place. The
+/// probe is the same, pointed at the entrypoint.
+///
 /// Two hashes answer two questions. The app hashes its bundled binary (SHA-256) and the probe
 /// hashes the installed one, which decides whether to push at all: the same build pushes nothing.
 /// The daemon hashes its own program at startup (`handoff.rs`, a process-local hash) and answers
@@ -139,7 +145,10 @@ enum DaemonBootstrap {
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
     handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
   ) async throws -> Outcome {
-    let binary = DaemonInstall.binary(besideSocket: socket)
+    // A container's driver places its daemon itself (#308), outside the socket's folder.
+    let placing = driver as? any DaemonPlacingDriver
+    let placed = placing?.daemonPath(on: host)
+    let binary = placed ?? DaemonInstall.binary(besideSocket: socket)
     let urls = architectures.compactMap { architecture in
       daemon(architecture).map { (architecture, $0) }
     }
@@ -191,8 +200,9 @@ enum DaemonBootstrap {
         architecture: architecture, pushed: false,
         daemon: .keptOlder("this build has no daemon for \(architecture)"), resources: set)
     }
-    // Nothing to compare against, and the install would refuse the push for the same reason.
-    if report.installed == "unknown" {
+    // Nothing to compare against, and the install would refuse the push for the same reason. A
+    // placed daemon needs no hash: it is placed again, and the hand-off says whether it changed.
+    if report.installed == "unknown", placed == nil {
       return Outcome(
         architecture: architecture, pushed: false,
         daemon: .keptOlder("the host has no sha256sum"), resources: set)
@@ -224,6 +234,13 @@ enum DaemonBootstrap {
         resources: set)
     }
 
+    if let placing, placed != nil {
+      let daemon = try await place(
+        url, on: host, driver: placing, socket: socket, handOff: handOff,
+        hasDaemon: report.installed != nil)
+      return Outcome(architecture: architecture, pushed: true, daemon: daemon, resources: set)
+    }
+
     let elf = try await runBlocking { try Data(contentsOf: url) }
     let install: (status: Int32, output: String)
     do {
@@ -239,8 +256,16 @@ enum DaemonBootstrap {
         architecture: architecture, pushed: true,
         daemon: .keptOlder("the install failed: \(detail)"), resources: set)
     }
-    let (outcome, serving) = parseInstall(install.output)
-    let daemon: Outcome.Daemon
+    return Outcome(
+      architecture: architecture, pushed: true,
+      daemon: try installed(after: install, hasDaemon: report.installed != nil), resources: set)
+  }
+
+  /// What became of the daemon, by the outcome install.sh or placed.sh ended on.
+  private static func installed(
+    after script: (status: Int32, output: String), hasDaemon: Bool
+  ) throws -> Outcome.Daemon {
+    let (outcome, serving) = parseInstall(script.output)
     switch outcome.first {
     case "installed":
       // `serving` is always printed after `installed`; its absence is an install cut short.
@@ -248,25 +273,63 @@ enum DaemonBootstrap {
       guard serving else {
         throw Error.installFailed("installed, but the supervisor did not start it within 10s")
       }
-      daemon = .installed
-    case "handed-off": daemon = .handedOff
-    case "current": daemon = .current
-    case "kept-older": daemon = .keptOlder(outcome.dropFirst().joined(separator: " "))
-    case "refused": daemon = .keptOlder("refused: " + outcome.dropFirst().joined(separator: " "))
+      return .installed
+    case "handed-off": return .handedOff
+    case "current": return .current
+    case "kept-older": return .keptOlder(outcome.dropFirst().joined(separator: " "))
+    case "refused": return .keptOlder("refused: " + outcome.dropFirst().joined(separator: " "))
     case .some:
       // The script said no before anything was replaced. A daemon already there is still a
       // daemon, and the app connects to it; a host with none has nothing to run.
       let why = describe(outcome)
-      guard report.installed != nil else { throw Error.installFailed(why) }
-      daemon = .keptOlder("the install failed: \(why)")
+      guard hasDaemon else { throw Error.installFailed(why) }
+      return .keptOlder("the install failed: \(why)")
     case nil:
       // A report cut short (`received` but no outcome: the link went mid-check): as above.
-      let said = install.output.trimmingCharacters(in: .whitespacesAndNewlines)
-      let why = said.isEmpty ? "the install said nothing (exit \(install.status))" : said
-      guard report.installed != nil else { throw Error.installFailed(why) }
-      daemon = .keptOlder("the install did not finish: \(why)")
+      let said = script.output.trimmingCharacters(in: .whitespacesAndNewlines)
+      let why = said.isEmpty ? "the install said nothing (exit \(script.status))" : said
+      guard hasDaemon else { throw Error.installFailed(why) }
+      return .keptOlder("the install did not finish: \(why)")
     }
-    return Outcome(architecture: architecture, pushed: true, daemon: daemon, resources: set)
+  }
+
+  /// Has the driver place this build's daemon (#308), then checks it runs and offers it to the
+  /// running daemon (placed.sh), and has the driver move a staged one into place, or remove it when
+  /// it didn't go in. As the install, a host with a daemon keeps it when this one doesn't go in,
+  /// and one with none fails.
+  private static func place(
+    _ url: URL, on host: HostID, driver: any DaemonPlacingDriver, socket: String, handOff: Bool,
+    hasDaemon: Bool
+  ) async throws -> Outcome.Daemon {
+    let placed: (path: String, staged: Bool)
+    do {
+      placed = try await driver.placeDaemon(url, on: host)
+    } catch {
+      guard hasDaemon else { throw Error.installFailed(error.localizedDescription) }
+      return .keptOlder("the daemon could not be placed: \(error.localizedDescription)")
+    }
+    let check: (status: Int32, output: String)
+    do {
+      check = try await run(
+        script: "placed", on: host, driver: driver, input: nil,
+        arguments: [placed.path, socket, handOff ? "1" : "0"])
+    } catch {
+      if placed.staged { try? await driver.settleDaemon(placed.path, keep: false, on: host) }
+      guard hasDaemon, case Error.transportFailed(let detail) = error else { throw error }
+      return .keptOlder("the install did not finish: \(detail)")
+    }
+    let outcome = parseInstall(check.output).outcome.first
+    let keep = ["installed", "handed-off", "current", "kept-older"].contains(outcome)
+    if placed.staged {
+      do {
+        try await driver.settleDaemon(placed.path, keep: keep, on: host)
+      } catch  where keep {
+        // The daemon may run from the staged file now, and does until it next starts, when the
+        // older one does and the next connect places this one again.
+        return .keptOlder("the daemon was not moved into place: \(error.localizedDescription)")
+      } catch {}
+    }
+    return try installed(after: check, hasDaemon: hasDaemon)
   }
 
   /// Puts `bundle`'s terminfo and shell integration at `directory` on the host, unless the probe

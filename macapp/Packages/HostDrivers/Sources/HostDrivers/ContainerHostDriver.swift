@@ -13,7 +13,9 @@ import WorkroomWire
 /// Its hosts are the ones the caller hands in, plus, given `Provisioning`, the containers it makes
 /// itself (#252): `create` runs a workroom's host from the fixture's image, and `destroy` removes
 /// it. Nothing here persists.
-public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
+public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
+  @unchecked Sendable
+{
   /// How the driver makes containers of its own: a container runtime's CLI (`docker`), the
   /// fixture's image, and the client key every container authorises. Containers are reached on a
   /// loopback port the runtime publishes, as `vcs/scripts/ssh-fixture/run.sh` reaches its own.
@@ -841,15 +843,18 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     return binary
   }
 
-  /// Docker: the daemon into the created container, before it starts, as a tar the runtime unpacks
-  /// at `/` (`cp -` makes the folders).
-  private func copyDaemon(_ binary: URL, into container: String) async throws {
+  /// Docker: the daemon into the container, named `name` in the daemon's folder, as a tar the
+  /// runtime unpacks at `/` (`cp -` makes the folders). A create copies it before the container
+  /// starts; a later build stages it beside the running one (`placeDaemon`).
+  private func copyDaemon(
+    _ binary: URL, into container: String, as name: String = "workroomd"
+  ) async throws {
     let staging = FileManager.default.temporaryDirectory.appendingPathComponent(
       "workroom-daemon-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: staging) }
     let folder = staging.appendingPathComponent(String(Self.daemonFolder.dropFirst()))
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    let copy = folder.appendingPathComponent("workroomd")
+    let copy = folder.appendingPathComponent(name)
     try FileManager.default.copyItem(at: binary, to: copy)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
     let tar = staging.appendingPathComponent("daemon.tar")
@@ -866,6 +871,34 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
       throw HostDriverError.provisioning("couldn't package the daemon for the container")
     }
     _ = try await runtime(["cp", "-", "\(container):/"], input: tar)
+  }
+
+  public func daemonPath(on host: HostID) -> String? {
+    isContainer(host) ? Self.containerDaemon : nil
+  }
+
+  /// Docker stages the daemon beside the running one, under a name of its own so two connects at
+  /// once don't share a file; Apple replaces the one its containers mount, which only takes effect
+  /// for a container whose daemon is handed off to it, or that starts again.
+  public func placeDaemon(_ binary: URL, on host: HostID) async throws -> (
+    path: String, staged: Bool
+  ) {
+    let target = try execTarget(host)
+    if provisioning?.dialect == .apple {
+      _ = try appleDaemonFolder(holding: binary)
+      return (Self.containerDaemon, false)
+    }
+    let name = "workroomd.new.\(UUID().uuidString.prefix(8).lowercased())"
+    try await copyDaemon(binary, into: target.container, as: name)
+    return (Self.daemonFolder + "/" + name, true)
+  }
+
+  /// As root: the daemon's folder is root's, so the remote user can't replace the entrypoint.
+  public func settleDaemon(_ staged: String, keep: Bool, on host: HostID) async throws {
+    let target = try execTarget(host)
+    _ = try await runtime(
+      ["exec", "-u", "0", target.container]
+        + (keep ? ["mv", "-f", staged, Self.containerDaemon] : ["rm", "-f", staged]))
   }
 
   /// Apple: the folder on this Mac its containers mount the daemon from, holding `binary`'s bytes.
