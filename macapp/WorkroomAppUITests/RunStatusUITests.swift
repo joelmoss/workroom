@@ -24,6 +24,7 @@ final class RunStatusUITests: XCTestCase {
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-WorkroomUITestRunCommand", runCommand]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.useScratchDaemon()
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
     return app
@@ -60,8 +61,12 @@ final class RunStatusUITests: XCTestCase {
 
   /// A run that exits non-zero on its own surfaces the failed run icon (red xmark octagon).
   func testFailedRunShowsFailedIndicator() {
-    let app = launchedApp(runCommand: "sleep 1; exit 7")
+    let app = launchedApp(runCommand: "sleep 3; exit 7")
     startRun(app)
+    // A run that never starts shows the same failed icon, so see this one running first.
+    XCTAssertTrue(
+      waitForRunState(app, "running"),
+      "the run started; got \(runTabChip(app).value ?? "<nil>")")
     XCTAssertTrue(
       waitForRunState(app, "failed"),
       "a non-zero exit shows the failed run icon (#79); got \(runTabChip(app).value ?? "<nil>")")

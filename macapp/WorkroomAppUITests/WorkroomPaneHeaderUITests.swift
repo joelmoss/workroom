@@ -26,7 +26,10 @@ final class WorkroomPaneHeaderUITests: XCTestCase {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     if workroomSplit { app.launchArguments += ["-WorkroomUITestWorkroomSplit", "1"] }
-    if let runCommand { app.launchArguments += ["-WorkroomUITestRunCommand", runCommand] }
+    if let runCommand {
+      app.launchArguments += ["-WorkroomUITestRunCommand", runCommand]
+      app.useScratchDaemon()
+    }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     return app
