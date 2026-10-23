@@ -429,7 +429,7 @@ final class AppStore: ObservableObject {
     guard !model.declared else { return }
     Task {
       await model.forwardDeclared {
-        try await DevContainerPorts.read(RepositoryRouter.shared.files(for: location))
+        try await DevContainerConfig.read(RepositoryRouter.shared.files(for: location))
       }
     }
   }

@@ -1389,16 +1389,16 @@ final class PortForwardingModelTests: XCTestCase {
   /// exhaust for the terminals and connections that share the app's limit.
   func testDeclaredPortsPastTheCapAreNotForwarded() async throws {
     let model = try await model(lease: lease())
-    let declared = (0..<DevContainerPorts.maxForwards + 8).map { 20000 + $0 }
+    let declared = (0..<DevContainerConfig.maxForwards + 8).map { 20000 + $0 }
     let file = #"{"forwardPorts": \#(declared)}"#
     await model.forwardDeclared { (".devcontainer.json", Data(file.utf8)) }
     XCTAssertEqual(
       model.forwards.map { Int($0.remotePort) },
-      Array(declared.prefix(DevContainerPorts.maxForwards)))
+      Array(declared.prefix(DevContainerConfig.maxForwards)))
     XCTAssertEqual(
       model.message,
       ".devcontainer.json declares \(declared.count) ports; only the first "
-        + "\(DevContainerPorts.maxForwards) are forwarded.")
+        + "\(DevContainerConfig.maxForwards) are forwarded.")
   }
 
   /// Forwarded once a launch: a second call reads nothing, and a declared port already forwarded
