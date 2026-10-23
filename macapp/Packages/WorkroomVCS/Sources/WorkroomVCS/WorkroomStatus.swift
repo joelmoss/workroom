@@ -88,7 +88,7 @@ public enum VCSStatusFailure: Equatable, Sendable {
   case busy  // the repository refused the read as busy (lock contention)
   case staleWorkingCopy  // the working tree changed while it was being read; a retry settles it
   case asleep  // a boxd box its provider put to sleep; a probe leaves it be (#356)
-  case olderLayout  // a host an older Nightly made before the daemon was renamed (#525)
+  case olderLayout  // a host an older Nightly made, this build can't open (#525, #308)
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).

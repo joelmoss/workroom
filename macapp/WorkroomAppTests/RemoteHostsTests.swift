@@ -112,6 +112,56 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
+  // Value: protects=a container workroom made before #308 says to recreate it, and its delete still takes the container down;
+  // fails_when=the connect's catch stops keeping olderContainer's words, or adopt stops taking such a record on for its destroy;
+  // why_new=the driver test stops at adopt, and nothing covered what the workroom then says or that delete can do as it says; seam=stub runtime; no_claim=the Changes panel's text
+  /// A container made before #308 (its record has an ssh host key) is taken on only to be taken
+  /// down (Nightly rule: made again, never migrated): its connect, the backoff after it and a
+  /// pane's attach all say to recreate the workroom, and the delete that asks for works.
+  func testAContainerMadeBeforeExecSaysToRecreateTheWorkroom() async throws {
+    let (runtime, log) = try stubRuntime()
+    let remote = RemoteHosts(
+      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      sweepDriver: { _, _, _, _ in [] })
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner,
+              id: id, container: Self.sshRecord(context: nil)))
+        ])
+    ])
+
+    for attempt in ["the connect", "a read inside the backoff"] {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("a container made before #308 connected (\(attempt))")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, .olderLayout(host), attempt)
+        XCTAssertEqual(
+          (error as? LocalizedError)?.errorDescription, HostDriverError.olderContainerMessage,
+          attempt)
+      }
+    }
+    let driver = try XCTUnwrap(remote.existingDriver(holding: id) as? ContainerHostDriver)
+    XCTAssertThrowsError(
+      try driver.attachCommand(
+        to: host, session: UUID(), workingDirectory: "/w", restored: false, metadata: [],
+        runCommand: nil)
+    ) { XCTAssertEqual($0 as? HostDriverError, .olderContainer) }
+
+    try await driver.destroy(host)
+    let calls = try calls(log)
+    XCTAssertTrue(
+      calls.contains("rm --force --volumes \(ContainerHostDriver.containerName(id))"),
+      calls.joined(separator: "\n"))
+  }
+
   /// A background read never connects to a boxd box boxd says is asleep: the ssh login would wake
   /// it, and every status sweep would keep every box awake and billing (#356). boxd is asked once a
   /// `retryAfter`; opening the workroom connects and wakes it; when boxd can't say, the read leaves

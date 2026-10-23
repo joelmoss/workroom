@@ -17,7 +17,8 @@ public enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError,
   case asleep(HostID)
   /// A boxd machine boxd says is not found: deleted, or in another org or account (#356).
   case gone(HostID)
-  /// A host an older Nightly made before the daemon was renamed (#525), which has to be made again.
+  /// A host an older Nightly made, which this build can't open and has to be made again: one from
+  /// before the daemon was renamed (#525), or a container from before #308, reached over ssh.
   case olderLayout(HostID)
   case registrationRequired
 
@@ -28,11 +29,11 @@ public enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError,
     "The box is asleep, or boxd could not say (check the boxd CLI and `boxd auth`). Open the "
     + "workroom to reach it."
 
-  /// What a host with the pre-#525 layout tells the user, wherever it is met: a connect, and a
-  /// pane's attach (`DaemonInstall.formerLayoutMessage`).
+  /// What a host an older Nightly made tells the user, wherever it is met: a connect, and a pane's
+  /// attach (`DaemonInstall.formerLayoutMessage`, `HostDriverError.olderContainerMessage`).
   public static let olderLayoutMessage =
-    "This workroom's host was set up by an older Workroom Nightly, before its daemon was renamed "
-    + "workroomd. Delete the workroom and create it again."
+    "This workroom's host was set up by an older Workroom Nightly, which this build can't open. "
+    + "Delete the workroom and create it again."
 
   public var errorDescription: String? {
     switch self {

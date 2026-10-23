@@ -213,8 +213,9 @@ final class ContainerHostDriverExecTests: XCTestCase {
   }
 
   /// A record a later launch adopts is reached the same way; one from a container made before #308
-  /// (it has an ssh host key) is refused, to be made again.
-  func testAdoptingTakesExecRecordsAndRefusesSSHOnes() throws {
+  /// (it has an ssh host key) is taken on only to be destroyed: reaching it is refused, to be made
+  /// again.
+  func testAdoptingTakesExecRecordsAndRefusesToReachSSHOnes() throws {
     let driver = try driver(try stubRuntime())
     let id = UUID()
     try driver.adopt(id, ContainerHostRecord(user: "vscode", image: nil, context: "orbstack"))
@@ -225,12 +226,17 @@ final class ContainerHostDriverExecTests: XCTestCase {
       runCommand: nil)
     XCTAssertTrue(command.contains("'exec' '-i' '-t' '-u' 'vscode'"), command)
 
+    let older = UUID()
+    let record = ContainerHostRecord(
+      address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA",
+      image: nil, context: "orbstack")
+    try driver.adopt(older, record)
+    XCTAssertFalse(driver.isContainer(.remote(older)))
+    XCTAssertEqual(driver.record(of: .remote(older)), record)
     XCTAssertThrowsError(
-      try driver.adopt(
-        UUID(),
-        ContainerHostRecord(
-          address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA",
-          image: nil, context: "orbstack"))
+      try driver.attachCommand(
+        to: .remote(older), session: UUID(), workingDirectory: "/w", restored: false,
+        metadata: [], runCommand: nil)
     ) { XCTAssertEqual($0 as? HostDriverError, .olderContainer) }
   }
 

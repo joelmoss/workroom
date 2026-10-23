@@ -1274,9 +1274,11 @@ final class RemoteHosts: @unchecked Sendable {
     } catch is CancellationError {
       throw CancellationError()
     } catch {
-      // The one failure with something the user can do about it, so it keeps its words (D3, #525).
+      // The one failure with something the user can do about it, so it keeps its words (D3, #525):
+      // a host from before the daemon's rename, or a container from before #308.
       var olderLayout = false
       if case DaemonBootstrap.Error.olderLayout = error { olderLayout = true }
+      if case HostDriverError.olderContainer = error { olderLayout = true }
       lock.withLock { failedAt[host] = (now(), olderLayout) }
       Self.logger.error(
         "connecting \(String(describing: host), privacy: .public): \(error, privacy: .public)")

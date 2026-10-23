@@ -207,10 +207,8 @@ public enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   /// Only Nightly and Dev builds made them; they are made again rather than migrated.
   case olderContainer
 
-  /// What a container made by an older build says, wherever it is met.
-  public static let olderContainerMessage =
-    "This workroom's container was made by an older build of Workroom, which this build can't "
-    + "open. Delete it and create it again."
+  /// What a container made by an older build says, wherever it is met: what any older host says.
+  public static let olderContainerMessage = RepositoryRoutingError.olderLayoutMessage
 
   public var errorDescription: String? {
     switch self {
