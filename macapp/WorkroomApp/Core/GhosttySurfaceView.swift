@@ -1094,6 +1094,23 @@ final class GhosttySurfaceView: NSView {
     return surface != nil && !processHasExited
   }
 
+  /// Test seam: forces `awaitsMount` (a test view never spawns, so it never awaits a mount).
+  var awaitsMountOverrideForTesting: Bool?
+
+  /// Whether this pane has not been mounted yet: no surface, and one spawns when it is (a restored
+  /// tab in a workroom not opened since launch).
+  var awaitsMount: Bool { awaitsMountOverrideForTesting ?? canSpawnSurface }
+
+  /// Test seam: forces `isReattachingAfterLinkLoss`.
+  var reattachingOverrideForTesting: Bool?
+
+  /// Whether the app is reattaching this remote pane after its link dropped, or is about to: a run
+  /// session that ended meanwhile then shows the daemon's ended notice and holds, so the run's end
+  /// never reaches this pane's own exit (#522).
+  var isReattachingAfterLinkLoss: Bool {
+    reattachingOverrideForTesting ?? (pendingReconnect != nil || attachedByTheAppsReconnect)
+  }
+
   /// Test seam: forces `didSpawnFail` (tests run with `spawnsSurface: false`, where a nil surface is
   /// intentional, so the real check can't exercise the failed-spawn path). Production leaves this nil.
   var spawnFailOverrideForTesting: Bool?

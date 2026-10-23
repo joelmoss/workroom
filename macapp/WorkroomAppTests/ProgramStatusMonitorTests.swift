@@ -1,4 +1,5 @@
 import DaemonConnection
+import WorkroomDomain
 import WorkroomVCS
 import XCTest
 
@@ -319,6 +320,46 @@ final class ProgramStatusMonitorTests: XCTestCase {
     XCTAssertEqual(monitor.hosts[.local], .live)
     XCTAssertEqual(monitor.rollup(for: session)?.stale, false)
     XCTAssertEqual(changes.count, published, "no stale change published")
+  }
+
+  /// Value: protects=a run's state, as its daemon publishes it, reaches its run tab through the
+  /// monitor (#522): the only production route from the supervisor's status to the tab;
+  /// fails_when=the monitor drops the run line or TerminalSessions stops forwarding it, so a run
+  /// that failed reads as running; seam=none; no_claim=the daemon side (run_session.rs)
+  func testARunsStateFromItsDaemonReachesItsTab() async throws {
+    let (monitor, gate) = makeMonitor()
+    let connection = FakeProgramStatusConnection()
+    gate.yield(connection)
+    let store = AppStore()
+    store.confirmOnCloseOverrideForTesting = false
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    store.terminals.programStatus = monitor
+    store.signalSupervisorForTesting = { _, _ in .delivered }
+    store.projects = [
+      Project(
+        path: "/a", vcs: "git",
+        workrooms: [Workroom(name: "main", path: "/a/main", vcsName: "workroom/main", warnings: [])]
+      )
+    ]
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let target = try XCTUnwrap(store.target(for: .workroom(project: "/a", name: "main")))
+    store.startRunCommand(for: target)
+    let tab = try XCTUnwrap(store.runTabID(for: target.id))
+    let run = try XCTUnwrap(store.terminals.sessionID(forTab: tab, inTarget: target.id))
+    await until(
+      {
+        connection.push(.snapshotComplete(boot: "b", sessions: [run]))
+        return monitor.hosts[.local] == .live
+      }())
+
+    connection.push(
+      .status(
+        boot: "b", session: run, revision: 2, reporting: false, records: [], run: "exited 3 1"))
+
+    await until(store.runStates[target.id] == .stopped(tab: tab))
+    XCTAssertEqual(store.runOutcomes[target.id], .exited(code: 3))
   }
 }
 

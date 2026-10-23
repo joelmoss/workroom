@@ -574,7 +574,10 @@ extension AppStore {
       }
       releaseCreatingWorkroom(id)
       if let setupFailure {
-        // As a local create's: the workroom and its host stay, for Open Anyway or Delete.
+        // As a local create's: the workroom and its host stay, for Open Anyway or Delete, and the
+        // auto-run armed at the reserve is disarmed, so Open Anyway doesn't start the command
+        // against a half-set-up tree (issue #7).
+        if case .armed = runStates[id] { runStates[id] = nil }
         failCreationRun(run, .setupScriptFailed(message: setupFailure))
       } else {
         await completeCreationRun(run)
@@ -596,7 +599,9 @@ extension AppStore {
       await reload()
       failCreationRun(run, .remoteFailed(message: errorText(error), leftBehind: leftBehind))
       if let name = run.name {
-        releaseCreatingWorkroom(TerminalTarget.workroomID(project: path, name: name))
+        let id = TerminalTarget.workroomID(project: path, name: name)
+        if case .armed = runStates[id] { runStates[id] = nil }  // as above
+        releaseCreatingWorkroom(id)
       }
     }
   }

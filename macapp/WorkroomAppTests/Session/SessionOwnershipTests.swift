@@ -485,6 +485,29 @@ final class PersistentSessionPairTests: XCTestCase {
       "the daemon was handed a socket that is not the daemon's")
   }
 
+  /// Value: protects=a run tab's pane asks the daemon for a run session (#522): its command and
+  /// WORKROOM_SESSION_RUN=1, which a shell's pane never carries; fails_when=either variable is
+  /// dropped, so the run becomes a bare shell or a shell becomes a run; seam=none;
+  /// no_claim=the daemon's side (run_session.rs)
+  @MainActor
+  func testARunPaneAsksTheDaemonForARunSessionAndAShellPaneDoesNot() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 9") },
+      ownership: { _ in .notOwned })
+    func environment(_ runCommand: String?) -> [String: String] {
+      Dictionary(
+        uniqueKeysWithValues: service.launchEnvironment(
+          sessionID: UUID(), workingDirectory: NSTemporaryDirectory(), runCommand: runCommand))
+    }
+
+    let run = environment("bin/dev")
+    XCTAssertEqual(run["WORKROOM_SESSION_COMMAND"], "bin/dev")
+    XCTAssertEqual(run["WORKROOM_SESSION_RUN"], "1")
+    let shell = environment(nil)
+    XCTAssertEqual(shell["WORKROOM_SESSION_COMMAND"], "")
+    XCTAssertNil(shell["WORKROOM_SESSION_RUN"])
+  }
+
   /// **The one that would actually break: ownership that answers differently each time.**
   ///
   /// A helper on a loaded machine answers one probe and misses the next — a dropped answer is a

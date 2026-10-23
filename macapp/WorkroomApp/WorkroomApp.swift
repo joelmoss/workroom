@@ -872,9 +872,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// steady-state surface — that's not a mass-free racing termination.)
   ///
   /// Run commands are the exception that SIGHUP doesn't safely cover: a dev server like Puma ignores
-  /// the hangup and is left orphaned on its port/pidfile. So `applicationShouldTerminate` Ctrl-Cs
-  /// every live run command and waits for it to exit *before* returning — sending key events only,
-  /// never freeing a surface, so the no-mass-free rationale above still holds (issue #7, Option B).
+  /// the hangup and is left orphaned on its port/pidfile. Run commands are daemon sessions now, so
+  /// quitting keeps them running unless the quit setting says to stop them (#522); then
+  /// `applicationShouldTerminate` asks each one's supervisor to stop and waits for it *before*
+  /// returning, never freeing a surface, so the no-mass-free rationale above still holds.
   @MainActor
   func applicationWillTerminate(_ notification: Notification) {}
 }

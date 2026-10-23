@@ -4,11 +4,12 @@ import Foundation
 /// commands `exec` over the shell, so they emit NO OSC 133 marks — the ad-hoc path (T2) misses them.
 /// Instead the whole surface is the command's output, and the run supervisor prints a fixed trailer
 /// in-band AFTER the command exits. Reading the surface only once that trailer has rendered closes
-/// the race where the `.status` file (written out-of-band) lands before the last output lines paint.
+/// the race where the run's status (published by its daemon, out of band) arrives before the last
+/// output lines paint.
 enum RunCaptureSupport {
   /// Printed by the run supervisor (`vcs/crates/workroomd/src/run_supervisor.sh`) after a natural
-  /// child exit. In-band, so its
-  /// presence in the rendered surface means all of the command's output has rendered (X3).
+  /// child exit. In-band, so its presence in the rendered surface means all of the command's output
+  /// has rendered (X3).
   static let exitTrailer = "Process exited. Press any key to close the terminal."
 
   /// Whether the supervisor's exit trailer has rendered yet — the signal that capture is safe.

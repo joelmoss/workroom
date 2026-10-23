@@ -304,20 +304,35 @@ extension AppStore {
 
   /// A run tab's session is not on its daemon any more. For a run reattached from a saved session
   /// that has not reported yet, it ended while Workroom was closed (a reboot, a daemon that died):
-  /// its tab stays, stopped, saying so, and Run starts it again; nothing starts by itself (Q8). For
-  /// a run that was going, its tab's own process ends with the session and says how
-  /// (`markRunExited`), so nothing is done here.
+  /// its tab stays, stopped, saying so, and Run starts it again; nothing starts by itself (Q8). A
+  /// run that was going whose remote pane is reattaching after its link dropped (its host
+  /// restarted, say) stops the same way: its pane holds on the daemon's ended notice, so the
+  /// session's end never reaches `markRunExited`. Any other run that was going ends through its
+  /// tab's own process, which says how, so nothing is done here.
   func runSessionGone(tab tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
-    guard runStates[targetID]?.tab == tabID, restoredRuns.remove(targetID) != nil else { return }
+    guard runStates[targetID]?.tab == tabID else { return }
+    let view = terminals.view(forTab: tabID, inTarget: targetID)
+    let notice: String
+    if restoredRuns.remove(targetID) != nil {
+      notice = Self.runEndedWhileClosed
+    } else if runStates[targetID]?.isRunning == true, view?.isReattachingAfterLinkLoss == true {
+      notice = Self.runEndedWhileReconnecting
+    } else {
+      return
+    }
     runStates[targetID] = .stopped(tab: tabID)
     runOutcomes[targetID] = .stoppedByUser
     runningToastAutoHidden.insert(targetID)
-    terminals.view(forTab: tabID, inTarget: targetID)?.showPaneNotice(Self.runEndedWhileClosed)
+    view?.showPaneNotice(notice)
   }
 
   /// What a run tab says when its run ended while Workroom was closed (Q8).
   static let runEndedWhileClosed =
     "This run ended while Workroom was closed. Press Run to start it again."
+
+  /// What a run tab says when its run ended while Workroom was reconnecting to its host.
+  static let runEndedWhileReconnecting =
+    "This run ended while Workroom was reconnecting to its host. Press Run to start it again."
 
   /// A stop, restart or quit its daemon could not confirm (R9): the run may or may not have been
   /// told, so nothing is started in its place, and its pane says what happened.
@@ -433,7 +448,8 @@ extension AppStore {
     sessions.compactMap { descriptor in
       let tags = Dictionary(
         descriptor.metadata.map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
-      guard tags[SessionMetadataKey.workroom] == workroom, tags[RunSessionKey.kind] == "run"
+      guard tags[SessionMetadataKey.workroom] == workroom,
+        tags[RunSessionKey.kind] == RunSessionKey.run
       else { return nil }
       return descriptor.identifier.uuid
     }

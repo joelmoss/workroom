@@ -360,7 +360,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                     && !no_spawn
                     && !replaced
                     && invoked_by_the_app
-                    && !crate::run::is_requested(&request.env) =>
+                    && !run =>
             {
                 replaced = true;
                 attach = encode(&serve::AttachRequest {

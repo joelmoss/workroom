@@ -60,8 +60,8 @@ extension AppStore {
       if let saved = held[targetID] { return saved }
       guard let captured = terminals.sessionCapture(forTargetID: targetID) else { return nil }
 
-      // Tabs the bridge refuses (Investigate tabs), and runs a quit is stopping, drop out here, and the split leaf that pointed at
-      // one collapses with them — `LayoutNode.capture` applies the same rule `PaneLayout.removingLeaf`
+      // Tabs the bridge refuses (Investigate tabs), and runs a quit is stopping, drop out here,
+      // and the split leaf that pointed at one collapses with them — `LayoutNode.capture` applies the same rule `PaneLayout.removingLeaf`
       // does, so a split can never be left addressing a pane that was not written.
       var keysByTabID: [TerminalTab.ID: String] = [:]
       var tabs: [TabSession] = []
