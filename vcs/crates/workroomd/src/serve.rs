@@ -1394,6 +1394,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The commonest way a daemon's last session goes: its shell exits on its own, with no client
+    /// and no kill. That too must wake the idle check, or the daemon never idles out.
+    /// Value: protects=a daemon idles out after its last session ends on its own; fails_when=remove_if_held stops calling wake_idle; why_new=the other idle test ends a client, not a session; seam=none; no_claim=kill and the rpc paths (their own wake_idle calls)
+    #[test]
+    fn a_session_ending_on_its_own_wakes_the_idle_check() {
+        let dir = std::env::temp_dir().join(format!("wr-idleend-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("workroomd");
+        let listener = bind(&socket).unwrap();
+        let daemon = Daemon::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 1")];
+        daemon
+            .sessions
+            .create(SessionSpec {
+                id: SessionId([0x5e; 16]),
+                program: OsStr::new("/bin/sh"),
+                argv0: None,
+                args: &args,
+                env: &[],
+                cwd: None,
+                columns: 80,
+                rows: 24,
+                metadata: &[],
+                interactive: false,
+            })
+            .expect("a session that ends");
+        let served = {
+            let socket = socket.clone();
+            std::thread::spawn(move || daemon.run(listener, &socket, Duration::from_millis(200)))
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!served.is_finished(), "idled out with a session running");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !served.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "the session ending did not wake the idle check"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        served.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// macOS's `tmp_cleaner` deletes /tmp files untouched for three days (#528). A daemon's lock is
     /// never written after it is taken, and a quiet one's log can sit for days: the serve loop
     /// touches both through the descriptors it holds, every interval, logged lines or not.

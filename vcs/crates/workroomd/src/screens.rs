@@ -729,7 +729,11 @@ mod tests {
 
         let mut written = HashSet::new();
         let mut failing = HashSet::new();
-        flush(&sessions, &mut written, &mut failing);
+        // `tick` is the loop's pass: it must report a pending retry, or the thread sleeps on it.
+        assert!(
+            tick(&sessions, &mut written, &mut failing),
+            "a failing write left no pass owed"
+        );
         assert!(failing.contains(&ID), "a failed write was not tracked");
         assert!(!written.contains(&ID));
         assert!(
@@ -740,7 +744,10 @@ mod tests {
         // Fixed now: `mark_changed` in the error arm means the next tick tries again with no new
         // output needed.
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("chmod back");
-        flush(&sessions, &mut written, &mut failing);
+        assert!(
+            !tick(&sessions, &mut written, &mut failing),
+            "a recovered write still owes a pass"
+        );
         assert!(written.contains(&ID), "the recovered write was not retried");
         assert!(!failing.contains(&ID), "failing was not cleared on success");
 
