@@ -1862,10 +1862,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       `--init`, with `--restart unless-stopped`: Docker restarts a daemon that exits, which retires
       the entrypoint's loop. The image's own ENTRYPOINT and CMD don't run, as with the
       devcontainers CLI's default `overrideCommand`; the daemon could start them as a child later.
-    - **Getting the daemon in.** `docker create`, then `docker cp` (or a read-only bind mount from
-      the Mac), then `docker start`. Apple's `container` can't copy into a created container and
-      has no restart policy, so it takes the bind mount, and the existing start-on-open
-      (`startIfStopped`) stands in for the restart.
+    - **Getting the daemon in.** A read-only bind mount of a folder on the Mac holding the bundled
+      daemon, on both runtimes: Apple's `container` can't copy into a created container, and one
+      path serves both (Docker's `create`, `cp`, `start` works too). A new build is written into
+      that folder and handed off to. Apple's has no restart policy, so the existing start-on-open
+      (`startIfStopped`) stands in for Docker's restart.
     - **Configuration.** The Development Containers spec, which `DevContainerPorts` already reads
       for `forwardPorts`: `image` or `build`, `mounts`, `containerEnv`, `remoteUser`, `runArgs`. A
       project without the file gets a default image and a setting to choose another. `features`
@@ -1880,16 +1881,27 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     daemon served again after `docker restart`, and a pane attached through `docker exec -it` ran a
     command and showed its output. The bind-mount variant served and attached on `alpine`. As
     `node:22`'s `node` user, it served and attached once its socket folder existed and was owned
-    by that user. Only `node:22` has git. Not measured: Apple's runtime (its apiserver was not
-    running), throughput beyond 20 MB, and a stdin close mid-stream. DevPod (ssh served over
+    by that user. Only `node:22` has git.
+
+    Measured on Apple's `container` 1.5.0, the same four images, the daemon bind-mounted read-only
+    (`--mount type=bind,…,readonly`) as entrypoint under `--init`: it served about 1 s after
+    `start`, 20 MB made the round trip through `container exec -i` intact, a closed stdin ended
+    the exec at once, a pane attached through `container exec -it` (as root, and as `node:22`'s
+    `node` user), a pane resize reached the session (30×100 to 45×132), `hand-off` answered `handed
+    off`, including to a build written into the mounted folder from the Mac after the start, and
+    the daemon served again after `stop` and `start`. `cp` into a created container fails
+    (`invalidState: … is not running`), so the bind mount is the only way in before the
+    entrypoint runs. With no restart policy, killing the daemon stops the container, and a
+    `start` brings it back serving, which is what start-on-open does. Not measured: throughput
+    beyond 20 MB, and a resize through `docker exec -t`. DevPod (ssh served over
     `docker exec` stdio), the devcontainers CLI (`docker exec -i`) and Coder (`docker cp` of its
     agent) reach arbitrary images the same way; none needs sshd in the image.
 
     What it costs:
     - The bootstrap's install path. `probe.sh`/`install.sh` assume a shell, `sha256sum` and a
       stage-then-rename beside the socket. The container driver would instead put a new build in
-      place from the Mac (`docker cp`, or the bind-mounted folder) and point `hand-off --binary` at
-      it, keeping the rule that only a checked binary is where the restart runs from.
+      place in the bind-mounted folder from the Mac and point `hand-off --binary` at it, keeping
+      the rule that only a checked binary is where the restart runs from.
     - Pane status (#392). `lastAttach` and `hostRefusedLastAttach` read ssh's exit status; `docker
       exec` uses 125–127 for its own failures and needs its own mapping.
     - Two daemon fixes the probe found. `serve` doesn't create its socket's folder (the entrypoint
@@ -1903,8 +1915,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     (`WorkroomHostImage`), sshd hardening, host-key minting and the published ssh port. Rejected:
     keeping ssh and layering a static ssh server onto the user's image (it ships a second Linux
     artifact and still needs a shell), and `FROM workroom-host` (Debian only, a Dockerfile per
-    user). Whether stable waits for this or first ships container workrooms on `workroom-host` is
-    the owner's call.
+    user). Stable waits for this: it ships no container workrooms on `workroom-host` (owner,
+    2026-10-23).
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits
