@@ -115,7 +115,7 @@ If Workroom's background helper isn't running, the run tab says so and runs noth
 
 ### Run on a remote workroom {nightly}
 
-On a remote or container workroom, the run command runs on the workroom's host, in its directory there, in the host user's login shell. Run, Stop and Restart work as they do on your Mac. A run started on one Mac shows on another that opens the same workroom: pressing Run there shows the run that's going rather than starting a second one. To reach a container's dev server from your Mac, forward its port. See [Port forwarding](../remote/port-forwarding.md).
+On a remote or container workroom, the run command runs on the workroom's host, in its directory there, in the host user's login shell. Run, Stop and Restart work as they do on your Mac. If a container is stopped, Run and Restart start it first; Stop never does. If a run ends while Workroom is reconnecting to its host, for example because the host restarted, the tab stops and says so: "This run ended while Workroom was reconnecting to its host. Press Run to start it again." A run started on one Mac shows on another that opens the same workroom: pressing Run there shows the run that's going rather than starting a second one. To reach a container's dev server from your Mac, forward its port. See [Port forwarding](../remote/port-forwarding.md).
 
 ## Quick Terminal
 
