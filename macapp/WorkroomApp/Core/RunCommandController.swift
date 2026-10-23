@@ -1,14 +1,26 @@
 import AppKit
+import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
 
+typealias RunSignalOutcome = PersistentSessionService.RunSignalOutcome
+
+/// What a run session's daemon lists it under (`workroomd`'s `crate::run`): `kind` is `run`.
+enum RunSessionKey {
+  static let kind = "kind"
+}
+
 /// A window's run commands (issue #7): each target's run state and outcome, the run toast's
-/// dismissal bookkeeping, the supervisor's pid, status and session files, and the graceful
-/// teardown. Owned by `AppStore` as `runCommand`. What needs the rest of the store stays in
-/// `AppStore+RunCommand.swift`: starting and respawning a run (project, run config, host layout,
-/// the settings sheet), applying the supervisor's status (the failure banner and diagnosis), the
-/// derived toast list (selection), and the selection-scoped menu actions.
+/// dismissal bookkeeping, signalling the run's supervisor through its daemon (#522), and the
+/// graceful teardown. Owned by `AppStore` as `runCommand`. What needs the rest of the store stays
+/// in `AppStore+RunCommand.swift`: starting and respawning a run (project, run config, host
+/// layout, the settings sheet), applying the supervisor's status (the failure banner and
+/// diagnosis), the derived toast list (selection), and the selection-scoped menu actions.
+///
+/// A run is a daemon session (a run session) whose supervisor the daemon runs, on this Mac or on
+/// the workroom's host (`workroomd run-supervisor`). It survives the app quitting; its state comes
+/// with the session's program status, and stop, restart and quit are signals the daemon sends it.
 @MainActor
 @Observable
 final class RunCommandController {
@@ -135,26 +147,23 @@ final class RunCommandController {
     return work
   }
 
-  /// Per-target temp file holding the run command's pid (written by the run wrapper, read to resolve
-  /// + signal its process group). Generated fresh per start/respawn; cleared when the run exits or
-  /// its tab is removed so a reused pid can never be signalled.
-  var runPidFiles: [TerminalTarget.ID: String] = [:]
+  /// Test seam: answer a supervisor signal without a daemon, synchronously. Production asks the
+  /// run session's daemon (`PersistentSessionService.signalRun`).
+  var signalSupervisorForTesting: ((RunSignal, TerminalTarget.ID) -> RunSignalOutcome)?
 
-  /// The run command's SESSION id, captured at launch via `getsid`. A process group isn't enough:
-  /// bin/dev-style launchers fork the leaf server into a *different* process group than the launcher,
-  /// so a captured group can miss it (issue #7). The SESSION is stable across those forks — every
-  /// process the run command spawns stays in the one session `login` created for it (unless it
-  /// daemonizes via setsid, which dev servers don't — a typed Ctrl-C stops them, proving it). The
-  /// session id stays valid after its leader exits, so it reaps a server that outlived the launcher.
-  var runSessions: [TerminalTarget.ID: pid_t] = [:]
-
-  /// Test seam: capture supervisor signals (and return whether a live supervisor was "signalled")
-  /// without a real process. Production signals the control-file pid via `kill`.
-  var signalSupervisorForTesting: ((Int32, TerminalTarget.ID) -> Bool)?
-
-  /// Last status line applied per target, so the poller reacts only to CHANGES (and doesn't re-fire
-  /// the auto-dismiss timer each tick). Cleared in `clearRunPidFile`.
+  /// Last status line applied per target, so a repeated report changes nothing (and doesn't re-fire
+  /// the auto-dismiss timer). Cleared in `forgetRun`.
   var lastRunStatus: [TerminalTarget.ID: String] = [:]
+
+  /// Runs reattached from a saved session (#522) that have not reported yet. Their first status is
+  /// how the run is NOW, not a change the user caused: a running one gets no "Running" toast
+  /// (Q13), and a failure it reports (it crashed while the app was closed) never starts an agent
+  /// to diagnose it (Q7). Gone before it reports means it ended while the app was closed (Q8).
+  var restoredRuns: Set<TerminalTarget.ID> = []
+
+  /// Remote starts asking their host for a run already going (D7), so a second press while it
+  /// answers starts nothing more.
+  var pendingRunStarts: Set<TerminalTarget.ID> = []
 
   // MARK: Hand-over between windows (#444)
 
@@ -163,8 +172,7 @@ final class RunCommandController {
   struct HandOff {
     var state: RunState?
     var outcome: RunOutcome?
-    var pidFile: String?
-    var session: pid_t?
+    var restored = false
     var lastStatus: String?
     var toastDismissed = false
     var toastAutoHidden = false
@@ -183,8 +191,7 @@ final class RunCommandController {
     return HandOff(
       state: runStates.removeValue(forKey: targetID),
       outcome: runOutcomes.removeValue(forKey: targetID),
-      pidFile: runPidFiles.removeValue(forKey: targetID),
-      session: runSessions.removeValue(forKey: targetID),
+      restored: restoredRuns.remove(targetID) != nil,
       lastStatus: lastRunStatus.removeValue(forKey: targetID),
       toastDismissed: dismissedRunToasts.remove(targetID) != nil,
       toastAutoHidden: runningToastAutoHidden.remove(targetID) != nil,
@@ -200,8 +207,7 @@ final class RunCommandController {
     resetRunToast(for: targetID)
     runStates[targetID] = state
     runOutcomes[targetID] = handOff.outcome
-    runPidFiles[targetID] = handOff.pidFile
-    runSessions[targetID] = handOff.session
+    if handOff.restored { restoredRuns.insert(targetID) }
     lastRunStatus[targetID] = handOff.lastStatus
     if handOff.toastDismissed { dismissedRunToasts.insert(targetID) }
     if handOff.toastAutoHidden { runningToastAutoHidden.insert(targetID) }
@@ -314,139 +320,46 @@ final class RunCommandController {
   /// The target's run terminal tab id (running or stopped-but-open), if any.
   func runTabID(for targetID: TerminalTarget.ID) -> TerminalTab.ID? { runStates[targetID]?.tab }
 
-  /// The bundled run supervisor (issue #7) — the long-lived shell that owns each run command's
-  /// process tree inside its terminal (start/stop/restart serialized there, controlled by signals +
-  /// a status file). Resolved from `Bundle.main`; the fallback keeps tests (no bundled resource)
-  /// building — they assert the invocation's shape, not a real path.
-  static func supervisorScriptPath() -> String {
-    Bundle.main.resourceURL?.appendingPathComponent("run-supervisor/supervisor.sh").path
-      ?? "run-supervisor/supervisor.sh"
+  /// Forget what the window knew of a target's run once it has gone (exited, closed, reaped).
+  func forgetRun(for targetID: TerminalTarget.ID) {
+    lastRunStatus[targetID] = nil
+    restoredRuns.remove(targetID)
   }
 
-  /// The supervisor's status file (it writes `running`/`stopped`/`exited <code>` etc. here, atomically;
-  /// the app watches it). Derived from the per-run control-file path so they share one lifecycle.
-  static func supervisorStatusPath(forPidPath pidPath: String) -> String {
-    (pidPath as NSString).deletingPathExtension + ".status"
+  // MARK: Run command — supervisor control (issues #7, #522)
+  //
+  // The run command runs under a long-lived SUPERVISOR (`workroomd run-supervisor`) as the pty child
+  // of a daemon session, on this Mac or on the workroom's host. The app asks the daemon to signal
+  // it, and reads the run's STATE from the session's program status, which carries what the
+  // supervisor writes. Start, stop and restart are serialized inside the supervisor, so the
+  // session is never replaced for a restart, and a relaunch happens only once the previous child
+  // has fully exited (no "A server is already running").
+
+  /// The run session of the target's run tab, or nil when it has none (no daemon took it).
+  private func runSessionID(for targetID: TerminalTarget.ID) -> UUID? {
+    guard let tab = runStates[targetID]?.tab else { return nil }
+    return terminals.view(forTab: tab, inTarget: targetID)?.persistentSessionID
   }
 
-  /// Build the libghostty `command` string (A3): launch the run SUPERVISOR as the surface's PTY child
-  /// (set once, never replaced). The supervisor owns the user command — it runs it in the user's
-  /// login+interactive shell (so it inherits PATH/aliases/version-manager shims), in the tty
-  /// FOREGROUND so interactive servers can read the keyboard, and the app drives stop/restart by
-  /// signalling the supervisor (its pid lands in `pidPath`) and reading the status file. POSIX `$SHELL`
-  /// (zsh/bash/sh/dash/ksh) gets `-lic`; a non-POSIX `$SHELL` (fish/nu/csh) falls back to a login
-  /// `/bin/sh -lc`, whose interactive rc won't load — a documented limitation (issue #7, fold #7).
-  /// libghostty runs this whole string via `sh -c`, which execs `/bin/sh <supervisor> …`, so the
-  /// supervisor becomes the session-leader PTY child (its `kill -INT 0` group-stop stays scoped to the
-  /// run's own session).
-  func runCommandLine(_ raw: String, pidPath: String) -> String {
-    let q = CommandLineInstaller.shellQuoted
-    // The child the supervisor runs: the user's login-interactive shell, which `exec`s the command
-    // through the runner with `-c` (so compound commands — `cd web && npm run dev`, `FOO=bar rails s`,
-    // pipes — work, and the exec keeps the pid stable so the supervisor's `$!` is the live server).
-    // The POSIX-vs-fallback decision lives in `ShellEnvironment.loginShellInvocation`, shared with
-    // the environment probe so the two can't drift; `commandString` is the form libghostty needs.
-    let runner = ShellEnvironment.loginShellExecutable()
-    let innerScript = "exec \(q(runner)) -c \(q(raw))"
-    let childOuter = ShellEnvironment.loginShellInvocation(script: innerScript).commandString
-    // config.command = /bin/sh <supervisor> <controlFile> <statusFile> <childArgv…>
-    let sup = q(Self.supervisorScriptPath())
-    let ctl = q(pidPath)
-    let status = q(Self.supervisorStatusPath(forPidPath: pidPath))
-    return "/bin/sh \(sup) \(ctl) \(status) \(childOuter)"
-  }
-
-  /// A fresh per-run pid-file path. Does NOT store it — the caller assigns `runPidFiles[target]`
-  /// AFTER the tab is (re)created, because `respawnRunTab` closes the old tab first and that fires
-  /// `.tabsRemoved` → `clearRunPidFile`, which would otherwise wipe a path stored too early (the
-  /// re-run-can't-be-stopped bug, issue #7).
-  func makeRunPidPath() -> String {
-    (NSTemporaryDirectory() as NSString)
-      .appendingPathComponent("workroom-run-\(UUID().uuidString).pid")
-  }
-
-  /// The supervisor's pid (it `echo $$`s into the control file). Used to signal it (stop/restart/quit).
-  private func runPid(for targetID: TerminalTarget.ID) -> pid_t? {
-    guard let path = runPidFiles[targetID],
-      let raw = try? String(contentsOfFile: path, encoding: .utf8),
-      let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1
-    else { return nil }
-    return pid
-  }
-
-  /// Poll the just-spawned run wrapper's pid file and record its session id while it's still alive, so
-  /// a later Stop / child-exit can SIGINT the whole session (issue #7). The launcher lives through the
-  /// server's boot, so a brief poll always catches it.
-  func captureRunSession(
-    for targetID: TerminalTarget.ID, pidPath: String, attempt: Int = 0
+  /// Asks the target's run supervisor, through its daemon, to restart, stop or quit, and hands the
+  /// outcome to `then` on the main actor: `.gone` when its daemon holds no such session (or the tab
+  /// never got one), so nothing runs and starting it again cannot double it; `.unknown` when the
+  /// daemon could not be asked or refused, which must never be read as gone (R9).
+  func signalSupervisor(
+    _ signal: RunSignal, for targetID: TerminalTarget.ID,
+    then: @escaping (RunSignalOutcome) -> Void = { _ in }
   ) {
-    if let raw = try? String(contentsOfFile: pidPath, encoding: .utf8),
-      let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1
-    {
-      let sid = getsid(pid)
-      if sid > 1 { runSessions[targetID] = sid }
+    if let signalSupervisorForTesting {
+      then(signalSupervisorForTesting(signal, targetID))
       return
     }
-    guard attempt < 30 else { return }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-      self?.captureRunSession(for: targetID, pidPath: pidPath, attempt: attempt + 1)
+    guard let session = runSessionID(for: targetID) else {
+      then(.gone)
+      return
     }
-  }
-
-  /// Live pids belonging to run session `sid`. macOS `pkill` has no `-s` (session) flag, so we
-  /// enumerate every pid (`proc_listallpids`) and keep those whose `getsid` matches — the generic way
-  /// to find everything a run command spawned, whatever process group its launcher forked the leaf
-  /// server into (issue #7). Returns empty for the app's own session, so a reap can never hit the app
-  /// itself or another terminal. Now used only by the forked-free backstop (a leaf that outlived the
-  /// supervisor); the supervisor itself owns the normal stop/restart.
-  private func runSessionMembers(_ sid: pid_t) -> [pid_t] {
-    guard sid > 1, sid != getsid(0) else { return [] }  // never our own (the app's) session
-    let n = proc_listallpids(nil, 0)
-    guard n > 0 else { return [] }
-    var pids = [pid_t](repeating: 0, count: Int(n) + 64)
-    let bytes = proc_listallpids(&pids, Int32(pids.count) * Int32(MemoryLayout<pid_t>.size))
-    guard bytes > 0 else { return [] }
-    var members: [pid_t] = []
-    for i in 0..<min(Int(bytes) / MemoryLayout<pid_t>.size, pids.count) where pids[i] > 1 {
-      if getsid(pids[i]) == sid { members.append(pids[i]) }
+    Task { @MainActor in
+      then(await PersistentSessionService.shared.signalRun(sessionID: session, signal))
     }
-    return members
-  }
-
-  /// Send `sig` to every process in run session `sid` — a session-scoped signal: SIGINT is a Ctrl-C
-  /// (graceful), SIGKILL the last-resort reap when graceful didn't take in time. Guarded (via
-  /// `runSessionMembers`) to a run command's own isolated `login` session.
-  private func signalRunSession(_ sid: pid_t, _ sig: Int32) {
-    for pid in runSessionMembers(sid) { _ = kill(pid, sig) }
-  }
-
-  /// Forget (and delete) a target's captured pid file + group once its run has exited/closed, so a
-  /// later reuse of that pid/group can't be signalled.
-  func clearRunPidFile(for targetID: TerminalTarget.ID) {
-    runSessions[targetID] = nil
-    lastRunStatus[targetID] = nil
-    if let path = runPidFiles.removeValue(forKey: targetID) {
-      try? FileManager.default.removeItem(atPath: path)
-      try? FileManager.default.removeItem(atPath: Self.supervisorStatusPath(forPidPath: path))
-    }
-  }
-
-  // MARK: Run command — supervisor control (issue #7)
-  //
-  // The run command runs under a long-lived SUPERVISOR (Resources/run-supervisor/supervisor.sh) that
-  // is the surface's PTY child. The app controls it by signalling the supervisor's pid (in the
-  // control file) and reads run STATE from the status file it writes — start/stop/restart are
-  // serialized inside the terminal, so the surface is never freed/respawned for a restart and a
-  // relaunch only happens after the previous child fully exits (no "A server is already running").
-
-  /// Send `sig` to the target's run supervisor (USR1 = restart, USR2 = stop/keep-pane, TERM = quit →
-  /// supervisor exits → surface frees). Returns false when there's no live supervisor to signal, so a
-  /// caller can fall back to respawning the surface.
-  @discardableResult
-  func signalSupervisor(_ sig: Int32, for targetID: TerminalTarget.ID) -> Bool {
-    if let signalSupervisorForTesting { return signalSupervisorForTesting(sig, targetID) }
-    guard let pid = runPid(for: targetID) else { return false }
-    return kill(pid, sig) == 0
   }
 
   /// Flip the run surface's "stopped — press any key to close" flag (issue #7): while stopped (the
@@ -462,16 +375,30 @@ final class RunCommandController {
   /// Terminal.
   var hasAnyRunTerminal: Bool { runStates.values.contains { $0.tab != nil } }
 
+  /// Told when a signal could not be confirmed (`.unknown`), with the target and why, so the run's
+  /// pane can say so. Set by `AppStore`.
+  var onSignalUnconfirmed: ((TerminalTarget.ID, String) -> Void)?
+
   /// Stop the run command (issue #7): one press tells the SUPERVISOR to stop the child gracefully and
-  /// keep the pane (SIGUSR2 — it SIGINTs the child's foreground group, waits for it to fully exit, and
+  /// keep the pane (USR2 — it SIGINTs the child's foreground group, waits for it to fully exit, and
   /// SIGKILLs on a 6s timeout for a process that ignores SIGINT). No second-press hard-kill / surface
   /// free — the supervisor owns the teardown. State flips to `.running(interrupted)` (stop in flight),
-  /// then the status file drives it to `.stopped`.
+  /// then the run's status drives it to `.stopped`. A run whose session has gone is stopped already.
   func stopRunCommand(for target: TerminalTarget) {
     switch runStates[target.id] {
     case .running(let tab, _), .restarting(let tab):
-      signalSupervisor(SIGUSR2, for: target.id)
       runStates[target.id] = .running(tab: tab, interrupted: true)
+      signalSupervisor(.stop, for: target.id) { [weak self] outcome in
+        guard let self, self.runStates[target.id]?.tab == tab else { return }
+        switch outcome {
+        case .delivered: break
+        case .gone:
+          self.runStates[target.id] = .stopped(tab: tab)
+          self.runOutcomes[target.id] = .stoppedByUser
+        case .unknown(let reason):
+          self.onSignalUnconfirmed?(target.id, reason)
+        }
+      }
     case .armed, .stopped, .none:
       break  // nothing executing to stop
     }
@@ -492,6 +419,9 @@ final class RunCommandController {
   /// Whether any run command still has a live process — gates the quit handler's graceful wait.
   /// Also true for a live Investigate session (issue #146), even though it has no `RunState` and
   /// no supervisor to gracefully stop — see `investigateTabs`.
+  /// Whether a run command (not an Investigate tab) is going: what a quit may keep or stop (#522).
+  var hasLiveRun: Bool { runStates.keys.contains { liveRunView(for: $0) != nil } }
+
   var hasLiveRunCommand: Bool {
     runStates.keys.contains { liveRunView(for: $0) != nil }
       || investigateTabs.contains { tabID, targetID in
@@ -499,59 +429,40 @@ final class RunCommandController {
       }
   }
 
-  /// Tell each target's SUPERVISOR to quit (SIGTERM — it stops the child gracefully, waits for it,
-  /// SIGKILLs on a 6s timeout, then exits), and run `then` once every run surface's child (the
-  /// supervisor) has actually exited — or after `timeout` (fallback). Polls `hasLiveProcess` on the
-  /// main runloop; NEVER frees a surface itself, so it can't race libghostty's teardown. The session
-  /// SIGKILL in `pollUntilExited` is the backstop for a forked-free leaf that outlived the supervisor.
+  /// Tell each target's SUPERVISOR to quit (TERM — it stops the child gracefully, waits for it,
+  /// SIGKILLs on a 6s timeout, then exits, which ends its session), and run `then` once every run
+  /// surface's child has actually exited, or after `timeout` (the fallback, as for a host that does
+  /// not answer). Polls `hasLiveProcess` on the main runloop; NEVER frees a surface itself, so it
+  /// can't race libghostty's teardown. What the run left outside its supervisor's tree, the daemon
+  /// ends as the session does (R8).
   func gracefullyStopRuns(
     _ targetIDs: [TerminalTarget.ID], timeout: TimeInterval = 6, then: @escaping () -> Void
   ) {
     var views: [GhosttySurfaceView] = []
-    var sids: [pid_t] = []
     for id in targetIDs {
       guard let view = liveRunView(for: id) else { continue }
-      signalSupervisor(SIGTERM, for: id)  // supervisor stops the child, then exits → surface frees
+      signalSupervisor(.quit, for: id)  // supervisor stops the child, then exits → session ends
       views.append(view)
-      if let sid = runSessions[id], sid > 1 { sids.append(sid) }
     }
     guard !views.isEmpty else {
       then()
       return
     }
-    pollUntilExited(views, sessions: sids, deadline: Date().addingTimeInterval(timeout), then: then)
+    pollUntilExited(views, deadline: Date().addingTimeInterval(timeout), then: then)
   }
 
-  /// Wait until both the surfaces' PTY children have exited AND every run session has drained (no live
-  /// member), then run `then`. On `deadline` (a graceful Ctrl-C didn't take in time) SIGKILL whatever
-  /// remains in those sessions, so a forked-free server is guaranteed dead before the caller frees the
-  /// surface / quits — what makes teardown reliable for ANY run command, not just SIGINT-honouring ones
-  /// (issue #7). Polling the surface (not just the session) keeps it unit-testable without a real PTY.
-  ///
-  /// Generalizes what used to be a separate `waitForSessionsExit(sids:deadline:then:)` (deleted): with
-  /// `views` empty, `surfacesDone` is vacuously true, reducing this to exactly a sessions-only wait —
-  /// the empty-set case still completes synchronously, so callers must already be off any libghostty
-  /// callback stack, same contract as before. The deadline branch signals every id in `sids` rather
-  /// than pre-filtering to only the still-live ones — behaviorally identical, since
-  /// `signalRunSession`/`runSessionMembers` already no-op for a session with no live members.
+  /// Wait until the surfaces' children have exited, then run `then`; at `deadline`, run it anyway.
+  /// With `views` empty this completes synchronously, so callers must already be off any libghostty
+  /// callback stack.
   func pollUntilExited(
-    _ views: [GhosttySurfaceView], sessions sids: [pid_t], deadline: Date,
-    then: @escaping () -> Void
+    _ views: [GhosttySurfaceView], deadline: Date, then: @escaping () -> Void
   ) {
-    let surfacesDone = views.allSatisfy { !$0.hasLiveProcess }
-    let sessionsDone = sids.allSatisfy { runSessionMembers($0).isEmpty }
-    if surfacesDone && sessionsDone {
-      then()
-      return
-    }
-    if Date() >= deadline {
-      // Last resort — guarantee death before the caller frees the surface.
-      for sid in sids { signalRunSession(sid, SIGKILL) }
+    if views.allSatisfy({ !$0.hasLiveProcess }) || Date() >= deadline {
       then()
       return
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-      self?.pollUntilExited(views, sessions: sids, deadline: deadline, then: then)
+      self?.pollUntilExited(views, deadline: deadline, then: then)
     }
   }
 
@@ -571,9 +482,9 @@ final class RunCommandController {
     gracefullyStopRuns([targetID], then: proceed)
   }
 
-  /// SIGINT all live run commands and wait for them to exit (bounded) before `completion`. Called from
-  /// the quit handler so dev servers clean up instead of being orphaned by the OS hangup on exit
-  /// (SIGHUP). Signals the captured pids directly — never frees a surface.
+  /// Stop all live run commands and wait for them to exit (bounded) before `completion`. Called by a
+  /// quit that is to stop dev servers (the quit setting, #522); a quit that keeps them signals
+  /// nothing. Never frees a surface.
   func gracefullyStopAllRunCommands(timeout: TimeInterval = 6, completion: @escaping () -> Void) {
     gracefullyStopRuns(Array(runStates.keys), timeout: timeout, then: completion)
   }

@@ -6,7 +6,8 @@ import Foundation
 /// in-band AFTER the command exits. Reading the surface only once that trailer has rendered closes
 /// the race where the `.status` file (written out-of-band) lands before the last output lines paint.
 enum RunCaptureSupport {
-  /// Printed by `Resources/run-supervisor/supervisor.sh` after a natural child exit. In-band, so its
+  /// Printed by the run supervisor (`vcs/crates/workroomd/src/run_supervisor.sh`) after a natural
+  /// child exit. In-band, so its
   /// presence in the rendered surface means all of the command's output has rendered (X3).
   static let exitTrailer = "Process exited. Press any key to close the terminal."
 

@@ -76,6 +76,14 @@ struct DaemonControlClient: SessionControlPlane {
     ) { $0.kind == .acknowledged } ?? false
   }
 
+  /// Asks a run session's supervisor to restart, stop or quit (#522). Nil when the daemon could not
+  /// be asked, predates run sessions, or did not answer: the signal may or may not have been sent.
+  func signal(session: UUID, _ signal: RunSignal) -> RunSignalReply? {
+    transact(bytes: signal.frame(session: session), minimumVersion: DaemonHandshake.minRunVersion) {
+      RunSignalReply.decode($0.encoded())
+    }
+  }
+
   // MARK: - Wire
 
   static func encodeEnvelope(service: Service, stream: UInt32, payload: [UInt8]) -> [UInt8] {
@@ -100,6 +108,14 @@ struct DaemonControlClient: SessionControlPlane {
   }
 
   private func transact<T>(_ frame: SessionFrame, parse: (SessionFrame) -> T?) -> T? {
+    transact(bytes: frame.encoded(), minimumVersion: 1, parse: parse)
+  }
+
+  /// `minimumVersion`: the daemon's own greeting must be at least this, or nothing is sent, since
+  /// an older daemon drops a frame it does not know without answering.
+  private func transact<T>(
+    bytes frame: [UInt8], minimumVersion: UInt16, parse: (SessionFrame) -> T?
+  ) -> T? {
     let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     defer { close(descriptor) }
@@ -135,10 +151,10 @@ struct DaemonControlClient: SessionControlPlane {
     guard
       let greeting = readUntil(descriptor, buffer: &buffer, { try DaemonHandshake.decodeHello($0) })
     else { return nil }
-    guard greeting.version >= 1 else { return nil }
+    guard greeting.version >= minimumVersion else { return nil }
     buffer.removeFirst(greeting.consumed)
 
-    let envelope = Self.encodeEnvelope(service: .control, stream: 0, payload: frame.encoded())
+    let envelope = Self.encodeEnvelope(service: .control, stream: 0, payload: frame)
     guard send(descriptor, envelope) else { return nil }
 
     // Loop rather than parse once: the daemon may send an unrelated envelope first, and a control

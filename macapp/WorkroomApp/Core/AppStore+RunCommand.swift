@@ -3,6 +3,8 @@ import Defaults
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
+import WorkroomVCS
+import WorkroomWire
 
 /// The run command (issue #7): starting, restarting and respawning a workroom's run command under
 /// its supervisor, applying the supervisor's status, the run toast list and native banner (issue
@@ -118,8 +120,11 @@ extension AppStore {
   /// always one; a workroom still being created became one in issue #167 and went unreflected here
   /// (issue #171). The pane title bar's Run shares `isRunBlocked` but not this predicate, since it
   /// deliberately shows for a target with no command configured (issue #139).
+  ///
+  /// A remote or container workroom whose panes open here runs too (#522): its run runs on its
+  /// host, so the gate is whether a pane can open, not whether its path is on this Mac.
   func canRunCommand(for target: TerminalTarget, inProject projectPath: String) -> Bool {
-    !target.isMissing && !isRunBlocked(target.id) && hasRunCommand(forProject: projectPath)
+    target.opensTerminals && !isRunBlocked(target.id) && hasRunCommand(forProject: projectPath)
   }
 
   /// The app-wide base branch for projects that name none; nil means origin's default branch.
@@ -227,39 +232,29 @@ extension AppStore {
     return nil
   }
 
-  /// Poll the supervisor's status file — the AUTHORITATIVE run state (issue #7) — while the run pane is
-  /// open, applying each change. Replaces inferring state from child-exit + an `interrupted` flag (which
-  /// caused the Stop-then-Run swallow). Self-terminates once the run tab is gone.
-  private func pollRunStatus(for target: TerminalTarget) {
-    guard runStates[target.id]?.tab != nil, let ctl = runPidFiles[target.id] else { return }
-    let statusPath = RunCommandController.supervisorStatusPath(forPidPath: ctl)
-    if let raw = try? String(contentsOfFile: statusPath, encoding: .utf8) {
-      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !line.isEmpty, lastRunStatus[target.id] != line {
-        lastRunStatus[target.id] = line
-        applyRunStatus(line, for: target)
-      }
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-      self?.pollRunStatus(for: target)
-    }
-  }
-
-  /// Test seam: production schedules the status poll on the main queue; tests drive transitions by
-  /// calling `applyRunStatus` directly, so they never start the poller.
-  /// Apply one status line from the supervisor to `RunState`/`RunOutcome` (issue #7).
+  /// Apply one status line from the supervisor to `RunState`/`RunOutcome` (issues #7, #522): the
+  /// AUTHORITATIVE run state, as the run session's daemon publishes it (`TerminalSessions` raises
+  /// `.runStatus`). A line repeated changes nothing. The first line of a run reattached from a saved
+  /// session (`restoredRuns`) is how the run is now, not something the user just did: a running
+  /// one shows no "Running" toast (Q13), and a failure never starts an agent to diagnose it (Q7).
   func applyRunStatus(_ line: String, for target: TerminalTarget) {
-    guard let tab = runStates[target.id]?.tab else { return }
+    guard let tab = runStates[target.id]?.tab, lastRunStatus[target.id] != line else { return }
+    lastRunStatus[target.id] = line
+    let restored = restoredRuns.remove(target.id) != nil
     let parts = line.split(separator: " ")
     switch parts.first.map(String.init) ?? "" {
     case "starting", "running":
       runStates[target.id] = .running(tab: tab, interrupted: false)
       runOutcomes[target.id] = nil
+      runCommand.setRunStoppedAwaitingClose(false, tab: tab, target: target.id)
+      guard !restored else {
+        runningToastAutoHidden.insert(target.id)
+        return
+      }
       // Every fresh "running" edge (initial start, or a restart completing) re-arms the live toast,
       // even if a prior run already auto-hid it.
       runningToastAutoHidden.remove(target.id)
       runCommand.scheduleRunningToastAutoHide(for: target.id)
-      runCommand.setRunStoppedAwaitingClose(false, tab: tab, target: target.id)
     case "stopping":
       break  // keep the in-flight state (running(interrupted) for a stop, restarting for a restart)
     case "stopped":
@@ -283,11 +278,53 @@ extension AppStore {
       if RunCommandController.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
         postRunFailureBannerIfBackgrounded(
           targetID: target.id, tabID: tab, title: "Run failed", body: "exited with code \(code)")
-        diagnoseRunFailure(target: target, tab: tab, exitCode: code)
+        if !restored { diagnoseRunFailure(target: target, tab: tab, exitCode: code) }
       }
     default:
       break
     }
+  }
+
+  /// A run tab came back from a saved session (#522): it is the target's run, reattached rather
+  /// than started, so it is wired as a run and waits for its daemon to say how the run is. If its
+  /// host's daemon has already said, that is applied now.
+  func adoptRestoredRun(tab tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
+    guard let target = terminalTarget(forID: targetID), runStates[targetID]?.tab == nil else {
+      return
+    }
+    runStates[targetID] = .running(tab: tabID, interrupted: false)
+    runOutcomes[targetID] = nil
+    lastRunStatus[targetID] = nil
+    restoredRuns.insert(targetID)
+    // Reattached, not started: no "Running" toast (Q13), now or when its state arrives.
+    runningToastAutoHidden.insert(targetID)
+    if let tab = terminals.tab(tabID, for: target) { wireRun(tab, for: target) }
+    terminals.reportRunStatus(tab: tabID, target: target)
+  }
+
+  /// A run tab's session is not on its daemon any more. For a run reattached from a saved session
+  /// that has not reported yet, it ended while Workroom was closed (a reboot, a daemon that died):
+  /// its tab stays, stopped, saying so, and Run starts it again; nothing starts by itself (Q8). For
+  /// a run that was going, its tab's own process ends with the session and says how
+  /// (`markRunExited`), so nothing is done here.
+  func runSessionGone(tab tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
+    guard runStates[targetID]?.tab == tabID, restoredRuns.remove(targetID) != nil else { return }
+    runStates[targetID] = .stopped(tab: tabID)
+    runOutcomes[targetID] = .stoppedByUser
+    runningToastAutoHidden.insert(targetID)
+    terminals.view(forTab: tabID, inTarget: targetID)?.showPaneNotice(Self.runEndedWhileClosed)
+  }
+
+  /// What a run tab says when its run ended while Workroom was closed (Q8).
+  static let runEndedWhileClosed =
+    "This run ended while Workroom was closed. Press Run to start it again."
+
+  /// A stop, restart or quit its daemon could not confirm (R9): the run may or may not have been
+  /// told, so nothing is started in its place, and its pane says what happened.
+  func runSignalUnconfirmed(targetID: TerminalTarget.ID, reason: String) {
+    guard let tab = runStates[targetID]?.tab else { return }
+    terminals.view(forTab: tab, inTarget: targetID)?.showPaneNotice(
+      "Workroom couldn't reach this run's supervisor, so it may still be running. \(reason)")
   }
 
   /// Diagnose a failed Run command with the inline agent (issue #49, A1 + X3). Run tabs `exec` over
@@ -317,7 +354,7 @@ extension AppStore {
         shell: shell,
         output: RunCaptureSupport.extractOutput(fromSurface: surfaceText) ?? "",
         isRunTab: true,
-        isRemote: false)
+        isRemote: target.remoteHost != nil)
       terminals.codingAgentManager.commandFinished(tab: tab, target: target.id, failure: failure)
     }
   }
@@ -330,7 +367,7 @@ extension AppStore {
   /// foreground tab; a toast surfaces its status. `focus: true` is only for auto-run on a freshly
   /// created workroom where the run would be the sole tab (Arch #5) — there we DO show it.
   func startRunCommand(for target: TerminalTarget, focus: Bool = false) {
-    guard !target.isMissing, let project = project(forTarget: target) else { return }
+    guard target.opensTerminals, let project = project(forTarget: target) else { return }
     if hostLayouts.fetching.contains(target.id) {
       return whenHostLayoutRestored(target) { [weak self] target in
         self?.startRunCommand(for: target, focus: focus)
@@ -350,32 +387,95 @@ extension AppStore {
       if focus { terminals.focus(existing, for: target) }
       return
     }
-    let pidPath = runCommand.makeRunPidPath()
-    let line = runCommand.runCommandLine(
-      config.command.trimmingCharacters(in: .whitespacesAndNewlines), pidPath: pidPath)
-    let tab = terminals.addRunTab(for: target, command: line, cwd: target.path, focus: focus)
+    let command = config.command.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let host = target.remoteHost else {
+      return openRunTab(for: target, command: command, focus: focus)
+    }
+    // A remote workroom's run is one per workroom on its host, whichever Mac started it (D7): ask
+    // the host first, and show a run that is already going rather than start a second server.
+    guard pendingRunStarts.insert(target.id).inserted else { return }
+    Task { @MainActor [weak self] in
+      let runs = await Self.liveRunSessions(on: .remote(host), workroom: target.sessionWorkroomKey)
+      guard let self else { return }
+      self.pendingRunStarts.remove(target.id)
+      guard self.runStates[target.id]?.tab == nil else { return }
+      if await HostConnectionManager.shared.runsRunSessions(on: .remote(host)) == false {
+        self.present(RunUnavailable.olderHostDaemon)
+        return
+      }
+      self.openRunTab(for: target, command: command, focus: focus, adopting: runs.first)
+    }
+  }
+
+  /// Why Run can't start here, as an error the store presents.
+  enum RunUnavailable: LocalizedError {
+    case olderHostDaemon
+    var errorDescription: String? {
+      "This workroom's host runs an older Workroom daemon that can't run the run command."
+    }
+    var recoverySuggestion: String? {
+      "Open the workroom again after updating Workroom on every Mac that uses this host."
+    }
+  }
+
+  /// The live run sessions `host`'s daemon holds for `workroom` (D7), or none when it can't say.
+  static func liveRunSessions(on host: HostID, workroom: String) async -> [UUID] {
+    guard
+      let sessions = try? await HostConnectionManager.shared.sessions(on: host)
+    else { return [] }
+    return runSessions(in: sessions, workroom: workroom)
+  }
+
+  /// The run sessions among `sessions` that are `workroom`'s.
+  static func runSessions(in sessions: [SessionDescriptor], workroom: String) -> [UUID] {
+    sessions.compactMap { descriptor in
+      let tags = Dictionary(
+        descriptor.metadata.map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
+      guard tags[SessionMetadataKey.workroom] == workroom, tags[RunSessionKey.kind] == "run"
+      else { return nil }
+      return descriptor.identifier.uuid
+    }
+  }
+
+  /// Opens the target's run tab: a new run session for `command`, or, `adopting`, the run session
+  /// another Mac started on the workroom's host, reattached as a restored one.
+  private func openRunTab(
+    for target: TerminalTarget, command: String, focus: Bool, adopting session: UUID? = nil
+  ) {
+    let tab: TerminalTab
+    if let session {
+      tab = terminals.addRestoredRunTab(
+        for: target, command: command, sessionID: session, focus: focus)
+      restoredRuns.insert(target.id)
+      runningToastAutoHidden.insert(target.id)
+    } else {
+      tab = terminals.addRunTab(
+        for: target, command: command, cwd: target.path, focus: focus, runSession: true)
+      resetRunToast(for: target.id)  // a new run always gets a fresh toast (clear dismiss + timer)
+    }
     runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
-    resetRunToast(for: target.id)  // a new run always gets a fresh toast (clear dismiss + timer)
-    // Background start spawns the surface off-window (`addRunTab(focus:false)`); if that failed there's
-    // no process — surface the failure rather than a lying "running" toast. (Foreground starts spawn on
-    // mount, so the surface is legitimately nil here — skip the check.)
-    if !focus, tab.surface?.didSpawnFail == true {
+    lastRunStatus[target.id] = nil
+    // Background start spawns the surface off-window (`addRunTab(focus:false)`); if that failed, or
+    // no daemon could take the run (D5), nothing runs: say so rather than show a lying "running"
+    // toast. (Foreground starts spawn on mount, so the surface is legitimately nil here — the exit
+    // of the pane's notice says it then, through `markRunExited`.)
+    if !focus, tab.surface?.didSpawnFail == true || tab.surface?.refusedRun == true {
       runOutcomes[target.id] = .failedToStart
       runStates[target.id] = .stopped(tab: tab.id)
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       postRunFailureBannerIfBackgrounded(
-        targetID: target.id, tabID: tab.id, title: "Run failed to start",
-        body: config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+        targetID: target.id, tabID: tab.id, title: "Run failed to start", body: command)
       return
     }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
-    runPidFiles[target.id] = pidPath  // after the tab exists, so cleanup can't wipe it
-    lastRunStatus[target.id] = nil
-    // record the session for the forked-free backstop
-    runCommand.captureRunSession(for: target.id, pidPath: pidPath)
-    pollRunStatus(for: target)  // status file drives state from here (issue #7)
-    // The surface child here is the SUPERVISOR; its exit means the whole run is over (quit/crash), not
-    // a user-command stop. State during run/stop/restart is driven by the status file (above).
+    wireRun(tab, for: target)
+    if session != nil { terminals.reportRunStatus(tab: tab.id, target: target) }
+  }
+
+  /// A run tab's own process ending, and its close, report to this window's run: the process is
+  /// the session's attach, so its exit means the run session is over (a quit, a kill), not a
+  /// user-command stop, which the run's status reports.
+  private func wireRun(_ tab: TerminalTab, for target: TerminalTarget) {
     tab.surface?.onChildExited = { [weak self] code in
       self?.markRunExited(for: target, exitCode: code)
     }
@@ -407,8 +507,8 @@ extension AppStore {
   }
 
   /// A run that came here with its workroom from another window (#444): its surface's exit and close
-  /// now report to this window, and this window takes over polling the supervisor's status, which the
-  /// origin's poll stopped doing the moment it lost the run.
+  /// now report to this window. Its status reaches whichever window holds its tab
+  /// (`TerminalSessions.applyRunStatus`), so it follows the tab here by itself.
   func resumeAdoptedRun(for target: TerminalTarget) {
     for (tabID, targetID) in investigateTabs where targetID == target.id {
       terminals.tab(tabID, for: target)?.surface?.onChildExited = { [weak self] _ in
@@ -417,17 +517,13 @@ extension AppStore {
     }
     guard let tabID = runStates[target.id]?.tab, let tab = terminals.tab(tabID, for: target)
     else { return }
-    tab.surface?.onChildExited = { [weak self] code in
-      self?.markRunExited(for: target, exitCode: code)
-    }
-    wireRunClose(tabID, for: target)
-    pollRunStatus(for: target)
+    wireRun(tab, for: target)
   }
 
   /// The "press any key to close" / wait_after_command close for a run tab MUST go through the graceful
-  /// stop (SIGTERM the supervisor + wait for it to fully exit) BEFORE freeing the surface — a raw
-  /// `closeTab` frees the surface, which PTY-hangs-up (SIGHUP) the supervisor and can orphan a
-  /// still-draining server on its port ("A server is already running" next start; issue #7).
+  /// stop (quit the supervisor + wait for it to fully exit) BEFORE the tab closes — closing ends the
+  /// run session, whose kill hangs the supervisor up mid-drain ("A server is already running" next
+  /// start; issue #7).
   private func wireRunClose(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     terminals.tab(tabID, for: target)?.surface?.onCloseRequested = { [weak self] in
       guard let self else { return }
@@ -443,7 +539,7 @@ extension AppStore {
   /// `oldTab` first so its port frees (SIGHUP) before the new instance binds — the graceful-restart
   /// ordering.
   private func respawnRunCommand(replacing oldTab: TerminalTab.ID, for target: TerminalTarget) {
-    guard !target.isMissing, let project = project(forTarget: target) else {
+    guard target.opensTerminals, let project = project(forTarget: target) else {
       terminals.closeTab(oldTab, for: target)
       return
     }
@@ -469,36 +565,28 @@ extension AppStore {
       }
       return
     }
-    let config = runConfig(forProject: project.path)
-    let pidPath = runCommand.makeRunPidPath()
-    let line = runCommand.runCommandLine(
-      config.command.trimmingCharacters(in: .whitespacesAndNewlines), pidPath: pidPath)
+    let command = runConfig(forProject: project.path).command.trimmingCharacters(
+      in: .whitespacesAndNewlines)
     // Issue #67: a restart PRESERVES focus rather than always backgrounding — if the user was viewing
     // the run tab, the replacement stays focused; if it was already backgrounded, it stays so. Capture
     // this BEFORE `respawnRunTab` closes the old tab (which would move focus to a successor).
     let wasFocused = terminals.focusedTab(for: target)?.id == oldTab
     let tab = terminals.respawnRunTab(
-      replacing: oldTab, for: target, command: line, cwd: target.path, focus: wasFocused)
+      replacing: oldTab, for: target, command: command, cwd: target.path, focus: wasFocused,
+      runSession: true)
     runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
     resetRunToast(for: target.id)  // restart re-arms the toast + cancels a stale timer
-    if !wasFocused, tab.surface?.didSpawnFail == true {
+    lastRunStatus[target.id] = nil
+    if !wasFocused, tab.surface?.didSpawnFail == true || tab.surface?.refusedRun == true {
       runOutcomes[target.id] = .failedToStart
       runStates[target.id] = .stopped(tab: tab.id)
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       postRunFailureBannerIfBackgrounded(
-        targetID: target.id, tabID: tab.id, title: "Run failed to start",
-        body: config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+        targetID: target.id, tabID: tab.id, title: "Run failed to start", body: command)
       return
     }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
-    runPidFiles[target.id] = pidPath  // after respawnRunTab's closeTab cleanup, so it survives
-    lastRunStatus[target.id] = nil
-    runCommand.captureRunSession(for: target.id, pidPath: pidPath)
-    pollRunStatus(for: target)
-    tab.surface?.onChildExited = { [weak self] code in
-      self?.markRunExited(for: target, exitCode: code)
-    }
-    wireRunClose(tab.id, for: target)
+    wireRun(tab, for: target)
   }
 
   /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or
@@ -576,7 +664,7 @@ extension AppStore {
   ///          startRunCommand(for: target)
   /// ```
   func runOrFocusRunCommand(for target: TerminalTarget) {
-    guard !target.isMissing else { return }
+    guard target.opensTerminals else { return }
     focusTargetPane(target)
     switch runStates[target.id] {
     case .running(_, true):
@@ -654,43 +742,64 @@ extension AppStore {
     terminals.focus(runTab, for: target)
   }
 
-  /// Restart the run command (issue #7): tell the SUPERVISOR (SIGUSR1) to stop the child, wait for it to
-  /// fully exit, then relaunch — all serialized inside the terminal, so the surface/tab/split slot are
-  /// untouched and the new instance can't boot into the old one's still-held port/pidfile. Works from
-  /// running, in-flight, OR a parked-but-stopped pane; only if the supervisor itself is gone (quit/crash)
-  /// do we respawn a fresh surface.
+  /// Restart the run command (issue #7): tell the SUPERVISOR (USR1) to stop the child, wait for it to
+  /// fully exit, then relaunch — all serialized inside the supervisor, so the session/tab/split slot
+  /// are untouched and the new instance can't boot into the old one's still-held port/pidfile. Works
+  /// from running, in-flight, OR a parked-but-stopped pane; only if the supervisor itself is gone
+  /// (quit/crash) do we respawn a fresh session.
+  ///
+  /// The supervisor is asked through its daemon (#522), so the answer can be slow or lost: the tab
+  /// shows "Restarting…" at once, a fresh run session replaces it only when its daemon holds no
+  /// such session (`.gone`), and an unconfirmed restart starts nothing (R9) and says so.
   func restartRunCommand(for target: TerminalTarget) {
     switch runStates[target.id] {
     case .running(let tab, _), .restarting(let tab), .stopped(let tab):
-      if runCommand.signalSupervisor(SIGUSR1, for: target.id) {
-        runStates[target.id] = .restarting(tab: tab)  // status: stopping → running
-        runningToastAutoHidden.remove(target.id)  // show "Restarting…" even if prior run auto-hid
-      } else {
-        respawnRunCommand(replacing: tab, for: target)  // supervisor gone → fresh surface
+      let before = runStates[target.id]
+      runStates[target.id] = .restarting(tab: tab)  // status: stopping → running
+      runningToastAutoHidden.remove(target.id)  // show "Restarting…" even if prior run auto-hid
+      runCommand.signalSupervisor(.restart, for: target.id) { [weak self] outcome in
+        guard let self, self.runStates[target.id]?.tab == tab else { return }
+        switch outcome {
+        case .delivered:
+          // Its next status is a fresh run's: let the same line apply again.
+          self.lastRunStatus[target.id] = nil
+        case .gone:
+          self.respawnRunCommand(replacing: tab, for: target)  // supervisor gone → fresh session
+        case .unknown(let reason):
+          if case .restarting = self.runStates[target.id] { self.runStates[target.id] = before }
+          self.runSignalUnconfirmed(targetID: target.id, reason: reason)
+        }
       }
     case .armed, .none:
       startRunCommand(for: target)
     }
   }
 
-  /// The surface's PTY child exited — under the supervisor model that's the SUPERVISOR itself, so the
-  /// whole run is over (a quit/teardown, or a supervisor crash), not a user-command stop (those are
-  /// driven by the status file). Mark terminal; the pane stays open (`wait_after_command`). If the
-  /// status file already recorded an outcome (the usual case — the supervisor wrote `exited <code>`
-  /// before exiting), keep it; otherwise fall back to libghostty's code. The forked-free backstop
-  /// (SIGKILL the captured session) guards against a leaf that outlived the supervisor.
+  /// The run tab's own process exited. For a run session that is its attach, so the run session is
+  /// over (a quit or kill, or the supervisor crashed), not a user-command stop (those come with
+  /// the run's status). Mark terminal; the pane stays open. If the run's status already recorded an
+  /// outcome (the usual case — the supervisor wrote `exited <code>` before exiting), keep it;
+  /// otherwise fall back to the process's code. What the run left behind, its daemon ends (R8).
+  ///
+  /// Not a run's end when the pane is about to attach again: a remote pane whose link dropped
+  /// reattaches (`GhosttySurfaceView.reconnectIfTheLinkDropped`) and its run carries on.
   private func markRunExited(for target: TerminalTarget, exitCode: UInt32) {
     guard let tab = runStates[target.id]?.tab else { return }
-    let sid = runSessions[target.id] ?? -1
-    // Prefer the supervisor's final status line (authoritative — it wrote `stopped`/`exited <code>`
-    // just before exiting) over libghostty's unreliable exit code, in case the poller hadn't read it
-    // yet when this child-exit callback fired.
-    if runOutcomes[target.id] == nil, let ctl = runPidFiles[target.id],
-      let raw = try? String(
-        contentsOfFile: RunCommandController.supervisorStatusPath(forPidPath: ctl), encoding: .utf8)
+    let view = terminals.view(forTab: tab, inTarget: target.id)
+    guard view?.pendingReconnect == nil else { return }
+    restoredRuns.remove(target.id)
+    if view?.refusedRun == true {
+      // No daemon took the run (D5): the pane said why, and nothing ran.
+      runStates[target.id] = .stopped(tab: tab)
+      runOutcomes[target.id] = .failedToStart
+      runCommand.scheduleRunToastAutoDismiss(for: target.id)
+      return
+    }
+    // The run's last status, which may have come in after the last one applied.
+    if runOutcomes[target.id] == nil, let sessionID = view?.persistentSessionID,
+      let line = terminals.programStatus.run(for: sessionID)
     {
-      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !line.isEmpty { applyRunStatus(line, for: target) }
+      applyRunStatus(line, for: target)
     }
     runStates[target.id] = .stopped(tab: tab)
     if runOutcomes[target.id] == nil {
@@ -702,13 +811,7 @@ extension AppStore {
           body: "exited with code \(exitCode)")
       }
     }
-    clearRunPidFile(for: target.id)
-    // Backstop: a forked-free leaf (bin/dev/foreman in another pgroup) can outlive the supervisor —
-    // SIGKILL the captured session so it can't linger on the port. No surfaces to poll here, so
-    // `views` is empty — this is `pollUntilExited`'s sessions-only, synchronous-empty-set path.
-    runCommand.pollUntilExited(
-      [], sessions: sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)
-    ) {}
+    forgetRun(for: target.id)
   }
 
   /// Ensure a target's terminal pane lands the user in a live terminal when it first appears (called by

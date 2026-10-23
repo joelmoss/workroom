@@ -1,3 +1,4 @@
+import DaemonConnection
 import Foundation
 import HostDrivers
 import WorkroomVCS
@@ -124,6 +125,8 @@ final class PersistentSessionService {
     let workingDirectory: String
     /// What its attach tells the host's daemon about it (#255).
     var metadata: [(key: String, value: String)] = []
+    /// A run session's command (#522), which its host's daemon runs under the run supervisor.
+    var runCommand: String? = nil
   }
 
   /// How the daemon's health is measured. Injected so a test can drive the unhealthy path without
@@ -494,12 +497,14 @@ final class PersistentSessionService {
   /// `workingDirectory` (a path on that host) if the session is new.
   func registerRemoteSession(
     _ sessionID: UUID, on host: HostID, via driver: any HostTerminalDriver,
-    workingDirectory: String, metadata: [(key: String, value: String)] = []
+    workingDirectory: String, metadata: [(key: String, value: String)] = [],
+    runCommand: String? = nil
   ) {
     // A pane holds it again, so it is no longer a closed pane's to end.
     dropUnended(sessionID)
     remoteSessions[sessionID] = RemoteSession(
-      host: host, driver: driver, workingDirectory: workingDirectory, metadata: metadata)
+      host: host, driver: driver, workingDirectory: workingDirectory, metadata: metadata,
+      runCommand: runCommand)
   }
 
   func isRemote(_ sessionID: UUID) -> Bool { remoteSessions[sessionID] != nil }
@@ -555,7 +560,7 @@ final class PersistentSessionService {
       do {
         let command = try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
-          restored: restored, metadata: remote.metadata)
+          restored: restored, metadata: remote.metadata, runCommand: remote.runCommand)
         guard let pane else { return command }
         attachedRemote[sessionID, default: []].insert(pane)
         // A pane attaching connects a host with no service connection, so its badge is heard and a
@@ -593,10 +598,13 @@ final class PersistentSessionService {
     return restored && owner == .daemon ? command + " --no-create" : command
   }
 
+  /// `runCommand` makes the session a run session (#522): the daemon runs it under the run
+  /// supervisor, which the app stops and restarts through the daemon (`signalRun`).
   func launchEnvironment(
     sessionID: UUID,
     workingDirectory: String,
     metadata: [(key: String, value: String)] = [],
+    runCommand: String? = nil,
     shell: String = ProcessInfo.processInfo.environment["SHELL"]
       ?? SessionShellIntegration
       .defaultShell,
@@ -623,8 +631,11 @@ final class PersistentSessionService {
       ("WORKROOM_SESSION_SOCKET", socketPath),
       ("WORKROOM_SESSION_SHELL", shell),
       ("WORKROOM_SESSION_CWD", workingDirectory),
-      ("WORKROOM_SESSION_COMMAND", ""),
+      ("WORKROOM_SESSION_COMMAND", runCommand ?? ""),
     ]
+    if runCommand != nil {
+      entries.append(("WORKROOM_SESSION_RUN", "1"))
+    }
     if let resourcesDirectory {
       entries.append(("WORKROOM_SESSION_RESOURCES", resourcesDirectory))
     }
@@ -731,6 +742,45 @@ final class PersistentSessionService {
     }
     remoteKillsInFlight[host, default: 1] -= 1
     if remoteKillsInFlight[host] == 0 { remoteKillsInFlight.removeValue(forKey: host) }
+  }
+
+  /// How asking a run session's supervisor to restart, stop or quit went (#522).
+  enum RunSignalOutcome: Equatable, Sendable {
+    case delivered
+    /// Its daemon holds no such session: the run is gone, and starting it again cannot double it.
+    case gone
+    /// No answer, or a refusal: the signal may or may not have been sent. Never read as gone, or a
+    /// lost reply would start a second server (R9).
+    case unknown(String)
+  }
+
+  /// Asks run session `sessionID`'s supervisor to `signal`, on its host's daemon for a remote one
+  /// and on this Mac's otherwise. A click: an asleep box is woken to be asked.
+  func signalRun(sessionID: UUID, _ signal: RunSignal) async -> RunSignalOutcome {
+    let reply: RunSignalReply?
+    if let remote = remoteSessions[sessionID] {
+      do {
+        try await RemoteHosts.shared.ensureConnected(remote.host, wake: true)
+        reply = try await HostConnectionManager.shared.signalSession(
+          sessionID, signal, on: remote.host)
+      } catch {
+        return .unknown(error.localizedDescription)
+      }
+    } else {
+      guard backend(forSession: sessionID) == .daemon,
+        let socketPath = existingSocketPath(for: .daemon)
+      else { return .unknown("Workroom's background helper isn't running.") }
+      let client = DaemonControlClient(socketPath: socketPath)
+      reply = await Task.detached(priority: .userInitiated) {
+        client.signal(session: sessionID, signal)
+      }.value
+    }
+    switch reply {
+    case .delivered: return .delivered
+    case .noSuchSession: return .gone
+    case .refused(let reason): return .unknown(reason)
+    case nil: return .unknown("Workroom's background helper didn't answer.")
+    }
   }
 
   @discardableResult

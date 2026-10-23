@@ -838,7 +838,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   public func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
-    metadata: [(key: String, value: String)]
+    metadata: [(key: String, value: String)], runCommand: String?
   ) throws -> String {
     let id = try id(of: host)
     try FileManager.default.createDirectory(
@@ -846,7 +846,8 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     return SSHTransport.attachCommand(
       via: route(id, spawned: false), in: hostDirectory(id), daemonSocket: daemonSocket,
       session: session,
-      workingDirectory: workingDirectory, restored: restored, metadata: metadata)
+      workingDirectory: workingDirectory, restored: restored, metadata: metadata,
+      runCommand: runCommand)
   }
 
   public func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {

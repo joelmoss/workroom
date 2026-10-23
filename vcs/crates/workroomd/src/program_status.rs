@@ -1107,6 +1107,7 @@ mod tests {
             "status-command" => {
                 include_str!("../../../../testdata/program-status/status-command.json")
             }
+            "status-run" => include_str!("../../../../testdata/program-status/status-run.json"),
             _ => include_str!("../../../../testdata/program-status/snapshot-complete.json"),
         }
         .trim_end()
@@ -1152,6 +1153,26 @@ mod tests {
         store.commit();
         let event = store.event(uuid(BOOT), uuid(SESSION));
         assert_eq!(String::from_utf8(event).unwrap(), fixture("status-command"));
+
+        let mut store = Store::default();
+        store.set_run("exited 3".into());
+        store.commit();
+        let event = store.event(uuid(BOOT), uuid(SESSION));
+        assert_eq!(String::from_utf8(event).unwrap(), fixture("status-run"));
+    }
+
+    /// Value: protects=a run's state is published only when it changes, so the watcher's re-reads
+    /// cost no events; fails_when=set_run marks the store dirty for the same line; why_new=the
+    /// watcher reads every run's file every tick; seam=none
+    #[test]
+    fn the_same_run_state_publishes_nothing() {
+        let mut store = Store::default();
+        store.set_run("running 7".into());
+        assert!(store.commit().is_some());
+        store.set_run("running 7".into());
+        assert_eq!(store.commit(), None);
+        store.set_run("stopped".into());
+        assert!(store.commit().is_some());
     }
 
     /// A report replaces its record whole, and moves it to the newest end.

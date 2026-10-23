@@ -25,6 +25,9 @@ protocol HostServiceConnection: Sendable {
   /// Ends terminal `session` on this host (#283): true once the host's daemon confirms the kill,
   /// which it also does for a session it no longer holds.
   func endSession(_ session: UUID) async throws -> Bool
+  /// Asks a run session's supervisor to restart, stop or quit (#522). Throws when the daemon could
+  /// not be asked or did not answer, so the signal may or may not have been sent.
+  func signalSession(_ session: UUID, _ signal: RunSignal) async throws -> RunSignalReply
   /// Every terminal session the host's daemon holds, with what the app said about each (#255).
   func sessions() async throws -> [SessionDescriptor]
   /// Returns once the daemon answers anything, its cheapest question (`dropUnlessAnswering`).
@@ -58,6 +61,10 @@ extension HostServiceConnection {
 
   func endSession(_ session: UUID) async throws -> Bool {
     throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
+  }
+
+  func signalSession(_ session: UUID, _ signal: RunSignal) async throws -> RunSignalReply {
+    throw HostConnectionError.serviceUnavailable("Host has no run sessions.")
   }
 
   func sessions() async throws -> [SessionDescriptor] {
@@ -274,6 +281,21 @@ actor HostConnectionManager {
   /// never connects; a caller that must reach the host connects first.
   func endSession(_ session: UUID, on host: HostID) async throws -> Bool {
     try await connected(host).1.endSession(session)
+  }
+
+  /// Not lease-tracked, and never connects, like `endSession`.
+  func signalSession(_ session: UUID, _ signal: RunSignal, on host: HostID) async throws
+    -> RunSignalReply
+  {
+    try await connected(host).1.signalSession(session, signal)
+  }
+
+  /// Whether `host`'s daemon runs run sessions (#522): false for one that predates them, which a
+  /// host keeps when it refused this build's hand-off. Nil when that can't be told: no connection,
+  /// or one that is not a daemon's. Never connects.
+  func runsRunSessions(on host: HostID) -> Bool? {
+    guard let connection = try? connected(host).1 as? DaemonVCSConnection else { return nil }
+    return connection.helloVersion >= DaemonHandshake.minRunVersion
   }
 
   /// Not lease-tracked either, and never connects, like `endSession`.

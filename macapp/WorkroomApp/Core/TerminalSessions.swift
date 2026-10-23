@@ -262,14 +262,16 @@ extension FocusedTabSelection {
 extension TabSession {
   /// A tab as it will be written to disk, or `nil` when it must not be persisted.
   ///
-  /// Run tabs return nil: restoring one would resurrect a dev server with no `AppStore.RunState`
-  /// behind it, orphaned on its port. They are identified by the surface carrying a command
-  /// (`isRunCommandSurface`) rather than by `AppStore.runStates`, so a tab whose run bookkeeping has
-  /// already moved on still cannot leak into the file.
+  /// A tab whose command runs in its own process (an Investigate tab) returns nil: its process dies
+  /// with the app. A run tab is kept (#522): its run session outlives the app, and restoring it
+  /// reattaches to the run rather than starting it, so it is marked `run` and saved with its
+  /// session. Identified by the surface, not by `AppStore.runStates`, so a tab whose run
+  /// bookkeeping has already moved on is still saved as what it is.
   @MainActor init?(key: String, tab: TerminalTab) {
     switch tab.content {
     case .terminal(let state):
-      guard state.view.isRunCommandSurface == false else { return nil }
+      let run = state.view.isRunSession
+      guard !state.view.isRunCommandSurface || run else { return nil }
       self.init(
         key: key, kind: Self.terminalKind,
         // The LAST REPORTED cwd, which is the whole value of restoring a terminal. `state.cwd` is
@@ -277,7 +279,8 @@ extension TabSession {
         // own copy and covers a tab whose mirror never updated.
         terminal: TerminalPayload(
           defaultTitle: state.defaultTitle, cwd: state.cwd ?? state.view.lastKnownCwd,
-          sessionID: (state.sessionID ?? state.view.persistentSessionID)?.uuidString))
+          sessionID: (state.sessionID ?? state.view.persistentSessionID)?.uuidString,
+          run: run ? true : nil))
     case .diff(let descriptor):
       self.init(
         key: key, kind: Self.diffKind,
@@ -569,7 +572,19 @@ final class TerminalSessions: ObservableObject {
     /// The user is now looking at this terminal: its surface became first responder in the key
     /// window, by any route (#358). Its notifications are read.
     case terminalSeen(TerminalTarget.ID, TerminalTab.ID)
+    /// A run tab came back from a saved session (#522): its run may still be going, and its state
+    /// arrives with the session's program status.
+    case runTabRestored(TerminalTarget.ID, TerminalTab.ID)
+    /// A run tab's supervisor wrote a new state (#522): `running <pid>`, `stopped`, `exited <code>`.
+    case runStatus(TerminalTarget.ID, TerminalTab.ID, String)
+    /// A run tab's session is not on its daemon any more (#522): the host's snapshot did not name
+    /// it, or the daemon said it ended.
+    case runSessionGone(TerminalTarget.ID, TerminalTab.ID)
   }
+
+  /// The project's run command for a target, for a run tab rebuilt from a saved session (#522). Set
+  /// by `AppStore`, which owns the run configs.
+  var runCommandForTarget: (TerminalTarget) -> String? = { _ in nil }
 
   /// Set once by `AppStore`. A closure, not a store reference, so sessions stay ignorant of
   /// `AppStore`.
@@ -988,13 +1003,26 @@ final class TerminalSessions: ObservableObject {
     var order: [TerminalTab.ID] = []
     var tabs: [TerminalTab.ID: TerminalTab] = [:]
     var restoredDetached: [(TerminalTab.ID, NSRect)] = []
+    var restoredRun: TerminalTab.ID?
 
     for saved in session.tabs {
       let tab: TerminalTab
-      if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
-        // `command:` is deliberately never passed: run tabs are not persisted, and this makes even a
-        // hand-edited file unable to start a process on launch.
-        // A remote pane's path is on its host, which this Mac can't check: its own path, always.
+      if saved.kind == TabSession.terminalKind, let payload = saved.terminal,
+        payload.run == true
+      {
+        // A run tab (#522), one per target, reattached to its run session. Its command is passed
+        // only so the session is a run session: a restored attach never creates one, so this can
+        // never start the command, whatever the file says (`workroomd attach`, D2).
+        guard restoredRun == nil, let sessionID = payload.sessionID.flatMap(UUID.init(uuidString:))
+        else { continue }
+        tab = makeRunTab(
+          for: target, command: runCommandForTarget(target) ?? "", cwd: target.path,
+          runSession: true, sessionID: sessionID)
+        restoredRun = tab.id
+      } else if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
+        // `command:` is deliberately never passed, so even a hand-edited file cannot start a
+        // process on launch. A remote pane's path is on its host, which this Mac can't check: its
+        // own path, always.
         let cwd =
           target.remoteHost == nil
           ? Self.restoredCwd(payload.cwd, fallback: target.path) : target.path
@@ -1060,6 +1088,7 @@ final class TerminalSessions: ObservableObject {
     for (tabID, frame) in restoredDetached {
       onEvent?(.paneRestoredDetached(target.id, tabID, frame: frame))
     }
+    if let restoredRun { onEvent?(.runTabRestored(target.id, restoredRun)) }
     reconcileOcclusion(for: target)
     return RestoreResult(count: order.count)
   }
@@ -1353,17 +1382,39 @@ final class TerminalSessions: ObservableObject {
   /// initial size so the command starts with reasonable COLUMNS/LINES; it re-sizes on first real mount.
   static let backgroundRunInitialSize = CGSize(width: 800, height: 480)
 
+  /// `runSession`: `command` is the project's run command, run by the daemon as a run session
+  /// (#522). Otherwise it runs in the tab's own process, as an Investigate tab's agent does.
   @discardableResult
-  func addRunTab(for target: TerminalTarget, command: String, cwd: String, focus: Bool = true)
-    -> TerminalTab
-  {
-    let tab = makeRunTab(for: target, command: command, cwd: cwd)
+  func addRunTab(
+    for target: TerminalTarget, command: String, cwd: String, focus: Bool = true,
+    runSession: Bool = false
+  ) -> TerminalTab {
+    let tab = makeRunTab(for: target, command: command, cwd: cwd, runSession: runSession)
     insert(tab, for: target)
     if focus {
       setFocused(tab.id, for: target.id)
     } else {
       // Issue #67 (run in the background): not focusing means the pane never mounts, so spawn the
       // surface off-window now — otherwise the command would never start and the toast would lie.
+      tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+    }
+    reconcileOcclusion(for: target)
+    return tab
+  }
+
+  /// A run tab attached to a run session that is already going (#522): one another Mac started on
+  /// the workroom's host (D7). Attached as a restored pane, so a session that has gone meanwhile is
+  /// never started again.
+  @discardableResult
+  func addRestoredRunTab(
+    for target: TerminalTarget, command: String, sessionID: UUID, focus: Bool
+  ) -> TerminalTab {
+    let tab = makeRunTab(
+      for: target, command: command, cwd: target.path, runSession: true, sessionID: sessionID)
+    insert(tab, for: target)
+    if focus {
+      setFocused(tab.id, for: target.id)
+    } else {
       tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
     }
     reconcileOcclusion(for: target)
@@ -1380,7 +1431,7 @@ final class TerminalSessions: ObservableObject {
   @discardableResult
   func respawnRunTab(
     replacing oldID: TerminalTab.ID, for target: TerminalTarget, command: String, cwd: String,
-    focus: Bool = true
+    focus: Bool = true, runSession: Bool = false
   ) -> TerminalTab {
     // Capture the old tab's place BEFORE closing it collapses its group / drops it from the order.
     let priorSplit = split(containing: oldID, for: target)
@@ -1388,7 +1439,7 @@ final class TerminalSessions: ObservableObject {
 
     closeTab(oldID, for: target)  // frees the port (SIGHUP); collapses the group — restored below
 
-    let tab = makeRunTab(for: target, command: command, cwd: cwd)
+    let tab = makeRunTab(for: target, command: command, cwd: cwd, runSession: runSession)
     tabsByTarget[target.id, default: [:]][tab.id] = tab
     if let orderIndex {
       var order = orderByTarget[target.id] ?? []
@@ -1424,8 +1475,13 @@ final class TerminalSessions: ObservableObject {
   /// (wait_after_command) → close this tab on the keypress, without the confirm (the process has
   /// already exited). Only run tabs wire `onCloseRequested`. Shared by `addRunTab` (append + focus) and
   /// `respawnRunTab` (in-place restart, issue #40).
-  private func makeRunTab(for target: TerminalTarget, command: String, cwd: String) -> TerminalTab {
-    makeTerminalTab(for: target, cwd: cwd, command: command, title: "Run")
+  private func makeRunTab(
+    for target: TerminalTarget, command: String, cwd: String, runSession: Bool,
+    sessionID: UUID? = nil
+  ) -> TerminalTab {
+    makeTerminalTab(
+      for: target, cwd: cwd, command: command, title: "Run", sessionID: sessionID,
+      runSession: runSession)
   }
 
   /// Split the focused pane by spawning a new terminal on the trailing side (⌘D right, ⇧⌘D down).
@@ -2375,9 +2431,11 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[target.id] = order
   }
 
+  /// `runSession`: `command` is the project's run command, run by the daemon as a run session
+  /// (#522); otherwise a `command` runs in this pane's own process (an Investigate tab).
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
-    sessionID: UUID? = nil
+    sessionID: UUID? = nil, runSession: Bool = false
   ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
@@ -2385,10 +2443,12 @@ final class TerminalSessions: ObservableObject {
     // directory, and the session starts in the path on the far side (`registerRemote`).
     let view = makeView(
       target, target.remoteHost == nil ? cwd : NSHomeDirectory(), command)
+    view.isRunSession = runSession
+    let inProcess = command != nil && !runSession
     let assignedSessionID =
-      target.remoteHost != nil && command == nil
+      target.remoteHost != nil && !inProcess
       ? sessionID ?? UUID()
-      : assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
+      : assignedSessionID(persisted: sessionID, inProcessCommand: inProcess)
     // The workroom a session is tagged with is how its daemon's list finds it again: `target.id`
     // for a workroom on this Mac, whose daemon no other Mac reads, and the workroom's own id for a
     // remote one, since `target.id` holds this Mac's project path and another Mac's differs (#255).
@@ -2399,7 +2459,9 @@ final class TerminalSessions: ObservableObject {
     ]
     if let host = target.remoteHost, let assignedSessionID {
       // `cwd` is a path on the host here: the target's, or a split's anchor pane's.
-      registerRemote(assignedSessionID, on: host, workingDirectory: cwd, metadata: metadata)
+      registerRemote(
+        assignedSessionID, on: host, workingDirectory: cwd, metadata: metadata,
+        runCommand: runSession ? command : nil)
     }
     view.persistentSessionID = assignedSessionID
     // `sessionID` non-nil means this pane is being rebuilt from a restore payload, so its id names
@@ -2498,9 +2560,51 @@ final class TerminalSessions: ObservableObject {
     if programStatusListener == nil {
       programStatusListener = programStatus.addListener { [weak self] change in
         self?.applyProgramStatus(change.sessions)
+        self?.applyRunStatus(change)
       }
     }
     programStatus.watch(host)
+  }
+
+  /// Tells `AppStore` what each run tab's session on `change.host` now says (#522): its run's state
+  /// when the daemon has one, or that the session is gone. Gone is known only from what the host
+  /// said, a snapshot that did not name the session or an `ended` for it, never from a monitor that
+  /// has not heard from the host yet.
+  func applyRunStatus(_ change: ProgramStatusMonitor.Change) {
+    for (targetID, tabs) in tabsByTarget {
+      guard let target = target(forID: targetID),
+        (target.remoteHost.map(HostID.remote) ?? .local) == change.host
+      else { continue }
+      for (tabID, tab) in tabs {
+        guard case .terminal(let state) = tab.content, state.view.isRunSession,
+          let sessionID = state.sessionID,
+          change.isSnapshot || change.sessions.contains(sessionID)
+        else { continue }
+        reportRunStatus(of: sessionID, tab: tabID, target: targetID, gone: true)
+      }
+    }
+  }
+
+  /// What the monitor already knows about a run tab that has just appeared (a restore, after its
+  /// host's snapshot may have come): its state, or that it is gone once the host has answered.
+  func reportRunStatus(tab tabID: TerminalTab.ID, target: TerminalTarget) {
+    guard case .terminal(let state)? = tabsByTarget[target.id]?[tabID]?.content,
+      state.view.isRunSession, let sessionID = state.sessionID
+    else { return }
+    reportRunStatus(
+      of: sessionID, tab: tabID, target: target.id,
+      gone: programStatus.hasSnapshot(of: target.remoteHost.map(HostID.remote) ?? .local))
+  }
+
+  /// `gone`: whether a session the monitor does not hold may be reported as gone.
+  private func reportRunStatus(
+    of sessionID: UUID, tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, gone: Bool
+  ) {
+    if let run = programStatus.run(for: sessionID) {
+      onEvent?(.runStatus(targetID, tabID, run))
+    } else if gone, !programStatus.hasSession(sessionID) {
+      onEvent?(.runSessionGone(targetID, tabID))
+    }
   }
 
   /// Puts the monitor's rollup on every tab attached to `sessions`.
@@ -2819,20 +2923,20 @@ final class TerminalSessions: ObservableObject {
   /// rather than opening that shell (`PersistentSessionService.attachCommand`).
   private func registerRemote(
     _ session: UUID, on host: UUID, workingDirectory: String,
-    metadata: [(key: String, value: String)]
+    metadata: [(key: String, value: String)], runCommand: String? = nil
   ) {
     let driver =
       RemoteHosts.shared.existingDriver(holding: host)
       ?? ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory)
     sessionService.registerRemoteSession(
       session, on: .remote(host), via: driver, workingDirectory: workingDirectory,
-      metadata: metadata)
+      metadata: metadata, runCommand: runCommand)
   }
 
-  private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -> UUID? {
+  private func assignedSessionID(persisted: UUID?, inProcessCommand: Bool) -> UUID? {
     let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
       isAvailable: sessionService.isAvailable,
-      isRunCommand: isRunCommand,
+      inProcessCommand: inProcessCommand,
       hasExistingSession: persisted != nil)
     guard policy else { return nil }
     return persisted ?? UUID()

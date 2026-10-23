@@ -350,7 +350,7 @@ private struct WorkroomPaneLeaf: View {
   /// to compute per render.
   private var toolbarControls: WorkroomPaneToolbarPresentation.Controls {
     WorkroomPaneToolbarPresentation.controls(
-      isMissing: target.isMissing, projectPath: projectPath,
+      isMissing: target.isMissing, opensTerminals: target.opensTerminals, projectPath: projectPath,
       hasEditor: !ExternalEditor.installed.isEmpty, multi: multi,
       // The same predicate `startRunCommand` guards on, so the button and the action can't disagree
       // about whether a run could start (issue #171).
@@ -455,8 +455,11 @@ enum WorkroomPaneToolbarPresentation {
     let removeFromSplit: Bool
   }
 
+  /// `opensTerminals`: a pane can open here, which a remote workroom's can although its path is
+  /// not on this Mac (`isMissing`); its run runs on its host (#522).
   static func controls(
-    isMissing: Bool, projectPath: String?, hasEditor: Bool, multi: Bool, isCreating: Bool
+    isMissing: Bool, opensTerminals: Bool, projectPath: String?, hasEditor: Bool, multi: Bool,
+    isCreating: Bool
   ) -> Controls {
     // Run is deliberately NOT gated on a configured command: the button is always there for a present
     // target, and pressing it with nothing configured opens Project Settings with the warning, the same
@@ -468,7 +471,7 @@ enum WorkroomPaneToolbarPresentation {
     // looks alive and silently does nothing. Barely visible until issue #171 put the focused create
     // inside its pane — where the create now sits under a full title bar for the whole script.
     // "Open in…" stays: opening the half-built tree in an editor is a real action that really happens.
-    let run = !isMissing && projectPath != nil && !isCreating
+    let run = opensTerminals && projectPath != nil && !isCreating
     let openIn = !isMissing && hasEditor
     // Close-all is the one control NOT gated on the directory, and deliberately so. Its neighbours are
     // gated because a vanished directory gives them nothing to act on — there is nowhere to run and

@@ -11,12 +11,20 @@ import XCTest
 /// present, and either can be absent — no run command configured, or no supported editor installed.
 final class WorkroomPaneToolbarPresentationTests: XCTestCase {
   private func controls(
-    isMissing: Bool = false, projectPath: String? = "/a", hasEditor: Bool = true,
-    multi: Bool = false, isCreating: Bool = false
+    isMissing: Bool = false, opensTerminals: Bool? = nil, projectPath: String? = "/a",
+    hasEditor: Bool = true, multi: Bool = false, isCreating: Bool = false
   ) -> WorkroomPaneToolbarPresentation.Controls {
     WorkroomPaneToolbarPresentation.controls(
-      isMissing: isMissing, projectPath: projectPath, hasEditor: hasEditor, multi: multi,
-      isCreating: isCreating)
+      isMissing: isMissing, opensTerminals: opensTerminals ?? !isMissing,
+      projectPath: projectPath, hasEditor: hasEditor, multi: multi, isCreating: isCreating)
+  }
+
+  /// A remote or container workroom whose panes open here runs its command on its host (#522), so
+  /// it shows Run; its path is not on this Mac, so it still offers no "Open in…".
+  func testARemoteWorkroomShowsRunButNotOpenIn() {
+    let c = controls(isMissing: true, opensTerminals: true)
+    XCTAssertTrue(c.run)
+    XCTAssertFalse(c.openIn)
   }
 
   /// The common case — a healthy solo workroom on a machine with an editor — shows both groups, the rule

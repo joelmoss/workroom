@@ -635,9 +635,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           await AppStore.flushHostLayouts(budget: 1)
           SessionCoordinator.shared.flushAndFreeze()
           // Only once frozen: stopping a run command removes its tab, and the document is built
-          // from the live windows.
-          group.enter()
-          WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
+          // from the live windows. Nobody can be asked about a signal, so the quit setting decides,
+          // and keeps runs going while it is still Ask (#522, Q12).
+          let action = QuitWithRunningServers.action(
+            setting: Defaults[.quitWithRunningServers],
+            hasLiveRuns: WindowRegistry.shared.hasAnyLiveRun,
+            isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: false)
+          if action == .stop {
+            group.enter()
+            WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
+          }
           group.leave()
         }
         // A tab closed moments before this signal fires an unstructured kill Task; without
@@ -737,11 +744,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       SessionCoordinator.shared.flushAndFreeze()
       return .terminateNow
     }
-    if Defaults[.confirmOnQuit] {
+    // Run commands are daemon sessions, which outlive the app unless quitting stops them (#522).
+    // The first quit with one going asks, whether or not quit confirmation is on, and keeps the
+    // answer; that dialog's Cancel stands in for the confirmation (Q9, Q10).
+    var action = QuitWithRunningServers.action(
+      setting: Defaults[.quitWithRunningServers],
+      hasLiveRuns: WindowRegistry.shared.hasAnyLiveRun,
+      isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: true)
+    if action == .ask {
+      guard let answer = askAboutRunningServers() else { return .terminateCancel }
+      Defaults[.quitWithRunningServers] = answer
+      action = answer == .stop ? .stop : .keep
+    } else if Defaults[.confirmOnQuit] {
       let alert = NSAlert()
       alert.messageText = "Quit Workroom?"
       alert.informativeText =
-        "Quitting leaves terminals running in the background. They'll be waiting when you reopen Workroom, but any running dev servers will still stop."
+        action == .stop
+        ? "Your terminals keep running in the background and will be waiting when you reopen "
+          + "Workroom. Your running dev servers will stop."
+        : "Your terminals and dev servers keep running in the background, and they'll be waiting "
+          + "when you reopen Workroom."
       alert.addButton(withTitle: "Quit")
       alert.addButton(withTitle: "Cancel")
       alert.showsSuppressionButton = true
@@ -754,17 +776,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       }
       guard shouldQuit else { return .terminateCancel }
     }
-    return stopRunCommandsThenTerminate(sender)
+    return stopRunCommandsThenTerminate(sender, stoppingRuns: action == .stop)
   }
 
-  /// Ctrl-C any live run commands and let them exit before the process dies, so dev servers clean up
-  /// (release their port + pidfile) instead of being orphaned by the OS hangup on exit — a SIGHUP
-  /// that Puma ignores, surfacing as "A server is already running" on the next launch (issue #7).
-  /// Sends only key events — never frees a surface — so the no-mass-free-on-quit rationale in
+  /// The first quit with a dev server running (#522): keep them running or stop them, remembered in
+  /// Settings ▸ General. Nil when the user cancels the quit.
+  @MainActor
+  private func askAboutRunningServers() -> QuitWithRunningServers? {
+    let alert = NSAlert()
+    alert.messageText = "Keep your dev servers running after Workroom quits?"
+    alert.informativeText =
+      "Your run commands keep running, and their tabs pick them up again when you reopen "
+      + "Workroom. Stopping them ends each one as Stop does. Workroom remembers your answer, and "
+      + "you can change it in Settings ▸ General."
+    alert.addButton(withTitle: "Keep Running and Quit")
+    alert.addButton(withTitle: "Stop Servers and Quit")
+    alert.addButton(withTitle: "Cancel")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn: return .keepRunning
+    case .alertSecondButtonReturn: return .stop
+    default: return nil
+    }
+  }
+
+  /// `stoppingRuns`: stop every live run command and let it exit before the process dies, so dev
+  /// servers clean up (release their port + pidfile) — the quit setting asked for it (#522). Run
+  /// commands that keep running are left alone: they are daemon sessions, and their tabs reattach
+  /// on the next launch. Never frees a surface, so the no-mass-free-on-quit rationale in
   /// `applicationWillTerminate` still holds. Bounded so a wedged server can't block the quit.
   @MainActor
-  private func stopRunCommandsThenTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply
-  {
+  private func stopRunCommandsThenTerminate(
+    _ sender: NSApplication, stoppingRuns: Bool
+  ) -> NSApplication.TerminateReply {
     let registry = WindowRegistry.shared
     // Mark the app as terminating so a window's own close handler doesn't also prompt/stop (#70).
     registry.isTerminating = true
@@ -784,7 +827,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       SessionCoordinator.shared.flushAndFreeze()
       // Only once frozen: stopping a run command removes its tab, and the document is built from
       // the live windows.
-      if registry.hasAnyLiveRunCommand {
+      if stoppingRuns {
         group.enter()
         // Stop every window's run commands, not just the focused one's.
         registry.gracefullyStopAllWindows(timeout: 5) { group.leave() }

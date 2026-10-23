@@ -52,13 +52,16 @@ struct ProgramStatusSession: Equatable {
   var revision: UInt64
   var reporting: Bool
   var records: [ProgramStatusRecord]
+  /// A run session's state as its supervisor last wrote it (#522): `running <pid>`, `stopped`,
+  /// `exited <code>`. Nil for a shell.
+  var run: String? = nil
   /// When this app first saw each waiting request, by (record id, episode).
   var blockedSince: [String: Date] = [:]
 
   /// Whether the two differ in anything an indicator or notification reads: `progress` alone is
   /// never shown, so a change only to it is not published.
   func differsVisibly(from other: ProgramStatusSession) -> Bool {
-    reporting != other.reporting || boot != other.boot
+    reporting != other.reporting || boot != other.boot || run != other.run
       || records.map(Self.visible) != other.records.map(Self.visible)
   }
 
@@ -122,6 +125,9 @@ final class ProgramStatusMonitor: ObservableObject {
     /// The first snapshot of this host since launch: every waiting request in it was there before
     /// the app was, so none of them notifies.
     let isLaunchSnapshot: Bool
+    /// A subscription's snapshot: every live session on `host` is in `sessions` now, so one that
+    /// is not has gone (a restored run tab's, #522).
+    var isSnapshot = false
   }
 
   /// Not `@Published`: panes get it through their tab's state, by listener, and the sidebar and tab
@@ -226,6 +232,19 @@ final class ProgramStatusMonitor: ObservableObject {
     return record.rollup(stale: hosts[record.host] == .stale)
   }
 
+  /// A run session's state as its supervisor last wrote it (#522), or nil for a session this
+  /// monitor has no run state for.
+  func run(for session: UUID) -> String? { sessions[session]?.run }
+
+  /// Whether the host's daemon has told this monitor about `session` and not said it ended.
+  func hasSession(_ session: UUID) -> Bool { sessions[session] != nil }
+
+  /// Whether `host`'s current subscription has delivered its snapshot, so a session missing from
+  /// `sessions` is known to be gone rather than not yet heard of.
+  func hasSnapshot(of host: HostID) -> Bool {
+    snapshotted.contains(host) && hosts[host] == .live
+  }
+
   /// The user has looked at `session`: its finished and failed records up to now go. With the link
   /// down it is sent once the host is back, after its snapshot; the revision keeps anything newer.
   func seen(_ session: UUID, states: [String]? = nil) {
@@ -274,10 +293,13 @@ final class ProgramStatusMonitor: ObservableObject {
             guard !Task.isCancelled else { return }
             if case .lost = event { break }
             if inSnapshot,
-              case .status(let boot, let session, let revision, let reporting, let records) = event
+              case .status(
+                let boot, let session, let revision, let reporting, let records, let run) =
+                event
             {
               pending[session] = ProgramStatusSession(
-                host: host, boot: boot, revision: revision, reporting: reporting, records: records)
+                host: host, boot: boot, revision: revision, reporting: reporting, records: records,
+                run: run)
               continue
             }
             if inSnapshot, case .snapshotComplete = event {
@@ -346,7 +368,7 @@ final class ProgramStatusMonitor: ObservableObject {
       Self.logger.info("program status: \(String(describing: host), privacy: .public) is live")
       changed.formUnion(sessions.filter { $0.value.host == host }.keys)
     }
-    notify(Change(host: host, sessions: changed, isLaunchSnapshot: launch))
+    notify(Change(host: host, sessions: changed, isLaunchSnapshot: launch, isSnapshot: true))
     for (session, seen) in pendingSeen where seen.host == host {
       pendingSeen.removeValue(forKey: session)
       guard sessions[session] != nil, let connection = connections[host] else { continue }
@@ -359,9 +381,10 @@ final class ProgramStatusMonitor: ObservableObject {
 
   private func apply(_ event: ProgramStatusEvent, host: HostID) {
     switch event {
-    case .status(let boot, let session, let revision, let reporting, let records):
+    case .status(let boot, let session, let revision, let reporting, let records, let run):
       let new = ProgramStatusSession(
-        host: host, boot: boot, revision: revision, reporting: reporting, records: records)
+        host: host, boot: boot, revision: revision, reporting: reporting, records: records,
+        run: run)
       if store(new, for: session) {
         notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
       }

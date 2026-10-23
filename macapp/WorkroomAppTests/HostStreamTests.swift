@@ -177,9 +177,20 @@ final class HostStreamTests: XCTestCase {
         "'WORKROOM_SESSION_CWD=/w' 'WORKROOM_SESSION_WORKROOM=4C0F5F2E-2B49-4C4D-9C1E-6A1B2B3C4D5E' "
           + "'WORKROOM_SESSION_TITLE=Terminal 2' '/b' 'attach'"), tagged)
     XCTAssertFalse(tagged.contains("WORKROOM_SESSION_PROJECT"), tagged)
-    for absent in ["WORKROOM_SESSION_SHELL", "AWAKE", "Contents/Resources"] {
+    for absent in ["WORKROOM_SESSION_SHELL", "AWAKE", "Contents/Resources", "WORKROOM_SESSION_RUN"]
+    {
       XCTAssertFalse(fresh.contains(absent), absent)
     }
+
+    // A run tab's attach (#522) makes a run session on the host, which its daemon runs under the
+    // run supervisor in the host's own login shell; the command goes as one quoted word.
+    let run = SSHTransport.remoteAttachCommand(
+      binary: "/b", session: session, socket: "/s", resources: "/r", workingDirectory: "/w",
+      restored: false, runCommand: "bin/dev 'web'")
+    XCTAssertTrue(
+      run.contains(
+        "'WORKROOM_SESSION_CWD=/w' 'WORKROOM_SESSION_RUN=1' "
+          + "'WORKROOM_SESSION_COMMAND=bin/dev '\\''web'\\''' '/b' 'attach'"), run)
 
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       UUID().uuidString)
