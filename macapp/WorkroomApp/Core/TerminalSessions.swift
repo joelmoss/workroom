@@ -2036,8 +2036,11 @@ final class TerminalSessions: ObservableObject {
       return
     }
     // Read once, for the agent and the tool alike: a second live PID read is a TOCTOU gap where the
-    // foreground process could differ between the two reads (review finding).
-    let foregroundExecutableName = s.view.foregroundExecutableName
+    // foreground process could differ between the two reads (review finding). Not read at all for
+    // a title the pane already shows: programs resend their title on every redraw, and the read
+    // takes the engine's render lock and a `proc_name` call each time. A program recognised only
+    // by its process name, under a title it did not change, is picked up at its next title.
+    let foregroundExecutableName = s.liveTitle == trimmed ? nil : s.view.foregroundExecutableName
     let detectedCodingAgent =
       CodingAgentProcessRecognition.backend(forProcessName: foregroundExecutableName)
       ?? CodingAgentTitleRecognition.backend(for: trimmed)
