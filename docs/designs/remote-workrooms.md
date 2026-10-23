@@ -1869,8 +1869,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       and OrbStack differ. Apple's has no restart policy, so the existing start-on-open
       (`startIfStopped`) stands in for Docker's restart.
     - **Configuration.** The Development Containers spec, which `DevContainerPorts` already reads
-      for `forwardPorts`: `image` or `build`, `features`, `mounts`, `containerEnv`, `remoteUser`,
-      `runArgs`, `workspaceFolder` and the lifecycle commands. A project without the file gets the
+      for `forwardPorts`: `image` or `build`, `features`, `mounts`, `containerEnv`, `remoteEnv`,
+      `remoteUser`, `runArgs`, `workspaceFolder` and the lifecycle commands. A project without the file gets the
       default image (below) and a per-Mac setting to choose another.
     - **What the image must have:** git (the clone and the daemon's VCS service run it) and a shell
       for panes. No sshd, distro or libc requirement: the daemon is a static musl binary.
@@ -1932,12 +1932,21 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     - **Trust** (D4): devcontainer.json runs only once this Mac approved its exact bytes, in the
       ADR 0054 store with the same Approve and Continue Without (which uses the default image). A
       Dockerfile or feature it pulls in is not covered, as ADR 0054 says for what a script calls.
-    - **Lifecycle commands** (D5, D6, D12): `initializeCommand` runs on the Mac before the build;
-      `onCreateCommand`, `updateContentCommand` and `postCreateCommand` run once after the clone and
-      "Copy local files", before `scripts/workroom_setup`, each a creation row, as the remote user
-      through `workroomd run-script`; `postStartCommand` runs on the first connect after each daemon
-      start (the daemon reports a start id), first at the end of the create; `postAttachCommand` is
-      not run.
+    - **Lifecycle commands** (D5, D6, D12; order amended by the owner, 2026-10-23):
+      `initializeCommand` runs on the Mac before the build. After the clone and "Copy local
+      files", the container's hooks run in the spec's order, `onCreateCommand`,
+      `updateContentCommand`, `postCreateCommand`, then `postStartCommand`, and only then
+      `scripts/workroom_setup`, so the setup script sees the container as VS Code would leave it,
+      with any services postStart starts (a database its migrations need) already running. Each is
+      a creation row, run as the remote user through `workroomd run-script`. After the create,
+      `postStartCommand` runs on the first connect after each new daemon start (the daemon reports
+      a start id), before panes attach. `postAttachCommand` is not run. A repository whose hooks and
+      setup script install the same things runs both; the docs say the setup script runs last.
+    - **Environment.** `containerEnv` is set on the container, so every process in it has it.
+      `remoteEnv` (with `${containerEnv:…}` and `${localEnv:…}` resolved at create) is added to
+      what panes, the lifecycle commands and `scripts/workroom_setup` run with, on top of the remote
+      user's login-shell environment, as the spec has it for tools and terminals. The
+      `WORKROOM_*` variables still go only to Workroom's own scripts.
     - **Users and folders.** The container runs as `remoteUser` (spec default: the image's user,
       else root); the socket folder and the path to `workspaceFolder` are made as root and owned by
       that user before the daemon serves or the clone runs. `workspaceMount` is ignored: each
