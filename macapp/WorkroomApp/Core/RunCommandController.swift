@@ -418,12 +418,12 @@ final class RunCommandController {
     return view
   }
 
-  /// Whether any run command still has a live process — gates the quit handler's graceful wait.
-  /// Also true for a live Investigate session (issue #146), even though it has no `RunState` and
-  /// no supervisor to gracefully stop — see `investigateTabs`.
   /// Whether a run command (not an Investigate tab) is going: what a quit may keep or stop (#522).
   var hasLiveRun: Bool { runStates.keys.contains { liveRunView(for: $0) != nil } }
 
+  /// Whether any run command still has a live process — gates the quit handler's graceful wait.
+  /// Also true for a live Investigate session (issue #146), even though it has no `RunState` and
+  /// no supervisor to gracefully stop — see `investigateTabs`.
   var hasLiveRunCommand: Bool {
     runStates.keys.contains { liveRunView(for: $0) != nil }
       || investigateTabs.contains { tabID, targetID in

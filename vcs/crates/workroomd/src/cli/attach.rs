@@ -257,6 +257,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // `Err`'s flag: nothing is listening yet, the one failure a supervisor starting the daemon heals
     // (see `unreachable`). A peer that answers and fails the handshake is not a daemon that will
     // work if asked again.
+    let run = crate::run::is_requested(&request.env);
     let open = || -> Result<std::os::unix::net::UnixStream, (&str, bool)> {
         let mut stream = match serve::connect(&socket) {
             Some(stream) => stream,
@@ -283,8 +284,16 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                 }
             }
         };
-        if handshake(&mut stream).is_err() {
+        let Ok(version) = handshake(&mut stream) else {
             return Err(("could not agree a protocol with the session daemon", false));
+        };
+        // An older daemon knows no run sessions and would run the command bare, with no supervisor
+        // to stop or restart it (D4).
+        if run && version < wr_protocol::envelope::MIN_RUN_VERSION {
+            return Err((
+                "the session daemon is older than this Workroom and can't run it",
+                false,
+            ));
         }
         Ok(stream)
     };

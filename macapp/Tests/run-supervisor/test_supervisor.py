@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Integration test for the run-command supervisor (supervisor.sh) — issue #7.
+"""Integration test for the run-command supervisor (run_supervisor.sh) — issues #7, #522.
 
-Runs the REAL supervisor.sh under a pseudo-tty (the same shape libghostty's surface gives it),
+Runs the REAL run_supervisor.sh under a pseudo-tty (the same shape a daemon session gives it),
 wrapping a fake rails-like server (fakeserver.py: binds a port, writes a pidfile, refuses to start
 if the pidfile holds a LIVE pid, ignores SIGHUP like Puma). Exercises the full lifecycle and the
 teardown/close paths, asserting NO orphaned server and NO "A server is already running" — the
 process-level behaviour the mocked Swift unit tests can't see.
 
-The app's control signals: USR1=restart, USR2=stop(keep pane), TERM=quit. "Closing the terminal"
-in the app FREES the surface, which hangs up the PTY -> SIGHUP to the foreground group; we simulate
-that by closing the master fd. Puma ignores SIGHUP, so only the supervisor catching SIGHUP and
+The control signals the daemon sends it: USR1=restart, USR2=stop(keep pane), TERM=quit. Killing
+its session hangs up the PTY -> SIGHUP to the foreground group; we simulate that by closing the
+master fd. Puma ignores SIGHUP, so only the supervisor catching SIGHUP and
 stopping the child keeps it from orphaning.
 
 Run: python3 test_supervisor.py   (exit 0 = all pass)
@@ -24,10 +24,9 @@ import socket
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# supervisor.sh ships in the app bundle, so it lives under Resources/; the test files are kept OUT
-# of that folder (which project.yml copies wholesale into the .app) — hence the ../../Resources hop.
+# The supervisor is embedded in workroomd (`workroomd run-supervisor`), which runs this script.
 SUPERVISOR = os.path.normpath(
-    os.path.join(HERE, "..", "..", "Resources", "run-supervisor", "supervisor.sh"))
+    os.path.join(HERE, "..", "..", "..", "vcs", "crates", "workroomd", "src", "run_supervisor.sh"))
 FAKESERVER = os.path.join(HERE, "fakeserver.py")
 PORT = 3111
 
@@ -72,15 +71,15 @@ def wait_until(fn, secs=6.0):
 
 
 class Sup:
-    """One supervisor instance over its own pty, sharing the given ctl/status/pidfile paths."""
+    """One supervisor instance over its own pty, sharing the given status/pidfile paths."""
 
-    def __init__(self, ctl, status, pidfile, drain="0.3"):
+    def __init__(self, status, pidfile, drain="0.3"):
         env = dict(os.environ, FAKE_PIDFILE=pidfile, FAKE_PORT=str(PORT), FAKE_DRAIN=drain)
-        self.ctl, self.status, self.pidfile = ctl, status, pidfile
+        self.status, self.pidfile = status, pidfile
         pid, fd = pty.fork()
         if pid == 0:
             os.environ.update(env)
-            os.execv("/bin/sh", ["/bin/sh", SUPERVISOR, ctl, status, "python3", "-u", FAKESERVER])
+            os.execv("/bin/sh", ["/bin/sh", SUPERVISOR, status, "python3", "-u", FAKESERVER])
             os._exit(127)
         self.pid, self.fd = pid, fd
         os.set_blocking(fd, False)
@@ -109,17 +108,6 @@ class Sup:
                 return True
         return needle in self.buf
 
-    def control_pid(self):
-        for _ in range(100):
-            try:
-                v = open(self.ctl).read().strip()
-                if v:
-                    return int(v)
-            except (FileNotFoundError, ValueError):
-                pass
-            time.sleep(0.05)
-        return None
-
     def server_pid(self):
         try:
             return int(open(self.pidfile).read().strip())
@@ -127,9 +115,8 @@ class Sup:
             return None
 
     def signal(self, sig):
-        cp = self.control_pid()
-        if cp:
-            os.kill(cp, sig)
+        # The supervisor is the pty's child, as in a run session, which the daemon signals.
+        os.kill(self.pid, sig)
 
     def hangup(self):
         """Simulate the app freeing the surface: close the pty master -> PTY hangup -> SIGHUP."""
@@ -169,7 +156,7 @@ class Sup:
 
 def fresh_paths():
     d = tempfile.mkdtemp(prefix="suptest-")
-    return os.path.join(d, "ctl"), os.path.join(d, "status"), os.path.join(d, "server.pid")
+    return os.path.join(d, "status"), os.path.join(d, "server.pid")
 
 
 def free_port():
@@ -178,10 +165,10 @@ def free_port():
 
 
 print("=== supervisor integration test (port %d) ===" % PORT)
-ctl, status, pidf = fresh_paths()
+status, pidf = fresh_paths()
 
 print("Test 1: run -> server up")
-s = Sup(ctl, status, pidf)
+s = Sup(status, pidf)
 check(s.saw("FAKE up", 6), "server started")
 check(wait_until(port_open), "port is listening")
 sp1 = s.server_pid()
@@ -213,8 +200,8 @@ s.reap()
 
 print("Test 5: stop -> close(SIGHUP) -> re-run (new supervisor) -> no 'already running'")
 check(free_port(), "precondition: port free")
-ctl, status, pidf = fresh_paths()
-a = Sup(ctl, status, pidf)
+status, pidf = fresh_paths()
+a = Sup(status, pidf)
 check(a.saw("FAKE up", 6), "server A up")
 spa = a.server_pid()
 a.signal(signal.SIGUSR2)  # stop
@@ -223,7 +210,7 @@ a.hangup()  # close the terminal (surface freed) while parked
 time.sleep(0.5)
 check(not pid_alive(spa), "server A not resurrected/orphaned by close")
 # the app would respawn a NEW surface for the next run:
-b = Sup(ctl, status, pidf)
+b = Sup(status, pidf)
 check(b.saw("FAKE up", 6), "server B started on re-run")
 check("already running" not in b.buf, "NO 'A server is already running' on re-run after close")
 check(wait_until(port_open), "port listening (server B)")
@@ -232,8 +219,8 @@ b.reap()
 
 print("Test 6: CLOSE while RUNNING via SIGTERM (graceful app teardown) -> server dies")
 check(free_port(), "precondition: port free")
-ctl, status, pidf = fresh_paths()
-c = Sup(ctl, status, pidf)
+status, pidf = fresh_paths()
+c = Sup(status, pidf)
 check(c.saw("FAKE up", 6), "server C up")
 spc = c.server_pid()
 c.signal(signal.SIGTERM)  # quit

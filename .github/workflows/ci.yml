@@ -639,7 +639,7 @@ jobs:
           path: macapp/DerivedData/Logs/Test/*.xcresult
           retention-days: 7
 
-      # The supervisor PTY integration test (issue #7) drives the real supervisor.sh under a pty with
+      # The supervisor PTY integration test (issue #7) drives workroomd's run_supervisor.sh under a pty with
       # a fake server — the only gate on the no-orphan / no-"already running" behaviour the Swift unit
       # tests (mocked seam) can't see. python3 is preinstalled on the macOS runner.
       - name: Test (run-command supervisor)
