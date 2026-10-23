@@ -478,8 +478,13 @@ final class CreationFlowTests: XCTestCase {
     store.clearError()
     skip.run()
 
+    // On the outcome, not the listing: the workroom is listed by the reload before the run is
+    // marked done, so asserting the outcome once it is listed raced (2 of 3 runs failed).
     await waitUntil(
-      { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
+      {
+        store.projects.first?.workrooms.contains { $0.name == "wr" } == true
+          && store.creationRuns.values.first?.outcome == .succeeded
+      },
       "the create didn't run again without the script")
     XCTAssertEqual(fake.approved, [], "skipping approved the script")
     let retry = try XCTUnwrap(store.creationRuns.values.first)
