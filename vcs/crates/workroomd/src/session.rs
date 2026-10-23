@@ -431,6 +431,9 @@ pub struct SessionStore {
     /// Where run sessions keep their status files (`crate::run`), when this store serves a
     /// socket (`keep_runs`). A store without one refuses run sessions.
     runs: Arc<OnceLock<PathBuf>>,
+    /// How many run sessions have been created here, signalled on each: what the runs watcher
+    /// (`crate::run`) sleeps on while there is no run session to publish.
+    runs_created: Arc<(Mutex<u64>, Condvar)>,
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
@@ -604,6 +607,25 @@ impl SessionStore {
         self.runs.get().map(PathBuf::as_path)
     }
 
+    /// How many run sessions have been created here so far. Read before looking for live ones, so
+    /// `wait_for_run_created` cannot miss one created in between.
+    pub(crate) fn runs_created(&self) -> u64 {
+        *self
+            .runs_created
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Blocks until a run session is created after `runs_created` returned `seen`.
+    pub(crate) fn wait_for_run_created(&self, seen: u64) {
+        let (count, created) = &*self.runs_created;
+        let mut count = count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count == seen {
+            count = created.wait(count).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
     /// The live run sessions.
     pub fn run_session_ids(&self) -> Vec<SessionId> {
         self.sessions
@@ -713,6 +735,7 @@ impl SessionStore {
             .is_some_and(|screens| screens.remove_unsynced(spec.id));
         let mut metadata = spec.metadata.to_vec();
         metadata.push((CREATED_KEY.to_string(), wall_now().as_millis().to_string()));
+        let is_run = crate::run::is_run(&metadata);
         let session = Session {
             id: spec.id,
             pty: Arc::new(pty),
@@ -733,6 +756,11 @@ impl SessionStore {
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
+        if is_run {
+            let (count, created) = &*self.runs_created;
+            *count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            created.notify_all();
+        }
         crate::note!(
             "session {} started: shell pid {}",
             spec.id.to_hyphenated(),
@@ -2429,6 +2457,44 @@ mod tests {
 
         let (_client, _) = attach_capture(&store, id(1));
         assert!(store.list()[0].attached);
+        store.kill_all();
+    }
+
+    /// The runs watcher sleeps on `wait_for_run_created` while the map holds no run session; a run
+    /// session's creation wakes it, a shell's does not.
+    #[test]
+    fn a_run_session_wakes_the_runs_watcher_and_a_shell_does_not() {
+        let store = SessionStore::new();
+        let seen = store.runs_created();
+        let args = [OsString::from("-c"), OsString::from("sleep 2")];
+        let e = env();
+        store.create(spec(id(93), &args, &e)).expect("a shell");
+        assert_eq!(store.runs_created(), seen, "a shell is not a run");
+
+        let (done, woke) = std::sync::mpsc::channel();
+        let waiting = store.clone();
+        std::thread::spawn(move || {
+            waiting.wait_for_run_created(seen);
+            let _ = done.send(());
+        });
+        assert!(
+            woke.recv_timeout(Duration::from_millis(200)).is_err(),
+            "nothing to wake for yet"
+        );
+        let run = [(
+            crate::run::KIND_KEY.to_string(),
+            crate::run::RUN_KIND.to_string(),
+        )];
+        store
+            .create(SessionSpec {
+                metadata: &run,
+                ..spec(id(94), &args, &e)
+            })
+            .expect("a run");
+        assert!(
+            woke.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "woken by the run session"
+        );
         store.kill_all();
     }
 
