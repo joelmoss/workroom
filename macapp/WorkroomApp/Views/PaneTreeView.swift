@@ -92,7 +92,6 @@ struct PaneTreeView: View {
           if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
             PaneLeafView(
               tabID: tabID, content: tab.content, target: target, sessions: sessions,
-              title: tab.title,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
               surfaceActive: surfaceActive, dimUnfocusedPanes: dimUnfocusedPanes,
               workroomIsSplit: workroomIsSplit,
@@ -714,7 +713,6 @@ struct PaneLeafView: View {
   @EnvironmentObject var store: AppStore
   /// The inline terminal agent (issue #49); its per-tab state drives the auto-diagnose opt-in dialog.
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
-  let title: String
   let focused: Bool
   let multiPane: Bool
   /// Whether this pane's workroom may hold keyboard focus — `false` for a co-displayed, non-focused
@@ -876,7 +874,10 @@ struct PaneLeafView: View {
     // render (issue #3), and a clear VoiceOver target. The focused pane carries the selected trait.
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("terminal.pane")
-    .accessibilityLabel(Text(accessibilityLabel))
+    // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
+    // and this body must not re-run for each one.
+    .withTabTitle(content) { pane, title in pane.accessibilityLabel(Text(accessibilityLabel(title)))
+    }
     // `multiPane || AppEnvironment.current.isFixture`: with one pane there's normally no need to mark it
     // selected, but that left single-pane keyboard focus with NO queryable signal, so a UI test
     // asserting "the terminal has focus" could only ever be vacuous — and focus races here are a
@@ -985,7 +986,7 @@ struct PaneLeafView: View {
 
   /// "Terminal <title>" (or just the content tab's title), plus "pane N of M" in a split — so
   /// VoiceOver announces both what the pane is and where it sits in the group.
-  private var accessibilityLabel: String {
+  private func accessibilityLabel(_ title: String) -> String {
     let base = isTerminal ? "Terminal \(title)" : title
     return multiPane ? "\(base), pane \(paneIndex) of \(paneCount)" : base
   }
@@ -999,35 +1000,38 @@ struct PaneLeafView: View {
   /// `sessions` and holds the store, and doing it once per pane keeps that churn out of the bar.
   private var titleBar: some View {
     let tab = sessions.tab(tabID, for: target)
-    return PaneTitleBar(
-      title: PaneTitlePresentation.title(for: content, tabTitle: title),
-      glyph: content.glyph,
-      controls: PaneToolbarPresentation.controls(for: content),
-      diffMode: tab?.diffViewModeOverride ?? defaultDiffViewMode,
-      markdownPreview: tab?.markdownPreviewOverride ?? true,
-      openFileEnabled: !isDeletedDiff,
-      focused: focused,
-      multiPane: multiPane,
-      help: helpText,
-      coordinateSpace: coordinateSpace,
-      onSetDiffMode: { sessions.setDiffViewMode($0, forTab: tabID, in: target) },
-      onSetMarkdownPreview: { sessions.setMarkdownPreview($0, forTab: tabID, in: target) },
-      // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
-      onOpenFile: {
-        if let path = content.filePath { store.openFilePreview(path: path, for: target) }
-      },
-      onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
-      onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
-      onClose: { store.requestCloseTerminalTab(tabID, for: target) },
-      onActivate: onActivate,
-      onPopOut: {
-        // Same screen placement a drag-out would produce, minus the drag: put the window under the
-        // pointer rather than somewhere arbitrary.
-        sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
-      },
-      onDragChanged: onDragChanged,
-      onDragEnded: onDragEnded
-    )
+    // The bar is the one thing here that shows the title, so it alone re-renders when it changes.
+    return TabTitleReader(content: content) { title in
+      PaneTitleBar(
+        title: PaneTitlePresentation.title(for: content, tabTitle: title),
+        glyph: content.glyph,
+        controls: PaneToolbarPresentation.controls(for: content),
+        diffMode: tab?.diffViewModeOverride ?? defaultDiffViewMode,
+        markdownPreview: tab?.markdownPreviewOverride ?? true,
+        openFileEnabled: !isDeletedDiff,
+        focused: focused,
+        multiPane: multiPane,
+        help: helpText(title),
+        coordinateSpace: coordinateSpace,
+        onSetDiffMode: { sessions.setDiffViewMode($0, forTab: tabID, in: target) },
+        onSetMarkdownPreview: { sessions.setMarkdownPreview($0, forTab: tabID, in: target) },
+        // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
+        onOpenFile: {
+          if let path = content.filePath { store.openFilePreview(path: path, for: target) }
+        },
+        onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
+        onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
+        onClose: { store.requestCloseTerminalTab(tabID, for: target) },
+        onActivate: onActivate,
+        onPopOut: {
+          // Same screen placement a drag-out would produce, minus the drag: put the window under
+          // the pointer rather than somewhere arbitrary.
+          sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
+        },
+        onDragChanged: onDragChanged,
+        onDragEnded: onDragEnded
+      )
+    }
   }
 
   /// A diff whose source file was deleted has no working copy to open (review D4).
@@ -1038,7 +1042,7 @@ struct PaneLeafView: View {
 
   /// The bar's tooltip: the full title, plus the file's absolute path where there is one — so a name
   /// the pane was too narrow to show is still readable on hover.
-  private var helpText: String {
+  private func helpText(_ title: String) -> String {
     guard let path = content.filePath else { return title }
     return "\(title)\n\((target.path as NSString).appendingPathComponent(path))"
   }

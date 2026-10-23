@@ -611,11 +611,15 @@ struct ProjectSidebar: View {
         .font(.system(size: 10))
         .foregroundStyle(.secondary)
         .frame(width: caretWidth, alignment: .center)
-      Text(tab.title)
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
-        .truncationMode(.middle)
+      // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
+      // and the sidebar's body must not re-run for each one.
+      TabTitleReader(content: tab.content) { title in
+        Text(title)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
       Spacer(minLength: 0)
 
       UnreadDot(count: notifications.count(tab: tab.id))
@@ -627,8 +631,10 @@ struct ProjectSidebar: View {
         if tab.isRunning || tab.indicator == .error, hoveredTerminal != tab.id {
           RunningSpinner(failed: tab.isProgressFailed || tab.indicator == .error)
         }
-        CloseTerminalRowButton(title: tab.title, visible: hoveredTerminal == tab.id) {
-          store.requestCloseTerminalTab(tab.id, for: target)
+        TabTitleReader(content: tab.content) { title in
+          CloseTerminalRowButton(title: title, visible: hoveredTerminal == tab.id) {
+            store.requestCloseTerminalTab(tab.id, for: target)
+          }
         }
       }
       // A waiting or finished program (#358) takes the spinner's place and stays on hover, with the
@@ -646,15 +652,18 @@ struct ProjectSidebar: View {
     .padding(.leading, 8)
     .contentShape(Rectangle())
     .onTapGesture { store.revealTerminal(tab.id, at: parent) }
-    .help(terminalTooltip(tab, target: target))
     .accessibilityAddTraits(.isButton)
-    .accessibilityLabel(
-      ([tab.title]
-        + ProgramStatusPresentation.accessibilityParts(
-          indicator: tab.indicator, rollup: tab.programStatus)).joined(separator: ", ")
-    )
     .accessibilityAction { store.revealTerminal(tab.id, at: parent) }
-    .accessibilityIdentifier("sidebar.terminal.\(tab.title)")
+    .withTabTitle(tab.content) { row, title in
+      row
+        .help(terminalTooltip(tab, target: target, title: title))
+        .accessibilityLabel(
+          ([title]
+            + ProgramStatusPresentation.accessibilityParts(
+              indicator: tab.indicator, rollup: tab.programStatus)).joined(separator: ", ")
+        )
+        .accessibilityIdentifier("sidebar.terminal.\(title)")
+    }
     .onHover { inside in
       if inside {
         hoveredTerminal = tab.id
@@ -679,6 +688,7 @@ struct ProjectSidebar: View {
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)
       } label: {
+        // Built when the menu opens, so this read is not in the row's body.
         Label("Close \(tab.title)", systemImage: "xmark")
       }
     }
@@ -728,10 +738,12 @@ struct ProjectSidebar: View {
   }
 
   /// A terminal row's tooltip: its title, then what its program reports or why nothing does.
-  private func terminalTooltip(_ tab: TerminalTab, target: TerminalTarget) -> String {
+  private func terminalTooltip(_ tab: TerminalTab, target: TerminalTarget, title: String)
+    -> String
+  {
     let lines = ProgramStatusPresentation.tooltipLines(
       for: tab, of: target, hosts: programStatus.hosts)
-    return ([tab.title] + lines).joined(separator: "\n")
+    return ([title] + lines).joined(separator: "\n")
   }
 
   /// Row highlight drawn at the row-background level so hover and selection share the
