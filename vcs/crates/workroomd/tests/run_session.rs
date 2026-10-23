@@ -528,6 +528,21 @@ fn nothing_the_run_started_outlives_it() {
     });
 }
 
+/// The same for a server that never stops logging: on Linux its output keeps the pty readable, so
+/// its supervisor's end must be noticed whatever is still to read.
+#[test]
+fn a_chatty_leftover_does_not_outlive_its_run() {
+    // It starts talking a second in, once its pid has been read off a quiet pane.
+    let command = "set -m; (trap '' INT HUP; sleep 1; while :; do echo tick; sleep 0.02; done) & \
+                   echo leaf=$!; wait";
+    leaves_nothing_behind("run-sweep-chatty", command, |socket| {
+        assert_eq!(
+            signal(socket, SESSION, RunSignal::Quit).kind,
+            FrameKind::Acknowledged
+        );
+    });
+}
+
 /// The same when the session is killed, as closing a run tab finally does, and after the launcher
 /// itself has exited: its server is then no process's descendant, only a member of the session.
 #[test]
