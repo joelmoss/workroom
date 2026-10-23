@@ -20,7 +20,7 @@ Settings that belong to one project, such as its run command, are in [Project Se
 
 | Setting | What it does |
 | --- | --- |
-| **When quitting with dev servers running** | What quitting does to run commands that are still going. **Ask** (the default) asks the first time and keeps your answer. **Keep running** leaves them going, and their tabs reattach when you reopen Workroom. **Stop** stops each one as Stop does. An update always keeps them running. |
+| **When quitting with dev servers running** | What quitting does to run commands that are still going. **Ask** (the default) asks the first time and keeps your answer. **Keep running** leaves them going, and their tabs reattach when you reopen Workroom. **Stop** stops each one as Stop does, and its tab does not come back. An update always keeps them running. |
 
 The question appears whether or not **Confirm before quitting** is on. See [Quitting with a run going](terminals-and-tabs.md#quitting-with-a-run-going).
 

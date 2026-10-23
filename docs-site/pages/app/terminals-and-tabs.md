@@ -102,7 +102,9 @@ The command runs in its own terminal tab, in your login shell, at the workroom's
 
 A run command is held by the background helper, as a terminal is, so it can keep running after you quit. The first time you quit with a run going, Workroom asks whether to keep your dev servers running or stop them, and remembers your answer. Change it in **Settings ▸ General ▸ When quitting with dev servers running**: **Ask**, **Keep running** or **Stop**. An update always keeps them running, whatever you chose.
 
-When you open Workroom again, each run's tab comes back where you left it:
+With **Stop**, the tab of each run that quitting stops is closed and does not come back.
+
+When you open Workroom again, every other run's tab comes back where you left it:
 
 - A run that is still going reattaches, with no toast.
 - A run you stopped comes back stopped, with its output. Press Run to start it again.

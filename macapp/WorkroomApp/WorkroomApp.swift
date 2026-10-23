@@ -629,18 +629,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // `applicationShouldTerminate` never runs for a signal, so the session flush has to happen
         // here too or none of those exits save anything (issue #46). Remote workrooms' layouts go
         // to their hosts first, for at most a second (#255, D14).
+        // Nobody can be asked about a signal, so the quit setting decides, and keeps runs going
+        // while it is still Ask (#522, Q12). Runs it stops are left out of what is saved.
+        let action = QuitWithRunningServers.action(
+          setting: Defaults[.quitWithRunningServers],
+          hasLiveRuns: WindowRegistry.shared.hasAnyLiveRun,
+          isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: false)
+        AppStore.quitStopsRuns = action == .stop
         let group = DispatchGroup()
         group.enter()
         Task {
           await AppStore.flushHostLayouts(budget: 1)
           SessionCoordinator.shared.flushAndFreeze()
-          // Only once frozen: stopping a run command removes its tab, and the document is built
-          // from the live windows. Nobody can be asked about a signal, so the quit setting decides,
-          // and keeps runs going while it is still Ask (#522, Q12).
-          let action = QuitWithRunningServers.action(
-            setting: Defaults[.quitWithRunningServers],
-            hasLiveRuns: WindowRegistry.shared.hasAnyLiveRun,
-            isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: false)
+          // Only once frozen: the document is built from the live windows, which stopping changes.
           if action == .stop {
             group.enter()
             WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
@@ -817,13 +818,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     //
     // Remote workrooms' layouts go to their hosts first, for at most a second (#255, D14), so the
     // session written next marks only what did not get there as stale.
+    // Runs this quit stops don't come back, so their tabs are left out of what is saved (#522).
+    AppStore.quitStopsRuns = stoppingRuns
     let group = DispatchGroup()
     group.enter()
     Task {
       await AppStore.flushHostLayouts(budget: 1)
       SessionCoordinator.shared.flushAndFreeze()
-      // Only once frozen: stopping a run command removes its tab, and the document is built from
-      // the live windows.
+      // Only once frozen: the document is built from the live windows, which stopping changes.
       if stoppingRuns {
         group.enter()
         // Stop every window's run commands, not just the focused one's.
