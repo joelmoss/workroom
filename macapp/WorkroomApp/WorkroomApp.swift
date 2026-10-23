@@ -73,6 +73,7 @@ struct WorkroomApp: App {
     // seeds `activeInspectorSection` from `Defaults`. Inert in production — a real user never passes
     // the flag. See `UITestFixture.applyFixtureDefaults`.
     UITestFixture.applyFixtureDefaults()
+    UITestFixture.endLiveDaemonWhenTheAppExits()
   }
 
   var body: some Scene {

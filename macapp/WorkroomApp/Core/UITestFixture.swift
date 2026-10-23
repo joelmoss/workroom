@@ -70,6 +70,28 @@ enum UITestFixture {
     return directory
   }
 
+  /// Once the app is gone, end its scratch daemon (`liveDaemonDirectory`), every process still
+  /// naming that directory (a run session's supervisor), and the directory. Nothing else can:
+  /// `XCUIApplication.terminate()` skips the app's quit path, the runner cannot spawn a process,
+  /// and a parked run session keeps the daemon from idling out (#533). Only a `/tmp` directory, so
+  /// a stray flag can never `rm -rf` anything else.
+  static func endLiveDaemonWhenTheAppExits() {
+    guard let directory = liveDaemonDirectory, directory.hasPrefix("/tmp/wr-") else { return }
+    let watcher = Process()
+    watcher.executableURL = URL(fileURLWithPath: "/bin/sh")
+    // The directory comes in by environment, so `pkill -f` never matches this script's own argv.
+    watcher.arguments = [
+      "-c",
+      "while kill -0 $PPID 2>/dev/null; do sleep 0.5; done; pkill -f \"$DIR\"; sleep 1; "
+        + "pkill -9 -f \"$DIR\"; rm -rf \"$DIR\"",
+    ]
+    watcher.environment = ["DIR": directory]
+    watcher.standardInput = FileHandle.nullDevice
+    watcher.standardOutput = FileHandle.nullDevice
+    watcher.standardError = FileHandle.nullDevice
+    try? watcher.run()
+  }
+
   /// The raw fixture launch flag (`-WorkroomUITestFixture 1`), one of the three signals
   /// `AppEnvironment.current` reads; everything else asks `AppEnvironment.current.isFixture`. Always
   /// `false` in a release build.

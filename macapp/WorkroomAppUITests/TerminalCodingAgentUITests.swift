@@ -22,6 +22,7 @@ final class TerminalCodingAgentUITests: XCTestCase {
     app.launchArguments += ["-WorkroomUITestCodingAgentStub", "1"]
     app.launchArguments += ["-WorkroomUITestRunCommand", runCommand]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.useScratchDaemon()
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
     return app

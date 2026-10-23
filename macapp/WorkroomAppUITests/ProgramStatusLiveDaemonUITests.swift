@@ -9,12 +9,8 @@ import XCTest
 ///
 /// Banners in Notification Center are not assertable here (another process, behind a permission
 /// prompt); the in-app alert stands in for them.
-///
-/// The runner cannot spawn a process, and `terminate()` does not run the app's quit path, so the
-/// test ends its own shells before quitting: with no session left, the scratch daemon idles out.
 final class ProgramStatusLiveDaemonUITests: XCTestCase {
   private var app: XCUIApplication!
-  private let scratch = "/tmp/wr-ps-\(UUID().uuidString.prefix(8))"
   private let mock = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     .appendingPathComponent("testdata/program-status/mock-claude-code.sh").path
@@ -26,25 +22,13 @@ final class ProgramStatusLiveDaemonUITests: XCTestCase {
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-WorkroomUITestNoRunCommand", "1"]
     app.launchArguments += ["-WorkroomUITestTerminalTabs", "2"]
-    app.launchArguments += ["-WorkroomUITestLiveDaemon", scratch]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.useScratchDaemon()
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
   }
 
   override func tearDown() {
-    // End the scratch daemon from a shell it runs (the shell's parent), its sessions with it, a few
-    // seconds after the app has quit: exiting the shells is not enough (the app opens a fresh
-    // terminal when the last closes), and a live app would start the daemon again. The shell also
-    // removes the scratch directory, which the runner may not.
-    if chips.count > 0 {
-      chip(0).click()
-      app.typeKey("c", modifierFlags: .control)
-      app.typeText(
-        "p=$PPID; nohup sh -c \"sleep 3; kill $p; sleep 1; rm -rf '\(scratch)'\" >/dev/null 2>&1 &")
-      app.typeText("\r")
-      RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-    }
     app?.terminate()
     super.tearDown()
   }
