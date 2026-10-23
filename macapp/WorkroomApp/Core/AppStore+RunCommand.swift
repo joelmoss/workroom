@@ -434,8 +434,10 @@ extension AppStore {
   }
 
   /// The live run sessions `host`'s daemon holds for `workroom` (D7), or none when it can't say.
-  /// Connects first (waking a sleeping host), as no pane of the workroom may have yet.
+  /// Connects first, as no pane of the workroom may have yet: the user asked for the run, so its
+  /// host is activated (a stopped container is started) and woken (`docs/remote-host-states.md`).
   static func liveRunSessions(on host: HostID, workroom: String) async -> [UUID] {
+    RemoteHosts.shared.activate(host)
     try? await RemoteHosts.shared.ensureConnected(host, wake: true)
     guard
       let sessions = try? await HostConnectionManager.shared.sessions(on: host)

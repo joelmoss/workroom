@@ -1643,6 +1643,22 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.runTabID(for: t.id), tab, "nothing replaced the run")
   }
 
+  /// Closing a window stops its runs first, a run whose pane was never mounted too: closed with it
+  /// still going, it would keep running with no tab, unsaved, and the next Run would start a second
+  /// server on its port (#522).
+  func testAWindowHoldingAnUnmountedRunStopsItBeforeClosing() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    XCTAssertFalse(store.stopsRunsBeforeClosing, "nothing to stop")
+    store.startRunCommand(for: t)
+    let view = try! XCTUnwrap(runView(store, t))
+    view.awaitsMountOverrideForTesting = true
+    view.persistentSessionID = view.persistentSessionID ?? UUID()
+
+    XCTAssertTrue(store.stopsRunsBeforeClosing)
+  }
+
   /// A run restored in a remote workroom not opened since launch has no process in this app, but
   /// it is still going on its host: a quit that stops dev servers counts it, asks its daemon to
   /// stop it and leaves its tab out of the saved layout (#522).

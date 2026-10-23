@@ -1732,6 +1732,9 @@ final class AppStore: ObservableObject {
   var hasAnyRunTerminal: Bool { runCommand.hasAnyRunTerminal }
   var hasLiveRunCommand: Bool { runCommand.hasLiveRunCommand }
   var hasLiveRun: Bool { runCommand.hasLiveRun }
+  /// Whether closing this window, or a quit that stops runs, must stop something first: a live
+  /// run or Investigate process, or a run whose pane was never mounted (#522).
+  var stopsRunsBeforeClosing: Bool { hasLiveRunCommand || hasLiveRun }
   func dismissRunToast(for targetID: TerminalTarget.ID) {
     runCommand.dismissRunToast(for: targetID)
   }
