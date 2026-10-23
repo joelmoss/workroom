@@ -31,7 +31,7 @@ Comments and trailing commas are allowed in the file.
 - **`forwardPorts`**: each number is forwarded.
 - **`portsAttributes`**: for a single port, `label` is the name shown on its row, and `requireLocalPort` refuses the forward instead of moving it to another port when your Mac already uses that number.
 
-Only these fields are read. A `"host:port"` entry, port ranges and patterns, `appPort`, and the container definition itself (`image`, `build`, `features`) are ignored, because a container workroom runs Workroom's own image.
+For ports, only these fields are read. A `"host:port"` entry, port ranges and patterns, and `appPort` are ignored. The rest of the file decides the container itself: see [Your dev container](containers.md#your-dev-container).
 
 The forwards are made when you open the workroom, from the workroom's own copy of the file. At most 32 ports are forwarded from one file. When the file declares more, the Ports list says that only the first 32 are forwarded.
 

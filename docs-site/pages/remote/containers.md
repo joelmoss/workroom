@@ -1,12 +1,15 @@
 ---
 title: Docker and Apple containers
-description: Run a workroom in a Docker or Apple container on your Mac, with its ports forwarded to localhost.
+description: Run a workroom in a Docker or Apple container on your Mac, made from your repository's devcontainer.json, with its ports forwarded to localhost.
 nightly: true
 ---
 
 A container workroom runs in a container on your Mac instead of in a git worktree. Its terminals, files and coding agents live inside the container, so what you install or run there stays out of your Mac. For what remote workrooms are, see [Remote workrooms](overview.md).
 
 A container is a remote workroom in every way that matters: it has a fresh host of its own, a fresh clone of your repository, and the same panes and inspector. Unlike boxd and exe.dev, the host is on your Mac and no account is needed.
+
+> [!IMPORTANT]
+> Container workrooms made by an earlier Nightly, before containers were made from `devcontainer.json`, can't be opened by this one. Their status, Changes panel and terminals say the workroom was set up by an older Workroom Nightly. Delete each one and create it again. Deleting it destroys the container, with any work in it you haven't pushed.
 
 ## Requirements
 
@@ -32,13 +35,58 @@ A runtime that does not meet these is dimmed in the New Workroom menu, with the 
 
 1. Click the **+** on a project, or right-click the project and choose **New Workroom**.
 2. Under **Local containers**, choose **Docker** or **Apple Container**.
-3. Watch the checklist in the pane: **Check repository**, **Pull host image**, **Start container**, **Connect**, **Clone repository**, **Check out branch**. When it finishes, click **Done**.
+3. Watch the checklist in the pane. When it finishes, click **Done**.
 
-The first create downloads Workroom's host image, and the **Pull host image** row shows how far the download has got. Later creates reuse it, and that row says `Image already downloaded`. If the download fails, the message says whether the registry refused it or your network failed.
+The checklist runs **Check repository**, **Read devcontainer.json**, **Run initializeCommand**, **Pull image**, **Build image**, **Start container**, **Connect**, **Clone repository**, **Check out branch**, **Copy local files**, then each lifecycle command your `devcontainer.json` has, and **Run setup script**. A step your project doesn't need is skipped.
 
-The container runs Workroom's own image. A `devcontainer.json` in your repository does not change it: `image`, `build`, `features` and the rest of the container definition are ignored. Only its ports are read. See [Port forwarding](port-forwarding.md).
+The first create from an image downloads it, and the **Pull image** row shows how far the download has got. Later creates reuse it, and that row says `Image already downloaded`. If the download fails, the message says whether the registry refused it or your network failed.
 
 Apple's runtime gives each container a VM of its own, and its default is too small for a compiler or an agent. So Workroom gives each Apple container half of your Mac's cores and a quarter of its memory, between 2 GB and 8 GB. Docker's containers share Docker's own VM.
+
+## Your dev container
+
+Workroom makes the container from your repository's dev container file, `.devcontainer/devcontainer.json` or `.devcontainer.json`, the same file VS Code, Codespaces and DevPod read. It reads the file from the commit the new workroom starts from, on `origin`, so a change you haven't pushed isn't used. Comments and trailing commas are allowed.
+
+Workroom uses these keys:
+
+- **`image`**, or **`build`** with its `dockerfile`, `context`, `args` and `target`.
+- **`features`**, fetched from their registry and installed in the order the spec gives them.
+- **`containerEnv`**, **`remoteEnv`**, **`remoteUser`** and **`containerUser`**.
+- **`mounts`** and **`capAdd`**, and on Docker **`runArgs`**, **`privileged`** and **`securityOpt`**.
+- **`workspaceFolder`**: where the workroom's clone goes, `/workspaces/<repository>` if you don't set it.
+- **`forwardPorts`** and **`portsAttributes`**. See [Port forwarding](port-forwarding.md).
+- The lifecycle commands, below.
+
+A key Workroom can't honour doesn't stop the create: the **Read devcontainer.json** row warns, naming each one and why. That covers `workspaceMount` (each workroom clones into `workspaceFolder` instead), `appPort`, `hostRequirements`, `postAttachCommand`, `runArgs` and the other Docker settings on Apple's runtime, and any key Workroom doesn't know. A file that describes Docker Compose services can't be used: the create stops and offers **Continue With Default Image**.
+
+A Dockerfile on its own, with no `devcontainer.json` naming it, is ignored, as the spec has it.
+
+### Approve it first
+
+Your `devcontainer.json` decides what the container mounts from your Mac and what runs there, so Workroom uses it only after you have approved its exact contents on this Mac, as it does for [setup scripts](../guides/prepare-a-project.md#approve-your-scripts). The first create that would use a new file, or one that changed since you approved it, stops and shows it to you, with **Approve**, **Continue With Default Image…** and **Cancel Creation**. Continuing creates the workroom on the default image and approves nothing, so the next create asks again.
+
+An approval covers the file's own contents only. The Dockerfile it builds, and the features it installs, aren't covered.
+
+### Lifecycle commands
+
+They run as the container's user:
+
+- **`initializeCommand`** runs on your Mac, in your project, before the image is built.
+- After the clone and **Copy local files**: **`onCreateCommand`**, **`updateContentCommand`**, **`postCreateCommand`** and **`postStartCommand`**, in that order, each as a row of its own.
+- **Run setup script** comes last, so `scripts/workroom_setup` sees the container as VS Code would leave it, with anything `postStartCommand` started already running.
+- **`postStartCommand`** runs again each time the container starts, on the first connect after it. A terminal you open meanwhile says it is waiting for it, and attaches once it is done. Updating Workroom doesn't start the container again, so it doesn't rerun.
+
+`remoteEnv` reaches every lifecycle command, the setup script and your terminals.
+
+### Without a devcontainer.json
+
+A repository with no dev container file gets Workroom's default image, the devcontainers project's Ubuntu base, run as its `vscode` user, who has passwordless `sudo`. Nothing is added to it.
+
+To use another image instead, set **Default image** under **Container Workrooms** in **Settings ▸ General**. It applies to containers made after you change it. The image needs `git` and a shell. If it lacks either, the create fails and names the missing one.
+
+### When the file changes
+
+A change to `devcontainer.json`, or to the Dockerfile it builds, applies to workrooms you create after it. The **Details** pane shows what a container was made from under **Made From**, and a note when the repository's file has changed since, or has been added or removed. To pick up the change, create a new workroom.
 
 ## Working in a container
 
@@ -46,6 +94,7 @@ Apple's runtime gives each container a VM of its own, and its default is too sma
 - Git inside the container asks your Mac's `gh` for GitHub credentials, while Workroom is open. Anything running in the container can ask, so it has the same GitHub access that `gh` has on your Mac.
 - A server you run in the container listens inside it, where your browser cannot reach it. Workroom forwards ports to `localhost` for you. See [Port forwarding](port-forwarding.md).
 - Your setup and teardown scripts run in the container, with `WORKROOM_HOST` set to `docker` or `apple`. See [Remote workrooms](overview.md#setup-and-teardown-scripts).
+- The image's own entrypoint and command don't run: the container runs Workroom's daemon in their place.
 
 ## Starting and stopping
 

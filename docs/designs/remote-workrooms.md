@@ -1640,7 +1640,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   build with the hidden `remoteWorkroomsPreview` setting (`RemoteWorkrooms.isEnabled`); a stable
   build shows no remote UI, including the Settings section, whatever the setting says. The
   project's context menu gains **New Remote Workroom**.
-  - **The host.** `make remote-host-image` builds `workroom-host` from the ssh fixture's
+  - **The host.** *Retired by #308: a container is made from any image and reached through its
+    runtime's `exec`, so the image, its make targets, its smoke test and its CI jobs are gone; the
+    ssh fixture stays, fixture-only, for the boxd, exe.dev and ssh drivers' tests. See the
+    amendment under "Not done" below.* `make remote-host-image` built `workroom-host` from the ssh fixture's
     Dockerfile with `FIXTURE=0`: sshd, git and CA certificates, no agent and no fake GitHub. The
     fixture's GitHub, its `/etc/hosts` mapping, its seed repository and its baked-in agent are
     `FIXTURE=1` only, which run.sh passes. The app installs its own agent on first connect, and
@@ -1816,7 +1819,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     stopped until its workroom is selected again. Background status probes reach every reachable
     remote workroom, so they never start one; an opened connect that finds one under way goes
     after it rather than joining it.
-  - **The image.** Nightly (and Release, once #260 lifts the gate) builds the `FIXTURE=0` image
+  - **The image.** *Retired by #308 (T9): no `workroom-host` image is built, published or pinned,
+    and `host-image.yml`, `WorkroomHostImage` and `release.sh`'s check for the pin are gone. What
+    follows is how it was.* Nightly (and Release, once #260 lifts the gate) built the `FIXTURE=0` image
     once per architecture, runs `host-image-test.sh` against that exact image (`WR_HOST_IMAGE`),
     pushes it by digest and joins the two into one manifest on ghcr (`host-image.yml`). The
     manifest's digest is pinned into the app (`WorkroomHostImage`); the hidden `remoteHostImage`
@@ -1845,7 +1850,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Not done.** A development environment in the container (toolchains, agent CLIs) is #308;
     Docker on another machine is #307.
 
-    *Amended 2026-10-23: proposed, not built. Any image, reached over `docker exec` (#308).* The
+    *Amended 2026-10-23, built 2026-10-24: any image, reached over `docker exec` (#308; why:
+    [ADR 0059](../adr/0059-container-workrooms-run-any-image-through-exec.md)). Where the build
+    differs from what follows, "As built (#308)" at the end of this block says so.* The
     owner wants a container workroom's image and container fully customisable. `workroom-host`
     can't be: it is the far side the driver needs (sshd, the supervisor loop, host-key minting, the
     `workroom` user), so a stock image fails at connect, and a Dev build's stale local copy failed
@@ -1941,14 +1948,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       `scripts/workroom_setup`, so the setup script sees the container as VS Code would leave it,
       with any services postStart starts (a database its migrations need) already running. Each is
       a creation row, run as the remote user through `workroomd run-script`. After the create,
-      `postStartCommand` runs on the first connect after each new daemon start, before panes
-      attach. The start id is the daemon's program-status `boot` (#358), so the daemon needs no
-      change: a fresh start makes a new one and a hand-off keeps it, so an app update doesn't rerun
-      postStart. It reaches the app only in a program-status subscription's events and
-      `snapshotComplete`, and `ProgramStatusMonitor` drops it from `snapshotComplete` today, the
-      only message an empty host sends. So the app still owes (T8): read `boot` from the
-      container connection's subscription, and hold that connection's pane attaches until postStart
-      has run or been found not needed. `postAttachCommand` is not run. A repository whose hooks
+      `postStartCommand` runs on the first connect after each start of the container, before panes
+      attach, and an app update's hand-off doesn't rerun it. (The plan here keyed it on the
+      daemon's program-status `boot`; it was built on a marker file instead, with no
+      `ProgramStatusMonitor` change: see "As built (#308)".) `postAttachCommand` is not run. A repository whose hooks
       and setup script install the same things runs both; the docs say the setup script runs last.
     - **Environment.** `containerEnv` is set on the container, so every process in it has it.
       `remoteEnv` (with `${containerEnv:…}` and `${localEnv:…}` resolved at create) is added to
@@ -1983,6 +1986,56 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       idle, 26–29 MB after 68 MB of output had gone through each, so it doesn't grow with
       traffic. The pane's attach wrapper (`/bin/sh`, `ContainerExecTransport.attachWrapper`) adds
       2.3 MB on top.
+
+    As built (#308, 2026-10-24; one commit per task, T1 to T13, the eng review's list):
+    - **postStart, once per container start.** Not keyed on the program-status `boot`. A marker,
+      `/dev/shm/workroom-poststart`, records that postStartCommand has run: `/dev/shm` is a tmpfs
+      made afresh at each start on both runtimes (measured on Apple 1.5.0), and the daemon is the
+      container's entrypoint, so a new start of one is a new start of the other, while a hand-off
+      keeps the marker. The command stays in `/run/workroom/hooks/postStartCommand`, written at
+      create. The connect task runs it, detached, when the marker is missing
+      (`ContainerHostDriver.runPostStartIfNeeded`, from `RemoteHosts`' connect); a `mkdir` lock
+      keeps a second connect from running it twice. A pane's attach waits for the marker inside
+      the container, up to the 10 minutes a lifecycle command may take, and says so
+      (`ContainerHostDriver.postStartWait`). A failing postStart is marked done too, so it never
+      holds panes back.
+    - **One revision, every remote kind.** `workroom trust status --base … --json` emits `start`, the
+      commit of a remote-tracking start, and the app checks that commit out on the host for every
+      remote kind, not only containers.
+    - **Placing the daemon** (`DaemonPlacingDriver`, `HostDriver.swift`). The daemon lives at
+      `/.workroom/bin/workroomd`, root's, outside the socket folder, so the remote user can't
+      replace the entrypoint. Docker: the bootstrap stages a new build as
+      `/.workroom/bin/workroomd.new.<id>` by `docker cp`, `placed.sh` (a new bootstrap script, the
+      second half of `install.sh`) checks it runs and offers it to the running daemon by
+      `hand-off`, and the app then moves it over the old one as root, or removes it. Apple: the
+      Mac replaces the file in the folder its containers mount read-only; `placed.sh` retries its
+      check for 3 s, since a file renamed into that folder reads as missing in a running container
+      for about a second.
+    - **Default image.** `mcr.microsoft.com/devcontainers/base@sha256:91eff046…`, the tag `ubuntu`'s
+      multi-platform index digest, so Docker on an Intel Mac gets amd64. Settings ▸ General ▸
+      Container Workrooms has a field for this Mac's own (`Defaults[.containerDefaultImage]`,
+      new containers only). The user comes from the image's `devcontainer.metadata` label
+      (`vscode`).
+    - **remoteEnv** is baked into each hook script, passed to the setup script as `run-script
+      --env`, and merged over `containerEnv` into the container's own environment, which is how
+      panes get it: so, unlike the spec, every process in the container has it.
+    - **What the live suites found** (T10): the credential relay's file lives beside the socket
+      (`workroomd credential relay --socket`), not beside the root-owned binary; exec'd commands set
+      `HOME` from the container's `/etc/passwd`, since Apple's `exec -u` gives a non-root user
+      `HOME=/`; Apple's `delete --force` of a container a failed create never made counts as
+      removed; and the sweep no longer reports Docker's refusal to remove an image in use (a
+      devcontainer build's base).
+    - **A container made before #308** (its record has an ssh host key) is adopted only so it can
+      be destroyed: every reach of it throws `olderContainer`, and the connect keeps those words as
+      it does for a pre-#525 host, so its status, the Changes panel and its panes say to delete the
+      workroom and create it again, and the delete works. No migration (Nightly rule).
+    - **Open for the owner:** a feature's own metadata, fetched from a registry or a local
+      `./feature` in the repository, can add bind mounts of Mac folders and `privileged` without a
+      new approval, since approval covers only devcontainer.json's bytes (D4, as ADR 0054 has it
+      for what a script calls). It takes a feature tag moving, or a pulled change to a local
+      feature. The choices: accept it as documented; refuse bind mounts and `privileged` from
+      features (which breaks docker-in-docker and docker-outside-of-docker); or fold the resolved
+      features' metadata digests into the approved digest (`DevContainerSetup.spec`).
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits

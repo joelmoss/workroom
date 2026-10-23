@@ -16,6 +16,8 @@ Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top
 - **Machine Name** appears for a remote workroom that has one. Click its copy button to copy it.
 - **Path** is the workroom's folder. For a workroom on a host it reads **Path on its host**, and names the folder on that host. Click the copy button beside it to copy the path.
 
+- **Made From** appears for a container workroom: the `devcontainer.json` it was made from, or the image when it had none. A note under it says when the repository's file has changed since, or has been added or removed, since a change applies only to workrooms created after it. See [Your dev container](../remote/containers.md#when-the-file-changes).
+
 A remote workroom may also show a short note under these.
 
 ## Ports
