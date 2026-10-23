@@ -1905,9 +1905,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       and points `hand-off --binary` at it. The ssh drivers keep the scripts.
     - Pane status (#392). `lastAttach` and `hostRefusedLastAttach` read ssh's exit status; `docker
       exec` uses 125–127 for its own failures and needs its own mapping.
-    - Two daemon fixes the probe found. `serve` doesn't create its socket's folder (the entrypoint
-      does today), and the shell falls back to `/bin/zsh` when `SHELL` is unset; the driver must
-      set `SHELL`, or the daemon read the user's login shell from `/etc/passwd`.
+    - Two daemon fixes the probe found, both done: `serve` makes a missing socket folder (and any
+      missing above it) 0700 before its lock and log, leaving an existing folder's mode alone; and
+      with `SHELL` unset, the session shell, `run-script`'s probe and `run-supervisor` take the
+      effective user's login shell from the passwd database before their old fallbacks (measured
+      on Apple 1.5.0: debian and alpine as root, node:22 as `node`, no folder made beforehand).
     - Containers made from `workroom-host` keep its entrypoint, so they stay on the ssh path or
       are made again. Stable has never shipped container workrooms, so only Nightly and Dev hold
       any, and Nightly carries no compatibility code for its own state.
@@ -1939,8 +1941,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       `scripts/workroom_setup`, so the setup script sees the container as VS Code would leave it,
       with any services postStart starts (a database its migrations need) already running. Each is
       a creation row, run as the remote user through `workroomd run-script`. After the create,
-      `postStartCommand` runs on the first connect after each new daemon start (the daemon reports
-      a start id), before panes attach. `postAttachCommand` is not run. A repository whose hooks and
+      `postStartCommand` runs on the first connect after each new daemon start, before panes
+      attach. The start id is the program-status `boot` the app already receives (#358): a fresh
+      start makes a new one and a hand-off keeps it, so an app update doesn't rerun postStart. `postAttachCommand` is not run. A repository whose hooks and
       setup script install the same things runs both; the docs say the setup script runs last.
     - **Environment.** `containerEnv` is set on the container, so every process in it has it.
       `remoteEnv` (with `${containerEnv:…}` and `${localEnv:…}` resolved at create) is added to
