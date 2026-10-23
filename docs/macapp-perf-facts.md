@@ -46,7 +46,10 @@ comparison before these calls (`GhosttySurfaceView.updateMetalLayerSize`) saves 
 Ghostty raises `GHOSTTY_ACTION_SET_TITLE` for every OSC 0/2 it receives, with no dedupe
 (`Surface.zig`, `.set_title`). A coding agent's spinner changes the title on every frame
 ("✳ Working", then "✻ Working"; see the fixtures in `TerminalSessionsTests.swift`), so an
-"unchanged title" early-out in `TerminalSessions.updateTitle` never fires for an agent.
+"unchanged title" early-out in `TerminalSessions.updateTitle` never fires for an agent. The one
+guard there skips only the foreground-process read (`ghostty_surface_foreground_pid`, then `proc_name`) for a
+title equal to the one shown; the title is still stored on every event, in its own observable
+(`LiveTitle`), so a repaint re-renders only the views that show it and does not republish the tab map.
 
 The work per title event is small. Measured 2026-10-18 on an Apple-silicon Mac, 100,000 calls each:
 
