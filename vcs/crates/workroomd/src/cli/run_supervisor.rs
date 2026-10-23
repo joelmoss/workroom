@@ -53,7 +53,7 @@ pub fn run_run_supervisor(args: &[String]) -> ExitCode {
         eprintln!("error: run-supervisor needs --status <path> -- <command>");
         return ExitCode::FAILURE;
     };
-    let shell = std::env::var("SHELL").unwrap_or_default();
+    let shell = crate::shell::user_shell(std::env::var_os("SHELL"));
     let argv = invocation(&status, command, &shell);
     let error = std::process::Command::new(&argv[0])
         .arg0(&argv[0])

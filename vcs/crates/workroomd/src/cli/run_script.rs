@@ -63,7 +63,7 @@ pub fn run_run_script(args: &[String]) -> ExitCode {
     };
     let extra = env_flags(options);
     install_signal_handlers();
-    let shell = std::env::var("SHELL").unwrap_or_default();
+    let shell = crate::shell::user_shell(std::env::var_os("SHELL"));
     let env = match probe(&shell, PROBE_TIMEOUT) {
         Ok(probed) => merge(probed, &floor_path()),
         Err(reason) => {

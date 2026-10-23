@@ -45,6 +45,46 @@ pub fn shell_name(shell: &str) -> &str {
     }
 }
 
+/// The user's shell: `env_shell` (a `SHELL`) when it names one, else the login shell the passwd
+/// database gives this process's effective user, else empty, which each caller turns into its own
+/// fallback. A container's processes start from `docker exec`, which sets no `SHELL` (#308).
+pub fn user_shell(env_shell: Option<OsString>) -> String {
+    user_shell_with(env_shell, passwd_shell)
+}
+
+fn user_shell_with(env_shell: Option<OsString>, passwd: impl FnOnce() -> Option<String>) -> String {
+    match env_shell.filter(|shell| !shell.is_empty()) {
+        Some(shell) => shell.to_string_lossy().into_owned(),
+        None => passwd().unwrap_or_default(),
+    }
+}
+
+/// The login shell the passwd database names for this process's effective user. Static musl
+/// reads /etc/passwd itself, with no NSS, which is what a container has.
+fn passwd_shell() -> Option<String> {
+    // SAFETY: `passwd` is plain C data (integers and pointers), for which all-zero is valid.
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: every pointer is to a live local sized as passed; the strings `entry` points at live
+    // in `buffer`, which outlives their use below.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if rc != 0 || found.is_null() || entry.pw_shell.is_null() {
+        return None;
+    }
+    // SAFETY: getpwuid_r succeeded, so `pw_shell` is a NUL-terminated string inside `buffer`.
+    let shell = unsafe { std::ffi::CStr::from_ptr(entry.pw_shell) };
+    Some(shell.to_string_lossy().into_owned()).filter(|shell| !shell.is_empty())
+}
+
 /// Builds the invocation for a session.
 ///
 /// `command` non-empty means a run command rather than an interactive shell: it goes through
@@ -403,6 +443,31 @@ mod tests {
     fn a_run_command_does_not_get_posix_mode() {
         let result = invocation("make test", "/bin/bash", "/res", &[]);
         assert!(!result.arguments.contains(&OsString::from("--posix")));
+    }
+
+    /// A container's processes start from `docker exec`, which sets no `SHELL` (#308), so the
+    /// passwd database is where the user's shell is found.
+    #[test]
+    fn the_user_shell_is_shell_else_the_passwd_entry_else_nothing() {
+        let passwd = || Some("/bin/bash".to_string());
+        assert_eq!(
+            user_shell_with(Some(OsString::from("/usr/bin/fish")), passwd),
+            "/usr/bin/fish"
+        );
+        assert_eq!(user_shell_with(None, passwd), "/bin/bash");
+        assert_eq!(user_shell_with(Some(OsString::new()), passwd), "/bin/bash");
+        assert_eq!(user_shell_with(None, || None), "");
+        assert_eq!(user_shell_with(None, || Some(String::new())), "");
+    }
+
+    /// The real lookup, against the account running the tests: whatever it names is a file.
+    #[test]
+    fn the_passwd_lookup_names_this_users_shell() {
+        let shell = passwd_shell().expect("the test runner's account has a login shell");
+        assert!(
+            std::path::Path::new(&shell).exists(),
+            "{shell} is not a file"
+        );
     }
 
     #[test]
