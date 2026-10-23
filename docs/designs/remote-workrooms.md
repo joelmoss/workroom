@@ -1978,7 +1978,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       scripts and reattach after wake; a container made before this gets "made by an older build,
       create it again".
     - **Accepted cost:** each open pane keeps one runtime CLI process: `container exec` measured
-      26 MB RSS against 2.7 MB for a connecting `ssh` (Docker's CLI to be measured).
+      26 MB RSS against 2.7 MB for a connecting `ssh`. Docker's (CLI 29.9.2, Docker Desktop,
+      macOS 27 on arm64; measured 2026-10-24, three `docker exec -it` attaches at once): 29–30 MB
+      idle, 26–29 MB after 68 MB of output had gone through each, so it doesn't grow with
+      traffic. The pane's attach wrapper (`/bin/sh`, `ContainerExecTransport.attachWrapper`) adds
+      2.3 MB on top.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits
