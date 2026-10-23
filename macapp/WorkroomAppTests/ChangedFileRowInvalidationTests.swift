@@ -45,6 +45,9 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     // the runner's load: about 0.35 s warm, 0.8 s cold, later on CI. Left running, it emptied the panel
     // mid-measurement, so the selection test saw no rows rebuild, and a warm pulse burst measured no
     // rows at all. The tests measure rows, not the probe, so none runs.
+    XCTAssertNotNil(
+      store.selectionStatusTask,
+      "selecting no longer schedules the probe here, so this cancels nothing")
     store.selectionStatusTask?.cancel()
     // `lastChecked` is load-bearing, not decoration: `ChangesPanel.content(for:)` renders "Checking…"
     // (and therefore NO rows) while it is nil, which would make every assertion here vacuously true.
@@ -92,14 +95,15 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
 
-    // And still listed now: a status that empties the panel would turn the burst's "0 rebuilds" into
-    // "there were no rows".
-    XCTAssertNotNil(
-      store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.changedFiles,
-      "the fixture's changed files must still be listed when the pulse burst starts")
     ChangedFileRow.bodyPasses = 0
     for _ in 0..<25 { store.terminals.pulsePaneActivity(tab.id) }
     settle(view)
+
+    // Still listed after the burst: a status that emptied the panel before or during it would turn
+    // "0 rebuilds" into "there were no rows".
+    XCTAssertNotNil(
+      store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.changedFiles,
+      "the fixture's changed files must still be listed through the pulse burst")
 
     XCTAssertEqual(
       ChangedFileRow.bodyPasses, 0,
