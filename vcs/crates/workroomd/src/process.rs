@@ -170,6 +170,29 @@ pub fn descendants(roots: &[i32]) -> Vec<Descendant> {
         .collect()
 }
 
+/// Every process still in session `sid`, the one a pty's child led, recorded as `descendants`
+/// records them so a later signal cannot reach a reused pid.
+///
+/// The complement of `descendants` for a run session (#522): a launcher that forks its server into
+/// a process group of its own and then exits leaves the server re-parented, out of every walk from
+/// the session's child, but still in its session, which only `setsid` leaves. Empty for this
+/// process's own session, so a sweep can never reach the daemon.
+pub fn session_members(sid: i32) -> Vec<Descendant> {
+    // SAFETY: `getsid` takes no pointers; 0 is this process.
+    if sid <= 1 || sid == unsafe { libc::getsid(0) } {
+        return Vec::new();
+    }
+    platform::parent_links()
+        .into_iter()
+        // SAFETY: as above.
+        .filter(|link| link.pid > 1 && unsafe { libc::getsid(link.pid) } == sid)
+        .map(|link| Descendant {
+            pid: link.pid,
+            started: link.started,
+        })
+        .collect()
+}
+
 /// Picks the user-meaningful name out of a full argv. Shared by both platforms because the
 /// interpreter problem is identical on each: the kernel rewrites a shebang invocation so argv[0]
 /// is the runtime, and the script the user actually typed is argv[1].

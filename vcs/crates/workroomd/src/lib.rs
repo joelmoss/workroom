@@ -20,6 +20,7 @@ mod process;
 pub mod program_status;
 pub mod pty;
 mod rpc;
+pub mod run;
 pub mod screens;
 pub mod serve;
 pub mod session;

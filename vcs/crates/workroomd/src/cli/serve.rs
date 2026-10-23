@@ -128,6 +128,8 @@ pub fn run_serve(
     daemon
         .sessions
         .keep_refusals(crate::session::refusals_path(&socket));
+    daemon.sessions.keep_runs(crate::run::dir_beside(&socket));
+    crate::run::spawn_watcher(daemon.sessions.clone());
     handoff::install(handoff::Context {
         socket: socket.clone(),
         listener: listener.as_raw_fd(),

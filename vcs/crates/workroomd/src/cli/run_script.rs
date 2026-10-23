@@ -178,7 +178,7 @@ fn exit_status(status: ExitStatus) -> u8 {
 }
 
 /// The shell to probe with and its flag: `shell` when it is a POSIX shell, else `/bin/sh`.
-fn probe_invocation(shell: &str) -> (&str, &'static str) {
+pub(crate) fn probe_invocation(shell: &str) -> (&str, &'static str) {
     let name = shell.rsplit('/').next().unwrap_or_default();
     if !shell.is_empty() && POSIX_SHELLS.contains(&name) {
         (shell, "-lic")

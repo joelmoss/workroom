@@ -41,9 +41,38 @@ pub enum FrameKind {
     /// Replace this daemon's program with another binary, keeping every session (#230). Payload:
     /// `force:u8`, then the binary's absolute path. See `workroomd::handoff`.
     HandOff = 0x25,
+    /// Ask a run session's supervisor to restart, stop or quit its command (#522). Payload: the
+    /// 16-byte session id, then one `RunSignal` byte. `Acknowledged` once the signal is sent;
+    /// `Failure` "no session …" when the daemon holds no such session, which a client reads as the
+    /// run being gone, and another `Failure` for a session that is not a run or a byte that is not
+    /// a `RunSignal`.
+    Signal = 0x26,
 
     Sessions = 0x31,
     Acknowledged = 0x32,
+}
+
+/// What a `Signal` frame asks a run supervisor to do, by the signal it is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RunSignal {
+    /// `SIGUSR1`: stop the command and run it again in place.
+    Restart = 1,
+    /// `SIGUSR2`: stop the command and keep the pane.
+    Stop = 2,
+    /// `SIGTERM`: stop the command, then end the session.
+    Quit = 3,
+}
+
+impl RunSignal {
+    pub fn from_u8(raw: u8) -> Option<Self> {
+        Some(match raw {
+            1 => Self::Restart,
+            2 => Self::Stop,
+            3 => Self::Quit,
+            _ => return None,
+        })
+    }
 }
 
 impl FrameKind {
@@ -61,6 +90,7 @@ impl FrameKind {
             0x23 => Self::Kill,
             0x24 => Self::KillAll,
             0x25 => Self::HandOff,
+            0x26 => Self::Signal,
             0x31 => Self::Sessions,
             0x32 => Self::Acknowledged,
             _ => return None,
@@ -317,7 +347,7 @@ mod tests {
             }
             rows += 1;
         }
-        assert_eq!(rows, 16, "every row was read");
+        assert_eq!(rows, 17, "every row was read");
         // Every kind this codec defines has exactly one row, so a new kind cannot go uncovered.
         let defined: Vec<u8> = (0..=u8::MAX)
             .filter(|&b| FrameKind::from_u8(b).is_some())

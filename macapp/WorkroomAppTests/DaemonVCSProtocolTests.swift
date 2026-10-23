@@ -400,6 +400,7 @@ final class DaemonVCSProtocolTests: XCTestCase {
     XCTAssertEqual(reported("min-layout"), DaemonHandshake.minLayoutVersion, output)
     XCTAssertEqual(
       reported("min-program-status"), DaemonHandshake.minProgramStatusVersion, output)
+    XCTAssertEqual(reported("min-run"), DaemonHandshake.minRunVersion, output)
   }
 
   /// Every failure the daemon's `FileError` can produce keeps its meaning across the wire.
