@@ -1658,6 +1658,31 @@ final class RunCommandTests: XCTestCase {
     XCTAssertNil(TabSession(key: "i", tab: investigate))
   }
 
+  /// A quit that stops dev servers leaves their run tabs out of the saved layout, so they don't
+  /// come back saying the run ended while Workroom was closed (owner, 2026-10-23). A run that had
+  /// already stopped before the quit is not one the quit stops, and still comes back (Q5).
+  func testAQuitThatStopsRunsLeavesTheirTabsOutOfTheLayout() {
+    let store = makeStore([project("/a", workrooms: ["main", "two"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let live = target(store, "/a", "main")
+    let parked = target(store, "/a", "two")
+    store.startRunCommand(for: live)
+    store.startRunCommand(for: parked)
+    try! XCTUnwrap(runView(store, live)).liveProcessOverrideForTesting = true
+    try! XCTUnwrap(runView(store, parked)).liveProcessOverrideForTesting = true
+    store.applyRunStatus("exited 1 1", for: parked)
+    func savedRunTabs() -> [String] {
+      store.captureWindowSession().targets.filter { target in
+        target.tabs.contains { $0.terminal?.run == true }
+      }.map(\.targetID)
+    }
+    XCTAssertEqual(Set(savedRunTabs()), [live.id, parked.id], "both are saved while Workroom runs")
+
+    AppStore.quitStopsRuns = true
+    defer { AppStore.quitStopsRuns = false }
+    XCTAssertEqual(savedRunTabs(), [parked.id], "the run the quit stops is left out")
+  }
+
   /// A saved run tab comes back as the target's run, reattached and waiting for its state.
   func testARestoredRunTabIsTheTargetsRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])

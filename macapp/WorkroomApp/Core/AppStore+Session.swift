@@ -27,6 +27,10 @@ extension AppStore {
         ? nil : expandedTerminalTargets.sorted())
   }
 
+  /// Set by a quit that stops dev servers, before it saves: their run tabs are left out of the
+  /// layout, here and on hosts, so they don't come back (#522, owner).
+  static var quitStopsRuns = false
+
   private static let sessionLogger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "session")
 
@@ -51,11 +55,12 @@ extension AppStore {
         + "\(SessionLimits.maxTargetsPerWindow) of \(active.count)"
       Self.sessionLogger.notice("\(message, privacy: .public)")
     }
+    let stoppedAtQuit = Self.quitStopsRuns ? runCommand.liveRunTabs : []
     return active.prefix(SessionLimits.maxTargetsPerWindow).compactMap { targetID in
       if let saved = held[targetID] { return saved }
       guard let captured = terminals.sessionCapture(forTargetID: targetID) else { return nil }
 
-      // Tabs the bridge refuses (today: run tabs) drop out here, and the split leaf that pointed at
+      // Tabs the bridge refuses (Investigate tabs), and runs a quit is stopping, drop out here, and the split leaf that pointed at
       // one collapses with them — `LayoutNode.capture` applies the same rule `PaneLayout.removingLeaf`
       // does, so a split can never be left addressing a pane that was not written.
       var keysByTabID: [TerminalTab.ID: String] = [:]
@@ -63,7 +68,8 @@ extension AppStore {
       for tab in captured.tabs {
         guard tabs.count < SessionLimits.maxTabsPerTarget else { break }
         let key = tab.id.uuidString
-        guard var session = TabSession(key: key, tab: tab) else { continue }
+        guard !stoppedAtQuit.contains(tab.id), var session = TabSession(key: key, tab: tab)
+        else { continue }
         // A detached pane records its window's LIVE frame (issue #172) — asked of the controller
         // rather than cached, so a window the user moved is persisted where it actually is.
         if let frame = detachedPanes.frame(for: tab.id) {

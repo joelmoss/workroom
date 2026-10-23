@@ -421,6 +421,13 @@ final class RunCommandController {
   /// Whether a run command (not an Investigate tab) is going: what a quit may keep or stop (#522).
   var hasLiveRun: Bool { runStates.keys.contains { liveRunView(for: $0) != nil } }
 
+  /// The tabs of the runs a quit that stops dev servers stops (#522).
+  var liveRunTabs: Set<TerminalTab.ID> {
+    Set(
+      runStates.compactMap { targetID, state in liveRunView(for: targetID) != nil ? state.tab : nil
+      })
+  }
+
   /// Whether any run command still has a live process — gates the quit handler's graceful wait.
   /// Also true for a live Investigate session (issue #146), even though it has no `RunState` and
   /// no supervisor to gracefully stop — see `investigateTabs`.
