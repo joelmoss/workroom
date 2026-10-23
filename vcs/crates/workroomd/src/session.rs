@@ -993,6 +993,9 @@ impl SessionStore {
             return Err(SessionError::RepaintFailed(id.to_hyphenated()));
         }
         apply_size(&pty, &shadow, &attached, size, &self.screens_work);
+        // The repaint read the shadow, which re-inflates its compressed history: the screens
+        // thread compresses it again on its next pass, even when this client claimed no size.
+        self.screens_work.raise();
 
         let sessions = self.sessions.lock().expect("session store poisoned");
         let session = sessions
@@ -1454,11 +1457,16 @@ impl SessionStore {
                 // order, used to spend the whole budget and leave each session after it a single
                 // attempt, which lost its record whenever it met that session's reader mid-read.
                 let deadline = shared.max(Instant::now() + RECORD_GRACE);
-                let mut held = until(deadline, || match attached.try_lock() {
+                let Some(mut held) = until(deadline, || match attached.try_lock() {
                     Ok(guard) => Some(guard),
                     Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
                     Err(TryLockError::WouldBlock) => None,
-                })?;
+                }) else {
+                    // Left changed for the next pass, which the screens thread must come back for:
+                    // a session that has gone quiet raises nothing more.
+                    self.screens_work.raise();
+                    return None;
+                };
                 if !std::mem::take(&mut held.changed) {
                     return None;
                 }
@@ -2546,6 +2554,18 @@ mod tests {
             woke.recv_timeout(Duration::from_secs(5)).is_ok(),
             "woken by the run session"
         );
+
+        // A signal to a finished run is what makes its supervisor write a new status: the watcher
+        // asleep on the old one must hear of it, or a restarted run tab keeps showing "exited".
+        let before = store.runs_wake();
+        store
+            .signal_run(id(94), wr_protocol::frame::RunSignal::Stop)
+            .expect("signal the run");
+        assert_ne!(
+            store.runs_wake(),
+            before,
+            "a signal did not wake the watcher"
+        );
         store.kill_all();
     }
 
@@ -2579,6 +2599,67 @@ mod tests {
         assert!(
             woke.recv_timeout(Duration::from_secs(3)).is_ok(),
             "output did not wake the screens thread"
+        );
+
+        // A session ending on its own is a change too (a `kill` drops its record itself): the
+        // record goes on the next pass, which the thread asleep must be woken for.
+        let brief = [OsString::from("-c"), OsString::from("sleep 0.5")];
+        store
+            .create(spec(id(97), &brief, &e))
+            .expect("a session that ends");
+        let before = store.screens_work();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.screens_work() == before {
+            assert!(
+                Instant::now() < deadline,
+                "a session ending did not wake the screens thread"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        store.kill_all();
+    }
+
+    /// The screens thread sleeps until something wakes it, so two things that leave it work with
+    /// no output must wake it themselves: an attach's repaint, which re-inflates the shadow's
+    /// compressed history even when the client claims no size, and a record skipped because the
+    /// session's attachment was held past the pass's budget.
+    /// Value: protects=a quiet session's history is recompressed after a second client attaches, and its record is retried after a busy pass; fails_when=either raise is dropped; why_new=the other wake tests cover output, resize and session end only; seam=none; no_claim=the compression and the record write themselves (screens tests)
+    #[test]
+    fn an_attach_and_a_skipped_record_wake_the_screens_thread() {
+        let store = SessionStore::new();
+        let e = env();
+        let quiet = [OsString::from("-c"), OsString::from("sleep 10")];
+        store
+            .create(spec(id(98), &quiet, &e))
+            .expect("a quiet session");
+        let (_first, _) = attach_capture(&store, id(98));
+        // The first client took the size; the second claims none, so only the repaint is left.
+        let before = store.screens_work();
+        let (_second, _) = attach_capture(&store, id(98));
+        assert_ne!(
+            store.screens_work(),
+            before,
+            "an attach that claimed no size did not wake the screens thread"
+        );
+
+        let (_, _, attached) = store.parts(id(98)).expect("the session");
+        let mut held = attached.lock().expect("attachment");
+        held.changed = true;
+        let before = store.screens_work();
+        assert!(
+            store.changed_screens().is_empty(),
+            "fixture: a held attachment's record was taken"
+        );
+        assert_ne!(
+            store.screens_work(),
+            before,
+            "a record skipped on a held attachment did not wake the screens thread"
+        );
+        drop(held);
+        assert_eq!(
+            store.changed_screens().len(),
+            1,
+            "the skipped record on the next pass"
         );
         store.kill_all();
     }
@@ -3024,6 +3105,12 @@ mod tests {
                 "fixture: no unprobed request"
             );
         }
+        // Requests waiting out their grace owe the screens thread another pass, or it sleeps on
+        // them and the alert never comes for a program that prints nothing more.
+        assert!(
+            store.promote_unprobed(Instant::now()),
+            "a request within its grace left no pass owed"
+        );
         store.promote_unprobed(Instant::now() + crate::program_status::limits::GRACE);
         let shell = first_record_notifies(&store, id(91));
         let command = first_record_notifies(&store, id(92));
