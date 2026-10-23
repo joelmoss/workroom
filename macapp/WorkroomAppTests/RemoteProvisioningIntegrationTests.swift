@@ -71,14 +71,18 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     // Read where it is used (`token`); needed here so an older run.sh skips these tests rather
     // than failing them.
     _ = try need("WR_SSH_FIXTURE_CLONE_TOKEN")
+    let daemon = URL(fileURLWithPath: try need("WR_SSH_FIXTURE_DAEMON"))
+    // Made from the fixture's image the way the app makes any container now (#308): the daemon
+    // placed and run as its entrypoint, reached through `docker exec`, as the fixture's user.
     return Fixture(
       provisioning: ContainerHostDriver.Provisioning(
         runtime: override ?? runtime, image: try need("WR_SSH_FIXTURE_IMAGE"),
         user: try need("WR_SSH_FIXTURE_USER"), identityFile: try need("WR_SSH_FIXTURE_IDENTITY"),
         publicKey: try need("WR_SSH_FIXTURE_PUBLIC_KEY"),
-        daemonSocket: try need("WR_SSH_FIXTURE_SOCKET"),
-        labels: [try need("WR_SSH_FIXTURE_LABEL"), label]),
-      daemon: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_DAEMON")))
+        daemonSocket: ContainerHostDriver.containerSocket,
+        labels: [try need("WR_SSH_FIXTURE_LABEL"), label], daemon: { _ in daemon },
+        daemonFolder: directory.appendingPathComponent("daemon")),
+      daemon: daemon)
   }
 
   /// The sequence's environment over `driver`, as a remote provider's: Workroom gives the host no
@@ -89,7 +93,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     connect: (@Sendable (HostID) async throws -> DaemonVCSConnection)? = nil
   ) -> RemoteProvisioning.Environment {
     let daemon = fixture.daemon
-    return RemoteProvisioning.Environment(
+    var environment = RemoteProvisioning.Environment(
       driver: driver, daemonSocket: fixture.provisioning.daemonSocket,
       connect: connect ?? { host in
         try await DaemonBootstrap.connect(
@@ -97,6 +101,50 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           daemon: { $0 == "aarch64" || $0 == "x86_64" ? daemon : nil }, handOff: false,
           resources: nil)
       })
+    environment.makeHost = makeHost(driver)
+    return environment
+  }
+
+  /// A container from the fixture's image, with the fixture's GitHub serving in it. `entrypoint.sh`
+  /// started that, and the daemon is the entrypoint now, so it starts here, as root.
+  private func makeHost(_ driver: ContainerHostDriver) -> @Sendable () async throws -> HostID {
+    let runtime = self.runtime!
+    return {
+      let host = try await driver.create()
+      guard case .remote(let id) = host else { return host }
+      let container = ContainerHostDriver.containerName(id)
+      _ = try Self.run(
+        runtime,
+        [
+          "exec", "-d", "-u", "0", container, "sh", "-c",
+          "grep -q ' github.com$' /etc/hosts || echo '127.0.0.1 github.com' >> /etc/hosts;"
+            + " setpriv --reuid=workroom --regid=workroom --init-groups"
+            + " --inh-caps=+net_bind_service --ambient-caps=+net_bind_service"
+            + " env -i PATH=/usr/bin:/bin python3 /usr/local/bin/fake-github.py",
+        ])
+      // Until it answers on 443.
+      for _ in 0..<50 {
+        let up = try Self.run(
+          runtime,
+          ["exec", container, "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/443 && echo up"])
+        if up.contains("up") { break }
+        try await Task.sleep(for: .milliseconds(100))
+      }
+      return host
+    }
+  }
+
+  private static func run(_ runtime: URL, _ arguments: [String]) throws -> String {
+    let process = Process()
+    process.executableURL = runtime
+    process.arguments = arguments
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return String(decoding: data, as: UTF8.self)
   }
 
   @discardableResult
@@ -240,8 +288,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let session = UUID()
     PersistentSessionService.shared.registerRemoteSession(
       session, on: first.instance.host, via: driver, workingDirectory: path)
+    // In a terminal (`script`), as libghostty runs it: `docker exec -t` refuses a stdin that isn't.
+    let attach = try XCTUnwrap(PersistentSessionService.shared.attachCommand(forSession: session))
     let pane = try RemoteHostIntegrationTests.Pane(
-      command: try XCTUnwrap(PersistentSessionService.shared.attachCommand(forSession: session)))
+      command: "/usr/bin/script -q /dev/null /bin/sh -c \(PosixShell.quoted(attach))")
     defer { pane.dropLink() }
     try await Task.sleep(for: .seconds(1))
     // Typed with a split marker, so only the shell's answer reads `:END`.
@@ -334,7 +384,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let (fixture, failing) = try failingFixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    try "run".write(to: failing, atomically: true, encoding: .utf8)
+    try "create".write(to: failing, atomically: true, encoding: .utf8)
     let recorded = Recorded()
 
     do {
@@ -614,7 +664,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     ]
     for (step, environment, branch) in steps {
       if step == "machine" {
-        try "run".write(to: failing, atomically: true, encoding: .utf8)
+        try "create".write(to: failing, atomically: true, encoding: .utf8)
       } else {
         try? FileManager.default.removeItem(at: failing)
       }
@@ -699,7 +749,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let daemon = fixture.daemon
     let socket = fixture.provisioning.daemonSocket
     let token = Self.token
-    let environment = RemoteProvisioning.Environment(
+    var environment = RemoteProvisioning.Environment(
       driver: driver, daemonSocket: socket, gitHubToken: { token },
       connect: { host in
         try await DaemonBootstrap.connect(
@@ -707,6 +757,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           daemon: { $0 == "aarch64" || $0 == "x86_64" ? daemon : nil }, handOff: false,
           resources: nil)
       })
+    environment.makeHost = makeHost(driver)
     let instance = try await provision(
       environment, branch: "wr-relayed", cloneURL: "https://github.com/origin.git")
     cleanups.append { try? await driver.destroy(instance.host) }
@@ -728,7 +779,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
           }
         }))
     try await relay.install(
-      on: instance.host, driver: driver, daemonBinary: DaemonInstall.binary(besideSocket: socket))
+      on: instance.host, driver: driver,
+      daemonBinary: try XCTUnwrap(driver.daemonPath(on: instance.host)), socket: socket)
 
     guard case .remote(let id) = instance.host else { return XCTFail("not a remote host") }
     let container = "workroom-\(id.uuidString.lowercased())"

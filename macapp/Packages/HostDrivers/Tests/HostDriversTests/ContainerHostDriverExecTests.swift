@@ -104,7 +104,10 @@ final class ContainerHostDriverExecTests: XCTestCase {
       ])
     XCTAssertEqual(
       Array(made[4].dropFirst(2)),
-      ["exec", "-i", "-u", "vscode", name, "sh", "-c", "command -v git >/dev/null 2>&1 || exit 3"])
+      [
+        "exec", "-i", "-u", "vscode", name, "sh", "-c",
+        ContainerExecTransport.ownHome + "command -v git >/dev/null 2>&1 || exit 3",
+      ])
 
     let listing = Process()
     listing.executableURL = URL(fileURLWithPath: "/usr/bin/tar")

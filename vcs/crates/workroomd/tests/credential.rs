@@ -58,7 +58,7 @@ fn fill(workspace: &Path, configure: bool) -> String {
         command
     };
     if configure {
-        let command = helper_command(&workroom).replace(" credential", "");
+        let command = helper_command(&workroom, None).replace(" credential", "");
         configure_git(git, &command).unwrap();
         // Idempotent: a second connect leaves one reset and one helper, not two of each.
         configure_git(git, &command).unwrap();

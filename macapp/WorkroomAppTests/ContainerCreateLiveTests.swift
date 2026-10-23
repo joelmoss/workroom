@@ -38,7 +38,7 @@ final class ContainerCreateLiveTests: XCTestCase {
         "image": "node:22", "remoteUser": "node",
         "containerEnv": {"BASE": "/opt"},
         "remoteEnv": {"GREETING": "hi ${containerEnv:BASE}"},
-        "onCreateCommand": "echo \"created $GREETING\" > /tmp/created",
+        "onCreateCommand": "echo \"created $GREETING in $HOME\" > /tmp/created",
         "postStartCommand": ["sh", "-c", "date +%s%N >> /tmp/started"],
       }
       """#.utf8)
@@ -69,7 +69,7 @@ final class ContainerCreateLiveTests: XCTestCase {
       XCTAssertEqual(status, 0, said)
       XCTAssertEqual(
         said.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) },
-        ["created hi /opt", "1", "marked", "hi /opt", "node"])
+        ["created hi /opt in /home/node", "1", "marked", "hi /opt", "node"])
       // Nothing to do again until the container starts again.
       let again = try await driver.runPostStartIfNeeded(on: host)
       XCTAssertNil(again)

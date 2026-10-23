@@ -1144,7 +1144,8 @@ final class RemoteHosts: @unchecked Sendable {
           try await CredentialRelay.shared.install(
             on: host, driver: held,
             daemonBinary: (held as? any DaemonPlacingDriver)?.daemonPath(on: host)
-              ?? DaemonInstall.binary(besideSocket: held.daemonSocket))
+              ?? DaemonInstall.binary(besideSocket: held.daemonSocket),
+            socket: held.daemonSocket)
         }
         _ = lock.withLock { relayPending.removeValue(forKey: id) }
         return
