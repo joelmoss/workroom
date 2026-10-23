@@ -13,6 +13,9 @@ public enum ProvisioningProgress {
     /// Copying the root's included files (#367), which the app runs after the checkout; a local
     /// create's CLI reports the same id.
     case include
+    /// A container's devcontainer.json (#308): reading it, its initializeCommand on this Mac, its
+    /// image's build, and its lifecycle commands in the container after the clone.
+    case config, initialize, build, onCreate, updateContent, postCreate, postStart
   }
 
   /// Told each `Step` as it starts, for a create's progress on its project row. Set with

@@ -544,12 +544,25 @@ final class RemoteScriptTests: XCTestCase {
 
   private func run(
     _ script: RemoteProvisioning.Script = .setup, driver: ShellHost = ShellHost(),
-    lines: Lines = Lines(), judge: @escaping RemoteProvisioning.ScriptJudge = approveAll
+    lines: Lines = Lines(), judge: @escaping RemoteProvisioning.ScriptJudge = approveAll,
+    environment: [String: String] = [:]
   ) async -> RemoteProvisioning.ScriptRun {
     await RemoteProvisioning.runScript(
       script, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
-      daemonBinary: daemon, on: .local, driver: driver, judge: judge, onStart: { lines.start() },
-      onLine: { lines.add($0) })
+      daemonBinary: daemon, on: .local, driver: driver, judge: judge, environment: environment,
+      onStart: { lines.start() }, onLine: { lines.add($0) })
+  }
+
+  /// A container's `remoteEnv` (#308) reaches the setup script, on top of the login shell's, and
+  /// Workroom's own variables still name the workroom.
+  func testTheRemoteEnvironmentReachesTheScript() async throws {
+    try write(
+      "#!/bin/sh\necho \"$GREETING|$WORKROOM_NAME\"\n", to: "checkout/scripts/workroom_setup")
+    let lines = Lines()
+    let result = await run(
+      lines: lines, environment: ["GREETING": "hi there", "WORKROOM_NAME": "not this"])
+    XCTAssertEqual(result, .passed)
+    XCTAssertEqual(lines.lines, ["hi there|contract"])
   }
 
   /// A Mac that has approved every script.

@@ -44,7 +44,7 @@ var trustCmd = &cobra.Command{
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "trust"
-		svc, dir, scripts, _, err := judgedScripts()
+		svc, dir, scripts, _, _, err := judgedScripts()
 		if err != nil {
 			return err
 		}
@@ -103,7 +103,7 @@ var trustStatusCmd = &cobra.Command{
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "trust status"
-		_, _, scripts, work, err := judgedScripts()
+		_, _, scripts, work, start, err := judgedScripts()
 		if err != nil {
 			return exitStatus{code: 2, err: err}
 		}
@@ -113,6 +113,9 @@ var trustStatusCmd = &cobra.Command{
 		}
 		if jsonOutput {
 			payload := map[string]any{"trusted": trusted, "scripts": scriptsJSON(scripts)}
+			if start != "" {
+				payload["start"] = start
+			}
 			// What a create from that start leaves out, for a remote create to warn about.
 			if work.Any() {
 				payload["local_work"] = localWorkJSON(work)
@@ -170,39 +173,41 @@ var untrustCmd = &cobra.Command{
 // judgedScripts is the project the trust commands name, judged: the one script read from stdin
 // with --stdin, else the scripts it would run next and the local work a create from that start
 // leaves out of the main checkout, which trust status reports for a remote create to warn about.
-func judgedScripts() (*workroom.Service, string, []workroom.Script, vcs.LocalWork, error) {
+// With --base it also says the commit that start names, which a remote create checks out.
+func judgedScripts() (*workroom.Service, string, []workroom.Script, vcs.LocalWork, string, error) {
 	var work vcs.LocalWork
 	svc, err := newService()
 	if err != nil {
-		return nil, "", nil, work, err
+		return nil, "", nil, work, "", err
 	}
 	dir, err := trustedProject(svc)
 	if err != nil {
-		return nil, "", nil, work, err
+		return nil, "", nil, work, "", err
 	}
 	if trustStdin == "" {
 		var scripts []workroom.Script
+		var start string
 		switch {
 		case trustBaseSet:
-			scripts, work, err = svc.ProjectScriptsFrom(dir, trustBase, trustDevcontainer)
+			scripts, work, start, err = svc.ProjectScriptsFrom(dir, trustBase, trustDevcontainer)
 		case trustDevcontainer:
-			return nil, "", nil, work, fmt.Errorf("--devcontainer judges a container create's file, so it needs --base")
+			return nil, "", nil, work, "", fmt.Errorf("--devcontainer judges a container create's file, so it needs --base")
 		default:
 			scripts, work, err = svc.ProjectScripts(dir)
 		}
-		return svc, dir, scripts, work, err
+		return svc, dir, scripts, work, start, err
 	}
 	switch trustStdin {
 	case workroom.SetupScript, workroom.TeardownScript, workroom.DevContainer:
 	default:
-		return nil, "", nil, work, fmt.Errorf("--stdin takes %s, %s or %s, not %q", workroom.SetupScript, workroom.TeardownScript, workroom.DevContainer, trustStdin)
+		return nil, "", nil, work, "", fmt.Errorf("--stdin takes %s, %s or %s, not %q", workroom.SetupScript, workroom.TeardownScript, workroom.DevContainer, trustStdin)
 	}
 	text, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return nil, "", nil, work, err
+		return nil, "", nil, work, "", err
 	}
 	sc, err := svc.JudgeScript(dir, trustStdin, workroom.OriginStdin, "", text)
-	return svc, dir, []workroom.Script{sc}, work, err
+	return svc, dir, []workroom.Script{sc}, work, "", err
 }
 
 // trustedProject is the project the trust commands act on: --project or the current directory,

@@ -94,7 +94,11 @@ public enum ContainerExecTransport {
       workingDirectory: workingDirectory, restored: restored, metadata: metadata,
       runCommand: runCommand)
     let log = SSHTransport.attachLog(session, in: hostDirectory).path
-    let exec = [target.runtime.path] + arguments(target, tty: true, command: ["sh", "-c", script])
+    let exec =
+      [target.runtime.path]
+      + arguments(
+        target, tty: true,
+        command: ["sh", "-c", ContainerHostDriver.postStartWait + "; " + script])
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + exec)
       .map(PosixShell.quoted).joined(separator: " ")
   }

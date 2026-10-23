@@ -37,11 +37,54 @@ struct DetailsPanel: View {
         if let note = target.remoteNote {
           Text(note).font(.caption2).foregroundStyle(.secondary)
         }
+        devContainer(target)
       }
       .padding(12)
       ports(target)
     }
   }
+
+  /// A container workroom's dev container (#308): what it was made from, and a note when the
+  /// repository's devcontainer.json has moved on, since a change applies to new workrooms only.
+  @ViewBuilder
+  private func devContainer(_ target: TerminalTarget) -> some View {
+    if case .container = target.hostPlace, let sid = store.inspectorTargetID,
+      let (workroom, project) = store.workroomAndProject(for: sid),
+      let record = workroom.host?.container, let digest = record.configDigest
+    {
+      let madeFrom =
+        digest.hasPrefix("image:") ? String(digest.dropFirst("image:".count)) : record.configFile
+      if let madeFrom { fact("Made From", madeFrom, copyable: true) }
+      DevContainerNote(
+        recorded: digest, project: project.path,
+        ref: RemoteWorkrooms.splitBase(
+          store.effectiveBaseBranch(for: project) ?? "HEAD", remotes: ["origin"]
+        ).branch)
+    }
+  }
+}
+
+/// The note under a container's "Made From" when the repository's devcontainer.json, at origin's
+/// copy of the project's base branch, isn't what the container was made from.
+private struct DevContainerNote: View {
+  let recorded: String
+  let project: String
+  /// The branch on origin new workrooms start from.
+  let ref: String
+  @State private var note: String?
+
+  var body: some View {
+    Group {
+      if let note { Text(note).font(.caption2).foregroundStyle(.secondary) }
+    }
+    .task(id: "\(project)\u{0}\(ref)\u{0}\(recorded)") {
+      let current = await ContainerCreate.configDigest(project: project, ref: "origin/\(ref)")
+      note = DevContainerSetup.configNote(recorded: recorded, current: current)
+    }
+  }
+}
+
+extension DetailsPanel {
 
   /// Only where ports can be forwarded: a container workroom this app reaches. Nowhere else has
   /// anything to configure here.

@@ -79,11 +79,11 @@ extension Defaults.Keys {
   static let confirmOnCloseTerminal = Key<Bool>(
     "confirmOnCloseTerminal", default: true, suite: .app)
 
-  /// Overrides the image a container workroom's host runs (#253, #309), which is otherwise the one
-  /// this build pins (`RemoteWorkrooms.hostImage`). Hidden; set it with
-  /// `defaults write <bundle id> remoteHostImage <image>`, e.g. `workroom-host` for the image
-  /// `make remote-host-image` builds.
-  static let remoteHostImage = Key<String?>("remoteHostImage", default: nil, suite: .app)
+  /// The image this Mac makes a container workroom from when its repository has no
+  /// devcontainer.json (#308, eng review D8), over the pinned devcontainers base
+  /// (`RemoteWorkrooms.defaultImage`). Set in Settings ▸ General.
+  static let containerDefaultImage = Key<String?>(
+    "containerDefaultImage", default: nil, suite: .app)
   /// CPUs and memory (`8G`) each container workroom gets (#309), over the defaults
   /// `RemoteHosts.resources` picks. Hidden: `defaults write <bundle id> containerCPUs -int 6`.
   static let containerCPUs = Key<Int?>("containerCPUs", default: nil, suite: .app)

@@ -1187,6 +1187,39 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(hosts.count, 1, "the retry stopped before asking for a container")
   }
 
+  /// Value: protects=eng review D10, an approved devcontainer.json that describes Compose services
+  /// stops the create before any container, offering the default image, which then goes ahead
+  /// without the file; fails_when=a container is asked for, or the stop is a plain failure with
+  /// only Try Again; no_claim=the Compose file itself (never read)
+  func testAComposeDevcontainerConfigIsRefusedWithTheDefaultImageOffered() async throws {
+    let hosts = Counter()
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: FakeDriver(), daemon: nil, hosts: hosts)
+    let compose = ScriptTrust(
+      name: ScriptTrust.devContainerName, file: ".devcontainer/devcontainer.json", origin: "base",
+      sha256: String(repeating: "c", count: 64),
+      text: #"{"dockerComposeFile": "compose.yml", "service": "app"}"#, trusted: true,
+      exempt: false)
+    services.trustStatus = { _, _, _, devcontainer in
+      TrustStatus(trusted: true, scripts: devcontainer ? [compose] : [])
+    }
+    store.remoteCreateServices = services
+    store.closesFinishedCreations = { false }
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.outcome, .composeRefused(file: ".devcontainer/devcontainer.json"))
+    XCTAssertEqual(hosts.count, 0, "a container was asked for")
+    XCTAssertEqual(run.steps.first { $0.id == "config" }?.state, .waitingForUser)
+    let footer = try XCTUnwrap(CreationPanePresentation.footer(for: run.outcome))
+    XCTAssertEqual(footer.primary, .defaultImage)
+    XCTAssertEqual(footer.secondary, .cancel)
+
+    await store.retryCreation(run, skipsDevContainer: true)
+    XCTAssertEqual(hosts.count, 1, "the default image's create didn't go ahead")
+  }
+
   /// Value: protects=the wording of a devcontainer.json's sheet and confirmation, which isn't a
   /// script; fails_when=it says "runs scripts/devcontainer" or offers to skip a script;
   /// no_claim=the sheet's drawing
@@ -1594,11 +1627,13 @@ final class CreationFlowTests: XCTestCase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     let runtime = directory.appendingPathComponent("docker")
+    let pulled = directory.appendingPathComponent("pulled").path
+    // A pulled image is there to inspect afterwards, as a real pull leaves it.
     try """
     #!/bin/sh
     case "$*" in
-      "image inspect"*) exit \(inspect) ;;
-      pull*) exit 0 ;;
+      "image inspect"*) [ -e '\(pulled)' ] && exit 0; exit \(inspect) ;;
+      pull*) touch '\(pulled)'; exit 0 ;;
     esac
     exit 1
     """.write(to: runtime, atomically: true, encoding: .utf8)

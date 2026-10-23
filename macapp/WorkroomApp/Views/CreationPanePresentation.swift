@@ -123,6 +123,8 @@ enum CreationPanePresentation {
     case reviewScript
     /// Asks again where a create that found local work starts.
     case chooseStart
+    /// Starts a container create again on the default image, without its devcontainer.json.
+    case defaultImage
     /// Close, worded for a create that made nothing and is waiting on the user: the whole create
     /// goes, not only the script.
     case cancel
@@ -137,6 +139,7 @@ enum CreationPanePresentation {
       // An ellipsis: it opens a sheet.
       case .reviewScript: "Review Script…"
       case .chooseStart: "Choose…"
+      case .defaultImage: "Continue With Default Image"
       case .cancel: "Cancel Creation"
       }
     }
@@ -203,6 +206,8 @@ enum CreationPanePresentation {
       Footer(
         reason: "The setup script failed: \(message.trimmingPrefix("setup script failed: "))",
         primary: .openAnyway, secondary: .deleteWorkroom)
+    case .hookFailed(let message):
+      Footer(reason: message, primary: .openAnyway, secondary: .deleteWorkroom)
     case .remoteFailed(let message, leftBehind: true):
       Footer(
         reason: "Couldn't create the workroom, and its machine is still running: \(message)",
@@ -216,6 +221,11 @@ enum CreationPanePresentation {
       Footer(
         reason: "\(work.summary). Choose whether the new workroom includes it.",
         primary: .chooseStart, secondary: .cancel)
+    case .composeRefused(let file):
+      Footer(
+        reason: "\(file) describes Docker Compose services, and a container workroom runs one "
+          + "container. It can be made from the default image instead.",
+        primary: .defaultImage, secondary: .cancel)
     }
   }
 

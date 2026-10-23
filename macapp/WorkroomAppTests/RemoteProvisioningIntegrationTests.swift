@@ -445,7 +445,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let lines = Lines()
     let result = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
-      daemonBinary: environment.daemonBinary, on: instance.host, driver: driver,
+      daemonBinary: environment.daemonBinary(on: instance.host), on: instance.host, driver: driver,
       judge: RemoteScriptTests.approveAll, onLine: { lines.add($0) })
     XCTAssertEqual(result, .passed)
     let want = try String(
@@ -457,7 +457,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let profile = Lines()
     let teardown = await RemoteProvisioning.runScript(
       .teardown, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
-      daemonBinary: environment.daemonBinary, on: instance.host, driver: driver,
+      daemonBinary: environment.daemonBinary(on: instance.host), on: instance.host, driver: driver,
       judge: RemoteScriptTests.approveAll, onLine: { profile.add($0) })
     XCTAssertEqual(teardown, .passed)
     XCTAssertEqual(profile.all, ["profile=yes"])
@@ -466,7 +466,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     _ = try await onHost(driver, instance.host, "chmod 644 \(setup)")
     let unstarted = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
-      daemonBinary: environment.daemonBinary, on: instance.host, driver: driver,
+      daemonBinary: environment.daemonBinary(on: instance.host), on: instance.host, driver: driver,
       judge: RemoteScriptTests.approveAll, onLine: { _ in })
     XCTAssertEqual(unstarted, .failed("setup script failed: \(setup) could not be started"))
 
@@ -475,7 +475,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       driver, instance.host,
       "printf '#!/bin/sh\\nsetsid sleep 60 &\\necho $! > /tmp/escaper\\nsleep 60\\n' > /tmp/slow"
         + " && chmod 755 /tmp/slow"
-        + " && { \(environment.daemonBinary) run-script --dir /tmp --timeout 1 -- /tmp/slow; echo \"exit=$?\"; }"
+        + " && { \(environment.daemonBinary(on: instance.host)) run-script --dir /tmp --timeout 1 -- /tmp/slow; echo \"exit=$?\"; }"
         + " && sleep 1 && if kill -0 \"$(cat /tmp/escaper)\" 2>/dev/null; then echo alive; else echo gone; fi"
     )
     XCTAssertEqual(status, 0, output)

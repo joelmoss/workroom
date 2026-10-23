@@ -113,7 +113,45 @@ final class ContainerExecTransportTests: XCTestCase {
     XCTAssertTrue(args.last?.contains("WORKROOM_SESSION_ID=\(session.uuidString)") ?? false)
     XCTAssertTrue(args.last?.contains("WORKROOM_SESSION_CWD=/workspaces/app") ?? false)
     XCTAssertTrue(args.last?.contains("attach") ?? false)
+    // First, in the container, it waits for a postStartCommand not yet run since the start (#308).
+    XCTAssertTrue(args.last?.hasPrefix(ContainerHostDriver.postStartWait + "; ") ?? false)
     XCTAssertEqual(ContainerExecTransport.lastAttach(of: session, in: directory), .finished)
+  }
+
+  /// The wait itself, in a shell: none without a hook or once it is done; with a hook not done, it
+  /// waits and says so.
+  func testAPaneWaitsForAPostStartNotYetRun() throws {
+    let root = directory.appendingPathComponent("poststart")
+    let hook = root.appendingPathComponent("hook").path
+    let done = root.appendingPathComponent("done").path
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let wait = ContainerHostDriver.postStartWait
+      .replacingOccurrences(of: ContainerHostDriver.postStartHook, with: hook)
+      .replacingOccurrences(of: ContainerHostDriver.postStartDone, with: done)
+    func run() throws -> (seconds: TimeInterval, said: String) {
+      let started = Date()
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/bin/sh")
+      process.arguments = ["-c", wait + "; echo attached"]
+      let output = Pipe()
+      process.standardOutput = output
+      try process.run()
+      process.waitUntilExit()
+      return (
+        Date().timeIntervalSince(started),
+        String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+      )
+    }
+    XCTAssertEqual(try run().said, "attached\n", "no hook waits")
+    FileManager.default.createFile(atPath: hook, contents: nil)
+    DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+      FileManager.default.createFile(atPath: done, contents: nil)
+    }
+    let (seconds, said) = try run()
+    XCTAssertGreaterThan(seconds, 1)
+    XCTAssertTrue(said.hasPrefix("Waiting for the dev container's postStartCommand"), said)
+    XCTAssertTrue(said.hasSuffix("attached\n"), said)
+    XCTAssertEqual(try run().said, "attached\n", "a done one waits")
   }
 
   /// A stopped container is a link that comes back (the workroom starts it when opened): recorded

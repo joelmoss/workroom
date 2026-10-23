@@ -170,8 +170,9 @@ func TestCreateWithSkipSetupRunsNoScriptAndApprovesNothing(t *testing.T) {
 }
 
 type statusEnvelope struct {
-	OK      bool `json:"ok"`
-	Trusted bool `json:"trusted"`
+	OK      bool   `json:"ok"`
+	Trusted bool   `json:"trusted"`
+	Start   string `json:"start"`
 	Scripts []struct {
 		Name    string `json:"name"`
 		File    string `json:"file"`
@@ -736,6 +737,26 @@ func TestTrustStatusJudgesTheDevcontainerConfigWhenAsked(t *testing.T) {
 
 // The spec's places, in its order: the folder's file first, else the one at the root; none is no
 // entry, not an error.
+// Value: protects=a remote create checks out the very commit its scripts and devcontainer.json were
+// judged at (#308, "one revision"); fails_when=`start` is missing or names another commit, or
+// appears without --base, or names a local commit the remote clone may lack; why_new=the app
+// checked out the branch name, which a push could move; seam=none; no_claim=the fetch itself
+func TestTrustStatusSaysTheCommitItJudgedAt(t *testing.T) {
+	_, project := aheadProject(t)
+	pushed := strings.TrimSpace(run(t, project, "git", "rev-parse", "origin/main"))
+	if _, env := trustStatus(t, project, "--base", "", "--devcontainer"); env.Start != pushed {
+		t.Fatalf("start %q, want origin's %q, not the unpushed local commit", env.Start, pushed)
+	}
+	if _, env := trustStatus(t, project); env.Start != "" {
+		t.Fatalf("without --base: start %q", env.Start)
+	}
+	// No remote: the start is local HEAD, which a clone from GitHub may not have.
+	local := devcontainerProject(t, ".devcontainer.json", `{"image": "a"}`)
+	if _, env := trustStatus(t, local, "--base", "", "--devcontainer"); env.Start != "" {
+		t.Fatalf("local-only start %q", env.Start)
+	}
+}
+
 func TestTheDevcontainerConfigIsFoundWhereTheSpecLooks(t *testing.T) {
 	project := devcontainerProject(t, ".devcontainer.json", `{"image": "a"}`)
 	if _, env := trustStatus(t, project, "--base", "", "--devcontainer"); len(env.Scripts) != 1 ||

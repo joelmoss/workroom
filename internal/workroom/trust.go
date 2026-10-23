@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/joelmoss/workroom/internal/errs"
 	"github.com/joelmoss/workroom/internal/vcs"
@@ -266,19 +267,29 @@ func (s *Service) ProjectScripts(dir string) ([]Script, vcs.LocalWork, error) {
 // default branch) rather than the project's: what a remote create checks out, which may differ.
 // The local work is what that start leaves out of the main checkout, as a create would find it.
 // With devcontainer, the devcontainer.json a container create would use is judged too.
-func (s *Service) ProjectScriptsFrom(dir, base string, devcontainer bool) ([]Script, vcs.LocalWork, error) {
+func (s *Service) ProjectScriptsFrom(dir, base string, devcontainer bool) ([]Script, vcs.LocalWork, string, error) {
 	scripts, work, start, err := s.projectScripts(dir, base, false)
-	if err != nil || !devcontainer {
-		return scripts, work, err
+	if err != nil {
+		return scripts, work, "", err
+	}
+	// The commit the start names now, so a remote create checks out exactly what was judged, and
+	// a push meanwhile can't split its devcontainer.json from its checkout (#308). Only a remote's
+	// ref: a local branch or HEAD (no origin/HEAD) can name a commit the remote clone lacks.
+	var commit string
+	if strings.HasPrefix(start, "refs/remotes/") {
+		commit, _ = vcs.CommitAt(dir, start)
+	}
+	if !devcontainer {
+		return scripts, work, commit, nil
 	}
 	config, ok, err := s.DevContainerAt(dir, start)
 	if err != nil {
-		return nil, work, err
+		return nil, work, commit, err
 	}
 	if ok {
 		scripts = append(scripts, config)
 	}
-	return scripts, work, nil
+	return scripts, work, commit, nil
 }
 
 // projectScripts judges the setup and teardown scripts, and says the start it resolved.

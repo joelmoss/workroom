@@ -1,6 +1,7 @@
 import AppKit
 import HostDrivers
 import WorkroomDomain
+import WorkroomVCS
 
 /// Workroom creation (issues #116, #163, #167, #483): local and remote creates, each a
 /// `CreationRun` whose pane opens on the click and shows its checklist until the workroom's own UI
@@ -572,6 +573,13 @@ extension AppStore {
         refuseCreation(run, script)
         return
       }
+      // The judged bytes, which are what the container is made from (#308).
+      let devcontainer = judgesDevContainer ? try ContainerCreate.file(in: status) : nil
+      if let devcontainer, devcontainer.config.usesCompose {
+        run.awaitDefaultImage(refusing: devcontainer.path)
+        Self.announceCreation("\(devcontainer.path) describes Docker Compose services")
+        return
+      }
       // A remote host clones from GitHub, so local work can't come along: it is only said.
       let leftOut = status.localWork.map {
         "\($0.summary). Remote workrooms can only start from what you've pushed, so this one "
@@ -591,11 +599,15 @@ extension AppStore {
         }
       }
       let host = try await services.host(place)
-      let created = try await provisionRemote(run, plan: plan, host: host)
+      let (created, prepared) = try await provisionRemote(
+        run, plan: plan, host: host, start: status.start, devcontainer: devcontainer)
       await Self.drainMainQueue()  // the last step's lines, before it is marked done
       if run.steps.contains(where: { $0.id == ProvisioningProgress.Step.include.rawValue }) {
         await copyIncluded(run, into: created.instance, driver: host.driver)
       }
+      // The dev container's lifecycle commands, before the setup script (#308).
+      let hookFailure = await runHooks(
+        run, prepared?.hooks ?? [], on: created.instance.host, environment: host.environment)
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
       // Before the setup script: the reload adopts the host, which marks a relayed one so the
@@ -604,14 +616,22 @@ extension AppStore {
       let id = TerminalTarget.workroomID(project: path, name: created.name)
       // Still undeletable while the script runs, as a local create's workroom is (issue #116).
       var setupFailure: String?
-      if run.skipsSetup {
+      if hookFailure != nil {
+        // A failed lifecycle command stops the create where it is: the setup script would run on
+        // a container half set up.
+      } else if run.skipsSetup {
         run.begin("script")
         run.finish("script", as: .skipped(reason: Self.setupSkippedReason))
       } else {
-        setupFailure = await runRemoteSetup(run, created: created, host: host, services: services)
+        setupFailure = await runRemoteSetup(
+          run, created: created, host: host, services: services,
+          environment: prepared?.remoteEnvironment ?? [:])
       }
       releaseCreatingWorkroom(id)
-      if let setupFailure {
+      if let hookFailure {
+        if case .armed = runStates[id] { runStates[id] = nil }  // as a failed setup script's
+        failCreationRun(run, .hookFailed(message: hookFailure))
+      } else if let setupFailure {
         // As a local create's: the workroom and its host stay, for Open Anyway or Delete, and the
         // auto-run armed at the reserve is disarmed, so Open Anyway doesn't start the command
         // against a half-set-up tree (issue #7).
@@ -647,9 +667,14 @@ extension AppStore {
   /// The machine, clone and checkout of a remote create, reporting each step and its log into
   /// `run`. The workroom's name, once reserved, becomes its pane's; a rollback that forgets it gives
   /// the pane back to the run (O2) before anything reloads.
+  ///
+  /// A container's dev container comes first (#308): `devcontainer`, the judged file or nil for
+  /// the default image, is read, built and made into the container's spec (`ContainerCreate`).
+  /// `start` is the judged commit the checkout starts at.
   private func provisionRemote(
-    _ run: CreationRun, plan: RemoteCreatePlan, host: RemoteCreateHost
-  ) async throws -> RemoteWorkrooms.Created {
+    _ run: CreationRun, plan: RemoteCreatePlan, host: RemoteCreateHost, start: String?,
+    devcontainer: ContainerCreate.File?
+  ) async throws -> (RemoteWorkrooms.Created, ContainerCreate.Prepared?) {
     let path = run.project.path
     // One queue for steps, lines and the pull, so a line is never filed after the next step began.
     let onMain: @Sendable (@escaping @MainActor () -> Void) -> Void = { body in
@@ -661,7 +686,7 @@ extension AppStore {
     let logged: @Sendable (ProvisioningProgress.Step, String) -> Void = { step, line in
       onMain { run.append(line, to: step.rawValue) }
     }
-    // Set once the driver reports a pull: still nil after `ensureHostImage`, the image was here.
+    // Set once the driver reports a pull: still nil after the image step, the image was here.
     let pulled = CreationWarningBox()
     let report: @Sendable (Double?) -> Void = { fraction in
       pulled.value = "pulled"
@@ -689,26 +714,68 @@ extension AppStore {
       environment.gitHubToken = { token }
     }
     let container = host.driver as? ContainerHostDriver
-    if container != nil { run.begin("image") }
+    let runtime = host.key.runtime ?? .docker
+    let defaultImage = RemoteWorkrooms.defaultImage
     return try await ProvisioningProgress.$reportStep.withValue(stepped) {
       try await ProvisioningProgress.$log.withValue(logged) {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
+          var prepared: ContainerCreate.Prepared?
+          var environment = environment
           if let container {
-            try await container.ensureHostImage()
+            let made = try await ContainerCreate.prepare(
+              devcontainer, project: path, repository: plan.repository.name,
+              start: start ?? plan.startBranch.map { "origin/\($0)" } ?? "origin/HEAD",
+              runtime: runtime, driver: container, defaultImage: defaultImage,
+              featureCache: RemoteHosts.directory.appendingPathComponent("feature-cache"))
+            prepared = made
             await Self.drainMainQueue()
             await MainActor.run {
-              if pulled.value == nil {
+              if !made.pulled {
+                run.finish("image", as: .skipped(reason: "Built from its Dockerfile"))
+              } else if pulled.value == nil {
                 run.finish("image", as: .skipped(reason: "Image already downloaded"))
               }
               run.pullFraction = nil
+              if !made.warnings.isEmpty {
+                run.warn(
+                  ProvisioningProgress.Step.config.rawValue,
+                  made.warnings.joined(separator: ". ") + ".")
+              }
             }
+            environment.makeHost = { try await container.create(spec: made.spec) }
           }
-          return try await RemoteWorkrooms.create(
+          let created = try await RemoteWorkrooms.create(
             repository: plan.repository, cloneURL: plan.cloneURL, startBranch: plan.startBranch,
-            key: host.key, driver: host.driver, environment: environment, recorder: recorder)
+            startCommit: start, path: prepared?.workspaceFolder,
+            config: prepared.map { ($0.configDigest, $0.configFile) }, key: host.key,
+            driver: host.driver, environment: environment, recorder: recorder)
+          return (created, prepared)
         }
       }
     }
+  }
+
+  /// A container create's lifecycle commands (#308), each under its own row, in order, stopping at
+  /// the first that fails. Nil when every one passed (or there were none); else why.
+  private func runHooks(
+    _ run: CreationRun, _ hooks: [(hook: DevContainerConfig.Hook, script: String)],
+    on host: HostID, environment: RemoteProvisioning.Environment
+  ) async -> String? {
+    let onMain: @Sendable (@escaping @MainActor () -> Void) -> Void = { body in
+      DispatchQueue.main.async { MainActor.assumeIsolated(body) }
+    }
+    for (hook, script) in hooks {
+      let step = hook.step.rawValue
+      run.begin(step)
+      let failure = await ContainerCreate.runHook(
+        hook, script: script, on: host, driver: environment.driver,
+        daemonBinary: environment.daemonBinary(on: host),
+        onLine: { line in onMain { run.append(line, to: step) } })
+      await Self.drainMainQueue()  // its last lines, before its row ends
+      if let failure { return failure }
+      run.finish(step, as: .done)
+    }
+    return nil
   }
 
   /// A remote create's "Run setup script" step: the project's setup script on the new host, as a
@@ -716,7 +783,7 @@ extension AppStore {
   /// worded as the CLI's ("setup script failed: ...").
   private func runRemoteSetup(
     _ run: CreationRun, created: RemoteWorkrooms.Created, host: RemoteCreateHost,
-    services: RemoteCreateServices
+    services: RemoteCreateServices, environment: [String: String] = [:]
   ) async -> String? {
     let step = "script"
     // One queue for the start and the lines, so a line is never filed before its row began.
@@ -726,11 +793,11 @@ extension AppStore {
     let request = RemoteWorkrooms.ScriptRequest(
       script: .setup, workroom: created.name, path: created.instance.path,
       host: created.instance.host, key: host.key, driver: host.driver,
-      daemonBinary: host.environment.daemonBinary,
+      daemonBinary: host.environment.daemonBinary(on: created.instance.host),
       rootScript: URL(fileURLWithPath: run.project.path + "/scripts/workroom_setup"),
       judge: Self.judge(.setup, in: run.project.path, cli: cli),
       onStart: { onMain { run.begin(step) } },
-      onLine: { line in onMain { run.append(line, to: step) } })
+      onLine: { line in onMain { run.append(line, to: step) } }, environment: environment)
     let result = await services.script(request)
     await Self.drainMainQueue()  // the script's last lines, before its row ends
     switch result {
