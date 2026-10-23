@@ -56,7 +56,7 @@ public struct ProgramStatusRecord: Sendable, Equatable {
 public enum ProgramStatusEvent: Sendable, Equatable {
   /// Every record of `session`, never a delta, so a lost event is healed by the next. `run` is set
   /// only for a run session (#522): what its supervisor last wrote, such as `running 4123`,
-  /// `stopped` or `exited 1`.
+  /// `stopped 1` or `exited 1 2` (ending in the launch's number).
   case status(
     boot: String, session: UUID, revision: UInt64, reporting: Bool, records: [ProgramStatusRecord],
     run: String? = nil)

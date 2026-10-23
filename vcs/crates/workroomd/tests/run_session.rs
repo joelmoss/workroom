@@ -496,8 +496,15 @@ fn a_run_is_never_sent_to_a_daemon_older_than_run_sessions() {
         .unwrap()
         .read_to_string(&mut stderr)
         .unwrap();
-    assert_eq!(fake.join().unwrap(), 0, "nothing was asked of the old daemon");
-    assert!(!status.success(), "the relay reports it could not start the run");
+    assert_eq!(
+        fake.join().unwrap(),
+        0,
+        "nothing was asked of the old daemon"
+    );
+    assert!(
+        !status.success(),
+        "the relay reports it could not start the run"
+    );
     assert!(stderr.contains("older"), "{stderr:?}");
 }
 
