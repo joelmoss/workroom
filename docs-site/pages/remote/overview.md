@@ -50,7 +50,7 @@ The **Details** pane in the inspector shows where a workroom runs: **Running on*
 
 When you pick a host, the workroom's pane opens at once with a checklist. It shows each step of the create with its time, and a log you can open:
 
-- A container: **Check repository**, **Pull host image**, **Start container**, **Connect**, **Clone repository**, **Check out branch**.
+- A container: **Check repository**, **Read devcontainer.json**, **Run initializeCommand**, **Pull image**, **Build image**, **Start container**, **Connect**, **Clone repository**, **Check out branch**, then your `devcontainer.json`'s lifecycle commands after **Copy local files**. See [Docker and Apple containers](containers.md#create-a-container-workroom).
 - boxd: **Check repository**, **Check boxd account**, **Create machine**, **Set up machine**, **Connect**, **Clone repository**, **Check out branch**.
 - exe.dev: **Check repository**, **Check exe.dev account**, **Create VM**, **Wait for boot**, **Set up machine**, **Connect**, **Clone repository**, **Check out branch**.
 

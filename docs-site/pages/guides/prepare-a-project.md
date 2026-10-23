@@ -90,6 +90,9 @@ Skipping a script approves nothing, so the next create asks again. When you incl
 uncommitted changes in a new workroom and you've edited the setup script, it's your edited copy that
 needs approving, since that's the one that runs.
 
+A container workroom's `devcontainer.json` is approved the same way, in the app, before a create uses
+it. See [Approve it first](../remote/containers.md#approve-it-first).
+
 An approval covers the script's own contents only, not what it runs in turn, such as `npm install` and
 the `package.json` it reads. A script that git ignores in your root never needs approving, because a
 `git pull` can't change it.
