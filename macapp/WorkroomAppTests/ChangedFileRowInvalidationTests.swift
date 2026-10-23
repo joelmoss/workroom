@@ -40,6 +40,12 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     let target = store.target(for: .workroom(project: projectPath, name: workroomName))!
     _ = store.terminals.addTab(for: target)
     store.selectedTargetID = .workroom(project: projectPath, name: workroomName)
+    // Selecting a workroom schedules a real status probe (debounced 0.3 s). Against this fixture's
+    // non-existent path it lands a status with no changed files, emptying the panel, at a time set by
+    // the runner's load: about 0.35 s warm, 0.8 s cold, later on CI. Left running, it emptied the panel
+    // mid-measurement, so the selection test saw no rows rebuild, and a warm pulse burst measured no
+    // rows at all. The tests measure rows, not the probe, so none runs.
+    store.selectionStatusTask?.cancel()
     // `lastChecked` is load-bearing, not decoration: `ChangesPanel.content(for:)` renders "Checking…"
     // (and therefore NO rows) while it is nil, which would make every assertion here vacuously true.
     store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
@@ -86,6 +92,11 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
 
+    // And still listed now: a status that empties the panel would turn the burst's "0 rebuilds" into
+    // "there were no rows".
+    XCTAssertNotNil(
+      store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.changedFiles,
+      "the fixture's changed files must still be listed when the pulse burst starts")
     ChangedFileRow.bodyPasses = 0
     for _ in 0..<25 { store.terminals.pulsePaneActivity(tab.id) }
     settle(view)
@@ -109,12 +120,6 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
       Task { await store.terminals.reapAll() }
       window.close()
     }
-    // Let the selection's status probe land and then restore the fixture list, as in the selection test
-    // — otherwise the panel is showing its empty state by measurement time and "no rows rebuilt" says
-    // nothing about the theme.
-    settle(view, seconds: 1.2)
-    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
-      dirty: true, changedFiles: files(20), lastChecked: Date())
     settle(view, until: { ChangedFileRow.bodyPasses > 0 })
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
@@ -129,23 +134,16 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
 
   /// The positive half: a selection change MUST still reach the rows.
   ///
-  /// Selection is moved by re-focusing an existing tab, not by opening a new one, deliberately. Opening
-  /// a tab changes the target's tab count, which trips a real status refresh — and against this
-  /// fixture's non-existent repo path that probe lands a status with `changedFiles == nil`, so the panel
-  /// renders its empty state and the row count drops to zero. That made an earlier version of this test
-  /// fail for a reason that had nothing to do with the equality gate. Re-focusing publishes
-  /// `focusedTabByTarget` only, so the fixture status stays put and the ONLY thing that changes is which
-  /// row is selected — which is exactly the property under test.
+  /// Selection is moved by re-focusing an existing tab, not by opening a new one, deliberately.
+  /// Re-focusing publishes `focusedTabByTarget` only, so the ONLY thing that changes is which row is
+  /// selected — which is exactly the property under test.
   func testSelectionChangeRebuildsChangedFileRows() throws {
     let store = makeStore(changedFiles: files(20))
     let target = store.target(for: .workroom(project: projectPath, name: workroomName))!
     let terminalTab = store.terminals.focusedTab(for: target)!
-    // Open the diff BEFORE hosting, so the status settles once and the first render already has a
-    // selected row.
+    // Open the diff BEFORE hosting, so the first render already has a selected row.
     store.openDiffPreview(
       ChangedFile(path: "src/file0.swift", change: .modified), source: .gitWorktree)
-    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
-      dirty: true, changedFiles: files(20), lastChecked: Date())
 
     ChangedFileRow.bodyPasses = 0
     let (window, view) = host(store)
@@ -153,12 +151,6 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
       Task { await store.terminals.reapAll() }
       window.close()
     }
-    // Let the tab-open status probe land and be overwritten BEFORE the measurement window opens. That
-    // probe runs `git status` against a path that doesn't exist, and its result (no `changedFiles`)
-    // makes the panel render its empty state — which is not a fact about the equality gate.
-    settle(view, seconds: 1.2)
-    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
-      dirty: true, changedFiles: files(20), lastChecked: Date())
     settle(view)
 
     XCTAssertEqual(
