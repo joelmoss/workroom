@@ -444,6 +444,63 @@ fn a_run_with_no_daemon_to_take_it_runs_nothing() {
     assert!(stderr.contains("run"), "{stderr:?}");
 }
 
+/// A daemon older than run sessions (a hand-off that was refused, here or on a host) is never asked
+/// to run one: it would run the command bare, with no supervisor to stop or restart it (D4).
+#[test]
+fn a_run_is_never_sent_to_a_daemon_older_than_run_sessions() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use wr_protocol::envelope::Hello;
+
+    let workspace = Workspace::new("run-old-daemon");
+    let socket = workspace.socket();
+    let listener = UnixListener::bind(&socket).expect("bind fake daemon");
+    let fake = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let hello = Hello {
+            protocol_version: wr_protocol::envelope::MIN_RUN_VERSION - 1,
+            build: "old".into(),
+        };
+        stream.write_all(&hello.encode()).expect("greet");
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut received = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(read) = stream.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            received.extend_from_slice(&chunk[..read]);
+        }
+        let (_, consumed) = Hello::decode(&received)
+            .expect("a greeting")
+            .expect("a whole greeting");
+        received.len() - consumed
+    });
+
+    // `--no-spawn`, so a relay that wrongly talks to the old daemon fails here rather than starting
+    // a daemon of its own once the fake one has gone, and running the command in it.
+    let mut client = attach_with_env(
+        &socket,
+        SESSION,
+        &["--no-spawn"],
+        &[
+            ("WORKROOM_SESSION_RUN", "1"),
+            ("WORKROOM_SESSION_COMMAND", "echo SHOULD-NOT-RUN"),
+        ],
+    );
+    let status = client.wait().expect("wait");
+    let mut stderr = String::new();
+    client
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert_eq!(fake.join().unwrap(), 0, "nothing was asked of the old daemon");
+    assert!(!status.success(), "the relay reports it could not start the run");
+    assert!(stderr.contains("older"), "{stderr:?}");
+}
+
 /// A `bin/dev`-style launcher forks its server into a process group of its own, which the
 /// supervisor's group-wide Ctrl-C never reaches. When the run ends, whatever it left in the session
 /// is ended too, so nothing outlives it on its port (R8; the app swept the session itself before).

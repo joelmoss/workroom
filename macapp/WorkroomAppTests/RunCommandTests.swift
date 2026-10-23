@@ -1499,7 +1499,7 @@ final class RunCommandTests: XCTestCase {
   /// spawning a SECOND, UNTRACKED supervisor + dev server the app can't stop — which orphans on the
   /// port and makes the next start fail with "A server is already running". `tearDown()` must make the
   /// view permanently unable to re-spawn. (The process-level half is covered by the supervisor PTY
-  /// integration test, `Resources/run-supervisor/test_supervisor.py`.)
+  /// integration test, `macapp/Tests/run-supervisor/test_supervisor.py`.)
   func testTornDownRunViewNeverRespawns() {
     // spawnsSurface: true so the test exercises the real spawn-eligibility predicate (not the test
     // no-op seam) — `canSpawnSurface` is true for a fresh view and must flip to false after teardown.

@@ -759,11 +759,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       let alert = NSAlert()
       alert.messageText = "Quit Workroom?"
       alert.informativeText =
-        action == .stop
-        ? "Your terminals keep running in the background and will be waiting when you reopen "
-          + "Workroom. Your running dev servers will stop."
-        : "Your terminals and dev servers keep running in the background, and they'll be waiting "
-          + "when you reopen Workroom."
+        "Your terminals keep running in the background and will be waiting when you reopen "
+        + "Workroom."
       alert.addButton(withTitle: "Quit")
       alert.addButton(withTitle: "Cancel")
       alert.showsSuppressionButton = true
