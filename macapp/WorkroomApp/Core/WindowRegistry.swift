@@ -362,8 +362,7 @@ final class WindowRegistry: ObservableObject {
   /// servers release their ports/pidfiles instead of being orphaned by the OS hangup (issue #7).
   /// Calls `completion` once all windows have stopped (or each one's timeout elapses).
   func gracefullyStopAllWindows(timeout: TimeInterval, completion: @escaping () -> Void) {
-    // `hasLiveRun` too: a run whose pane was never mounted has no live process here (#522).
-    let live = allStores.filter { $0.hasLiveRunCommand || $0.hasLiveRun }
+    let live = allStores.filter(\.stopsRunsBeforeClosing)
     guard !live.isEmpty else {
       completion()
       return
@@ -394,7 +393,7 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
     MainActor.assumeIsolated {
       // During an app quit, `applicationShouldTerminate` already prompts + stops every window, so
       // don't prompt again here (de-dup, OV #10). No live run command → nothing to stop, close now.
-      guard let store, !WindowRegistry.shared.isTerminating, store.hasLiveRunCommand else {
+      guard let store, !WindowRegistry.shared.isTerminating, store.stopsRunsBeforeClosing else {
         return true
       }
       if Defaults[.confirmOnQuit] {

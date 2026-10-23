@@ -759,6 +759,10 @@ final class PersistentSessionService {
   func signalRun(sessionID: UUID, _ signal: RunSignal) async -> RunSignalOutcome {
     let reply: RunSignalReply?
     if let remote = remoteSessions[sessionID] {
+      // A restart is the user asking for the run to go, so a stopped container is started for it
+      // (`docs/remote-host-states.md`). A stop or a quit's stop never starts one just to stop a run
+      // that isn't going.
+      if signal == .restart { RemoteHosts.shared.activate(remote.host) }
       do {
         try await RemoteHosts.shared.ensureConnected(remote.host, wake: true)
         reply = try await HostConnectionManager.shared.signalSession(
