@@ -496,6 +496,7 @@ pub struct KillInFlight(Arc<AtomicUsize>);
 impl Drop for KillInFlight {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
+        crate::serve::wake_idle();
     }
 }
 
@@ -1321,6 +1322,7 @@ impl SessionStore {
         if let Some(screens) = self.screens.get() {
             screens.remove(id);
         }
+        crate::serve::wake_idle();
         true
     }
 
@@ -1386,6 +1388,7 @@ impl SessionStore {
         if let Some(screens) = self.screens.get() {
             screens.remove_all();
         }
+        crate::serve::wake_idle();
         if !ending.is_empty() {
             let ids: Vec<String> = ending.iter().map(|s| s.id.to_hyphenated()).collect();
             crate::note!("killing all {} sessions: {}", ids.len(), ids.join(", "));
@@ -1828,6 +1831,7 @@ fn remove_if_held(store: &mut HashMap<SessionId, Session>, id: SessionId, number
         .is_some_and(|session| session.number == number);
     if held {
         store.remove(&id);
+        crate::serve::wake_idle();
     }
     held
 }

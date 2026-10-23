@@ -73,6 +73,7 @@ impl Permit {
 impl Drop for Permit {
     fn drop(&mut self) {
         ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        crate::serve::wake_idle();
     }
 }
 
