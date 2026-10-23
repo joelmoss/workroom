@@ -737,6 +737,26 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
   }
 
+  /// A stopped run's pane keeps a live process (the parked supervisor, or the relay holding a gone
+  /// session's notice), but no dev server is going: quit must not ask about it, and closing it must
+  /// not wait on a stop nothing will answer (#522).
+  func testAStoppedRunWithALivePaneIsNotALiveRun() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    try! XCTUnwrap(runView(store, t)).liveProcessOverrideForTesting = true
+    store.applyRunStatus("exited 1", for: t)
+
+    XCTAssertFalse(store.hasLiveRun, "a stopped run is no dev server to keep or stop at quit")
+    XCTAssertFalse(store.hasLiveRunCommand)
+    signals.removeAll()
+    store.requestCloseTerminalTab(tab, for: t)
+    XCTAssertNil(store.runTabID(for: t.id), "closing a stopped run tab must not wait")
+    XCTAssertFalse(signals.contains { $0.1 == .quit })
+  }
+
   func testGracefullyStopAllWaitsForEveryLiveCommandThenCompletes() {
     let store = makeStore([project("/a", workrooms: ["main", "two"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
@@ -1004,6 +1024,23 @@ final class RunCommandTests: XCTestCase {
 
     XCTAssertEqual(
       store.runOutcomes[t.id], .exited(code: 137), "a non-zero exit is recorded as such")
+  }
+
+  /// The supervisor ends an outcome with its launch number (#522), so a restart that fails the
+  /// same way again still arrives; the code is still the second word.
+  func testARestartThatFailsTheSameWayEndsTheRestart() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    store.applyRunStatus("exited 127 1", for: t)
+    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 127))
+
+    store.restartRunCommand(for: t)
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "restarting")
+    store.applyRunStatus("exited 127 2", for: t)
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id), "the restart's failure ends it")
+    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 127))
   }
 
   func testUserStopThenExitMapsToStopped() {
