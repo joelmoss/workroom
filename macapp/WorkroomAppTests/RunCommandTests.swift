@@ -1610,6 +1610,68 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.runStates[t.id], .running(tab: tab, interrupted: false))
   }
 
+  /// A remote run that was going whose session ended while its link was down (its host
+  /// restarted, say) stops: its pane holds on the daemon's ended notice, so no exit of its own
+  /// would ever say the run is over, and it would read as running for good (#522).
+  func testAGoneSessionOfARunReattachingAfterItsLinkDroppedStopsIt() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    try! XCTUnwrap(runView(store, t)).reattachingOverrideForTesting = true
+
+    store.terminals.onEvent?(.runSessionGone(t.id, tab))
+
+    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab))
+    XCTAssertEqual(store.runOutcomes[t.id], .stoppedByUser, "an end it didn't fail by")
+    XCTAssertTrue(signals.isEmpty, "nothing was started or signalled")
+  }
+
+  /// A stop its daemon can't confirm (R9) keeps the run as it is, stopping, and starts nothing.
+  func testAnUnconfirmedStopStartsNothing() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    store.signalSupervisorForTesting = { _, _ in .unknown("no answer") }
+
+    store.stopRunCommand(for: t)
+
+    XCTAssertEqual(store.runStates[t.id], .running(tab: tab, interrupted: true))
+    XCTAssertEqual(store.runTabID(for: t.id), tab, "nothing replaced the run")
+  }
+
+  /// A run restored in a remote workroom not opened since launch has no process in this app, but
+  /// it is still going on its host: a quit that stops dev servers counts it, asks its daemon to
+  /// stop it and leaves its tab out of the saved layout (#522).
+  func testAQuitStopsARunWhosePaneWasNeverMounted() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let view = try! XCTUnwrap(runView(store, t))
+    view.awaitsMountOverrideForTesting = true  // never mounted, so no live process
+    view.persistentSessionID = view.persistentSessionID ?? UUID()
+    XCTAssertFalse(view.hasLiveProcess)
+
+    XCTAssertTrue(store.hasLiveRun, "quit asks about it")
+    AppStore.quitStopsRuns = true
+    defer { AppStore.quitStopsRuns = false }
+    XCTAssertFalse(
+      store.captureWindowSession().targets.contains {
+        $0.tabs.contains { $0.terminal?.run == true }
+      },
+      "its tab is left out")
+    var completed = false
+    store.gracefullyStopAllRunCommands(timeout: 300) { completed = true }
+    XCTAssertTrue(signals.contains { $0.0 == t.id && $0.1 == .quit }, "its supervisor is told")
+    waitUntil("the stop ends once its daemon has answered") { completed }
+    XCTAssertEqual(store.runTabID(for: t.id), tab)
+  }
+
   /// A restart whose daemon holds no such session starts a fresh one; one it cannot confirm starts
   /// nothing, so a lost reply can never double a server (R9).
   func testARestartReplacesTheRunOnlyWhenItsSessionIsGone() {

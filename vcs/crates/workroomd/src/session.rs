@@ -1993,22 +1993,6 @@ fn read_session(
     }
 }
 
-/// Ends these ptys' shells and everything they started.
-///
-/// SIGHUP first, which is what a terminal closing means and what a shell expects; SIGKILL only for
-/// whatever is still there afterwards. Sending SIGKILL outright would deny a shell the chance to
-/// run its exit traps.
-///
-/// Signalling the shell alone is not enough, and that is the whole reason this takes a descendant
-/// snapshot. Killing the shell hangs up the pty, and the kernel delivers SIGHUP to the pty's
-/// foreground process group — but a child that called `setsid()` is in neither that group nor the
-/// shell's session, so nothing reaches it and it survives the app quitting. See
-/// `process::descendants`.
-///
-/// **The snapshot must be taken before anything is signalled.** Once the shell is hung up its
-/// children start exiting, and a descendant that has already left the process table is one no
-/// later sweep can find — it would be missed precisely in the common case where it exits slowly
-/// enough to matter.
 /// How long what a run left behind gets to exit on SIGTERM before `sweep_run_session` sends SIGKILL.
 const RUN_SWEEP_GRACE: Duration = Duration::from_secs(2);
 
@@ -2047,6 +2031,22 @@ fn sweep_run_session(id: SessionId, sid: i32) {
     }
 }
 
+/// Ends these ptys' shells and everything they started.
+///
+/// SIGHUP first, which is what a terminal closing means and what a shell expects; SIGKILL only for
+/// whatever is still there afterwards. Sending SIGKILL outright would deny a shell the chance to
+/// run its exit traps.
+///
+/// Signalling the shell alone is not enough, and that is the whole reason this takes a descendant
+/// snapshot. Killing the shell hangs up the pty, and the kernel delivers SIGHUP to the pty's
+/// foreground process group — but a child that called `setsid()` is in neither that group nor the
+/// shell's session, so nothing reaches it and it survives the app quitting. See
+/// `process::descendants`.
+///
+/// **The snapshot must be taken before anything is signalled.** Once the shell is hung up its
+/// children start exiting, and a descendant that has already left the process table is one no
+/// later sweep can find — it would be missed precisely in the common case where it exits slowly
+/// enough to matter.
 fn terminate(ptys: &[&Arc<Pty>]) {
     let roots: Vec<i32> = ptys
         .iter()

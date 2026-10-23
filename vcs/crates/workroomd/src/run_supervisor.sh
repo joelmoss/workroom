@@ -35,7 +35,8 @@ write_status() {  # atomic: temp + rename, so a watcher never reads a half-writt
 # Signal our OWN process group (`kill -INT 0`) = exactly what a typed Ctrl-C does: it reaches the
 # child AND its grandchildren (a server forked through a shell), whatever the exec/fork shape, as
 # long as they're in our foreground pgroup (they are — job control is off). We survive because we
-# ignore INT below. A truly forked-free leaf in another pgroup escapes; the app reaps it as a backstop.
+# ignore INT below. A truly forked-free leaf in another pgroup escapes; when the run ends, the daemon
+# ends whatever is left in its session (`sweep_run_session`).
 on_restart() {
   ACTION=restart
   kill -INT 0 2>/dev/null

@@ -1049,11 +1049,15 @@ final class CreationFlowTests: XCTestCase {
     // The run waits for Done: a create against the fake daemon ends within one poll of the
     // run's start, so watching `creationRuns` for it mid-flight is a race.
     store.closesFinishedCreations = { false }
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
     let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
 
     XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertNotNil(
+      store.runStates[TerminalTarget.workroomID(project: projectPath, name: "calm-river")],
+      "auto-run was armed for the workroom's first terminal, and runs on its host (#522)")
     XCTAssertEqual(
       run.steps.map(\.state),
       [
@@ -1179,6 +1183,7 @@ final class CreationFlowTests: XCTestCase {
       return .failed(why)
     }
     store.remoteCreateServices = services
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: project.path)
 
     await store.createRemoteWorkroom(in: project, place: .boxd)
 
@@ -1188,6 +1193,9 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(driver.destroys, 0, "the machine was taken down")
     XCTAssertFalse(cli.calls.contains("delete calm-river"), "the record was forgotten")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
+    XCTAssertNil(
+      store.runStates[TerminalTarget.workroomID(project: project.path, name: "calm-river")],
+      "Open Anyway must not start the run against a half-set-up tree (issue #7)")
   }
 
   /// Value: protects=a setup that fails before its script starts (the connect, its check, the

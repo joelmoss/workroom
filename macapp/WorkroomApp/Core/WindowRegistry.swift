@@ -354,8 +354,6 @@ final class WindowRegistry: ObservableObject {
 
   // MARK: Quit
 
-  /// Any window with a live run command — gates the graceful-stop-on-quit (issue #7 / #70).
-  var hasAnyLiveRunCommand: Bool { allStores.contains(where: \.hasLiveRunCommand) }
   /// Whether any window's run command (not an Investigate tab) is going: what quitting may keep
   /// running or stop (#522).
   var hasAnyLiveRun: Bool { allStores.contains(where: \.hasLiveRun) }
@@ -364,7 +362,8 @@ final class WindowRegistry: ObservableObject {
   /// servers release their ports/pidfiles instead of being orphaned by the OS hangup (issue #7).
   /// Calls `completion` once all windows have stopped (or each one's timeout elapses).
   func gracefullyStopAllWindows(timeout: TimeInterval, completion: @escaping () -> Void) {
-    let live = allStores.filter(\.hasLiveRunCommand)
+    // `hasLiveRun` too: a run whose pane was never mounted has no live process here (#522).
+    let live = allStores.filter { $0.hasLiveRunCommand || $0.hasLiveRun }
     guard !live.isEmpty else {
       completion()
       return

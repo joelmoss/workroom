@@ -375,11 +375,15 @@ fn a_restored_run_whose_session_is_gone_is_never_started_again() {
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
 
+    // As the app's own pane: only the app's restored panes get an ended session made again (#459),
+    // so without the app's variable this would never reach the refusal it is here to pin.
+    let cwd = socket.parent().unwrap().to_str().unwrap();
     let mut client = attach_with_env(
         &socket,
         SESSION,
         &["--no-create"],
         &[
+            ("WORKROOM_SESSION_CWD", cwd),
             ("WORKROOM_SESSION_RUN", "1"),
             ("WORKROOM_SESSION_COMMAND", "echo SHOULD-NOT-RUN"),
         ],

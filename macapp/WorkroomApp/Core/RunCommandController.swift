@@ -9,6 +9,7 @@ typealias RunSignalOutcome = PersistentSessionService.RunSignalOutcome
 /// What a run session's daemon lists it under (`workroomd`'s `crate::run`): `kind` is `run`.
 enum RunSessionKey {
   static let kind = "kind"
+  static let run = "run"
 }
 
 /// A window's run commands (issue #7): each target's run state and outcome, the run toast's
@@ -418,14 +419,28 @@ final class RunCommandController {
     return view
   }
 
+  /// The target's run tab if its run is going but its pane has not been mounted yet, so it has no
+  /// process here to wait on: a remote workroom's run restored at launch in a workroom not opened
+  /// since. Its run is still going on its host, and a stop reaches it through its session (#522).
+  private func unmountedRunView(for targetID: TerminalTarget.ID) -> GhosttySurfaceView? {
+    guard let state = runStates[targetID], state.isRunning, let tabID = state.tab,
+      let view = terminals.view(forTab: tabID, inTarget: targetID),
+      view.awaitsMount, view.persistentSessionID != nil
+    else { return nil }
+    return view
+  }
+
+  /// Whether `targetID`'s run is going, mounted or not: what a quit may keep or stop (#522).
+  private func runIsGoing(_ targetID: TerminalTarget.ID) -> Bool {
+    liveRunView(for: targetID) != nil || unmountedRunView(for: targetID) != nil
+  }
+
   /// Whether a run command (not an Investigate tab) is going: what a quit may keep or stop (#522).
-  var hasLiveRun: Bool { runStates.keys.contains { liveRunView(for: $0) != nil } }
+  var hasLiveRun: Bool { runStates.keys.contains(where: runIsGoing) }
 
   /// The tabs of the runs a quit that stops dev servers stops (#522).
   var liveRunTabs: Set<TerminalTab.ID> {
-    Set(
-      runStates.compactMap { targetID, state in liveRunView(for: targetID) != nil ? state.tab : nil
-      })
+    Set(runStates.compactMap { targetID, state in runIsGoing(targetID) ? state.tab : nil })
   }
 
   /// Whether any run command still has a live process — gates the quit handler's graceful wait.
@@ -442,36 +457,43 @@ final class RunCommandController {
   /// SIGKILLs on a 6s timeout, then exits, which ends its session), and run `then` once every run
   /// surface's child has actually exited, or after `timeout` (the fallback, as for a host that does
   /// not answer). Polls `hasLiveProcess` on the main runloop; NEVER frees a surface itself, so it
-  /// can't race libghostty's teardown. What the run left outside its supervisor's tree, the daemon
-  /// ends as the session does (R8).
+  /// can't race libghostty's teardown. A run whose pane was never mounted has no process here: it
+  /// is waited on until its daemon answers the signal. What the run left outside its supervisor's
+  /// tree, the daemon ends as the session does (R8).
   func gracefullyStopRuns(
     _ targetIDs: [TerminalTarget.ID], timeout: TimeInterval = 6, then: @escaping () -> Void
   ) {
     var views: [GhosttySurfaceView] = []
+    let unanswered = Unanswered()
     for id in targetIDs {
-      guard let view = liveRunView(for: id) else { continue }
-      signalSupervisor(.quit, for: id)  // supervisor stops the child, then exits → session ends
-      views.append(view)
+      if let view = liveRunView(for: id) {
+        signalSupervisor(.quit, for: id)  // supervisor stops the child, then exits → session ends
+        views.append(view)
+      } else if unmountedRunView(for: id) != nil {
+        unanswered.count += 1
+        signalSupervisor(.quit, for: id) { _ in unanswered.count -= 1 }
+      }
     }
-    guard !views.isEmpty else {
-      then()
-      return
-    }
-    pollUntilExited(views, deadline: Date().addingTimeInterval(timeout), then: then)
+    pollUntilExited(
+      views, waitingFor: unanswered, deadline: Date().addingTimeInterval(timeout), then: then)
   }
 
-  /// Wait until the surfaces' children have exited, then run `then`; at `deadline`, run it anyway.
-  /// With `views` empty this completes synchronously, so callers must already be off any libghostty
-  /// callback stack.
-  func pollUntilExited(
-    _ views: [GhosttySurfaceView], deadline: Date, then: @escaping () -> Void
+  /// How many signals a stop is still waiting on its daemons to answer.
+  private final class Unanswered { var count = 0 }
+
+  /// Wait until the surfaces' children have exited and `unanswered` signals have been answered,
+  /// then run `then`; at `deadline`, run it anyway. With nothing to wait on this completes
+  /// synchronously, so callers must already be off any libghostty callback stack.
+  private func pollUntilExited(
+    _ views: [GhosttySurfaceView], waitingFor unanswered: Unanswered, deadline: Date,
+    then: @escaping () -> Void
   ) {
-    if views.allSatisfy({ !$0.hasLiveProcess }) || Date() >= deadline {
+    if (views.allSatisfy({ !$0.hasLiveProcess }) && unanswered.count <= 0) || Date() >= deadline {
       then()
       return
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-      self?.pollUntilExited(views, deadline: deadline, then: then)
+      self?.pollUntilExited(views, waitingFor: unanswered, deadline: deadline, then: then)
     }
   }
 

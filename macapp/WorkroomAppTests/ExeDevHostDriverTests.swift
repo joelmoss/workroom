@@ -154,6 +154,13 @@ final class ExeDevHostDriverTests: XCTestCase {
       attach.contains("'/usr/bin/env' 'SSH_AUTH_SOCK=/agent.sock' '/usr/bin/ssh'"), attach)
     XCTAssertTrue(attach.contains("'HostKeyAlias=exe.dev'"), attach)
     XCTAssertFalse(attach.contains("'-F'"), attach)
+    XCTAssertFalse(attach.contains("WORKROOM_SESSION_RUN"), attach)
+    // A run tab's attach carries its run command through the driver to the VM (#522).
+    let run = try driver.attachCommand(
+      to: .remote(id), session: UUID(), workingDirectory: "/home/exedev/r", restored: false,
+      metadata: [], runCommand: "bin/dev")
+    XCTAssertTrue(run.contains("WORKROOM_SESSION_RUN=1"), run)
+    XCTAssertTrue(run.contains("WORKROOM_SESSION_COMMAND=bin/dev"), run)
 
     // An ssh the app spawns has no environment of its own, so it gets the login shell's PATH for a
     // ProxyCommand's helper; a pane's ssh keeps the pane's.
