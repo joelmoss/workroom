@@ -264,7 +264,16 @@ pub fn spawn(sessions: SessionStore) {
             let mut written: HashSet<SessionId> = sessions.ids().into_iter().collect();
             let mut failing = HashSet::new();
             loop {
-                tick(&sessions, &mut written, &mut failing);
+                // Read before the pass looks, so a change made during it still wakes the thread.
+                let seen = sessions.screens_work();
+                let pending = tick(&sessions, &mut written, &mut failing);
+                // With nothing to come back for, sleep until a screen may have changed or a
+                // session has gone, rather than tick every INTERVAL of an idle daemon (half of
+                // its remaining wakeups, 2026-10-23). The INTERVAL after the wake batches a busy
+                // session's output as the fixed tick did.
+                if !pending {
+                    sessions.wait_for_screens_work(seen);
+                }
                 std::thread::sleep(INTERVAL);
             }
         });
@@ -276,15 +285,17 @@ pub fn spawn(sessions: SessionStore) {
 }
 
 /// One tick: the records, then the compression, which then also undoes what the records' reads
-/// re-inflated, then the unprobed requests whose grace has passed (#481).
+/// re-inflated, then the unprobed requests whose grace has passed (#481). Whether another tick
+/// is owed without new output: a record to retry, or a request still waiting out its grace.
 fn tick(
     sessions: &SessionStore,
     written: &mut HashSet<SessionId>,
     failing: &mut HashSet<SessionId>,
-) {
+) -> bool {
     flush(sessions, written, failing);
     sessions.compress_shadows();
-    sessions.promote_unprobed(std::time::Instant::now());
+    let unprobed = sessions.promote_unprobed(std::time::Instant::now());
+    unprobed || !failing.is_empty()
 }
 
 /// One tick: writes the screens that changed, and removes the records of sessions that ended.
