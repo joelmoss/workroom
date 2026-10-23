@@ -1489,7 +1489,7 @@ final class AppStore: ObservableObject {
       onDock: { [weak self] in self?.dockPane(tabID, for: target) },
       content: {
         DetachedPaneView(
-          tabID: tabID, content: tab.content, target: target, title: tab.title,
+          tabID: tabID, content: tab.content, target: target,
           sessions: terminals, store: self,
           onTitleChange: { [weak self] title in
             guard let self else { return }

@@ -48,15 +48,9 @@ struct TerminalTab: Identifiable {
   }
 
   /// What the tab strip displays: a terminal's live/idle title, or a content tab's own title (a
-  /// diff's filename).
-  var title: String {
-    switch content {
-    case .terminal(let s): return s.liveTitle ?? s.defaultTitle
-    case .diff(let d): return (d.path as NSString).lastPathComponent
-    case .file(let f): return (f.path as NSString).lastPathComponent
-    case .changeset(let c): return c.title
-    }
-  }
+  /// diff's filename). A view reads it through `TabTitleReader`, in a leaf, as a terminal's title
+  /// changes many times a second.
+  var title: String { content.title }
 
   /// The full repo-relative path of the file this tab shows (issue #136) — what the pane footer
   /// names, and the chip's tooltip. Nil for a terminal (its footer shows the cwd instead) and for a
@@ -142,6 +136,16 @@ enum TabContent {
   case diff(DiffDescriptor)
   case file(FileDescriptor)
   case changeset(ChangesetDescriptor)
+
+  /// A terminal's live/idle title, or a content tab's own (a diff's filename): `TerminalTab.title`.
+  var title: String {
+    switch self {
+    case .terminal(let s): return s.liveTitle ?? s.defaultTitle
+    case .diff(let d): return (d.path as NSString).lastPathComponent
+    case .file(let f): return (f.path as NSString).lastPathComponent
+    case .changeset(let c): return c.title
+    }
+  }
 
   /// The full repo-relative path of the file this content shows (issue #136) — see
   /// `TerminalTab.filePath`, which forwards here. Every kind that HAS a file already carries the

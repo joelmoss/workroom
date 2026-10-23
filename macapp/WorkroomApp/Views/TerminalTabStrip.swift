@@ -333,8 +333,11 @@ struct TerminalTabStrip: View {
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .help("\(tab.title): \(sentence)")
-    .accessibilityLabel("Show \(tab.title), \(sentence.lowercased())")
+    .withTabTitle(tab.content) { button, title in
+      button
+        .help("\(title): \(sentence)")
+        .accessibilityLabel("Show \(title), \(sentence.lowercased())")
+    }
     .accessibilityIdentifier("terminal.tab.waitingEdge.\(edge)")
   }
 
@@ -517,8 +520,8 @@ private struct TerminalTabChip: View {
   /// Extracted as a computed property for the same reason `runOrBusyAccessibilityValue` is: inlined
   /// in the chip's already-large `body`, this kind of map/ternary combo blew the type-checker's
   /// budget on a clean build.
-  private var chipAccessibilityLabel: String {
-    var parts = [tab.title]
+  private func chipAccessibilityLabel(_ title: String) -> String {
+    var parts = [title]
     if let tool = tab.recognizedTool { parts.append(tool.displayName) }
     if codingAgentBadge { parts.append("Diagnosis available") }
     // A run tab's value stays its run state (asserted exactly), so its OSC 9;4 ERROR goes here.
@@ -536,8 +539,8 @@ private struct TerminalTabChip: View {
       indicator: tab.indicator, rollup: tab.programStatus)
   }
 
-  private var tooltip: String {
-    ([tab.filePath ?? tab.title] + statusLines).joined(separator: "\n")
+  private func tooltip(_ title: String) -> String {
+    ([tab.filePath ?? title] + statusLines).joined(separator: "\n")
   }
 
   /// The chip's base line, one at a time: waiting and a stopped error are static, a running
@@ -628,27 +631,35 @@ private struct TerminalTabChip: View {
         )
         .accessibilityHidden(true)
       }
-      Text(tab.title)
-        .font(.callout)
-        // The focused tab's title is brighter (full primary) so it reads as selected; unfocused titles
-        // dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch re-measures the
-        // title and nudges the chips sideways. Unread activity (accent) overrides either, on any tab.
-        .foregroundStyle(
-          hasActivity ? theme.tokens.accent : (isActive ? Color.primary : theme.tokens.fgMuted)
-        )
-        // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
-        .italic(tab.isPreview)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        // Cap the title (~25 chars at `.callout`) so a long name (a file path, a shell-set terminal
-        // title) tail-truncates with an ellipsis instead of stretching the chip arbitrarily wide; the
-        // full title rides in the chip's `.help` tooltip below. A short title stays tight (leading
-        // alignment, Text sizes to its ideal width up to the cap).
-        .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
+      // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
+      // and only this text re-renders for it, not the chip.
+      TabTitleReader(content: tab.content) { title in
+        Text(title)
+          .font(.callout)
+          // The focused tab's title is brighter (full primary) so it reads as selected; unfocused
+          // titles dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch
+          // re-measures the title and nudges the chips sideways. Unread activity (accent) overrides
+          // either, on any tab.
+          .foregroundStyle(
+            hasActivity ? theme.tokens.accent : (isActive ? Color.primary : theme.tokens.fgMuted)
+          )
+          // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
+          .italic(tab.isPreview)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          // Cap the title (~25 chars at `.callout`) so a long name (a file path, a shell-set
+          // terminal title) tail-truncates with an ellipsis instead of stretching the chip
+          // arbitrarily wide; the full title rides in the chip's `.help` tooltip below. A short
+          // title stays tight (leading alignment, Text sizes to its ideal width up to the cap).
+          .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
+      }
       // The ✕ is always shown (every tab is closable at a glance), so the chip width is constant.
       TabCloseButton(action: onClose)
-        .help("Close \(tab.title)")
-        .accessibilityLabel("Close \(tab.title)")
+        .withTabTitle(tab.content) { button, title in
+          button
+            .help("Close \(title)")
+            .accessibilityLabel("Close \(title)")
+        }
     }
     .padding(.leading, 10)
     .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
@@ -716,15 +727,19 @@ private struct TerminalTabChip: View {
     // two `user.rb` tabs from different directories are otherwise indistinguishable without opening
     // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕. Program
     // status lines follow (#358).
-    .help(tooltip)
-    .accessibilityIdentifier("terminal.tab.\(tab.title)")
-    .accessibilityAddTraits(isActive ? .isSelected : [])
     // The recognized tool's favicon (issue #141) is otherwise conveyed ONLY by a plain `Image` — a
     // leaf `.accessibilityIdentifier` on the icon itself is silently unreachable (measured: an
     // XCUITest querying it never found the element, even though the model-layer detection and the
     // image asset both resolved correctly). Folded into the chip's own label instead, and the title
-    // stays in the label so VoiceOver still reads the tab's name.
-    .accessibilityLabel(chipAccessibilityLabel)
+    // stays in the label so VoiceOver still reads the tab's name. The three read the title in a
+    // leaf (`TabTitleReader`), so the chip's body does not re-run for every title change.
+    .withTabTitle(tab.content) { chip, title in
+      chip
+        .help(tooltip(title))
+        .accessibilityIdentifier("terminal.tab.\(title)")
+        .accessibilityLabel(chipAccessibilityLabel(title))
+    }
+    .accessibilityAddTraits(isActive ? .isSelected : [])
     // The ✦ badge is a real control that assistive technology could not reach at all: it is a nested
     // `Button`, and the chip's own label above collapses the chip into a single element. Announcing
     // it in the label (see `chipAccessibilityLabel`) makes it perceivable; this makes it OPERABLE,

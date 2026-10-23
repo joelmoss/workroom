@@ -21,7 +21,6 @@ struct DetachedPaneView: View {
   let tabID: TerminalTab.ID
   let content: TabContent
   let target: TerminalTarget
-  let title: String
   @ObservedObject var sessions: TerminalSessions
   let store: AppStore
   /// Push the pane's live title onto the window, so a terminal that renames itself renames its window
@@ -30,12 +29,9 @@ struct DetachedPaneView: View {
 
   private static let space = "detachedPaneContent"
 
-  /// The pane's current title, which for a terminal changes as commands run.
-  private var liveTitle: String { sessions.tab(tabID, for: target)?.title ?? title }
-
   var body: some View {
     PaneLeafView(
-      tabID: tabID, content: content, target: target, sessions: sessions, title: liveTitle,
+      tabID: tabID, content: content, target: target, sessions: sessions,
       focused: true, multiPane: false, surfaceActive: true,
       dimUnfocusedPanes: false, workroomIsSplit: false,
       paneIndex: 1, paneCount: 1, coordinateSpace: Self.space,
@@ -50,7 +46,13 @@ struct DetachedPaneView: View {
     // `takesOverTitlebar: false` — unlike the main window, this one keeps a normal title bar so the
     // pane has a name and a place to drag from; the themer only paints its background.
     .background(WindowBackgroundThemer(takesOverTitlebar: false))
-    .onChange(of: liveTitle, initial: true) { _, new in onTitleChange(new) }
+    // The title is read in a leaf (`TabTitleReader`) so a terminal renaming itself many times a
+    // second re-runs this `onChange` alone, not the pane.
+    .background(
+      TabTitleReader(content: content) { title in
+        Color.clear.onChange(of: title, initial: true) { _, new in onTitleChange(new) }
+      }
+    )
     .detachedPaneEnvironment(store: store, sessions: sessions)
   }
 }
