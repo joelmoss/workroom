@@ -1469,7 +1469,12 @@ final class RemoteHosts: @unchecked Sendable {
       // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
       labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: target.context,
       dialect: runtimeKind == .docker ? .docker : .apple, cpus: resources.cpus,
-      memory: resources.memory)
+      memory: resources.memory,
+      // A container's entrypoint (#308): the daemon this build bundles for its architecture,
+      // mounted on Apple's runtime from a folder of this build's own.
+      daemon: { PersistentSessionPaths.linuxDaemonURL(architecture: $0) },
+      daemonFolder: RemoteHosts.directory.appendingPathComponent(
+        "container-daemon", isDirectory: true))
   }
 
   /// This Mac's ssh key for its remote hosts, in `directory`, made the first time: ed25519, no

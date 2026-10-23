@@ -25,10 +25,14 @@ public struct Warning: Codable, Hashable, Sendable {
 /// socket are the driver's own (`Provisioning`), and the container's name follows from the
 /// host's ID.
 public struct ContainerHostRecord: Codable, Hashable, Sendable {
-  public let address: String
-  public let port: Int
+  /// Where a container made before #308 was reached over ssh: its loopback address, port and pinned
+  /// key. A record with a host key is one of those, which this build refuses (made again rather
+  /// than migrated); a container reached through its runtime has none.
+  public let address: String?
+  public let port: Int?
+  /// The user its workroom runs as: the remote user (#308), or a pre-#308 container's ssh user.
   public let user: String
-  public let hostKey: String
+  public let hostKey: String?
   /// The image a workroom an older build derived from a base was run from, which only it uses;
   /// nil for any other host.
   public let image: String?
@@ -36,8 +40,13 @@ public struct ContainerHostRecord: Codable, Hashable, Sendable {
   /// #309 has it, follows the environment and the CLI's current context, as those always did.
   public var context: String? = nil
 
+  /// A container reached through its runtime (#308).
+  public init(user: String, image: String?, context: String? = nil) {
+    self.init(address: nil, port: nil, user: user, hostKey: nil, image: image, context: context)
+  }
+
   public init(
-    address: String, port: Int, user: String, hostKey: String, image: String?,
+    address: String?, port: Int?, user: String, hostKey: String?, image: String?,
     context: String? = nil
   ) {
     self.address = address

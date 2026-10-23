@@ -868,8 +868,8 @@ final class RemoteHostsTests: XCTestCase {
     return (runtime, log)
   }
 
-  /// A stand-in runtime CLI that logs every call and fails `image inspect` (the image is missing),
-  /// `run`, and `pull` when `pullFails`, so `create` stops at its first container.
+  /// A stand-in runtime CLI that logs every call and fails the image's presence check (the image is
+  /// missing), `create`, and `pull` when `pullFails`, so `create` stops at its first container.
   private func failingRuntime(pullFails: Bool, said: String = "denied") throws -> (
     runtime: URL, log: URL
   ) {
@@ -878,25 +878,27 @@ final class RemoteHostsTests: XCTestCase {
     try
       (script + """
 
-        case "$1 $2" in "image inspect") exit 1 ;; esac
-        case "$1" in run) exit 1 ;; pull) \(pullFails ? "echo '\(said)' >&2; exit 1" : "exit 0") ;; esac
+        case "$*" in "image inspect --format {{.Id}} "*) exit 1 ;; esac
+        case "$1" in create) exit 1 ;; pull) \(pullFails ? "echo '\(said)' >&2; exit 1" : "exit 0") ;; esac
         """).write(to: runtime, atomically: true, encoding: .utf8)
     return (runtime, log)
   }
 
-  /// A missing host image is pulled, by itself, before the base's container runs, and `run` never
-  /// pulls: left to it, a missing image was looked for on Docker Hub (#309).
-  func testAMissingHostImageIsPulledBeforeRunAndRunNeverPulls() async throws {
+  /// A missing host image is pulled, by itself, before the base's container is made, and `create`
+  /// never pulls: left to it, a missing image was looked for on Docker Hub (#309).
+  func testAMissingHostImageIsPulledBeforeCreateAndCreateNeverPulls() async throws {
     let (runtime, log) = try failingRuntime(pullFails: false)
     do {
       _ = try await Self.driver(runtime: runtime, context: nil).create()
-      XCTFail("run was meant to fail")
+      XCTFail("create was meant to fail")
     } catch {}
     let calls = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map {
       $0.split(separator: " ").prefix(2).joined(separator: " ")
     }
+    XCTAssertEqual(Array(calls.prefix(2)), ["image inspect", "pull workroom-host"])
+    // After the pull, only reads of the image (its user, its architecture) before the create.
     XCTAssertEqual(
-      Array(calls.prefix(3)), ["image inspect", "pull workroom-host", "run --pull=never"])
+      calls.dropFirst(2).first { $0 != "image inspect" }, "create --pull=never")
   }
 
   private final class Fractions: @unchecked Sendable {
@@ -957,7 +959,7 @@ final class RemoteHostsTests: XCTestCase {
       } catch {
         XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription)
       }
-      XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).contains("run "))
+      XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).contains("create "))
     }
   }
 
@@ -1016,10 +1018,27 @@ final class RemoteHostsTests: XCTestCase {
         runtime: runtime, image: "workroom-host", user: RemoteWorkrooms.user,
         identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
         daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"],
-        context: context, dialect: dialect))
+        context: context, dialect: dialect, daemon: { _ in daemon },
+        daemonFolder: daemon.deletingLastPathComponent().appendingPathComponent("daemon")))
   }
 
+  /// A stand-in for the bundled Linux daemon, which a create copies or mounts before it makes the
+  /// container.
+  private static let daemon: URL = {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-daemon-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let file = folder.appendingPathComponent("workroomd-linux")
+    try? Data("ELF".utf8).write(to: file)
+    return file
+  }()
+
   private static func record(context: String?) -> ContainerHostRecord {
+    ContainerHostRecord(user: RemoteWorkrooms.user, image: nil, context: context)
+  }
+
+  /// A container made before #308, reached by ssh.
+  private static func sshRecord(context: String?) -> ContainerHostRecord {
     ContainerHostRecord(
       address: "127.0.0.1", port: 2222, user: RemoteWorkrooms.user, hostKey: "ssh-ed25519 AAAA",
       image: nil, context: context)
@@ -1032,11 +1051,11 @@ final class RemoteHostsTests: XCTestCase {
       #"{"address":"127.0.0.1","port":2222,"user":"workroom","host_key":"ssh-ed25519 AAAA"}"#.utf8)
     let decoded = try JSONDecoder().decode(ContainerHostRecord.self, from: old)
     XCTAssertNil(decoded.context)
-    XCTAssertEqual(decoded, Self.record(context: nil))
+    XCTAssertEqual(decoded, Self.sshRecord(context: nil))
 
     // Written back with no `context` key at all, so an old record's bytes don't change.
     let written = try JSONSerialization.jsonObject(
-      with: try JSONEncoder().encode(Self.record(context: nil)))
+      with: try JSONEncoder().encode(Self.sshRecord(context: nil)))
     XCTAssertNil((written as? [String: Any])?["context"])
 
     let pinned = Self.record(context: "orbstack")
@@ -1763,16 +1782,16 @@ final class RemoteHostsTests: XCTestCase {
     let journal = directory.appendingPathComponent("pending-containers-docker.json")
     let seen = directory.appendingPathComponent("seen-at-run")
     let (failing, _) = try scriptedRuntime(
-      "run*) cat \(SSHTransport.shellQuoted(journal.path)) >> "
+      "create*) cat \(SSHTransport.shellQuoted(journal.path)) >> "
         + "\(SSHTransport.shellQuoted(seen.path)); exit 1 ;;")
     let driver = Self.driver(runtime: failing, context: nil, directory: directory)
     do {
       _ = try await driver.create()
-      XCTFail("run was meant to fail")
+      XCTFail("create was meant to fail")
     } catch {}
     XCTAssertTrue(
       try String(contentsOf: seen, encoding: .utf8).contains("workroom-"),
-      "the name was not pending when the container ran")
+      "the name was not pending when the container was made")
     XCTAssertEqual(driver.pendingContainers, [], "a removed container stayed pending")
     XCTAssertTrue(ContainerHostDriver.pending(in: directory).isEmpty)
   }
@@ -2062,24 +2081,28 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   /// Apple's runtime has no `--restart` or `--pull`, and pulls every platform of an image unless
-  /// told its architecture: a missing image is pulled for arm64, and run with neither flag.
-  func testAppleRunsAndPullsInItsOwnDialect() async throws {
+  /// told its architecture: a missing image is pulled for arm64, and made with neither flag.
+  func testAppleMakesAndPullsInItsOwnDialect() async throws {
+    let pulled = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-pulled-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: pulled) }
     let (runtime, log) = try scriptedRuntime(
       """
-      "image inspect workroom-host") exit 1 ;;
-      run*) exit 1 ;;
+      "image inspect workroom-host") [ -e \(pulled.path) ] && { echo '[]'; exit 0; }; exit 1 ;;
+      "image pull"*) touch \(pulled.path) ;;
+      create*) exit 1 ;;
       """)
     do {
       _ = try await Self.driver(runtime: runtime, context: nil, dialect: .apple).create()
-      XCTFail("run was meant to fail")
+      XCTFail("create was meant to fail")
     } catch {}
     let made = try calls(log)
     XCTAssertEqual(
       Array(made.prefix(2)),
       ["image inspect workroom-host", "image pull --arch arm64 workroom-host"])
-    let run = try XCTUnwrap(made.first { $0.hasPrefix("run ") })
-    XCTAssertTrue(run.hasPrefix("run --detach --init --arch arm64 --name workroom-"), run)
-    XCTAssertFalse(run.contains("--restart") || run.contains("--pull"), run)
+    let create = try XCTUnwrap(made.first { $0.hasPrefix("create ") })
+    XCTAssertTrue(create.hasPrefix("create --init --arch arm64 --name workroom-"), create)
+    XCTAssertFalse(create.contains("--restart") || create.contains("--pull"), create)
     XCTAssertTrue(made.contains { $0.hasPrefix("delete --force workroom-") }, "\(made)")
   }
 

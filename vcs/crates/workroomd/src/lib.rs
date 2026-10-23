@@ -8,6 +8,7 @@
 //! See docs/designs/remote-workrooms.md. Phase 1 is the protocol and the terminal service; the VCS,
 //! file, status and port-forwarding services are Phase 2 over the same envelope.
 
+pub mod account;
 pub mod cli;
 pub mod credential;
 mod file;

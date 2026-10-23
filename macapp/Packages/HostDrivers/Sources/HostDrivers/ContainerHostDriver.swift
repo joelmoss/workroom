@@ -40,12 +40,21 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     /// VM's.
     public var cpus: Int?
     public var memory: String?
+    /// The bundled Linux daemon for an architecture (`aarch64`, `x86_64`): a container's
+    /// entrypoint (#308).
+    public var daemon: (@Sendable (String) -> URL?)?
+    /// The folder on this Mac Apple's containers mount the daemon from (Apple can't copy into a
+    /// container before it starts).
+    public var daemonFolder: URL?
 
     public init(
       runtime: URL, image: String, user: String, identityFile: String, publicKey: String,
       daemonSocket: String, labels: [String], context: String? = nil, dialect: Dialect = .docker,
-      cpus: Int? = nil, memory: String? = nil
+      cpus: Int? = nil, memory: String? = nil, daemon: (@Sendable (String) -> URL?)? = nil,
+      daemonFolder: URL? = nil
     ) {
+      self.daemon = daemon
+      self.daemonFolder = daemonFolder
       self.runtime = runtime
       self.image = image
       self.user = user
@@ -79,36 +88,128 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   /// seconds since 1970, so `sweep` can leave one that may still be part of a create.
   public static let createdLabel = "workroom.created"
 
-  /// Where each host's `ssh_config` and `known_hosts` are written.
+  /// How a host is reached: one handed in over ssh (the ssh fixture, and the path boxd and exe.dev
+  /// share, which its tests run through this driver), or a container this driver made, through its
+  /// runtime's `exec` (#308), as `user`, its daemon on `socket`.
+  private enum Reach {
+    case ssh(SSHTransport.Host)
+    case exec(user: String, socket: String)
+  }
+
+  /// What a container is made from (#308): the image, run as `user`, with the container settings a
+  /// devcontainer.json and its features ask for, resolved by the create.
+  public struct ContainerSpec: Sendable {
+    public var image: String
+    /// The remote user; nil for the image's own, else root.
+    public var user: String?
+    public var environment: [String: String]
+    public var mounts: [Mount]
+    /// Docker's run flags, as written; Apple's runtime takes none of them.
+    public var runArgs: [String]
+    public var privileged: Bool
+    public var capAdd: [String]
+    public var securityOpt: [String]
+    /// Made by the daemon, as root, for the remote user, before anything runs: the clone's parent.
+    public var workspaceFolder: String?
+
+    public init(
+      image: String, user: String? = nil, environment: [String: String] = [:],
+      mounts: [Mount] = [], runArgs: [String] = [], privileged: Bool = false,
+      capAdd: [String] = [], securityOpt: [String] = [], workspaceFolder: String? = nil
+    ) {
+      self.image = image
+      self.user = user
+      self.environment = environment
+      self.mounts = mounts
+      self.runArgs = runArgs
+      self.privileged = privileged
+      self.capAdd = capAdd
+      self.securityOpt = securityOpt
+      self.workspaceFolder = workspaceFolder
+    }
+  }
+
+  /// A mount, as both runtimes' `--mount` take it.
+  public struct Mount: Sendable, Equatable {
+    public var type: String
+    public var source: String?
+    public var target: String
+    public var readOnly: Bool
+
+    public init(type: String, source: String?, target: String, readOnly: Bool = false) {
+      self.type = type
+      self.source = source
+      self.target = target
+      self.readOnly = readOnly
+    }
+
+    /// `type=…,source=…,target=…[,readonly]`.
+    var flag: String {
+      (["type=\(type)"] + (source.map { ["source=\($0)"] } ?? []) + ["target=\(target)"]
+        + (readOnly ? ["readonly"] : [])).joined(separator: ",")
+    }
+  }
+
+  /// Where each host's `ssh_config` and `known_hosts`, and each pane's attach log, are written.
   public let directory: URL
   public let provisioning: Provisioning?
   private let lock = NSLock()
-  private var hosts: [UUID: SSHTransport.Host]
+  private var hosts: [UUID: Reach]
   private var provisioned: [UUID: Provisioned] = [:]
   /// Hosts this driver has destroyed, so destroying one again succeeds: a caller retrying after a
   /// later step of its own failed (forgetting its record) gets past the destroy it already did.
   private var destroyed: Set<UUID> = []
 
   public init(hosts: [UUID: SSHTransport.Host], directory: URL, provisioning: Provisioning? = nil) {
-    self.hosts = hosts
+    self.hosts = hosts.mapValues { .ssh($0) }
     self.directory = directory
     self.provisioning = provisioning
   }
 
-  private func target(_ host: HostID) throws -> (UUID, SSHTransport.Host) {
-    guard case .remote(let id) = host, let target = lock.withLock({ hosts[id] }) else {
+  private func reach(_ host: HostID) throws -> (UUID, Reach) {
+    guard case .remote(let id) = host, let reach = lock.withLock({ hosts[id] }) else {
       throw HostDriverError.unknownHost(host)
     }
-    return (id, target)
+    return (id, reach)
   }
 
+  /// How `exec` reaches `host`, a container this driver made.
+  private func execTarget(_ host: HostID) throws -> ContainerExecTransport.Target {
+    guard let provisioning, case .remote(let id) = host,
+      let (reach, made) = lock.withLock({
+        hosts[id].flatMap { r in provisioned[id].map { (r, $0) } }
+      }),
+      case .exec(let user, let socket) = reach
+    else { throw HostDriverError.unknownHost(host) }
+    return ContainerExecTransport.Target(
+      runtime: provisioning.runtime, dialect: provisioning.dialect, context: provisioning.context,
+      container: made.container, user: user, daemonSocket: socket,
+      daemonBinary: Self.containerDaemon)
+  }
+
+  /// Whether `host` is a container reached through its runtime (rather than a host handed in over
+  /// ssh): the bootstrap places its daemon itself (#308).
+  public func isContainer(_ host: HostID) -> Bool {
+    guard case .remote(let id) = host, case .exec = lock.withLock({ hosts[id] }) else {
+      return false
+    }
+    return true
+  }
+
+  /// A container from the provisioned image, as the image's own user: a create with no
+  /// devcontainer.json to say otherwise.
   public func create() async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
+    return try await create(spec: ContainerSpec(image: provisioning.image))
+  }
+
+  /// A container made from `spec` (#308), its image pulled first when this runtime hasn't it.
+  public func create(spec: ContainerSpec) async throws -> HostID {
     // The app announces the image step itself, around `ensureHostImage`: only its log here.
     try await ProvisioningProgress.step(.image, report: false) {
-      try await ensureImage(provisioning.image)
+      try await ensureImage(spec.image)
     }
-    return try await ProvisioningProgress.step(.machine) { try await run(provisioning.image) }
+    return try await ProvisioningProgress.step(.machine) { try await run(spec) }
   }
 
   /// Pulls the host image unless this runtime has it. A create calls it before it names its
@@ -263,26 +364,26 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     }
     guard stopped else { return }
     _ = try await runtime(["start", made.container])
-    try await awaitLogin(host)
+    try await awaitDaemon(host)
   }
 
   /// What a later launch's driver needs to `adopt` `host`, or nil for a host this driver did not
-  /// make.
+  /// make: the container's user (its name is its id's), its older derive's image, its context.
   public func record(of host: HostID) -> ContainerHostRecord? {
     guard case .remote(let id) = host else { return nil }
     return lock.withLock {
-      guard let target = hosts[id], let made = provisioned[id] else { return nil }
-      return ContainerHostRecord(
-        address: target.address, port: target.port, user: target.user, hostKey: target.hostKey,
-        image: made.image, context: provisioning?.context)
+      guard case .exec(let user, _) = hosts[id], let made = provisioned[id] else { return nil }
+      return ContainerHostRecord(user: user, image: made.image, context: provisioning?.context)
     }
   }
 
   /// Takes a host an earlier launch made back on (#253), as its `record` describes it, so it can
   /// be reached and destroyed as if this driver had made it. Whether its container is still there
-  /// is found out by using it.
+  /// is found out by using it. A container made before #308, reached over ssh, is refused: its
+  /// image's entrypoint is the ssh one, which this build doesn't speak.
   public func adopt(_ id: UUID, _ record: ContainerHostRecord) throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Adopting a host") }
+    guard record.hostKey == nil else { throw HostDriverError.olderContainer }
     // `destroy` removes it by this, with `--force`: a config edited by hand must not name an image
     // that is not an older derive's commit.
     if let image = record.image, !Self.isImageID(image) {
@@ -295,10 +396,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
           + (provisioning.context ?? "(current)"))
     }
     lock.withLock {
-      hosts[id] = SSHTransport.Host(
-        address: record.address, port: record.port, user: record.user,
-        identityFile: provisioning.identityFile, hostKey: record.hostKey,
-        daemonSocket: provisioning.daemonSocket)
+      hosts[id] = .exec(user: record.user, socket: Self.containerSocket)
       provisioned[id] = Provisioned(container: Self.containerName(id), image: record.image)
       destroyed.remove(id)
     }
@@ -610,19 +708,25 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     String(image.replacingOccurrences(of: "sha256:", with: "").prefix(12))
   }
 
-  /// Runs a container from `source` and waits until it can be reached: its identity minted, its
-  /// host key pinned, and an ssh login through this driver's own configuration answering. A
-  /// container that gets no further is removed.
-  private func run(_ source: String) async throws -> HostID {
+  /// Where a container's daemon is, inside it: the bundled binary, put there before the container
+  /// starts (Docker's `cp`, Apple's read-only mount), out of the socket's folder, which a mount
+  /// would make read-only.
+  public static let daemonFolder = "/.workroom/bin"
+  public static var containerDaemon: String { daemonFolder + "/workroomd" }
+  /// Where its socket is: the folder the daemon makes, as root, for the remote user.
+  public static let containerSocket = DaemonInstall.defaultSocket
+  /// Where it keeps each session's screen: in the remote user's home, which survives a restart.
+  static let containerScreens = "~/.local/state/workroom/screens"
+
+  /// Runs a container from `spec` and waits until its daemon serves the remote user, then checks
+  /// the image has what a workroom needs (a shell for panes, git for the clone and the daemon's
+  /// VCS service). Its entrypoint is the bundled daemon, started as root to make the socket's and
+  /// the workspace's folders for the remote user, which it then becomes (`serve --user`). The
+  /// image's own entrypoint and command don't run, as the devcontainers CLI's `overrideCommand`
+  /// default. A container that gets no further is removed.
+  private func run(_ spec: ContainerSpec) async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
-    // A port of its own rather than an ephemeral one (`127.0.0.1::22`): a restart keeps it, so the
-    // host's address outlives a reboot, as a provider's box keeps its address.
-    // ponytail: the port is free when chosen, not when the runtime binds it; a run that loses
-    // that race fails and is rolled back like any other.
-    guard let (probe, port) = LoopbackSocket.listen() else {
-      throw HostDriverError.provisioning("no free loopback port: errno \(errno)")
-    }
-    Darwin.close(probe)
+    let apple = provisioning.dialect == .apple
     let id = UUID()
     // Named here, not by the runtime's own ID, which is known only from its output: a run that
     // outlives its CLI still leaves a container this name removes.
@@ -630,29 +734,48 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     // Before the container exists: a crash from here on leaves its name pending (#284).
     try updatePending { $0.append(container) }
     do {
-      // Docker's `unless-stopped`: a Docker or Mac restart brings it back, on the port its record
-      // names. Apple's runtime has no restart policy; opening the workroom starts it
-      // (`startIfStopped`), on the port it keeps.
+      let user = try await remoteUser(spec)
+      let daemon = try await bundledDaemon(for: spec.image)
+      // Docker's `unless-stopped`: a daemon that exits, or a Docker or Mac restart, brings it back.
+      // Apple's runtime has no restart policy; opening the workroom starts it (`startIfStopped`).
       // In steps, typed: as one expression, CI's Swift gave up type-checking it.
       var arguments: [String] =
-        provisioning.dialect == .apple
-        ? ["run", "--detach", "--init", "--arch", "arm64"]
-        : ["run", "--pull=never", "--detach", "--init", "--restart", "unless-stopped"]
+        apple
+        ? ["create", "--init", "--arch", "arm64"]
+        : ["create", "--pull=never", "--init", "--restart", "unless-stopped"]
       if let cpus = provisioning.cpus { arguments += ["--cpus", String(cpus)] }
       if let memory = provisioning.memory { arguments += ["--memory", memory] }
-      arguments += ["--name", container, "--publish", "127.0.0.1:\(port):22"]
+      arguments += ["--name", container, "--user", "0"]
       for label in provisioning.labels + [Self.created()] { arguments += ["--label", label] }
-      arguments += ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source]
+      for (key, value) in spec.environment.sorted(by: { $0.key < $1.key }) {
+        arguments += ["--env", "\(key)=\(value)"]
+      }
+      for mount in spec.mounts { arguments += ["--mount", mount.flag] }
+      arguments += spec.capAdd.flatMap { ["--cap-add", $0] }
+      if !apple {
+        if spec.privileged { arguments.append("--privileged") }
+        arguments += spec.securityOpt.flatMap { ["--security-opt", $0] } + spec.runArgs
+      }
+      if apple {
+        arguments += [
+          "--mount",
+          "type=bind,source=\(try appleDaemonFolder(holding: daemon).path),"
+            + "target=\(Self.daemonFolder),readonly",
+        ]
+      }
+      arguments +=
+        ["--entrypoint", Self.containerDaemon, spec.image]
+        + Self.serveArguments(
+          user: user, workspaceFolder: spec.workspaceFolder)
       _ = try await runtime(arguments)
-      let hostKey = try await identity(of: container)
+      if !apple { try await copyDaemon(daemon, into: container) }
+      _ = try await runtime(["start", container])
       lock.withLock {
-        hosts[id] = SSHTransport.Host(
-          address: "127.0.0.1", port: Int(port), user: provisioning.user,
-          identityFile: provisioning.identityFile, hostKey: hostKey,
-          daemonSocket: provisioning.daemonSocket)
+        hosts[id] = .exec(user: user, socket: Self.containerSocket)
         provisioned[id] = Provisioned(container: container, image: nil)
       }
-      try await awaitLogin(.remote(id))
+      try await awaitDaemon(.remote(id))
+      try await checkImage(.remote(id), user: user)
       return .remote(id)
     } catch {
       lock.withLock {
@@ -660,8 +783,7 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
         provisioned[id] = nil
       }
       let remove =
-        provisioning.dialect == .apple
-        ? ["delete", "--force", container] : ["rm", "--force", "--volumes", container]
+        apple ? ["delete", "--force", container] : ["rm", "--force", "--volumes", container]
       let removal = await Task { () -> String? in
         do {
           _ = try await self.runtime(remove)
@@ -669,38 +791,140 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
         } catch { return "container \(container): \(error.localizedDescription)" }
       }.value
       if removal == nil { forgetPending([container]) }
-      // The login wait wrote the host's ssh_config and pinned key here.
       try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
       guard let removal else { throw error }
       throw HostDriverError.leftBehind(cause: error.localizedDescription, leftover: [removal])
     }
   }
 
-  /// The container's ssh host key, read through the runtime once its entrypoint has minted it
-  /// (the image's `identity.sh`, which run.sh reads it through too): delivered out of band, as
-  /// every driver's must be (design doc, host-key policy).
-  private func identity(of container: String) async throws -> String {
-    for _ in 0..<100 {
-      if let key = try? await runtime(["exec", container, "identity.sh"], quiet: true),
-        key.split(separator: " ").count == 2
-      {
-        return key
+  /// The daemon's arguments as a container's entrypoint (`serve --user`).
+  static func serveArguments(user: String, workspaceFolder: String?) -> [String] {
+    [
+      "serve", "--socket", containerSocket, "--idle-timeout", "never", "--screens",
+      containerScreens, "--user", user,
+    ] + (workspaceFolder.map { ["--own", $0] } ?? [])
+  }
+
+  /// The user a container's workroom runs as: the spec's, else the image's own, else root (the
+  /// devcontainers CLI's rule).
+  private func remoteUser(_ spec: ContainerSpec) async throws -> String {
+    if let user = spec.user, !user.isEmpty { return user }
+    let configured: String
+    if provisioning?.dialect == .apple {
+      let images = try AppleContainerCLI.objects(
+        try await runtime(["image", "inspect", spec.image], allLines: true))
+      configured = images.first.flatMap(AppleContainerCLI.user(ofImage:)) ?? ""
+    } else {
+      configured = try await runtime([
+        "image", "inspect", "--format", "{{.Config.User}}", spec.image,
+      ])
+    }
+    return configured.isEmpty ? "root" : configured
+  }
+
+  /// The bundled daemon for the image's architecture.
+  private func bundledDaemon(for image: String) async throws -> URL {
+    guard let provisioning, let daemon = provisioning.daemon else {
+      throw HostDriverError.notImplemented("A container's daemon")
+    }
+    let architecture: String
+    if provisioning.dialect == .apple {
+      architecture = "aarch64"  // Apple's runtime runs arm64 images only (`--arch arm64`).
+    } else {
+      let said = try await runtime(["image", "inspect", "--format", "{{.Architecture}}", image])
+      architecture = ["arm64": "aarch64", "amd64": "x86_64"][said] ?? said
+    }
+    guard let binary = daemon(architecture) else {
+      throw HostDriverError.provisioning(
+        "the image \(image) is for \(architecture), and this build has no daemon for it")
+    }
+    return binary
+  }
+
+  /// Docker: the daemon into the created container, before it starts, as a tar the runtime unpacks
+  /// at `/` (`cp -` makes the folders).
+  private func copyDaemon(_ binary: URL, into container: String) async throws {
+    let staging = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "workroom-daemon-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: staging) }
+    let folder = staging.appendingPathComponent(String(Self.daemonFolder.dropFirst()))
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let copy = folder.appendingPathComponent("workroomd")
+    try FileManager.default.copyItem(at: binary, to: copy)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
+    let tar = staging.appendingPathComponent("daemon.tar")
+    let archive = Process()
+    archive.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+    // Root's, and no macOS extended attributes, which Docker can't set inside a container.
+    archive.arguments = [
+      "--no-xattrs", "--no-mac-metadata", "--uid", "0", "--gid", "0", "-cf", tar.path, "-C",
+      staging.path, String(Self.daemonFolder.dropFirst().split(separator: "/").first ?? ""),
+    ]
+    try archive.run()
+    archive.waitUntilExit()
+    guard archive.terminationStatus == 0 else {
+      throw HostDriverError.provisioning("couldn't package the daemon for the container")
+    }
+    _ = try await runtime(["cp", "-", "\(container):/"], input: tar)
+  }
+
+  /// Apple: the folder on this Mac its containers mount the daemon from, holding `binary`'s bytes.
+  /// One per build (a container is only ever opened by the build that made it), replaced in place.
+  private func appleDaemonFolder(holding binary: URL) throws -> URL {
+    guard let folder = provisioning?.daemonFolder else {
+      throw HostDriverError.notImplemented("A folder for Apple containers' daemon")
+    }
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let target = folder.appendingPathComponent("workroomd")
+    if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
+      return folder
+    }
+    let staged = folder.appendingPathComponent(".workroomd-\(UUID().uuidString)")
+    try FileManager.default.copyItem(at: binary, to: staged)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
+    _ = try FileManager.default.replaceItemAt(target, withItemAt: staged)
+    return folder
+  }
+
+  /// Until the container's daemon answers its remote user: it starts a moment after the container.
+  /// Run directly, with no shell, so an image without one gets to `checkImage`, which says so.
+  private func awaitDaemon(_ host: HostID) async throws {
+    let target = try execTarget(host)
+    var last = ""
+    for _ in 0..<50 {
+      do {
+        _ = try await runtime(
+          [
+            "exec", "-u", target.user ?? "root", target.container, target.daemonBinary, "list",
+            "--socket", target.daemonSocket,
+          ], quiet: true)
+        return
+      } catch {
+        last = error.localizedDescription
       }
       try await Task.sleep(for: .milliseconds(200))
     }
-    throw HostDriverError.provisioning("\(container) never minted its identity")
+    throw HostDriverError.provisioning("the container's daemon never started: \(last)")
   }
 
-  /// sshd starts a moment after the identity is minted, so the first login can be refused.
-  private func awaitLogin(_ host: HostID) async throws {
-    var last = ""
-    for _ in 0..<50 {
-      let (status, output) = try await exec("true", on: host).communicate(nil, timeout: 20)
-      if status == 0 { return }
-      last = output
-      try await Task.sleep(for: .milliseconds(200))
+  /// That the image has a shell for panes (the check itself needs one) and git (the clone and the
+  /// daemon's VCS service run it), with what is missing named rather than left to fail later.
+  private func checkImage(_ host: HostID, user: String) async throws {
+    let (status, said) = try await exec(
+      "command -v git >/dev/null 2>&1 || exit 3", on: host
+    ).communicate(nil, timeout: 20)
+    switch status {
+    case 0: return
+    case 3:
+      throw HostDriverError.provisioning(
+        "this image has no git, which Workroom needs inside the container for the checkout. Add it "
+          + "to the image, or use a devcontainer.json feature such as "
+          + "ghcr.io/devcontainers/features/git.")
+    default:
+      throw HostDriverError.provisioning(
+        "this image has no shell for \(user), which Workroom needs for the workroom's terminals "
+          + "(\(said.trimmingCharacters(in: .whitespacesAndNewlines)))")
     }
-    throw HostDriverError.provisioning("ssh never let us in: \(last)")
   }
 
   /// One runtime command; its first line of output, which is all most of these print on success,
@@ -708,7 +932,8 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   /// talk to, never the app's whole one.
   private func runtime(
     _ arguments: [String], timeout: TimeInterval = 120, allLines: Bool = false,
-    onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)? = nil, quiet: Bool = false
+    onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)? = nil, quiet: Bool = false,
+    input: URL? = nil
   ) async throws -> String {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     // `quiet` is for a poll, which would log the same line a hundred times. The environment is never
@@ -723,10 +948,15 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
       quiet ? nil : ProvisioningProgress.commandLine(provisioning.runtime.path, full),
       logOutput: logOutput
     ) {
-      let (status, output) = try await HostStream.spawn(
+      let stream = try HostStream.spawn(
         provisioning.runtime, full, environment: environment, handshakeTimeout: 20,
-        purpose: .exchange
-      ).communicate(nil, timeout: timeout, onOutput: onOutput)
+        purpose: .exchange)
+      let (status, output) =
+        if let input {
+          try await stream.communicate(contentsOf: input, timeout: timeout, onOutput: onOutput)
+        } else {
+          try await stream.communicate(nil, timeout: timeout, onOutput: onOutput)
+        }
       return (status, output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     guard status == 0 else {
@@ -758,7 +988,10 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   }
 
   public func openStream(to host: HostID) async throws -> HostStream {
-    let (id, target) = try target(host)
+    let (id, reach) = try reach(host)
+    guard case .ssh(let target) = reach else {
+      return try ContainerExecTransport.openStream(on: try execTarget(host))
+    }
     return try SSHTransport.exec(
       SSHTransport.relayCommand(binary: target.daemonBinary, socket: target.daemonSocket),
       on: target,
@@ -766,7 +999,10 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
   }
 
   public func exec(_ command: String, on host: HostID) async throws -> HostStream {
-    let (id, target) = try target(host)
+    let (id, reach) = try reach(host)
+    guard case .ssh(let target) = reach else {
+      return try ContainerExecTransport.exec(command, on: try execTarget(host), purpose: .exchange)
+    }
     return try SSHTransport.exec(
       command, on: target, in: directory.appendingPathComponent(id.uuidString),
       purpose: .exchange)
@@ -776,21 +1012,33 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
     metadata: [(key: String, value: String)], runCommand: String?
   ) throws -> String {
-    let (id, target) = try target(host)
+    let (id, reach) = try reach(host)
+    let hostDirectory = directory.appendingPathComponent(id.uuidString)
+    guard case .ssh(let target) = reach else {
+      return ContainerExecTransport.attachCommand(
+        on: try execTarget(host), in: hostDirectory, session: session,
+        workingDirectory: workingDirectory, restored: restored, metadata: metadata,
+        runCommand: runCommand)
+    }
     return try SSHTransport.attachCommand(
-      to: target, in: directory.appendingPathComponent(id.uuidString), session: session,
+      to: target, in: hostDirectory, session: session,
       workingDirectory: workingDirectory, restored: restored, metadata: metadata,
       runCommand: runCommand)
   }
 
-  /// Whether the last attach of `session` was refused by `host` in a way that does not heal: a
-  /// changed host key, a key it will not take, nothing to agree a cipher on (#241). Everything
-  /// else is worth trying again: a host that is booting refuses, times out, or accepts and closes
-  /// before its banner, and some of those leave ssh nothing to say at `LogLevel ERROR`.
+  /// Whether the last attach of `session` was refused by `host` in a way that does not heal. Over
+  /// ssh: a changed host key, a key it will not take, nothing to agree a cipher on (#241); a host
+  /// that is booting refuses, times out, or accepts and closes before its banner, and those are
+  /// worth trying again. Through the runtime: a container that is gone.
   public func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
-    guard case .remote(let id) = host else { return false }
-    return SSHTransport.refusedLastAttach(
-      of: session, in: directory.appendingPathComponent(id.uuidString))
+    guard case .remote(let id) = host, let reach = lock.withLock({ hosts[id] }) else {
+      return false
+    }
+    let hostDirectory = directory.appendingPathComponent(id.uuidString)
+    if case .exec = reach {
+      return ContainerExecTransport.refusedLastAttach(of: session, in: hostDirectory)
+    }
+    return SSHTransport.refusedLastAttach(of: session, in: hostDirectory)
   }
 
   public func lastAttach(of session: UUID, on host: HostID) -> LastAttach {

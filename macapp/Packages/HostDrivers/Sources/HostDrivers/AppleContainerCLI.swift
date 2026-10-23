@@ -35,6 +35,12 @@ public enum AppleContainerCLI {
     configuration(image)["name"] as? String
   }
 
+  /// The user an image runs as (its config's `User`), from whichever of its platforms says; nil or
+  /// empty for root.
+  public static func user(ofImage image: [String: Any]) -> String? {
+    variants(image).lazy.compactMap { config($0)["User"] as? String }.first
+  }
+
   /// An image's labels, from whichever of its platforms carries them.
   public static func labels(ofImage image: [String: Any]) -> [String: String] {
     variants(image).reduce(into: [:]) { labels, variant in

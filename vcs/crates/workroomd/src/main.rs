@@ -13,11 +13,14 @@ use workroomd::cli;
 fn usage() -> &'static str {
     "usage:
   workroomd serve --socket <path> [--idle-timeout <secs>|never] [--screens <dir>]
+                  [--user <name|uid[:gid]> [--own <dir>]...]
         own ptys and services (the daemon role).
         --idle-timeout never is for a supervised remote daemon, which must keep running with no
         client attached.
         --screens <dir> keeps each session's screen in <dir>, so a pane reattaching after the
         host reboots is shown its last one. <dir> must survive a reboot: not the socket's.
+        --user, run as root (a container's entrypoint), makes the socket's folder and each
+        --own <dir> for that user, then becomes it; a ~ in --screens is that user's home.
   workroomd serve --stdio
         serve one connection over stdin/stdout, whose sessions die with it; a transport test
         entry point, not a persistent remote daemon (that is serve --idle-timeout never + relay)
@@ -73,6 +76,13 @@ fn main() -> ExitCode {
                 cli::flag(&args, "--idle-timeout"),
                 cli::flag(&args, "--handoff").map(PathBuf::from),
                 cli::flag(&args, "--screens").map(PathBuf::from),
+                cli::serve::Become {
+                    user: cli::flag(&args, "--user"),
+                    own: cli::flags(&args, "--own")
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect(),
+                },
             ),
             None => {
                 eprintln!("error: serve needs --socket <path> or --stdio");

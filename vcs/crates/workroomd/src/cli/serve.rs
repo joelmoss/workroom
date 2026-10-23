@@ -37,11 +37,19 @@ pub fn run_serve_stdio() -> ExitCode {
     }
 }
 
+/// `serve --user` and its `--own` folders: who a container's daemon becomes (#308).
+#[derive(Debug, Default)]
+pub struct Become {
+    pub user: Option<String>,
+    pub own: Vec<PathBuf>,
+}
+
 pub fn run_serve(
     socket: PathBuf,
     idle: Option<String>,
     handoff: Option<PathBuf>,
-    screens: Option<PathBuf>,
+    mut screens: Option<PathBuf>,
+    as_user: Become,
 ) -> ExitCode {
     let timeout = match idle_timeout(idle.as_deref()) {
         Ok(timeout) => timeout,
@@ -50,6 +58,27 @@ pub fn run_serve(
             return ExitCode::FAILURE;
         }
     };
+    // Before anything is made, so all of it is the user's: a container's entrypoint starts as root.
+    if let Some(user) = as_user.user {
+        let account = match crate::account::lookup(&user) {
+            Ok(account) => account,
+            Err(e) => {
+                eprintln!("error: serve --user {user}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        screens = screens.map(|dir| crate::account::expand_home(&dir, &account.home));
+        let mut folders: Vec<(PathBuf, bool)> = socket
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(|parent| vec![(parent.to_path_buf(), true)])
+            .unwrap_or_default();
+        folders.extend(as_user.own.into_iter().map(|dir| (dir, false)));
+        if let Err(e) = crate::account::become_user(&account, &folders) {
+            eprintln!("error: serve could not become {user}: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
     // Before anything can fail, so every line below and every session's end has somewhere to go.
     // The log lives beside the socket, so its folder comes first; the lock reports a failure.
     let _ = serve::make_socket_folder(&socket);

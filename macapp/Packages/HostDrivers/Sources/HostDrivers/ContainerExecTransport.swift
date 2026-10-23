@@ -23,10 +23,12 @@ public enum ContainerExecTransport {
     /// The user every command runs as (the container's remote user); nil for the image's own.
     public let user: String?
     public let daemonSocket: String
+    /// The daemon's binary in the container: beside the socket unless the driver put it elsewhere.
+    public let daemonBinary: String
 
     public init(
       runtime: URL, dialect: ContainerHostDriver.Dialect, context: String?, container: String,
-      user: String?, daemonSocket: String
+      user: String?, daemonSocket: String, daemonBinary: String? = nil
     ) {
       self.runtime = runtime
       self.dialect = dialect
@@ -34,9 +36,8 @@ public enum ContainerExecTransport {
       self.container = container
       self.user = user
       self.daemonSocket = daemonSocket
+      self.daemonBinary = daemonBinary ?? DaemonInstall.binary(besideSocket: daemonSocket)
     }
-
-    public var daemonBinary: String { DaemonInstall.binary(besideSocket: daemonSocket) }
   }
 
   /// The runtime's arguments to run `command` in `target` (both runtimes spell `exec` the same).
