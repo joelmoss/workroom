@@ -1136,7 +1136,7 @@ final class PortForwardingModel: ObservableObject {
     }
   }
 
-  /// Forward the ports the workroom's dev container declares (`DevContainerPorts`), once a launch:
+  /// Forward the ports the workroom's dev container declares (`DevContainerConfig`), once a launch:
   /// `read` gives its `devcontainer.json`, or nil when it has none. A port already forwarded is
   /// left as it is. A pass the host's connection cuts short (the container not started yet, Docker
   /// not running) runs again once the host connects (`watch`), as well as on the next call; one
@@ -1161,9 +1161,9 @@ final class PortForwardingModel: ObservableObject {
       declared = true
       return
     }
-    let ports: [DevContainerPorts.Port]
+    let ports: [DevContainerConfig.Port]
     do {
-      ports = try DevContainerPorts.parse(file.data)
+      ports = try DevContainerConfig.parse(file.data).ports
     } catch {
       declared = true
       message = "Couldn't read \(file.path): \(error.localizedDescription)"
@@ -1172,12 +1172,12 @@ final class PortForwardingModel: ObservableObject {
     var failures: [String] = []
     // Each forward holds a descriptor for the launch, so a file listing hundreds of ports must not
     // take the app's (terminals, ssh and daemon connections share the same limit).
-    if ports.count > DevContainerPorts.maxForwards {
+    if ports.count > DevContainerConfig.maxForwards {
       failures.append(
         "\(file.path) declares \(ports.count) ports; only the first "
-          + "\(DevContainerPorts.maxForwards) are forwarded.")
+          + "\(DevContainerConfig.maxForwards) are forwarded.")
     }
-    for port in ports.prefix(DevContainerPorts.maxForwards)
+    for port in ports.prefix(DevContainerConfig.maxForwards)
     where !forwards.contains(where: { $0.remotePort == port.port }) {
       do {
         try await forward(port)
@@ -1204,7 +1204,7 @@ final class PortForwardingModel: ObservableObject {
     watch()
   }
 
-  private func forward(_ port: DevContainerPorts.Port) async throws {
+  private func forward(_ port: DevContainerConfig.Port) async throws {
     let (lease, service) = try await transport.forwarding()
     let reconnect = transport.reconnect
     let id = UUID()

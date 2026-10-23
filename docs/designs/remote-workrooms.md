@@ -1868,8 +1868,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       Desktop's file sharing may exclude /Users (it did on the owner's Mac, 2026-09-24), and Colima
       and OrbStack differ. Apple's has no restart policy, so the existing start-on-open
       (`startIfStopped`) stands in for Docker's restart.
-    - **Configuration.** The Development Containers spec, which `DevContainerPorts` already reads
-      for `forwardPorts`: `image` or `build`, `features`, `mounts`, `containerEnv`, `remoteEnv`,
+    - **Configuration.** The Development Containers spec, read by `DevContainerConfig` (which
+      replaced the ports-only `DevContainerPorts`): `image` or `build`, `features`, `mounts`, `containerEnv`, `remoteEnv`,
       `remoteUser`, `runArgs`, `workspaceFolder` and the lifecycle commands. A project without the file gets the
       default image (below) and a per-Mac setting to choose another.
     - **What the image must have:** git (the clone and the daemon's VCS service run it) and a shell
