@@ -126,6 +126,11 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
   }
 
   @MainActor
+  func testARunRunsOnAnExeDevVMAndAnswersStopRestartAndQuit() async throws {
+    try await aRunRunsOnTheHostAndAnswersStopRestartAndQuit(provider())
+  }
+
+  @MainActor
   func testARemoteWorkroomIsMadeAndTakenDownOnExeDevAsTheAppDoesIt() async throws {
     let driver = driver()
     let account = try await driver.signedIn()
