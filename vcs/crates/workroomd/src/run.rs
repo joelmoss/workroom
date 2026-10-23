@@ -63,8 +63,17 @@ pub fn spawn_watcher(sessions: SessionStore) {
         .spawn(move || {
             let mut published = HashMap::new();
             loop {
+                // Counted before the tick looks, so a run created between the look and the wait
+                // still wakes it.
+                let seen = sessions.runs_created();
                 tick(&sessions, &dir, &mut published);
-                std::thread::sleep(POLL);
+                if sessions.run_session_ids().is_empty() {
+                    // Nothing to publish: sleep until there is, rather than tick an empty map
+                    // seven times a second (the daemon's whole idle cost, 2026-10-23).
+                    sessions.wait_for_run_created(seen);
+                } else {
+                    std::thread::sleep(POLL);
+                }
             }
         });
     if let Err(e) = spawned {
