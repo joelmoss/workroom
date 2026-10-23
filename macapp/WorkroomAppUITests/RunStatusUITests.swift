@@ -73,25 +73,42 @@ final class RunStatusUITests: XCTestCase {
   }
 
   /// A running run session keeps its daemon from idling out, and the runner cannot end either, so
-  /// the app's own watcher must: once the app is gone, so is the scratch directory, which the
-  /// watcher removes last, after ending the daemon and the run (#533).
+  /// the app's own watcher must: once the app is gone, so are the run's command and the scratch
+  /// directory (#533). The command outlives this test's wait unless something ends it.
   func testTheScratchDaemonIsGoneOnceTheAppQuits() {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
-    app.launchArguments += ["-WorkroomUITestRunCommand", "sleep 30"]
+    app.launchArguments += ["-WorkroomUITestRunCommand", "sleep 60"]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     let scratch = app.useScratchDaemon()
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
     startRun(app)
     XCTAssertTrue(app.buttons["runCommand.stop"].waitForExistence(timeout: 15), "the run started")
+    // The run supervisor writes "running <pid>" into its status file in the scratch directory.
+    var command: pid_t = 0
     XCTAssertTrue(
-      FileManager.default.fileExists(atPath: scratch), "the run's daemon lives in \(scratch)")
+      poll(timeout: 10) {
+        command = Self.runningPid(in: scratch + "/workroomd.runs") ?? 0
+        return command > 0
+      }, "the run's daemon lives in \(scratch)")
 
     app.terminate()
     XCTAssertTrue(
-      poll(timeout: 15) { !FileManager.default.fileExists(atPath: scratch) },
-      "the app's exit left its scratch daemon behind in \(scratch)")
+      poll(timeout: 15) { kill(command, 0) != 0 }, "the app's exit left its run \(command) running")
+    XCTAssertTrue(
+      poll(timeout: 5) { !FileManager.default.fileExists(atPath: scratch) },
+      "the app's exit left its scratch directory behind: \(scratch)")
+  }
+
+  private static func runningPid(in runs: String) -> pid_t? {
+    let files = (try? FileManager.default.contentsOfDirectory(atPath: runs)) ?? []
+    for file in files where file.hasSuffix(".status") {
+      let line = (try? String(contentsOfFile: runs + "/" + file, encoding: .utf8)) ?? ""
+      let fields = line.split(whereSeparator: \.isWhitespace)
+      if fields.first == "running", fields.count > 1, let pid = pid_t(fields[1]) { return pid }
+    }
+    return nil
   }
 
   /// A run that exits 0 is a success, not a failure: no failed icon (the chip settles on stopped).
