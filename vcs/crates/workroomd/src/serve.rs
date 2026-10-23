@@ -81,6 +81,7 @@ impl InstanceLock {
 /// because binding a unix socket unlinks and recreates the path — two racing daemons would each
 /// successfully bind and the second would silently steal the first's address.
 pub fn acquire_instance_lock(socket: &Path) -> Result<InstanceLock, ServeError> {
+    make_socket_folder(socket)?;
     let path = socket.with_extension("lock");
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -356,10 +357,22 @@ pub fn bind(socket: &Path) -> std::io::Result<UnixListener> {
     if socket.exists() {
         let _ = std::fs::remove_file(socket);
     }
-    if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    make_socket_folder(socket)?;
     UnixListener::bind(socket)
+}
+
+/// Makes the socket's folder, and any missing above it, private to this user (ADR 0043: a client
+/// of the socket can type into every session). Nothing else makes it when the daemon is a
+/// container's entrypoint (#308). A folder that exists keeps the mode it has.
+pub fn make_socket_folder(socket: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match socket.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent),
+        _ => Ok(()),
+    }
 }
 
 /// The state the request/reply services keep for ONE connection, dropped with it.
@@ -648,7 +661,7 @@ fn dispatch(
                         .clone()
                         .unwrap_or_default()
                         .to_string_lossy(),
-                    &request.shell.clone().unwrap_or_default().to_string_lossy(),
+                    &shell::user_shell(request.shell.clone()),
                     &request
                         .resources
                         .clone()
@@ -1287,6 +1300,39 @@ pub fn parse_session_id(value: &OsStr) -> Option<SessionId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A container's daemon is its entrypoint, so nothing makes the socket's folder first (#308):
+    /// the lock beside the socket is the first thing written there.
+    #[test]
+    fn the_lock_makes_a_missing_socket_folder_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("workroomd-mkdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let socket = root.join("a/b/workroomd.sock");
+
+        let _lock = acquire_instance_lock(&socket).expect("the lock makes the folder");
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root.join("a/b")), 0o700);
+        assert_eq!(mode(&root.join("a")), 0o700);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder someone else made keeps the mode they gave it.
+    #[test]
+    fn the_lock_leaves_an_existing_socket_folder_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("workroomd-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+
+        let _lock = acquire_instance_lock(&dir.join("workroomd.sock")).expect("lock");
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn instance_lock_is_exclusive() {

@@ -51,6 +51,8 @@ pub fn run_serve(
         }
     };
     // Before anything can fail, so every line below and every session's end has somewhere to go.
+    // The log lives beside the socket, so its folder comes first; the lock reports a failure.
+    let _ = serve::make_socket_folder(&socket);
     crate::log::redirect_stderr(&socket);
     // First, before an update can replace the file at this path: see `handoff::Context::digest`.
     let digest = handoff::own_binary()

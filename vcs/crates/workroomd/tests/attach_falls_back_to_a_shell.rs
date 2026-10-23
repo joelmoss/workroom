@@ -142,16 +142,17 @@ fn a_peer_that_cannot_negotiate_still_leaves_a_working_shell() {
 
 /// Nothing listening, and the spawned daemon cannot start there.
 ///
-/// The guard below is load-bearing and was missing. The reason the daemon fails is NOT "the
-/// directory does not exist" — `serve.rs` does `create_dir_all(parent)` before binding. It fails
-/// because `acquire_instance_lock` opens `<socket>.lock` first and that ENOENTs. Move the lock
-/// below the mkdir, a plausible refactor, and a REAL daemon binds and runs the command, so every
-/// assertion below passes without the fallback ever executing. The notice is what proves which
-/// path ran.
+/// The guard below is load-bearing. A missing folder no longer stops the daemon: `serve` makes the
+/// socket's folder itself (#308), and this test once relied on it not doing so, which a real daemon
+/// binding and running the command would have hidden from every other assertion. So the socket's
+/// parent here is an ordinary file, which no folder-making gets past. The notice is what proves
+/// which path ran.
 #[test]
 fn a_daemon_that_cannot_be_started_still_leaves_a_working_shell() {
     let dir = scratch("nostart");
-    let socket = dir.join("missing").join("a.sock");
+    let file = dir.join("not-a-folder");
+    std::fs::write(&file, "").unwrap();
+    let socket = file.join("a.sock");
 
     let (output, code) = attach(&[
         (
