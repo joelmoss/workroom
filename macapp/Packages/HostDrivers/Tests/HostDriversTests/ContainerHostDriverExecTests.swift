@@ -158,15 +158,26 @@ final class ContainerHostDriverExecTests: XCTestCase {
     XCTAssertTrue(try calls.contains { $0.dropFirst(2).starts(with: ["rm", "--force"]) })
   }
 
-  /// No user in the spec is the image's own, from its config; none there is root.
+  /// No user in the spec is the one the image's devcontainer metadata names (the devcontainers
+  /// images run as root and name `vscode` there), else the image's own, from its config; none
+  /// there is root.
   func testTheRemoteUserDefaultsToTheImagesOwnThenRoot() async throws {
     var spec = spec
     spec.user = nil
     let driver = try driver(
       try stubRuntime(
-        #""--context orbstack image inspect --format {{.Config.User}}"*) echo node ;;"#))
+        #""--context orbstack image inspect --format {{json .Config}}"*) echo '{"User":"node"}' ;;"#
+      ))
     let host = try await driver.create(spec: spec)
     XCTAssertEqual(driver.record(of: host)?.user, "node")
+
+    let metadata = #"[{\"id\":\"git\"},{\"remoteUser\":\"vscode\"}]"#
+    let devcontainer = try self.driver(
+      try stubRuntime(
+        #""--context orbstack image inspect --format {{json .Config}}"*) "#
+          + #"echo '{"User":"root","Labels":{"devcontainer.metadata":"\#(metadata)"}}' ;;"#))
+    let devcontainerHost = try await devcontainer.create(spec: spec)
+    XCTAssertEqual(devcontainer.record(of: devcontainerHost)?.user, "vscode")
 
     let rootDriver = try self.driver(try stubRuntime())
     let rootHost = try await rootDriver.create(spec: spec)

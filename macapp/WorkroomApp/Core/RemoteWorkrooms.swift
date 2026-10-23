@@ -166,20 +166,10 @@ enum RemoteWorkrooms {
   static let daemonSocket = DaemonInstall.defaultSocket
   static let user = "workroom"
 
-  /// The image a new container host runs (#309): the hidden `remoteHostImage` override, else the published
-  /// image this build pins by digest (`WorkroomHostImage`, from CI), else a local `workroom-host`,
-  /// as `make remote-host-image` builds it for a Dev build.
-  static var hostImage: String {
-    hostImage(
-      override: Defaults[.remoteHostImage],
-      pinned: Bundle.main.object(forInfoDictionaryKey: "WorkroomHostImage") as? String)
-  }
-
-  static func hostImage(override: String?, pinned: String?) -> String {
-    for image in [override, pinned] {
-      if let image = image?.trimmingCharacters(in: .whitespaces), !image.isEmpty { return image }
-    }
-    return "workroom-host"
+  /// The image a container workroom without a devcontainer.json is made from (#308, eng review
+  /// D8): this Mac's choice in Settings, else the pinned devcontainers base.
+  static var defaultImage: String {
+    DevContainerSetup.defaultImage(setting: Defaults[.containerDefaultImage])
   }
 
   /// The branch a remote workroom checks out, as a local workroom's is named.
@@ -332,9 +322,14 @@ enum RemoteWorkrooms {
   ///
   /// When the create fails and undid itself, the entry is dropped. When undoing it failed too, the
   /// entry keeps the host that is still live so deleting it can finish the job.
+  ///
+  /// A container's dev container (#308) says where the checkout goes (`path`, its
+  /// workspaceFolder), and what it was made from (`config`, for the Details pane); `startCommit` is
+  /// the commit its files were judged at.
   static func create(
     repository: GitHubRepository, cloneURL: String, startBranch: String? = nil,
-    key: RemoteHosts.DriverKey = .init(),
+    startCommit: String? = nil, path: String? = nil,
+    config: (digest: String, file: String?)? = nil, key: RemoteHosts.DriverKey = .init(),
     driver: any HostTerminalDriver,
     environment: RemoteProvisioning.Environment, recorder: Recorder,
     pendingIn: URL? = RemoteHosts.pendingIn
@@ -353,7 +348,7 @@ enum RemoteWorkrooms {
     }
     let recorder = recorder.forgettingPending(in: pendingIn)
     let origin = "\(repository.owner)/\(repository.name)"
-    let path = clonePath(for: repository, on: key)
+    let path = path ?? clonePath(for: repository, on: key)
     let workroomID = UUID()
     let name = try await recorder.reserve(
       path,
@@ -364,7 +359,7 @@ enum RemoteWorkrooms {
     do {
       instance = try await RemoteProvisioning.provision(
         cloneURL: cloneURL, path: path, branch: branch(for: name), startBranch: startBranch,
-        in: environment
+        startCommit: startCommit, in: environment
       ) { host in
         // Still `creating`, but now naming what a delete has to take down.
         try await recorder.record(
@@ -402,6 +397,8 @@ enum RemoteWorkrooms {
       var descriptor = describing(
         instance.host, key: key, driver: driver, credentials: instance.relayed)
       descriptor.workroomID = workroomID
+      descriptor.container?.configDigest = config?.digest
+      descriptor.container?.configFile = config?.file
       // Its own GitHub identity, for PR and CI status (`registrations`).
       descriptor.repository = origin
       descriptor.cloneURL = cloneURL
@@ -499,6 +496,8 @@ enum RemoteWorkrooms {
     let judge: RemoteProvisioning.ScriptJudge
     var onStart: @Sendable () -> Void = {}
     let onLine: @Sendable (String) -> Void
+    /// On top of what the script runs with: a container's `remoteEnv` (#308).
+    var environment: [String: String] = [:]
   }
 
   /// Runs a workroom's script on its host, through the app's own connection to it
@@ -524,7 +523,8 @@ enum RemoteWorkrooms {
       request.script, workroom: request.workroom, at: request.path,
       hostKind: RemoteProvisioning.hostKind(request.key), rootScript: request.rootScript,
       daemonBinary: request.daemonBinary, on: request.host, driver: request.driver,
-      judge: request.judge, onStart: request.onStart, onLine: request.onLine)
+      judge: request.judge, environment: request.environment, onStart: request.onStart,
+      onLine: request.onLine)
   }
 
   /// What a delete runs before the host goes: the workroom's teardown script, as the CLI runs a local
@@ -585,7 +585,8 @@ enum RemoteWorkrooms {
       let run = await teardown.run(
         ScriptRequest(
           script: .teardown, workroom: name, path: teardown.path, host: box, key: key,
-          driver: driver, daemonBinary: environment.daemonBinary, rootScript: teardown.rootScript,
+          driver: driver, daemonBinary: environment.daemonBinary(on: box),
+          rootScript: teardown.rootScript,
           judge: teardown.judge, onLine: teardown.onLine))
       switch run {
       case .failed(let why): throw Failure.teardownScriptFailed(why)
@@ -1142,7 +1143,8 @@ final class RemoteHosts: @unchecked Sendable {
           let held = try driver ?? heldDriver(host)
           try await CredentialRelay.shared.install(
             on: host, driver: held,
-            daemonBinary: DaemonInstall.binary(besideSocket: held.daemonSocket))
+            daemonBinary: (held as? any DaemonPlacingDriver)?.daemonPath(on: host)
+              ?? DaemonInstall.binary(besideSocket: held.daemonSocket))
         }
         _ = lock.withLock { relayPending.removeValue(forKey: id) }
         return
@@ -1259,6 +1261,8 @@ final class RemoteHosts: @unchecked Sendable {
           if let probe, (try? await probe.value) != nil { return }
           try await start?(host)
           try await connect(host)
+          // Not awaited: only panes wait for it, and they do so in the container.
+          Task { await self.runPostStart(on: host) }
         }
         connecting[host] = (task, start != nil)
         return task
@@ -1277,6 +1281,23 @@ final class RemoteHosts: @unchecked Sendable {
         "connecting \(String(describing: host), privacy: .public): \(error, privacy: .public)")
       if olderLayout { throw RepositoryRoutingError.olderLayout(host) }
       throw RepositoryRoutingError.unavailable(host)
+    }
+  }
+
+  /// A container's postStartCommand, on the first connect after each start of it (#308, eng review
+  /// D12); its panes wait for it in the container, and a second connect meanwhile finds it under
+  /// way there. How it went is logged, never thrown: the connect itself worked.
+  private func runPostStart(on host: HostID) async {
+    guard let driver = try? heldDriver(host) as? ContainerHostDriver else { return }
+    do {
+      guard let (status, said) = try await driver.runPostStartIfNeeded(on: host) else { return }
+      Self.logger.notice(
+        "postStartCommand on \(String(describing: host), privacy: .public) exited \(status): \(said, privacy: .public)"
+      )
+    } catch {
+      Self.logger.error(
+        "postStartCommand on \(String(describing: host), privacy: .public): \(error.localizedDescription, privacy: .public)"
+      )
     }
   }
 
@@ -1461,7 +1482,7 @@ final class RemoteHosts: @unchecked Sendable {
     }
     let key = try clientKey()
     return ContainerHostDriver.Provisioning(
-      runtime: URL(fileURLWithPath: runtime), image: RemoteWorkrooms.hostImage,
+      runtime: URL(fileURLWithPath: runtime), image: RemoteWorkrooms.defaultImage,
       user: RemoteWorkrooms.user, identityFile: key.path,
       publicKey: try String(contentsOf: key.appendingPathExtension("pub"), encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines),

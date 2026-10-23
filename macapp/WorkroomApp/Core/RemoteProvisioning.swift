@@ -35,6 +35,9 @@ enum RemoteProvisioning {
     var grantRepository: (@Sendable (GitHubRepository) async throws -> Void)?
     /// A connection to the daemon on a host, bootstrapping one there first.
     var connect: @Sendable (HostID) async throws -> DaemonVCSConnection
+    /// Makes the workroom's host, where it isn't the driver's plain `create`: a container from its
+    /// devcontainer.json's spec (#308).
+    var makeHost: (@Sendable () async throws -> HostID)? = nil
 
     init(
       driver: any HostDriver, daemonSocket: String,
@@ -54,7 +57,12 @@ enum RemoteProvisioning {
         }
     }
 
-    var daemonBinary: String { DaemonInstall.binary(besideSocket: daemonSocket) }
+    /// Where the daemon runs from on `host`: where its driver placed it (a container's, #308),
+    /// else beside the socket.
+    func daemonBinary(on host: HostID) -> String {
+      (driver as? any DaemonPlacingDriver)?.daemonPath(on: host)
+        ?? DaemonInstall.binary(besideSocket: daemonSocket)
+    }
   }
 
   /// A workroom's host, serving requests over `connection`.
@@ -126,9 +134,12 @@ enum RemoteProvisioning {
   ///
   /// `checkpoint` is told the host as soon as it exists. A crash later still leaves it recorded for
   /// a delete to take down (#253). A checkpoint that fails is a failed step, and undoes the create.
+  ///
+  /// `startCommit`, when known, is the commit the create's scripts and devcontainer.json were judged
+  /// at (#308, "one revision"): the branch starts there, so a push since can't change what runs.
   static func provision(
     cloneURL: String, path: String, branch: String, startBranch: String? = nil,
-    in environment: Environment,
+    startCommit: String? = nil, in environment: Environment,
     checkpoint: @Sendable (_ host: HostID) async throws -> Void = { _ in }
   ) async throws -> Instance {
     // The Mac's token first: checked before the machine, which can take minutes.
@@ -136,7 +147,12 @@ enum RemoteProvisioning {
     if let gitHubToken = environment.gitHubToken {
       header = cloneEnvironment(token: try await gitHubToken())
     }
-    let host = try await environment.driver.create()
+    let host: HostID
+    if let makeHost = environment.makeHost {
+      host = try await makeHost()
+    } else {
+      host = try await environment.driver.create()
+    }
     var connection: DaemonVCSConnection?
     do {
       try await checkpoint(host)
@@ -157,7 +173,7 @@ enum RemoteProvisioning {
       _ = try await git(
         [
           "switch", "--quiet", "--no-track", "--create", branch,
-          "refs/remotes/origin/\(startBranch ?? "HEAD")",
+          startCommit ?? "refs/remotes/origin/\(startBranch ?? "HEAD")",
         ],
         in: path, environment: header ?? [:], on: connected, step: .checkout)
       return Instance(
@@ -297,10 +313,12 @@ enum RemoteProvisioning {
   /// run; with none, the root's (`rootScript`, on this Mac) is copied in with its mode and run, as
   /// the CLI falls back to the root's copy locally (`findScript`). Either way the bytes that would
   /// run go to `judge` first, and ones this Mac has not approved never run (#363). It never throws.
+  ///
+  /// `environment` goes on top of what the script runs with: a container's `remoteEnv` (#308).
   static func runScript(
     _ script: Script, workroom name: String, at path: String, hostKind: String,
     rootScript: URL?, daemonBinary: String, on host: HostID, driver: any HostDriver,
-    judge: ScriptJudge,
+    judge: ScriptJudge, environment: [String: String] = [:],
     onStart: @Sendable () -> Void = {}, onLine: @escaping @Sendable (String) -> Void,
     timeout: TimeInterval = scriptTimeout, slack: TimeInterval = 30
   ) async -> ScriptRun {
@@ -332,6 +350,8 @@ enum RemoteProvisioning {
       }
       let command =
         "\(q(daemonBinary)) run-script --dir \(q(path)) --timeout \(Int(timeout))"
+        + environment.sorted(by: { $0.key < $1.key }).map { " --env \(q("\($0.key)=\($0.value)"))" }
+        .joined()
         + " --env \(q("WORKROOM_NAME=\(name)")) --env \(q("WORKROOM_PATH=\(path)"))"
         + " --env \(q("WORKROOM_HOST=\(hostKind)")) -- \(q(scriptPath))"
       onStart()
@@ -481,7 +501,7 @@ enum RemoteProvisioning {
 
   /// Splits a stream's pieces into lines, stdout's and stderr's apart, since a piece can end
   /// mid-line and the two interleave.
-  private final class LineSplitter: @unchecked Sendable {
+  final class LineSplitter: @unchecked Sendable {
     private let onLine: @Sendable (String) -> Void
     private let lock = NSLock()
     private var pending: [Bool: Data] = [:]

@@ -219,6 +219,7 @@ struct CreationPane: View {
     case .tryAgain: Task { await store.retryCreation(run) }
     case .reviewScript: store.presentSetupApproval(run)
     case .chooseStart: store.presentStartChoice(run)
+    case .defaultImage: Task { await store.retryCreation(run, skipsDevContainer: true) }
     case .close, .cancel: store.closeCreation(run)
     case .openAnyway: store.openCreatedWorkroomAnyway(run)
     case .deleteWorkroom: deleteWorkroom()

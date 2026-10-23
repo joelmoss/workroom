@@ -131,6 +131,8 @@ final class CLIContractTests: XCTestCase {
       LocalWork(
         branch: "main", remote: "origin", ahead: 1, uncommitted: false,
         summary: "You have 1 commit on main that you haven't pushed yet"))
+    // The commit judged, which a remote create checks out (#308); the golden normalises its hash.
+    XCTAssertEqual(status.start, "<commit>")
   }
 
   /// A create that would leave local work out, asked to stop (`--start ask`), carries that work,

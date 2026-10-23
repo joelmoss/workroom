@@ -39,6 +39,12 @@ public struct ContainerHostRecord: Codable, Hashable, Sendable {
   /// The Docker context it runs in (`Provisioning.context`). nil, as every record made before
   /// #309 has it, follows the environment and the CLI's current context, as those always did.
   public var context: String? = nil
+  /// What it was made from (#308, eng review D7): the devcontainer.json's bytes, hashed
+  /// (`sha256:…`), or `image:<reference>` for a container made without one. The Details pane says
+  /// when the repository's has moved on, since a change applies to new workrooms only.
+  public var configDigest: String? = nil
+  /// Where that devcontainer.json was in the repository, when there was one.
+  public var configFile: String? = nil
 
   /// A container reached through its runtime (#308).
   public init(user: String, image: String?, context: String? = nil) {
@@ -60,6 +66,8 @@ public struct ContainerHostRecord: Codable, Hashable, Sendable {
   enum CodingKeys: String, CodingKey {
     case address, port, user, image, context
     case hostKey = "host_key"
+    case configDigest = "config_digest"
+    case configFile = "config_file"
   }
 }
 
@@ -367,15 +375,21 @@ public struct TrustStatus: Codable, Sendable {
   public let scripts: [ScriptTrust]
   /// What a create from the base judged leaves out of the main checkout, when anything.
   public let localWork: LocalWork?
+  /// The commit the judged start names (a status with a base): a remote create checks it out, so
+  /// what runs there is what was judged (#308).
+  public let start: String?
 
-  public init(trusted: Bool, scripts: [ScriptTrust], localWork: LocalWork? = nil) {
+  public init(
+    trusted: Bool, scripts: [ScriptTrust], localWork: LocalWork? = nil, start: String? = nil
+  ) {
     self.trusted = trusted
     self.scripts = scripts
     self.localWork = localWork
+    self.start = start
   }
 
   enum CodingKeys: String, CodingKey {
-    case trusted, scripts
+    case trusted, scripts, start
     case localWork = "local_work"
   }
 }

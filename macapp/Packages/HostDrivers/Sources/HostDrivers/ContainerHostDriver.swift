@@ -207,19 +207,12 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
 
   /// A container made from `spec` (#308), its image pulled first when this runtime hasn't it.
   public func create(spec: ContainerSpec) async throws -> HostID {
-    // The app announces the image step itself, around `ensureHostImage`: only its log here.
+    // The app pulls and builds before it names the workroom (`ContainerCreate.prepare`), so a
+    // download's progress shows on its own row; this finds the image there, and only logs.
     try await ProvisioningProgress.step(.image, report: false) {
       try await ensureImage(spec.image)
     }
     return try await ProvisioningProgress.step(.machine) { try await run(spec) }
-  }
-
-  /// Pulls the host image unless this runtime has it. A create calls it before it names its
-  /// workroom, so a download's progress (`pullProgress`) shows on the project's row, which is the
-  /// one that shows it; `create` then finds the image there.
-  public func ensureHostImage() async throws {
-    guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
-    try await ProvisioningProgress.step(.image) { try await ensureImage(provisioning.image) }
   }
 
   /// Told how far a host image's pull has got, 0 to 1, then nil once it is done, for a create run
@@ -227,10 +220,10 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   /// and two creates at once each hear only their own.
   @TaskLocal public static var pullProgress: (@Sendable (Double?) -> Void)?
 
-  /// Pulls `image` unless the runtime already has it (#309). `run` itself never pulls
-  /// (`--pull=never`): left to it, a missing `workroom-host` was looked for on Docker Hub as
-  /// `library/workroom-host`, and failed with a registry error that said nothing about why.
-  private func ensureImage(_ image: String) async throws {
+  /// Pulls `image` unless the runtime already has it (#309). `create` itself never pulls
+  /// (`--pull=never`): left to it, a missing local image was looked for on Docker Hub as
+  /// `library/<name>`, and failed with a registry error that said nothing about why.
+  public func ensureImage(_ image: String) async throws {
     let apple = provisioning?.dialect == .apple
     let inspect =
       apple ? ["image", "inspect", image] : ["image", "inspect", "--format", "{{.Id}}", image]
@@ -264,12 +257,12 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
         said.lowercased().contains($0)
       }) {
         throw HostDriverError.provisioning(
-          "the registry refused the workroom host image \(image): it isn't public, or this build "
-            + "names one that doesn't exist. (\(said))")
+          "the registry refused the image \(image): it isn't public, you aren't logged in to "
+            + "its registry, or it doesn't exist. (\(said))")
       }
       throw HostDriverError.provisioning(
-        "couldn't download the workroom host image \(image). Check your network connection, "
-          + "then try again. (\(said))")
+        "couldn't download the image \(image). Check your network connection, then try again. "
+          + "(\(said))")
     }
   }
 
@@ -345,6 +338,28 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     }
     forgetPending([made.container])
     try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
+  }
+
+  /// Runs `host`'s postStartCommand when the container has one that hasn't run since it started
+  /// (#308, eng review D12): after a Docker restart, a Mac restart or start-on-open, its first
+  /// connect does. Panes wait for it (`postStartWait`). Nil when there was nothing to run; else how
+  /// it ended and what it printed. It is marked done whatever its status, so a failing one never
+  /// holds panes back; a second connect at the same time finds it under way and leaves it.
+  public func runPostStartIfNeeded(on host: HostID) async throws -> (status: Int32, output: String)?
+  {
+    guard isContainer(host) else { return nil }
+    let q = PosixShell.quoted
+    let lock = q(Self.postStartDone + ".lock")
+    let command = """
+      if [ -e \(q(Self.postStartDone)) ] || [ ! -e \(q(Self.postStartHook)) ]; then exit 0; fi
+      mkdir \(lock) 2>/dev/null || exit 0
+      echo 'WRB ran'
+      \(q(Self.containerDaemon)) run-script --dir / --timeout 600 -- \(q(Self.postStartHook))
+      status=$?; : > \(q(Self.postStartDone)); rmdir \(lock); exit "$status"
+      """
+    let (status, output) = try await exec(command, on: host).communicate(nil, timeout: 630)
+    guard output.contains("WRB ran") else { return nil }
+    return (status, output.replacingOccurrences(of: "WRB ran\n", with: ""))
   }
 
   /// Starts `host`'s container if it is stopped, and waits until it can be logged in to (#309): a
@@ -719,6 +734,24 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   public static let containerSocket = DaemonInstall.defaultSocket
   /// Where it keeps each session's screen: in the remote user's home, which survives a restart.
   static let containerScreens = "~/.local/state/workroom/screens"
+  /// Where a create writes the devcontainer.json lifecycle commands it runs, one script each, named
+  /// by its key (#308): in the socket's folder, the remote user's, which survives a restart.
+  public static let hooksFolder = (containerSocket as NSString).deletingLastPathComponent + "/hooks"
+  /// The postStartCommand, run again after each start of the container (`runPostStartIfNeeded`).
+  public static var postStartHook: String { hooksFolder + "/postStartCommand" }
+  /// Written once postStartCommand has run since the container started: `/dev/shm` is a tmpfs made
+  /// afresh at each start, on both runtimes (measured on Apple's 1.5.0), and the daemon is the
+  /// container's entrypoint, so a new start of one is a new start of the other.
+  public static let postStartDone = "/dev/shm/workroom-poststart"
+
+  /// What a pane runs in the container before it attaches, when the container has a
+  /// postStartCommand that hasn't run since it started: it waits for it (#308, eng review D12),
+  /// up to the 10 minutes a lifecycle command may run.
+  static let postStartWait = """
+    if [ -e \(postStartHook) ] && [ ! -e \(postStartDone) ]; then \
+    printf '%s\\r\\n' 'Waiting for the dev container'"'"'s postStartCommand to finish…'; i=0; \
+    while [ ! -e \(postStartDone) ] && [ "$i" -lt 600 ]; do sleep 1; i=$((i + 1)); done; fi
+    """
 
   /// Runs a container from `spec` and waits until its daemon serves the remote user, then checks
   /// the image has what a workroom needs (a shell for panes, git for the clone and the daemon's
@@ -807,21 +840,134 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     ] + (workspaceFolder.map { ["--own", $0] } ?? [])
   }
 
-  /// The user a container's workroom runs as: the spec's, else the image's own, else root (the
-  /// devcontainers CLI's rule).
+  /// The user a container's workroom runs as: the spec's, else the one the image's devcontainer
+  /// metadata names, else the image's own, else root (the devcontainers CLI's rule).
   private func remoteUser(_ spec: ContainerSpec) async throws -> String {
     if let user = spec.user, !user.isEmpty { return user }
-    let configured: String
+    let image = try await imageConfig(spec.image)
+    return image.metadataUser ?? image.user ?? "root"
+  }
+
+  /// What an image says about how it runs (#308).
+  public struct ImageConfig: Equatable, Sendable {
+    /// Its config's `User`; nil for root.
+    public var user: String?
+    /// The user its `devcontainer.metadata` label names: the last `remoteUser`, else the last
+    /// `containerUser` (the devcontainers images run as root and name `vscode` there).
+    public var metadataUser: String?
+    /// Its config's `Env`, which `${containerEnv:…}` reads.
+    public var environment: [String: String]
+
+    public init(user: String?, metadataUser: String?, environment: [String: String]) {
+      self.user = user
+      self.metadataUser = metadataUser
+      self.environment = environment
+    }
+  }
+
+  public func imageConfig(_ image: String) async throws -> ImageConfig {
+    let user: String?
+    let labels: [String: String]
+    let environment: [String]
     if provisioning?.dialect == .apple {
       let images = try AppleContainerCLI.objects(
-        try await runtime(["image", "inspect", spec.image], allLines: true))
-      configured = images.first.flatMap(AppleContainerCLI.user(ofImage:)) ?? ""
+        try await runtime(["image", "inspect", image], allLines: true))
+      let first = images.first ?? [:]
+      user = AppleContainerCLI.user(ofImage: first)
+      labels = AppleContainerCLI.labels(ofImage: first)
+      environment = AppleContainerCLI.environment(ofImage: first)
     } else {
-      configured = try await runtime([
-        "image", "inspect", "--format", "{{.Config.User}}", spec.image,
-      ])
+      let said = try await runtime(
+        ["image", "inspect", "--format", "{{json .Config}}", image], allLines: true)
+      let config =
+        (try? JSONSerialization.jsonObject(with: Data(said.utf8))) as? [String: Any] ?? [:]
+      user = config["User"] as? String
+      labels = config["Labels"] as? [String: String] ?? [:]
+      environment = config["Env"] as? [String] ?? []
     }
-    return configured.isEmpty ? "root" : configured
+    return ImageConfig(
+      user: user.flatMap { $0.isEmpty ? nil : $0 },
+      metadataUser: Self.metadataUser(labels["devcontainer.metadata"]),
+      environment: environment.reduce(into: [:]) { result, pair in
+        let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+        if parts.count == 2 { result[parts[0]] = parts[1] }
+      })
+  }
+
+  /// The user a `devcontainer.metadata` label names: a JSON list of objects, or one object.
+  static func metadataUser(_ label: String?) -> String? {
+    guard let data = label?.data(using: .utf8),
+      let parsed = try? JSONSerialization.jsonObject(with: data)
+    else { return nil }
+    let entries = parsed as? [[String: Any]] ?? (parsed as? [String: Any]).map { [$0] } ?? []
+    func last(_ key: String) -> String? {
+      entries.reversed().lazy.compactMap { $0[key] as? String }.first { !$0.isEmpty }
+    }
+    return last("remoteUser") ?? last("containerUser")
+  }
+
+  /// Builds `dockerfile` in `context` into `tag` (#308): a devcontainer.json's `build`, or its
+  /// features on top of an image. Labelled as this build's, so the sweep removes it once no
+  /// container uses it. Its output goes to the create's log as it comes.
+  public func build(
+    dockerfile: URL, context: URL, tag: String, arguments: [String: String] = [:],
+    target: String? = nil, options: [String] = []
+  ) async throws {
+    guard let provisioning else { throw HostDriverError.notImplemented("Building an image") }
+    let apple = provisioning.dialect == .apple
+    var command = ["build", "--file", dockerfile.path, "--tag", tag]
+    for label in provisioning.labels + [Self.created()] { command += ["--label", label] }
+    for (key, value) in arguments.sorted(by: { $0.key < $1.key }) {
+      command += ["--build-arg", "\(key)=\(value)"]
+    }
+    if let target { command += ["--target", target] }
+    // Apple's builds arm64 only, as it runs; its `build` takes none of Docker's other options.
+    command +=
+      apple ? ["--arch", "arm64", "--progress", "plain"] : ["--progress", "plain"] + options
+    command.append(context.path)
+    let lines = LineLog(ProvisioningProgress.log, step: ProvisioningProgress.current)
+    defer { lines.finish() }
+    // Silence-bounded: a build that prints nothing for 15 minutes is stuck, however long it runs.
+    _ = try await runtime(command, timeout: 900, onOutput: { data, _ in lines.add(data) })
+  }
+
+  /// A command's output, line by line, into the create's log under the step it began in: the
+  /// output arrives on another thread, where the step's task-local isn't set.
+  private final class LineLog: @unchecked Sendable {
+    private let log: (@Sendable (ProvisioningProgress.Step, String) -> Void)?
+    private let step: ProvisioningProgress.Step?
+    private let lock = NSLock()
+    private var pending = Data()
+
+    init(
+      _ log: (@Sendable (ProvisioningProgress.Step, String) -> Void)?,
+      step: ProvisioningProgress.Step?
+    ) {
+      self.log = log
+      self.step = step
+    }
+
+    func add(_ data: Data) {
+      let lines: [String] = lock.withLock {
+        pending.append(data)
+        var complete: [String] = []
+        while let newline = pending.firstIndex(of: 0x0A) {
+          complete.append(String(decoding: pending[pending.startIndex..<newline], as: UTF8.self))
+          pending = Data(pending[pending.index(after: newline)...])
+        }
+        return complete
+      }
+      guard let log, let step else { return }
+      for line in lines where !line.isEmpty { log(step, line) }
+    }
+
+    func finish() {
+      let rest = lock.withLock { () -> String in
+        defer { pending = Data() }
+        return String(decoding: pending, as: UTF8.self)
+      }
+      if let log, let step, !rest.isEmpty { log(step, rest) }
+    }
   }
 
   /// The bundled daemon for the image's architecture.

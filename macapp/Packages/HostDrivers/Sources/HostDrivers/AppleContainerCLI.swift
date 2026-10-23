@@ -41,6 +41,11 @@ public enum AppleContainerCLI {
     variants(image).lazy.compactMap { config($0)["User"] as? String }.first
   }
 
+  /// An image's environment (`NAME=value`), from whichever of its platforms says.
+  public static func environment(ofImage image: [String: Any]) -> [String] {
+    variants(image).lazy.compactMap { config($0)["Env"] as? [String] }.first ?? []
+  }
+
   /// An image's labels, from whichever of its platforms carries them.
   public static func labels(ofImage image: [String: Any]) -> [String: String] {
     variants(image).reduce(into: [:]) { labels, variant in

@@ -43,11 +43,17 @@ enum CreationKind: Equatable {
         CreationStep(id: "script", title: "Run setup script"),
       ]
     case .container:
-      remote = [
-        (.repository, "Check repository"), (.image, "Pull host image"),
+      // The devcontainer.json's rows (`onDemand`) show once the file says they run.
+      let rows: [(Step, String)] = [
+        (.repository, "Check repository"), (.config, "Read devcontainer.json"),
+        (.initialize, "Run initializeCommand"), (.image, "Pull image"), (.build, "Build image"),
         (.machine, "Start container"), (.connect, "Connect"), (.clone, "Clone repository"),
-        (.checkout, "Check out branch"),
+        (.checkout, "Check out branch"), (.include, "Copy local files"),
+        (.onCreate, "Run onCreateCommand"), (.updateContent, "Run updateContentCommand"),
+        (.postCreate, "Run postCreateCommand"), (.postStart, "Run postStartCommand"),
       ]
+      return rows.map { CreationStep(id: $0.0.rawValue, title: $0.1) }
+        + [CreationStep(id: "script", title: "Run setup script")]
     case .boxd:
       remote = [
         (.repository, "Check repository"), (.account, "Check boxd account"),
@@ -66,6 +72,25 @@ enum CreationKind: Equatable {
     return (remote + [(.include, "Copy local files")]).map {
       CreationStep(id: $0.0.rawValue, title: $0.1)
     } + [CreationStep(id: "script", title: "Run setup script")]
+  }
+
+  /// A container create's rows that show only when its devcontainer.json makes them run: a step's
+  /// `begin` puts its row back (#308).
+  static let onDemand: Set<String> = Set(
+    ([.config, .initialize, .build] + DevContainerConfig.Hook.inContainer.map(\.step)).map(
+      \.rawValue))
+}
+
+extension DevContainerConfig.Hook {
+  /// The creation row a container hook runs under (#308).
+  var step: ProvisioningProgress.Step {
+    switch self {
+    case .initialize: .initialize
+    case .onCreate: .onCreate
+    case .updateContent: .updateContent
+    case .postCreate: .postCreate
+    case .postStart, .postAttach: .postStart
+    }
   }
 }
 
@@ -117,6 +142,9 @@ enum CreationOutcome: Equatable {
   case failedBeforeWorkroom(message: String)
   /// A local create whose workroom exists but whose setup script failed.
   case setupScriptFailed(message: String)
+  /// A container create whose workroom exists but one of whose devcontainer.json lifecycle
+  /// commands failed (#308), which `message` names. As a failed setup script, it stays.
+  case hookFailed(message: String)
   /// A remote create that failed; `leftBehind` when its machine could not be taken down.
   case remoteFailed(message: String, leftBehind: Bool)
   /// Stopped before anything was made: this Mac has not approved the setup script (#363). Approve
@@ -125,6 +153,10 @@ enum CreationOutcome: Equatable {
   /// Stopped before anything was made: the main checkout has work the create would leave out, and
   /// the user chooses where it starts (`CreationStart`), which starts the create again.
   case localWorkFound(LocalWork)
+  /// Stopped before anything was made: the container create's devcontainer.json (at `file`)
+  /// describes Docker Compose services, which a workroom can't run (#308, eng review D10). Continue
+  /// With Default Image starts it again without the file.
+  case composeRefused(file: String)
 }
 
 /// Where a local create starts when the main checkout has work the remote's copy of the base branch
@@ -206,6 +238,7 @@ final class CreationRun: ObservableObject, Identifiable {
       (hasSetupScript || skipsSetup || $0.id != "script")
         && (hasIncludeFile || $0.id != ProvisioningProgress.Step.include.rawValue)
         && (start == .localWithChanges || $0.id != "changes")
+        && !CreationKind.onDemand.contains($0.id)
     }
     if let carriedFetch, let index = steps.firstIndex(where: { $0.id == carriedFetch.id }) {
       steps[index] = carriedFetch
@@ -239,7 +272,7 @@ final class CreationRun: ObservableObject, Identifiable {
   /// where to start. Not running, and not failed either.
   var awaitsApproval: Bool {
     switch outcome {
-    case .scriptNotTrusted, .localWorkFound: true
+    case .scriptNotTrusted, .localWorkFound, .composeRefused: true
     default: false
     }
   }
@@ -335,6 +368,18 @@ final class CreationRun: ObservableObject, Identifiable {
     }
     askedAt = startCommit
     outcome = .localWorkFound(work)
+  }
+
+  /// The devcontainer.json describes Compose services (#308): the step running now ends done, the
+  /// config's row (put back if the plan left it out) waits on the user, and the rest stay pending,
+  /// since Continue With Default Image runs them.
+  func awaitDefaultImage(refusing file: String) {
+    if let running = runningIndex { end(running, as: .done) }
+    let step = ProvisioningProgress.Step.config.rawValue
+    if let index = steps.firstIndex(where: { $0.id == step }) ?? restore(step) {
+      steps[index].state = .waitingForUser
+    }
+    outcome = .composeRefused(file: file)
   }
 
   /// The create finished: the running step ends done and every step still pending is skipped.

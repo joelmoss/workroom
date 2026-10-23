@@ -13,6 +13,18 @@ import (
 // bytes depend on where the checkout lands and so can't be read from the commit.
 var ErrLinkOutside = errors.New("the file is a symlink outside the repository")
 
+// CommitAt is the full hash of the commit rev ("" is HEAD) names, or "" when it names none.
+func CommitAt(dir, rev string) (string, error) {
+	if rev == "" {
+		rev = "HEAD"
+	}
+	out, err := gitOutput(dir, nil, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // FileAt is path's contents in commit rev ("" is HEAD) as a checkout of it writes them, with the
 // repository's filters and line-ending conversion applied, and whether rev has it as a file (#363).
 // A symlink anywhere along the path (the file itself, or a linked directory such as scripts/) is

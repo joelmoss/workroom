@@ -940,7 +940,7 @@ final class RemoteHostsTests: XCTestCase {
   /// runtime that isn't running, or else the network.
   func testAFailedPullSaysWhy() async throws {
     for (said, expected) in [
-      ("denied", "the registry refused the workroom host image"),
+      ("denied", "the registry refused the image workroom-host"),
       (
         "Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?",
         "Docker didn't answer"
@@ -949,8 +949,8 @@ final class RemoteHostsTests: XCTestCase {
         "Got permission denied while trying to connect to the Docker daemon socket at unix:///x",
         "Docker didn't answer"
       ),
-      ("manifest unknown", "the registry refused the workroom host image"),
-      ("read: connection reset by peer", "couldn't download the workroom host image"),
+      ("manifest unknown", "the registry refused the image workroom-host"),
+      ("read: connection reset by peer", "couldn't download the image workroom-host"),
     ] {
       let (runtime, log) = try failingRuntime(pullFails: true, said: said)
       do {
@@ -991,16 +991,6 @@ final class RemoteHostsTests: XCTestCase {
       }
       XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).contains("pull"), "it pulled")
     }
-  }
-
-  /// The image a new base runs: the hidden override, else the build's pinned digest, else a local
-  /// `workroom-host`. Empty values, as an unset build setting leaves `WorkroomHostImage`, don't count.
-  func testTheHostImageIsTheOverrideThenThePinThenLocal() {
-    let pinned = "ghcr.io/joelmoss/workroom-host@sha256:" + String(repeating: "a", count: 64)
-    XCTAssertEqual(RemoteWorkrooms.hostImage(override: "mine", pinned: pinned), "mine")
-    XCTAssertEqual(RemoteWorkrooms.hostImage(override: nil, pinned: pinned), pinned)
-    XCTAssertEqual(RemoteWorkrooms.hostImage(override: " ", pinned: ""), "workroom-host")
-    XCTAssertEqual(RemoteWorkrooms.hostImage(override: nil, pinned: nil), "workroom-host")
   }
 
   private static func driver(
