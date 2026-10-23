@@ -38,12 +38,10 @@ struct ScriptCodeView: View {
     version &+= 1
     let firstLine = PlainFileViewer.splitLines(source).first
     guard let grammar = SyntaxLanguage.grammar(forPath: name, firstLine: firstLine) else { return }
-    let spans = await Task.detached(priority: .utility) {
-      SyntaxHighlighter.shared.spans(for: source, grammar: grammar)
-    }.value
-    guard !Task.isCancelled, !spans.isEmpty else { return }
-    attributed = FileHighlightMapper.nsAttributedString(
-      content: source, spans: spans, tokens: theme.tokens, font: PlainFileViewer.font)
+    let highlighted = await FileHighlightMapper.highlighted(
+      content: source, grammar: grammar, tokens: theme.tokens, font: PlainFileViewer.font)
+    guard !Task.isCancelled, let highlighted else { return }
+    attributed = highlighted
     version &+= 1
   }
 }

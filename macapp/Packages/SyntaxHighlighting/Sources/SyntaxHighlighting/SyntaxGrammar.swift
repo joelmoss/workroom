@@ -1,5 +1,4 @@
 import Foundation
-import SwiftTreeSitter
 // Bundled tree-sitter grammars. Each `import` links one grammar's C parser (+ any `src/scanner.c`
 // external scanner) and copies its `queries/` into an SPM resource bundle. Adding a language =
 // pin the package in project.yml, import it here, add a `GrammarID` case with its `tree_sitter_*`

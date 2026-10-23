@@ -8,6 +8,28 @@ import SyntaxHighlighting
 /// `DiffHighlightMapper`, but without a diff: every character is the theme foreground with captured
 /// spans recoloured. Unit-tested without a parser or UI.
 enum FileHighlightMapper {
+  /// Highlight a whole file off the main thread: parse, then `nsAttributedString`, which alone took
+  /// 26 ms of main-thread time at the viewer's 5000-line cap. `nil` when the grammar captures
+  /// nothing, so the caller keeps the plain string it already shows.
+  @MainActor static func highlighted(
+    content: String, grammar: GrammarID, tokens: ThemeTokens, font: NSFont
+  ) async -> NSAttributedString? {
+    // An NSFont is immutable, and AppKit documents it as safe to share across threads.
+    nonisolated(unsafe) let font = font
+    return await Task.detached(priority: .utility) {
+      let spans = SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
+      guard !spans.isEmpty else { return Built(string: nil) }
+      return Built(
+        string: nsAttributedString(content: content, spans: spans, tokens: tokens, font: font))
+    }.value.string
+  }
+
+  /// A string built on the worker and handed over whole: nothing else holds it, so it is safe to
+  /// read from the main actor afterwards.
+  private struct Built: @unchecked Sendable {
+    let string: NSAttributedString?
+  }
+
   /// Build a single themed `NSAttributedString` for the whole file — the text the `NSTextView`-backed
   /// `CodeTextView` renders (SwiftUI `Text` can't select across lines). Every character starts in the
   /// theme foreground + `font`; captured spans are recoloured. `spans == []` yields a plain (but still
@@ -23,26 +45,34 @@ enum FileHighlightMapper {
     result.addAttribute(.foregroundColor, value: tokens.nsFg, range: full)
     guard !spans.isEmpty else { return result }
 
-    let byteCount = content.utf8.count
-    var index = content.startIndex
+    // One forward walk over the scalars turns byte offsets into UTF-16 offsets; spans ascend and
+    // never overlap, so the cursor only moves on. (Stepping `Character`s and converting each
+    // `String.Index` range cost three times this at the 5000-line cap.)
+    var scalars = content.unicodeScalars.makeIterator()
     var byte = 0
-    for span in spans {
-      let lo = span.byteRange.lowerBound
-      let hi = min(span.byteRange.upperBound, byteCount)
-      guard lo < hi, lo >= byte else { continue }
-      while byte < lo, index < content.endIndex {
-        byte += content[index].utf8.count
-        index = content.index(after: index)
+    var utf16 = 0
+    func advance(to target: Int) {
+      while byte < target, let scalar = scalars.next() {
+        byte += scalar.utf8.count
+        utf16 += scalar.utf16.count
       }
-      let start = index
-      while byte < hi, index < content.endIndex {
-        byte += content[index].utf8.count
-        index = content.index(after: index)
+    }
+    var colors: [String: NSColor?] = [:]  // a capture's colour, nil when the theme has none
+    for span in spans where span.byteRange.lowerBound >= byte {
+      advance(to: span.byteRange.lowerBound)
+      let start = utf16
+      advance(to: span.byteRange.upperBound)
+      guard utf16 > start else { continue }
+      let color: NSColor?
+      if let cached = colors[span.capture] {
+        color = cached
+      } else {
+        color = ThemeTokens.category(for: span.capture).flatMap { tokens.syntaxByCategory[$0] }
+        colors[span.capture] = color
       }
-      guard start < index else { continue }
-      let color = tokens.syntaxColor(forCapture: span.capture).map { NSColor($0) } ?? tokens.nsFg
+      guard let color else { continue }
       result.addAttribute(
-        .foregroundColor, value: color, range: NSRange(start..<index, in: content))
+        .foregroundColor, value: color, range: NSRange(location: start, length: utf16 - start))
     }
     return result
   }

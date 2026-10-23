@@ -168,13 +168,9 @@ struct PlainFileViewer: View {
     guard let grammar = SyntaxLanguage.grammar(forPath: descriptor.path, firstLine: lines.first)
     else { return }
     let source = content
-    let spans = await Task.detached(priority: .utility) {
-      SyntaxHighlighter.shared.spans(for: source, grammar: grammar)
-    }.value
-    guard !Task.isCancelled, source == content, !spans.isEmpty else { return }
-    let highlighted = FileHighlightMapper.nsAttributedString(
-      content: source, spans: spans, tokens: theme.tokens, font: Self.font)
-    guard !Task.isCancelled else { return }
+    let highlighted = await FileHighlightMapper.highlighted(
+      content: source, grammar: grammar, tokens: theme.tokens, font: Self.font)
+    guard !Task.isCancelled, source == content, let highlighted else { return }
     attributed = highlighted
     version &+= 1
   }

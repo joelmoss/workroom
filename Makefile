@@ -237,6 +237,28 @@ app-bench-markdown: ## Benchmark the Markdown preview (shows a window while it r
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/MarkdownPreviewBenchmarkTests"
 
+# Times the file viewer's themed-string build (FileHighlightBenchmarkTests) at the 5000-line cap on
+# a generated Swift source, in the app test host (a Debug build: compare runs with each other).
+# Prints a line and writes JSON to BENCH_OUT, by default a timestamped file in
+# macapp/DerivedData/Benchmarks.
+app-bench-file-highlight: ## Benchmark the file viewer's highlight mapping (app test host) [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/FileHighlightBenchmarkTests"
+
+# Times the diff viewer's per-line coloured strings (DiffHighlightBenchmarkTests) on a 2000-line
+# new-file diff over a generated Swift source, in the app test host (a Debug build).
+app-bench-diff-highlight: ## Benchmark the diff viewer's highlight mapping (app test host) [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/DiffHighlightBenchmarkTests"
+
+# Times SyntaxHighlighter.spans (SyntaxHighlightingBenchmarkTests) in a release build of the
+# package: generated Swift at 70 KB and the 2 MB cap, and Python, whose query is predicate-heavy.
+# Prints a table and writes JSON to BENCH_OUT, by default a timestamped file in
+# macapp/DerivedData/Benchmarks.
+app-bench-highlighting: ## Benchmark syntax highlighting (release build of the package) [BENCH_OUT=file.json]
+	WORKROOM_BENCH=1 WORKROOM_BENCH_OUT="$(BENCH_OUT)" swift test -c release \
+	  --package-path macapp/Packages/SyntaxHighlighting --filter SyntaxHighlightingBenchmarkTests
+
 # Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock.
 # CI, nightly and release run it beside `make app-test`. Each package resolves first, up to three
 # times: SyntaxHighlighting clones 16 grammars, and a github.com blip would otherwise fail a release
