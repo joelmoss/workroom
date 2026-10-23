@@ -22,7 +22,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::rpc::SharedWriter;
@@ -122,6 +122,55 @@ fn touch(files: &[std::os::unix::io::RawFd]) {
     }
 }
 
+/// A pipe `Daemon::run` sleeps on beside its listener, so that whatever ends a client, a session,
+/// a kill or a request (`wake_idle`) has it look again at whether the daemon is idle, instead of
+/// waking once a second to look (the whole of an otherwise idle daemon's wakeups, 2026-10-23).
+/// Process-wide, as `TERMINATING` is; close-on-exec, so the program a hand-off runs makes its own.
+struct IdleWake {
+    read: libc::c_int,
+    write: libc::c_int,
+}
+
+static IDLE_WAKE: OnceLock<IdleWake> = OnceLock::new();
+
+fn idle_wake() -> &'static IdleWake {
+    IDLE_WAKE.get_or_init(|| {
+        let mut fds = [-1 as libc::c_int; 2];
+        // SAFETY: `pipe` writes two descriptors into the array; each `fcntl` takes one by number.
+        unsafe {
+            if libc::pipe(fds.as_mut_ptr()) != 0 {
+                return IdleWake {
+                    read: -1,
+                    write: -1,
+                };
+            }
+            for fd in fds {
+                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+        }
+        IdleWake {
+            read: fds[0],
+            write: fds[1],
+        }
+    })
+}
+
+/// Has `Daemon::run` look again at whether the daemon is idle. A full pipe already holds a wake,
+/// and without a pipe the loop falls back to looking every second.
+pub(crate) fn wake_idle() {
+    let wake = idle_wake();
+    // SAFETY: one byte from a live buffer, to a descriptor this process opened or -1.
+    unsafe { libc::write(wake.write, [0u8].as_ptr().cast(), 1) };
+}
+
+/// Empties the wake pipe, so the next `poll` sleeps until the next wake.
+fn drain(fd: libc::c_int) {
+    let mut taken = [0u8; 64];
+    // SAFETY: reads into a live buffer of the stated length, from a non-blocking descriptor.
+    while unsafe { libc::read(fd, taken.as_mut_ptr().cast(), taken.len()) } > 0 {}
+}
+
 pub struct Daemon {
     pub sessions: SessionStore,
     connections: Arc<AtomicUsize>,
@@ -173,6 +222,7 @@ impl Daemon {
         // Mac sleeps, and launchd runs a missed `tmp_cleaner` the moment it wakes. A clock set back
         // reads as due.
         let mut freshened: Option<std::time::SystemTime> = None;
+        let wake = idle_wake();
         loop {
             if let Some(freshen) = &self.freshen
                 && freshened.is_none_or(|at| at.elapsed().map_or(true, |e| e >= freshen.every))
@@ -205,6 +255,7 @@ impl Daemon {
                             let _ = stream.set_nonblocking(false);
                             let _ = handle_connection(stream, sessions);
                             connections.fetch_sub(1, Ordering::SeqCst);
+                            wake_idle();
                         })
                         .is_err()
                     {
@@ -224,23 +275,50 @@ impl Daemon {
                         || !self.sessions.is_empty()
                         || crate::rpc::is_busy()
                         || self.sessions.is_killing();
+                    // How long to sleep: until the idle deadline when idle, the next freshen when
+                    // one is kept, and otherwise until something happens.
+                    let mut until: Option<Duration> = None;
                     if busy {
                         idle_since = None;
                     } else {
                         let since = idle_since.get_or_insert_with(Instant::now);
-                        if since.elapsed() >= idle_timeout {
+                        let waited = since.elapsed();
+                        if waited >= idle_timeout {
                             break;
                         }
+                        until = Some(idle_timeout - waited);
                     }
-                    // Sleep until a client connects, waking once a second to re-check idleness:
-                    // polling the listener every 25 ms cost 40 wakeups a second for nothing.
-                    let mut descriptor = libc::pollfd {
-                        fd: listener.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    // SAFETY: one live pollfd, for the listener this loop owns.
-                    unsafe { libc::poll(&mut descriptor, 1, 1000) };
+                    if let Some(freshen) = &self.freshen {
+                        let next = freshened.map_or(Duration::ZERO, |at| {
+                            at.elapsed()
+                                .map_or(Duration::ZERO, |e| freshen.every.saturating_sub(e))
+                        });
+                        until = Some(until.map_or(next, |u| u.min(next)));
+                    }
+                    let mut timeout =
+                        until.map_or(-1, |u| i32::try_from(u.as_millis()).unwrap_or(i32::MAX));
+                    if wake.read < 0 && !(0..=1000).contains(&timeout) {
+                        timeout = 1000; // no pipe: look every second, as before
+                    }
+                    // Sleep until a client connects or something ends (`wake_idle`): polling the
+                    // listener every 25 ms cost 40 wakeups a second for nothing, and looking once
+                    // a second was every wakeup an idle daemon had left.
+                    let mut descriptors = [
+                        libc::pollfd {
+                            fd: listener.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: wake.read,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    // SAFETY: two live pollfds, for the listener this loop owns and the wake pipe
+                    // (or -1, which `poll` skips).
+                    unsafe { libc::poll(descriptors.as_mut_ptr(), 2, timeout) };
+                    drain(wake.read);
                 }
                 // An accept failure (descriptor exhaustion, say) ends the daemon.
                 Err(e) => {
@@ -1283,6 +1361,37 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         ages
+    }
+
+    /// A daemon with a client is not idle and sleeps with no deadline; the client leaving is what
+    /// has it look again (`wake_idle`), so it idles out `idle_timeout` after that and not never.
+    #[test]
+    fn the_last_client_leaving_wakes_the_idle_check() {
+        let dir = std::env::temp_dir().join(format!("wr-idlewake-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("workroomd");
+        let listener = bind(&socket).unwrap();
+        let client = UnixStream::connect(&socket).unwrap();
+        let daemon = Daemon::new();
+        let served = {
+            let socket = socket.clone();
+            std::thread::spawn(move || daemon.run(listener, &socket, Duration::from_millis(200)))
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!served.is_finished(), "idled out with a client connected");
+
+        drop(client);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !served.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "the client leaving did not wake the idle check"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        served.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// macOS's `tmp_cleaner` deletes /tmp files untouched for three days (#528). A daemon's lock is
