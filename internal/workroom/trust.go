@@ -18,7 +18,24 @@ import (
 const (
 	SetupScript    = "workroom_setup"
 	TeardownScript = "workroom_teardown"
+	// DevContainer is a container workroom's devcontainer.json (#308): repository code too, since it
+	// tells the Mac's container runtime what to mount and run, so it is approved by its bytes
+	// under this name (eng review D4).
+	DevContainer = "devcontainer"
 )
+
+// DevContainerPaths are where the Development Containers spec looks for devcontainer.json, in its
+// order.
+var DevContainerPaths = []string{".devcontainer/devcontainer.json", ".devcontainer.json"}
+
+// scriptFile is the repository path of the file a judged name stands for: a devcontainer.json judged
+// without a place (bytes on stdin) is shown at the spec's first.
+func scriptFile(name string) string {
+	if name == DevContainer {
+		return DevContainerPaths[0]
+	}
+	return filepath.ToSlash(filepath.Join("scripts", name))
+}
 
 // Where a Script's bytes came from.
 const (
@@ -35,7 +52,10 @@ const (
 // Script is a setup or teardown script's bytes as Workroom would run them, judged against the
 // project's approvals.
 type Script struct {
-	Name   string
+	Name string
+	// File is the repository path the bytes are, or would be, at: scripts/<name>, or where the
+	// devcontainer.json was found.
+	File   string
 	Origin string
 	// Path is the file, for a root or workroom copy.
 	Path   string
@@ -70,8 +90,8 @@ func (e *UntrustedScriptError) Error() string {
 	if e.Script.Origin == OriginWorkroom {
 		how = "Run the same command in a terminal to review and approve it"
 	}
-	return fmt.Sprintf("%v: scripts/%s %s is new, or changed since it was approved. %s",
-		errs.ErrScriptNotTrusted, e.Script.Name, e.Script.OriginLabel(), how)
+	return fmt.Sprintf("%v: %s %s is new, or changed since it was approved. %s",
+		errs.ErrScriptNotTrusted, e.Script.File, e.Script.OriginLabel(), how)
 }
 
 func (e *UntrustedScriptError) Unwrap() error { return errs.ErrScriptNotTrusted }
@@ -80,24 +100,28 @@ func (e *UntrustedScriptError) Unwrap() error { return errs.ErrScriptNotTrusted 
 // approved for the project, or the root's gitignored copy. An unreadable config is an error, so
 // nothing runs on a guess.
 func (s *Service) JudgeScript(dir, name, origin, path string, text []byte) (Script, error) {
+	return s.judgeFile(dir, name, scriptFile(name), origin, path, text)
+}
+
+// judgeFile is JudgeScript for the bytes of file, the repository path name stands for.
+func (s *Service) judgeFile(dir, name, file, origin, path string, text []byte) (Script, error) {
 	sum := sha256.Sum256(text)
-	sc := Script{Name: name, Origin: origin, Path: path, Text: text, SHA256: hex.EncodeToString(sum[:])}
+	sc := Script{Name: name, File: file, Origin: origin, Path: path, Text: text, SHA256: hex.EncodeToString(sum[:])}
 	projects, err := s.Config.AllProjects()
 	if err != nil {
 		return sc, err
 	}
-	sc.Exempt = ignoredRootCopy(dir, name, sc.SHA256)
+	sc.Exempt = ignoredRootCopy(dir, file, sc.SHA256)
 	sc.Trusted = sc.Exempt || projects[dir].TrustedScripts[name] == sc.SHA256
 	return sc, nil
 }
 
-// ignoredRootCopy reports whether the root's scripts/<name> is a gitignored regular file holding the
+// ignoredRootCopy reports whether the root's file at rel is a gitignored regular file holding the
 // bytes whose SHA-256 is digest. A workroom's copy can hold them too: the include step copies
 // ignored files into a new workroom before its setup script runs. An ignored symlink is not exempt:
 // what it points to may be tracked, and a pull can change it.
-func ignoredRootCopy(dir, name, digest string) bool {
-	rel := filepath.Join("scripts", name)
-	path := filepath.Join(dir, rel)
+func ignoredRootCopy(dir, rel, digest string) bool {
+	path := filepath.Join(dir, filepath.FromSlash(rel))
 	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
 		return false
 	}
@@ -185,6 +209,42 @@ func (s *Service) SetupScriptAt(dir, start string) (Script, bool, error) {
 	return s.fileScript(dir, SetupScript, OriginRoot, filepath.Join(dir, "scripts", SetupScript))
 }
 
+// DevContainerAt judges the devcontainer.json a container create starting from start ("" is HEAD)
+// would use: the first of DevContainerPaths the base commit has, else the first the root has
+// (eng review S3). It reports false when neither has one.
+func (s *Service) DevContainerAt(dir, start string) (Script, bool, error) {
+	for _, file := range DevContainerPaths {
+		text, ok, err := vcs.FileAt(dir, start, file)
+		if errors.Is(err, vcs.ErrLinkOutside) {
+			continue
+		}
+		if err != nil {
+			return Script{}, false, fmt.Errorf("%w: %v", ErrVCSCommand, err)
+		}
+		if !ok {
+			continue
+		}
+		if len(text) > MaxScriptBytes {
+			return Script{}, false, fmt.Errorf("%w: %s in the base commit is larger than %d bytes", ErrScriptNotTrusted, file, MaxScriptBytes)
+		}
+		sc, err := s.judgeFile(dir, DevContainer, file, OriginBase, "", text)
+		return sc, true, err
+	}
+	for _, file := range DevContainerPaths {
+		path := filepath.Join(dir, filepath.FromSlash(file))
+		text, err := readScript(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return Script{}, false, err
+		}
+		sc, err := s.judgeFile(dir, DevContainer, file, OriginRoot, path, text)
+		return sc, true, err
+	}
+	return Script{}, false, nil
+}
+
 // RootScript judges the root's copy of script name, or reports false when it has none.
 func (s *Service) RootScript(dir, name string) (Script, bool, error) {
 	return s.fileScript(dir, name, OriginRoot, filepath.Join(dir, "scripts", name))
@@ -198,24 +258,38 @@ func (s *Service) ProjectScripts(dir string) ([]Script, vcs.LocalWork, error) {
 	if err != nil {
 		return nil, vcs.LocalWork{}, err
 	}
-	return s.projectScripts(dir, base, global)
+	scripts, work, _, err := s.projectScripts(dir, base, global)
+	return scripts, work, err
 }
 
 // ProjectScriptsFrom is ProjectScripts with new workrooms starting from base ("" is origin's
 // default branch) rather than the project's: what a remote create checks out, which may differ.
 // The local work is what that start leaves out of the main checkout, as a create would find it.
-func (s *Service) ProjectScriptsFrom(dir, base string) ([]Script, vcs.LocalWork, error) {
-	return s.projectScripts(dir, base, false)
+// With devcontainer, the devcontainer.json a container create would use is judged too.
+func (s *Service) ProjectScriptsFrom(dir, base string, devcontainer bool) ([]Script, vcs.LocalWork, error) {
+	scripts, work, start, err := s.projectScripts(dir, base, false)
+	if err != nil || !devcontainer {
+		return scripts, work, err
+	}
+	config, ok, err := s.DevContainerAt(dir, start)
+	if err != nil {
+		return nil, work, err
+	}
+	if ok {
+		scripts = append(scripts, config)
+	}
+	return scripts, work, nil
 }
 
-func (s *Service) projectScripts(dir, base string, global bool) ([]Script, vcs.LocalWork, error) {
+// projectScripts judges the setup and teardown scripts, and says the start it resolved.
+func (s *Service) projectScripts(dir, base string, global bool) ([]Script, vcs.LocalWork, string, error) {
 	var work vcs.LocalWork
 	if err := s.detectVCS(dir); err != nil {
-		return nil, work, err
+		return nil, work, "", err
 	}
 	start, warning, err := s.VCS.StartPoint(dir, base, global, vcs.Progress{})
 	if err != nil {
-		return nil, work, err
+		return nil, work, "", err
 	}
 	// As a create does: not against a start that already warns.
 	if warning == "" {
@@ -224,19 +298,19 @@ func (s *Service) projectScripts(dir, base string, global bool) ([]Script, vcs.L
 	var scripts []Script
 	setup, ok, err := s.SetupScriptAt(dir, start)
 	if err != nil {
-		return nil, work, err
+		return nil, work, start, err
 	}
 	if ok {
 		scripts = append(scripts, setup)
 	}
 	teardown, ok, err := s.RootScript(dir, TeardownScript)
 	if err != nil {
-		return nil, work, err
+		return nil, work, start, err
 	}
 	if ok {
 		scripts = append(scripts, teardown)
 	}
-	return scripts, work, nil
+	return scripts, work, start, nil
 }
 
 // gateSetup is gate for the setup script a create starting from start would run, if any.
@@ -294,7 +368,7 @@ func (s *Service) gate(dir string, sc Script) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("%w: scripts/%s was not approved", ErrCancelled, sc.Name)
+		return fmt.Errorf("%w: %s was not approved", ErrCancelled, sc.File)
 	}
 	return s.Trust(dir, sc)
 }
@@ -310,12 +384,12 @@ func (s *Service) Trust(dir string, sc Script) error {
 	return s.Config.SetTrustedScript(dir, sc.Name, sc.SHA256)
 }
 
-// Untrust forgets every approval of project dir's scripts.
+// Untrust forgets every approval of project dir's scripts and its devcontainer.json.
 func (s *Service) Untrust(dir string) error {
 	if s.Pretend {
 		return nil
 	}
-	for _, name := range []string{SetupScript, TeardownScript} {
+	for _, name := range []string{SetupScript, TeardownScript, DevContainer} {
 		if err := s.Config.SetTrustedScript(dir, name, ""); err != nil {
 			return err
 		}

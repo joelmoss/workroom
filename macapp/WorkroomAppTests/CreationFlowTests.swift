@@ -696,7 +696,7 @@ final class CreationFlowTests: XCTestCase {
     let scripts = Counter()
     let checks = Counter()
     var services = services(driver: FakeDriver(), daemon: daemon)
-    services.trustStatus = { _, _, _ in
+    services.trustStatus = { _, _, _, _ in
       checks.add()
       if checks.count > 1 { throw WorkroomCLIError.timedOut }
       return TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
@@ -828,7 +828,7 @@ final class CreationFlowTests: XCTestCase {
     defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     var services = services(driver: FakeDriver(), daemon: daemon)
-    services.trustStatus = { _, _, _ in
+    services.trustStatus = { _, _, _, _ in
       TrustStatus(trusted: true, scripts: [], localWork: UntrustedSetupCLI.work)
     }
     store.remoteCreateServices = services
@@ -1054,6 +1054,14 @@ final class CreationFlowTests: XCTestCase {
     func add() { lock.withLock { value += 1 } }
   }
 
+  /// What a fake closure was called with, from any thread.
+  private final class Calls<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Value] = []
+    var all: [Value] { lock.withLock { values } }
+    func add(_ value: Value) { lock.withLock { values.append(value) } }
+  }
+
   private static let gitFails =
     #"{"stdout":"","stderr":"fatal: repository 'https://github.com/o/r.git/' not found","exit_code":128,"timed_out":false,"signaled":false}"#
   private static let gitSucceeds =
@@ -1103,7 +1111,7 @@ final class CreationFlowTests: XCTestCase {
     let hosts = Counter()
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     var services = services(driver: FakeDriver(), daemon: nil, hosts: hosts)
-    services.trustStatus = { _, _, _ in
+    services.trustStatus = { _, _, _, _ in
       TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
     }
     store.remoteCreateServices = services
@@ -1114,6 +1122,82 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(run.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
     XCTAssertEqual(hosts.count, 0, "a machine was asked for")
     XCTAssertEqual(run.steps.first { $0.id == "repository" }?.state, .done)
+  }
+
+  private static let devContainer = ScriptTrust(
+    name: ScriptTrust.devContainerName, file: ".devcontainer/devcontainer.json", origin: "base",
+    sha256: String(repeating: "b", count: 64), text: #"{"image": "x"}"#, trusted: false,
+    exempt: false)
+
+  /// Value: protects=eng review D4, a container create whose devcontainer.json this Mac has not
+  /// approved stops before any container is made, on its own approval, and only a container create
+  /// asks for the file; fails_when=a host is asked for, a boxd create judges a devcontainer.json, or
+  /// the stop names the setup script; no_claim=`trust status --devcontainer` itself (the Go tests)
+  func testAnUnapprovedDevcontainerConfigStopsAContainerCreateBeforeAnyContainer() async throws {
+    let hosts = Counter()
+    let asked = Calls<Bool>()
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: FakeDriver(), daemon: nil, hosts: hosts)
+    services.trustStatus = { _, _, _, devcontainer in
+      asked.add(devcontainer)
+      return TrustStatus(trusted: false, scripts: devcontainer ? [Self.devContainer] : [])
+    }
+    store.remoteCreateServices = services
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.outcome, .scriptNotTrusted(Self.devContainer))
+    XCTAssertEqual(hosts.count, 0, "a container was asked for")
+    XCTAssertEqual(store.errorTitle, "Approve the dev container?")
+    XCTAssertEqual(store.errorAction?.label, "Continue With Default Image…")
+    XCTAssertEqual(
+      CreationPanePresentation.footer(for: run.outcome)?.reason,
+      ".devcontainer/devcontainer.json from the base commit needs approving before the workroom "
+        + "is made.")
+
+    store.clearError()
+    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    XCTAssertEqual(asked.all, [true, false], "only a container create judges the file")
+  }
+
+  /// Value: protects=Continue With Default Image creates again without judging or using the
+  /// devcontainer.json, and approves nothing; fails_when=the retry stops on the file again, judges
+  /// it, or forgets it skipped it; no_claim=which image the create then runs (T8)
+  func testContinueWithDefaultImageCreatesAgainWithoutTheDevcontainerConfig() async throws {
+    let hosts = Counter()
+    let asked = Calls<Bool>()
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: FakeDriver(), daemon: nil, hosts: hosts)
+    services.trustStatus = { _, _, _, devcontainer in
+      asked.add(devcontainer)
+      return TrustStatus(trusted: false, scripts: devcontainer ? [Self.devContainer] : [])
+    }
+    store.remoteCreateServices = services
+    store.closesFinishedCreations = { false }
+    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+
+    await store.skipSetupScript(run)
+
+    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertTrue(retry.skipsDevContainer)
+    XCTAssertFalse(retry.skipsSetup, "the setup script is still judged")
+    XCTAssertEqual(asked.all, [true, false])
+    XCTAssertEqual(hosts.count, 1, "the retry stopped before asking for a container")
+  }
+
+  /// Value: protects=the wording of a devcontainer.json's sheet and confirmation, which isn't a
+  /// script; fails_when=it says "runs scripts/devcontainer" or offers to skip a script;
+  /// no_claim=the sheet's drawing
+  func testTheDevcontainerConfigsSheetSpeaksOfTheImage() async throws {
+    let confirmation = CreationPanePresentation.skipConfirmation(for: Self.devContainer)
+    XCTAssertEqual(confirmation.button, "Continue With Default Image")
+    XCTAssertEqual(
+      confirmation.title, "Create the workroom on the default image, without its dev container?")
+    XCTAssertEqual(
+      CreationPanePresentation.skipConfirmation(for: UntrustedSetupCLI.script).button,
+      "Continue Without Script")
   }
 
   /// Value: protects=a repository the provider refuses fails the repository row, not the account
@@ -1309,7 +1393,7 @@ final class CreationFlowTests: XCTestCase {
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let scripts = Counter()
     var services = services(driver: FakeDriver(), daemon: daemon)
-    services.trustStatus = { _, _, _ in
+    services.trustStatus = { _, _, _, _ in
       TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
     }
     services.script = { _ in

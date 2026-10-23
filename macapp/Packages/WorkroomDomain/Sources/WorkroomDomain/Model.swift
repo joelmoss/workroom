@@ -308,8 +308,11 @@ public struct LocalWork: Codable, Sendable, Equatable {
 /// A setup or teardown script as the CLI judged it against this Mac's approvals (#363): its bytes
 /// as `text`, where they came from, and whether Workroom may run them.
 public struct ScriptTrust: Codable, Sendable, Equatable {
-  /// `workroom_setup` or `workroom_teardown`.
+  /// `workroom_setup`, `workroom_teardown`, or `devcontainer` (`devContainerName`).
   public let name: String
+  /// The repository path judged (`scripts/workroom_setup`, `.devcontainer/devcontainer.json`); nil
+  /// from a CLI before it said.
+  public let file: String?
   /// `base` (the base commit), `root`, `workroom` or `stdin`.
   public let origin: String
   public let sha256: String
@@ -323,10 +326,11 @@ public struct ScriptTrust: Codable, Sendable, Equatable {
   public let exempt: Bool
 
   public init(
-    name: String, origin: String, sha256: String, text: String, bytes: Data? = nil, trusted: Bool,
-    exempt: Bool
+    name: String, file: String? = nil, origin: String, sha256: String, text: String,
+    bytes: Data? = nil, trusted: Bool, exempt: Bool
   ) {
     self.name = name
+    self.file = file
     self.origin = origin
     self.sha256 = sha256
     self.text = text
@@ -337,6 +341,15 @@ public struct ScriptTrust: Codable, Sendable, Equatable {
 
   /// The bytes to approve: exactly those judged, or the text when the CLI sent none.
   public var approvalBytes: Data { bytes ?? Data(text.utf8) }
+
+  /// The name a container workroom's devcontainer.json is approved under (#308, eng review D4).
+  public static let devContainerName = "devcontainer"
+
+  /// Whether this is a devcontainer.json rather than a script.
+  public var isDevContainer: Bool { name == Self.devContainerName }
+
+  /// The repository path to show.
+  public var displayFile: String { file ?? "scripts/\(name)" }
 }
 
 /// `trust status`: whether every script a project would run next is approved, and each one.

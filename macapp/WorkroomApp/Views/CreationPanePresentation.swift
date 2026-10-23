@@ -145,15 +145,30 @@ enum CreationPanePresentation {
   /// The setup script approval sheet's message (#363): why the create stopped, for which project,
   /// and the ways on. Worded as the teardown's (`AppStore.teardownApprovalMessage`).
   @MainActor static func setupApprovalMessage(for run: CreationRun, script: ScriptTrust) -> String {
-    "Creating a workroom in \(run.project.displayName) runs scripts/\(script.name) "
+    if script.isDevContainer {
+      return "Creating a workroom in \(run.project.displayName) uses \(script.displayFile) "
+        + "\(script.originLabel), and it is new, or changed since it was approved on this Mac. It "
+        + "decides what the container mounts from this Mac and what runs there. Read it, then "
+        + "approve it to use it, or create the workroom on the default image."
+    }
+    return "Creating a workroom in \(run.project.displayName) runs \(script.displayFile) "
       + "\(script.originLabel), and it is new, or changed since it was approved on this Mac. Read "
       + "it, then approve it to run it, or create the workroom without running it."
   }
 
-  /// Continue Without Script's confirmation, for the script `name`.
-  static func skipConfirmation(scriptName name: String) -> ErrorAction.Confirmation {
-    ErrorAction.Confirmation(
-      title: "Create the workroom without running scripts/\(name)?",
+  /// Continue Without's confirmation for `script`: a setup script is skipped; a devcontainer.json
+  /// gives way to the default image.
+  static func skipConfirmation(for script: ScriptTrust) -> ErrorAction.Confirmation {
+    if script.isDevContainer {
+      return ErrorAction.Confirmation(
+        title: "Create the workroom on the default image, without its dev container?",
+        message:
+          "The workroom is created on Workroom's default image, so nothing \(script.displayFile) "
+          + "sets up is there. It stays unapproved, so you'll be asked again next time.",
+        button: "Continue With Default Image")
+    }
+    return ErrorAction.Confirmation(
+      title: "Create the workroom without running \(script.displayFile)?",
       message: "The workroom is created, but nothing the script would have set up is done. The "
         + "script stays unapproved, so you'll be asked again next time.",
       button: "Continue Without Script")
@@ -194,7 +209,7 @@ enum CreationPanePresentation {
         primary: .deleteWorkroom, secondary: .close)
     case .scriptNotTrusted(let script):
       Footer(
-        reason: "scripts/\(script.name) \(script.originLabel) needs approving before the workroom "
+        reason: "\(script.displayFile) \(script.originLabel) needs approving before the workroom "
           + "is made.",
         primary: .reviewScript, secondary: .cancel)
     case .localWorkFound(let work):

@@ -158,6 +158,9 @@ final class CreationRun: ObservableObject, Identifiable {
   /// Continue Without Script on an unapproved setup script: this create neither judges nor runs it
   /// (#363), and a Try Again keeps that.
   let skipsSetup: Bool
+  /// Continue With Default Image on an unapproved devcontainer.json: this container create neither
+  /// judges nor uses it (#308, eng review D4), and a Try Again keeps that.
+  let skipsDevContainer: Bool
   /// Where it starts, as the user chose when it found local work; `.ask` until then. A Try Again
   /// keeps it.
   let start: CreationStart
@@ -183,8 +186,9 @@ final class CreationRun: ObservableObject, Identifiable {
   init(
     id: UUID = UUID(), project: Project, kind: CreationKind, splitAnchor: SidebarID?,
     previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
-    skipsSetup: Bool = false, start: CreationStart = .ask, startCommit: String? = nil,
-    carriedFetch: CreationStep? = nil, now: @escaping () -> Date = Date.init
+    skipsSetup: Bool = false, skipsDevContainer: Bool = false, start: CreationStart = .ask,
+    startCommit: String? = nil, carriedFetch: CreationStep? = nil,
+    now: @escaping () -> Date = Date.init
   ) {
     self.id = id
     self.project = project
@@ -192,6 +196,7 @@ final class CreationRun: ObservableObject, Identifiable {
     self.splitAnchor = splitAnchor
     self.previousSelection = previousSelection
     self.skipsSetup = skipsSetup
+    self.skipsDevContainer = skipsDevContainer
     self.start = start
     self.startCommit = startCommit
     self.now = now

@@ -103,6 +103,8 @@ final class CLIContractTests: XCTestCase {
       WorkroomCLIError(envelope: decode(Envelope.self, "create-script-not-trusted.json")))
     let script = try XCTUnwrap(WorkroomCLIError.untrustedScript(error))
     XCTAssertEqual(script.name, "workroom_setup")
+    // The path it is at, which the app shows (a devcontainer.json's differs from its name, #308).
+    XCTAssertEqual(script.file, "scripts/workroom_setup")
     XCTAssertEqual(script.origin, "root")
     XCTAssertEqual(script.text, "#!/bin/sh\necho installing\n")
     XCTAssertEqual(script.sha256.count, 64)
