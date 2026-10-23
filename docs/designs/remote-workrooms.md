@@ -1942,9 +1942,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       with any services postStart starts (a database its migrations need) already running. Each is
       a creation row, run as the remote user through `workroomd run-script`. After the create,
       `postStartCommand` runs on the first connect after each new daemon start, before panes
-      attach. The start id is the program-status `boot` the app already receives (#358): a fresh
-      start makes a new one and a hand-off keeps it, so an app update doesn't rerun postStart. `postAttachCommand` is not run. A repository whose hooks and
-      setup script install the same things runs both; the docs say the setup script runs last.
+      attach. The start id is the daemon's program-status `boot` (#358), so the daemon needs no
+      change: a fresh start makes a new one and a hand-off keeps it, so an app update doesn't rerun
+      postStart. It reaches the app only in a program-status subscription's events and
+      `snapshotComplete`, and `ProgramStatusMonitor` drops it from `snapshotComplete` today, the
+      only message an empty host sends. So the app still owes (T8): read `boot` from the
+      container connection's subscription, and hold that connection's pane attaches until postStart
+      has run or been found not needed. `postAttachCommand` is not run. A repository whose hooks
+      and setup script install the same things runs both; the docs say the setup script runs last.
     - **Environment.** `containerEnv` is set on the container, so every process in it has it.
       `remoteEnv` (with `${containerEnv:…}` and `${localEnv:…}` resolved at create) is added to
       what panes, the lifecycle commands and `scripts/workroom_setup` run with, on top of the remote
