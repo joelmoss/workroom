@@ -323,6 +323,123 @@ class ProviderParityTestCase: XCTestCase {
     }
   }
 
+  // MARK: Run sessions (#522)
+
+  /// A remote run tab's run, on the provider's own host, as the app makes and drives it: a pane
+  /// attaches with the run command, the host's daemon runs it under its run supervisor and
+  /// publishes its state with the session's program status, and the app's Stop, Restart and Quit
+  /// reach it by session id. It outlives a dropped link, and Quit ends its session and whatever
+  /// its launcher left running in it.
+  @MainActor
+  func aRunRunsOnTheHostAndAnswersStopRestartAndQuit(_ provider: LiveProvider) async throws {
+    let driver = provider.driver
+    let host = try await driver.create()
+    // Whatever fails below, the machine goes, so a broken run never leaves one billing. The
+    // provider suite's own tearDown sweeps by prefix too, but only if the test gets that far.
+    addTeardownBlock { try? await driver.destroy(host) }
+    let connection = try await connect(provider, host)
+    XCTAssertGreaterThanOrEqual(connection.helloVersion, DaemonHandshake.minRunVersion)
+    let runs = RunLines()
+    let session = UUID()
+    let availability = try await connection.subscribeProgramStatus { event in
+      if case .status(_, let reported, _, _, _, let run?) = event, reported == session {
+        runs.add(run)
+      }
+    }
+    XCTAssertEqual(availability, .available)
+    // A launcher that forks a server into a process group of its own, which ignores the
+    // supervisor's Ctrl-C, as a `bin/dev` does. `$((40+2))` keeps the marker out of the echo.
+    let command =
+      "set -m; (trap '' INT HUP TERM; exec sleep 600) & echo LEAF=$!; echo RUN-$((40+2)); wait"
+    let attach = { (restored: Bool) in
+      try RemoteHostIntegrationTests.Pane(
+        command: driver.attachCommand(
+          to: host, session: session, workingDirectory: provider.home, restored: restored,
+          metadata: [], runCommand: command))
+    }
+
+    let pane = try attach(false)
+    defer { pane.dropLink() }
+    let seen = pane.read(until: "RUN-42", within: 60)
+    let leaves = Self.numbers(after: "LEAF=", in: seen)
+    guard leaves.count == 1 else {
+      XCTFail("the run command never ran on the host: \(seen)")
+      return
+    }
+    try await until("the run reports running") { runs.last?.hasPrefix("running ") == true }
+
+    // Stop parks it in its session; Restart runs it again there.
+    let stop = try await connection.signalSession(session, .stop)
+    XCTAssertEqual(stop, .delivered)
+    try await until("the run parks on Stop") { runs.last == "stopped 1" }
+    let restart = try await connection.signalSession(session, .restart)
+    XCTAssertEqual(restart, .delivered)
+    try await until("the run starts again on Restart") {
+      runs.last?.hasPrefix("running ") == true && runs.all.contains("stopped 1")
+    }
+    let restarted = pane.read(until: "RUN-42", within: 20)
+    let allLeaves = Self.numbers(after: "LEAF=", in: restarted)
+    let listed = try await connection.sessions()
+    XCTAssertTrue(
+      listed.contains { $0.identifier.uuid == session }, "the restart replaced the session")
+
+    // The link drops and comes back: the run carried on.
+    pane.dropLink()
+    try await Task.sleep(for: .seconds(2))
+    XCTAssertEqual(runs.last?.hasPrefix("running "), true, "the run ended with its link")
+    let again = try attach(true)
+    defer { again.dropLink() }
+    let reattached = again.read(until: "RUN-42", within: 30)
+    XCTAssertFalse(reattached.contains("has ended"), reattached)
+
+    // Quit ends the run, its session and everything the launcher left in it.
+    let quit = try await connection.signalSession(session, .quit)
+    XCTAssertEqual(quit, .delivered)
+    try await until("the session ends with its run's quit") {
+      (try? await connection.sessions())?.contains { $0.identifier.uuid == session } == false
+    }
+    for leaf in Set(allLeaves + leaves) {
+      try await until("the server the run left (\(leaf)) ends with it") {
+        (try? provider.onBox(host, "kill -0 \(leaf) 2>/dev/null"))?.hasSuffix("exit=0") == false
+      }
+    }
+
+    try await driver.destroy(host)
+    XCTAssertEqual(try provider.leftovers(), [])
+  }
+
+  /// A run's state lines as its host's daemon publishes them, in order.
+  final class RunLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
+    var last: String? { all.last }
+  }
+
+  /// Polls `condition` for up to `seconds`, and fails the test there if it never holds: the steps
+  /// after it would only wait out their own timeouts on a paid host.
+  func until(
+    _ what: String, within seconds: Double = 60, _ condition: () async throws -> Bool
+  ) async throws {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+      if try await condition() { return }
+      try await Task.sleep(for: .milliseconds(250))
+    }
+    throw ParityTimeout(what: what)
+  }
+
+  struct ParityTimeout: Error, CustomStringConvertible {
+    let what: String
+    var description: String { "timed out: \(what)" }
+  }
+
+  /// Every number that follows `label` in `text`, in order.
+  static func numbers(after label: String, in text: String) -> [Int] {
+    text.components(separatedBy: label).dropFirst().compactMap { Int($0.prefix { $0.isNumber }) }
+  }
+
   // MARK: In the app
 
   /// A remote workroom made and taken down the way the app does it (`RemoteWorkrooms.create` and

@@ -2305,3 +2305,136 @@ fn over_ssh_the_supervisor_restarts_a_crashed_agent() {
         .request(Service::Status, 1, &json!({"method": "status"}));
     assert!(status["error"]["unsupported"].is_string(), "{status}");
 }
+
+/// A remote run tab's run (#522), over real ssh into a Linux host, as the app makes it: a pane
+/// attaches with the run's variables, and the host's daemon runs the command under its run
+/// supervisor. Stop parks it and Restart runs it again in the same session, both asked of the
+/// daemon by session id; it outlives a dropped link; and Quit ends the session and, on Linux too,
+/// whatever its launcher left running in it.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_a_run_runs_on_the_host_and_answers_stop_restart_and_quit() {
+    let fixture = fixture();
+    let session = "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e52";
+    let status_file = format!(
+        "{}/{session}.status",
+        Path::new(&fixture.socket).with_extension("runs").display()
+    );
+    let status = || {
+        fixture
+            .run(&format!("cat {status_file} 2>/dev/null || true"))
+            .trim()
+            .to_string()
+    };
+    // A launcher that forks a server into a process group of its own, which ignores the
+    // supervisor's Ctrl-C, as a `bin/dev` does. `$((40+2))` keeps the marker out of the tty's echo.
+    let command = "set -m; (trap '' INT HUP TERM; exec sleep 600) & echo LEAF=$!; \
+                   echo RUN-$((40+2)); wait";
+    let env = format!(
+        "WORKROOM_SESSION_RUN=1 {}",
+        sh_quoted(&format!("WORKROOM_SESSION_COMMAND={command}"))
+    );
+    let mut pane = Pane::attach_with(&fixture, session, false, &env);
+    let seen = pane.read_until("RUN-42", Duration::from_secs(20));
+    let first_leaf = number_after(&seen, "LEAF=").unwrap_or_else(|| panic!("no leaf in {seen:?}"));
+    assert!(
+        fixture.wait_for(&format!("cat {status_file}"), |out| out
+            .starts_with("running ")),
+        "the run never reported running: {:?}",
+        status()
+    );
+
+    let mut control = fixture.relay();
+    control.client.handshake();
+    let mut signal = |stream: u32, signal: u8| {
+        let mut payload = session_id_bytes(session);
+        payload.push(signal);
+        control.client.send(
+            Service::Control,
+            stream,
+            Frame::new(FrameKind::Signal, payload),
+        );
+        let reply = control
+            .client
+            .envelope(Service::Control, stream, Duration::from_secs(10));
+        let mut frames = FrameDecoder::new();
+        frames.push(&reply.payload);
+        frames
+            .next_frame()
+            .ok()
+            .flatten()
+            .map(|frame| frame.kind)
+            .expect("a signal reply")
+    };
+
+    // Stop parks it in its session; Restart runs it again there.
+    assert_eq!(signal(10, 2), FrameKind::Acknowledged);
+    assert!(
+        fixture.wait_for(&format!("cat {status_file}"), |out| out.trim()
+            == "stopped 1"),
+        "the run did not park on Stop: {:?}",
+        status()
+    );
+    assert_eq!(signal(11, 1), FrameKind::Acknowledged);
+    assert!(
+        fixture.wait_for(&format!("cat {status_file}"), |out| out
+            .starts_with("running ")),
+        "the run did not start again on Restart: {:?}",
+        status()
+    );
+    let seen = pane.read_until("LEAF=", Duration::from_secs(10));
+    let second_leaf = seen
+        .rmatch_indices("LEAF=")
+        .next()
+        .and_then(|(at, _)| number_after(&seen[at..], "LEAF="))
+        .unwrap_or_else(|| panic!("no second leaf in {seen:?}"));
+    assert!(
+        fixture
+            .run(&format!("workroomd list --socket {}", fixture.socket))
+            .contains(session),
+        "the restart replaced the session"
+    );
+
+    // The link drops and comes back: the run carried on.
+    drop(pane);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        status().starts_with("running "),
+        "the run ended with its link: {:?}",
+        status()
+    );
+    let mut again = Pane::attach_with(&fixture, session, true, &env);
+    std::thread::sleep(Duration::from_secs(1));
+    let seen = again.read_until("RUN-42", Duration::from_secs(10));
+    assert!(
+        !seen.contains("has ended"),
+        "the reattach found no run: {seen:?}"
+    );
+
+    // Quit ends the run, its session and everything the launcher left in it.
+    assert_eq!(signal(12, 3), FrameKind::Acknowledged);
+    assert!(
+        fixture.wait_for(
+            &format!("workroomd list --socket {}", fixture.socket),
+            |out| !out.contains(session)
+        ),
+        "the session outlived its run's quit"
+    );
+    for leaf in [first_leaf, second_leaf] {
+        assert!(
+            fixture.wait_for(
+                &format!("kill -0 {leaf} 2>/dev/null && echo alive || echo gone"),
+                |out| out.trim() == "gone"
+            ),
+            "the server the run left ({leaf}) outlived it"
+        );
+    }
+}
+
+/// A session id's 16 bytes, as a control frame carries them.
+fn session_id_bytes(session: &str) -> Vec<u8> {
+    let hex: String = session.chars().filter(|c| *c != '-').collect();
+    (0..16)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("a hex session id"))
+        .collect()
+}

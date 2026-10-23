@@ -198,6 +198,13 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
     try await aWorkroomThatFailsAfterItsMachineLeavesNothing(provider())
   }
 
+  // MARK: Run sessions (#522, `ProviderParityTestCase`)
+
+  @MainActor
+  func testARunRunsOnABoxdMachineAndAnswersStopRestartAndQuit() async throws {
+    try await aRunRunsOnTheHostAndAnswersStopRestartAndQuit(provider())
+  }
+
   // MARK: In the app (#356)
 
   @MainActor
