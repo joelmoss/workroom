@@ -60,7 +60,6 @@ fn start_run(socket: &Path, session: &str, command: &str) -> (common::Spawned, C
 fn running(socket: &Path, session: &str) -> bool {
     read_status(socket, session).starts_with("running ")
 }
-
 /// Stop parks the run with its pane kept, and restart runs the command again in the same session:
 /// the #7 controls, now asked of the daemon rather than signalled by the app itself.
 #[test]
@@ -79,7 +78,7 @@ fn stop_parks_the_run_and_restart_runs_it_again() {
     );
     assert!(
         wait_for(Duration::from_secs(10), || read_status(&socket, SESSION)
-            == "stopped"),
+            == "stopped 1"),
         "status was {:?}",
         read_status(&socket, SESSION)
     );
@@ -246,11 +245,11 @@ fn a_runs_state_is_published_with_its_program_status() {
     let (_client, _reader) = start_run(&socket, SESSION, "exit 3");
     assert!(wait_for(Duration::from_secs(10), || read_status(
         &socket, SESSION
-    ) == "exited 3"));
+    ) == "exited 3 1"));
 
     let mut app = StatusClient::subscribe(&socket);
     let snapshot = app.until(Duration::from_secs(10), |event| {
-        run_of(event, SESSION).as_deref() == Some("exited 3")
+        run_of(event, SESSION).as_deref() == Some("exited 3 1")
     });
     assert!(
         snapshot.is_some(),
@@ -281,6 +280,40 @@ fn a_runs_state_is_published_with_its_program_status() {
     );
 }
 
+/// A restart whose command fails again at once, the same way, still reaches the app: its run is
+/// over before the daemon looks in on it, so only the launch the supervisor numbers its outcome
+/// with tells the second failure from the first, and without it the tab says "Restarting…" for good.
+#[test]
+fn a_restart_that_fails_the_same_way_is_published_again() {
+    if !common::has_terminal_state() {
+        return;
+    }
+    let workspace = Workspace::new("run-refail");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let (_client, _reader) = start_run(&socket, SESSION, "exit 3");
+    let mut app = StatusClient::subscribe(&socket);
+    assert!(
+        app.until(Duration::from_secs(10), |event| run_of(event, SESSION)
+            .as_deref()
+            == Some("exited 3 1"))
+            .is_some(),
+        "the first failure is published"
+    );
+
+    assert_eq!(
+        signal(&socket, SESSION, RunSignal::Restart).kind,
+        FrameKind::Acknowledged
+    );
+    assert!(
+        app.until(Duration::from_secs(10), |event| run_of(event, SESSION)
+            .as_deref()
+            == Some("exited 3 2"))
+            .is_some(),
+        "the second failure is published"
+    );
+}
+
 /// An update hands the daemon off to its new program: the run keeps going, its state is still
 /// published, and its supervisor still answers stop and restart. Q6: a run survives an update.
 #[test]
@@ -301,7 +334,7 @@ fn a_run_survives_a_hand_off_and_can_still_be_controlled() {
     );
     assert!(wait_for(Duration::from_secs(10), || read_status(
         &socket, SESSION
-    ) == "stopped"));
+    ) == "stopped 1"));
 
     let output = std::process::Command::new(common::daemon_binary())
         .args(["hand-off", "--socket"])
@@ -317,7 +350,7 @@ fn a_run_survives_a_hand_off_and_can_still_be_controlled() {
     assert!(
         app.until(Duration::from_secs(10), |event| run_of(event, SESSION)
             .as_deref()
-            == Some("stopped"))
+            == Some("stopped 1"))
             .is_some(),
         "the stopped run is still published after the hand-off"
     );
@@ -435,7 +468,7 @@ fn nothing_the_run_started_outlives_a_kill() {
     leaves_nothing_behind("run-sweep-kill", command, |socket| {
         assert!(wait_for(Duration::from_secs(10), || read_status(
             socket, SESSION
-        ) == "exited 0"));
+        ) == "exited 0 1"));
         let mut payload = session_bytes(SESSION);
         payload.truncate(16);
         let reply = common::control(socket, Frame::new(FrameKind::Kill, payload));
@@ -496,7 +529,7 @@ fn a_run_that_exits_parks_with_its_exit_code() {
     assert!(seen.contains("Process exited"), "the pane parks: {seen:?}");
     assert!(
         wait_for(Duration::from_secs(5), || read_status(&socket, SESSION)
-            == "exited 3"),
+            == "exited 3 1"),
         "status was {:?}",
         read_status(&socket, SESSION)
     );

@@ -23,6 +23,9 @@ shift 1
 
 CHILD_PID=""
 ACTION=""
+# Ends each outcome line ("exited <code> <launch>", "stopped <launch>"): a restart that fails at once
+# the same way is over before the daemon next reads the file, and the same line would publish nothing.
+LAUNCH=0
 
 write_status() {  # atomic: temp + rename, so a watcher never reads a half-written line
   __t="$STATUS.tmp.$$"
@@ -67,6 +70,7 @@ wait_child_dead() {  # poll until the launcher is gone; SIGKILL after ~6s for an
 
 start_child() {
   printf '\033[3J\033[H\033[2J'  # clear scrollback + screen so each (re)launch starts fresh
+  LAUNCH=$((LAUNCH + 1))
   write_status "starting"
   # (a) job control is OFF (non-interactive /bin/sh), so `&` keeps the child in OUR pgroup = the tty
   #     foreground group (no SIGTTIN). (b) `< /dev/tty` overrides the POSIX async-stdin-from-/dev/null
@@ -89,14 +93,14 @@ while :; do
       continue  # relaunch in place (start_child clears)
       ;;
     quit)
-      write_status "exited 0"
+      write_status "exited 0 $LAUNCH"
       exit 0  # surface frees
       ;;
     stop)
-      write_status "stopped"
+      write_status "stopped $LAUNCH"
       ;;
     *)
-      write_status "exited $code"  # child self-exited (130 = a typed Ctrl-C)
+      write_status "exited $code $LAUNCH"  # child self-exited (130 = a typed Ctrl-C)
       ;;
   esac
 
@@ -112,7 +116,7 @@ while :; do
     case "$ACTION" in
       restart) break ;;  # leave parked -> relaunch via the outer loop (clears)
       quit)
-        write_status "exited 0"
+        write_status "exited 0 $LAUNCH"
         exit 0
         ;;
       *) : ;;  # empty or already-stopped -> stay parked, wait for the next signal

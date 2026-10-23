@@ -406,10 +406,12 @@ final class RunCommandController {
 
   // MARK: Run command — graceful teardown (issue #7, Option B)
 
-  /// The target's run surface if a child process is still alive in it, else nil. Used by the
-  /// teardown paths to decide whether a Ctrl-C + wait is needed before freeing it.
+  /// The target's run surface if its run is going and a process is still alive in it, else nil.
+  /// Used by the teardown paths to decide whether a stop + wait is needed before freeing it. A
+  /// stopped run's pane can hold a live process (the parked supervisor, or the relay showing that
+  /// its session is gone) that no stop would end (#522).
   private func liveRunView(for targetID: TerminalTarget.ID) -> GhosttySurfaceView? {
-    guard let tabID = runStates[targetID]?.tab,
+    guard let state = runStates[targetID], state.isRunning, let tabID = state.tab,
       let view = terminals.view(forTab: tabID, inTarget: targetID),
       view.hasLiveProcess
     else { return nil }
