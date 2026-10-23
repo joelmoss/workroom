@@ -113,12 +113,6 @@ targets:
       - path: Resources/ghostty
         type: folder
         buildPhase: resources
-      # Run-command supervisor (issue #7): the long-lived shell that owns each run command's process
-      # tree inside its terminal. Folder reference → copied to Contents/Resources/run-supervisor;
-      # AppStore.supervisorScriptPath resolves it from Bundle.main.
-      - path: Resources/run-supervisor
-        type: folder
-        buildPhase: resources
       # Markdown preview web assets (marked + DOMPurify + Pele + our template/CSS/glue). Folder
       # reference → copied verbatim to Contents/Resources/markdown; MarkdownWebView loads it offline
       # via Bundle.main.url(forResource: "markdown"). See Resources/markdown/template.html.

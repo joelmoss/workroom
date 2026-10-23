@@ -1016,6 +1016,15 @@ final class AppStore: ObservableObject {
     // Everything `TerminalSessions` reports comes through one synchronous sink, handled in
     // `handleTerminalEvent` (eng review D8).
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
+    // A run tab rebuilt from a saved session is a run session of the project's command (#522).
+    terminals.runCommandForTarget = { [weak self] target in
+      guard let self, let project = self.project(forTargetID: target.id) else { return nil }
+      let command = self.runConfig(forProject: project.path).command
+      return command.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    runCommand.onSignalUnconfirmed = { [weak self] targetID, reason in
+      self?.runSignalUnconfirmed(targetID: targetID, reason: reason)
+    }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
     // background notifications. `DockBadge` draws into the tile's `contentView` (not `badgeLabel`,
@@ -1083,7 +1092,7 @@ final class AppStore: ObservableObject {
       if let runTab = self.runStates[targetID]?.tab, ids.contains(runTab) {
         self.runStates[targetID] = nil
         self.runOutcomes[targetID] = nil  // reset the red run icon (issue #79)
-        self.clearRunPidFile(for: targetID)  // forget the captured pid (issue #7)
+        self.forgetRun(for: targetID)
         self.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
       }
       // Same idea for a closed/reaped Investigate tab (issue #146) — a second, independent cleanup
@@ -1132,6 +1141,16 @@ final class AppStore: ObservableObject {
       raiseDetachedPane(tabID)
     case .paneWindowToggleRequested(let targetID, let tabID):
       togglePaneWindow(tabID, targetID: targetID)
+    // Run sessions (#522): a run tab back from a saved session, and what its daemon says of it.
+    case .runTabRestored(let targetID, let tabID):
+      adoptRestoredRun(tab: tabID, targetID: targetID)
+    case .runStatus(let targetID, let tabID, let line):
+      guard self.runStates[targetID]?.tab == tabID,
+        let target = self.terminalTarget(forID: targetID)
+      else { return }
+      applyRunStatus(line, for: target)
+    case .runSessionGone(let targetID, let tabID):
+      runSessionGone(tab: tabID, targetID: targetID)
     }
   }
 
@@ -1686,17 +1705,17 @@ final class AppStore: ObservableObject {
     get { runCommand.scheduleRunToastDismiss }
     set { runCommand.scheduleRunToastDismiss = newValue }
   }
-  var runPidFiles: [TerminalTarget.ID: String] {
-    get { runCommand.runPidFiles }
-    set { runCommand.runPidFiles = newValue }
-  }
-  var runSessions: [TerminalTarget.ID: pid_t] {
-    get { runCommand.runSessions }
-    set { runCommand.runSessions = newValue }
-  }
-  var signalSupervisorForTesting: ((Int32, TerminalTarget.ID) -> Bool)? {
+  var signalSupervisorForTesting: ((RunSignal, TerminalTarget.ID) -> RunSignalOutcome)? {
     get { runCommand.signalSupervisorForTesting }
     set { runCommand.signalSupervisorForTesting = newValue }
+  }
+  var restoredRuns: Set<TerminalTarget.ID> {
+    get { runCommand.restoredRuns }
+    set { runCommand.restoredRuns = newValue }
+  }
+  var pendingRunStarts: Set<TerminalTarget.ID> {
+    get { runCommand.pendingRunStarts }
+    set { runCommand.pendingRunStarts = newValue }
   }
   var lastRunStatus: [TerminalTarget.ID: String] {
     get { runCommand.lastRunStatus }
@@ -1712,12 +1731,13 @@ final class AppStore: ObservableObject {
   }
   var hasAnyRunTerminal: Bool { runCommand.hasAnyRunTerminal }
   var hasLiveRunCommand: Bool { runCommand.hasLiveRunCommand }
+  var hasLiveRun: Bool { runCommand.hasLiveRun }
   func dismissRunToast(for targetID: TerminalTarget.ID) {
     runCommand.dismissRunToast(for: targetID)
   }
   func resetRunToast(for targetID: TerminalTarget.ID) { runCommand.resetRunToast(for: targetID) }
-  func clearRunPidFile(for targetID: TerminalTarget.ID) {
-    runCommand.clearRunPidFile(for: targetID)
+  func forgetRun(for targetID: TerminalTarget.ID) {
+    runCommand.forgetRun(for: targetID)
   }
   func stopRunCommand(for target: TerminalTarget) { runCommand.stopRunCommand(for: target) }
   func armAutoRun(forWorkroom targetID: TerminalTarget.ID) {
@@ -2485,7 +2505,7 @@ final class AppStore: ObservableObject {
     // `reap` only fires `.tabsRemoved` (which clears run state) when tabs existed; a target armed
     // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
     runStates[targetID] = nil
-    clearRunPidFile(for: targetID)
+    forgetRun(for: targetID)
     runOutcomes[targetID] = nil
     resetRunToast(for: targetID)  // deleted target → drop any run toast state (issue #67)
     // Drop the gone target's notifications and pull any banners it already delivered.

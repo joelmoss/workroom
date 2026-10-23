@@ -8,19 +8,21 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
     XCTAssertTrue(
       TerminalPersistentSessionPolicy.usesPersistentSession(
         isAvailable: true,
-        isRunCommand: false,
+        inProcessCommand: false,
         hasExistingSession: false,
         isFixture: false))
   }
 
-  func testRunCommandAndFixtureAreExcluded() {
+  /// An Investigate tab's agent runs in its pane's own process, so it gets no session; a run tab's
+  /// command is a run session (#522), which reaches the policy as no in-process command.
+  func testAnInProcessCommandAndFixtureAreExcluded() {
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        isAvailable: true, isRunCommand: true,
+        isAvailable: true, inProcessCommand: true,
         hasExistingSession: false, isFixture: false))
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        isAvailable: true, isRunCommand: false,
+        isAvailable: true, inProcessCommand: false,
         hasExistingSession: false, isFixture: true))
   }
 
@@ -29,7 +31,7 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
         isAvailable: false,
-        isRunCommand: false,
+        inProcessCommand: false,
         hasExistingSession: false,
         isFixture: false))
   }
@@ -46,18 +48,19 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
     XCTAssertTrue(
       TerminalPersistentSessionPolicy.usesPersistentSession(
         isAvailable: false,
-        isRunCommand: false,
+        inProcessCommand: false,
         hasExistingSession: true,
         isFixture: false),
       "a pane restoring a session it already had must keep its id so the owner can be resolved")
   }
 
-  /// A run command is still excluded even when restoring, so the bypass cannot widen past its case.
-  func testARestoredRunCommandIsStillExcluded() {
+  /// An in-process command is still excluded even when restoring, so the bypass cannot widen past
+  /// its case.
+  func testARestoredInProcessCommandIsStillExcluded() {
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
         isAvailable: false,
-        isRunCommand: true,
+        inProcessCommand: true,
         hasExistingSession: true,
         isFixture: false))
   }

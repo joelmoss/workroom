@@ -34,7 +34,7 @@ final class ProgramStatusConnectionTests: XCTestCase {
     fake.push(service: 7, stream: 0, payload: Data([1]) + Data("not json".utf8))
     fake.push(service: 7, stream: 0, payload: status("blocked", session: session))
     var events = received.stream.makeAsyncIterator()
-    guard case .status(_, let id, _, _, let records) = await events.next() else {
+    guard case .status(_, let id, _, _, let records, _) = await events.next() else {
       return XCTFail("no status event")
     }
     XCTAssertEqual(id, session)

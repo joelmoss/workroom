@@ -15,14 +15,17 @@ enum TerminalPersistentSessionPolicy {
   ///
   /// Keeping the id when nothing can attach to it is harmless: `attachCommand(forSession:)` returns
   /// nil for an unresolved owner and `GhosttySurfaceView` opens a plain shell, which is the same
-  /// outcome as having no id at all.
+  /// outcome as having no id at all (a run tab runs nothing instead, and says why).
+  ///
+  /// `inProcessCommand`: the pane runs a command in its own process, as an Investigate tab runs its
+  /// agent, so it has no session. A run tab's command is a run session's (#522), so it does.
   static func usesPersistentSession(
     isAvailable: Bool,
-    isRunCommand: Bool,
+    inProcessCommand: Bool,
     hasExistingSession: Bool,
     // A fixture pane is a plain shell, unless the launch gave it a scratch daemon of its own.
     isFixture: Bool = AppEnvironment.current.isFixture && UITestFixture.liveDaemonDirectory == nil
   ) -> Bool {
-    (isAvailable || hasExistingSession) && !isRunCommand && !isFixture
+    (isAvailable || hasExistingSession) && !inProcessCommand && !isFixture
   }
 }

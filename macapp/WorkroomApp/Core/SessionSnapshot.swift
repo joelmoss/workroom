@@ -309,6 +309,9 @@ struct TerminalPayload: Codable, Hashable, Sendable {
   var cwd: String?
   /// Persistent background session (additive — older builds ignore it).
   var sessionID: String? = nil
+  /// The workroom's run tab (#522): its session is a run session, reattached as the target's run,
+  /// never started again. Additive: an older build reads it as an ordinary terminal.
+  var run: Bool? = nil
 }
 
 /// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive

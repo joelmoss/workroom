@@ -357,6 +357,21 @@ public final class DaemonVCSConnection: @unchecked Sendable {
     return frame.kind == .acknowledged
   }
 
+  /// Asks a run session's supervisor to restart, stop or quit (#522), on this connection's Control
+  /// service. Throws when the daemon could not be asked or did not answer: the signal may or may
+  /// not have been sent, which a caller must not read as the run being gone.
+  public func signalSession(_ session: UUID, _ signal: RunSignal) async throws -> RunSignalReply {
+    guard helloVersion >= DaemonHandshake.minRunVersion else {
+      throw HostConnectionError.serviceUnavailable("This host's workroomd predates run sessions.")
+    }
+    let reply = try await request(
+      bytes: Data(signal.frame(session: session)), timeout: 10, service: Self.controlService)
+    guard let answer = RunSignalReply.decode(Array(reply)) else {
+      throw HostConnectionError.serviceUnavailable("No reply to a run signal.")
+    }
+    return answer
+  }
+
   /// Whether this connection has ended: a forward that outlives it (`PortForward`'s `reconnect`)
   /// makes a new one before it opens a stream.
   public var isClosed: Bool { lock.withLock { closed } }

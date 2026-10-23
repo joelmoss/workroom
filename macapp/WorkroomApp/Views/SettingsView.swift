@@ -182,15 +182,25 @@ private struct SettingsWindowThemer: NSViewRepresentable {
 
 private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
+  @Default(.quitWithRunningServers) private var quitWithRunningServers
   @Default(.globalHotkey) private var globalHotkey
 
   var body: some View {
     Form {
       Toggle("Confirm before quitting", isOn: $confirmOnQuit)
-        .help(
-          "Ask for confirmation before quitting. Ordinary terminals keep running after you quit."
-        )
+        .help("Ask for confirmation before quitting. Terminals keep running after you quit.")
         .accessibilityIdentifier("settings.control.confirmQuit")
+
+      Picker("When quitting with dev servers running", selection: $quitWithRunningServers) {
+        ForEach(QuitWithRunningServers.allCases, id: \.self) { choice in
+          Text(choice.title).tag(choice)
+        }
+      }
+      .help(
+        "What quitting Workroom does to run commands that are still going. Kept runs pick up "
+          + "again in their tabs when you reopen Workroom. Updates always keep them running."
+      )
+      .accessibilityIdentifier("settings.control.quitWithRunningServers")
 
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
         .help("Register the system-wide ⌘§ shortcut to show or hide Workroom.")

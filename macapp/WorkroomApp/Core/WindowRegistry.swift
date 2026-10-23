@@ -356,6 +356,9 @@ final class WindowRegistry: ObservableObject {
 
   /// Any window with a live run command — gates the graceful-stop-on-quit (issue #7 / #70).
   var hasAnyLiveRunCommand: Bool { allStores.contains(where: \.hasLiveRunCommand) }
+  /// Whether any window's run command (not an Investigate tab) is going: what quitting may keep
+  /// running or stop (#522).
+  var hasAnyLiveRun: Bool { allStores.contains(where: \.hasLiveRun) }
 
   /// Ctrl-C every window's live run commands and let them exit before the process dies, so dev
   /// servers release their ports/pidfiles instead of being orphaned by the OS hangup (issue #7).

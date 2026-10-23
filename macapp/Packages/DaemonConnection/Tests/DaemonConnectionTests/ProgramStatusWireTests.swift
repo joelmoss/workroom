@@ -41,8 +41,20 @@ final class ProgramStatusWireTests: XCTestCase {
             id: "shell command", state: .error, message: "npm test", exitCode: 1)
         ]))
     let program = try ProgramStatusEvent.decode(fixture("status")).event
-    guard case .status(_, _, _, _, let records) = program else { return XCTFail() }
+    guard case .status(_, _, _, _, let records, _) = program else { return XCTFail() }
     XCTAssertNil(records.first?.exitCode)
+  }
+
+  /// A run session's state (#522) rides its status event; a shell's has none.
+  func testRunFixtureDecodes() throws {
+    XCTAssertEqual(
+      try ProgramStatusEvent.decode(fixture("status-run")).event,
+      .status(
+        boot: boot, session: session, revision: 1, reporting: false, records: [],
+        run: "exited 3"))
+    let shell = try ProgramStatusEvent.decode(fixture("status")).event
+    guard case .status(_, _, _, _, _, let run) = shell else { return XCTFail() }
+    XCTAssertNil(run)
   }
 
   func testEndedAndSnapshotCompleteFixturesDecode() throws {
@@ -66,7 +78,7 @@ final class ProgramStatusWireTests: XCTestCase {
       """
     let decoded = try ProgramStatusEvent.decode(Data(json.utf8))
     XCTAssertEqual(decoded.droppedRecords, 3)
-    guard case .status(_, _, _, _, let records) = decoded.event else {
+    guard case .status(_, _, _, _, let records, _) = decoded.event else {
       return XCTFail("\(String(describing: decoded.event))")
     }
     XCTAssertEqual(records.map(\.id), ["a"])
@@ -88,7 +100,7 @@ final class ProgramStatusWireTests: XCTestCase {
       #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":1,"reporting":true,"records":[\#(many)]}"#
     XCTAssertGreaterThan(big.utf8.count, 1_000_000)
     let decoded = try ProgramStatusEvent.decode(Data(big.utf8))
-    guard case .status(_, _, _, _, let records) = decoded.event else { return XCTFail() }
+    guard case .status(_, _, _, _, let records, _) = decoded.event else { return XCTFail() }
     XCTAssertEqual(records.count, 1_000, "a large but valid event still decodes")
   }
 

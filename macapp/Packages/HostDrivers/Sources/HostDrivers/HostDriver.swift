@@ -121,9 +121,12 @@ public protocol HostTerminalDriver: HostDriver {
   ///
   /// `metadata` is what the app says about the session (`SessionMetadataKey`): its workroom and
   /// title travel to the host's daemon with the attach, so any Mac can find the session (#255).
+  ///
+  /// `runCommand`, when set, makes the session a run session (#522): the host's daemon runs it
+  /// under its run supervisor rather than starting a shell.
   func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
-    metadata: [(key: String, value: String)]
+    metadata: [(key: String, value: String)], runCommand: String?
   ) throws -> String
   /// Whether the last attach of `session` was refused by `host` in a way that does not heal, for
   /// a pane deciding whether to keep trying: a host that is rebooting comes back, one that
@@ -156,7 +159,17 @@ extension HostTerminalDriver {
   {
     try attachCommand(
       to: host, session: session, workingDirectory: workingDirectory, restored: restored,
-      metadata: [])
+      metadata: [], runCommand: nil)
+  }
+
+  /// A shell's attach.
+  public func attachCommand(
+    to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+    metadata: [(key: String, value: String)]
+  ) throws -> String {
+    try attachCommand(
+      to: host, session: session, workingDirectory: workingDirectory, restored: restored,
+      metadata: metadata, runCommand: nil)
   }
 }
 

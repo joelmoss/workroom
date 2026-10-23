@@ -171,35 +171,23 @@ final class WorkroomHandOverTests: XCTestCase {
       destination.runStates[t.id], .stopped(tab: run.id), "the exit was the destination's to hear")
   }
 
-  /// The supervisor's status file is what drives a run (issue #7), and the origin's poll of it
-  /// stops the moment the run leaves. The destination must take it up.
-  func testTheDestinationPollsAMovedRunsSupervisor() throws {
+  /// A run's state comes with its session's program status to whichever window holds its tab
+  /// (#522), so once the run moves the destination hears it and the origin, which no longer
+  /// holds the run, changes nothing.
+  func testTheDestinationHearsAMovedRunsStatus() {
     let origin = makeOrigin()
     let destination = makeStore()
     let t = target(origin)
-    let run = origin.terminals.addRunTab(for: t, command: "sleep 1000", cwd: "/p/a", focus: false)
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let pid = dir.appendingPathComponent("run.pid").path
+    let run = origin.terminals.addRunTab(
+      for: t, command: "sleep 1000", cwd: "/p/a", focus: false, runSession: true)
     origin.runStates[t.id] = .running(tab: run.id, interrupted: false)
-    origin.runPidFiles[t.id] = pid
 
     origin.moveWorkroom(sid, to: destination)
-    try "stopped\n".write(
-      toFile: RunCommandController.supervisorStatusPath(forPidPath: pid), atomically: true,
-      encoding: .utf8)
+    origin.terminals.onEvent?(.runStatus(t.id, run.id, "stopped"))
+    XCTAssertNil(origin.runStates[t.id])
+    destination.terminals.onEvent?(.runStatus(t.id, run.id, "stopped"))
 
-    let stopped = expectation(description: "the destination read the status file")
-    func check() {
-      if destination.runStates[t.id] == .stopped(tab: run.id) {
-        stopped.fulfill()
-      } else {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { check() }
-      }
-    }
-    check()
-    wait(for: [stopped], timeout: 3)
+    XCTAssertEqual(destination.runStates[t.id], .stopped(tab: run.id))
     XCTAssertEqual(destination.runOutcomes[t.id], .stoppedByUser)
   }
 

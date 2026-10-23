@@ -194,7 +194,12 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate,
   func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
     // Installing now; the relaunch resets state anyway, but clear so the pill doesn't linger.
     clearAvailable()
+    // The quit that follows is the update's, which keeps running dev servers (#522, Q12).
+    Self.isInstallingUpdate = true
   }
+
+  /// Sparkle is installing an update, so the coming quit is its relaunch, not the user's.
+  @MainActor static var isInstallingUpdate = false
 
   // MARK: - SPUUpdaterDelegate (download-in-progress tracking)
 

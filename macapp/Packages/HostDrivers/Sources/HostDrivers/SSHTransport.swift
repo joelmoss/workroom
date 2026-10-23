@@ -85,19 +85,20 @@ public enum SSHTransport {
   /// configuration written to `hostDirectory`.
   public static func attachCommand(
     to host: Host, in hostDirectory: URL, session: UUID, workingDirectory: String, restored: Bool,
-    metadata: [(key: String, value: String)] = []
+    metadata: [(key: String, value: String)] = [], runCommand: String? = nil
   ) throws -> String {
     attachCommand(
       via: try route(to: host, in: hostDirectory), in: hostDirectory,
       daemonSocket: host.daemonSocket, session: session, workingDirectory: workingDirectory,
-      restored: restored, metadata: metadata)
+      restored: restored, metadata: metadata, runCommand: runCommand)
   }
 
   /// The command a pane runs to attach to `session` over `route`, keeping ssh's log in
   /// `hostDirectory`.
   public static func attachCommand(
     via route: Route, in hostDirectory: URL, daemonSocket: String, session: UUID,
-    workingDirectory: String, restored: Bool, metadata: [(key: String, value: String)] = []
+    workingDirectory: String, restored: Bool, metadata: [(key: String, value: String)] = [],
+    runCommand: String? = nil
   ) -> String {
     // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
     // and ssh forwards the pane's resizes to it. It outranks the config's `RequestTTY no`, which
@@ -112,7 +113,8 @@ public enum SSHTransport {
         remoteAttachCommand(
           binary: DaemonInstall.binary(besideSocket: daemonSocket), session: session,
           socket: daemonSocket, resources: DaemonInstall.resources(besideSocket: daemonSocket),
-          workingDirectory: workingDirectory, restored: restored, metadata: metadata),
+          workingDirectory: workingDirectory, restored: restored, metadata: metadata,
+          runCommand: runCommand),
       ]
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
       .map(shellQuoted).joined(separator: " ")
@@ -225,9 +227,13 @@ public enum SSHTransport {
   /// (`SessionMetadataKey.environmentVariables`), which the host's daemon keeps (#255). Nothing
   /// else does: the project is this Mac's path, which the host neither keeps nor needs, and an ssh
   /// command line is visible to everything on the host.
+  ///
+  /// `runCommand` makes the session a run session (#522), whose daemon runs it under the run
+  /// supervisor in the host's own login shell. It is the project's run command, which the user
+  /// typed and which runs on the host anyway, so the command line showing it gives nothing away.
   public static func remoteAttachCommand(
     binary: String, session: UUID, socket: String, resources: String, workingDirectory: String,
-    restored: Bool, metadata: [(key: String, value: String)] = []
+    restored: Bool, metadata: [(key: String, value: String)] = [], runCommand: String? = nil
   ) -> String {
     let integrated = [
       "TERM=xterm-ghostty", "TERMINFO=\(resources)/terminfo",
@@ -241,6 +247,7 @@ public enum SSHTransport {
         "WORKROOM_SESSION_SOCKET=\(socket)",
         "WORKROOM_SESSION_CWD=\(workingDirectory)",
       ]
+      + (runCommand.map { ["WORKROOM_SESSION_RUN=1", "WORKROOM_SESSION_COMMAND=\($0)"] } ?? [])
       + metadata.compactMap { entry in
         names[entry.key].flatMap { entry.value.isEmpty ? nil : "\($0)=\(entry.value)" }
       }

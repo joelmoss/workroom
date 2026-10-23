@@ -367,7 +367,7 @@ final class RemoteTeardownTests: XCTestCase {
     }
     func attachCommand(
       to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
-      metadata: [(key: String, value: String)]
+      metadata: [(key: String, value: String)], runCommand: String?
     ) throws -> String { "" }
     func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool { false }
     func lastAttach(of session: UUID, on host: HostID) -> LastAttach { .finished }

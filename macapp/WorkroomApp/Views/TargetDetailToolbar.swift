@@ -155,8 +155,9 @@ struct RunControls: View {
     // Settings with the warning banner — `runOrFocusRunCommand(for:)` has done that since issue #127, it
     // was just unreachable by click while the button hid itself. A button that teaches you how to
     // configure a run command beats no button at all. (The sidebar's per-row button still hides: a list
-    // of many workrooms each offering a settings shortcut would be noise.)
-    if !target.isMissing {
+    // of many workrooms each offering a settings shortcut would be noise.) A remote or container
+    // workroom whose panes open here shows it too: its run runs on its host (#522).
+    if target.opensTerminals {
       let running = store.isRunCommandRunning(for: target.id)
       // Stop deliberately TRAILS Restart (it used to lead), and the idle Run is trailing-aligned in the
       // reserved box, so Stop lands exactly where Run was: the primary toggle keeps its position under

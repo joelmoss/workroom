@@ -427,9 +427,14 @@ extension AppStore {
     let id = TerminalTarget.workroomID(project: run.project.path, name: name)
     guard landing.claim(id) else { return }
     await nameCreationRun(run, name)
-    // Arm auto-run so the workroom's first terminal runs the project command as tab #1 (issue #7).
-    // It fires when the pane mounts, which is once the run is over.
-    let cfg = runConfig(forProject: run.project.path)
+    armAutoRunIfConfigured(id, in: run.project)
+  }
+
+  /// Arm auto-run so the workroom's first terminal runs the project command as tab #1 (issue #7).
+  /// It fires when the pane mounts, which is once the create is over. A remote create arms it at
+  /// the same point, once its workroom has a name (#522): its run runs on its host.
+  func armAutoRunIfConfigured(_ id: TerminalTarget.ID, in project: Project) {
+    let cfg = runConfig(forProject: project.path)
     if cfg.autoRun, cfg.hasCommand { armAutoRun(forWorkroom: id) }
   }
 
@@ -624,6 +629,8 @@ extension AppStore {
     recorder.reserve = { [weak self] hostPath, descriptor in
       let name = try await reserve(hostPath, descriptor)
       await self?.nameCreationRun(run, name)
+      await self?.armAutoRunIfConfigured(
+        TerminalTarget.workroomID(project: path, name: name), in: run.project)
       return name
     }
     let forget = recorder.forget

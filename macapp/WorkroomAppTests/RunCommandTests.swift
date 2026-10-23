@@ -1,8 +1,10 @@
 import AppKit
+import DaemonConnection
 import Defaults
 import Observation
 import WorkroomDomain
 import WorkroomSystem
+import WorkroomWire
 import XCTest
 
 @testable import Workroom
@@ -15,7 +17,7 @@ import XCTest
 @MainActor
 final class RunCommandTests: XCTestCase {
   private var captured: [String?] = []
-  private var signals: [(TerminalTarget.ID, Int32)] = []
+  private var signals: [(TerminalTarget.ID, RunSignal)] = []
   /// Windows registered on `WindowRegistry.shared` by the owner-focus test below — unlike every
   /// other test here, that one exercises the real singleton (not an injectable instance), so
   /// registrations must be unwound in `tearDown` (not just at the end of the test body) or a failed
@@ -48,14 +50,15 @@ final class RunCommandTests: XCTestCase {
     }
     store.signalSupervisorForTesting = { [weak self] sig, id in
       self?.signals.append((id, sig))
-      return true
+      return .delivered
     }
     store.projects = projects
     return store
   }
 
-  /// A `makeStore` variant whose supervisor seam always returns `false` (dead supervisor), forcing
-  /// `restartRunCommand` to take the respawn path rather than the signal path.
+  /// A `makeStore` variant whose supervisor seam always answers that the daemon holds no such
+  /// session (dead supervisor), forcing `restartRunCommand` to take the respawn path rather than
+  /// the signal path.
   private func makeStoreDeadSupervisor(_ projects: [Project]) -> AppStore {
     let store = AppStore()
     store.confirmOnCloseOverrideForTesting = false  // as in `makeStore`: never a modal
@@ -65,7 +68,7 @@ final class RunCommandTests: XCTestCase {
     }
     store.signalSupervisorForTesting = { [weak self] sig, id in
       self?.signals.append((id, sig))
-      return false
+      return .gone
     }
     store.projects = projects
     return store
@@ -112,7 +115,10 @@ final class RunCommandTests: XCTestCase {
 
   // MARK: Start
 
-  func testStartRunCommandSpawnsTracksAndWraps() {
+  /// A run is a run session (#522): its tab carries the project's command for the daemon, which
+  /// runs it under the run supervisor in the login shell (`workroomd run-supervisor`, whose shell
+  /// choice and wrap the daemon's own tests pin), never in the tab's own process.
+  func testStartRunCommandOpensARunSession() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
@@ -121,37 +127,17 @@ final class RunCommandTests: XCTestCase {
 
     XCTAssertNotNil(store.runTabID(for: t.id))
     XCTAssertTrue(store.isRunCommandRunning(for: t.id))
-    // The surface command is the supervisor invocation: /bin/sh <supervisor.sh> <ctl> <status> …
-    let cmd = try! XCTUnwrap(captured.last as? String)
-    XCTAssertTrue(cmd.contains("supervisor.sh"), "command must invoke the supervisor: \(cmd)")
-    XCTAssertTrue(cmd.contains("echo hi"), "user command must be present: \(cmd)")
-    // The supervisor runs the user command under an interactive login shell (A3); `-lic` is the
-    // proof that `-i` (interactive) is included alongside `-l` and `-c` (issue #15).
-    XCTAssertTrue(cmd.contains("-lic"), "not an interactive login shell: \(cmd)")
-    // The status file path is included so the supervisor can write its state transitions.
-    XCTAssertTrue(cmd.contains(".status"), "no status file path in command: \(cmd)")
+    XCTAssertEqual(captured.last, "echo hi")
+    XCTAssertEqual(runView(store, t)?.isRunSession, true)
   }
 
-  /// Regression guard for moving `runCommandLine`'s shell-dialect decision into the shared
-  /// `ShellEnvironment.loginShellInvocation` (which the environment probe also uses, so the two
-  /// can't drift). The dialect branch itself — POSIX `$SHELL` gets `-lic`, fish/nu/csh fall back to
-  /// a login `/bin/sh -lc` — is covered per-shell in `ShellEnvironmentTests`; that fallback had no
-  /// test at all before, and this refactor made it load-bearing for the run command too. What can
-  /// only be checked here is the composition: that the wrap the supervisor receives is byte-for-byte
-  /// what the shared helper produces, rather than a second hand-rolled copy that happens to agree
-  /// on this machine's shell.
-  func testRunWrapComesFromTheSharedLoginShellHelper() {
+  /// An Investigate tab's agent runs in its own process: it is not a run session.
+  func testAnInvestigateTabIsNotARunSession() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
-
-    store.startRunCommand(for: t)
-
-    let cmd = try! XCTUnwrap(captured.last as? String)
-    let q = CommandLineInstaller.shellQuoted
-    let inner = "exec \(q(ShellEnvironment.loginShellExecutable())) -c \(q("echo hi"))"
-    let expected = ShellEnvironment.loginShellInvocation(script: inner).commandString
-    XCTAssertTrue(cmd.hasSuffix(expected), "wrap is not the shared helper's output: \(cmd)")
+    let tab = store.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: nil, codingAgentSetting: "auto")
+    XCTAssertEqual(tab.surface?.isRunSession, false)
   }
 
   func testStartIsNoOpWithoutCommand() {
@@ -343,12 +329,13 @@ final class RunCommandTests: XCTestCase {
       "the other window already runs THIS workroom — no duplicate (issue #70)")
   }
 
-  func testStartSingleQuoteEscaping() {
+  /// The command goes to the daemon as typed: quoting it for the login shell is the run
+  /// supervisor's, where it runs (`workroomd run-supervisor`, #522).
+  func testTheCommandReachesTheRunSessionAsTyped() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo 'x'", autoRun: false), forProject: "/a")
     store.startRunCommand(for: target(store, "/a", "main"))
-    let cmd = try! XCTUnwrap(captured.last as? String)
-    XCTAssertTrue(cmd.contains("'\\''"), "single quotes not POSIX-escaped: \(cmd)")
+    XCTAssertEqual(captured.last, "echo 'x'")
   }
 
   func testStartDoesNotDuplicateRunTab() {
@@ -471,7 +458,7 @@ final class RunCommandTests: XCTestCase {
     let first = try! XCTUnwrap(store.runTabID(for: t.id))
 
     store.restartRunCommand(for: t)  // running → SIGUSR1 → .restarting (same tab)
-    XCTAssertTrue(signals.contains { $0.1 == SIGUSR1 }, "restart must send SIGUSR1")
+    XCTAssertTrue(signals.contains { $0.1 == .restart }, "restart must send SIGUSR1")
     XCTAssertTrue(store.isRunCommandRunning(for: t.id))
     XCTAssertEqual(
       store.runTabID(for: t.id), first, "tab stays put — supervisor handles the restart")
@@ -497,7 +484,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.split(for: t)?.tabIDs, [sibling, runID])
 
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting, tab unchanged
-    XCTAssertTrue(signals.contains { $0.1 == SIGUSR1 }, "restart must send SIGUSR1")
+    XCTAssertTrue(signals.contains { $0.1 == .restart }, "restart must send SIGUSR1")
 
     store.applyRunStatus("running 1", for: t)  // child relaunched by supervisor
 
@@ -628,7 +615,7 @@ final class RunCommandTests: XCTestCase {
     let tab = try! XCTUnwrap(store.runTabID(for: t.id))
 
     store.stopRunCommand(for: t)  // SIGUSR2 → .running(interrupted), pane stays
-    XCTAssertTrue(signals.contains { $0.1 == SIGUSR2 }, "stop must send SIGUSR2")
+    XCTAssertTrue(signals.contains { $0.1 == .stop }, "stop must send SIGUSR2")
     XCTAssertEqual(store.runTabID(for: t.id), tab, "stop keeps the pane open")
     XCTAssertTrue(
       store.isRunCommandRunning(for: t.id), "still running until supervisor confirms stop")
@@ -650,11 +637,11 @@ final class RunCommandTests: XCTestCase {
     let tab = try! XCTUnwrap(store.runTabID(for: t.id))
 
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting
-    XCTAssertTrue(signals.contains { $0.1 == SIGUSR1 }, "restart must send SIGUSR1")
+    XCTAssertTrue(signals.contains { $0.1 == .restart }, "restart must send SIGUSR1")
 
     signals.removeAll()
     store.stopRunCommand(for: t)  // Stop after Restart → SIGUSR2, pane stays
-    XCTAssertTrue(signals.contains { $0.1 == SIGUSR2 }, "stop after restart must send SIGUSR2")
+    XCTAssertTrue(signals.contains { $0.1 == .stop }, "stop after restart must send SIGUSR2")
     XCTAssertEqual(store.runTabID(for: t.id), tab, "pane must stay open on stop")
 
     store.applyRunStatus("stopped", for: t)
@@ -743,7 +730,7 @@ final class RunCommandTests: XCTestCase {
     store.requestCloseTerminalTab(tab, for: t)
     XCTAssertEqual(
       store.runTabID(for: t.id), tab, "close must wait while the process is alive")
-    XCTAssertTrue(signals.contains { $0.1 == SIGTERM }, "close must send SIGTERM to supervisor")
+    XCTAssertTrue(signals.contains { $0.1 == .quit }, "close must send SIGTERM to supervisor")
 
     view.liveProcessOverrideForTesting = false  // process exits
     waitUntil("tab closes once the process has exited") { store.runTabID(for: t.id) == nil }
@@ -771,7 +758,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(completed, "waits while processes are alive")
     // SIGTERM must be sent to both supervisors.
     XCTAssertTrue(
-      signals.filter { $0.1 == SIGTERM }.count >= 2,
+      signals.filter { $0.1 == .quit }.count >= 2,
       "SIGTERM must be sent to each live supervisor")
 
     v1.liveProcessOverrideForTesting = false  // only one exited
@@ -1123,7 +1110,7 @@ final class RunCommandTests: XCTestCase {
     store.runOrFocusRunCommand()  // ⌘R during the stop → must restart, not swallow
 
     XCTAssertTrue(
-      signals.contains { $0.1 == SIGUSR1 },
+      signals.contains { $0.1 == .restart },
       "⌘R during a stop must restart (SIGUSR1), not silently focus a dying run")
     XCTAssertEqual(store.runTabID(for: t.id), tab, "restart keeps the same run tab")
   }
@@ -1139,7 +1126,7 @@ final class RunCommandTests: XCTestCase {
     store.terminals.focus(runID, for: t)  // user opened the run terminal
 
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting (same tab)
-    XCTAssertTrue(signals.contains { $0.1 == SIGUSR1 }, "restart must send SIGUSR1")
+    XCTAssertTrue(signals.contains { $0.1 == .restart }, "restart must send SIGUSR1")
 
     store.applyRunStatus("running 1", for: t)  // supervisor relaunched the child
 
@@ -1161,7 +1148,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.activeTab(for: t)?.id, shell)
 
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting (same tab, no focus change)
-    XCTAssertTrue(signals.contains { $0.1 == SIGUSR1 }, "restart must send SIGUSR1")
+    XCTAssertTrue(signals.contains { $0.1 == .restart }, "restart must send SIGUSR1")
 
     store.applyRunStatus("running 1", for: t)  // child relaunched by supervisor
 
@@ -1507,5 +1494,170 @@ final class RunCommandTests: XCTestCase {
     }
     store.armAutoRun(forWorkroom: "t")
     XCTAssertTrue(invalidated, "a forwarded read must track RunCommandController")
+  }
+
+  // MARK: Run sessions (#522)
+
+  /// A run tab the store has reattached from a saved session, as `TerminalSessions.restore`
+  /// reports one.
+  private func restoredRun(_ store: AppStore, _ t: TerminalTarget) -> TerminalTab {
+    let tab = store.terminals.addRunTab(
+      for: t, command: "bin/dev", cwd: t.path, focus: false, runSession: true)
+    store.terminals.onEvent?(.runTabRestored(t.id, tab.id))
+    return tab
+  }
+
+  /// A reattached run that is still going is the target's run again, and says nothing about it:
+  /// no "Running" toast at launch (Q13).
+  func testARestoredRunStillGoingShowsNoRunningToast() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)  // a focused shell, so the run is in the background
+    // The control: a run started here does show its Running toast in this same setup.
+    store.startRunCommand(for: t)
+    let started = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertEqual(store.runToastItems.map(\.status), [.running], "the control must show a toast")
+    store.terminals.closeTab(started, for: t)
+
+    let tab = restoredRun(store, t)
+    XCTAssertTrue(store.runToastItems.isEmpty, "nor before its daemon has said how it is")
+    store.terminals.onEvent?(.runStatus(t.id, tab.id, "running 4123"))
+
+    XCTAssertEqual(store.runStates[t.id], .running(tab: tab.id, interrupted: false))
+    XCTAssertTrue(store.runToastItems.isEmpty, "a reattach is not a start: no Running toast")
+    XCTAssertFalse(store.restoredRuns.contains(t.id))
+  }
+
+  /// A run that failed while the app was closed comes back with its outcome (Q7).
+  func testARestoredRunThatFailedComesBackFailed() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    let tab = restoredRun(store, t)
+
+    store.terminals.onEvent?(.runStatus(t.id, tab.id, "exited 1"))
+
+    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab.id))
+    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 1))
+    XCTAssertTrue(store.runFailed(for: t.id))
+  }
+
+  /// A reattached run whose session is gone (a reboot, a daemon that died) stays as a stopped Run
+  /// tab, starts nothing, and Run starts it again (Q8).
+  func testARestoredRunWhoseSessionIsGoneComesBackStopped() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    let tab = restoredRun(store, t)
+
+    store.terminals.onEvent?(.runSessionGone(t.id, tab.id))
+
+    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab.id))
+    XCTAssertTrue(store.runToastItems.isEmpty)
+    XCTAssertTrue(signals.isEmpty, "nothing was started or signalled")
+  }
+
+  /// Gone matters only for a run that has not reported since it was reattached: a run that was
+  /// going ends through its own tab's process, which says how (`markRunExited`).
+  func testAGoneSessionOfARunThatWasGoingChangesNothing() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+
+    store.terminals.onEvent?(.runSessionGone(t.id, tab))
+
+    XCTAssertEqual(store.runStates[t.id], .running(tab: tab, interrupted: false))
+  }
+
+  /// A restart whose daemon holds no such session starts a fresh one; one it cannot confirm starts
+  /// nothing, so a lost reply can never double a server (R9).
+  func testARestartReplacesTheRunOnlyWhenItsSessionIsGone() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let first = try! XCTUnwrap(store.runTabID(for: t.id))
+
+    store.signalSupervisorForTesting = { _, _ in .unknown("no answer") }
+    store.restartRunCommand(for: t)
+    XCTAssertEqual(store.runTabID(for: t.id), first, "an unconfirmed restart replaces nothing")
+    XCTAssertEqual(store.runStates[t.id], .running(tab: first, interrupted: false))
+
+    store.signalSupervisorForTesting = { _, _ in .gone }
+    store.restartRunCommand(for: t)
+    let second = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertNotEqual(second, first, "a gone supervisor's run starts again in a fresh session")
+  }
+
+  /// A stop whose daemon holds no such session finds the run stopped already.
+  func testAStopOfAGoneRunStopsIt() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    store.signalSupervisorForTesting = { _, _ in .gone }
+
+    store.stopRunCommand(for: t)
+
+    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab))
+  }
+
+  /// A run tab is saved, as a run, so it comes back; an Investigate tab, whose agent dies with
+  /// the app, is not (Q1, Q2).
+  func testARunTabIsSavedAndAnInvestigateTabIsNot() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let run = store.terminals.addRunTab(
+      for: t, command: "bin/dev", cwd: t.path, focus: false, runSession: true)
+    let investigate = store.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: nil, codingAgentSetting: "auto")
+
+    XCTAssertEqual(TabSession(key: "r", tab: run)?.terminal?.run, true)
+    XCTAssertNil(TabSession(key: "i", tab: investigate))
+  }
+
+  /// A saved run tab comes back as the target's run, reattached and waiting for its state.
+  func testARestoredRunTabIsTheTargetsRun() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    let session = UUID()
+    let saved = TargetSession(
+      targetID: t.id,
+      tabs: [
+        TabSession(
+          key: "r", kind: TabSession.terminalKind,
+          terminal: TerminalPayload(
+            defaultTitle: "Run", cwd: nil, sessionID: session.uuidString, run: true))
+      ])
+
+    store.terminals.restore(saved, for: t)
+
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertTrue(store.restoredRuns.contains(t.id))
+    XCTAssertEqual(store.terminals.view(forTab: tab, inTarget: t.id)?.isRunSession, true)
+    XCTAssertEqual(captured.last, "bin/dev", "a run session of the project's command")
+  }
+
+  /// On a second Mac, Run shows the run already going on the workroom's host (D7): only a run
+  /// session of THIS workroom counts, never a shell or another workroom's run.
+  func testOnlyThisWorkroomsRunSessionsCount() {
+    func session(_ tags: [String: String]) -> SessionDescriptor {
+      SessionDescriptor(
+        identifier: SessionIdentifier(UUID()), shellProcessID: 1, ttyDevice: 0,
+        workingDirectory: "/w", isAttached: false,
+        metadata: tags.map { SessionEnvironmentEntry(key: $0.key, value: $0.value) })
+    }
+    let mine = session([SessionMetadataKey.workroom: "W", "kind": "run"])
+    let shell = session([SessionMetadataKey.workroom: "W"])
+    let other = session([SessionMetadataKey.workroom: "X", "kind": "run"])
+
+    XCTAssertEqual(
+      AppStore.runSessions(in: [shell, mine, other], workroom: "W"), [mine.identifier.uuid!])
   }
 }

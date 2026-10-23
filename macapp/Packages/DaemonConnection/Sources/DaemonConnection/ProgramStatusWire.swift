@@ -54,9 +54,12 @@ public struct ProgramStatusRecord: Sendable, Equatable {
 }
 
 public enum ProgramStatusEvent: Sendable, Equatable {
-  /// Every record of `session`, never a delta, so a lost event is healed by the next.
+  /// Every record of `session`, never a delta, so a lost event is healed by the next. `run` is set
+  /// only for a run session (#522): what its supervisor last wrote, such as `running 4123`,
+  /// `stopped` or `exited 1`.
   case status(
-    boot: String, session: UUID, revision: UInt64, reporting: Bool, records: [ProgramStatusRecord])
+    boot: String, session: UUID, revision: UInt64, reporting: Bool, records: [ProgramStatusRecord],
+    run: String? = nil)
   case ended(boot: String, session: UUID)
   /// Closes the snapshot that follows a subscribe: a session the snapshot did not name has gone.
   case snapshotComplete(boot: String, sessions: [UUID])
@@ -78,7 +81,7 @@ public enum ProgramStatusEvent: Sendable, Equatable {
       return (
         .status(
           boot: boot, session: session, revision: revision, reporting: wire.reporting ?? false,
-          records: kept),
+          records: kept, run: wire.run),
         records.count - kept.count
       )
     case "ended":
@@ -104,6 +107,7 @@ public enum ProgramStatusEvent: Sendable, Equatable {
     let reporting: Bool?
     let records: [LossyRecord]?
     let sessions: [String]?
+    let run: String?
   }
 
   /// Decodes one record or nothing, so one bad record never costs the event.

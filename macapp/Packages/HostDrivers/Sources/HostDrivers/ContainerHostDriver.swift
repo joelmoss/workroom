@@ -774,12 +774,13 @@ public final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable 
 
   public func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
-    metadata: [(key: String, value: String)]
+    metadata: [(key: String, value: String)], runCommand: String?
   ) throws -> String {
     let (id, target) = try target(host)
     return try SSHTransport.attachCommand(
       to: target, in: directory.appendingPathComponent(id.uuidString), session: session,
-      workingDirectory: workingDirectory, restored: restored, metadata: metadata)
+      workingDirectory: workingDirectory, restored: restored, metadata: metadata,
+      runCommand: runCommand)
   }
 
   /// Whether the last attach of `session` was refused by `host` in a way that does not heal: a

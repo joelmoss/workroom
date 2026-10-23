@@ -70,6 +70,11 @@ extension Defaults.Keys {
   /// Confirm before quitting (quitting tears down every terminal with no undo).
   static let confirmOnQuit = Key<Bool>("confirmOnQuit", default: true, suite: .app)
 
+  /// What quitting does to running dev servers (#522, Q9–Q12): ask the first time (the answer is
+  /// kept here), keep them running, or stop them. Settings ▸ General.
+  static let quitWithRunningServers = Key<QuitWithRunningServers>(
+    "quitWithRunningServers", default: .ask, suite: .app)
+
   /// Confirm before closing a terminal (closing kills its shell and any running process, no undo).
   static let confirmOnCloseTerminal = Key<Bool>(
     "confirmOnCloseTerminal", default: true, suite: .app)

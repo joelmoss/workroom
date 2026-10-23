@@ -57,9 +57,18 @@ final class GhosttySurfaceView: NSView {
   let workingDirectory: String
 
   /// When non-nil/non-empty, the surface launches this command instead of a login shell, and keeps
-  /// the pane open after it exits (`wait_after_command`). Used by the "run command" feature (issue
-  /// #7); nil for every ordinary terminal. The host passes a shell-wrapped string (`$SHELL -lic …`).
+  /// the pane open after it exits (`wait_after_command`): an Investigate tab's agent (#49). For a
+  /// run session (`isRunSession`) it is the project's run command, which the daemon runs instead.
+  /// Nil for every ordinary terminal.
   private let runCommand: String?
+  /// A run tab (#522): `runCommand` goes to the daemon as a run session, never into this process.
+  var isRunSession = false
+  /// A run tab that got no daemon session, so it runs nothing and says why (D5).
+  private(set) var refusedRun = false
+  /// What such a pane says.
+  static let noRunNotice = CommandLineInstaller.shellQuoted(
+    "Workroom's background helper isn't available, so the run command can't start here. "
+      + "Press Run to try again.")
 
   /// Names this pane's attach (`PersistentSessionService.attachCommand(by:)`), so only this pane
   /// clears it. Not its object identity, which a later view can reuse once this one is freed.
@@ -324,10 +333,18 @@ final class GhosttySurfaceView: NSView {
     // link that was up (`reconnectIfTheLinkDropped`).
     if startedPersistent { lastAttachAt = Date() }
 
-    if !startedPersistent, let runCommand, !runCommand.isEmpty, let cmd = strdup(runCommand) {
+    // A run session's command runs only in a daemon session, whose supervisor the app stops,
+    // restarts and reattaches to (#522, D5). Run here it would be none of those, and a restored
+    // run tab would start its dev server unasked, so the pane says why there is no run instead.
+    let command =
+      isRunSession && !startedPersistent
+      ? "/bin/sh -c " + CommandLineInstaller.shellQuoted("printf '%s\\n' " + Self.noRunNotice)
+      : runCommand
+    if !startedPersistent, let command, !command.isEmpty, let cmd = strdup(command) {
       surfaceCStrings.append(cmd)
       config.command = UnsafePointer(cmd)
       config.wait_after_command = true
+      refusedRun = isRunSession
     }
 
     if !envPairs.isEmpty {
@@ -485,8 +502,10 @@ final class GhosttySurfaceView: NSView {
     // See `confirmBeforeAttach`.
     PersistentSessionService.shared.confirmBeforeAttach(
       sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored)
-    if PersistentSessionService.shared.willReplaceRestoredSession(
-      persistentSessionID, wasRestored: persistentSessionIsRestored)
+    // A run session that is gone is never replaced (#522, D2): its tab says the run ended.
+    if !isRunSession,
+      PersistentSessionService.shared.willReplaceRestoredSession(
+        persistentSessionID, wasRestored: persistentSessionIsRestored)
     {
       showPaneNotice(PaneNoticeToast.sessionReplaced)
     }
@@ -520,7 +539,8 @@ final class GhosttySurfaceView: NSView {
       contentsOf: PersistentSessionService.shared.launchEnvironment(
         sessionID: persistentSessionID,
         workingDirectory: workingDirectory,
-        metadata: sessionMetadata))
+        metadata: sessionMetadata,
+        runCommand: isRunSession ? runCommand : nil))
     return true
   }
 
