@@ -240,11 +240,11 @@ final class GhosttySurfaceView: NSView {
   //
   // A libghostty surface renders through Metal, so its content is otherwise invisible to VoiceOver —
   // there is no per-frame "content changed" callback from the engine to drive notifications off (the
-  // adapter's `GHOSTTY_ACTION_*` switch has nothing render-shaped), so this polls instead. The poll
-  // itself is near-free when VoiceOver is off (one boolean check), which is the common case for every
-  // user of every pane, so the timer runs unconditionally and the real work — materializing the
-  // viewport into a `String` and diffing it — happens only while VoiceOver is actually listening.
+  // adapter's `GHOSTTY_ACTION_*` switch has nothing render-shaped), so this polls instead, but only
+  // while VoiceOver is on: `NSWorkspace.isVoiceOverEnabled` is observable, and the timer's 2.5
+  // wakeups a second per pane bought nothing for everyone else (measured 2026-10-23).
   nonisolated(unsafe) private var accessibilityPollTimer: Timer?
+  nonisolated(unsafe) private var voiceOverObservation: NSKeyValueObservation?
   private static let accessibilityPollInterval: TimeInterval = 0.4
   private var lastAccessibilityValue: String?
   /// Set while a `GHOSTTY_ACTION_SELECTION_CHANGED` hop is already queued — see
@@ -1290,20 +1290,34 @@ final class GhosttySurfaceView: NSView {
   /// has nothing of that shape (`GHOSTTY_ACTION_RENDER` is a draw request, not a content diff, and
   /// this embedding never sees it: libghostty drives its own layer, we call no draw entry point) — so
   /// the screen half polls. The SELECTION half doesn't: it's engine-pushed via
-  /// `GHOSTTY_ACTION_SELECTION_CHANGED` into `handleSelectionChanged()`. Gated on
-  /// `NSWorkspace.shared.isVoiceOverEnabled`, checked FIRST and cheaply on every tick: the real cost —
-  /// materializing the whole viewport into a `String` — is paid only while VoiceOver is actually
-  /// listening, which is the rare case, not the common one. The timer itself runs unconditionally so
-  /// turning VoiceOver on mid-session is picked up within one interval, with no separate on/off
-  /// notification to subscribe to.
+  /// `GHOSTTY_ACTION_SELECTION_CHANGED` into `handleSelectionChanged()`. The timer runs only while
+  /// `NSWorkspace.shared.isVoiceOverEnabled`, observed so turning VoiceOver on or off mid-session
+  /// starts or stops it: the real cost — materializing the whole viewport into a `String` — and the
+  /// wakeups are both paid only while VoiceOver is actually listening.
   private func startAccessibilityPolling() {
-    guard accessibilityPollTimer == nil else { return }
-    accessibilityPollTimer = Timer.scheduledTimer(
-      withTimeInterval: Self.accessibilityPollInterval, repeats: true
-    ) { [weak self] _ in MainActor.assumeIsolated { self?.pollAccessibilityContent() } }
+    guard voiceOverObservation == nil else { return }
+    voiceOverObservation = NSWorkspace.shared.observe(
+      \.isVoiceOverEnabled, options: [.initial, .new]
+    ) { [weak self] workspace, _ in
+      let listening = workspace.isVoiceOverEnabled
+      Task { @MainActor in
+        guard let self, self.voiceOverObservation != nil else { return }
+        if listening {
+          guard self.accessibilityPollTimer == nil else { return }
+          self.accessibilityPollTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.accessibilityPollInterval, repeats: true
+          ) { [weak self] _ in MainActor.assumeIsolated { self?.pollAccessibilityContent() } }
+        } else {
+          self.accessibilityPollTimer?.invalidate()
+          self.accessibilityPollTimer = nil
+        }
+      }
+    }
   }
 
   private func stopAccessibilityPolling() {
+    voiceOverObservation?.invalidate()
+    voiceOverObservation = nil
     accessibilityPollTimer?.invalidate()
     accessibilityPollTimer = nil
   }
