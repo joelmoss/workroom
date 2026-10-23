@@ -431,9 +431,39 @@ pub struct SessionStore {
     /// Where run sessions keep their status files (`crate::run`), when this store serves a
     /// socket (`keep_runs`). A store without one refuses run sessions.
     runs: Arc<OnceLock<PathBuf>>,
-    /// How many run sessions have been created here, signalled on each: what the runs watcher
-    /// (`crate::run`) sleeps on while there is no run session to publish.
-    runs_created: Arc<(Mutex<u64>, Condvar)>,
+    /// Raised for each run session created: what the runs watcher (`crate::run`) sleeps on while
+    /// there is no run session to publish.
+    runs_created: Arc<Wake>,
+    /// Raised when a screen may have changed or a session has gone (output, a resize,
+    /// `mark_changed`, the reader's end): what the screens thread (`crate::screens`) sleeps on
+    /// instead of ticking every two seconds of an idle daemon.
+    screens_work: Arc<Wake>,
+}
+
+/// A counted signal. `wait_past` a count read by `seen` returns once `raise` has moved it, so a
+/// raise between the read and the wait is never missed.
+#[derive(Default)]
+struct Wake {
+    count: Mutex<u64>,
+    raised: Condvar,
+}
+
+impl Wake {
+    fn seen(&self) -> u64 {
+        *self.count.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn raise(&self) {
+        *self.count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        self.raised.notify_all();
+    }
+
+    fn wait_past(&self, seen: u64) {
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count == seen {
+            count = self.raised.wait(count).unwrap_or_else(|e| e.into_inner());
+        }
+    }
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
@@ -610,20 +640,24 @@ impl SessionStore {
     /// How many run sessions have been created here so far. Read before looking for live ones, so
     /// `wait_for_run_created` cannot miss one created in between.
     pub(crate) fn runs_created(&self) -> u64 {
-        *self
-            .runs_created
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        self.runs_created.seen()
     }
 
     /// Blocks until a run session is created after `runs_created` returned `seen`.
     pub(crate) fn wait_for_run_created(&self, seen: u64) {
-        let (count, created) = &*self.runs_created;
-        let mut count = count.lock().unwrap_or_else(|e| e.into_inner());
-        while *count == seen {
-            count = created.wait(count).unwrap_or_else(|e| e.into_inner());
-        }
+        self.runs_created.wait_past(seen);
+    }
+
+    /// How often a screen may have changed or a session gone so far. Read before a pass over the
+    /// sessions, so `wait_for_screens_work` cannot miss a change made during it.
+    pub(crate) fn screens_work(&self) -> u64 {
+        self.screens_work.seen()
+    }
+
+    /// Blocks until a screen may have changed or a session has gone after `screens_work` returned
+    /// `seen`.
+    pub(crate) fn wait_for_screens_work(&self, seen: u64) {
+        self.screens_work.wait_past(seen);
     }
 
     /// The live run sessions.
@@ -750,16 +784,13 @@ impl SessionStore {
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
-        let store = Arc::clone(&self.sessions);
-        let hub = Arc::clone(&self.program_status);
+        let store = self.clone();
         sessions.insert(spec.id, session);
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
         if is_run {
-            let (count, created) = &*self.runs_created;
-            *count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-            created.notify_all();
+            self.runs_created.raise();
         }
         crate::note!(
             "session {} started: shell pid {}",
@@ -786,7 +817,7 @@ impl SessionStore {
             // An `Err` is the sender dropped without a send, which only a panicking `register` can
             // do; draining anyway is what that case needs too.
             let _ = start.recv();
-            read_session(spec.id, number, pty, shadow, attached, store, hub)
+            read_session(spec.id, number, pty, shadow, attached, store)
         });
         if spawned.is_err() {
             self.kill(spec.id);
@@ -958,7 +989,7 @@ impl SessionStore {
         if !painted {
             return Err(SessionError::RepaintFailed(id.to_hyphenated()));
         }
-        apply_size(&pty, &shadow, &attached, size);
+        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
 
         let sessions = self.sessions.lock().expect("session store poisoned");
         let session = sessions
@@ -994,7 +1025,7 @@ impl SessionStore {
                 _ => None,
             }
         };
-        apply_size(&pty, &shadow, &attached, size);
+        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
     }
 
     /// A client's window changed size.
@@ -1018,7 +1049,7 @@ impl SessionStore {
                 None => attached.claim(token),
             }
         };
-        apply_size(&pty, &shadow, &attached, size);
+        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
     }
 
     /// Input from a client: claims the size if it is the USER acting, then goes to the pty.
@@ -1040,7 +1071,7 @@ impl SessionStore {
                 None
             }
         };
-        apply_size(&pty, &shadow, &attached, size);
+        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
         let _ = pty.write_all(bytes);
     }
 
@@ -1256,8 +1287,7 @@ impl SessionStore {
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
-        let store = Arc::clone(&self.sessions);
-        let hub = Arc::clone(&self.program_status);
+        let store = self.clone();
         {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
             if sessions.contains_key(&id) {
@@ -1267,7 +1297,7 @@ impl SessionStore {
         }
         let pid = pty.child_pid();
         let spawned = std::thread::Builder::new()
-            .spawn(move || read_session(id, number, pty, shadow, attached, store, hub));
+            .spawn(move || read_session(id, number, pty, shadow, attached, store));
         if spawned.is_err() {
             self.kill(id);
             return Err(SessionError::ReaderFailed(id.to_hyphenated()));
@@ -1465,6 +1495,7 @@ impl SessionStore {
     pub fn mark_changed(&self, id: SessionId) {
         if let Some((_, _, attached)) = self.parts(id) {
             attached.lock().unwrap_or_else(|e| e.into_inner()).changed = true;
+            self.screens_work.raise();
         }
     }
 
@@ -1502,7 +1533,8 @@ impl SessionStore {
     /// after it blocked, and is not the session's interactive shell (#481). `screens::tick` runs
     /// it every `screens::INTERVAL`; as `compress_shadows`, it takes each shadow's lock on its own,
     /// never a session's attachment lock.
-    pub fn promote_unprobed(&self, now: Instant) {
+    pub fn promote_unprobed(&self, now: Instant) -> bool {
+        let mut pending = false;
         let sessions: Vec<_> = {
             let sessions = self.sessions.lock().expect("session store poisoned");
             sessions
@@ -1522,6 +1554,7 @@ impl SessionStore {
                 if !status.has_unprobed_request() {
                     return;
                 }
+                pending = true;
                 let foreground = pty.foreground_pgid();
                 let shell = interactive.then(|| pty.child_pid());
                 status.promote_unprobed(now, |group| {
@@ -1531,6 +1564,7 @@ impl SessionStore {
                 });
             });
         }
+        pending
     }
 
     /// The publisher of this store's program status (#358), whose boot names the store.
@@ -1699,6 +1733,7 @@ fn apply_size(
     shadow: &Mutex<Shadow>,
     attached: &Mutex<Attached>,
     size: Option<(u16, u16)>,
+    work: &Wake,
 ) {
     let Some((columns, rows)) = size else {
         return;
@@ -1710,6 +1745,7 @@ fn apply_size(
     }
     // A resize reflows the screen even when the program prints nothing after it.
     held.changed = true;
+    work.raise();
 }
 
 /// What a client attaching to a live session is shown: its screen, busy only while the program
@@ -1847,9 +1883,13 @@ fn read_session(
     pty: Arc<Pty>,
     shadow: Arc<Mutex<Shadow>>,
     attached: Arc<Mutex<Attached>>,
-    store: Arc<Mutex<HashMap<SessionId, Session>>>,
-    hub: Arc<Hub>,
+    sessions: SessionStore,
 ) {
+    // The store's shared parts the reader uses: the map, the status publisher and the screens
+    // thread's wake.
+    let store = Arc::clone(&sessions.sessions);
+    let hub = Arc::clone(&sessions.program_status);
+    let work = Arc::clone(&sessions.screens_work);
     let mut buffer = [0u8; READ_CHUNK];
     // A run session ends when its supervisor does, even while something it left behind holds the
     // pty open. On Linux a master reads EIO only once every holder of the slave has closed it, so
@@ -1915,6 +1955,7 @@ fn read_session(
                         });
                     }
                     held.changed = true;
+                    work.raise();
                     held.clients.iter().map(Client::target).collect::<Vec<_>>()
                 }
                 _ => Vec::new(),
@@ -1974,6 +2015,9 @@ fn read_session(
                     run,
                 )
             });
+            if held {
+                work.raise(); // the record of a session that ended goes on the next pass
+            }
             if held && run {
                 sweep_run_session(id, pty.child_pid());
             }
@@ -2020,7 +2064,7 @@ fn read_session(
                         Frame::new(FrameKind::Output, buffer[..n].to_vec()),
                     );
                     let size = deliver(&attached, target, &bytes);
-                    apply_size(&pty, &shadow, &attached, size);
+                    apply_size(&pty, &shadow, &attached, size, &work);
                 }
             }
             // `Interrupted` is not a failure — a signal arriving mid-read is ordinary, and the
@@ -2062,6 +2106,7 @@ fn read_session(
                     remove_if_held(&mut store, id, number);
                     store.contains_key(&id)
                 });
+                work.raise();
                 if !replaced {
                     end_program_status(id, &shadow, &hub);
                 }
@@ -2494,6 +2539,40 @@ mod tests {
         assert!(
             woke.recv_timeout(Duration::from_secs(5)).is_ok(),
             "woken by the run session"
+        );
+        store.kill_all();
+    }
+
+    /// The screens thread sleeps on `wait_for_screens_work` until a session prints, is resized or
+    /// ends; a session that has nothing to say does not wake it.
+    #[test]
+    fn output_wakes_the_screens_thread_and_silence_does_not() {
+        let store = SessionStore::new();
+        let seen = store.screens_work();
+        let e = env();
+        let quiet = [OsString::from("-c"), OsString::from("sleep 10")];
+        store
+            .create(spec(id(95), &quiet, &e))
+            .expect("a quiet session");
+
+        let (done, woke) = std::sync::mpsc::channel();
+        let waiting = store.clone();
+        std::thread::spawn(move || {
+            waiting.wait_for_screens_work(seen);
+            let _ = done.send(());
+        });
+        assert!(
+            woke.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a session with nothing to say woke the screens thread"
+        );
+        // Long-lived, so within the wait only its output can be what wakes the thread, not its end.
+        let talks = [OsString::from("-c"), OsString::from("echo hi; sleep 10")];
+        store
+            .create(spec(id(96), &talks, &e))
+            .expect("a session that prints");
+        assert!(
+            woke.recv_timeout(Duration::from_secs(3)).is_ok(),
+            "output did not wake the screens thread"
         );
         store.kill_all();
     }
@@ -3194,7 +3273,7 @@ mod tests {
         );
 
         let (pty, shadow, attached) = store.parts(id(13)).expect("parts");
-        apply_size(&pty, &shadow, &attached, Some((100, 30)));
+        apply_size(&pty, &shadow, &attached, Some((100, 30)), &Wake::default());
         let taken: Vec<(SessionId, u16, u16)> = store
             .changed_screens()
             .into_iter()
