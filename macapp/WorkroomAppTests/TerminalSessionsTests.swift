@@ -1,3 +1,4 @@
+import Combine
 import HostDrivers
 import WorkroomDomain
 import WorkroomVCS
@@ -390,6 +391,23 @@ final class TerminalSessionsTests: XCTestCase {
     view.handleCommandFinished(rawExitCode: 0)
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
     XCTAssertNil(activeCodingAgent(in: s), "command_finished removes quota immediately")
+  }
+
+  /// A title repaint reaches the views showing it through the title's own observable, not by
+  /// republishing the tab map: a spinner's ten titles a second used to re-run every view that
+  /// reads any terminal state (24% of a core on the main thread, 2026-10-23).
+  func testTitleChangeDoesNotRepublishTheTabMap() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.surface!
+    var publishes = 0
+    let watching = s.objectWillChange.sink { _ in publishes += 1 }
+    // Titles no registry recognises: a newly recognised tool or agent republishes, by design.
+    view.onTitleChange?("⠋ thinking")
+    view.onTitleChange?("⠙ thinking")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "⠙ thinking", "the title still shows")
+    XCTAssertEqual(publishes, 0, "a title alone republished the tab map")
+    watching.cancel()
   }
 
   func testActiveAgentsIncludeBackgroundTargetsAndDeduplicateProviders() {

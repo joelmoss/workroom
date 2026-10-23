@@ -352,6 +352,17 @@ protocol ContentDescriptor: Sendable {
   func matches(_ content: TabContent) -> Bool
 }
 
+/// A terminal's live title, observed on its own. A spinner repaints the title ten times a second,
+/// and republishing the whole tab map for each one re-ran every view that reads any terminal
+/// state: 24% of a core on the main thread for one pane (Dev build, 2026-10-23). A view that
+/// shows the title reads it through here and is the only thing that re-renders when it changes.
+/// Not actor-isolated, as the struct holding it is not; it is read and written on the main thread
+/// like the rest of `TerminalState`.
+@Observable
+final class LiveTitle {
+  var text: String?
+}
+
 /// The state a terminal tab owns: its surface plus the live-title/progress the surface reports. Kept
 /// in the `.terminal` payload so a content tab carries none of it.
 struct TerminalState {
@@ -362,8 +373,14 @@ struct TerminalState {
   /// Shown until the surface reports a title — and again whenever it reports an empty one.
   let defaultTitle: String
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
-  /// busy, the working directory when idle. Nil until the first report (issue #2).
-  var liveTitle: String?
+  /// busy, the working directory when idle. Nil until the first report (issue #2). Kept on an
+  /// observable of its own (`titleCell`), so a program repainting its title re-renders the views
+  /// showing that title and nothing else; see `LiveTitle`.
+  var liveTitle: String? {
+    get { titleCell.text }
+    nonmutating set { titleCell.text = newValue }
+  }
+  let titleCell = LiveTitle()
   /// The agent identified from the PTY foreground process (or conservatively from shell title as a
   /// fallback for multiplexed sessions). Providers repaint OSC titles while they run, so this is
   /// deliberately latched until `command_finished` instead of being derived from `liveTitle`.
@@ -2065,10 +2082,16 @@ final class TerminalSessions: ObservableObject {
       recordUnrecognizedTool(rawName)
     }
     let claudeStarted = s.activeCodingAgentBackend == nil && detectedCodingAgent == .claude
-    mutateTerminalState(tabID, target: target) {
-      $0.liveTitle = trimmed
-      if $0.activeCodingAgentBackend == nil { $0.activeCodingAgentBackend = detectedCodingAgent }
-      if $0.activeTool == nil { $0.activeTool = detectedTool }
+    // The title goes to its own observable; the tab map is republished only for a newly
+    // recognised agent or tool, which other views show.
+    s.liveTitle = trimmed
+    let newAgent = s.activeCodingAgentBackend == nil ? detectedCodingAgent : nil
+    let newTool = s.activeTool == nil ? detectedTool : nil
+    if newAgent != nil || newTool != nil {
+      mutateTerminalState(tabID, target: target) {
+        if $0.activeCodingAgentBackend == nil { $0.activeCodingAgentBackend = newAgent }
+        if $0.activeTool == nil { $0.activeTool = newTool }
+      }
     }
     if claudeStarted { readClaudeProfile(forTab: tabID, target: target) }
   }
