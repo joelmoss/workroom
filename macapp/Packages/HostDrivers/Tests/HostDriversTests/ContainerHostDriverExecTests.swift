@@ -173,6 +173,31 @@ final class ContainerHostDriverExecTests: XCTestCase {
     XCTAssertEqual(rootDriver.record(of: rootHost)?.user, "root")
   }
 
+  /// A later build's daemon (#308): Docker stages it beside the entrypoint under a name of its own,
+  /// and moves it over the entrypoint, or removes it, as root, whose folder it is.
+  func testADockerContainersDaemonIsStagedThenMovedIntoPlaceAsRoot() async throws {
+    let driver = try driver(try stubRuntime())
+    let host = try await driver.create(spec: spec)
+    let name = try XCTUnwrap(calls.first { $0.contains("create") }).drop { $0 != "--name" }
+      .dropFirst().first
+    try FileManager.default.removeItem(at: directory.appendingPathComponent("calls"))
+    XCTAssertEqual(driver.daemonPath(on: host), "/.workroom/bin/workroomd")
+
+    let placed = try await driver.placeDaemon(
+      directory.appendingPathComponent("workroomd-linux"), on: host)
+    XCTAssertTrue(placed.staged)
+    XCTAssertTrue(placed.path.hasPrefix("/.workroom/bin/workroomd.new."), placed.path)
+    XCTAssertEqual(try calls.last?.suffix(2), ["-", "\(name ?? ""):/"])
+    try await driver.settleDaemon(placed.path, keep: true, on: host)
+    try await driver.settleDaemon(placed.path, keep: false, on: host)
+    XCTAssertEqual(
+      try calls.suffix(2).map { Array($0.dropFirst(2)) },
+      [
+        ["exec", "-u", "0", name ?? "", "mv", "-f", placed.path, "/.workroom/bin/workroomd"],
+        ["exec", "-u", "0", name ?? "", "rm", "-f", placed.path],
+      ])
+  }
+
   /// A record a later launch adopts is reached the same way; one from a container made before #308
   /// (it has an ssh host key) is refused, to be made again.
   func testAdoptingTakesExecRecordsAndRefusesSSHOnes() throws {

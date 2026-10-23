@@ -17,7 +17,7 @@ final class DaemonBootstrapScriptTests: XCTestCase {
   /// login shell would. So `parseProbe` and `parseInstall` meet what the scripts actually print,
   /// not a hand-typed answer. `uname` is shimmed to say Linux aarch64; the rest is the Mac's own
   /// coreutils, `/sbin/sha256sum` included. The fixture proves the same on a real Linux host.
-  private final class LocalShellDriver: HostDriver, @unchecked Sendable {
+  private class LocalShellDriver: HostDriver, @unchecked Sendable {
     let path: String
 
     init(path: String) { self.path = path }
@@ -32,6 +32,36 @@ final class DaemonBootstrapScriptTests: XCTestCase {
       try HostStream.spawn(
         URL(fileURLWithPath: "/bin/sh"), ["-c", command], environment: ["PATH": path],
         handshakeTimeout: 5, purpose: .exchange)
+    }
+  }
+
+  /// As a container's driver places the daemon (#308): staged beside the entrypoint in a folder of
+  /// its own, then moved over it or removed.
+  private final class LocalPlacingDriver: LocalShellDriver, DaemonPlacingDriver,
+    @unchecked Sendable
+  {
+    let folder: URL
+
+    init(path: String, folder: URL) {
+      self.folder = folder
+      super.init(path: path)
+    }
+
+    func daemonPath(on host: HostID) -> String? { folder.appendingPathComponent("workroomd").path }
+    func placeDaemon(_ binary: URL, on host: HostID) async throws -> (path: String, staged: Bool) {
+      let staged = folder.appendingPathComponent("workroomd.new.\(UUID().uuidString.prefix(8))")
+      try FileManager.default.copyItem(at: binary, to: staged)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
+      return (staged.path, true)
+    }
+    func settleDaemon(_ staged: String, keep: Bool, on host: HostID) async throws {
+      let file = URL(fileURLWithPath: staged)
+      if keep {
+        _ = try FileManager.default.replaceItemAt(
+          folder.appendingPathComponent("workroomd"), withItemAt: file)
+      } else {
+        try FileManager.default.removeItem(at: file)
+      }
     }
   }
 
@@ -222,6 +252,40 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     XCTAssertEqual(
       broken.daemon, .keptOlder("the install failed: the bundled daemon does not run on this host"))
     XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: older))
+  }
+
+  /// A container's daemon, placed by its driver (#308): placed.sh checks the staged build and hands
+  /// off to it, and it is moved over the entrypoint; one the running daemon refuses is removed and
+  /// the entrypoint left as it was.
+  func testTheRealCheckOfAPlacedDaemonHandsOffOrLeavesTheEntrypoint() async throws {
+    let host = try localHost()
+    let folder = host.directory.deletingLastPathComponent().appendingPathComponent("bin")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let driver = LocalPlacingDriver(path: host.driver.path, folder: folder)
+    let entrypoint = folder.appendingPathComponent("workroomd")
+    try FileManager.default.copyItem(at: try standIn(), to: entrypoint)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: entrypoint.path)
+    try listen(on: host)
+    let ensure = { (build: URL) in
+      try await DaemonBootstrap.ensure(
+        host: self.host, driver: driver, socket: host.socket,
+        daemon: { $0 == "aarch64" ? build : nil }, resources: nil)
+    }
+    let staged = { try FileManager.default.contentsOfDirectory(atPath: folder.path).count }
+
+    let newer = try standIn(handOff: "echo handed off")
+    let outcome = try await ensure(newer)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, daemon: .handedOff))
+    XCTAssertEqual(
+      try DaemonBootstrap.digest(of: entrypoint), try DaemonBootstrap.digest(of: newer))
+    XCTAssertEqual(try staged(), 1, "a staged copy was left")
+
+    let refused = try await ensure(
+      try standIn(handOff: "echo 'error: cannot restore' >&2; exit 1"))
+    XCTAssertEqual(refused.daemon, .keptOlder("refused: error: cannot restore"))
+    XCTAssertEqual(
+      try DaemonBootstrap.digest(of: entrypoint), try DaemonBootstrap.digest(of: newer))
+    XCTAssertEqual(try staged(), 1, "a refused copy was left")
   }
 
   /// A daemon that cannot be handed off (it predates hand-off, it did not greet, or hand-off is

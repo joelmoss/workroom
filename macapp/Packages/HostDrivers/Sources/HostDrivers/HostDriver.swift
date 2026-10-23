@@ -138,6 +138,21 @@ public protocol HostTerminalDriver: HostDriver {
   func lastAttach(of session: UUID, on host: HostID) -> LastAttach
 }
 
+/// A driver that puts the daemon on some of its hosts itself, from outside the host (#308): a
+/// container's runtime copies it in or mounts it from this Mac, where an ssh host gets it from the
+/// bootstrap's install script, which writes beside the socket. The bootstrap still checks it runs
+/// and hands the running daemon off to it.
+public protocol DaemonPlacingDriver: HostDriver {
+  /// Where `host`'s daemon runs from, when this driver places it; nil for a host the bootstrap's
+  /// install script installs on.
+  func daemonPath(on host: HostID) -> String?
+  /// Puts `binary` where `host` can run it, and says where. `staged` when it is not yet at
+  /// `daemonPath`, for `settleDaemon` to move there or remove.
+  func placeDaemon(_ binary: URL, on host: HostID) async throws -> (path: String, staged: Bool)
+  /// Moves a staged daemon to `daemonPath` (`keep`), or removes it.
+  func settleDaemon(_ staged: String, keep: Bool, on host: HostID) async throws
+}
+
 /// How a pane's last attach ended, as the attach wrapper recorded ssh's exit status.
 public enum LastAttach: Equatable, Sendable {
   /// ssh's own failure, 255: the link dropped or never came up, as after laptop sleep, a network
