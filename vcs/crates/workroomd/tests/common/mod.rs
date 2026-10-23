@@ -119,6 +119,16 @@ pub fn attach(socket: &Path, session: &str) -> Spawned {
 
 /// `attach` with more flags, such as `--no-create` for a restored pane.
 pub fn attach_with(socket: &Path, session: &str, flags: &[&str]) -> Spawned {
+    attach_with_env(socket, session, flags, &[])
+}
+
+/// `attach_with` and more of the session variables the app exports, such as a run command's.
+pub fn attach_with_env(
+    socket: &Path,
+    session: &str,
+    flags: &[&str],
+    env: &[(&str, &str)],
+) -> Spawned {
     let child = Command::new(daemon_binary())
         .args(["attach", "--socket"])
         .arg(socket)
@@ -129,6 +139,7 @@ pub fn attach_with(socket: &Path, session: &str, flags: &[&str]) -> Spawned {
         // load-bearing rather than tidy: without it these tests run the developer's interactive
         // shell, which exits immediately on a piped stdin and takes the session with it.
         .env("SHELL", "/bin/sh")
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -191,6 +202,49 @@ impl ClientReader {
     pub fn drain(&mut self, quiet: Duration) {
         while let Ok(chunk) = self.rx.recv_timeout(quiet) {
             self.seen.push_str(&chunk);
+        }
+    }
+}
+
+/// Sends one Control frame to the daemon at `socket` and returns its first reply frame, as the
+/// app's control client does.
+pub fn control(socket: &Path, frame: wr_protocol::frame::Frame) -> wr_protocol::frame::Frame {
+    use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
+    use wr_protocol::frame::FrameDecoder;
+
+    let mut stream = UnixStream::connect(socket).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    stream
+        .write_all(&Hello::current("test").encode())
+        .expect("greet");
+    let mut greeting = Vec::new();
+    let mut byte = [0u8; 1];
+    while Hello::decode(&greeting)
+        .expect("a daemon greeting")
+        .is_none()
+    {
+        stream.read_exact(&mut byte).expect("greeting byte");
+        greeting.push(byte[0]);
+    }
+    stream
+        .write_all(&Envelope::new(Service::Control, 1, frame.encode()).encode())
+        .expect("send");
+    let mut envelopes = EnvelopeDecoder::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        let n = stream
+            .read(&mut buffer)
+            .unwrap_or_else(|e| panic!("no reply to {frame:?}: {e}"));
+        assert_ne!(n, 0, "the daemon hung up without answering");
+        envelopes.push(&buffer[..n]);
+        while let Ok(Some(envelope)) = envelopes.next_envelope() {
+            let mut frames = FrameDecoder::new();
+            frames.push(&envelope.payload);
+            if let Ok(Some(frame)) = frames.next_frame() {
+                return frame;
+            }
         }
     }
 }

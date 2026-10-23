@@ -300,6 +300,14 @@ pub enum SessionError {
     ReaderFailed(String),
 }
 
+/// Why `SessionStore::signal_run` sent nothing.
+#[derive(Debug)]
+pub enum RunSignalError {
+    NotFound,
+    NotARun,
+    Failed(std::io::Error),
+}
+
 /// A session's screen as `SessionStore::changed_screens` takes it, for its record.
 pub struct TakenScreen {
     pub id: SessionId,
@@ -420,6 +428,9 @@ pub struct SessionStore {
     refusals: Arc<OnceLock<PathBuf>>,
     /// Publishes each session's program status to subscribed connections (#358).
     program_status: Arc<Hub>,
+    /// Where run sessions keep their status files (`crate::run`), when this store serves a
+    /// socket (`keep_runs`). A store without one refuses run sessions.
+    runs: Arc<OnceLock<PathBuf>>,
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
@@ -566,6 +577,70 @@ impl SessionStore {
             Err(e) => crate::note!("not taking refusals from {}: {e}", path.display()),
         }
         let _ = self.refusals.set(path);
+    }
+
+    /// Keeps run sessions' status files in `dir` (`crate::run`), made private to this user if it is
+    /// new. A directory that cannot be made leaves the store refusing run sessions.
+    pub fn keep_runs(&self, dir: PathBuf) {
+        use std::os::unix::fs::DirBuilderExt;
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                crate::note!("not keeping run sessions in {}: {e}", dir.display());
+                return;
+            }
+        }
+        let _ = self.runs.set(dir);
+    }
+
+    /// Where run session `id` keeps its status, or None when this store keeps no run sessions.
+    pub fn run_status_path(&self, id: SessionId) -> Option<PathBuf> {
+        self.runs.get().map(|dir| crate::run::status_file(dir, id))
+    }
+
+    /// The directory `keep_runs` was given.
+    pub fn runs_dir(&self) -> Option<&Path> {
+        self.runs.get().map(PathBuf::as_path)
+    }
+
+    /// The live run sessions.
+    pub fn run_session_ids(&self) -> Vec<SessionId> {
+        self.sessions
+            .lock()
+            .expect("session store poisoned")
+            .values()
+            .filter(|session| crate::run::is_run(&session.metadata))
+            .map(|session| session.id)
+            .collect()
+    }
+
+    /// Sends a run session's supervisor `signal` (#522): it serializes its command's stop and start
+    /// itself. Only to a run session, whose pty child is the supervisor; a shell is never sent one.
+    pub fn signal_run(
+        &self,
+        id: SessionId,
+        signal: wr_protocol::frame::RunSignal,
+    ) -> Result<(), RunSignalError> {
+        use wr_protocol::frame::RunSignal;
+        let sessions = self.sessions.lock().expect("session store poisoned");
+        let session = sessions.get(&id).ok_or(RunSignalError::NotFound)?;
+        if !crate::run::is_run(&session.metadata) {
+            return Err(RunSignalError::NotARun);
+        }
+        let number = match signal {
+            RunSignal::Restart => libc::SIGUSR1,
+            RunSignal::Stop => libc::SIGUSR2,
+            RunSignal::Quit => libc::SIGTERM,
+        };
+        // Accepted limit: the reader reaps the child a moment before it takes this lock to remove the
+        // session, so in that window the pid is free. Reusing it needs another process started in
+        // those microseconds, while a client signals a run that has just ended.
+        // SAFETY: `kill` takes no pointers.
+        if unsafe { libc::kill(session.pty.child_pid(), number) } != 0 {
+            return Err(RunSignalError::Failed(std::io::Error::last_os_error()));
+        }
+        Ok(())
     }
 
     pub fn new() -> Self {
@@ -1144,9 +1219,10 @@ impl SessionStore {
             shadow: Arc::new(Mutex::new(shadow)),
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
             number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+            // A hand-off carries no such flag, and the app makes only shells and run sessions,
+            // which say which they are in their metadata (#522).
+            interactive: !crate::run::is_run(&metadata),
             metadata,
-            // shortcut: a hand-off carries no such flag and the app only makes shells, so a handed-off run command's own reports never alert; carry it in the table if run commands ever report.
-            interactive: true,
         };
         let number = session.number;
         let pty = Arc::clone(&session.pty);
@@ -1217,6 +1293,10 @@ impl SessionStore {
                     session.pty.child_pid()
                 );
                 terminate(&[&session.pty]);
+                // What a run left outside its supervisor's tree: see `sweep_run_session`.
+                if crate::run::is_run(&session.metadata) {
+                    sweep_run_session(id, session.pty.child_pid());
+                }
                 true
             }
             None => {
@@ -1254,6 +1334,9 @@ impl SessionStore {
         }
         let ptys: Vec<&Arc<Pty>> = ending.iter().map(|session| &session.pty).collect();
         terminate(&ptys);
+        for session in ending.iter().filter(|s| crate::run::is_run(&s.metadata)) {
+            sweep_run_session(session.id, session.pty.child_pid());
+        }
         ending.len()
     }
 
@@ -1803,12 +1886,19 @@ fn read_session(
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
             // `replaced`: a later session already holds the id, and its subscribers' records.
-            let (held, replaced) = store.lock().map_or((false, false), |mut store| {
+            let (held, replaced, run) = store.lock().map_or((false, false, false), |mut store| {
+                let run = store.get(&id).is_some_and(|session| {
+                    session.number == number && crate::run::is_run(&session.metadata)
+                });
                 (
                     remove_if_held(&mut store, id, number),
                     store.contains_key(&id),
+                    run,
                 )
             });
+            if held && run {
+                sweep_run_session(id, pty.child_pid());
+            }
             // Under `TERMINATING`, so a hand-off cannot replace this program between the removal and
             // the line, which would carry neither the session nor any record of its end. Outside
             // the store lock, so a stderr that has stopped draining (a supervisor's pipe) stalls
@@ -1919,6 +2009,44 @@ fn read_session(
 /// children start exiting, and a descendant that has already left the process table is one no
 /// later sweep can find — it would be missed precisely in the common case where it exits slowly
 /// enough to matter.
+/// How long what a run left behind gets to exit on SIGTERM before `sweep_run_session` sends SIGKILL.
+const RUN_SWEEP_GRACE: Duration = Duration::from_secs(2);
+
+/// Ends whatever a run session left running when its supervisor exited (#522, R8): a server its
+/// launcher forked into a process group of its own, which the supervisor's group-wide Ctrl-C never
+/// reached and its exit then orphaned. Everything still in the session that `sid` led gets SIGTERM,
+/// then SIGKILL after `RUN_SWEEP_GRACE`. On a thread of its own, so the reader's end is not held up.
+fn sweep_run_session(id: SessionId, sid: i32) {
+    let spawned = std::thread::Builder::new()
+        .name("run-sweep".into())
+        .spawn(move || {
+            let members = crate::process::session_members(sid);
+            if members.is_empty() {
+                return;
+            }
+            crate::note!(
+                "run session {} left {} process(es) running; ending them",
+                id.to_hyphenated(),
+                members.len()
+            );
+            for member in &members {
+                // SAFETY: `kill` takes no pointers; each pid was read just above.
+                unsafe { libc::kill(member.pid, libc::SIGTERM) };
+            }
+            let deadline = Instant::now() + RUN_SWEEP_GRACE;
+            while Instant::now() < deadline && members.iter().any(|m| m.is_running()) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            for member in members.iter().filter(|m| m.is_running()) {
+                // SAFETY: as above; `is_running` compared start times, so a reused pid is skipped.
+                unsafe { libc::kill(member.pid, libc::SIGKILL) };
+            }
+        });
+    if let Err(e) = spawned {
+        crate::note!("could not sweep run session {}: {e}", id.to_hyphenated());
+    }
+}
+
 fn terminate(ptys: &[&Arc<Pty>]) {
     let roots: Vec<i32> = ptys
         .iter()

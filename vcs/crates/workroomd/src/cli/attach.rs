@@ -18,15 +18,21 @@ use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 /// daemon session; no other Mac could see it and it would die with the ssh link. The pane is told
 /// the terminal ended, then holds with input going nowhere until its user closes it, as a pane
 /// shown a record does.
+///
+/// A run session's pane is never given a shell, here or remotely: it would run the run command,
+/// starting a dev server nobody asked for (#522, D2). It says the run ended and holds, and the app,
+/// which knows the run, offers to start it again.
 fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
-    if !no_spawn {
+    let run = crate::run::is_requested(&request.env);
+    if !no_spawn && !run {
         return fall_back_to_shell(
             request,
             "the terminal that was running here has ended, so this is a new shell",
         );
     }
+    let notice = if run { RUN_ENDED_NOTICE } else { ENDED_NOTICE };
     let mut stdout = std::io::stdout();
-    let _ = write!(stdout, "\r\nworkroom: {ENDED_NOTICE}\r\n");
+    let _ = write!(stdout, "\r\nworkroom: {notice}\r\n");
     let _ = stdout.flush();
     let _raw = RawMode::enter();
     let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
@@ -35,6 +41,8 @@ fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
 
 /// What a remote pane says when its session has ended and no record of it was kept.
 const ENDED_NOTICE: &str = "This terminal has ended. Close it to start again.";
+/// What a run session's pane says when its session has ended.
+const RUN_ENDED_NOTICE: &str = "The run command that was running here has ended.";
 
 /// Become an ordinary shell, because this relay could not deliver a persistent session.
 ///
@@ -59,6 +67,14 @@ const ENDED_NOTICE: &str = "This terminal has ended. Close it to start again.";
 /// window title, the exit status, everything. Returns only when `exec` itself fails.
 fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode {
     use std::os::unix::process::CommandExt;
+
+    // A run command runs only in a daemon session, whose supervisor the app can stop, restart and
+    // reattach to (#522, D5). Run here it would be none of those, and on a remote host it would
+    // run on the wrong machine's terms. So it is not run at all, and the pane says why.
+    if crate::run::is_requested(&request.env) {
+        eprintln!("workroomd: could not start the run command: {reason}\r");
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    }
 
     let text = |value: &Option<std::ffi::OsString>| {
         value
@@ -328,9 +344,14 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             // (`PersistentSessionService.willReplaceRestoredSession`), so the new session does not
             // pass as the old one.
             // Only for the app's own panes: an `attach --no-create` someone typed asked to be
-            // refused, and gets no toast to say a session was made.
+            // refused, and gets no toast to say a session was made. Never for a run session, whose
+            // new session would start the run command unasked (#522, D2): it is `ended`.
             Answer::Refused(_)
-                if request.existing_only && !no_spawn && !replaced && invoked_by_the_app =>
+                if request.existing_only
+                    && !no_spawn
+                    && !replaced
+                    && invoked_by_the_app
+                    && !crate::run::is_requested(&request.env) =>
             {
                 replaced = true;
                 attach = encode(&serve::AttachRequest {

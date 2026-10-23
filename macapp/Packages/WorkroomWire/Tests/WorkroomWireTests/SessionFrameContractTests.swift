@@ -10,7 +10,7 @@ final class SessionFrameContractTests: XCTestCase {
   /// Kinds the daemon added after WorkroomWire was frozen (v2.0.0). The shipped app reads them as
   /// unknown, so that is what this checks; a kind missing from both here and `SessionFrameKind`
   /// fails the test rather than being skipped.
-  private static let newerThanWorkroomWire: Set<String> = ["handOff"]
+  private static let newerThanWorkroomWire: Set<String> = ["handOff", "signal"]
 
   /// The repository's `testdata/contracts/frames.tsv`, found from this file's own source location.
   private static let fixture = URL(fileURLWithPath: String(describing: #filePath))
@@ -77,7 +77,7 @@ final class SessionFrameContractTests: XCTestCase {
       }
       rows += 1
     }
-    XCTAssertEqual(rows, 16, "every row was read")
+    XCTAssertEqual(rows, 17, "every row was read")
     // Every kind WorkroomWire defines has exactly one row, so none can go uncovered.
     XCTAssertEqual(seen.count, Set(seen).count, "a kind is listed twice")
     XCTAssertEqual(

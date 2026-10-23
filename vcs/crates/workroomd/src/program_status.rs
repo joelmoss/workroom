@@ -208,6 +208,10 @@ pub struct Store {
     /// The default reads a hand-off from a daemon that kept none.
     #[serde(default)]
     command: Option<CommandResult>,
+    /// A run session's state, as its supervisor last wrote it (`crate::run`): `running <pid>`,
+    /// `stopped`, `exited <code>` and so on. None for a shell.
+    #[serde(default)]
+    run: Option<String>,
     /// Changed since the last `commit`. Never carried: a hand-off freezes between commits.
     #[serde(skip)]
     dirty: bool,
@@ -455,6 +459,14 @@ impl Store {
         }
     }
 
+    /// A run session's state changed (#522).
+    pub fn set_run(&mut self, run: String) {
+        if self.run.as_ref() != Some(&run) {
+            self.run = Some(run);
+            self.dirty = true;
+        }
+    }
+
     /// Takes the changes since the last commit as one revision. `Some(blocked)` when there is one
     /// to publish, `blocked` when a record entered blocked, which skips the throttle.
     pub fn commit(&mut self) -> Option<bool> {
@@ -514,6 +526,7 @@ impl Store {
             revision: self.revision,
             reporting: self.reporting.is_some(),
             records,
+            run: self.run.as_deref(),
         })
         .expect("a status event serializes")
     }
@@ -622,6 +635,10 @@ struct StatusEvent<'a> {
     revision: u64,
     reporting: bool,
     records: Vec<WireRecord<'a>>,
+    /// Only on a run session (#522): what its supervisor last wrote. An app that predates it
+    /// ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<&'a str>,
 }
 
 #[derive(Serialize)]

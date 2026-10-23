@@ -20,6 +20,7 @@ info	2200000000	-
 kill	2300000000	-
 killAll	2400000000	-
 handOff	2500000000	-
+signal	2600000000	-
 sessions	3100000000	-
 acknowledged	3200000000	-
 error:frameTooLarge	9900100001	-

@@ -50,6 +50,10 @@ fn usage() -> &'static str {
         environment and each NAME=VALUE, streaming its output. Exits with the script's status,
         124 when <secs> ran out, 126 when it could not start; the whole tree is killed on a
         timeout or a SIGTERM, SIGHUP or SIGINT
+  workroomd run-supervisor --status <path> -- <command>
+        what a run session's pty runs: the run supervisor around <command> in the login shell,
+        writing its state (running, stopped, exited <code>) to <path>; USR1 restarts the command,
+        USR2 stops it and keeps the pane, TERM stops it and exits
   workroomd protocol
         print the protocol version this build speaks
 "
@@ -82,6 +86,7 @@ fn main() -> ExitCode {
         Some("hand-off") => cli::hand_off::run_hand_off(&args),
         Some("credential") => cli::credential::run_credential(&args),
         Some("run-script") => cli::run_script::run_run_script(&args),
+        Some("run-supervisor") => cli::run_supervisor::run_run_supervisor(&args),
         Some("handoff-check") => cli::hand_off::run_handoff_check(&args),
         _ => {
             eprint!("{}", usage());

@@ -8,6 +8,7 @@ pub mod list;
 pub mod program_status;
 pub mod relay;
 pub mod run_script;
+pub mod run_supervisor;
 pub mod serve;
 
 use std::io::{Read, Write};
@@ -17,8 +18,8 @@ use crate::handoff;
 use crate::serve::BUILD;
 use wr_protocol::envelope::{
     Hello, MIN_FILE_VERSION, MIN_FORWARD_VERSION, MIN_HANDOFF_VERSION, MIN_LAYOUT_VERSION,
-    MIN_PROGRAM_STATUS_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION,
-    negotiate,
+    MIN_PROGRAM_STATUS_VERSION, MIN_RUN_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION,
+    PROTOCOL_VERSION, negotiate,
 };
 
 pub fn flag(args: &[String], name: &str) -> Option<String> {
@@ -141,7 +142,7 @@ pub fn protocol() -> ExitCode {
          min-vcs {MIN_VCS_VERSION} min-file {MIN_FILE_VERSION} \
          min-forward {MIN_FORWARD_VERSION} \
          min-handoff {MIN_HANDOFF_VERSION} min-layout {MIN_LAYOUT_VERSION} \
-         min-program-status {MIN_PROGRAM_STATUS_VERSION}"
+         min-program-status {MIN_PROGRAM_STATUS_VERSION} min-run {MIN_RUN_VERSION}"
     );
     println!("build {BUILD}");
     // The order between builds (#255): the app's probe reads it to decide whether to push.

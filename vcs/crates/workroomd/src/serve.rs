@@ -26,13 +26,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::rpc::SharedWriter;
-use crate::session::{SessionId, SessionSpec, SessionStore};
+use crate::session::{RunSignalError, SessionId, SessionSpec, SessionStore};
 use crate::shell;
 use crate::transport::Transport;
 use wr_protocol::envelope::{
     Envelope, EnvelopeDecoder, Hello, MAX_ENVELOPE_PAYLOAD, ProtocolError, Service, negotiate,
 };
-use wr_protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
+use wr_protocol::frame::{
+    Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE, RunSignal,
+};
 use wr_protocol::reply::Reply;
 
 pub const BUILD: &str = concat!("workroomd ", env!("CARGO_PKG_VERSION"));
@@ -547,7 +549,7 @@ fn dispatch(
                     .filter(|(key, _)| !key.to_string_lossy().starts_with("WORKROOM_SESSION_"))
                     .cloned()
                     .collect();
-                let invocation = shell::invocation(
+                let mut invocation = shell::invocation(
                     &request
                         .command
                         .clone()
@@ -561,6 +563,14 @@ fn dispatch(
                         .to_string_lossy(),
                     &child_environment,
                 );
+                if crate::run::is_requested(&request.env) {
+                    match run_invocation(sessions, id, &request, invocation.environment) {
+                        Ok(run) => invocation = run,
+                        Err(reason) => {
+                            return reply(Frame::new(FrameKind::Failure, reason.into_bytes()));
+                        }
+                    }
+                }
                 sessions.create_then(
                     SessionSpec {
                         id,
@@ -624,6 +634,35 @@ fn dispatch(
             );
             kill_off_the_reader(sessions, id, writer, envelope.service, envelope.stream)
         }
+        FrameKind::Signal => {
+            let (Some(id), Some(signal)) = (
+                frame.payload.get(..16).and_then(SessionId::from_slice),
+                frame
+                    .payload
+                    .get(16)
+                    .and_then(|byte| RunSignal::from_u8(*byte)),
+            ) else {
+                return reply(Frame::new(
+                    FrameKind::Failure,
+                    b"a signal names one 16-byte session id and a run signal".to_vec(),
+                ));
+            };
+            match sessions.signal_run(id, signal) {
+                Ok(()) => reply(Frame::control(FrameKind::Acknowledged)),
+                Err(RunSignalError::NotFound) => reply(Frame::new(
+                    FrameKind::Failure,
+                    format!("no session {}", id.to_hyphenated()).into_bytes(),
+                )),
+                Err(RunSignalError::NotARun) => reply(Frame::new(
+                    FrameKind::Failure,
+                    format!("not a run session: {}", id.to_hyphenated()).into_bytes(),
+                )),
+                Err(RunSignalError::Failed(e)) => reply(Frame::new(
+                    FrameKind::Failure,
+                    format!("could not signal session {}: {e}", id.to_hyphenated()).into_bytes(),
+                )),
+            }
+        }
         FrameKind::KillAll => {
             crate::note!("kill of every session requested by {}", services.peer);
             sessions.kill_all();
@@ -660,6 +699,47 @@ fn dispatch(
         }
         _ => None,
     }
+}
+
+/// What a run session's pty runs (#522): this binary's `run-supervisor` around the request's
+/// command, writing to the status file the store names for `id`. `environment` is what a command
+/// session would get (`shell::invocation`): the client's, with the shell integration's variables.
+/// `SHELL` is the one the client asked for, which `run-supervisor` runs the command in.
+fn run_invocation(
+    sessions: &SessionStore,
+    id: SessionId,
+    request: &AttachRequest,
+    mut environment: Vec<(OsString, OsString)>,
+) -> Result<shell::Invocation, String> {
+    let command = request.command.clone().unwrap_or_default();
+    if command.is_empty() {
+        return Err(format!("run session {} has no command", id.to_hyphenated()));
+    }
+    let Some(status) = sessions.run_status_path(id) else {
+        return Err("this daemon keeps no run sessions: it serves no socket".to_string());
+    };
+    // A file left by an earlier session under this id must not be read as this one's.
+    let _ = std::fs::remove_file(&status);
+    let binary = crate::handoff::own_binary()
+        .map_err(|e| format!("could not find this daemon's own binary: {e}"))?;
+    if let Some(shell) = request.shell.clone().filter(|shell| !shell.is_empty()) {
+        environment.retain(|(key, _)| key != "SHELL");
+        environment.push((OsString::from("SHELL"), shell));
+    }
+    Ok(shell::Invocation {
+        program: binary.into_os_string(),
+        arguments: [
+            OsString::from("workroomd"),
+            OsString::from("run-supervisor"),
+            OsString::from("--status"),
+            status.into_os_string(),
+            OsString::from("--"),
+            command,
+        ]
+        .into(),
+        environment,
+        interactive: false,
+    })
 }
 
 /// The session list, in the wire format `SessionDescriptor.decodeList` already reads.
@@ -935,6 +1015,12 @@ pub fn session_metadata(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
             title.truncate(end);
         }
         metadata.push(("title".to_string(), title));
+    }
+    if crate::run::is_requested(env) {
+        metadata.push((
+            crate::run::KIND_KEY.to_string(),
+            crate::run::RUN_KIND.to_string(),
+        ));
     }
     metadata
 }
