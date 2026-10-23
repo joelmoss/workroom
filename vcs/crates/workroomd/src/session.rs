@@ -1361,6 +1361,7 @@ impl SessionStore {
                 terminate(&[&session.pty]);
                 // What a run left outside its supervisor's tree: see `sweep_run_session`.
                 if crate::run::is_run(&session.metadata) {
+                    self.runs_wake.raise(); // its status file goes on the watcher's next pass
                     sweep_run_session(id, session.pty.child_pid());
                 }
                 true
@@ -1401,8 +1402,13 @@ impl SessionStore {
         }
         let ptys: Vec<&Arc<Pty>> = ending.iter().map(|session| &session.pty).collect();
         terminate(&ptys);
+        let mut runs = false;
         for session in ending.iter().filter(|s| crate::run::is_run(&s.metadata)) {
+            runs = true;
             sweep_run_session(session.id, session.pty.child_pid());
+        }
+        if runs {
+            self.runs_wake.raise(); // their status files go on the watcher's next pass
         }
         ending.len()
     }
@@ -2034,6 +2040,9 @@ fn read_session(
                 work.raise(); // the record of a session that ended goes on the next pass
             }
             if held && run {
+                // The runs watcher may be asleep on this run's last status; its file goes on the
+                // next pass, which it must be woken for.
+                sessions.runs_wake.raise();
                 sweep_run_session(id, pty.child_pid());
             }
             // Under `TERMINATING`, so a hand-off cannot replace this program between the removal and
@@ -2567,7 +2576,53 @@ mod tests {
             before,
             "a signal did not wake the watcher"
         );
+
+        // A run that ends, on its own or killed, must wake it too: the watcher asleep on its
+        // finished status is what removes its status file, which otherwise outlives the run.
+        let brief = [OsString::from("-c"), OsString::from("sleep 0.5")];
+        store
+            .create(SessionSpec {
+                metadata: &run,
+                ..spec(id(99), &brief, &e)
+            })
+            .expect("a run that ends");
+        let before = store.runs_wake();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.runs_wake() == before {
+            assert!(
+                Instant::now() < deadline,
+                "a run ending did not wake the watcher"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let long = [OsString::from("-c"), OsString::from("sleep 30")];
+        store
+            .create(SessionSpec {
+                metadata: &run,
+                ..spec(id(100), &long, &e)
+            })
+            .expect("a run to kill");
+        let before = store.runs_wake();
+        assert!(store.kill(id(100)), "fixture: the run was there to kill");
+        assert_ne!(
+            store.runs_wake(),
+            before,
+            "killing a run did not wake the watcher"
+        );
+        // A run of its own for `kill_all`: the Stop above ended id(94) (its `sh` has no handler).
+        store
+            .create(SessionSpec {
+                metadata: &run,
+                ..spec(id(101), &long, &e)
+            })
+            .expect("a run for kill_all");
+        let before = store.runs_wake();
         store.kill_all();
+        assert_ne!(
+            store.runs_wake(),
+            before,
+            "killing every run did not wake the watcher"
+        );
     }
 
     /// The screens thread sleeps on `wait_for_screens_work` until a session prints, is resized or
