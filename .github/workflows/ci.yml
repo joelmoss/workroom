@@ -276,7 +276,9 @@ jobs:
 
       - name: Install qemu
         if: matrix.arch == 'aarch64'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+        # `qemu-user`, not `qemu-user-static`: Ubuntu 26.04 (ubuntu-latest from 2026-10) dropped the
+        # latter. Running one static binary needs no static qemu.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
 
       - name: Build
         run: |
@@ -289,7 +291,7 @@ jobs:
           file "$bin"
           file -b "$bin" | grep -q 'statically linked'
           run=""
-          if [ "${{ matrix.arch }}" = aarch64 ]; then run=qemu-aarch64-static; fi
+          if [ "${{ matrix.arch }}" = aarch64 ]; then run=qemu-aarch64; fi
           out="$($run "$bin" protocol)"
           echo "$out"
           echo "$out" | grep -q '^protocol '
