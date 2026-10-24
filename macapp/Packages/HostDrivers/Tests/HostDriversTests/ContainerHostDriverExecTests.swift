@@ -161,6 +161,33 @@ final class ContainerHostDriverExecTests: XCTestCase {
     XCTAssertTrue(try calls.contains { $0.dropFirst(2).starts(with: ["rm", "--force"]) })
   }
 
+  // Value: protects=a create's owned volumes are labelled on its container and recorded for its delete, and a failed create removes
+  // them after its container; fails_when=the label or record is dropped, or a failed create leaves them; why_new=only an adopted
+  // record's destroy was tested; seam=stub runtime; no_claim=the runtime's own volume handling
+  /// The volumes a container owns travel with it: on its label (for a sweep), in its record (for a
+  /// delete after a relaunch), and out with it when its create fails.
+  func testACreatesOwnedVolumesAreLabelledRecordedAndRemovedOnFailure() async throws {
+    var owning = spec
+    owning.ownedVolumes = ["dind-1", "cache-1"]
+    let made = try driver(try stubRuntime())
+    let host = try await made.create(spec: owning)
+    XCTAssertEqual(made.record(of: host)?.volumes, ["dind-1", "cache-1"])
+    let create = try XCTUnwrap(try calls.first { $0.contains("create") })
+    XCTAssertTrue(contains(create, ["--label", "workroom.volumes=dind-1,cache-1"]), "\(create)")
+
+    try FileManager.default.removeItem(at: directory.appendingPathComponent("calls"))
+    let failing = try driver(try stubRuntime(#"*"exec -i"*"command -v git"*) exit 3 ;;"#))
+    do {
+      _ = try await failing.create(spec: owning)
+      XCTFail("an image without git was taken")
+    } catch {}
+    let calls = try calls
+    let removal = try XCTUnwrap(calls.firstIndex { contains($0, ["rm", "--force"]) }, "\(calls)")
+    let volumes = try XCTUnwrap(
+      calls.firstIndex { contains($0, ["volume", "rm", "dind-1", "cache-1"]) }, "\(calls)")
+    XCTAssertLessThan(removal, volumes)
+  }
+
   /// No user in the spec is the one the image's devcontainer metadata names (the devcontainers
   /// images run as root and name `vscode` there), else the image's own, from its config; none
   /// there is root.

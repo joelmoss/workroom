@@ -75,6 +75,17 @@ struct DevContainerConfig: Equatable, Sendable {
     case exec([String])
     /// An object: each entry runs in parallel, and each must succeed.
     case parallel([Named])
+
+    /// This command with `variables` substituted in its strings, as in the file's other values:
+    /// `cd ${containerWorkspaceFolder}` names the checkout, not an empty shell variable.
+    func substituting(_ variables: Variables) -> Command {
+      switch self {
+      case .shell(let text): .shell(variables.substitute(text))
+      case .exec(let argv): .exec(argv.map(variables.substitute))
+      case .parallel(let entries):
+        .parallel(entries.map { Named(name: $0.name, command: $0.command.substituting(variables)) })
+      }
+    }
   }
 
   struct Named: Equatable, Sendable {

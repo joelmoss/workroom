@@ -23,7 +23,10 @@ enum DevContainerSetup {
   static func workspaceFolder(
     _ config: DevContainerConfig?, repository: String, variables: DevContainerConfig.Variables
   ) -> String {
-    let named = config?.workspaceFolder.flatMap { $0.isEmpty ? nil : variables.substitute($0) }
+    // One that substitutes to nothing or a relative path (an unset `${localEnv:…}`) is no folder.
+    let named = config?.workspaceFolder.map(variables.substitute).flatMap {
+      $0.hasPrefix("/") ? $0 : nil
+    }
     return named ?? "/workspaces/\(repository)"
   }
 

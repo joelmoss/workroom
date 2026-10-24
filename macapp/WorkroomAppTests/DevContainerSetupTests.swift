@@ -31,6 +31,28 @@ final class DevContainerSetupTests: XCTestCase {
         try config(
           #"{"image": "x", "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"}"#),
         repository: "repo", variables: variables), "/workspaces/app")
+    for unusable in ["${localEnv:UNSET}", "src", ""] {
+      XCTAssertEqual(
+        DevContainerSetup.workspaceFolder(
+          try config(#"{"image": "x", "workspaceFolder": "\#(unusable)"}"#), repository: "repo",
+          variables: variables), "/workspaces/repo", unusable)
+    }
+  }
+
+  // Value: protects=a lifecycle command's `${containerWorkspaceFolder}` (and the other variables) name their values, in every form;
+  // fails_when=commands reach the shell unsubstituted; why_new=only mounts and environments were substituted; seam=none;
+  // no_claim=the shell's own expansion of names it knows
+  func testLifecycleCommandsHaveTheirVariablesSubstituted() {
+    let parallel = DevContainerConfig.Command.parallel([
+      .init(name: "a", command: .exec(["ls", "${devcontainerId}"]))
+    ])
+    XCTAssertEqual(
+      DevContainerConfig.Command.shell("cd ${containerWorkspaceFolder} && echo $HOME ${HOME}")
+        .substituting(variables),
+      .shell("cd /workspaces/app && echo $HOME ${HOME}"))
+    XCTAssertEqual(
+      parallel.substituting(variables),
+      .parallel([.init(name: "a", command: .exec(["ls", "abc"]))]))
   }
 
   // Value: protects=each create gets a devcontainerId of its own, and the volumes named by it are the container's to remove;

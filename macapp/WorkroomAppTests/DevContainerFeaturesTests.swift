@@ -387,6 +387,38 @@ final class DevContainerFeaturesTests: XCTestCase {
     }
   }
 
+  // Value: protects=a cached feature is used only by a digest of the shape this Mac's own verified unpacks have; fails_when=the shape
+  // check goes, and a manifest naming any folder in the cache gets that folder used unverified; why_new=only the valid-digest cache
+  // hit was tested; seam=none; no_claim=a real registry
+  /// A digest not shaped like a checked one (uppercase hex here) never takes a cached folder: its
+  /// blob is fetched and checked, and fails.
+  func testOnlyADigestOfTheRightShapeTakesTheCache() async throws {
+    let base = "https://r.io/v2/o/x"
+    let digest = "sha256:" + String(repeating: "A", count: 64)
+    let cache = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: cache) }
+    let planted = cache.appendingPathComponent(digest.replacingOccurrences(of: ":", with: "-"))
+    try FileManager.default.createDirectory(at: planted, withIntermediateDirectories: true)
+    try Data(#"{"id": "planted", "version": "1.0.0"}"#.utf8).write(
+      to: planted.appendingPathComponent("devcontainer-feature.json"))
+    StubRegistry.replies = [
+      "\(base)/manifests/1": (
+        200, [:],
+        Data(
+          #"{"layers": [{"mediaType": "application/vnd.devcontainers.layer.v1+tar", "digest": "\#(digest)"}]}"#
+            .utf8)
+      ),
+      "\(base)/blobs/\(digest)": (200, [:], try featureTar(id: "x")),
+    ]
+    let source = Features.OCISource(session: stubSession(), cache: cache)
+    do {
+      let fetched = try await source.fetch(try Reference("r.io/o/x:1"))
+      XCTFail("a folder the digest's shape doesn't vouch for was used: \(fetched.metadata.id)")
+    } catch DevContainerFeatures.Failure.fetch(let why) {
+      XCTAssertTrue(why.contains("digest"), why)
+    }
+  }
+
   /// A local feature is a folder beside the devcontainer.json, and must stay inside its folder.
   func testALocalFeatureStaysBesideTheConfig() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

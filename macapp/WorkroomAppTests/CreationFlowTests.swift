@@ -999,6 +999,9 @@ final class CreationFlowTests: XCTestCase {
       let state = try descriptor.map { try JSONDecoder().decode(HostDescriptor.self, from: $0) }
       lock.withLock { log.append("host \(state?.state ?? "serving")") }
     }
+    func trustScript(_ name: String, text: Data, project: String) async throws {
+      lock.withLock { log.append("trust \(name) \(String(decoding: text, as: UTF8.self))") }
+    }
     func addProject(_ path: String, create: Bool) async throws -> String { path }
     func create(
       project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
@@ -1159,6 +1162,37 @@ final class CreationFlowTests: XCTestCase {
     store.clearError()
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
     XCTAssertEqual(asked.all, [true, false], "only a container create judges the file")
+  }
+
+  /// Value: protects=Approve on a devcontainer.json's sheet records that file's exact bytes under its
+  /// own name and creates again, now with it; fails_when=the bytes go under the setup script's name,
+  /// other bytes are recorded, or the create doesn't go on; no_claim=`trust --stdin devcontainer`
+  /// itself (the Go tests)
+  func testApprovingADevcontainerConfigRecordsItsBytesAndCreatesAgain() async throws {
+    let hosts = Counter()
+    let cli = RemoteFakeCLI(projectPath: projectPath)
+    let store = remoteStore(cli)
+    var services = services(driver: FakeDriver(), daemon: nil, hosts: hosts)
+    services.trustStatus = { _, _, _, devcontainer in
+      let approved = cli.calls.contains { $0.hasPrefix("trust devcontainer ") }
+      let config = ScriptTrust(
+        name: ScriptTrust.devContainerName, file: ".devcontainer/devcontainer.json", origin: "base",
+        sha256: String(repeating: "b", count: 64), text: #"{"image": "x"}"#, trusted: approved,
+        exempt: false)
+      return TrustStatus(trusted: approved, scripts: devcontainer ? [config] : [])
+    }
+    store.remoteCreateServices = services
+    store.closesFinishedCreations = { false }
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+    XCTAssertEqual(hosts.count, 0)
+    let approve = try XCTUnwrap(store.errorApproval)
+    store.clearError()
+    approve.run()
+
+    await waitUntil({ hosts.count == 1 }, "the create ran again after Approve")
+    XCTAssertEqual(
+      cli.calls.filter { $0.hasPrefix("trust ") }, [#"trust devcontainer {"image": "x"}"#])
   }
 
   /// Value: protects=Continue With Default Image creates again without judging or using the

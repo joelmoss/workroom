@@ -132,12 +132,30 @@ final class ContainerCreateTests: XCTestCase {
     }
     XCTAssertFalse(FileManager.default.fileExists(atPath: calls.path), "the runtime was asked")
 
-    try await prepare(#"{"image": "x", "initializeCommand": "pwd -P > ran"}"#)
+    try await prepare(
+      #"{"image": "x", "initializeCommand": "pwd -P > ran; echo ${localWorkspaceFolderBasename} > name"}"#
+    )
+    XCTAssertEqual(
+      try String(contentsOf: project.appendingPathComponent("name"), encoding: .utf8), "project\n",
+      "the command's variables weren't substituted")
     let ran = try String(contentsOf: project.appendingPathComponent("ran"), encoding: .utf8)
       .trimmingCharacters(in: .newlines)
     XCTAssertEqual(
       URL(fileURLWithPath: ran).resolvingSymlinksInPath().path,
       project.resolvingSymlinksInPath().path)
+
+    // The container's own lifecycle commands are substituted too, in the scripts it will run.
+    let made = try await ContainerCreate.prepare(
+      ContainerCreate.File(
+        path: ".devcontainer/devcontainer.json",
+        data: Data(#"{"image": "x", "onCreateCommand": "cd ${containerWorkspaceFolder}"}"#.utf8),
+        config: try DevContainerConfig.parse(
+          Data(#"{"image": "x", "onCreateCommand": "cd ${containerWorkspaceFolder}"}"#.utf8))),
+      project: project.path, repository: "app", start: "HEAD", runtime: .docker,
+      driver: driver, defaultImage: "unused", environment: [:],
+      featureCache: directory.appendingPathComponent("features"))
+    let script = try XCTUnwrap(made.hooks.first?.script)
+    XCTAssertTrue(script.contains("cd /workspaces/app"), script)
 
     do {
       try await prepare(#"{"name": "no image"}"#)
