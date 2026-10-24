@@ -27,6 +27,7 @@ var (
 	ErrBaseBranchNotFound  = errors.New("the base branch exists neither on its remote nor locally")
 	ErrScriptNotTrusted    = errors.New("script is not trusted on this Mac")
 	ErrLocalWork           = errors.New("the new workroom would leave out some of your work")
+	ErrStartCommitUnusable = errors.New("the commit this create was asked about is no longer where it starts")
 )
 
 // classification is one sentinel error's entry in the registry: its stable --json code and
@@ -66,6 +67,7 @@ var registry = []classification{
 	{ErrBaseBranchNotFound, "BaseBranchNotFound", 3},
 	{ErrScriptNotTrusted, "ScriptNotTrusted", 3},
 	{ErrLocalWork, "LocalWorkLeftOut", 3},
+	{ErrStartCommitUnusable, "StartCommitUnusable", 3},
 }
 
 func classify(err error) (classification, bool) {

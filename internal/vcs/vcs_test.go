@@ -588,6 +588,123 @@ func TestGitCreateReportsTheDefaultFallbackWarningOnTheFetchStep(t *testing.T) {
 	}
 }
 
+// pinnedCreate runs a real Create from project pinned to commit (Progress.StartCommit), counting
+// fetches and recording step events as recordedCreate does. It returns the workroom's path.
+func pinnedCreate(t *testing.T, project, base, commit string) (path string, fetches map[string]int, steps []string, warning string, err error) {
+	t.Helper()
+	exec := &countingExecutor{fetches: map[string]int{}}
+	path = filepath.Join(t.TempDir(), "wr")
+	progress := Progress{StartCommit: commit, Step: func(id, state, detail string) {
+		steps = append(steps, id+":"+state)
+	}}
+	warning, err = (&Git{Executor: exec}).Create(project, "workroom/wr", path, base, false, progress)
+	return path, exec.fetches, steps, warning, err
+}
+
+// Value: protects=an answered create question starts at the commit it was asked about and fetches
+// nothing, even after a fetch moved the remote's copy past it (ADR 0059); fails_when=the pinned
+// create fetches, starts at the moved ref, or reports a fetch step; no_claim=the app passing the pin
+func TestGitCreatePinnedToACommitStartsThereWithoutFetching(t *testing.T) {
+	project, _, fetched, _, _ := projectBehindOrigin(t)
+	git(t, project, "fetch", "-q", "origin") // the background fetch: origin/trunk is now newer
+	path, fetches, steps, warning, err := pinnedCreate(t, project, "", fetched)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := git(t, path, "rev-parse", "HEAD"); got != fetched {
+		t.Fatalf("workroom at %s, want the pinned %s", got, fetched)
+	}
+	if len(fetches) != 0 {
+		t.Fatalf("fetches = %v, want none", fetches)
+	}
+	if want := []string{"worktree:running", "worktree:done"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q, want only the worktree's", steps)
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q, want none", warning)
+	}
+}
+
+// Value: protects=a pin that isn't the start point's commit or behind it (missing, or on another
+// branch, as when the project's base branch changed between the question and the answer) is
+// refused, never used; fails_when=the create starts at the stray commit; no_claim=the app's Try Again
+func TestGitCreateRefusesAPinOffTheStartPoint(t *testing.T) {
+	project, _, _, _, feature := projectBehindOrigin(t)
+	for name, pin := range map[string]string{
+		"missing":      strings.Repeat("ab", 20),
+		"other branch": feature,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, fetches, _, _, err := pinnedCreate(t, project, "", pin)
+			if !errors.Is(err, errs.ErrStartCommitUnusable) {
+				t.Fatalf("err = %v, want ErrStartCommitUnusable", err)
+			}
+			if len(fetches) != 0 {
+				t.Fatalf("fetches = %v, want none", fetches)
+			}
+		})
+	}
+}
+
+// Value: protects=a create question raised before the worktree (BeforeWorktree's error) comes back
+// with the commit the start point resolved to, for the answer to pin (ADR 0059); fails_when=the
+// refusal names no commit, or the ref's later commit; no_claim=the --json envelope (cmd tests)
+func TestGitCreateQuestionReportsTheStartCommit(t *testing.T) {
+	project, _, _, newer, _ := projectBehindOrigin(t)
+	asked := errors.New("asked")
+	progress := Progress{BeforeWorktree: func(string, LocalWork) (string, error) { return "", asked }}
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "", false, progress)
+	var question *QuestionError
+	if !errors.As(err, &question) || !errors.Is(err, asked) {
+		t.Fatalf("err = %v, want a QuestionError wrapping the hook's error", err)
+	}
+	if question.StartCommit != newer {
+		t.Fatalf("StartCommit = %s, want the fetched start %s", question.StartCommit, newer)
+	}
+}
+
+// Value: protects=a pinned create asks its questions (and so judges its setup script) at the pinned
+// commit, counting the local work against it, not against where the ref has moved; fails_when=the
+// hook sees the ref, or the moved ref's commits are counted as behind; no_claim=the script gate itself
+func TestGitCreatePinnedAsksItsQuestionsAtThePin(t *testing.T) {
+	project, _, fetched, _, _ := projectBehindOrigin(t)
+	git(t, project, "fetch", "-q", "origin") // origin/trunk is now one commit past the pin
+	git(t, project, "switch", "-q", "trunk")
+	var gotStart string
+	var gotWork LocalWork
+	progress := Progress{StartCommit: fetched, BeforeWorktree: func(start string, work LocalWork) (string, error) {
+		gotStart, gotWork = start, work
+		return start, nil
+	}}
+	if _, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "", false, progress); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if gotStart != fetched {
+		t.Fatalf("hook saw start %q, want the pinned %s", gotStart, fetched)
+	}
+	if gotWork.Branch != "trunk" || gotWork.Behind != 0 {
+		t.Fatalf("work = %+v, want trunk compared with the pin (0 behind)", gotWork)
+	}
+}
+
+// Value: protects=a pinned create against an unreachable remote neither fetches nor says it could
+// not fetch: the create whose question it answers already said so; fails_when=the pinned create
+// warns "Could not fetch"; no_claim=the app showing the first run's warning
+func TestGitCreatePinnedNeverSaysItCouldNotFetch(t *testing.T) {
+	project, _, fetched, _, _ := projectBehindOrigin(t)
+	git(t, project, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	path, _, _, warning, err := pinnedCreate(t, project, "", fetched)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := git(t, path, "rev-parse", "HEAD"); got != fetched {
+		t.Fatalf("workroom at %s, want the pinned %s", got, fetched)
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q, want none", warning)
+	}
+}
+
 // Value: protects=a base branch found nowhere after a fetch that worked fails the fetch step, with
 // the error as its detail and in its log, and never starts the worktree step; fails_when=fetch
 // ends done and the failure lands on a worktree step that never ran, with an empty log;
