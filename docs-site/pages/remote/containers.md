@@ -45,7 +45,7 @@ Apple's runtime gives each container a VM of its own, and its default is too sma
 
 ## Your dev container
 
-Workroom makes the container from your repository's dev container file, `.devcontainer/devcontainer.json` or `.devcontainer.json`, the same file VS Code, Codespaces and DevPod read. It reads the file from the commit the new workroom starts from, on `origin`, so a change you haven't pushed isn't used. Comments and trailing commas are allowed.
+Workroom makes the container from your repository's dev container file, `.devcontainer/devcontainer.json` or `.devcontainer.json`, the same file VS Code, Codespaces and DevPod read. It reads the file from the commit the new workroom starts from, on `origin`, so a change you haven't pushed to a file already there isn't used. When that commit has no dev container file, the one in your project's folder is used, with the Dockerfile and build context beside it, so you can try a new one before you push it. Comments and trailing commas are allowed.
 
 Workroom uses these keys:
 

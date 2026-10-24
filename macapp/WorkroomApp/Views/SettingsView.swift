@@ -325,6 +325,9 @@ private struct ContainerWorkroomsSection: View {
         text: Binding(get: { image ?? "" }, set: { image = $0.isEmpty ? nil : $0 }),
         prompt: Text("mcr.microsoft.com/devcontainers/base:ubuntu")
       )
+      .help(
+        "The image a container workroom is made from when its repository has no devcontainer.json."
+      )
       .accessibilityIdentifier("settings.control.containerDefaultImage")
     } header: {
       Text("Container Workrooms")
