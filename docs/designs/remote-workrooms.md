@@ -2029,13 +2029,18 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       be destroyed: every reach of it throws `olderContainer`, and the connect keeps those words as
       it does for a pre-#525 host, so its status, the Changes panel and its panes say to delete the
       workroom and create it again, and the delete works. No migration (Nightly rule).
-    - **Open for the owner:** a feature's own metadata, fetched from a registry or a local
-      `./feature` in the repository, can add bind mounts of Mac folders and `privileged` without a
-      new approval, since approval covers only devcontainer.json's bytes (D4, as ADR 0054 has it
-      for what a script calls). It takes a feature tag moving, or a pulled change to a local
-      feature. The choices: accept it as documented; refuse bind mounts and `privileged` from
-      features (which breaks docker-in-docker and docker-outside-of-docker); or fold the resolved
-      features' metadata digests into the approved digest (`DevContainerSetup.spec`).
+    - **What features add is not approved** (owner, 2026-10-24): a feature's own metadata, fetched
+      from a registry or a local `./feature` in the repository, can add bind mounts of Mac folders
+      and `privileged` without a new approval, since approval covers only devcontainer.json's
+      bytes (D4, as ADR 0054 has it for what a script calls). It takes a feature tag moving, or a
+      pulled change to a local feature. Accepted as documented. Rejected: refusing them from
+      features (breaks docker-in-docker and docker-outside-of-docker), folding the features'
+      resolved metadata into the approval (every feature release would ask again, showing JSON
+      nobody in the repository wrote), and a warning row naming them.
+    - **The config digest is devcontainer.json's only** (owner, 2026-10-24): a change to only the
+      Dockerfile it builds, or to its build context, is not noticed by the Details pane's note,
+      though it too applies only to workrooms made after it. Nor does the note follow a later change
+      of the project's base branch: it compares with the base branch as it is now.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits

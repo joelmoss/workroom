@@ -185,6 +185,26 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     }
   }
 
+  // Value: protects=the branch starts at the commit the create judged its scripts and devcontainer.json at (#308, one revision);
+  // fails_when=the checkout falls back to origin's branch tip when a start commit is given;
+  // why_new=the Go side tests trust status emits the commit, nothing tested it reaches git switch; seam=FakeDaemon
+  /// A push to the base branch during a long build can't move the checkout: given the commit the
+  /// create judged, the new branch starts there rather than at origin's tip.
+  func testTheBranchStartsAtTheJudgedCommitNotTheTip() async throws {
+    let fake = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { fake.stop() }
+    let commit = String(repeating: "a1", count: 20)
+
+    let instance = try await RemoteProvisioning.provision(
+      cloneURL: "https://github.com/o/r.git", path: "/p", branch: "wr-b", startBranch: "main",
+      startCommit: commit, in: environment(gitHubToken: nil, connect: Self.connecting(to: fake)))
+    await instance.connection.close()
+
+    XCTAssertEqual(
+      try execs(of: fake).last?["args"] as? [String],
+      ["switch", "--quiet", "--no-track", "--create", "wr-b", commit])
+  }
+
   // Value: protects=a remote provider's workroom gets no credential from Workroom and is not
   // relayed; fails_when=the Mac's token or the relay leaks onto a provider's host; why_new=no
   // other test provisions a remote provider's host; seam=none
