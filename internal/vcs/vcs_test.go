@@ -310,6 +310,10 @@ func (e *countingExecutor) Run(dir, name string, args ...string) (string, error)
 	if len(args) > 0 && args[0] == "fetch" {
 		e.fetches[args[len(args)-1]]++
 	}
+	// `remote set-head --auto` asks the remote too, so it counts as reaching it.
+	if slices.Equal(args, []string{"remote", "set-head", "origin", "--auto"}) {
+		e.fetches["set-head --auto"]++
+	}
 	return e.RealExecutor.Run(dir, name, args...)
 }
 
@@ -684,6 +688,42 @@ func TestGitCreatePinnedAsksItsQuestionsAtThePin(t *testing.T) {
 	}
 	if gotWork.Branch != "trunk" || gotWork.Behind != 0 {
 		t.Fatalf("work = %+v, want trunk compared with the pin (0 behind)", gotWork)
+	}
+}
+
+// Value: protects=a pinned create on the fallback path (the app-wide default base missing here, so
+// origin's default branch) reaches the remote for nothing, not even `remote set-head --auto`;
+// fails_when=the pinned create asks origin for its HEAD; no_claim=none beyond protects
+func TestGitCreatePinnedOnTheFallbackReachesNoRemote(t *testing.T) {
+	project, _, fetched, _, _ := projectBehindOrigin(t)
+	exec := &countingExecutor{fetches: map[string]int{}}
+	progress := Progress{StartCommit: fetched}
+	path := filepath.Join(t.TempDir(), "wr")
+	if _, err := (&Git{Executor: exec}).Create(project, "workroom/wr", path, "upstream/main", true, progress); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if len(exec.fetches) != 0 {
+		t.Fatalf("remote calls = %v, want none", exec.fetches)
+	}
+	if got := git(t, path, "rev-parse", "HEAD"); got != fetched {
+		t.Fatalf("workroom at %s, want the pinned %s", got, fetched)
+	}
+}
+
+// Value: protects=a pinned create whose missing default base names another remote falls back to
+// origin's default without saying it couldn't fetch origin, since it fetched nothing on purpose;
+// fails_when=the fallback warning says "Could not fetch origin"; no_claim=none beyond protects
+func TestGitCreatePinnedFallbackFromAnotherRemoteSaysNoFetchFailed(t *testing.T) {
+	project, origin, fetched, _, _ := projectBehindOrigin(t)
+	git(t, project, "remote", "add", "upstream", origin)
+	exec := &countingExecutor{fetches: map[string]int{}}
+	progress := Progress{StartCommit: fetched}
+	warning, err := (&Git{Executor: exec}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "upstream/nope", true, progress)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if strings.Contains(warning, "Could not fetch") || len(exec.fetches) != 0 {
+		t.Fatalf("warning = %q, remote calls = %v; want no fetch claim and no remote call", warning, exec.fetches)
 	}
 }
 
