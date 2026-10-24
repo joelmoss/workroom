@@ -46,16 +46,29 @@ pub fn shell_name(shell: &str) -> &str {
 }
 
 /// The user's shell: `env_shell` (a `SHELL`) when it names one, else the login shell the passwd
-/// database gives this process's effective user, else empty, which each caller turns into its own
-/// fallback. A container's processes start from `docker exec`, which sets no `SHELL` (#308).
+/// database gives this process's effective user. A container's processes start from `docker exec`,
+/// which sets no `SHELL` (#308), and an image's numeric `USER` may have no passwd entry at all:
+/// there it is `/bin/sh`, which every image Workroom accepts has, not zsh, which few do. Elsewhere
+/// it is empty, which each caller turns into its own fallback.
 pub fn user_shell(env_shell: Option<OsString>) -> String {
-    user_shell_with(env_shell, passwd_shell)
+    let fallback = if cfg!(target_os = "linux") {
+        POSIX_SHELL
+    } else {
+        ""
+    };
+    user_shell_with(env_shell, passwd_shell, fallback)
 }
 
-fn user_shell_with(env_shell: Option<OsString>, passwd: impl FnOnce() -> Option<String>) -> String {
+fn user_shell_with(
+    env_shell: Option<OsString>,
+    passwd: impl FnOnce() -> Option<String>,
+    fallback: &str,
+) -> String {
     match env_shell.filter(|shell| !shell.is_empty()) {
         Some(shell) => shell.to_string_lossy().into_owned(),
-        None => passwd().unwrap_or_default(),
+        None => passwd()
+            .filter(|shell| !shell.is_empty())
+            .unwrap_or_else(|| fallback.to_string()),
     }
 }
 
@@ -446,18 +459,23 @@ mod tests {
     }
 
     /// A container's processes start from `docker exec`, which sets no `SHELL` (#308), so the
-    /// passwd database is where the user's shell is found.
+    /// passwd database is where the user's shell is found; a numeric `USER` with no entry gets the
+    /// fallback.
     #[test]
-    fn the_user_shell_is_shell_else_the_passwd_entry_else_nothing() {
+    fn the_user_shell_is_shell_else_the_passwd_entry_else_the_fallback() {
         let passwd = || Some("/bin/bash".to_string());
         assert_eq!(
-            user_shell_with(Some(OsString::from("/usr/bin/fish")), passwd),
+            user_shell_with(Some(OsString::from("/usr/bin/fish")), passwd, ""),
             "/usr/bin/fish"
         );
-        assert_eq!(user_shell_with(None, passwd), "/bin/bash");
-        assert_eq!(user_shell_with(Some(OsString::new()), passwd), "/bin/bash");
-        assert_eq!(user_shell_with(None, || None), "");
-        assert_eq!(user_shell_with(None, || Some(String::new())), "");
+        assert_eq!(user_shell_with(None, passwd, ""), "/bin/bash");
+        assert_eq!(user_shell_with(Some(OsString::new()), passwd, ""), "/bin/bash");
+        assert_eq!(user_shell_with(None, || None, ""), "");
+        assert_eq!(user_shell_with(None, || None, POSIX_SHELL), POSIX_SHELL);
+        assert_eq!(
+            user_shell_with(None, || Some(String::new()), POSIX_SHELL),
+            POSIX_SHELL
+        );
     }
 
     /// The real lookup, against the account running the tests: whatever it names is a file.
