@@ -218,8 +218,10 @@ enum ContainerCreate {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let q = PosixShell.quoted
     let listed = Set(paths).sorted().map(q).joined(separator: " ")
+    // pipefail: a path the archive doesn't have fails here, not later as a missing file in the build.
     let script =
-      (revision.map { "git -C \(q(project)) archive --format=tar \(q($0)) -- \(listed)" }
+      "set -o pipefail; "
+      + (revision.map { "git -C \(q(project)) archive --format=tar \(q($0)) -- \(listed)" }
         ?? "tar -c -f - -C \(q(project)) -- \(listed)")
       + " | tar -x -f - -C \(q(directory.path))"
     let (status, said) = try await shell(script, in: project, timeout: 300)

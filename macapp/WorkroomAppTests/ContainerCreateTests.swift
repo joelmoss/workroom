@@ -46,15 +46,28 @@ final class ContainerCreateTests: XCTestCase {
         daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=test"],
         daemon: { _ in nil }))
 
-    _ = try await ContainerCreate.prepare(
-      ContainerCreate.File(
-        path: ".devcontainer/devcontainer.json", data: json,
-        config: try DevContainerConfig.parse(json), fromRoot: true),
-      project: project.path, repository: "app", start: "HEAD", runtime: .docker, driver: driver,
-      defaultImage: "unused", environment: [:],
-      featureCache: directory.appendingPathComponent("features"))
+    let prepare = { (fromRoot: Bool) in
+      _ = try await ContainerCreate.prepare(
+        ContainerCreate.File(
+          path: ".devcontainer/devcontainer.json", data: json,
+          config: try DevContainerConfig.parse(json), fromRoot: fromRoot),
+        project: project.path, repository: "app", start: "HEAD", runtime: .docker,
+        driver: driver, defaultImage: "unused", environment: [:],
+        featureCache: directory.appendingPathComponent("features"))
+    }
 
+    try await prepare(true)
     XCTAssertEqual(try String(contentsOf: built, encoding: .utf8), "FROM uncommitted-base\n")
+
+    // From the base commit, which has no Dockerfile, the export says so rather than the build
+    // failing on a missing file.
+    do {
+      try await prepare(false)
+      XCTFail("a Dockerfile the base commit doesn't have was built")
+    } catch ContainerCreate.Failure.exportFailed {
+    } catch {
+      XCTFail("not the export's failure: \(error)")
+    }
   }
 
   private func git(_ arguments: [String], in directory: URL) throws {
