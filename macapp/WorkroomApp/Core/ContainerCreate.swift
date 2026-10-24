@@ -18,6 +18,9 @@ enum ContainerCreate {
     let path: String
     let data: Data
     let config: DevContainerConfig
+    /// The base commit has none, so this is the project root's copy (eng review S3): what it
+    /// builds from is the root's too, which may not be committed yet.
+    var fromRoot = false
   }
 
   enum Failure: Error, LocalizedError, Equatable {
@@ -49,7 +52,8 @@ enum ContainerCreate {
     do {
       return File(
         path: path, data: judged.approvalBytes,
-        config: try DevContainerConfig.parse(judged.approvalBytes))
+        config: try DevContainerConfig.parse(judged.approvalBytes),
+        fromRoot: judged.origin == "root")
     } catch {
       throw Failure.unreadable(file: path, detail: error.localizedDescription)
     }
@@ -81,6 +85,9 @@ enum ContainerCreate {
     environment: [String: String] = ProcessInfo.processInfo.environment, featureCache: URL
   ) async throws -> Prepared {
     let config = file?.config
+    // Where its Dockerfile, build context and local features are read: the judged commit, or the
+    // root's folder as it is.
+    let revision = file?.fromRoot == true ? nil : start
     var warnings: [String] = []
     if let file, let config {
       ProvisioningProgress.reportStep?(.config)
@@ -122,7 +129,7 @@ enum ContainerCreate {
       let source = scratch.appendingPathComponent("source", isDirectory: true)
       image = "workroom-build-\(UUID().uuidString.prefix(8).lowercased())"
       try await ProvisioningProgress.step(.build) {
-        try await export(project: project, start: start, paths: [context, dockerfile], to: source)
+        try await export(project: project, at: revision, paths: [context, dockerfile], to: source)
         try await driver.build(
           dockerfile: source.appendingPathComponent(dockerfile),
           context: source.appendingPathComponent(context), tag: image,
@@ -139,10 +146,12 @@ enum ContainerCreate {
       let base = image
       let built = "workroom-build-\(UUID().uuidString.prefix(8).lowercased())"
       try await ProvisioningProgress.step(.build) {
-        // A feature named by a path is one of the repository's, read from the judged commit.
+        // A feature named by a path is one of the repository's, read where the file was.
         let source = scratch.appendingPathComponent("features-source", isDirectory: true)
         let local = config.features.keys.contains { $0.hasPrefix("./") || $0.hasPrefix("../") }
-        if local { try await export(project: project, start: start, paths: [folder], to: source) }
+        if local {
+          try await export(project: project, at: revision, paths: [folder], to: source)
+        }
         let features = try await DevContainerFeatures.resolve(
           config.features, override: config.overrideFeatureInstallOrder,
           source: DevContainerFeatures.OCISource(
@@ -201,16 +210,17 @@ enum ContainerCreate {
     return parts.isEmpty ? "." : parts.joined(separator: "/")
   }
 
-  /// `paths` of the repository at `start`, written under `directory` as a checkout of it would
-  /// have them (`git archive`).
+  /// `paths` of the repository at `revision`, written under `directory` as a checkout of it would
+  /// have them (`git archive`); with no revision, as they are in the project's folder.
   private static func export(
-    project: String, start: String, paths: [String], to directory: URL
+    project: String, at revision: String?, paths: [String], to directory: URL
   ) async throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let q = PosixShell.quoted
+    let listed = Set(paths).sorted().map(q).joined(separator: " ")
     let script =
-      "git -C \(q(project)) archive --format=tar \(q(start)) -- "
-      + Set(paths).sorted().map(q).joined(separator: " ")
+      (revision.map { "git -C \(q(project)) archive --format=tar \(q($0)) -- \(listed)" }
+        ?? "tar -c -f - -C \(q(project)) -- \(listed)")
       + " | tar -x -f - -C \(q(directory.path))"
     let (status, said) = try await shell(script, in: project, timeout: 300)
     guard status == 0 else { throw Failure.exportFailed(said) }
