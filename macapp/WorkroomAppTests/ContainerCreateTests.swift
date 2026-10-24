@@ -70,6 +70,50 @@ final class ContainerCreateTests: XCTestCase {
     }
   }
 
+  // Value: protects=a root-level .devcontainer.json's local feature is read from the repository's root;
+  // fails_when=the root folder is exported as an empty pathspec, which git archive refuses;
+  // why_new=PR #542 review (Codex); seam=stub runtime; no_claim=what the feature installs
+  /// `.devcontainer.json` at the root is a supported layout, and its `./` features live beside it.
+  func testARootLevelConfigsLocalFeatureIsExported() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-create-\(UUID().uuidString)", isDirectory: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let project = directory.appendingPathComponent("project", isDirectory: true)
+    let feature = project.appendingPathComponent("feat", isDirectory: true)
+    try FileManager.default.createDirectory(at: feature, withIntermediateDirectories: true)
+    try #"{"id": "feat", "version": "1.0.0"}"#.write(
+      to: feature.appendingPathComponent("devcontainer-feature.json"), atomically: true,
+      encoding: .utf8)
+    try "#!/bin/sh\n".write(
+      to: feature.appendingPathComponent("install.sh"), atomically: true, encoding: .utf8)
+    try git(["init", "-q"], in: project)
+    try git(["add", "."], in: project)
+    try git(
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base"], in: project)
+    let runtime = directory.appendingPathComponent("docker")
+    try """
+    #!/bin/sh
+    [ "$1" = image ] && echo '{}'
+    exit 0
+    """.write(to: runtime, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("hosts"),
+      provisioning: ContainerHostDriver.Provisioning(
+        runtime: runtime, image: "unused", user: "",
+        daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=test"],
+        daemon: { _ in nil }))
+    let json = Data(#"{"image": "x", "features": {"./feat": {}}}"#.utf8)
+
+    let made = try await ContainerCreate.prepare(
+      ContainerCreate.File(
+        path: ".devcontainer.json", data: json, config: try DevContainerConfig.parse(json)),
+      project: project.path, repository: "app", start: "HEAD", runtime: .docker,
+      driver: driver, defaultImage: "unused", environment: [:],
+      featureCache: directory.appendingPathComponent("features"))
+    XCTAssertTrue(made.spec.image.hasPrefix("workroom-build-"), made.spec.image)
+  }
+
   // Value: protects=a devcontainer.json's build context and dockerfile stay inside the repository;
   // fails_when=`..` past the root is followed, or `.`/`..` within it stop collapsing;
   // why_new=no test named the guard; seam=none; no_claim=git archive itself

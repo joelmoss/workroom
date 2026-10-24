@@ -19,8 +19,9 @@ pub struct Account {
     pub home: PathBuf,
 }
 
-/// The account `spec` names: a user name, or a numeric `uid[:gid]` (Docker's `--user` forms). A
-/// uid with no passwd entry is still an account, with `/` for its home, as Docker treats one.
+/// The account `spec` names: a user name or uid, with a group name or gid after a `:` (Docker's
+/// `--user` forms). A uid with no passwd entry is still an account, with `/` for its home, as
+/// Docker treats one.
 pub fn lookup(spec: &str) -> io::Result<Account> {
     let (user, group) = match spec.split_once(':') {
         Some((user, group)) => (user, Some(group)),
@@ -41,14 +42,43 @@ pub fn lookup(spec: &str) -> io::Result<Account> {
         })?,
     };
     if let Some(group) = group {
-        account.gid = group.parse().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("group {group} is not a number"),
-            )
-        })?;
+        account.gid = match group.parse() {
+            Ok(gid) => gid,
+            // A named group, as `USER app:app` gives one.
+            Err(_) => group_id(group)?.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no group {group} in /etc/group"),
+                )
+            })?,
+        };
     }
     Ok(account)
+}
+
+/// The gid of the group called `name`, from the group database.
+fn group_id(name: &str) -> io::Result<Option<libc::gid_t>> {
+    let name = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a NUL in a group name"))?;
+    // SAFETY: `group` is plain C data (integers and pointers), for which all-zero is valid.
+    let mut record: libc::group = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::group = std::ptr::null_mut();
+    // A group's member list can be long, unlike a passwd entry.
+    let mut buffer = vec![0 as libc::c_char; 64 * 1024];
+    // SAFETY: every pointer is to a live local sized as passed.
+    let rc = unsafe {
+        libc::getgrnam_r(
+            name.as_ptr(),
+            &mut record,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::from_raw_os_error(rc));
+    }
+    Ok((!found.is_null()).then_some(record.gr_gid))
 }
 
 enum Entry<'a> {
@@ -224,6 +254,13 @@ mod tests {
         assert_eq!(by_uid, by_name);
         assert!(by_uid.home.is_absolute());
         assert_eq!(lookup(&format!("{uid}:4242")).unwrap().gid, 4242);
+        // A named group, as `USER app:app` names one: gid 0's, which every system has.
+        // SAFETY: getgrgid's static result is read before anything else calls it.
+        let root_group = unsafe { CStr::from_ptr((*libc::getgrgid(0)).gr_name) }
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(lookup(&format!("{uid}:{root_group}")).unwrap().gid, 0);
+        assert!(lookup(&format!("{uid}:no-such-group-workroom")).is_err());
         let nobody = lookup("4000000").unwrap();
         assert_eq!((nobody.uid, nobody.home), (4_000_000, PathBuf::from("/")));
         assert!(lookup("no-such-user-workroom").is_err());

@@ -152,7 +152,9 @@ enum ContainerCreate {
         let source = scratch.appendingPathComponent("features-source", isDirectory: true)
         let local = config.features.keys.contains { $0.hasPrefix("./") || $0.hasPrefix("../") }
         if local {
-          try await export(project: project, at: revision, paths: [folder], to: source)
+          // A root-level .devcontainer.json's folder is "", which git archive refuses.
+          try await export(
+            project: project, at: revision, paths: [folder.isEmpty ? "." : folder], to: source)
         }
         let features = try await DevContainerFeatures.resolve(
           config.features, override: config.overrideFeatureInstallOrder,
