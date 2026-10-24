@@ -1092,7 +1092,7 @@ final class RemoteHostsTests: XCTestCase {
         calls,
         [
           "\(prefix)ps -a --filter label=workroom.provisioner=test --format "
-            + "{{.Names}}\t{{.Label \"workroom.created\"}}",
+            + "{{.Names}}\t{{.Label \"workroom.created\"}}\t{{.Label \"workroom.volumes\"}}",
           "\(prefix)images -aq --filter label=workroom.provisioner=test",
         ], "context \(context ?? "nil")")
     }
@@ -1737,6 +1737,35 @@ final class RemoteHostsTests: XCTestCase {
 
     XCTAssertEqual(secondSweep, [])
     XCTAssertEqual(try removed(), ["rm --force --volumes \(names[0])"])
+  }
+
+  // Value: protects=a container a crash left mid-create takes the named volumes made for it when the sweep removes it;
+  // fails_when=the sweep drops only anonymous volumes, or removes a volume before its container; why_new=only destroy removed owned
+  // volumes, and each create now names fresh ones (docker-in-docker's); seam=stub runtime; no_claim=Apple's sweep (same rule, JSON listing)
+  /// The volumes a swept container's label names go after it; a container with none removes none.
+  func testASweptContainerTakesItsOwnedVolumes() async throws {
+    let orphan = ContainerHostDriver.containerName(UUID())
+    let plain = ContainerHostDriver.containerName(UUID())
+    let (runtime, log) = try stubRuntime()
+    let script = try String(contentsOf: runtime, encoding: .utf8)
+    try
+      (script + "\ncase \"$1 $2\" in \"ps -a\") printf '%s\\n%s' "
+      + SSHTransport.shellQuoted("\(orphan)\t1\tdind-a,cache-a") + " "
+      + SSHTransport.shellQuoted("\(plain)\t1\t") + " ;; esac\n").write(
+        to: runtime, atomically: true, encoding: .utf8)
+    let driver = Self.driver(runtime: runtime, context: nil)
+
+    _ = await driver.sweep(keeping: [])
+    let failures = await driver.sweep(keeping: [])
+
+    XCTAssertEqual(failures, [])
+    let removals = try calls(log).filter { $0.hasPrefix("rm ") || $0.hasPrefix("volume ") }
+    XCTAssertEqual(
+      removals,
+      [
+        "rm --force --volumes \(orphan)", "volume rm dind-a cache-a",
+        "rm --force --volumes \(plain)",
+      ])
   }
 
   /// A sweep that cannot write down what it found unknown removes nothing (#284): the list left

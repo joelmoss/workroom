@@ -76,7 +76,7 @@ They run as the container's user:
 - **Run setup script** comes last, so `scripts/workroom_setup` sees the container as VS Code would leave it, with anything `postStartCommand` started already running.
 - **`postStartCommand`** runs again each time the container starts, on the first connect after it. A terminal you open meanwhile says it is waiting for it, and attaches once it is done. Updating Workroom doesn't start the container again, so it doesn't rerun.
 
-`remoteEnv` reaches every lifecycle command, the setup script and your terminals.
+`remoteEnv` reaches every lifecycle command, the setup script and your terminals. The spec's variables, such as `${containerWorkspaceFolder}` and `${localWorkspaceFolderBasename}`, are filled in in the commands, `workspaceFolder`, mounts and environments.
 
 ### Without a devcontainer.json
 

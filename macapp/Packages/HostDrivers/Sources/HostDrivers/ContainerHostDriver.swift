@@ -83,6 +83,9 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   /// The label every container and image this driver makes carries, with when it was made in
   /// seconds since 1970, so `sweep` can leave one that may still be part of a create.
   public static let createdLabel = "workroom.created"
+  /// The label naming a container's owned volumes (`ContainerSpec.ownedVolumes`), comma-separated,
+  /// which a sweep removes after it.
+  static let volumesLabel = "workroom.volumes"
 
   /// How a host is reached: one handed in over ssh (the ssh fixture, and the path boxd and exe.dev
   /// share, which its tests run through this driver), or a container this driver made, through its
@@ -475,8 +478,12 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     let pending = onlyPending ? pendingContainers : []
     do {
       var unknown: [String] = []
+      var volumes: [String: [String]] = [:]
       for line in try await runtime(
-        ["ps", "-a"] + filters + ["--format", "{{.Names}}\t{{.Label \"\(Self.createdLabel)\"}}"],
+        ["ps", "-a"] + filters + [
+          "--format",
+          "{{.Names}}\t{{.Label \"\(Self.createdLabel)\"}}\t{{.Label \"\(Self.volumesLabel)\"}}",
+        ],
         allLines: true
       ).split(separator: "\n") {
         let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
@@ -485,6 +492,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
           !onlyPending || pending.contains(name)
         {
           unknown.append(name)
+          if fields.count > 2 { volumes[name] = fields[2].split(separator: ",").map(String.init) }
         }
       }
       var removed: [String] = []
@@ -494,6 +502,10 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
           removed.append(name)
         } catch {
           failed.append("container \(name): \(error.localizedDescription)")
+          continue
+        }
+        do { try await removeVolumes(volumes[name] ?? []) } catch {
+          failed.append("volumes of \(name): \(error.localizedDescription)")
         }
       }
       forgetPending(removed)
@@ -567,6 +579,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     let pending = onlyPending ? pendingContainers : []
     do {
       var unknown: [String] = []
+      var volumes: [String: [String]] = [:]
       for container in try AppleContainerCLI.objects(
         try await runtime(["list", "--all", "--format", "json"], allLines: true))
       {
@@ -582,6 +595,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
           !keptContainers.contains(id), !onlyPending || pending.contains(id)
         {
           unknown.append(id)
+          volumes[id] = labels[Self.volumesLabel]?.split(separator: ",").map(String.init)
         }
       }
       var removed: [String] = []
@@ -591,6 +605,10 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
           removed.append(id)
         } catch {
           failed.append("container \(id): \(error.localizedDescription)")
+          continue
+        }
+        do { try await removeVolumes(volumes[id] ?? []) } catch {
+          failed.append("volumes of \(id): \(error.localizedDescription)")
         }
       }
       forgetPending(removed)
@@ -802,6 +820,12 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       if let memory = provisioning.memory { arguments += ["--memory", memory] }
       arguments += ["--name", container, "--user", "0"]
       for label in provisioning.labels + [Self.created()] { arguments += ["--label", label] }
+      // So a sweep of a container a crash left can take its volumes too (names have no commas).
+      if !spec.ownedVolumes.isEmpty {
+        arguments += [
+          "--label", "\(Self.volumesLabel)=\(spec.ownedVolumes.joined(separator: ","))",
+        ]
+      }
       for (key, value) in spec.environment.sorted(by: { $0.key < $1.key }) {
         arguments += ["--env", "\(key)=\(value)"]
       }

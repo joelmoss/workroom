@@ -95,17 +95,6 @@ enum ContainerCreate {
       warnings += config.ignoredKeys(on: runtime).map { "\($0.key) is left out: \($0.reason)" }
       for line in warnings { ProvisioningProgress.log?(.config, line) }
     }
-    if let command = config?.lifecycle[.initialize] {
-      try await ProvisioningProgress.step(.initialize) {
-        try await runOnMac(command, in: project)
-      }
-    }
-
-    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "workroom-devcontainer-\(UUID().uuidString)", isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: scratch) }
-    // The file's folder in the repository, which its relative paths start from.
-    let folder = (file.map { ($0.path as NSString).deletingLastPathComponent } ?? "")
     let devcontainerId = DevContainerSetup.newDevcontainerID()
     let variables = { (workspace: String) in
       DevContainerConfig.Variables(
@@ -114,6 +103,17 @@ enum ContainerCreate {
     }
     let workspace = DevContainerSetup.workspaceFolder(
       config, repository: repository, variables: variables(""))
+    if let command = config?.lifecycle[.initialize] {
+      try await ProvisioningProgress.step(.initialize) {
+        try await runOnMac(command.substituting(variables(workspace)), in: project)
+      }
+    }
+
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "workroom-devcontainer-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    // The file's folder in the repository, which its relative paths start from.
+    let folder = (file.map { ($0.path as NSString).deletingLastPathComponent } ?? "")
 
     var image: String
     var pulled = true
@@ -188,7 +188,8 @@ enum ContainerCreate {
       (
         $0.hook,
         DevContainerSetup.hookScript(
-          $0.hook, commands: $0.commands, checkout: workspace, environment: remoteEnvironment)
+          $0.hook, commands: $0.commands.map { $0.substituting(variables(workspace)) },
+          checkout: workspace, environment: remoteEnvironment)
       )
     }
     return Prepared(

@@ -1495,7 +1495,6 @@ final class RemoteHosts: @unchecked Sendable {
       daemonFolder: RemoteHosts.directory.appendingPathComponent(
         "container-daemon", isDirectory: true))
   }
-
 }
 
 extension PendingMachines.Entry {
