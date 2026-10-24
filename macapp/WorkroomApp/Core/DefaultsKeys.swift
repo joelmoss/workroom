@@ -79,11 +79,6 @@ extension Defaults.Keys {
   static let confirmOnCloseTerminal = Key<Bool>(
     "confirmOnCloseTerminal", default: true, suite: .app)
 
-  /// The image this Mac makes a container workroom from when its repository has no
-  /// devcontainer.json (#308, eng review D8), over the pinned devcontainers base
-  /// (`RemoteWorkrooms.defaultImage`). Set in Settings ▸ General.
-  static let containerDefaultImage = Key<String?>(
-    "containerDefaultImage", default: nil, suite: .app)
   /// CPUs and memory (`8G`) each container workroom gets (#309), over the defaults
   /// `RemoteHosts.resources` picks. Hidden: `defaults write <bundle id> containerCPUs -int 6`.
   static let containerCPUs = Key<Int?>("containerCPUs", default: nil, suite: .app)

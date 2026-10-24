@@ -206,7 +206,6 @@ private struct GeneralSettingsPane: View {
         .help("Register the system-wide ⌘§ shortcut to show or hide Workroom.")
 
       NewWorkroomsSection()
-      ContainerWorkroomsSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
@@ -309,32 +308,6 @@ private struct NewWorkroomsSection: View {
       } catch {
         failure = error.localizedDescription
       }
-    }
-  }
-}
-
-/// The image a container workroom is made from when its repository has no devcontainer.json (#308,
-/// eng review D8): this Mac's own, saved as typed; empty is the pinned devcontainers base.
-private struct ContainerWorkroomsSection: View {
-  @Default(.containerDefaultImage) private var image
-
-  var body: some View {
-    Section {
-      TextField(
-        "Default image",
-        text: Binding(get: { image ?? "" }, set: { image = $0.isEmpty ? nil : $0 }),
-        prompt: Text("mcr.microsoft.com/devcontainers/base:ubuntu")
-      )
-      .help(
-        "The image a container workroom is made from when its repository has no devcontainer.json."
-      )
-      .accessibilityIdentifier("settings.control.containerDefaultImage")
-    } header: {
-      Text("Container Workrooms")
-    } footer: {
-      Text(
-        "A repository's devcontainer.json decides its container. One without it is made from this "
-          + "image, which needs git and a shell. New containers only.")
     }
   }
 }

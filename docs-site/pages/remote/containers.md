@@ -82,7 +82,7 @@ They run as the container's user:
 
 A repository with no dev container file gets Workroom's default image, the devcontainers project's Ubuntu base, run as its `vscode` user, who has passwordless `sudo`. Nothing is added to it.
 
-To use another image instead, set **Default image** under **Container Workrooms** in **Settings ▸ General**. It applies to containers made after you change it. The image needs `git` and a shell. If it lacks either, the create fails and names the missing one.
+To use another image, add a `devcontainer.json` to your repository that names it with `image`, or builds it from a Dockerfile with `build`. A Dockerfile with no `devcontainer.json` naming it isn't used. Whatever the image, it needs `git` and a shell. If it lacks either, the create fails and names the missing one.
 
 ### When the file changes
 
