@@ -287,7 +287,12 @@ renders each `DeleteResult`.
    `git cat-file --filters` (else the root's copy) and `gate` lets it through when its SHA-256 is the
    project's `trusted_scripts` entry, or the root's copy is gitignored. Otherwise `ApproveScriptFn`
    (a terminal's y/n) is asked, and without one the create ends with `ScriptNotTrusted` (exit 3)
-   before anything exists.
+   before anything exists. A create stopped there by a question (`ScriptNotTrusted`, or
+   `LocalWorkLeftOut` from `--start ask`) is a `vcs.QuestionError`, and its `--json` envelope reports
+   `start_commit`, the commit its start point resolved to. The app answers by running `create` again
+   with the hidden `--start-commit <sha>` (`Service.StartCommit`, ADR 0059): that create fetches
+   nothing, emits no `fetch` step and starts from the pinned commit, or fails with
+   `StartCommitUnusable` (exit 3) when the commit is no longer on the start point's ref.
 6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,
    with the VCS type.
 7. **Signal readiness:** fire `OnReady` (the `created` event: the app gives the creation pane it
