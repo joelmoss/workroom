@@ -1851,7 +1851,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     Docker on another machine is #307.
 
     *Amended 2026-10-23, built 2026-10-24: any image, reached over `docker exec` (#308; why:
-    [ADR 0059](../adr/0059-container-workrooms-run-any-image-through-exec.md)). Where the build
+    [ADR 0060](../adr/0060-container-workrooms-run-any-image-through-exec.md)). Where the build
     differs from what follows, "As built (#308)" at the end of this block says so.* The
     owner wants a container workroom's image and container fully customisable. `workroom-host`
     can't be: it is the far side the driver needs (sshd, the supervisor loop, host-key minting, the
@@ -1878,7 +1878,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     - **Configuration.** The Development Containers spec, read by `DevContainerConfig` (which
       replaced the ports-only `DevContainerPorts`): `image` or `build`, `features`, `mounts`, `containerEnv`, `remoteEnv`,
       `remoteUser`, `runArgs`, `workspaceFolder` and the lifecycle commands. A project without the file gets the
-      default image (below) and a per-Mac setting to choose another.
+      default image (below); the per-Mac setting to choose another was dropped (owner,
+      2026-10-24).
     - **What the image must have:** git (the clone and the daemon's VCS service run it) and a shell
       for panes. No sshd, distro or libc requirement: the daemon is a static musl binary.
 
@@ -2012,10 +2013,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       check for 3 s, since a file renamed into that folder reads as missing in a running container
       for about a second.
     - **Default image.** `mcr.microsoft.com/devcontainers/base@sha256:91eff046…`, the tag `ubuntu`'s
-      multi-platform index digest, so Docker on an Intel Mac gets amd64. Settings ▸ General ▸
-      Container Workrooms has a field for this Mac's own (`Defaults[.containerDefaultImage]`,
-      new containers only). The user comes from the image's `devcontainer.metadata` label
-      (`vscode`).
+      multi-platform index digest, so Docker on an Intel Mac gets amd64. The user comes from the
+      image's `devcontainer.metadata` label (`vscode`). No per-Mac setting (owner, 2026-10-24,
+      which drops D8's "same setting"): a repository wanting another image names it in its
+      devcontainer.json, with `image` or `build`.
     - **remoteEnv** is baked into each hook script, passed to the setup script as `run-script
       --env`, and merged over `containerEnv` into the container's own environment, which is how
       panes get it: so, unlike the spec, every process in the container has it.

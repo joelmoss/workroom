@@ -16,16 +16,6 @@ final class DevContainerSetupTests: XCTestCase {
     try DevContainerConfig.parse(Data(json.utf8))
   }
 
-  /// No setting is the pinned image, by digest; a setting (trimmed) replaces it.
-  func testTheDefaultImageIsThePinnedOneUnlessThisMacChoseAnother() {
-    XCTAssertTrue(
-      DevContainerSetup.defaultImage(setting: nil).hasPrefix(
-        "mcr.microsoft.com/devcontainers/base@sha256:"))
-    XCTAssertEqual(
-      DevContainerSetup.defaultImage(setting: "  "), DevContainerSetup.pinnedDefaultImage)
-    XCTAssertEqual(DevContainerSetup.defaultImage(setting: " node:22 "), "node:22")
-  }
-
   func testTheCheckoutGoesInTheWorkspaceFolderElseUnderWorkspaces() throws {
     XCTAssertEqual(DevContainerSetup.workspaceFolder(nil, repository: "app"), "/workspaces/app")
     XCTAssertEqual(

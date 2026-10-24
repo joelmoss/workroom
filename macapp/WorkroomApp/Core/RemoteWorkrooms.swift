@@ -167,10 +167,9 @@ enum RemoteWorkrooms {
   static let user = "workroom"
 
   /// The image a container workroom without a devcontainer.json is made from (#308, eng review
-  /// D8): this Mac's choice in Settings, else the pinned devcontainers base.
-  static var defaultImage: String {
-    DevContainerSetup.defaultImage(setting: Defaults[.containerDefaultImage])
-  }
+  /// D8): the pinned devcontainers base. Another image is the repository's to name, in its
+  /// devcontainer.json.
+  static let defaultImage = DevContainerSetup.pinnedDefaultImage
 
   /// The branch a remote workroom checks out, as a local workroom's is named.
   static func branch(for name: String) -> String { "workroom/\(name)" }

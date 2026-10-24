@@ -16,13 +16,6 @@ enum DevContainerSetup {
     "mcr.microsoft.com/devcontainers/base@sha256:"
     + "91eff046d5c12318fc98e59258982b87ba896c467427ed8b5dab5a02107a5db7"
 
-  /// The default image this Mac uses: its setting (`Defaults[.containerDefaultImage]`), else the
-  /// pinned one.
-  static func defaultImage(setting: String?) -> String {
-    let chosen = setting?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return chosen.isEmpty ? pinnedDefaultImage : chosen
-  }
-
   /// Where the workroom's checkout goes: the file's `workspaceFolder`, else the spec's default,
   /// `/workspaces/<repository>`.
   static func workspaceFolder(_ config: DevContainerConfig?, repository: String) -> String {
