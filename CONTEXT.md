@@ -30,6 +30,14 @@ A root or a workroom, as the thing a window selects and opens terminals in.
 The branch a new workroom starts from, set per project or for all projects.
 _Avoid_: Base (alone)
 
+**Start point**:
+The commit a new workroom's branch starts from: the remote's copy of the base branch, or the local branch when the user includes local work.
+_Avoid_: start ref, base commit
+
+**Create question**:
+A create that stops to ask the user something before anything exists: whether to approve its setup script, or where it starts when the root has local work. Answering continues the same create from its start point; it is not a Try Again, which starts over and reads the base branch afresh.
+_Avoid_: retry, restart (for an answered question)
+
 **Setup script**, **Teardown script**:
 The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted, on every kind of workroom: the Go CLI runs them locally, the app runs them on a remote workroom's host through `workroomd run-script`. A failed teardown stops the delete; **Delete Anyway** deletes without it.
 
