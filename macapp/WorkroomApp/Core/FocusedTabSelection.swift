@@ -11,10 +11,12 @@ import Foundation
 /// the WORKROOM-2B App Hang (≥2000 ms on the main thread, sampled inside `HistoryRow.body`).
 ///
 /// Now the *panel* reads it once per body pass and hands each row a plain value, so no row observes
-/// anything. Keeping the chain in one place also means a new `TabContent` case has exactly one site to
-/// teach, instead of three that fail silently by never highlighting.
-/// `Equatable` because the inspector rows now take it as a plain value and are themselves `Equatable`
-/// (the equality gate that keeps a terminal pulse from rebuilding them).
+/// `TerminalSessions`, and that is what keeps a pulse from rebuilding them (measured for #538: a pulse
+/// never reaches a row's `==`). Keeping the chain in one place also means a new `TabContent` case has
+/// exactly one site to teach, instead of three that fail silently by never highlighting.
+/// `Equatable` because the inspector rows now take it as a plain value and are themselves `Equatable`:
+/// their equality gate is what stops a data change, such as a status sweep that adds one changed file,
+/// from rebuilding every row.
 enum FocusedTabSelection: Equatable {
 
   /// The focused tab's content identity for the selected workroom, or `nil` when nothing is selected,
