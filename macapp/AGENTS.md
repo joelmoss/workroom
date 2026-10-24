@@ -273,7 +273,7 @@ whatever happened, so a delete reads what it printed. Both drivers' shared live 
 `WorkroomAppTests/ProviderParityTestCase.swift`.
 
 `HostDrivers/BoxdHostDriver.swift` is the first real provider: boxd machines driven through the `boxd`
-CLI (`--json`) and reached over the container driver's ssh transport (its `exec`,
+CLI (`--json`) and reached over `SSHTransport` (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
 `Resources/host-setup/systemd.sh` (an identity unit and the daemon's supervisor, both systemd; shared
