@@ -622,9 +622,9 @@ struct ChangedFileRow: View, Equatable {
     selection?.selectsChangedFile(path: file.path, source: source) ?? false
   }
 
-  /// The equality gate behind `.equatable()` in `fileList`: a panel body pass caused by an unrelated
-  /// publish re-creates every row value, and only the ones whose file, group or selected-ness actually
-  /// changed get a body. `@EnvironmentObject`/`@State`/`@Default` still invalidate past this gate, so
+  /// The equality gate behind `.equatable()` in `fileList`: a panel body pass that rebuilds the rows,
+  /// such as a status sweep that changes one file, re-creates every row value, and only the ones whose
+  /// file, group or selected-ness actually changed get a body. `@EnvironmentObject`/`@State`/`@Default` still invalidate past this gate, so
   /// hover, the editor-preference label and store-driven updates are unaffected. A theme change needs
   /// no input here, unlike `HistoryRow`'s: every row reads `theme.tokens` outside any ternary (the
   /// change letter's `color`), so Observation repaints each row past the gate.
@@ -733,8 +733,8 @@ struct ChangesPanel: View {
   /// Observed HERE so the rows don't have to be. `TerminalSessions` republishes per terminal
   /// title/activity write, and while each `ChangedFileRow` observed it directly, every one of those
   /// publishes rebuilt all `renderCap` rows — the same defect that produced the WORKROOM-2B App Hang
-  /// in the History pane (see `HistoryPanel`'s invalidation diagram). Now it is one panel pass per
-  /// publish, and no row rebuilds (`ChangedFileRowInvalidationTests`).
+  /// in the History pane (see `HistoryPanel`'s invalidation diagram). Now a burst of publishes costs
+  /// one panel pass, and no row rebuilds (`ChangedFileRowInvalidationTests`).
   @ObservedObject var sessions: TerminalSessions
   /// Hard cap on rendered rows so a huge change set can't blow up the list (the underlying
   /// output is already byte-capped by `StatusCommandRunner`).
