@@ -61,6 +61,46 @@ final class NotificationStoreTests: XCTestCase {
     XCTAssertEqual(s.total, 3)
   }
 
+  /// Badges are often read before the next notification arrives. Weighted fixture entries, request
+  /// removal, eviction and cross-window moves must all invalidate that previously read summary.
+  func testPreviouslyReadCountsFollowHistoryChanges() {
+    let s = makeStore(cap: 2)
+    let tab = UUID()
+    XCTAssertEqual(s.count(tab: tab), 0)
+    s.seedForTesting([
+      WorkroomNotification(
+        id: UUID(), targetID: target, tabID: tab, source: "fixture", title: "ordinary",
+        body: nil, date: Date(timeIntervalSince1970: 1), count: 3),
+      WorkroomNotification(
+        id: UUID(), targetID: target, tabID: tab, source: "fixture", title: "request",
+        body: nil, date: Date(timeIntervalSince1970: 2), count: 2, episode: "request"),
+    ])
+    XCTAssertEqual(s.count(tab: tab), 5)
+    XCTAssertEqual(s.count(target: target), 5)
+    XCTAssertEqual(s.total, 5)
+    XCTAssertEqual(s.unreadExcludingRequests, 3)
+
+    s.dismiss(episode: "request")
+    XCTAssertEqual(s.count(tab: tab), 3)
+    XCTAssertEqual(s.unreadExcludingRequests, 3)
+    s.record(targetID: otherTarget, tabID: tab, activity: osc("new"), focused: false)
+    XCTAssertEqual(s.total, 4)
+    s.record(
+      targetID: otherTarget, tabID: tab, activity: osc("evicts weighted entry"), focused: false)
+    XCTAssertEqual(s.count(target: target), 0)
+    XCTAssertEqual(s.count(tab: tab), 2)
+    XCTAssertEqual(s.total, 2)
+
+    let moved = s.take(target: otherTarget)
+    XCTAssertEqual(s.total, 0)
+    s.adopt(moved)
+    XCTAssertEqual(s.count(target: otherTarget), 2)
+    XCTAssertEqual(s.total, 2)
+    s.clear()
+    XCTAssertEqual(s.count(tab: tab), 0)
+    XCTAssertEqual(s.unreadExcludingRequests, 0)
+  }
+
   func testDismissByTabDeletesItsItemsAndLeavesOthers() {
     let s = makeStore()
     let tabA = UUID()
