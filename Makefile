@@ -174,6 +174,8 @@ APP_SIGN_FLAGS ?=
 # class. With 10 workers (and APP_TEST_DIAGNOSTICS below) the test phase went 83s -> 42s, measured
 # 2026-10-18 on 3365 tests. `hw.ncpu` so a smaller CI runner is not oversubscribed.
 APP_TEST_FLAGS ?= -parallel-testing-enabled YES -parallel-testing-worker-count $(shell sysctl -n hw.ncpu)
+# Native menu tracking needs foreground focus; normal unit tests continue to share the GUI.
+APP_TEST_GUI_MODE ?= shared
 # A unit test that hangs fails after 5 minutes, naming itself, rather than holding the run (and CI's
 # `app` job) until something kills it, with no clue which test it was. Apart from APP_TEST_FLAGS so a
 # serial `APP_TEST_FLAGS=` run keeps it.
@@ -225,7 +227,7 @@ app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	cd macapp && xcodegen generate && \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
 	  touch DerivedData/.WorkroomApp.test-stamp && { \
-	  $(call gui_lock,shared,app-test) \
+	  $(call gui_lock,$(APP_TEST_GUI_MODE),app-test) \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) $(APP_TEST_TIMEOUTS) \
 	    $(APP_TEST_DIAGNOSTICS) test-without-building; \
 	  $(call test_summary,WorkroomApp); }
@@ -262,6 +264,10 @@ app-bench-file-highlight: ## Benchmark the file viewer's highlight mapping (app 
 app-bench-sidebar: ## Benchmark sidebar scaling (8/16/32/64 projects) [BENCH_OUT=file.json]
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/SidebarBenchmarkTests/testSidebarScaling"
+
+app-bench-menu: ## Benchmark real main-menu rebuilds (macOS 26+) [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/MenuRebuildBenchmarkTests"
 
 # Times the diff viewer's per-line coloured strings (DiffHighlightBenchmarkTests) on a 2000-line
 # new-file diff over a generated Swift source, in the app test host (a Debug build).

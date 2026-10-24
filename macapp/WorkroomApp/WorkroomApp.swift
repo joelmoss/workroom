@@ -5,6 +5,7 @@ import UserNotifications
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
+import os
 
 // No `@main`: the entry point is `main.swift`, which dispatches Ghostty's `+action` CLI when this
 // binary is invoked through the `Contents/MacOS/ghostty` symlink, and calls `WorkroomApp.main()`
@@ -1117,6 +1118,11 @@ extension FocusedValues {
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
+  private static let signposter = OSSignposter(
+    subsystem: "com.developwithstyle.workroom", category: "MainMenu")
+  #if DEBUG
+    static var bodyPasses = 0
+  #endif
   @ObservedObject var updater: Updater
   /// Which detached pane has key focus (issue #172), so the pop-out item can flip into its own
   /// inverse. Observed directly because a detached window is not a scene: nothing about it reaches
@@ -1134,6 +1140,7 @@ struct WorkroomCommands: Commands {
   /// Projects track the focused window's `sidebarVisible` live. `@FocusedObject` would listen only to
   /// `objectWillChange`, which the `@Observable` store never sends.
   @FocusedValue(AppStore.self) private var store
+  @FocusedValue(\.roomCommandState) private var roomCommandState
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
@@ -1221,12 +1228,10 @@ struct WorkroomCommands: Commands {
   }
 
   /// Room ▸ Reveal in Finder's precondition: something is selected and its directory still exists.
-  /// A computed flag rather than an inline expression so it reads — and gates — like every other
-  /// workroom-scoped item. Reads `store.selectedTarget` directly, so the enabled state tracks
-  /// selection live (the `@ObservedObject store` re-evaluates this body).
+  /// Published with the inspected target's command state. Its publisher refreshes availability
+  /// without making this body observe every target's status dictionary entry.
   private var revealInFinderEnabled: Bool? {
-    guard let target = store?.selectedTarget else { return false }
-    return !target.isMissing
+    roomCommandState?.canRevealInFinder
   }
 
   // The Room menu's items that only buttons offered before, off while a dialog or sheet is up, as
@@ -1236,20 +1241,13 @@ struct WorkroomCommands: Commands {
   private var inspectedWorkroom: SidebarID? {
     store?.hasModalPresentation == false ? store?.inspectorTargetID : nil
   }
-  private var canCommit: Bool? { inspectedWorkroom.map { store?.canCommit($0) == true } }
-  private var pullRequest: PullRequestInfo? {
-    guard let store, let sid = inspectedWorkroom, store.githubCLIStatus == .available else {
-      return nil
-    }
-    return store.workroomStatuses[sid]?.pr
-  }
+  private var canCommit: Bool? { roomCommandState?.canCommit }
+  private var pullRequest: RoomCommandState.PullRequest? { roomCommandState?.pullRequest }
   /// Ready for Review or Convert to Draft, whichever an open pull request offers.
   private var draftAction: PRAction? {
-    pullRequest.flatMap { pr in
-      PRAction.available(for: pr).first { $0 == .markReady || $0 == .convertToDraft }
-    }
+    pullRequest?.draftAction
   }
-  private var canChangeDraft: Bool? { draftAction != nil && store?.prActionInFlight == false }
+  private var canChangeDraft: Bool? { roomCommandState?.canChangeDraft }
   /// The selected workroom, as the menu's title and the workroom's right-click menu take it; a root
   /// is never labelled or deleted, so it has none.
   private var selectedPair: (workroom: Workroom, project: Project)? {
@@ -1447,6 +1445,15 @@ struct WorkroomCommands: Commands {
   }
 
   var body: some Commands {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
+    let interval = Self.signposter.beginInterval("Workroom commands")
+    defer { Self.signposter.endInterval("Workroom commands", interval) }
+    return menuCommands
+  }
+
+  @ContentBuilder private var menuCommands: some Commands {
     CommandGroup(after: .appInfo) {
       // Sparkle update check, sitting directly beneath "About Workroom". Disabled while a check is
       // already running. See Core/Updater.swift.
