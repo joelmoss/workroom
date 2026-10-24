@@ -477,6 +477,7 @@ struct RootView: View {
       .onChange(of: auxSheetPresented, initial: true) { _, presented in
         store.auxSheetPresented = presented
       }
+      .modifier(RoomCommandStateValues(store: store))
       .modifier(
         MenuStateValues(
           // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
