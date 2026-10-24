@@ -469,7 +469,10 @@ mod tests {
             "/usr/bin/fish"
         );
         assert_eq!(user_shell_with(None, passwd, ""), "/bin/bash");
-        assert_eq!(user_shell_with(Some(OsString::new()), passwd, ""), "/bin/bash");
+        assert_eq!(
+            user_shell_with(Some(OsString::new()), passwd, ""),
+            "/bin/bash"
+        );
         assert_eq!(user_shell_with(None, || None, ""), "");
         assert_eq!(user_shell_with(None, || None, POSIX_SHELL), POSIX_SHELL);
         assert_eq!(
