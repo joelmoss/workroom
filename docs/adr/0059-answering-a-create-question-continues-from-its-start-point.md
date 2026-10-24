@@ -1,6 +1,6 @@
 # Answering a create question continues from the start point it was asked about
 
-Decided 2026-10-24 (owner), for #531. Not yet built. Builds on ADR 0054 (scripts run only once their exact bytes are approved) and ADR 0055 (a create asks before it leaves local work out).
+Decided 2026-10-24 (owner), for #531. Builds on ADR 0054 (scripts run only once their exact bytes are approved) and ADR 0055 (a create asks before it leaves local work out).
 
 A local create resolves its start point first, fetching the remote, and only then asks its create questions: where it starts when the root has local work, then whether to approve its setup script. The app answers them by running `workroom create` again with the answer: `--start` for the start choice, after `workroom trust --stdin` for Approve, `--skip-setup` for Continue Without Script. Each of those is a fresh create, so each fetched again. A create that asked both questions fetched three times.
 
@@ -23,4 +23,4 @@ Rejected:
 
 Remote creates are out of scope. They fetch for `trust status` and again in the host's clone, a separate path with separate costs.
 
-Source (to change): [`internal/vcs/git.go`](../../internal/vcs/git.go) (`Git.Create`, `startPoint`, `fetchStep`), [`internal/workroom/workroom.go`](../../internal/workroom/workroom.go) (`CreateNamed`), [`cmd/create.go`](../../cmd/create.go), [`cmd/json.go`](../../cmd/json.go), [`macapp/WorkroomApp/Core/AppStore+WorkroomCreation.swift`](../../macapp/WorkroomApp/Core/AppStore+WorkroomCreation.swift) (`retryCreation`, `approveSetupScript`, `skipSetupScript`, `chooseStart`).
+Source: [`internal/vcs/git.go`](../../internal/vcs/git.go) (`Git.Create`, `QuestionError`, `fetchStep`), [`internal/workroom/workroom.go`](../../internal/workroom/workroom.go) (`CreateNamed`, `StartCommit`), [`cmd/create.go`](../../cmd/create.go) (`--start-commit`), [`cmd/json.go`](../../cmd/json.go) (`start_commit`), [`macapp/WorkroomApp/Core/CreationRun.swift`](../../macapp/WorkroomApp/Core/CreationRun.swift) (`startCommit`, `askedAt`, `carriedFetch`), [`macapp/WorkroomApp/Core/AppStore+WorkroomCreation.swift`](../../macapp/WorkroomApp/Core/AppStore+WorkroomCreation.swift) (`retryCreation`, `approveSetupScript`, `skipSetupScript`, `chooseStart`).
