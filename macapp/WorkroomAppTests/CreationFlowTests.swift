@@ -349,20 +349,34 @@ final class CreationFlowTests: XCTestCase {
       summary:
         "You have 2 commits on main that you haven't pushed yet, and some changes you haven't "
         + "committed")
+    /// The start point a first try's create questions are asked at, as its refusals report it.
+    static let asked = String(repeating: "c", count: 40)
     private let lock = NSLock()
     private var approvals: [String] = []
     private var made = false
     private var startsAsked: [CreationStart?] = []
+    private var pinsAsked: [String?] = []
     let untrusted: Bool
     let localWork: LocalWork?
-    init(projectPath: String, untrusted: Bool = true, localWork: LocalWork? = nil) {
+    /// The warning a first try's fetch ends with, or nil for no remote (skipped).
+    let fetchWarning: String?
+    /// A pinned create fails `StartCommitUnusable`, as the CLI does for a commit no longer on its ref.
+    let unusablePin: Bool
+    init(
+      projectPath: String, untrusted: Bool = true, localWork: LocalWork? = nil,
+      fetchWarning: String? = nil, unusablePin: Bool = false
+    ) {
       self.projectPath = projectPath
       self.untrusted = untrusted
       self.localWork = localWork
+      self.fetchWarning = fetchWarning
+      self.unusablePin = unusablePin
     }
     var approved: [String] { lock.withLock { approvals } }
     /// The start each create asked for.
     var starts: [CreationStart?] { lock.withLock { startsAsked } }
+    /// The `--start-commit` each create passed.
+    var pins: [String?] { lock.withLock { pinsAsked } }
 
     func list(warnings: String, project: String?) async throws -> ListResponse {
       let names = lock.withLock { made } ? ["anchor", "wr"] : ["anchor"]
@@ -380,20 +394,39 @@ final class CreationFlowTests: XCTestCase {
     func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
       -> CreateResponse
     {
-      try await create(project: project, skipSetup: false, start: nil, onEvent: onEvent)
+      try await create(
+        project: project, skipSetup: false, start: nil, startCommit: nil, onEvent: onEvent)
     }
     func create(
-      project: String, skipSetup: Bool, start: CreationStart?,
+      project: String, skipSetup: Bool, start: CreationStart?, startCommit: String?,
       onEvent: @escaping @Sendable (StreamEvent) -> Void
     ) async throws -> CreateResponse {
-      lock.withLock { startsAsked.append(start) }
-      onEvent(CreateEvents.step("fetch", "skipped", "No remote to fetch from"))
-      // As the CLI: where it starts is settled before the setup script is judged.
+      lock.withLock {
+        startsAsked.append(start)
+        pinsAsked.append(startCommit)
+      }
+      if startCommit != nil, unusablePin {
+        throw WorkroomCLIError.cli(kind: "StartCommitUnusable", message: "no longer on origin/main")
+      }
+      // As the CLI: a pinned create fetches nothing and reports no fetch step (ADR 0059).
+      if startCommit == nil {
+        if let fetchWarning {
+          onEvent(CreateEvents.step("fetch", "running"))
+          onEvent(CreateEvents.step("fetch", "warning", fetchWarning))
+        } else {
+          onEvent(CreateEvents.step("fetch", "skipped", "No remote to fetch from"))
+        }
+      }
+      // As the CLI: where it starts is settled before the setup script is judged, and each question
+      // names the start point it was asked at: the pin, or the first try's.
+      let asked = startCommit ?? Self.asked
       if let localWork, start == .ask {
-        throw WorkroomCLIError.localWorkLeftOut(localWork, message: "local work")
+        throw WorkroomCLIError.localWorkLeftOut(
+          localWork, message: "local work", startCommit: asked)
       }
       guard !approved.isEmpty || skipSetup || !untrusted else {
-        throw WorkroomCLIError.scriptNotTrusted(Self.script, message: "script is not trusted")
+        throw WorkroomCLIError.scriptNotTrusted(
+          Self.script, message: "script is not trusted", startCommit: asked)
       }
       let path = "\(projectPath)/.workrooms/wr"
       onEvent(CreateEvents.step("worktree", "running"))
@@ -419,6 +452,94 @@ final class CreationFlowTests: XCTestCase {
     func deleteProject(
       _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
     ) async throws -> [URL] { [] }
+  }
+
+  /// Value: protects=ADR 0059, answering a create question continues from the start point it was
+  /// asked at: Choose Start and then Approve each pass the refusal's start commit; fails_when=an
+  /// answer creates with no pin, or with another; no_claim=the CLI starting there (the Go tests)
+  func testAnsweringCreateQuestionsPassesTheirStartCommit() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath, localWork: UntrustedSetupCLI.work)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    await store.createWorkroom(in: emptyProject)
+    let first = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(first.outcome, .localWorkFound(UntrustedSetupCLI.work))
+
+    await store.chooseStart(.origin, for: first)
+    let second = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(second.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
+    await store.approveSetupScript(second)
+
+    await waitUntil(
+      { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
+      "the create ran again after Approve")
+    let asked = UntrustedSetupCLI.asked
+    XCTAssertEqual(fake.pins, [nil, asked, asked], "each answer continues from the start point")
+  }
+
+  /// Value: protects=Continue Without Script answers the script question too, so it passes the start
+  /// commit; fails_when=it creates with no pin; no_claim=none beyond protects
+  func testContinueWithoutScriptPassesTheStartCommit() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.skipSetupScript(run)
+    XCTAssertEqual(fake.pins, [nil, UntrustedSetupCLI.asked])
+  }
+
+  /// Value: protects=Try Again is not an answer: it starts over and reads the base branch afresh,
+  /// with no pin; fails_when=Try Again passes the refused run's start commit; no_claim=none
+  func testTryAgainPassesNoStartCommit() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.retryCreation(run)
+    XCTAssertEqual(fake.pins, [nil, nil], "Try Again must fetch afresh")
+  }
+
+  /// Value: protects=an answered create shows the one fetch its first try made, warning and all, in
+  /// its fetch row and its notice, though the pinned create reports no fetch; fails_when=the fetch
+  /// row is left pending or the stale-start notice is lost; no_claim=the row's drawing
+  func testAnAnsweredCreateKeepsTheFirstTrysFetchAndItsWarning() async throws {
+    let warning =
+      "Could not fetch origin. The workroom starts from origin/main, which may be out of date."
+    let fake = UntrustedSetupCLI(projectPath: projectPath, fetchWarning: warning)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    store.closesFinishedCreations = { false }  // the finished checklist stays, to read its rows
+    await store.createWorkroom(in: emptyProject)
+    let first = try XCTUnwrap(store.creationRuns.values.first)
+    await store.approveSetupScript(first)
+
+    await waitUntil(
+      { store.creationRuns.values.first?.outcome == .succeeded }, "the answered create finished")
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(run.steps.first { $0.id == "fetch" }?.state, .warning(warning))
+    XCTAssertEqual(store.notifications.items.map(\.body), [warning])
+  }
+
+  /// Value: protects=a start commit the CLI can no longer use (the base branch changed in between)
+  /// turns the answer into a Try Again, which fetches afresh; fails_when=the create fails, or retries
+  /// with the same pin; no_claim=the CLI's check (the Go tests)
+  func testAnUnusableStartCommitTriesAgain() async throws {
+    let fake = UntrustedSetupCLI(projectPath: projectPath, unusablePin: true)
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.approveSetupScript(run)
+
+    await waitUntil(
+      {
+        store.creationRuns.values.first?.outcome == .succeeded
+          || store.projects.first?.workrooms.contains { $0.name == "wr" } == true
+      },
+      "the Try Again created the workroom")
+    XCTAssertEqual(fake.pins, [nil, UntrustedSetupCLI.asked, nil])
   }
 
   /// Value: protects=#363, a create refused for its setup script keeps its pane with the script row

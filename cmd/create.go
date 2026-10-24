@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -22,6 +23,9 @@ var (
 	createSkipSetup bool
 	// Where to start when the main checkout has work origin lacks; "" asks at a terminal.
 	createStart string
+	// The start point a create question was asked about: the app's answer passes back the refusal's
+	// start_commit, so it fetches nothing and starts there (ADR 0059).
+	createStartCommit string
 	// The desktop app's remote workrooms (#253): the descriptor and the checkout's path on the host.
 	createHost     string
 	createHostPath string
@@ -48,6 +52,11 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("--start must be one of %s, not %q", strings.Join(names, ", "), createStart)
 		}
 		svc.Start = workroom.Start(createStart)
+		// A commit hash only: it goes to git as an argument, never as an option or a revision expression.
+		if createStartCommit != "" && !commitHash.MatchString(createStartCommit) {
+			return fmt.Errorf("--start-commit must be a commit hash, not %q", createStartCommit)
+		}
+		svc.StartCommit = createStartCommit
 		dir, err := resolveProject(createProject)
 		if err != nil {
 			return err
@@ -153,6 +162,9 @@ func createWorkroom(svc *workroom.Service, dir string, out io.Writer, offerEdito
 	return nil
 }
 
+// commitHash is what --start-commit takes: a full SHA-1 or SHA-256 commit hash, as git prints one.
+var commitHash = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
 // askSelect asks a person to pick one of options, returning its index. Tests replace it.
 var askSelect = ui.Select
 
@@ -224,6 +236,8 @@ func init() {
 	createCmd.Flags().StringVar(&createHostPath, "host-path", "", "The remote workroom's path on its host (with --host)")
 	_ = createCmd.Flags().MarkHidden("host")
 	_ = createCmd.Flags().MarkHidden("host-path")
+	createCmd.Flags().StringVar(&createStartCommit, "start-commit", "", "Start from this commit, the start_commit a refused create reported, without fetching (used by the desktop app)")
+	_ = createCmd.Flags().MarkHidden("start-commit")
 	createCmd.Flags().StringVar(&createProject, "project", "", "Project directory to create the workroom in (defaults to the current directory)")
 	createCmd.Flags().BoolVar(&createNoEditor, "no-editor", false, "Do not offer to open the new workroom in $EDITOR")
 	createCmd.Flags().BoolVar(&createSkipSetup, "skip-setup", false, "Create without running the setup script, and without asking to approve it")

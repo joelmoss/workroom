@@ -161,6 +161,12 @@ final class CreationRun: ObservableObject, Identifiable {
   /// Where it starts, as the user chose when it found local work; `.ask` until then. A Try Again
   /// keeps it.
   let start: CreationStart
+  /// The start point the create question this run answers was asked at (ADR 0059): it creates from
+  /// there with `--start-commit`, fetching nothing. Nil for a first try and a Try Again.
+  let startCommit: String?
+  /// The start point this run's own create question was asked at, once it stops on one: what an
+  /// answer passes on as its `startCommit`.
+  private(set) var askedAt: String?
   @Published private(set) var steps: [CreationStep]
   @Published private(set) var name: String?
   @Published private(set) var outcome: CreationOutcome = .running
@@ -171,11 +177,14 @@ final class CreationRun: ObservableObject, Identifiable {
   /// `hasSetupScript` false leaves the setup script's row out of the plan; it comes back if the
   /// script runs after all (one only the new worktree has). `hasIncludeFile` false, a root with no
   /// `.worktreeinclude`, leaves out the "Copy local files" row (#367) the same way. The "Copy
-  /// your changes" row is there only for a create that starts `.localWithChanges`.
+  /// your changes" row is there only for a create that starts `.localWithChanges`. A run that answers
+  /// a create question (`startCommit`) fetches nothing, so it shows `carriedFetch`, the fetch row of
+  /// the try whose question it answers: one create, one fetch.
   init(
     id: UUID = UUID(), project: Project, kind: CreationKind, splitAnchor: SidebarID?,
     previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
-    skipsSetup: Bool = false, start: CreationStart = .ask, now: @escaping () -> Date = Date.init
+    skipsSetup: Bool = false, start: CreationStart = .ask, startCommit: String? = nil,
+    carriedFetch: CreationStep? = nil, now: @escaping () -> Date = Date.init
   ) {
     self.id = id
     self.project = project
@@ -184,6 +193,7 @@ final class CreationRun: ObservableObject, Identifiable {
     self.previousSelection = previousSelection
     self.skipsSetup = skipsSetup
     self.start = start
+    self.startCommit = startCommit
     self.now = now
     self.startedAt = now()
     self.steps = kind.plan.filter {
@@ -192,6 +202,21 @@ final class CreationRun: ObservableObject, Identifiable {
         && (hasIncludeFile || $0.id != ProvisioningProgress.Step.include.rawValue)
         && (start == .localWithChanges || $0.id != "changes")
     }
+    if let carriedFetch, let index = steps.firstIndex(where: { $0.id == carriedFetch.id }) {
+      steps[index] = carriedFetch
+    }
+  }
+
+  /// The fetch row, for a run answering this one's create question to carry.
+  var fetchStep: CreationStep? { steps.first { $0.id == "fetch" } }
+
+  /// The warning a carried fetch row ended with (a failed fetch, a stale start), for the created
+  /// workroom's notice: the answering create's CLI doesn't fetch, so it can't say it again.
+  var carriedFetchWarning: String? {
+    guard startCommit != nil, case .warning(let text)? = fetchStep?.state, !text.isEmpty else {
+      return nil
+    }
+    return text
   }
 
   var isRunning: Bool { outcome == .running }
@@ -276,21 +301,25 @@ final class CreationRun: ObservableObject, Identifiable {
   /// The setup script needs approving before anything is made (#363): the step running now ends
   /// done, the script's row (put back if the plan left it out) waits on the user, and the steps in
   /// between stay pending, since Approve runs them.
-  func awaitApproval(of script: ScriptTrust) {
+  /// `startCommit` is the start point the question was asked at.
+  func awaitApproval(of script: ScriptTrust, at startCommit: String? = nil) {
     if let running = runningIndex { end(running, as: .done) }
     if let index = steps.firstIndex(where: { $0.id == "script" }) ?? restore("script") {
       steps[index].state = .waitingForUser
     }
+    askedAt = startCommit
     outcome = .scriptNotTrusted(script)
   }
 
   /// The main checkout has work the create would leave out, so where it starts waits on the user:
   /// the step running now ends done and the worktree's row, which starts from the choice, waits.
-  func awaitStartChoice(for work: LocalWork) {
+  /// `startCommit` is the start point the question was asked at.
+  func awaitStartChoice(for work: LocalWork, at startCommit: String? = nil) {
     if let running = runningIndex { end(running, as: .done) }
     if let index = steps.firstIndex(where: { $0.id == "worktree" }) {
       steps[index].state = .waitingForUser
     }
+    askedAt = startCommit
     outcome = .localWorkFound(work)
   }
 

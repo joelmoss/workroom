@@ -242,22 +242,27 @@ public struct Envelope: Codable, Sendable {
   public let script: ScriptTrust?
   /// The work a `LocalWorkLeftOut` error says a create would leave out.
   public let localWork: LocalWork?
+  /// The start point a create question (`ScriptNotTrusted`, `LocalWorkLeftOut`) was asked at, for
+  /// the answer to pass back as `--start-commit` (ADR 0059).
+  public let startCommit: String?
 
   public init(
     ok: Bool, schemaVersion: Int?, error: CLIErrorBody?, script: ScriptTrust? = nil,
-    localWork: LocalWork? = nil
+    localWork: LocalWork? = nil, startCommit: String? = nil
   ) {
     self.ok = ok
     self.schemaVersion = schemaVersion
     self.error = error
     self.script = script
     self.localWork = localWork
+    self.startCommit = startCommit
   }
 
   enum CodingKeys: String, CodingKey {
     case ok, error, script
     case schemaVersion = "schema_version"
     case localWork = "local_work"
+    case startCommit = "start_commit"
   }
 }
 

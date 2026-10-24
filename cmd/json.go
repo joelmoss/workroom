@@ -86,6 +86,11 @@ func writeJSONError(w io.Writer, command string, err error) {
 	if left := (*workroom.LocalWorkError)(nil); errors.As(err, &left) {
 		obj["local_work"] = localWorkJSON(left.Work)
 	}
+	// The start point a create question was asked about, for the answer to pass back as
+	// --start-commit (ADR 0059).
+	if question := (*vcs.QuestionError)(nil); errors.As(err, &question) {
+		obj["start_commit"] = question.StartCommit
+	}
 	maps.Copy(obj, jsonErrorExtra)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)

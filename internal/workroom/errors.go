@@ -19,4 +19,5 @@ var (
 	ErrRemoteWorkroom      = errs.ErrRemoteWorkroom
 	ErrScriptNotTrusted    = errs.ErrScriptNotTrusted
 	ErrLocalWork           = errs.ErrLocalWork
+	ErrStartCommitUnusable = errs.ErrStartCommitUnusable
 )

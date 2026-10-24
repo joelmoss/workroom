@@ -11,11 +11,12 @@ enum WorkroomCLIError: LocalizedError {
   case cli(kind: String, message: String)
   /// Non-zero exit without a decodable JSON error envelope.
   case nonzero(code: Int32, stderr: String)
-  /// `ScriptNotTrusted`: the CLI refused to run `script`, which this Mac has not approved (#363).
-  case scriptNotTrusted(ScriptTrust, message: String)
+  /// `ScriptNotTrusted`: the CLI refused to run `script`, which this Mac has not approved (#363). A
+  /// create's refusal names the start point it was asked at (ADR 0059).
+  case scriptNotTrusted(ScriptTrust, message: String, startCommit: String? = nil)
   /// `LocalWorkLeftOut`: `create --start ask` stopped, before making anything, on work the main
-  /// checkout has that the create would leave out.
-  case localWorkLeftOut(LocalWork, message: String)
+  /// checkout has that the create would leave out, at the start point `startCommit`.
+  case localWorkLeftOut(LocalWork, message: String, startCommit: String? = nil)
 
   var errorDescription: String? {
     switch self {
@@ -25,8 +26,8 @@ enum WorkroomCLIError: LocalizedError {
       return "The workroom command timed out."
     case .decodeFailed(let raw):
       return "Could not parse the workroom response: \(raw.prefix(200))"
-    case .cli(_, let message), .scriptNotTrusted(_, let message),
-      .localWorkLeftOut(_, let message):
+    case .cli(_, let message), .scriptNotTrusted(_, let message, _),
+      .localWorkLeftOut(_, let message, _):
       return message
     case .nonzero(let code, let stderr):
       return stderr.isEmpty ? "workroom exited with code \(code)." : stderr
@@ -47,9 +48,9 @@ enum WorkroomCLIError: LocalizedError {
   init?(envelope: Envelope) {
     guard let body = envelope.error else { return nil }
     if body.kind == "ScriptNotTrusted", let script = envelope.script {
-      self = .scriptNotTrusted(script, message: body.message)
+      self = .scriptNotTrusted(script, message: body.message, startCommit: envelope.startCommit)
     } else if body.kind == "LocalWorkLeftOut", let work = envelope.localWork {
-      self = .localWorkLeftOut(work, message: body.message)
+      self = .localWorkLeftOut(work, message: body.message, startCommit: envelope.startCommit)
     } else {
       self = .cli(kind: body.kind, message: body.message)
     }
@@ -57,14 +58,30 @@ enum WorkroomCLIError: LocalizedError {
 
   /// The refused script, for a `ScriptNotTrusted` error.
   static func untrustedScript(_ error: any Error) -> ScriptTrust? {
-    if case WorkroomCLIError.scriptNotTrusted(let script, _) = error { return script }
+    if case WorkroomCLIError.scriptNotTrusted(let script, _, _) = error { return script }
     return nil
   }
 
   /// The work a `LocalWorkLeftOut` error says a create would leave out.
   static func leftOutWork(_ error: any Error) -> LocalWork? {
-    if case WorkroomCLIError.localWorkLeftOut(let work, _) = error { return work }
+    if case WorkroomCLIError.localWorkLeftOut(let work, _, _) = error { return work }
     return nil
+  }
+
+  /// The start point a create question was asked at, for its answer to continue from (ADR 0059).
+  static func startCommit(_ error: any Error) -> String? {
+    switch error {
+    case WorkroomCLIError.scriptNotTrusted(_, _, let commit),
+      WorkroomCLIError.localWorkLeftOut(_, _, let commit):
+      commit
+    default: nil
+    }
+  }
+
+  /// `StartCommitUnusable`: the start point an answer pinned is no longer where the create starts
+  /// (the base branch changed in between), so it starts over as a Try Again.
+  static func isUnusableStartCommit(_ error: any Error) -> Bool {
+    (error as? WorkroomCLIError)?.kind == "StartCommitUnusable"
   }
 }
 
@@ -211,9 +228,11 @@ protocol WorkroomCLIProtocol: Sendable {
   /// `create`, with `skipSetup` neither judging nor running the setup script (Continue Without
   /// Script, for one this Mac has not approved), and `start` saying where it starts when the main
   /// checkout has work the remote's copy of the base branch lacks; `.ask` stops on that work with
-  /// `localWorkLeftOut`, and nil leaves it to the CLI (origin, with a warning).
+  /// `localWorkLeftOut`, and nil leaves it to the CLI (origin, with a warning). `startCommit`, an
+  /// answer to a create question, starts from the start point it was asked at, fetching nothing
+  /// (ADR 0059).
   func create(
-    project: String, skipSetup: Bool, start: CreationStart?,
+    project: String, skipSetup: Bool, start: CreationStart?, startCommit: String?,
     onEvent: @escaping @Sendable (StreamEvent) -> Void
   ) async throws -> CreateResponse
   func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws
@@ -260,7 +279,7 @@ extension WorkroomCLIProtocol {
   /// Fakes that never skip a script or meet local work need not implement it: it is a plain create
   /// there.
   func create(
-    project: String, skipSetup: Bool, start: CreationStart?,
+    project: String, skipSetup: Bool, start: CreationStart?, startCommit: String?,
     onEvent: @escaping @Sendable (StreamEvent) -> Void
   ) async throws -> CreateResponse {
     try await create(project: project, onEvent: onEvent)
@@ -484,11 +503,12 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
   {
-    try await create(project: project, skipSetup: false, start: nil, onEvent: onEvent)
+    try await create(
+      project: project, skipSetup: false, start: nil, startCommit: nil, onEvent: onEvent)
   }
 
   func create(
-    project: String, skipSetup: Bool, start: CreationStart?,
+    project: String, skipSetup: Bool, start: CreationStart?, startCommit: String?,
     onEvent: @escaping @Sendable (StreamEvent) -> Void
   ) async throws -> CreateResponse {
     // Setup scripts run inside this call, so resolve the user's environment first — freshly, in
@@ -498,6 +518,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     var args = ["create", "--json", "--no-editor", "--project", project]
     if skipSetup { args.append("--skip-setup") }
     if let start { args += ["--start", start.rawValue] }
+    if let startCommit { args += ["--start-commit", startCommit] }
     let result = try await run(args, timeout: 600, userInitiated: true, onEvent: onEvent)
     return try decode(CreateResponse.self, from: result)
   }

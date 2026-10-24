@@ -27,26 +27,38 @@ func (g *Git) Label() string { return "Git worktree" }
 // upstream until published. The returned string is a warning for the user, non-empty when the
 // start point may not be what they expect.
 func (g *Git) Create(dir, vcsName, path, base string, fallback bool, progress Progress) (string, error) {
-	fs := &fetchStep{progress: progress}
-	start, warning, err := g.startPoint(dir, base, fallback, fs)
+	fs := &fetchStep{progress: progress, pinned: progress.StartCommit != ""}
+	// ref names the start point, for the local branch it is compared with and for its wording; at is
+	// where the workroom starts from it: the ref itself, or the pinned commit.
+	ref, warning, err := g.startPoint(dir, base, fallback, fs)
 	if err != nil {
 		fs.finish(warning, err)
 		return "", err
 	}
+	at := ref
+	if fs.pinned {
+		// The pin answers a question about this start point: it must be where the start point's ref
+		// points, or behind it. Anything else (a commit that's gone, or another branch's, as when the
+		// base branch changed in between) is refused, not used.
+		if !g.isAncestor(dir, progress.StartCommit, ref) {
+			return "", fmt.Errorf("%w: %s is not on %s", errs.ErrStartCommitUnusable, progress.StartCommit, g.refName(dir, ref))
+		}
+		at = progress.StartCommit
+	}
+	start := at
 	if progress.BeforeWorktree != nil {
 		// A start that already warns (a failed fetch, a fallback) is compared all the same, so a
 		// start the user chose still holds, but marked stale: nobody is asked against it.
-		work := g.LocalWork(dir, start)
+		work := g.localWork(dir, ref, at)
 		work.Stale = warning != ""
-		remoteStart := start
-		if start, err = progress.BeforeWorktree(start, work); err != nil {
+		if start, err = progress.BeforeWorktree(at, work); err != nil {
 			fs.finish(warning, nil)
-			return "", err
+			return "", g.question(dir, at, err)
 		}
 		// The warning was about the remote's copy; a start switched to the local branch says what
 		// it really is instead.
-		if warning != "" && start != remoteStart {
-			warning = localStartWarning(base, remoteStart, work, fs.failed)
+		if warning != "" && start != at {
+			warning = localStartWarning(base, ref, work, fs.failed)
 		}
 	}
 	// The fetch step carries the start-point warning, so it ends only once the start is settled:
@@ -102,16 +114,19 @@ func (g *Git) run(log io.Writer, dir string, args ...string) (string, error) {
 }
 
 // fetchStep reports the create's fetch step. The step stays unannounced until a fetch is
-// attempted, so a project with no remote goes straight to skipped.
+// attempted, so a project with no remote goes straight to skipped. A pinned create (StartCommit)
+// has no fetch step: the create whose question it answers fetched, and reported it.
 type fetchStep struct {
 	progress          Progress
 	attempted, failed bool
+	pinned            bool
 }
 
 // finish closes the step once startPoint is done, which is after any fetch in originDefault. The
 // step owns startPoint's outcome: a base found nowhere fails it, and any start-point warning ends it.
 func (f *fetchStep) finish(warning string, err error) {
 	switch {
+	case f.pinned:
 	case err != nil:
 		if f.progress.Log != nil {
 			fmt.Fprintln(f.progress.Log, err.Error())
@@ -205,8 +220,12 @@ func (g *Git) originDefault(dir, base string, remotes []string, originFetched bo
 }
 
 // fetch fetches remote, pruned, and with setHead refreshes its HEAD, which fetch never moves after
-// a default-branch rename. It reports whether the fetch worked.
+// a default-branch rename. It reports whether the fetch worked. A pinned create fetches nothing and
+// counts as fetched: the create whose question it answers did fetch, and said so if that failed.
 func (g *Git) fetch(dir, remote string, setHead bool, fs *fetchStep) bool {
+	if fs.pinned {
+		return true
+	}
 	if !fs.attempted {
 		fs.progress.step("fetch", "running", "")
 	}
@@ -221,9 +240,37 @@ func (g *Git) fetch(dir, remote string, setHead bool, fs *fetchStep) bool {
 	return true
 }
 
+// QuestionError is a create stopped by a create question (BeforeWorktree's error) before anything
+// exists. StartCommit is the commit of the start point it was asked about, for the answer to pass
+// back as Progress.StartCommit (ADR 0059).
+type QuestionError struct {
+	StartCommit string
+	Err         error
+}
+
+func (e *QuestionError) Error() string { return e.Err.Error() }
+func (e *QuestionError) Unwrap() error { return e.Err }
+
+// question is err as a QuestionError at start, or err as it is when start names no commit (a
+// repository with none yet).
+func (g *Git) question(dir, start string, err error) error {
+	if start == "" {
+		start = "HEAD"
+	}
+	commit, revErr := g.Executor.Run(dir, "git", "rev-parse", "--verify", "--quiet", start+"^{commit}")
+	if revErr != nil || commit == "" {
+		return err
+	}
+	return &QuestionError{StartCommit: commit, Err: err}
+}
+
 // LocalWork compares start, a remote's branch such as refs/remotes/origin/HEAD, with the local
 // branch of the same name and with the main checkout at dir.
-func (g *Git) LocalWork(dir, start string) LocalWork {
+func (g *Git) LocalWork(dir, start string) LocalWork { return g.localWork(dir, start, start) }
+
+// localWork is LocalWork with the counts taken against at, the commit a create starts from, which
+// a pinned create (Progress.StartCommit) holds behind where start has since moved.
+func (g *Git) localWork(dir, start, at string) LocalWork {
 	rest, ok := strings.CutPrefix(start, "refs/remotes/")
 	if !ok {
 		return LocalWork{}
@@ -242,7 +289,7 @@ func (g *Git) LocalWork(dir, start string) LocalWork {
 	}
 	work := LocalWork{Branch: branch, Remote: remote}
 	// "<behind>\t<ahead>": the start's commits the local branch lacks, then the local branch's.
-	if out, err := g.Executor.Run(dir, "git", "rev-list", "--left-right", "--count", start+"...refs/heads/"+branch); err == nil {
+	if out, err := g.Executor.Run(dir, "git", "rev-list", "--left-right", "--count", at+"...refs/heads/"+branch); err == nil {
 		if behind, ahead, ok := strings.Cut(out, "\t"); ok {
 			work.Behind, _ = strconv.Atoi(behind)
 			work.Ahead, _ = strconv.Atoi(ahead)
@@ -253,6 +300,15 @@ func (g *Git) LocalWork(dir, start string) LocalWork {
 		work.Uncommitted = err == nil && status != ""
 	}
 	return work
+}
+
+// isAncestor reports whether commit is a commit that ref ("" is HEAD) points to or descends from.
+func (g *Git) isAncestor(dir, commit, ref string) bool {
+	if ref == "" {
+		ref = "HEAD"
+	}
+	_, err := g.Executor.Run(dir, "git", "merge-base", "--is-ancestor", commit+"^{commit}", ref)
+	return err == nil
 }
 
 // firstRef is the first of refs that names a commit, or "".

@@ -27,6 +27,10 @@ type Progress struct {
 	// start to use instead (the local branch, when the user chose it); an error ends the create
 	// there.
 	BeforeWorktree func(start string, work LocalWork) (string, error)
+	// StartCommit, when set, is the start point a create question was asked about, the commit a
+	// QuestionError reported (ADR 0059). The answer's create fetches nothing, resolves the start
+	// point from the refs already here and starts from this commit instead of where its ref points.
+	StartCommit string
 }
 
 // LocalWork is what a create starting from a remote's copy of a branch leaves behind in the main

@@ -74,6 +74,10 @@ type Service struct {
 	// ChooseStartFn, when set, is told the local work a create would leave out and answers where it
 	// starts. A person at a terminal is asked.
 	ChooseStartFn func(vcs.LocalWork) (Start, error)
+	// StartCommit, when set, is the start point a create question was asked about (the commit a
+	// vcs.QuestionError reported): the create answering it fetches nothing and starts there
+	// (ADR 0059). One it can't use is ErrStartCommitUnusable.
+	StartCommit string
 }
 
 func (s *Service) sayStatus(status, msg string) {
@@ -261,7 +265,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		// refusal leaves nothing behind.
 		var refused error
 		var leftOut string
-		progress := vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep}
+		progress := vcs.Progress{Log: s.ScriptLogWriter, Step: s.OnStep, StartCommit: s.StartCommit}
 		progress.BeforeWorktree = func(start string, work vcs.LocalWork) (string, error) {
 			choice, err := s.chooseStart(work)
 			if err != nil {
@@ -291,7 +295,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 			return start, nil
 		}
 		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global, progress)
-		if refused != nil || errors.Is(err, ErrBaseBranchNotFound) {
+		if refused != nil || errors.Is(err, ErrBaseBranchNotFound) || errors.Is(err, ErrStartCommitUnusable) {
 			return res, err
 		}
 		if err != nil {

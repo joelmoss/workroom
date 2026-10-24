@@ -195,17 +195,21 @@ extension AppStore {
   }
 
   /// The setup script needs approving before anything is made (#363): its row waits, the pane
-  /// shows the script with Approve, and VoiceOver hears it once.
-  private func refuseCreation(_ run: CreationRun, _ script: ScriptTrust) {
-    run.awaitApproval(of: script)
+  /// shows the script with Approve, and VoiceOver hears it once. `startCommit` is the start point it
+  /// was asked at, which the answer continues from.
+  private func refuseCreation(
+    _ run: CreationRun, _ script: ScriptTrust, at startCommit: String? = nil
+  ) {
+    run.awaitApproval(of: script, at: startCommit)
     Self.announceCreation("scripts/\(script.name) needs approving")
     presentSetupApproval(run)
   }
 
   /// The main checkout has work the create would leave out, before anything is made: the worktree's
   /// row waits, the user is asked where it starts, and VoiceOver hears it once.
-  private func refuseCreation(_ run: CreationRun, leaving work: LocalWork) {
-    run.awaitStartChoice(for: work)
+  private func refuseCreation(_ run: CreationRun, leaving work: LocalWork, at startCommit: String?)
+  {
+    run.awaitStartChoice(for: work, at: startCommit)
     Self.announceCreation("\(work.summary). Choose whether the new workroom includes it")
     presentStartChoice(run)
   }
@@ -219,11 +223,11 @@ extension AppStore {
     pendingStartChoice = PendingStartChoice(run: run, work: work)
   }
 
-  /// A start chosen for a create that found local work: it starts again, in the same pane, from
-  /// there. A choice left over from a run since replaced does nothing.
+  /// A start chosen for a create that found local work: it continues, in the same pane, from the
+  /// start point it was asked at. A choice left over from a run since replaced does nothing.
   func chooseStart(_ start: CreationStart, for run: CreationRun) async {
     guard creationRuns[run.id] === run, case .localWorkFound = run.outcome else { return }
-    await retryCreation(run, start: start)
+    await retryCreation(run, start: start, startCommit: run.askedAt)
   }
 
   /// Cancel Creation on the start choice; stale, it cancels nothing.
@@ -259,7 +263,7 @@ extension AppStore {
   }
 
   /// Approve on a create its setup script stopped: the bytes shown are recorded as approved and the
-  /// create starts again, in the same pane.
+  /// create continues, in the same pane, from the start point the script was judged at.
   func approveSetupScript(_ run: CreationRun) async {
     guard creationRuns[run.id] === run, case .scriptNotTrusted(let script) = run.outcome else {
       return
@@ -270,15 +274,15 @@ extension AppStore {
       failCreationRun(run, .failedBeforeWorkroom(message: errorText(error)))
       return
     }
-    await retryCreation(run)
+    await retryCreation(run, startCommit: run.askedAt)
   }
 
-  /// Continue Without Script, once confirmed, on a create its setup script stopped: the create starts
-  /// again, in the same pane, without that script. Nothing is approved, so the next create asks
+  /// Continue Without Script, once confirmed, on a create its setup script stopped: the create
+  /// continues, in the same pane, without that script. Nothing is approved, so the next create asks
   /// again.
   func skipSetupScript(_ run: CreationRun) async {
     guard creationRuns[run.id] === run, case .scriptNotTrusted = run.outcome else { return }
-    await retryCreation(run, skipsSetup: true)
+    await retryCreation(run, skipsSetup: true, startCommit: run.askedAt)
   }
 
   /// The setup script row's reason on a create that skipped it, as the CLI words it.
@@ -303,9 +307,12 @@ extension AppStore {
 
   /// Try Again: the same request again, in the same pane, as a new run that replaces `run`. The base
   /// branch is read afresh, as a new create does. It skips the setup script and starts where `run`
-  /// did, unless `skipsSetup` or `start` says otherwise.
+  /// did, unless `skipsSetup` or `start` says otherwise. An answer to `run`'s create question passes
+  /// `startCommit`, the start point it was asked at: the new run continues from there, fetching
+  /// nothing, and keeps `run`'s fetch row (ADR 0059).
   func retryCreation(
-    _ run: CreationRun, skipsSetup: Bool? = nil, start: CreationStart? = nil
+    _ run: CreationRun, skipsSetup: Bool? = nil, start: CreationStart? = nil,
+    startCommit: String? = nil
   ) async {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
@@ -315,7 +322,8 @@ extension AppStore {
       previousSelection: run.previousSelection,
       hasSetupScript: Self.hasSetupScript(project),
       hasIncludeFile: Self.hasIncludeFile(project), skipsSetup: skipsSetup ?? run.skipsSetup,
-      start: start ?? run.start)
+      start: start ?? run.start, startCommit: startCommit,
+      carriedFetch: startCommit == nil ? nil : run.fetchStep)
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)
@@ -347,6 +355,9 @@ extension AppStore {
 
   private func runLocalCreate(_ run: CreationRun) async {
     let warning = CreationWarningBox()
+    // An answer's create fetches nothing, so the try it answers is what said its start may be stale;
+    // the create's own warning, when it has one, says it anew.
+    warning.value = run.carriedFetchWarning
     guard let landedID = await performLocalCreate(run, warning: warning) else { return }
     await completeCreationRun(run)
     if let text = warning.value, !text.isEmpty { noticeStaleStart(of: landedID, text) }
@@ -367,7 +378,8 @@ extension AppStore {
     }
     do {
       let created = try await cli.create(
-        project: project.path, skipSetup: run.skipsSetup, start: run.start
+        project: project.path, skipSetup: run.skipsSetup, start: run.start,
+        startCommit: run.startCommit
       ) { event in
         if event.type == "created", let name = event.name {
           if let text = event.warning, !text.isEmpty { warning.value = text }
@@ -405,9 +417,13 @@ extension AppStore {
         // Offline, the fetch and a networked setup script fail together: say both.
         if let text = warning.value { noticeStaleStart(of: id, text) }
       } else if let script = WorkroomCLIError.untrustedScript(error) {
-        refuseCreation(run, script)
+        refuseCreation(run, script, at: WorkroomCLIError.startCommit(error))
       } else if let work = WorkroomCLIError.leftOutWork(error) {
-        refuseCreation(run, leaving: work)
+        refuseCreation(run, leaving: work, at: WorkroomCLIError.startCommit(error))
+      } else if run.startCommit != nil, WorkroomCLIError.isUnusableStartCommit(error) {
+        // The start point the answer was about is gone (the base branch changed in between): start
+        // over, fetching afresh, and ask again if need be.
+        await retryCreation(run)
       } else {
         failCreationRun(run, .failedBeforeWorkroom(message: errorText(error)))
       }
