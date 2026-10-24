@@ -205,9 +205,14 @@ func (g *Git) startPoint(dir, base string, fallback bool, fs *fetchStep) (start,
 // the base already happened (originFetched), so a create never fetches the same remote twice.
 func (g *Git) originDefault(dir, base string, remotes []string, originFetched bool, fs *fetchStep) (start, warning string, err error) {
 	if slices.Contains(remotes, "origin") {
-		if originFetched {
+		switch {
+		case fs.pinned:
+			// `set-head --auto` asks the remote, and a pinned create reaches it for nothing: the
+			// create whose question it answers set origin/HEAD, and said if its fetch failed.
+			originFetched = true
+		case originFetched:
 			_, _ = g.Executor.Run(dir, "git", "remote", "set-head", "origin", "--auto")
-		} else {
+		default:
 			originFetched = g.fetch(dir, "origin", true, fs)
 		}
 		start = g.firstRef(dir, []string{"refs/remotes/origin/HEAD"})
