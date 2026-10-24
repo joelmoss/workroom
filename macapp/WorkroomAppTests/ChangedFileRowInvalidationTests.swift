@@ -10,10 +10,10 @@ import XCTest
 ///
 /// `ChangedFileRow` had the identical defect the History rows did — `@ObservedObject TerminalSessions`
 /// held purely to compute `isSelected` — just bounded at `renderCap` (200) instead of the whole commit
-/// log, which is why it never crossed the 2-second app-hang threshold on its own. Hoisting the lookup
-/// into the panel is NOT sufficient here: the panel then observes `TerminalSessions` itself, and the
-/// file list is an eager `VStack`, so without an equality gate on the row every pulse would still
-/// rebuild all 200 bodies. This suite is what proves the gate is doing that work.
+/// log, which is why it never crossed the 2-second app-hang threshold on its own. The lookup now lives
+/// in the panel, and the file list is an eager `VStack`, so the row's equality gate is what keeps a
+/// status change from rebuilding all 200 bodies. This suite proves both: pulses rebuild no row, and
+/// the gate elides the rows a change did not touch.
 @MainActor
 final class ChangedFileRowInvalidationTests: XCTestCase {
   private let projectPath = "/changes-invalidation"
@@ -75,6 +75,39 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     return (window, hosting)
   }
 
+  /// What the equality gate is for. When a status sweep changes the list, the panel rebuilds every row
+  /// from the new status and SwiftUI asks each row's `==`. Only the new row may get a body; without
+  /// the gate, one more changed file rebuilds all `renderCap` rows.
+  func testStatusChangeRebuildsOnlyTheChangedFileRow() throws {
+    let store = makeStore(changedFiles: files(60))
+    let (window, view) = host(store)
+    defer {
+      Task { await store.terminals.reapAll() }
+      window.close()
+    }
+    settle(view)
+    XCTAssertGreaterThan(
+      ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
+
+    ChangedFileRow.bodyPasses = 0
+    store.mergeLocalStatus(
+      WorkroomStatus(dirty: true, changedFiles: files(61)),
+      into: .workroom(project: projectPath, name: workroomName))
+    settle(view)
+
+    // Exactly one, not "at most one": zero would mean the panel never re-rendered, which would let a
+    // broken gate pass unseen.
+    XCTAssertEqual(
+      ChangedFileRow.bodyPasses, 1,
+      "one file joined the list, so only its row may rebuild; the other 60 are equal to what they "
+        + "were and the equality gate must elide them")
+  }
+
+  /// A terminal pulse rebuilds no row by any route. It does not reach the equality gate: the panel
+  /// re-renders once per burst, yet SwiftUI never asks a row's `==` (measured for #538: zero calls,
+  /// and no rebuilds with `==` forced false). The gate is pinned by
+  /// `testStatusChangeRebuildsOnlyTheChangedFileRow`; this test pins the original WORKROOM-2B defect,
+  /// a row that observes `TerminalSessions` itself and so rebuilds on every pulse, gate or not.
   func testTerminalPulseBurstRebuildsNoChangedFileRows() throws {
     let store = makeStore(changedFiles: files(60))
     let (window, view) = host(store)
@@ -107,16 +140,15 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
 
     XCTAssertEqual(
       ChangedFileRow.bodyPasses, 0,
-      "a terminal activity pulse says nothing about any changed file, so it must rebuild no rows — "
-        + "hoisting the selection lookup alone would not achieve this behind an eager VStack")
+      "a terminal activity pulse says nothing about any changed file, so it must rebuild no rows")
   }
 
-  /// A theme change must repaint the rows — the same gate check the History suite makes.
+  /// A theme change must repaint the rows, every one of them, selected or not.
   ///
-  /// These rows read their hover/selection tints inside ternaries, so an unselected, unhovered row
-  /// registers no Observation dependency on the theme; before the fix they repainted only because
-  /// applying a theme also republished `TerminalSessions`, which every row observed. The explicit
-  /// `themeGeneration` input is what replaces that accident.
+  /// Unlike `HistoryRow`, this row needs no theme input to its equality gate: its change letter's
+  /// colour reads `theme.tokens` outside any ternary, so each row repaints by Observation. This test
+  /// pins that read: a row whose only theme reads sat inside its hover/selection ternaries would keep
+  /// the old theme's colours.
   func testThemeChangeRebuildsChangedFileRows() throws {
     let store = makeStore(changedFiles: files(20))
     let (window, view) = host(store)
