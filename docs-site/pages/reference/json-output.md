@@ -130,6 +130,7 @@ These kinds exist on Nightly only:
 | `InvalidHostDescriptor` | 2 | A host descriptor must be a JSON object. |
 | `RemoteProjectUnsupported` | 3 | `add-project` was given a remote path such as `host:path` or `ssh://…`. |
 | `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
+| `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
 
 ### The ScriptNotTrusted envelope {nightly}
 
@@ -139,7 +140,12 @@ A `ScriptNotTrusted` error envelope has a `script` object, so a program can show
 { "ok": false, "schema_version": 1, "cli_version": "v2.1.0", "command": "create",
   "error": { "kind": "ScriptNotTrusted", "message": "script is not trusted on this Mac: …" },
   "script": { "name": "workroom_setup", "origin": "root", "sha256": "0ce619c6…", "text": "#!/bin/sh\n…",
-              "bytes": "IyEvYmluL3No…", "trusted": false, "exempt": false } }
+              "bytes": "IyEvYmluL3No…", "trusted": false, "exempt": false },
+  "start_commit": "9b2f4905aeaf0dd0cfc829ad42745d5c1268236e" }
 ```
 
 See [workroom trust](../cli/workroom-trust.md) for how approval works.
+
+### The start commit {nightly}
+
+A `create` that stops to ask something before it makes anything, a `ScriptNotTrusted` or `LocalWorkLeftOut` error, also has `start_commit`: the commit its start point resolved to after its fetch. The Workroom app passes it back when you answer, so the create continues from the commit you were asked about instead of fetching again. That create reports no `fetch` step, since the one whose question it answers already fetched.

@@ -420,7 +420,10 @@ final class CreationFlowTests: XCTestCase {
       // As the CLI: where it starts is settled before the setup script is judged, and each question
       // names the start point it was asked at: the pin, or the first try's.
       let asked = startCommit ?? Self.asked
-      if let localWork, start == .ask {
+      // As the CLI (ADR 0055): nobody is asked against a start whose fetch warned; it starts from
+      // origin. A pinned create fetched nothing, so nothing marks it stale.
+      let stale = startCommit == nil && fetchWarning != nil
+      if let localWork, start == .ask, !stale {
         throw WorkroomCLIError.localWorkLeftOut(
           localWork, message: "local work", startCommit: asked)
       }
@@ -520,6 +523,29 @@ final class CreationFlowTests: XCTestCase {
     let run = try XCTUnwrap(store.creationRuns.values.first)
     XCTAssertEqual(run.steps.first { $0.id == "fetch" }?.state, .warning(warning))
     XCTAssertEqual(store.notifications.items.map(\.body), [warning])
+  }
+
+  /// Value: protects=a first try whose fetch failed asks nobody where it starts (ADR 0055), so its
+  /// answered, pinned create mustn't ask either, though it fetched nothing to be stale; fails_when=
+  /// Approve is followed by a local-work question the first try never asked; no_claim=the CLI's rule
+  func testAnAnsweredCreateAfterAFailedFetchAsksNoNewQuestion() async throws {
+    let fake = UntrustedSetupCLI(
+      projectPath: projectPath, localWork: UntrustedSetupCLI.work,
+      fetchWarning:
+        "Could not fetch origin. The workroom starts from origin/main, which may be out of date.")
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    store.closesFinishedCreations = { false }  // the finished run stays, to read its outcome
+    await store.createWorkroom(in: emptyProject)
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(
+      run.outcome, .scriptNotTrusted(UntrustedSetupCLI.script), "stale: no start question")
+    await store.approveSetupScript(run)
+
+    let answered = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertNotEqual(
+      answered.outcome, .localWorkFound(UntrustedSetupCLI.work), "Approve asked a new question")
+    XCTAssertEqual(fake.starts, [.ask, .origin], "the answer starts where the stale try did")
   }
 
   /// Value: protects=a start commit the CLI can no longer use (the base branch changed in between)
