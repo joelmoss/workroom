@@ -800,3 +800,22 @@ func TestAJudgedScriptNamesItsFile(t *testing.T) {
 		t.Fatalf("%+v", env)
 	}
 }
+
+// Value: protects=a devcontainer.json the judge can't take is refused rather than skipped: one
+// over the script size limit stops a container create, and --devcontainer without --base is a
+// usage error; fails_when=an oversize file is judged (and so approvable) or silently left out, or
+// the flag is accepted with no start to read the file from; why_new=the tests above only judge
+// small files with --base; seam=none; no_claim=what a container create does with the exit status
+func TestADevcontainerConfigTheJudgeCannotTakeIsRefused(t *testing.T) {
+	project := devcontainerProject(t, ".devcontainer/devcontainer.json",
+		`{"image": "a", "x": "`+strings.Repeat("#", 1<<20)+`"}`)
+	r := runCLI(t, "trust", "status", "--json", "--project", project, "--base", "", "--devcontainer")
+	if r.code != 2 || !strings.Contains(string(r.stdout), "larger than") {
+		t.Fatalf("oversize: exit %d %.300s", r.code, r.stdout)
+	}
+
+	r = runCLI(t, "trust", "status", "--json", "--project", project, "--devcontainer")
+	if r.code != 2 || !strings.Contains(string(r.stdout)+string(r.stderr), "needs --base") {
+		t.Fatalf("no --base: exit %d %.300s %.300s", r.code, r.stdout, r.stderr)
+	}
+}

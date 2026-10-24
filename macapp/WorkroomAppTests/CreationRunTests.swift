@@ -244,6 +244,46 @@ final class CreationRunTests: XCTestCase {
     XCTAssertEqual(run.progress.label, "Create worktree")
   }
 
+  /// Value: protects=a container create's devcontainer.json rows (build, hooks) are listed only
+  /// once a step says they run, each in its plan place, and every hook maps to its row;
+  /// fails_when=a hook's row lands after the setup script or before the clone, a hook has no row,
+  /// or postAttach gets its own row; why_new=no test drove the on-demand rows; seam=none;
+  /// no_claim=the driver's step events
+  func testAContainerConfigsRowsComeBackInTheirPlanPlaceWhenAStepSaysTheyRun() {
+    let run = run(.container(.docker))
+    run.begin("repository")
+    run.begin("build")
+    XCTAssertEqual(
+      run.steps.map(\.id),
+      ["repository", "image", "build", "machine", "connect", "clone", "checkout", "script"])
+    XCTAssertEqual(states(run)["image"], .skipped(reason: nil))
+    run.begin("postCreate")
+    XCTAssertEqual(run.steps.map(\.id).suffix(3), ["checkout", "postCreate", "script"])
+
+    XCTAssertEqual(
+      DevContainerConfig.Hook.allCases.map { $0.step.rawValue },
+      ["initialize", "onCreate", "updateContent", "postCreate", "postStart", "postStart"])
+  }
+
+  /// Value: protects=a container create stopped on a Compose devcontainer.json ends the running
+  /// step done, shows the config row waiting on the user and keeps the rest pending for Continue
+  /// With Default Image; fails_when=the row stays hidden, the earlier step stays running, or the
+  /// later rows are skipped; why_new=only the store's stop was tested, not the run's rows; seam=none;
+  /// no_claim=the button's wording
+  func testAComposeRefusalWaitsOnTheConfigRowAndKeepsTheRestPending() {
+    let run = run(.container(.docker))
+    run.begin("repository")
+    run.awaitDefaultImage(refusing: ".devcontainer/devcontainer.json")
+
+    XCTAssertEqual(run.steps.map(\.id).prefix(3), ["repository", "config", "image"])
+    XCTAssertEqual(states(run)["repository"], .done)
+    XCTAssertEqual(states(run)["config"], .waitingForUser)
+    XCTAssertEqual(states(run)["image"], .pending)
+    XCTAssertEqual(states(run)["clone"], .pending)
+    XCTAssertEqual(run.outcome, .composeRefused(file: ".devcontainer/devcontainer.json"))
+    XCTAssertTrue(run.awaitsApproval)
+  }
+
   /// Value: protects=the destination text the pane's subtitle and the provisional row share;
   /// fails_when=a kind names the wrong place; no_claim=none beyond protects
   func testEachKindNamesItsDestination() {
