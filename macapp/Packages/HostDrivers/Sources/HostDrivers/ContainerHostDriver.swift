@@ -5,27 +5,22 @@ import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire
 
-/// The first `HostDriver`: a Linux container running sshd and a supervised `workroomd`
-/// (`vcs/scripts/ssh-fixture`, #228), reached over plain ssh-stdio. It is the test fixture for
-/// the remote path, and its ssh transport (`exec`, `attachCommand`) is the one a real
-/// ssh-reachable driver shares (`BoxdHostDriver`, #256).
-///
-/// Its hosts are the ones the caller hands in, plus, given `Provisioning`, the containers it makes
-/// itself (#252): `create` runs a workroom's host from the fixture's image, and `destroy` removes
-/// it. Nothing here persists.
+/// The first `HostDriver`. Its hosts are the ones the caller hands in over ssh (the ssh fixture,
+/// `vcs/scripts/ssh-fixture`, #228, whose ssh transport, `exec` and `attachCommand`, a real
+/// ssh-reachable driver shares: `BoxdHostDriver`, #256), plus, given `Provisioning`, the containers
+/// it makes itself: `create` runs a workroom's container from any image with the bundled
+/// `workroomd` as its entrypoint, reached through the runtime's own `exec` (#308), and `destroy`
+/// removes it. Nothing here persists.
 public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   @unchecked Sendable
 {
-  /// How the driver makes containers of its own: a container runtime's CLI (`docker`), the
-  /// fixture's image, and the client key every container authorises. Containers are reached on a
-  /// loopback port the runtime publishes, as `vcs/scripts/ssh-fixture/run.sh` reaches its own.
+  /// How the driver makes containers of its own: a container runtime's CLI (`docker`, or Apple's
+  /// `container`), the image a container without a devcontainer.json is made from, and the labels
+  /// that mark what it made.
   public struct Provisioning: Sendable {
     public let runtime: URL
     public let image: String
     public let user: String
-    public let identityFile: String
-    /// The public half of `identityFile`, which the entrypoint writes to `authorized_keys`.
-    public let publicKey: String
     public let daemonSocket: String
     /// `key=value` labels on every container and image made, so whoever started the fixture can
     /// sweep up what a crashed test left (run.sh does).
@@ -50,7 +45,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     public var daemonFolder: URL?
 
     public init(
-      runtime: URL, image: String, user: String, identityFile: String, publicKey: String,
+      runtime: URL, image: String, user: String,
       daemonSocket: String, labels: [String], context: String? = nil, dialect: Dialect = .docker,
       cpus: Int? = nil, memory: String? = nil, daemon: (@Sendable (String) -> URL?)? = nil,
       daemonFolder: URL? = nil
@@ -60,8 +55,6 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       self.runtime = runtime
       self.image = image
       self.user = user
-      self.identityFile = identityFile
-      self.publicKey = publicKey
       self.daemonSocket = daemonSocket
       self.labels = labels
       self.context = context
@@ -84,6 +77,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   private struct Provisioned {
     let container: String
     let image: String?
+    var volumes: [String] = []
   }
 
   /// The label every container and image this driver makes carries, with when it was made in
@@ -116,12 +110,17 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     public var securityOpt: [String]
     /// Made by the daemon, as root, for the remote user, before anything runs: the clone's parent.
     public var workspaceFolder: String?
+    /// The named volumes of `mounts` made for this container alone, which `destroy` removes after
+    /// it (`ContainerHostRecord.volumes`).
+    public var ownedVolumes: [String]
 
     public init(
       image: String, user: String? = nil, environment: [String: String] = [:],
       mounts: [Mount] = [], runArgs: [String] = [], privileged: Bool = false,
-      capAdd: [String] = [], securityOpt: [String] = [], workspaceFolder: String? = nil
+      capAdd: [String] = [], securityOpt: [String] = [], workspaceFolder: String? = nil,
+      ownedVolumes: [String] = []
     ) {
+      self.ownedVolumes = ownedVolumes
       self.image = image
       self.user = user
       self.environment = environment
@@ -333,6 +332,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       throw HostDriverError.unknownHost(host)
     }
     try await removeContainer(made.container)
+    try await removeVolumes(made.volumes)
     if provisioning?.dialect != .apple, let image = made.image {
       _ = try await runtime(["rmi", "--force", image])
     }
@@ -398,7 +398,9 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       guard let made = provisioned[id] else { return nil }
       switch hosts[id] {
       case .exec(let user, _):
-        return ContainerHostRecord(user: user, image: made.image, context: provisioning?.context)
+        return ContainerHostRecord(
+          user: user, image: made.image, context: provisioning?.context,
+          volumes: made.volumes.isEmpty ? nil : made.volumes)
       case .older(let record): return record
       case .ssh, nil: return nil
       }
@@ -427,7 +429,8 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       hosts[id] =
         record.hostKey == nil
         ? .exec(user: record.user, socket: Self.containerSocket) : .older(record)
-      provisioned[id] = Provisioned(container: Self.containerName(id), image: record.image)
+      provisioned[id] = Provisioned(
+        container: Self.containerName(id), image: record.image, volumes: record.volumes ?? [])
       destroyed.remove(id)
     }
   }
@@ -824,7 +827,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       _ = try await runtime(["start", container])
       lock.withLock {
         hosts[id] = .exec(user: user, socket: Self.containerSocket)
-        provisioned[id] = Provisioned(container: container, image: nil)
+        provisioned[id] = Provisioned(container: container, image: nil, volumes: spec.ownedVolumes)
       }
       try await awaitDaemon(.remote(id))
       try await checkImage(.remote(id), user: user)
@@ -837,6 +840,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
       let removal = await Task { () -> String? in
         do {
           try await self.removeContainer(container)
+          try await self.removeVolumes(spec.ownedVolumes)
           return nil
         } catch { return "container \(container): \(error.localizedDescription)" }
       }.value
@@ -858,6 +862,20 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
     } catch {
       let said = error.localizedDescription.lowercased()
       guard ["not found", "notfound", "no such container"].contains(where: said.contains) else {
+        throw error
+      }
+    }
+  }
+
+  /// The named volumes a container's own mounts made (`ContainerSpec.ownedVolumes`), after the
+  /// container: a volume in use can't be removed. One already gone counts as removed.
+  private func removeVolumes(_ volumes: [String]) async throws {
+    guard !volumes.isEmpty else { return }
+    do {
+      _ = try await runtime(["volume", "rm"] + volumes)
+    } catch {
+      let said = error.localizedDescription.lowercased()
+      guard ["not found", "notfound", "no such volume"].contains(where: said.contains) else {
         throw error
       }
     }
@@ -1147,7 +1165,7 @@ public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
   ) async throws -> String {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     // `quiet` is for a poll, which would log the same line a hundred times. The environment is never
-    // logged, and `commandLine` hides the one the arguments carry (`--env AUTHORIZED_KEY=…`).
+    // logged, and `commandLine` hides any `--env` the arguments carry.
     let full = Self.runtimeArguments(arguments, context: provisioning.context)
     let environment = ProcessInfo.processInfo.environment.filter {
       ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)

@@ -42,7 +42,7 @@ final class ContainerCreateTests: XCTestCase {
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory.appendingPathComponent("hosts"),
       provisioning: ContainerHostDriver.Provisioning(
-        runtime: runtime, image: "unused", user: "", identityFile: "", publicKey: "",
+        runtime: runtime, image: "unused", user: "",
         daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=test"],
         daemon: { _ in nil }))
 
@@ -67,6 +67,84 @@ final class ContainerCreateTests: XCTestCase {
     } catch ContainerCreate.Failure.exportFailed {
     } catch {
       XCTFail("not the export's failure: \(error)")
+    }
+  }
+
+  // Value: protects=a devcontainer.json's build context and dockerfile stay inside the repository;
+  // fails_when=`..` past the root is followed, or `.`/`..` within it stop collapsing;
+  // why_new=no test named the guard; seam=none; no_claim=git archive itself
+  /// Paths are the file's folder's, collapsed; one that climbs above the repository is refused
+  /// before anything reads it.
+  func testABuildPathCannotLeaveTheRepository() throws {
+    XCTAssertEqual(try ContainerCreate.repositoryPath(".devcontainer", "..", file: "f"), ".")
+    XCTAssertEqual(
+      try ContainerCreate.repositoryPath(".devcontainer", "./a/../Dockerfile", file: "f"),
+      ".devcontainer/Dockerfile")
+    XCTAssertEqual(try ContainerCreate.repositoryPath("", ".", file: "f"), ".")
+    for (folder, path) in [(".devcontainer", "../.."), ("", ".."), ("a", "../../b")] {
+      XCTAssertThrowsError(try ContainerCreate.repositoryPath(folder, path, file: "f")) {
+        XCTAssertEqual(
+          $0 as? ContainerCreate.Failure, .outsideRepository(file: "f", path: path), path)
+      }
+    }
+  }
+
+  // Value: protects=initializeCommand runs on this Mac in the project's folder, and its failure stops the create before the runtime is touched;
+  // fails_when=it runs elsewhere, its exit status is ignored, or the image is pulled first;
+  // why_new=no test ran initializeCommand; seam=stub runtime; no_claim=a real image pull
+  /// A file that names neither an image nor a build has none to make, and says so.
+  func testInitializeCommandRunsOnThisMacFirstAndItsFailureStopsTheCreate() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-create-\(UUID().uuidString)", isDirectory: true)
+    let project = directory.appendingPathComponent("project", isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let calls = directory.appendingPathComponent("calls")
+    let runtime = directory.appendingPathComponent("docker")
+    try """
+    #!/bin/sh
+    printf '%s\\n' "$*" >> \(PosixShell.quoted(calls.path))
+    [ "$1" = image ] && echo '{}'
+    exit 0
+    """.write(to: runtime, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("hosts"),
+      provisioning: ContainerHostDriver.Provisioning(
+        runtime: runtime, image: "unused", user: "",
+        daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=test"],
+        daemon: { _ in nil }))
+    let prepare = { (json: String) in
+      _ = try await ContainerCreate.prepare(
+        ContainerCreate.File(
+          path: ".devcontainer/devcontainer.json", data: Data(json.utf8),
+          config: try DevContainerConfig.parse(Data(json.utf8))),
+        project: project.path, repository: "app", start: "HEAD", runtime: .docker,
+        driver: driver, defaultImage: "unused", environment: [:],
+        featureCache: directory.appendingPathComponent("features"))
+    }
+
+    do {
+      try await prepare(#"{"image": "x", "initializeCommand": "echo boom >&2; exit 3"}"#)
+      XCTFail("a failed initializeCommand went on")
+    } catch {
+      XCTAssertEqual(error as? ContainerCreate.Failure, .initializeFailed("it exited 3: boom"))
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: calls.path), "the runtime was asked")
+
+    try await prepare(#"{"image": "x", "initializeCommand": "pwd -P > ran"}"#)
+    let ran = try String(contentsOf: project.appendingPathComponent("ran"), encoding: .utf8)
+      .trimmingCharacters(in: .newlines)
+    XCTAssertEqual(
+      URL(fileURLWithPath: ran).resolvingSymlinksInPath().path,
+      project.resolvingSymlinksInPath().path)
+
+    do {
+      try await prepare(#"{"name": "no image"}"#)
+      XCTFail("a file with no image was made into a container")
+    } catch {
+      XCTAssertEqual(
+        error as? ContainerCreate.Failure, .noImage(file: ".devcontainer/devcontainer.json"))
     }
   }
 

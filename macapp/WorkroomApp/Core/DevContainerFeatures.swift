@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import WorkroomSystem
 
 /// A devcontainer.json's features (containers.dev/implementors/features), built into a container
 /// workroom's image (#308, eng review D2): each feature's folder is copied into a generated
@@ -347,6 +348,17 @@ enum DevContainerFeatures {
         guard let layer = manifest.layers.first(where: { $0.mediaType == Self.layerType }) else {
           throw Failure.fetch("\(reference.key): its manifest has no feature layer")
         }
+        // A layer this Mac has unpacked before, by the digest its bytes were checked against, is
+        // used as it is. The digest's shape is checked first: it names a folder in the cache.
+        let hex = layer.digest.dropFirst("sha256:".count)
+        if layer.digest.hasPrefix("sha256:"), hex.count == 64,
+          hex.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+          let cached = try? Metadata.read(in: folder(for: layer.digest))
+        {
+          return Fetched(
+            metadata: cached, directory: folder(for: layer.digest),
+            digest: response.value(forHTTPHeaderField: "Docker-Content-Digest") ?? layer.digest)
+        }
         var blobRequest = URLRequest(url: try url("\(base)/blobs/\(layer.digest)"))
         if let token {
           blobRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -632,8 +644,7 @@ enum DevContainerFeatures {
   /// `environment` as a file `/bin/sh` sources (`set -a; . ./devcontainer-features.env`): every
   /// value single-quoted, in name order.
   static func envFile(_ environment: [String: String]) -> String {
-    environment.sorted { $0.key < $1.key }.map { key, value in
-      "\(key)='\(value.replacingOccurrences(of: "'", with: "'\\''"))'\n"
-    }.joined()
+    environment.sorted { $0.key < $1.key }.map { "\($0.key)=\(PosixShell.quoted($0.value))\n" }
+      .joined()
   }
 }

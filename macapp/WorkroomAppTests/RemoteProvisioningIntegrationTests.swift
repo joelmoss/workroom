@@ -77,9 +77,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     return Fixture(
       provisioning: ContainerHostDriver.Provisioning(
         runtime: override ?? runtime, image: try need("WR_SSH_FIXTURE_IMAGE"),
-        user: try need("WR_SSH_FIXTURE_USER"), identityFile: try need("WR_SSH_FIXTURE_IDENTITY"),
-        publicKey: try need("WR_SSH_FIXTURE_PUBLIC_KEY"),
-        daemonSocket: ContainerHostDriver.containerSocket,
+        user: try need("WR_SSH_FIXTURE_USER"), daemonSocket: ContainerHostDriver.containerSocket,
         labels: [try need("WR_SSH_FIXTURE_LABEL"), label], daemon: { _ in daemon },
         daemonFolder: directory.appendingPathComponent("daemon")),
       daemon: daemon)

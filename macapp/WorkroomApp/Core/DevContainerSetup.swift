@@ -16,16 +16,22 @@ enum DevContainerSetup {
     "mcr.microsoft.com/devcontainers/base@sha256:"
     + "91eff046d5c12318fc98e59258982b87ba896c467427ed8b5dab5a02107a5db7"
 
-  /// Where the workroom's checkout goes: the file's `workspaceFolder`, else the spec's default,
-  /// `/workspaces/<repository>`.
-  static func workspaceFolder(_ config: DevContainerConfig?, repository: String) -> String {
-    let named = config?.workspaceFolder.flatMap { $0.isEmpty ? nil : $0 }
+  /// Where the workroom's checkout goes: the file's `workspaceFolder`, its variables substituted
+  /// (VS Code's templates write `/workspaces/${localWorkspaceFolderBasename}`), else the spec's
+  /// default, `/workspaces/<repository>`. The container's own folder isn't known yet, so
+  /// `variables` has none.
+  static func workspaceFolder(
+    _ config: DevContainerConfig?, repository: String, variables: DevContainerConfig.Variables
+  ) -> String {
+    let named = config?.workspaceFolder.flatMap { $0.isEmpty ? nil : variables.substitute($0) }
     return named ?? "/workspaces/\(repository)"
   }
 
-  /// A stable id for the spec's `${devcontainerId}`: the project's folder on this Mac, hashed.
-  static func devcontainerID(project: String) -> String {
-    SHA256.hash(data: Data(project.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+  /// The spec's `${devcontainerId}`, unique to the container it is made for: each workroom is a
+  /// container of its own, so two of one project never share a volume named by it (as
+  /// docker-in-docker's `/var/lib/docker`). There is no rebuild for it to survive.
+  static func newDevcontainerID() -> String {
+    UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
   }
 
   /// The users the features' scripts are told about (`_REMOTE_USER` and the rest), and the one the
@@ -85,7 +91,11 @@ enum DevContainerSetup {
       privileged: (config?.privileged ?? false) || contributions.privileged,
       capAdd: unique(contributions.capAdd + (config?.capAdd ?? [])),
       securityOpt: unique(contributions.securityOpt + (config?.securityOpt ?? [])),
-      workspaceFolder: workspaceFolder)
+      workspaceFolder: workspaceFolder,
+      ownedVolumes: unique(
+        mounts.compactMap { mount in
+          mount.type == "volume" ? mount.source : nil
+        }.filter { $0.contains(variables.devcontainerId) }))
   }
 
   private static func unique(_ values: [String]) -> [String] {
