@@ -258,6 +258,11 @@ app-bench-file-highlight: ## Benchmark the file viewer's highlight mapping (app 
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/FileHighlightBenchmarkTests"
 
+# Times the real sidebar List with five workrooms per project and 500 notifications (Debug).
+app-bench-sidebar: ## Benchmark sidebar scaling (8/16/32/64 projects) [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/SidebarBenchmarkTests/testSidebarScaling"
+
 # Times the diff viewer's per-line coloured strings (DiffHighlightBenchmarkTests) on a 2000-line
 # new-file diff over a generated Swift source, in the app test host (a Debug build).
 app-bench-diff-highlight: ## Benchmark the diff viewer's highlight mapping (app test host) [BENCH_OUT=file.json]

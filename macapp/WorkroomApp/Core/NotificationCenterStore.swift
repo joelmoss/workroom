@@ -38,20 +38,48 @@ struct WorkroomNotification: Identifiable, Equatable {
 ///
 /// There is no read state: a notification lives until it's dismissed — the user focuses or opens
 /// its terminal, clicks it in the panel, or clears the panel — or until it's evicted at the cap.
-/// Nothing lingers once seen. Counts are COMPUTED by scanning `items` (capped at 500) rather than
-/// maintained as incremental tallies, so a badge can't drift (issue #10 review, tension 1).
+/// Nothing lingers once seen. Counts are derived together from `items` (capped at 500), cached until
+/// it changes, rather than maintained as incremental tallies, so a badge can't drift. Sidebar
+/// redraws read many badges: scanning the same 500 entries for every row was costly (#534).
 ///
 /// ```
 ///   record(target,tab,activity, focused) ─▶ focused? drop
 ///                                          ─▶ osc:  append a distinct item
 ///                                          ─▶ trim to 500 (drop oldest)
-///   count(tab|target) / total          = scan items, sum .count
+///   count(tab|target) / total          = shared derived summary, invalidated on every items change
 ///   dismiss(...) / removeForTarget     = filter the matching items out
 /// ```
 @MainActor
 final class NotificationCenterStore: ObservableObject {
   @Published private(set) var items: [WorkroomNotification] = [] {
-    didSet { onTotalChange?(total) }
+    didSet {
+      cachedCounts = nil
+      onTotalChange?(total)
+    }
+  }
+
+  private struct Counts {
+    var byTab: [TerminalTab.ID: Int] = [:]
+    var byTarget: [TerminalTarget.ID: Int] = [:]
+    var total = 0
+    var excludingRequests = 0
+
+    init(_ items: [WorkroomNotification]) {
+      for item in items {
+        byTab[item.tabID, default: 0] += item.count
+        byTarget[item.targetID, default: 0] += item.count
+        total += item.count
+        if item.episode == nil { excludingRequests += item.count }
+      }
+    }
+  }
+
+  private var cachedCounts: Counts?
+  private var counts: Counts {
+    if let cachedCounts { return cachedCounts }
+    let fresh = Counts(items)
+    cachedCounts = fresh
+    return fresh
   }
 
   /// Fired with the new aggregate `total` whenever the history changes, so a coordinator can mirror
@@ -145,24 +173,24 @@ final class NotificationCenterStore: ObservableObject {
     return n
   }
 
-  // MARK: Derived counts (computed scans — no incremental state to drift)
+  // MARK: Derived counts (rebuilt from items — no incremental state to drift)
 
   func count(tab: TerminalTab.ID) -> Int {
-    items.lazy.filter { $0.tabID == tab }.reduce(0) { $0 + $1.count }
+    counts.byTab[tab, default: 0]
   }
 
   func count(target: TerminalTarget.ID) -> Int {
-    items.lazy.filter { $0.targetID == target }.reduce(0) { $0 + $1.count }
+    counts.byTarget[target, default: 0]
   }
 
   var total: Int {
-    items.reduce(0) { $0 + $1.count }
+    counts.total
   }
 
   /// Unread notifications other than "needs you" alerts, whose requests are counted by
   /// `ProgramStatusAlerts` while they wait, however the alert itself was read (#358).
   var unreadExcludingRequests: Int {
-    items.lazy.filter { $0.episode == nil }.reduce(0) { $0 + $1.count }
+    counts.excludingRequests
   }
 
   // MARK: Mutations
