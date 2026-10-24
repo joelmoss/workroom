@@ -460,10 +460,6 @@ struct ChangedFileRow: View, Equatable {
   /// `@ObservedObject TerminalSessions` and compute this itself, which meant every terminal
   /// title/activity publish rebuilt all `renderCap` rows (WORKROOM-2B's defect, one pane over).
   let selection: FocusedTabSelection?
-  /// `ThemeService.generation`, so a theme change defeats the equality gate below. The row's
-  /// hover/selection tints are read inside ternaries, so an unselected, unhovered row would otherwise
-  /// register no Observation dependency at all — see `HistoryPanel.list` for the full reasoning.
-  let themeGeneration: Int
   /// Still an `@EnvironmentObject`: the row's click/context-menu actions need the store, and those are
   /// four call sites, not one value. `AppStore` publishes on status sweeps — seconds apart — not per
   /// terminal keystroke, so it is not the invalidation source this fix was about.
@@ -629,10 +625,11 @@ struct ChangedFileRow: View, Equatable {
   /// The equality gate behind `.equatable()` in `fileList`: a panel body pass caused by an unrelated
   /// publish re-creates every row value, and only the ones whose file, group or selected-ness actually
   /// changed get a body. `@EnvironmentObject`/`@State`/`@Default` still invalidate past this gate, so
-  /// hover, the editor-preference label and store-driven updates are unaffected.
+  /// hover, the editor-preference label and store-driven updates are unaffected. A theme change needs
+  /// no input here, unlike `HistoryRow`'s: every row reads `theme.tokens` outside any ternary (the
+  /// change letter's `color`), so Observation repaints each row past the gate.
   nonisolated static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
     lhs.file == rhs.file && lhs.source == rhs.source && lhs.isSelected == rhs.isSelected
-      && lhs.themeGeneration == rhs.themeGeneration
   }
 
   // Letter / colour / word live in `ChangeBadge` (Core) so the mapping is unit-testable — see its
@@ -736,10 +733,9 @@ struct ChangesPanel: View {
   /// Observed HERE so the rows don't have to be. `TerminalSessions` republishes per terminal
   /// title/activity write, and while each `ChangedFileRow` observed it directly, every one of those
   /// publishes rebuilt all `renderCap` rows — the same defect that produced the WORKROOM-2B App Hang
-  /// in the History pane (see `HistoryPanel`'s invalidation diagram). One panel pass per publish, and
-  /// the rows' `Equatable` gate elides the rest.
+  /// in the History pane (see `HistoryPanel`'s invalidation diagram). Now it is one panel pass per
+  /// publish, and no row rebuilds (`ChangedFileRowInvalidationTests`).
   @ObservedObject var sessions: TerminalSessions
-  private let theme = ThemeService.shared
   /// Hard cap on rendered rows so a huge change set can't blow up the list (the underlying
   /// output is already byte-capped by `StatusCommandRunner`).
   private let renderCap = 200
@@ -810,14 +806,10 @@ struct ChangesPanel: View {
     // Resolved once for the whole list, not once per row: this is the read that used to make every row
     // observe `TerminalSessions`.
     let selection = FocusedTabSelection.current(store: store, sessions: sessions)
-    // Read here so the panel observes the theme, and passed down so the rows' gate sees a theme change.
-    let themeGeneration = theme.generation
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
-        ChangedFileRow(
-          file: file, source: source, selection: selection, themeGeneration: themeGeneration
-        )
-        .equatable()
+        ChangedFileRow(file: file, source: source, selection: selection)
+          .equatable()
       }
       if files.count > shown.count {
         Text("Showing first \(shown.count) of \(files.count)")
