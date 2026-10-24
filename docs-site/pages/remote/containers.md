@@ -63,7 +63,7 @@ A Dockerfile on its own, with no `devcontainer.json` naming it, is ignored, as t
 
 ### Approve it first
 
-Your `devcontainer.json` decides what the container mounts from your Mac and what runs there, so Workroom uses it only after you have approved its exact contents on this Mac, as it does for [setup scripts](../guides/prepare-a-project.md#approve-your-scripts). The first create that would use a new file, or one that changed since you approved it, stops and shows it to you, with **Approve**, **Continue With Default Image…** and **Cancel Creation**. Continuing creates the workroom on the default image and approves nothing, so the next create asks again.
+Your `devcontainer.json` decides what the container mounts from your Mac and what runs there, and its `initializeCommand` runs on your Mac itself, so Workroom uses it only after you have approved its exact contents on this Mac, as it does for [setup scripts](../guides/prepare-a-project.md#approve-your-scripts). The first create that would use a new file, or one that changed since you approved it, stops and shows it to you, with **Approve**, **Continue With Default Image…** and **Cancel Creation**. Continuing creates the workroom on the default image and approves nothing, so the next create asks again.
 
 An approval covers the file's own contents only. The Dockerfile it builds, and the features it installs, aren't covered. A feature can itself ask for folders from your Mac to be mounted in the container, or for the container to be privileged, and a new release of the feature can add that without asking you again. Use features you trust, as you would any code your repository runs.
 
@@ -104,6 +104,6 @@ Terminals in a container workroom reattach after the container comes back. See [
 
 ## Delete the workroom
 
-Deleting the workroom destroys its container and everything in it, including changes and commits that were not pushed. See [Delete a remote workroom](overview.md#delete-a-remote-workroom).
+Deleting the workroom destroys its container and everything in it, including changes and commits that were not pushed, and the volumes made for it alone, such as docker-in-docker's. A volume your `devcontainer.json` names without `${devcontainerId}` is shared by its workrooms and kept. See [Delete a remote workroom](overview.md#delete-a-remote-workroom).
 
 A container belongs to the build of Workroom that made it. Release and Nightly cannot delete each other's containers.

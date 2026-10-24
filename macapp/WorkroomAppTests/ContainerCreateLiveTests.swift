@@ -27,7 +27,7 @@ final class ContainerCreateLiveTests: XCTestCase {
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory.appendingPathComponent("hosts"),
       provisioning: ContainerHostDriver.Provisioning(
-        runtime: runtime, image: "unused", user: "", identityFile: "", publicKey: "",
+        runtime: runtime, image: "unused", user: "",
         daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=live-test"],
         dialect: .apple, daemon: { _ in daemon },
         daemonFolder: directory.appendingPathComponent("daemon")))
@@ -110,7 +110,7 @@ final class ContainerCreateLiveTests: XCTestCase {
       hosts: [:], directory: directory.appendingPathComponent("hosts"),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: URL(fileURLWithPath: "/opt/homebrew/bin/container"), image: "unused", user: "",
-        identityFile: "", publicKey: "", daemonSocket: DaemonInstall.defaultSocket,
+        daemonSocket: DaemonInstall.defaultSocket,
         labels: ["workroom.provisioner=live-test"], dialect: .apple, daemon: { _ in daemon },
         daemonFolder: directory.appendingPathComponent("daemon")))
     let prepared = try await ContainerCreate.prepare(

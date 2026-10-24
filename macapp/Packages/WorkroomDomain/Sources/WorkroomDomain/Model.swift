@@ -45,10 +45,14 @@ public struct ContainerHostRecord: Codable, Hashable, Sendable {
   public var configDigest: String? = nil
   /// Where that devcontainer.json was in the repository, when there was one.
   public var configFile: String? = nil
+  /// The named volumes made for this container alone, which its delete removes after it: those
+  /// whose name carries its `${devcontainerId}`, as docker-in-docker's `/var/lib/docker` (#308).
+  public var volumes: [String]? = nil
 
   /// A container reached through its runtime (#308).
-  public init(user: String, image: String?, context: String? = nil) {
+  public init(user: String, image: String?, context: String? = nil, volumes: [String]? = nil) {
     self.init(address: nil, port: nil, user: user, hostKey: nil, image: image, context: context)
+    self.volumes = volumes
   }
 
   public init(
@@ -64,7 +68,7 @@ public struct ContainerHostRecord: Codable, Hashable, Sendable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case address, port, user, image, context
+    case address, port, user, image, context, volumes
     case hostKey = "host_key"
     case configDigest = "config_digest"
     case configFile = "config_file"

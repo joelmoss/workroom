@@ -151,7 +151,8 @@ enum CreationPanePresentation {
     if script.isDevContainer {
       return "Creating a workroom in \(run.project.displayName) uses \(script.displayFile) "
         + "\(script.originLabel), and it is new, or changed since it was approved on this Mac. It "
-        + "decides what the container mounts from this Mac and what runs there. Read it, then "
+        + "decides what the container mounts from this Mac and what runs there, and its "
+        + "initializeCommand runs on this Mac itself. Read it, then "
         + "approve it to use it, or create the workroom on the default image."
     }
     return "Creating a workroom in \(run.project.displayName) runs \(script.displayFile) "

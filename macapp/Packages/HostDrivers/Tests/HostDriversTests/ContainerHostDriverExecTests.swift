@@ -53,7 +53,7 @@ final class ContainerHostDriverExecTests: XCTestCase {
     return ContainerHostDriver(
       hosts: [:], directory: directory.appendingPathComponent("hosts"),
       provisioning: ContainerHostDriver.Provisioning(
-        runtime: runtime, image: "unused", user: "", identityFile: "", publicKey: "",
+        runtime: runtime, image: "unused", user: "",
         daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=test"],
         context: dialect == .docker ? "orbstack" : nil, dialect: dialect,
         daemon: { _ in daemon }, daemonFolder: directory.appendingPathComponent("daemon")))
@@ -238,6 +238,30 @@ final class ContainerHostDriverExecTests: XCTestCase {
         to: .remote(older), session: UUID(), workingDirectory: "/w", restored: false,
         metadata: [], runCommand: nil)
     ) { XCTAssertEqual($0 as? HostDriverError, .olderContainer) }
+  }
+
+  // Value: protects=a deleted container workroom takes the named volumes made for it (docker-in-docker's) with it, after a relaunch too;
+  // fails_when=destroy stops removing them, or the record stops carrying them; why_new=destroy only removed the container and its
+  // anonymous volumes; seam=stub runtime; no_claim=what the runtime itself does with `volume rm`
+  /// The volumes a container owns go with it, after it: a later launch's driver knows them from
+  /// the record, and one already gone counts as removed.
+  func testDestroyRemovesTheVolumesTheContainerOwns() async throws {
+    let driver = try driver(
+      try stubRuntime(#"*"volume rm"*) echo 'Error: No such volume: v' >&2; exit 1 ;;"#))
+    let id = UUID()
+    try driver.adopt(
+      id,
+      ContainerHostRecord(
+        user: "vscode", image: nil, context: "orbstack", volumes: ["dind-var-lib-docker-abc"]))
+    XCTAssertEqual(driver.record(of: .remote(id))?.volumes, ["dind-var-lib-docker-abc"])
+
+    try await driver.destroy(.remote(id))
+    let calls = try calls
+    let removal = try XCTUnwrap(
+      calls.firstIndex { contains($0, ["rm", "--force", "--volumes"]) }, "\(calls)")
+    let volumes = try XCTUnwrap(
+      calls.firstIndex { contains($0, ["volume", "rm", "dind-var-lib-docker-abc"]) }, "\(calls)")
+    XCTAssertLessThan(removal, volumes, "a volume in use can't be removed")
   }
 
   private func contains(_ arguments: [String], _ run: [String]) -> Bool {

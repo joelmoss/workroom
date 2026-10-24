@@ -1220,6 +1220,72 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(hosts.count, 1, "the default image's create didn't go ahead")
   }
 
+  /// Value: protects=a devcontainer.json lifecycle command that fails stops the create there: the
+  /// setup script never runs, an armed auto-run is disarmed, and the workroom and its container
+  /// stay for Open Anyway or Delete; fails_when=the setup script or the run starts on a half-set-up
+  /// container, or the failure takes the container down; no_claim=a real runtime (a stub script
+  /// stands in for docker, a fake daemon for the container's)
+  func testAFailedLifecycleCommandStopsTheCreateBeforeTheSetupScript() async throws {
+    let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { daemon.stop() }
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-hook-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: scratch) }
+    let bundled = scratch.appendingPathComponent("workroomd-linux")
+    try Data("ELF".utf8).write(to: bundled)
+    let runtime = scratch.appendingPathComponent("docker")
+    try """
+    #!/bin/sh
+    case "$*" in
+      *"{{.Architecture}}"*) echo arm64 ;;
+      *"{{json .Config}}"*) echo '{}' ;;
+      *run-script*) echo 'onCreateCommand broke'; exit 7 ;;
+      *"cp - "* | *"cat > "*) cat > /dev/null ;;
+    esac
+    exit 0
+    """.write(to: runtime, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: scratch.appendingPathComponent("hosts", isDirectory: true),
+      provisioning: ContainerHostDriver.Provisioning(
+        runtime: runtime, image: "unused", user: RemoteWorkrooms.user,
+        daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"],
+        daemon: { _ in bundled }))
+    let config = ScriptTrust(
+      name: ScriptTrust.devContainerName, file: ".devcontainer/devcontainer.json", origin: "base",
+      sha256: String(repeating: "d", count: 64),
+      text: #"{"image": "x", "onCreateCommand": "npm install"}"#, trusted: true, exempt: false)
+    let scripts = Counter()
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: driver, daemon: daemon)
+    services.trustStatus = { _, _, _, devcontainer in
+      TrustStatus(trusted: true, scripts: devcontainer ? [config] : [])
+    }
+    services.script = { _ in
+      scripts.add()
+      return .passed
+    }
+    store.remoteCreateServices = services
+    store.closesFinishedCreations = { false }
+    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
+
+    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+
+    let run = try XCTUnwrap(store.creationRuns.values.first)
+    guard case .hookFailed(let message) = run.outcome else {
+      return XCTFail("not a lifecycle command's failure: \(run.outcome)")
+    }
+    XCTAssertTrue(message.contains("onCreateCommand"), message)
+    XCTAssertEqual(run.steps.first { $0.id == "onCreate" }?.state, .failed)
+    XCTAssertEqual(scripts.count, 0, "the setup script ran on a half-set-up container")
+    let name = try XCTUnwrap(run.name)
+    XCTAssertNil(
+      store.runStates[TerminalTarget.workroomID(project: projectPath, name: name)],
+      "Open Anyway must not start the run against a half-set-up container")
+    XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
+  }
+
   /// Value: protects=the wording of a devcontainer.json's sheet and confirmation, which isn't a
   /// script; fails_when=it says "runs scripts/devcontainer" or offers to skip a script;
   /// no_claim=the sheet's drawing
@@ -1655,7 +1721,7 @@ final class CreationFlowTests: XCTestCase {
           "wr-hosts-\(UUID().uuidString)", isDirectory: true),
         provisioning: ContainerHostDriver.Provisioning(
           runtime: try stubRuntime(inspect: present ? 0 : 1), image: "workroom-host",
-          user: RemoteWorkrooms.user, identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
+          user: RemoteWorkrooms.user,
           daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"]))
       let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
       store.remoteCreateServices = services(driver: driver, daemon: daemon)
@@ -1684,7 +1750,7 @@ final class CreationFlowTests: XCTestCase {
         "wr-hosts-\(UUID().uuidString)", isDirectory: true),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: try stubRuntime(inspect: 1), image: "workroom-host",
-        user: RemoteWorkrooms.user, identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
+        user: RemoteWorkrooms.user,
         daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"]))
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.remoteCreateServices = services(

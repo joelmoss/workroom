@@ -2017,6 +2017,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       image's `devcontainer.metadata` label (`vscode`). No per-Mac setting (owner, 2026-10-24,
       which drops D8's "same setting"): a repository wanting another image names it in its
       devcontainer.json, with `image` or `build`.
+    - **`${devcontainerId}`** is new for each create, as the spec has it unique to its container:
+      two workrooms of one project never share a volume it names (docker-in-docker's
+      `dind-var-lib-docker-${devcontainerId}`). The named volumes whose name carries it are
+      recorded with the container (`ContainerHostRecord.volumes`) and removed after it on
+      delete, and when a failed create takes its container down. `workspaceFolder` has its
+      variables substituted (`/workspaces/${localWorkspaceFolderBasename}`).
     - **remoteEnv** is baked into each hook script, passed to the setup script as `run-script
       --env`, and merged over `containerEnv` into the container's own environment, which is how
       panes get it: so, unlike the spec, every process in the container has it.

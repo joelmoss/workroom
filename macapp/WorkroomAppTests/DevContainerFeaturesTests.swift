@@ -349,6 +349,16 @@ final class DevContainerFeaturesTests: XCTestCase {
     XCTAssertEqual(
       StubRegistry.asked.last(where: { $0.url.hasSuffix("manifests/1") })?.authorization,
       "Bearer t0k3n")
+
+    // Value: protects=a feature this Mac has unpacked is not downloaded again on the next create;
+    // fails_when=the cache is checked only after the blob is fetched; why_new=only one fetch was tested; seam=none; no_claim=a real registry
+    StubRegistry.replies["\(base)/blobs/\(digest)"] = nil
+    StubRegistry.asked = []
+    let again = try await source.fetch(
+      try Reference("ghcr.io/devcontainers/features/github-cli:1"))
+    XCTAssertEqual(again.directory, fetched.directory)
+    XCTAssertFalse(
+      StubRegistry.asked.contains { $0.url.contains("/blobs/") }, "\(StubRegistry.asked)")
   }
 
   /// A layer whose bytes don't match its digest is never unpacked.

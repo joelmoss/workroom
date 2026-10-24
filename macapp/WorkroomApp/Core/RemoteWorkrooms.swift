@@ -162,7 +162,7 @@ enum RemoteWorkrooms {
     else { return false }
     return sharedHostBuilds.contains(own) && sharedHostBuilds.contains(theirs)
   }
-  /// Fixed by the host image's entrypoint (`vcs/scripts/ssh-fixture/entrypoint.sh`).
+  /// Where a container's daemon serves (`ContainerHostDriver.containerSocket`).
   static let daemonSocket = DaemonInstall.defaultSocket
   static let user = "workroom"
 
@@ -1482,13 +1482,9 @@ final class RemoteHosts: @unchecked Sendable {
       throw runtimeKind == .docker
         ? RemoteWorkrooms.Failure.noDocker : RemoteWorkrooms.Failure.noAppleContainer
     }
-    let key = try clientKey()
     return ContainerHostDriver.Provisioning(
       runtime: URL(fileURLWithPath: runtime), image: RemoteWorkrooms.defaultImage,
-      user: RemoteWorkrooms.user, identityFile: key.path,
-      publicKey: try String(contentsOf: key.appendingPathExtension("pub"), encoding: .utf8)
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-      daemonSocket: RemoteWorkrooms.daemonSocket,
+      user: RemoteWorkrooms.user, daemonSocket: RemoteWorkrooms.daemonSocket,
       // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
       labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: target.context,
       dialect: runtimeKind == .docker ? .docker : .apple, cpus: resources.cpus,
@@ -1500,41 +1496,6 @@ final class RemoteHosts: @unchecked Sendable {
         "container-daemon", isDirectory: true))
   }
 
-  /// This Mac's ssh key for its remote hosts, in `directory`, made the first time: ed25519, no
-  /// passphrase (ssh runs in `BatchMode`), in the app's own 0700 directory.
-  static func clientKey(in directory: URL = RemoteHosts.directory) throws -> URL {
-    let key = directory.appendingPathComponent("id_ed25519")
-    let pub = key.appendingPathExtension("pub")
-    if FileManager.default.fileExists(atPath: key.path) {
-      // A keygen cut short can leave the private half alone; the public half follows from it.
-      if !FileManager.default.fileExists(atPath: pub.path) {
-        try keygen(["-y", "-f", key.path]).write(to: pub, options: .atomic)
-      }
-      return key
-    }
-    try FileManager.default.createDirectory(
-      at: directory, withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
-    _ = try keygen(["-q", "-t", "ed25519", "-N", "", "-C", "workroom-remote", "-f", key.path])
-    return key
-  }
-
-  /// Runs `ssh-keygen` with `arguments`, returning what it printed.
-  private static func keygen(_ arguments: [String]) throws -> Data {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
-    process.arguments = arguments
-    let out = Pipe()
-    process.standardOutput = out
-    try process.run()
-    let data = out.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-      throw HostDriverError.invalidConfiguration(
-        "ssh-keygen \(arguments.joined(separator: " ")) exited \(process.terminationStatus)")
-    }
-    return data
-  }
 }
 
 extension PendingMachines.Entry {

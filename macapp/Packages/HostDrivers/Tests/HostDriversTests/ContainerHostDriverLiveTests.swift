@@ -22,7 +22,7 @@ final class ContainerHostDriverLiveTests: XCTestCase {
       hosts: [:], directory: directory.appendingPathComponent("hosts"),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: URL(fileURLWithPath: "/opt/homebrew/bin/container"), image: "unused", user: "",
-        identityFile: "", publicKey: "", daemonSocket: DaemonInstall.defaultSocket,
+        daemonSocket: DaemonInstall.defaultSocket,
         labels: ["workroom.provisioner=live-test"], dialect: .apple,
         daemon: { _ in daemon }, daemonFolder: directory.appendingPathComponent("daemon")))
 

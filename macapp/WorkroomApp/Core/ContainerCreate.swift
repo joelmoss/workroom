@@ -106,12 +106,14 @@ enum ContainerCreate {
     defer { try? FileManager.default.removeItem(at: scratch) }
     // The file's folder in the repository, which its relative paths start from.
     let folder = (file.map { ($0.path as NSString).deletingLastPathComponent } ?? "")
+    let devcontainerId = DevContainerSetup.newDevcontainerID()
     let variables = { (workspace: String) in
       DevContainerConfig.Variables(
         localEnv: environment, localWorkspaceFolder: project, containerWorkspaceFolder: workspace,
-        devcontainerId: DevContainerSetup.devcontainerID(project: project))
+        devcontainerId: devcontainerId)
     }
-    let workspace = DevContainerSetup.workspaceFolder(config, repository: repository)
+    let workspace = DevContainerSetup.workspaceFolder(
+      config, repository: repository, variables: variables(""))
 
     var image: String
     var pulled = true

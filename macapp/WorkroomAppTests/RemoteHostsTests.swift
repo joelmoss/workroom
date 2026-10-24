@@ -675,29 +675,6 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
-  /// A keygen cut short leaves the private half alone: the public half is derived from it again,
-  /// rather than every later create failing to read it. A private half that isn't a key says so.
-  func testAMissingPublicKeyIsDerivedFromThePrivateOne() throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "wr-key-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let key = try RemoteHosts.clientKey(in: directory)
-    let pub = key.appendingPathExtension("pub")
-    let original = try String(contentsOf: pub, encoding: .utf8)
-    XCTAssertTrue(original.hasPrefix("ssh-ed25519 "), original)
-
-    try FileManager.default.removeItem(at: pub)
-    XCTAssertEqual(try RemoteHosts.clientKey(in: directory), key)
-    // `-y` prints no comment, so compare the key itself.
-    XCTAssertEqual(
-      try String(contentsOf: pub, encoding: .utf8).split(separator: " ").prefix(2),
-      original.split(separator: " ").prefix(2))
-
-    try FileManager.default.removeItem(at: pub)
-    try Data("not a key".utf8).write(to: key)
-    XCTAssertThrowsError(try RemoteHosts.clientKey(in: directory))
-  }
-
   /// The launch's one sweep waits out a delete (#296): a call that isn't allowed leaves it for the
   /// next, and only one call ever runs it. One whose runtime could not list is owed again (#284),
   /// and one still running is never claimed twice.
@@ -1056,7 +1033,6 @@ final class RemoteHostsTests: XCTestCase {
           "wr-hosts-\(UUID().uuidString)", isDirectory: true),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: runtime, image: "workroom-host", user: RemoteWorkrooms.user,
-        identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
         daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"],
         context: context, dialect: dialect, daemon: { _ in daemon },
         daemonFolder: daemon.deletingLastPathComponent().appendingPathComponent("daemon")))

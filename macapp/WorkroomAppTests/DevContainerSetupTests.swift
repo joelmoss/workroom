@@ -16,11 +16,41 @@ final class DevContainerSetupTests: XCTestCase {
     try DevContainerConfig.parse(Data(json.utf8))
   }
 
+  // Value: protects=a workspaceFolder written with a variable (VS Code's templates) is the folder it names, not the literal `${…}`;
+  // fails_when=workspaceFolder is used as written; why_new=the folder was only tested with plain paths; seam=none; no_claim=the clone itself
   func testTheCheckoutGoesInTheWorkspaceFolderElseUnderWorkspaces() throws {
-    XCTAssertEqual(DevContainerSetup.workspaceFolder(nil, repository: "app"), "/workspaces/app")
+    XCTAssertEqual(
+      DevContainerSetup.workspaceFolder(nil, repository: "app", variables: variables),
+      "/workspaces/app")
     XCTAssertEqual(
       DevContainerSetup.workspaceFolder(
-        try config(#"{"image": "x", "workspaceFolder": "/src"}"#), repository: "app"), "/src")
+        try config(#"{"image": "x", "workspaceFolder": "/src"}"#), repository: "app",
+        variables: variables), "/src")
+    XCTAssertEqual(
+      DevContainerSetup.workspaceFolder(
+        try config(
+          #"{"image": "x", "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"}"#),
+        repository: "repo", variables: variables), "/workspaces/app")
+  }
+
+  // Value: protects=each create gets a devcontainerId of its own, and the volumes named by it are the container's to remove;
+  // fails_when=the id is shared (two workrooms share docker-in-docker's volume) or a shared volume is counted as owned;
+  // why_new=the id was the project's hash and nothing removed a named volume; seam=none; no_claim=the runtime removing it
+  func testEachContainerOwnsTheVolumesItsIdNames() throws {
+    XCTAssertNotEqual(DevContainerSetup.newDevcontainerID(), DevContainerSetup.newDevcontainerID())
+    let file = try config(
+      #"""
+      {"image": "x", "mounts": ["source=cache,target=/cache,type=volume",
+       "source=${localEnv:HOME},target=/home,type=bind"]}
+      """#)
+    var added = DevContainerFeatures.Contributions()
+    added.mounts = [
+      .init(type: "volume", source: "dind-var-lib-docker-${devcontainerId}", target: "/var/lib")
+    ]
+    let spec = DevContainerSetup.spec(
+      image: "x", config: file, contributions: added, remoteEnvironment: [:],
+      variables: variables, workspaceFolder: "/workspaces/app")
+    XCTAssertEqual(spec.ownedVolumes, ["dind-var-lib-docker-abc"])
   }
 
   /// The file's user, else the image's devcontainer metadata, else its own, else root; the remote

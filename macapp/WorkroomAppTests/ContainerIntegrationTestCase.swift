@@ -77,7 +77,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     return ContainerHostDriver(
       hosts: [:], directory: directory.appendingPathComponent(folder),
       provisioning: ContainerHostDriver.Provisioning(
-        runtime: override ?? runtime, image: "unused", user: "", identityFile: "", publicKey: "",
+        runtime: override ?? runtime, image: "unused", user: "",
         daemonSocket: ContainerHostDriver.containerSocket, labels: [label], dialect: dialect,
         daemon: { _ in daemon }, daemonFolder: directory.appendingPathComponent("daemon")))
   }
