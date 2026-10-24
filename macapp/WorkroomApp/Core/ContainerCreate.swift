@@ -235,12 +235,20 @@ enum ContainerCreate {
 
   /// initializeCommand, on this Mac in the project's folder (eng review D6), its output in the
   /// row's log. 10 minutes, as a lifecycle command in the container.
-  private static func runOnMac(_ command: DevContainerConfig.Command, in project: String)
-    async throws
-  {
+  static func runOnMac(
+    _ command: DevContainerConfig.Command, in project: String, timeout: TimeInterval = 600
+  ) async throws {
     let script = DevContainerSetup.hookScript(
       .initialize, commands: [command], checkout: project, environment: [:])
-    let (status, said) = try await shell(script, in: project, timeout: 600, log: .initialize)
+    let status: Int32
+    let said: String
+    do {
+      (status, said) = try await shell(script, in: project, timeout: timeout, log: .initialize)
+    } catch is VCSTimeoutError {
+      throw Failure.initializeFailed(
+        "it still held its output open after \(Int(timeout)) s"
+          + " (a process it started in the background, perhaps)")
+    }
     guard status == 0 else {
       let last = said.split(separator: "\n").last.map(String.init) ?? ""
       throw Failure.initializeFailed("it exited \(status)\(last.isEmpty ? "" : ": \(last)")")
@@ -248,6 +256,8 @@ enum ContainerCreate {
   }
 
   /// `/bin/sh -c script` on this Mac, with its output, line by line, in `log`'s row when given.
+  /// `timeout` bounds the whole exchange, not only silence: a process the script left in the
+  /// background holds its output open past it, and one that keeps printing is never silent.
   private static func shell(
     _ script: String, in directory: String, timeout: TimeInterval,
     log step: ProvisioningProgress.Step? = nil
@@ -261,8 +271,10 @@ enum ContainerCreate {
       URL(fileURLWithPath: "/bin/sh"), ["-c", "cd \(PosixShell.quoted(directory)) && \(script)"],
       environment: ProcessInfo.processInfo.environment, handshakeTimeout: 10, purpose: .exchange)
     do {
-      return try await stream.communicate(
-        nil, timeout: timeout, onOutput: { data, stderr in lines.add(data, stderr) })
+      return try await withTimeout(seconds: timeout) {
+        try await stream.communicate(
+          nil, timeout: timeout, onOutput: { data, stderr in lines.add(data, stderr) })
+      }
     } catch {
       stream.end()
       throw error

@@ -210,6 +210,32 @@ final class ContainerCreateTests: XCTestCase {
     }
   }
 
+  // Value: protects=initializeCommand's 10 minutes are a deadline, not a silence bound;
+  // fails_when=a background process that keeps printing holds the create on its step for ever;
+  // why_new=PR #542 review (Codex); seam=a short timeout; no_claim=the 600 s value
+  /// A command that leaves a chatty process behind still ends, as a failure that says why.
+  func testInitializeCommandThatKeepsPrintingStillEnds() async throws {
+    let project = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-create-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: project) }
+    let started = Date()
+    do {
+      try await ContainerCreate.runOnMac(
+        .shell("(for i in 1 2 3 4 5 6 7 8 9 10; do echo tick; sleep 0.2; done) &"),
+        in: project.path,
+        timeout: 1)
+      XCTFail("a command whose background process held its output finished")
+    } catch {
+      XCTAssertEqual(
+        error as? ContainerCreate.Failure,
+        .initializeFailed(
+          "it still held its output open after 1 s (a process it started in the background, perhaps)"
+        ))
+    }
+    XCTAssertLessThan(Date().timeIntervalSince(started), 1.9, "the deadline didn't end it")
+  }
+
   private func git(_ arguments: [String], in directory: URL) throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let process = Process()
