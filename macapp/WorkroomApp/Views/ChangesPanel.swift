@@ -624,10 +624,11 @@ struct ChangedFileRow: View, Equatable {
 
   /// The equality gate behind `.equatable()` in `fileList`: a panel body pass that rebuilds the rows,
   /// such as a status sweep that changes one file, re-creates every row value, and only the ones whose
-  /// file, group or selected-ness actually changed get a body. `@EnvironmentObject`/`@State`/`@Default` still invalidate past this gate, so
-  /// hover, the editor-preference label and store-driven updates are unaffected. A theme change needs
-  /// no input here, unlike `HistoryRow`'s: every row reads `theme.tokens` outside any ternary (the
-  /// change letter's `color`), so Observation repaints each row past the gate.
+  /// file, group or selected-ness actually changed get a body. `@EnvironmentObject`/`@State`/
+  /// `@Default` still invalidate past this gate, so hover, the editor-preference label and
+  /// store-driven updates are unaffected. A theme change needs no input here, unlike `HistoryRow`'s:
+  /// every row reads `theme.tokens` outside any ternary (the change letter's `color`), so
+  /// Observation repaints each row past the gate.
   nonisolated static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
     lhs.file == rhs.file && lhs.source == rhs.source && lhs.isSelected == rhs.isSelected
   }
