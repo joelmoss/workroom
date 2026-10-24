@@ -174,6 +174,20 @@ pub fn protocol() -> ExitCode {
 mod tests {
     use super::*;
 
+    // Value: protects=`serve --own <dir>` can be given more than once and every folder is kept, in order;
+    // fails_when=flags() returns only the first or last value, or picks up another flag's value;
+    // why_new=nothing else reads a repeatable flag; seam=none; no_claim=what serve does with the folders
+    #[test]
+    fn a_repeatable_flag_gives_every_value_in_order() {
+        let args: Vec<String> = ["serve", "--own", "/a", "--user", "u", "--own", "/b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(flags(&args, "--own"), ["/a", "/b"]);
+        assert_eq!(flags(&args, "--user"), ["u"]);
+        assert!(flags(&args, "--screens").is_empty());
+    }
+
     /// A stream that serves an endless login banner, counting how much of it is consumed.
     ///
     /// The byte cap is what keeps a regression a FAILURE rather than a hung suite: without it a

@@ -191,6 +191,28 @@ mod tests {
         );
     }
 
+    // Value: protects=a daemon already running as its user (a hand-off's new program, after the drop) only makes the folders and keeps its environment;
+    // fails_when=become_user chowns, drops credentials or rewrites HOME for an account that is already this process, or leaves a folder unmade;
+    // why_new=only the live container suites reach become_user, as root; seam=none; no_claim=the root drop itself (needs root)
+    #[test]
+    fn an_account_that_is_already_this_process_only_makes_its_folders() {
+        // SAFETY: getuid takes nothing and cannot fail.
+        let account = lookup(&unsafe { libc::getuid() }.to_string()).unwrap();
+        let root = std::env::temp_dir().join(format!("workroomd-become-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = std::env::var_os("HOME");
+
+        become_user(
+            &account,
+            &[(root.join("a/b"), true), (root.join("c"), false)],
+        )
+        .unwrap();
+
+        assert!(root.join("a/b").is_dir() && root.join("c").is_dir());
+        assert_eq!(std::env::var_os("HOME"), home);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The account running the tests, found by its name and by its uid, the same either way; a uid
     /// with a group overrides the group; a uid nobody has is still an account, rooted at `/`.
     #[test]
