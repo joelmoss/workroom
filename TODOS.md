@@ -11,6 +11,36 @@ None open. The crossing-`keep` flake entry went with the test, `keep` and the pr
 
 ## P1 — before GA
 
+### Container workrooms (#308): three /ship review follow-ups (macapp, HostDrivers)
+
+**What:** three things the #308 /ship review found and the owner chose to ship and follow up
+(2026-10-24):
+1. A `build` devcontainer.json's Dockerfile and context are exported with `git archive`
+   (`ContainerCreate.export`), which obeys `.gitattributes` `export-ignore` and `export-subst`, while
+   the approved file is read with checkout semantics. Export with checkout semantics instead (a
+   temporary `GIT_INDEX_FILE` with `git read-tree` and `git checkout-index -a --prefix=`, or a
+   worktree at the commit).
+2. `initializeCommand` and `${localEnv:…}` use the app's own process environment
+   (`ContainerCreate.shell`, `prepare(environment:)`), not the login shell's that local setup scripts
+   get (`ShellEnvironment.environment()`), so from a Finder launch an nvm or mise tool isn't found.
+3. Apple's sweep removes the volumes a swept container's `workroom.volumes` label names, but no test
+   covers it (the Docker path's `RemoteHostsTests.testASweptContainerTakesItsOwnedVolumes` does), and
+   Apple's not-found wording for `container volume rm` is unmeasured.
+
+**Why:** (1) a repo marking `.devcontainer`, its Dockerfile or `tests/` export-ignore (a common
+release-tarball habit) builds a container missing those files, silently or with a confusing error;
+(2) an `initializeCommand` that needs a shell-managed tool fails on every create; (3) a regression
+would leak docker-in-docker-sized volumes on Apple after interrupted creates.
+
+**How to start:** (1) and (2) are in `macapp/WorkroomApp/Core/ContainerCreate.swift`; give each a
+test in `ContainerCreateTests` (a repo with an export-ignore line; an initializeCommand that reads a
+variable only the login environment has). (3) mirror the Docker sweep test in the Apple sweep tests in
+`RemoteHostsTests`, then run `container volume rm <missing>` on a running Apple runtime.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** #308 merged.
+
 ### Finish removing base machines (codaset, Go, macapp) — #395 follow-ups
 
 **What:** What is left of the remove-bases plan once the app retires older builds' bases at launch
