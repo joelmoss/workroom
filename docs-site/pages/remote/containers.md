@@ -65,7 +65,7 @@ A Dockerfile on its own, with no `devcontainer.json` naming it, is ignored, as t
 
 Your `devcontainer.json` decides what the container mounts from your Mac and what runs there, so Workroom uses it only after you have approved its exact contents on this Mac, as it does for [setup scripts](../guides/prepare-a-project.md#approve-your-scripts). The first create that would use a new file, or one that changed since you approved it, stops and shows it to you, with **Approve**, **Continue With Default Image…** and **Cancel Creation**. Continuing creates the workroom on the default image and approves nothing, so the next create asks again.
 
-An approval covers the file's own contents only. The Dockerfile it builds, and the features it installs, aren't covered.
+An approval covers the file's own contents only. The Dockerfile it builds, and the features it installs, aren't covered. A feature can itself ask for folders from your Mac to be mounted in the container, or for the container to be privileged, and a new release of the feature can add that without asking you again. Use features you trust, as you would any code your repository runs.
 
 ### Lifecycle commands
 
@@ -86,7 +86,7 @@ To use another image instead, set **Default image** under **Container Workrooms*
 
 ### When the file changes
 
-A change to `devcontainer.json`, or to the Dockerfile it builds, applies to workrooms you create after it. The **Details** pane shows what a container was made from under **Made From**, and a note when the repository's file has changed since, or has been added or removed. To pick up the change, create a new workroom.
+A change to `devcontainer.json`, or to the Dockerfile it builds, applies to workrooms you create after it. The **Details** pane shows what a container was made from under **Made From**, and a note when the repository's `devcontainer.json` has changed since, or has been added or removed. A change to only the Dockerfile shows no note. To pick up a change, create a new workroom.
 
 ## Working in a container
 
