@@ -548,6 +548,23 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(fake.starts, [.ask, .origin], "the answer starts where the stale try did")
   }
 
+  /// Value: protects=starting from origin is the pinned answer's alone: a later Try Again fetches
+  /// afresh, so it still asks where to start; fails_when=Try Again after an answered stale try
+  /// starts from origin, leaving local work out unasked; no_claim=none beyond protects
+  func testTryAgainAfterAnAnsweredStaleTryStillAsksWhereToStart() async throws {
+    let fake = UntrustedSetupCLI(
+      projectPath: projectPath, localWork: UntrustedSetupCLI.work,
+      fetchWarning:
+        "Could not fetch origin. The workroom starts from origin/main, which may be out of date.")
+    let store = makeStore(fake)
+    store.projects = [project(["anchor"])]
+    store.closesFinishedCreations = { false }  // the answered run stays, to try again
+    await store.createWorkroom(in: emptyProject)
+    await store.approveSetupScript(try XCTUnwrap(store.creationRuns.values.first))
+    await store.retryCreation(try XCTUnwrap(store.creationRuns.values.first))
+    XCTAssertEqual(fake.starts, [.ask, .origin, .ask])
+  }
+
   /// Value: protects=a start commit the CLI can no longer use (the base branch changed in between)
   /// turns the answer into a Try Again, which fetches afresh; fails_when=the create fails, or retries
   /// with the same pin; no_claim=the CLI's check (the Go tests)

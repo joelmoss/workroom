@@ -317,11 +317,7 @@ extension AppStore {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
     let project = projects.first { $0.path == run.project.path } ?? run.project
-    var start = start ?? run.start
-    // A try whose fetch warned asked nobody where it starts and started from origin (ADR 0055). The
-    // answer fetches nothing, so nothing marks its start stale: it starts from origin as that try did,
-    // rather than ask a question the try never asked.
-    if startCommit != nil, start == .ask, case .warning? = run.fetchStep?.state { start = .origin }
+    let start = start ?? run.start
     let retry = CreationRun(
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
       previousSelection: run.previousSelection,
@@ -383,7 +379,7 @@ extension AppStore {
     }
     do {
       let created = try await cli.create(
-        project: project.path, skipSetup: run.skipsSetup, start: run.start,
+        project: project.path, skipSetup: run.skipsSetup, start: run.cliStart,
         startCommit: run.startCommit
       ) { event in
         if event.type == "created", let name = event.name {

@@ -219,6 +219,15 @@ final class CreationRun: ObservableObject, Identifiable {
     return text
   }
 
+  /// Where the CLI starts. A try whose fetch warned asked nobody where it starts and started from
+  /// origin (ADR 0055). An answer to it fetches nothing, so nothing marks its start stale: it starts
+  /// from origin as that try did, rather than ask a question the try never asked. The run keeps
+  /// `start`, so a later Try Again, which fetches afresh, can still ask.
+  var cliStart: CreationStart {
+    if startCommit != nil, start == .ask, case .warning? = fetchStep?.state { return .origin }
+    return start
+  }
+
   var isRunning: Bool { outcome == .running }
 
   /// Stopped before anything was made, waiting on the user: its setup script's Approve (#363), or
