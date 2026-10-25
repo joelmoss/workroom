@@ -19,6 +19,7 @@ cd "$(dirname "$0")/.."
 # Test fixtures are found through CARGO_MANIFEST_DIR, which is baked in at compile time as a path on
 # THIS machine. The container mounts the vcs tree read-only at that same path so they resolve.
 VCS_DIR="$(pwd)"
+TESTDATA_DIR="$(cd ../testdata && pwd)"
 
 # macOS still ships bash 3.2, where an EMPTY array is "unbound" under `set -u` and neither
 # `mapfile` nor `declare -A` exists. build-helper.sh documents the same trap. So: expand arrays
@@ -209,9 +210,12 @@ IMAGE="${WR_LINUX_IMAGE:-docker.io/library/buildpack-deps:stable-scm}"
 echo "test-linux: running on $RUNTIME ($IMAGE)"
 # bash, because one test reproduces an argv[0] rewrite with `exec -a`, which is a bashism and skips
 # itself where /bin/bash is absent — silently losing the coverage it exists to provide.
-"$RUNTIME" run --rm \
+# Reap orphaned fixture descendants: without init, signal 0 still sees dead zombies as alive.
+# shellcheck disable=SC2016 # The loop's variables expand in the container, not on the host.
+"$RUNTIME" run --rm --init \
   --volume "$STAGE:/tests" \
   --volume "$VCS_DIR:$VCS_DIR:ro" \
+  --volume "$TESTDATA_DIR:$TESTDATA_DIR:ro" \
   --env WORKROOMD_BIN=/tests/workroomd \
   --env "WORKROOMD_HAS_TERMINAL_STATE=${WORKROOMD_HAS_TERMINAL_STATE:-}" \
   --env "WR_TEST_SHELL=/bin/sh" \

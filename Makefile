@@ -109,11 +109,13 @@ vcs-test: ## Test the Rust workspace, then workroomd with terminal-state, as CI 
 # DAEMON_OLD=<binary> also runs vcs/scripts/daemon-handoff-check.sh from that build to this one.
 DAEMON_BENCH_SECS ?= 60
 DAEMON_BENCH_SESSIONS ?= 4
-vcs-bench-daemon: ## Measure an idle workroomd's CPU and wakeups (release build) [DAEMON_BENCH_SECS= DAEMON_BENCH_SESSIONS= DAEMON_OLD=]
+DAEMON_BENCH_KIND ?= shell
+DAEMON_BENCH_SCOPE ?= daemon
+vcs-bench-daemon: ## Measure idle daemon CPU/wakeups [DAEMON_BENCH_SECS= DAEMON_BENCH_SESSIONS= DAEMON_BENCH_KIND=shell|parked DAEMON_BENCH_SCOPE=daemon|supervisor DAEMON_OLD=]
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-bench-daemon needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	cargo build --manifest-path vcs/Cargo.toml --release -p workroomd && \
-	vcs/scripts/daemon-idle-bench.sh vcs/target/release/workroomd $(DAEMON_BENCH_SECS) $(DAEMON_BENCH_SESSIONS) && \
+	vcs/scripts/daemon-idle-bench.sh vcs/target/release/workroomd $(DAEMON_BENCH_SECS) $(DAEMON_BENCH_SESSIONS) $(DAEMON_BENCH_KIND) $(DAEMON_BENCH_SCOPE) && \
 	if [ -n "$(DAEMON_OLD)" ]; then vcs/scripts/daemon-handoff-check.sh "$(DAEMON_OLD)" vcs/target/release/workroomd; fi
 
 # --- macOS app (macapp/) ---
@@ -346,6 +348,7 @@ app-identity: ## Print the bundle id this checkout's Debug build gets (one per w
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
+	python3 vcs/scripts/test-parked-supervisor.py
 
 app-test-scripts: ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, daemon name, exe.dev git setup, test summary, red proof, restore mtime)
 	sh macapp/Scripts/build-helper_test.sh

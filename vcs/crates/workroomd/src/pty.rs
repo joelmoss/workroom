@@ -330,6 +330,52 @@ impl Pty {
         self.poll_readable(i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX))
     }
 
+    /// Linux can keep the slave open after its session leader exits. A pidfd wakes the same reader
+    /// for that exit without reaping it, and closes across a daemon hand-off like the other watches.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn child_exit_fd(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        use std::os::fd::FromRawFd;
+        // SAFETY: pidfd_open takes only integers. Zero flags requests a close-on-exec descriptor.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_open,
+                libc::c_long::from(self.pid),
+                0 as libc::c_ulong,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the syscall returned a new descriptor, now owned by this handle alone.
+        Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as libc::c_int) })
+    }
+
+    /// Waits for either pty output/hangup or child exit; true means the exit descriptor woke us.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn wait_readable_or_exit(
+        &self,
+        exit: &std::os::fd::OwnedFd,
+    ) -> std::io::Result<bool> {
+        use std::os::fd::AsRawFd;
+        let mut descriptors = [
+            libc::pollfd {
+                fd: self.master,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: exit.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: both descriptors remain open for the call; the array has exactly two entries.
+        if unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(descriptors[1].revents != 0)
+    }
+
     fn poll_readable(&self, timeout_ms: i32) -> std::io::Result<bool> {
         let mut descriptor = libc::pollfd {
             fd: self.master,
@@ -736,6 +782,37 @@ mod tests {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => panic!("unexpected read failure: {e}"),
             }
+        }
+    }
+
+    /// Opening a watch after the child ended still observes its exit, does not reap it and cannot
+    /// leak the watch into an exec hand-off. Both early and late registration use the real kernel.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_exit_descriptor_observes_early_and_late_exits_without_reaping() {
+        use std::os::fd::AsRawFd;
+        for late in [false, true] {
+            let pty = spawn(
+                OsStr::new("/bin/sh"),
+                &[OsString::from("-c"), OsString::from("sleep 0.1; exit 7")],
+                &env(),
+                None,
+                80,
+                24,
+            )
+            .expect("spawn");
+            if late {
+                pty.wait_readable().expect("child ends before registration");
+            }
+            let exit = pty.child_exit_fd().expect("pidfd_open on the test kernel");
+            // SAFETY: F_GETFD reads the flags of our own live descriptor.
+            let flags = unsafe { libc::fcntl(exit.as_raw_fd(), libc::F_GETFD) };
+            assert_ne!(flags & libc::FD_CLOEXEC, 0);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !pty.wait_readable_or_exit(&exit).expect("wait for child") {
+                assert!(Instant::now() < deadline, "child exit never arrived");
+            }
+            assert_eq!(pty.wait(), Some(7 << 8), "only this wait reaps the child");
         }
     }
 

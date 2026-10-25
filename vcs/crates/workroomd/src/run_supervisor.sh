@@ -110,10 +110,8 @@ while :; do
   # the APP closes this tab when a key is pressed while stopped (GhosttySurfaceView.runStoppedAwaitingClose).
   printf '\r\nProcess exited. Press any key to close the terminal.\r\n'
   while :; do
-    # Honor a pending control signal BEFORE clearing ACTION. A USR1/USR2/TERM delivered in the
-    # window between entering the parked phase (the stop case + prompt print above) and this loop
-    # would otherwise be wiped by `ACTION=""` and lost — the supervisor would then block in `wait`
-    # forever, never relaunching on a restart. Checking at the top closes that race.
+    # Keep a delivered action until the next run. Clearing it while parked can erase a control
+    # that arrives between the case check and sleeping.
     case "$ACTION" in
       restart) break ;;  # leave parked -> relaunch via the outer loop (clears)
       quit)
@@ -122,10 +120,8 @@ while :; do
         ;;
       *) : ;;  # empty or already-stopped -> stay parked, wait for the next signal
     esac
-    ACTION=""
-    while [ -z "$ACTION" ]; do
-      wait 2>/dev/null  # no child -> returns at once; a signal sets ACTION via its trap
-      [ -z "$ACTION" ] && sleep 0.2
-    done
+    # Bound the wait: a shell can defer a trap across entry into a blocking builtin. A foreground
+    # sleep returns on its own, so a deferred Restart or Quit cannot leave this pane parked forever.
+    sleep 0.2
   done
 done
