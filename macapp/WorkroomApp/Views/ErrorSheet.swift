@@ -72,13 +72,10 @@ struct ErrorSheet: View {
       HStack(spacing: 8) {
         // A script to approve has no Copy: it pops out from its own box instead.
         if script == nil, details != nil || log != nil {
-          Button("Copy") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(
-              [title, message, log, details].compactMap { $0 }.joined(separator: "\n\n"),
-              forType: .string)
-          }
-          .help("Copy the message, its output and its details to the clipboard")
+          CopyButton(
+            text: [title, message, log, details].compactMap { $0 }.joined(separator: "\n\n"),
+            title: "Copy", help: "Copy the message, its output and its details to the clipboard"
+          )
           .accessibilityIdentifier("error.copy")
         }
         Spacer()

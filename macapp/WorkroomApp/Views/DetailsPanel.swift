@@ -105,14 +105,9 @@ extension DetailsPanel {
       HStack(alignment: .top, spacing: 2) {
         factValue(value, copyable: copyable, link: link)
         if copyable {
-          InspectorHeaderButton(
-            systemImage: "doc.on.doc", help: "Copy \(title.lowercased())", compact: true
-          ) {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(value, forType: .string)
-          }
-          // Its glyph on the value's first line.
-          .padding(.top, -3)
+          CopyButton(text: value, help: "Copy \(title.lowercased())")
+            // Its glyph on the value's first line.
+            .padding(.top, -3)
         }
       }
     }
@@ -321,10 +316,7 @@ private struct PortsSection: View {
           Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
         Spacer(minLength: 0)
-        InspectorHeaderButton(systemImage: "doc.on.doc", help: "Copy \(address)", compact: true) {
-          NSPasteboard.general.clearContents()
-          NSPasteboard.general.setString(address, forType: .string)
-        }
+        CopyButton(text: address, help: "Copy \(address)")
         InspectorHeaderButton(
           systemImage: "xmark", help: "Stop forwarding port \(String(forward.remotePort))",
           destructive: true

@@ -94,9 +94,13 @@ Set a run command for a project, such as `npm run dev`, and start it in any of i
 
 In Workroom 2.1.0 these are in a **Run** menu, and going to the run terminal is **Go ▸ Run Terminal**.
 
-The workroom's title bar and the root row in the sidebar have the same buttons. While a run is going, the title bar shows **Restart** and **Stop**. **Stop** sends the command Ctrl-C and waits for it to exit. If it has not exited after about six seconds, Workroom force-quits it.
+The workroom's title bar shows **Run** when idle and **Restart** and **Stop** while a run is going. **Stop** sends the command Ctrl-C and waits for it to exit. If it has not exited after about six seconds, Workroom force-quits it.
 
 The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state. If a run ends or fails while you are looking at another tab or workroom, a toast tells you. In Workroom 2.1.0, run commands stop when you quit Workroom.
+
+### Stop from the sidebar {nightly}
+
+A project's root row shows its run control only while its run command is running. Click it to stop the command.
 
 ### Quitting with a run going {nightly}
 
