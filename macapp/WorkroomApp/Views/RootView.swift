@@ -265,7 +265,12 @@ struct RootView: View {
         Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
       } message: {
         // #253: a remote workroom has no directory here; its host goes, and all on it.
-        if let target = store.pendingDeletion, target.workroom.isRemote {
+        if let target = store.pendingDeletion, target.workroom.isSSH {
+          Text(
+            "This removes \(target.workroom.path) on \(target.workroom.host?.sshDestination ?? "its host"), "
+              + "including changes and commits that aren't pushed. The server and its other folders stay."
+          )
+        } else if let target = store.pendingDeletion, target.workroom.isRemote {
           Text(
             "This destroys the workroom's remote machine and everything on it, including changes "
               + "and commits that aren't pushed."
@@ -372,6 +377,8 @@ struct RootView: View {
       ExeDevSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     } else if let setup = pending.setup as? BoxdSetup {
       BoxdSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
+    } else if let setup = pending.setup as? SSHHostSetup {
+      SSHHostSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     }
   }
 

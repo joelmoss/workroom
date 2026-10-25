@@ -156,6 +156,73 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     XCTAssertEqual(running, .init(architecture: "aarch64", pushed: false, daemon: .current))
   }
 
+  /// The start script detaches all of ssh's descriptors, uses a fixed environment, and reports the
+  /// process it made. A stale socket file does not count as a live daemon; a listening daemon does.
+  func testTheRealSSHStartDetachesAndPinsTheEnvironment() async throws {
+    let host = try localHost()
+    let shim = try XCTUnwrap(host.driver.path.split(separator: ":").first).description
+    let setsid = URL(fileURLWithPath: shim).appendingPathComponent("setsid")
+    // macOS has no setsid utility; the Linux fixture exercises the real utility. This shim keeps
+    // the actual backgrounding, descriptor redirections, argv and env -i in the script under test.
+    try Data("#!/bin/sh\nexec \"$@\"\n".utf8).write(to: setsid)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: setsid.path)
+    let alive = host.directory.appendingPathComponent("alive")
+    let pidFile = host.directory.appendingPathComponent("pid")
+    let record = host.directory.appendingPathComponent("record")
+    let body = """
+      #!/bin/sh
+      case $1 in
+        list) test -f \(PosixShell.quoted(alive.path)); exit ;;
+        serve)
+          printf '%s\\n' "$*" "$HOME" "$USER" "$SHELL" "$PATH" "${MUST_NOT_LEAK:-unset}" > \(PosixShell.quoted(record.path))
+          echo $$ > \(PosixShell.quoted(pidFile.path))
+          : > \(PosixShell.quoted(alive.path))
+          exec /bin/sleep 30 ;;
+      esac
+      exit 1
+      """
+    try Data(body.utf8).write(to: URL(fileURLWithPath: host.binary))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: host.binary)
+    try listen(on: host)
+    defer {
+      if let text = try? String(contentsOf: pidFile, encoding: .utf8),
+        let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+      {
+        kill(pid, SIGKILL)
+      }
+    }
+    let arguments = [
+      "sh", "-c", try DaemonBootstrap.script(named: "start"), "start", host.binary, host.socket,
+      host.directory.appendingPathComponent("screens").path, "never",
+    ]
+    let command = arguments.map(PosixShell.quoted).joined(separator: " ")
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", command],
+      environment: [
+        "PATH": host.driver.path, "HOME": host.directory.path, "USER": "server-user",
+        "SHELL": "/bin/sh", "MUST_NOT_LEAK": "from-ssh",
+      ], handshakeTimeout: 5, purpose: .exchange)
+    let start = ContinuousClock.now
+    let (status, output) = try await stream.communicate(nil, timeout: 5)
+    XCTAssertEqual(status, 0, output)
+    XCTAssertLessThan(ContinuousClock.now - start, .seconds(5), "ssh's descriptors stayed open")
+    let pid = try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    XCTAssertTrue(output.contains("WRB started \(pid)\n"), output)
+    XCTAssertTrue(output.contains("WRB serving yes\n"), output)
+    let lines = try String(contentsOf: record, encoding: .utf8).split(separator: "\n").map(
+      String.init)
+    XCTAssertEqual(
+      lines,
+      [
+        "serve --socket \(host.socket) --idle-timeout never --screens \(host.directory.path)/screens",
+        host.directory.path, "server-user", "/bin/sh", "/usr/local/bin:/usr/bin:/bin", "unset",
+      ])
+    let again = try await host.driver.exec(command, on: self.host).communicate(nil, timeout: 5)
+    XCTAssertEqual(again.status, 0, again.output)
+    XCTAssertEqual(again.output, "WRB serving yes\n", "the live daemon was started twice")
+  }
+
   /// A host an older Nightly made before the daemon was renamed (#525) has `wr-agent` and no
   /// `workroomd`, and its supervisor only ever starts the old name. Nothing is pushed, and the
   /// connect fails saying to recreate the workroom (eng review D3).

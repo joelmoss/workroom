@@ -1626,7 +1626,7 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   /// A driver whose create makes `made`, and whose destroy succeeds, unless told otherwise.
-  private struct MachineDriver: HostTerminalDriver {
+  private struct MachineDriver: HostTerminalDriver, ProvisioningHostDriver {
     let made: UUID
     /// The create fails and cannot remove the machine it made.
     var leavesItBehind = false

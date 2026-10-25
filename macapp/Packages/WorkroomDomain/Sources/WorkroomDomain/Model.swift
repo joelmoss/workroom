@@ -116,6 +116,9 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   /// A boxd host's account, `boxd auth`'s `user_id` when it was made (#356). Every personal
   /// account's org is nil, so the org alone can't tell two accounts apart.
   public var account: String? = nil
+  /// The user's ssh destination, kept exactly as typed, and the checked remote home.
+  public var sshDestination: String? = nil
+  public var sshHome: String? = nil
 
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   public var isRelayed: Bool { credentials == "relay" }
@@ -127,6 +130,8 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     case account
     case workroomID = "workroom_id"
     case cloneURL = "clone_url"
+    case sshDestination = "ssh_destination"
+    case sshHome = "ssh_home"
   }
 
   public init(
@@ -134,7 +139,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     workroomID: UUID? = nil, repository: String? = nil,
     cloneURL: String? = nil, path: String? = nil, container: ContainerHostRecord? = nil,
     bases: [HostDescriptor]? = nil, credentials: String? = nil, org: String? = nil,
-    account: String? = nil
+    account: String? = nil, sshDestination: String? = nil, sshHome: String? = nil
   ) {
     self.state = state
     self.driver = driver
@@ -149,6 +154,8 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     self.credentials = credentials
     self.org = org
     self.account = account
+    self.sshDestination = sshDestination
+    self.sshHome = sshHome
   }
 
   public init(from decoder: Decoder) throws {
@@ -166,6 +173,8 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     credentials = try? fields?.decodeIfPresent(String.self, forKey: .credentials)
     org = try? fields?.decodeIfPresent(String.self, forKey: .org)
     account = try? fields?.decodeIfPresent(String.self, forKey: .account)
+    sshDestination = try? fields?.decodeIfPresent(String.self, forKey: .sshDestination)
+    sshHome = try? fields?.decodeIfPresent(String.self, forKey: .sshHome)
   }
 }
 

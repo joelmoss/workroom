@@ -11,7 +11,8 @@ import WorkroomWire
 /// it makes itself: `create` runs a workroom's container from any image with the bundled
 /// `workroomd` as its entrypoint, reached through the runtime's own `exec` (#308), and `destroy`
 /// removes it. Nothing here persists.
-public final class ContainerHostDriver: HostTerminalDriver, DaemonPlacingDriver,
+public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriver,
+  DaemonPlacingDriver,
   @unchecked Sendable
 {
   /// How the driver makes containers of its own: a container runtime's CLI (`docker`, or Apple's

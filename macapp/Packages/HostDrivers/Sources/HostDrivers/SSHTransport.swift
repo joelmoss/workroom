@@ -9,6 +9,55 @@ import WorkroomWire
 /// `ContainerHostDriver` as is: none of it is container-shaped, and a driver for any ssh host
 /// needs it and nothing else of that driver's.
 public enum SSHTransport {
+  /// The user's own ssh supplies keys, aliases, proxies and Keychain. Workroom supplies only
+  /// the background-link overrides, with exe.dev's gateway alias when that driver asks for it.
+  public static func userOwnedOptions(hostKeyAlias: String? = nil) -> [String] {
+    (["BatchMode=yes"] + (hostKeyAlias.map { ["HostKeyAlias=\($0)"] } ?? []))
+      .flatMap { ["-o", $0] }
+      + [
+        "ForwardAgent=no", "ForwardX11=no", "ClearAllForwardings=yes", "ControlMaster=no",
+        "ControlPath=none", "RemoteCommand=none", "EscapeChar=none", "RequestTTY=no",
+        "ServerAliveInterval=15", "ServerAliveCountMax=3", "ConnectTimeout=10", "LogLevel=ERROR",
+      ].flatMap { ["-o", $0] }
+  }
+
+  public static func userSSHAgent(
+    inherited: [String: String] = ProcessInfo.processInfo.environment,
+    probed: @autoclosure () -> [String: String] = ShellEnvironment.environment()
+  ) -> String? {
+    for value in [inherited["SSH_AUTH_SOCK"], probed()["SSH_AUTH_SOCK"]] {
+      if let value, !value.isEmpty { return value }
+    }
+    return nil
+  }
+
+  /// The first known_hosts path from the user's resolved ssh configuration.
+  public static func knownHostsFile(in resolved: String) -> String? {
+    for line in resolved.split(separator: "\n") where line.hasPrefix("userknownhostsfile ") {
+      guard let first = line.split(separator: " ").dropFirst().first, first != "none" else {
+        return nil
+      }
+      return (String(first) as NSString).expandingTildeInPath
+    }
+    return nil
+  }
+
+  public static func appendKnownHost(_ line: String, to file: URL) throws {
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    if !FileManager.default.fileExists(atPath: file.path) {
+      FileManager.default.createFile(
+        atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
+    }
+    let handle = try FileHandle(forWritingTo: file)
+    defer { try? handle.close() }
+    let existing = (try? Data(contentsOf: file)) ?? Data()
+    let lead = existing.last.map { $0 == UInt8(ascii: "\n") ? "" : "\n" } ?? ""
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data((lead + line + "\n").utf8))
+  }
+
   public struct Host: Sendable {
     public let address: String
     public let port: Int

@@ -9,12 +9,14 @@ enum CreationKind: Equatable {
   case container(RemoteWorkrooms.Runtime)
   case boxd
   case exeDev
+  case ssh
 
   init(_ place: RemoteWorkrooms.Place) {
     switch place {
     case .container(let runtime): self = .container(runtime)
     case .boxd: self = .boxd
     case .exeDev: self = .exeDev
+    case .ssh: self = .ssh
     }
   }
 
@@ -25,6 +27,7 @@ enum CreationKind: Equatable {
     case .container(let runtime): RemoteWorkrooms.Place.container(runtime).displayName
     case .boxd: RemoteWorkrooms.Place.boxd.displayName
     case .exeDev: RemoteWorkrooms.Place.exeDev.displayName
+    case .ssh: RemoteWorkrooms.Place.ssh.displayName
     }
   }
 
@@ -54,6 +57,12 @@ enum CreationKind: Equatable {
       ]
       return rows.map { CreationStep(id: $0.0.rawValue, title: $0.1) }
         + [CreationStep(id: "script", title: "Run setup script")]
+    case .ssh:
+      remote = [
+        (.repository, "Check repository"), (.account, "Choose SSH host"),
+        (.machine, "Create folder"), (.connect, "Connect"),
+        (.clone, "Clone repository"), (.checkout, "Check out branch"),
+      ]
     case .boxd:
       remote = [
         (.repository, "Check repository"), (.account, "Check boxd account"),

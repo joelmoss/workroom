@@ -253,6 +253,8 @@ protocol WorkroomCLIProtocol: Sendable {
   func setBaseBranch(project: String, branch: String?) async throws
   func createRemote(project: String, hostPath: String, descriptor: Data) async throws
     -> CreateResponse
+  func createRemote(project: String, hostParent: String, descriptor: Data) async throws
+    -> CreateResponse
   func claimProvisioned(from shared: String, provisioner: String) async throws
   /// Writes the project's included files (#367) to a tar at `output`, for a remote workroom's host.
   func includeArchive(project: String, output: String) async throws -> IncludeArchive
@@ -317,6 +319,12 @@ extension WorkroomCLIProtocol {
     -> CreateResponse
   {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "createRemote is not faked")
+  }
+
+  func createRemote(project: String, hostParent: String, descriptor: Data) async throws
+    -> CreateResponse
+  {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "createRemote parent is not faked")
   }
 
   func claimProvisioned(from shared: String, provisioner: String) async throws {}
@@ -419,6 +427,17 @@ final class WorkroomCLI: WorkroomCLIProtocol {
       [
         "create", "--json", "--no-editor", "--project", project, "--host",
         String(decoding: descriptor, as: UTF8.self), "--host-path", hostPath,
+      ], timeout: 10)
+    return try decode(CreateResponse.self, from: result)
+  }
+
+  func createRemote(project: String, hostParent: String, descriptor: Data) async throws
+    -> CreateResponse
+  {
+    let result = try await run(
+      [
+        "create", "--json", "--no-editor", "--project", project, "--host",
+        String(decoding: descriptor, as: UTF8.self), "--host-parent", hostParent,
       ], timeout: 10)
     return try decode(CreateResponse.self, from: result)
   }

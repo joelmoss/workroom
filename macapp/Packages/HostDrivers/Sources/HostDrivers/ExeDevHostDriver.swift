@@ -30,7 +30,8 @@ import os
 ///
 /// exe.dev has no stop, start or idle timer, and its VMs were never put to sleep while idle
 /// (spike), so nothing here reads presence or keeps a box awake.
-public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
+public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable
+{
   public struct Configuration: Sendable {
     /// What every VM this driver makes is named after.
     public var prefix: String
@@ -431,25 +432,13 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     guard let path = Self.knownHostsFile(in: resolved.stdout) else {
       throw HostDriverError.provisioning("ssh named no known_hosts file for exe.dev")
     }
-    try Self.appendKnownHost(line, to: URL(fileURLWithPath: path))
+    try SSHTransport.appendKnownHost(line, to: URL(fileURLWithPath: path))
   }
 
   /// Appends `line` to the known_hosts `file`, on a line of its own, making the file and its
   /// directory (0700) when they don't exist.
   public static func appendKnownHost(_ line: String, to file: URL) throws {
-    try FileManager.default.createDirectory(
-      at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
-    if !FileManager.default.fileExists(atPath: file.path) {
-      FileManager.default.createFile(atPath: file.path, contents: nil)
-    }
-    let handle = try FileHandle(forWritingTo: file)
-    defer { try? handle.close() }
-    // A file that doesn't end in a newline would glue this entry to its last one.
-    let existing = (try? Data(contentsOf: file)) ?? Data()
-    let lead = existing.last.map { $0 == UInt8(ascii: "\n") ? "" : "\n" } ?? ""
-    try handle.seekToEnd()
-    try handle.write(contentsOf: Data((lead + line + "\n").utf8))
+    try SSHTransport.appendKnownHost(line, to: file)
   }
 
   /// Whether `ssh-keyscan` printed a key at all, as against one that doesn't match.
@@ -477,11 +466,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The first file `ssh -G`'s `userknownhostsfile` names, `~` expanded.
   public static func knownHostsFile(in resolved: String) -> String? {
-    for line in resolved.split(separator: "\n") where line.hasPrefix("userknownhostsfile ") {
-      guard let first = line.split(separator: " ").dropFirst().first else { return nil }
-      return (String(first) as NSString).expandingTildeInPath
-    }
-    return nil
+    SSHTransport.knownHostsFile(in: resolved)
   }
 
   /// ssh's default identities, which it offers when no config names one. OpenSSH 10 lists the
@@ -777,15 +762,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// takes a VM's key to be the gateway's, forwards nothing to a VM an agent works on, and notices
   /// a dead link (#228); a pane's ssh reads no escapes from what is typed in it. A pane's `-t`
   /// outranks `RequestTTY`.
-  public static let sshOptions =
-    testConfig
-    + [
-      "BatchMode=yes", "HostKeyAlias=\(lobby)", "ForwardAgent=no", "ForwardX11=no",
-      "ClearAllForwardings=yes", "ControlMaster=no", "ControlPath=none", "RemoteCommand=none",
-      "EscapeChar=none", "RequestTTY=no", "ServerAliveInterval=15", "ServerAliveCountMax=3",
-      "ConnectTimeout=10",
-      "LogLevel=ERROR",
-    ].flatMap { ["-o", $0] }
+  public static let sshOptions = testConfig + SSHTransport.userOwnedOptions(hostKeyAlias: lobby)
 
   /// Debug builds only: `-F $WR_EXEDEV_SSH_CONFIG`, an ssh config standing in for the user's own, so
   /// a developer can be a user exe.dev has never seen (a fresh key, an empty `known_hosts`) without
@@ -805,10 +782,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     inherited: [String: String] = ProcessInfo.processInfo.environment,
     probed: @autoclosure () -> [String: String] = ShellEnvironment.environment()
   ) -> String? {
-    for value in [inherited["SSH_AUTH_SOCK"], probed()["SSH_AUTH_SOCK"]] {
-      if let value, !value.isEmpty { return value }
-    }
-    return nil
+    SSHTransport.userSSHAgent(inherited: inherited, probed: probed())
   }
 
   /// The VM as the user's ssh reaches it, with only the agent's socket from the app's environment.

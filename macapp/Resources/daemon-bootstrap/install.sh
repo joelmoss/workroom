@@ -3,7 +3,8 @@
 # over the driver's transport, with the Linux `workroomd` the app bundles for the host's
 # architecture on stdin):
 #
-#   sh -c "$(cat install.sh)" install <binary> <socket> <hand-off 0|1> <sha256>  < workroomd-linux-<arch>
+#   sh -c "$(cat install.sh)" install <binary> <socket> <hand-off 0|1> <sha256> \
+#     [<app starts daemon 0|1>]  < workroomd-linux-<arch>
 #
 # It installs the binary beside the socket, which is where the supervisor starts the daemon from
 # and where the relay and the attach run. Every line it prints is prefixed `WRB `:
@@ -39,6 +40,7 @@ binary=$1
 socket=$2
 handoff=$3
 expected=$4
+starts=${5:-0}
 staged="$binary.new.$$"
 ticker=
 # Whatever ends this, nothing staged is left where the next install, or a curious eye, finds it,
@@ -135,6 +137,12 @@ fi
 echo "WRB outcome $outcome"
 
 if [ "$listening" = no ]; then
+  # An SSH host has no supervisor. Report that a start is needed, and let the app's separate start
+  # exchange do it; provider hosts still wait for their existing supervisor below.
+  if [ "$starts" = 1 ]; then
+    echo "WRB serving no"
+    exit 0
+  fi
   i=0
   while [ "$i" -lt 50 ]; do
     if "$binary" list --socket "$socket" > /dev/null 2>&1; then

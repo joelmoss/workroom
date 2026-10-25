@@ -4,10 +4,11 @@ import Foundation
 import HostDrivers
 import WorkroomDomain
 import WorkroomVCS
+import WorkroomWire
 import os
 
-/// Remote workrooms in the app (#253): a workroom on a host of its own, with its own clone, on a
-/// host the app provisions. A remote workroom always belongs to a project registered on this Mac
+/// Remote workrooms in the app (#253): each has its own clone, on a provisioned host or in its own
+/// folder on an existing SSH server. A remote workroom belongs to a project registered on this Mac
 /// (design doc, Phase 4: there are no remote projects).
 enum RemoteWorkrooms {
   /// Which container runtime makes a workroom's host (#309): Docker (Desktop, OrbStack, Colima) or
@@ -27,12 +28,14 @@ enum RemoteWorkrooms {
     case container(Runtime)
     case boxd
     case exeDev
+    case ssh
 
     var displayName: String {
       switch self {
       case .container(let runtime): runtime.displayName
       case .boxd: "boxd"
       case .exeDev: "exe.dev"
+      case .ssh: "SSH"
       }
     }
 
@@ -41,7 +44,7 @@ enum RemoteWorkrooms {
     var icon: String {
       switch self {
       case .container: "network"
-      case .boxd, .exeDev: "cloud"
+      case .boxd, .exeDev, .ssh: "cloud"
       }
     }
 
@@ -50,7 +53,7 @@ enum RemoteWorkrooms {
     /// and exe.dev serves `/vm/<name>` behind its sign-in.
     func dashboardURL(machine: String) -> URL? {
       switch self {
-      case .container: return nil
+      case .container, .ssh: return nil
       case .boxd:
         var url = URLComponents(string: "https://app.boxd.sh/machines")!
         url.queryItems = [URLQueryItem(name: "m", value: machine)]
@@ -65,12 +68,13 @@ enum RemoteWorkrooms {
       case .container(let runtime): "\(runtime.containerPhrase) on this Mac"
       case .boxd: "a boxd machine"
       case .exeDev: "an exe.dev VM"
+      case .ssh: "an SSH host"
       }
     }
 
     /// The remote providers, in the order the New Workroom menu and picker list them (#259). A new
     /// provider is a case here and an entry in this list.
-    static let remoteProviders: [Place] = [.boxd, .exeDev]
+    static let remoteProviders: [Place] = [.boxd, .exeDev, .ssh]
 
     /// How the user gives this place's hosts GitHub access, said after git's own words when a clone
     /// fails, or nil where Workroom gives it (a container takes the Mac's `gh` through the relay,
@@ -80,6 +84,9 @@ enum RemoteWorkrooms {
     var credentialHint: String? {
       switch self {
       case .container: nil
+      case .ssh:
+        "If GitHub refused the clone, set up credentials on the host: a GitHub SSH key for an "
+          + "SSH URL, or `gh auth login` and `gh auth setup-git` for HTTPS."
       case .boxd:
         "If GitHub refused the clone: a boxd machine reaches GitHub through your boxd git "
           + "integration. Connect it with `boxd manage integrations connect git`."
@@ -98,7 +105,7 @@ enum RemoteWorkrooms {
   static func unavailability(of place: Place) -> String? {
     switch place {
     case .container(let runtime): unavailability(of: runtime)
-    case .boxd, .exeDev:
+    case .boxd, .exeDev, .ssh:
       // Never unavailable: a create first checks the user's account there and, when it isn't
       // ready, shows the provider's setup (`BoxdSetup`, `ExeDevSetup`), installing boxd too.
       nil
@@ -111,6 +118,7 @@ enum RemoteWorkrooms {
   static let boxdDriver = BoxdHostDriver.driverName
   /// The descriptor's `driver` for an exe.dev host (#259).
   static let exeDevDriver = ExeDevHostDriver.driverName
+  static let sshDriver = "ssh"
 
   /// Why a workroom can't be created on `runtime` now, as the New Workroom menu shows it beside the
   /// entry, or nil when it can (#309).
@@ -190,7 +198,14 @@ enum RemoteWorkrooms {
   /// `repository` in a form every host rewrites to https: https, or `git@github.com:`, which boxd
   /// rewrites itself and an exe.dev host and a container's relay are given a rewrite for. Any other
   /// origin (another repository gh resolved, `ssh://` or a user-less scp form) gives way to https.
-  static func cloneURL(for repository: GitHubRepository, origin: String?) -> String {
+  static func cloneURL(
+    for repository: GitHubRepository, origin: String?, onSSHHost: Bool = false
+  ) -> String {
+    if onSSHHost, let origin = origin?.trimmingCharacters(in: .whitespacesAndNewlines),
+      GitHubRepository(remote: origin) == repository
+    {
+      return origin.hasPrefix("github.com:") ? "git@" + origin : origin
+    }
     if let origin = origin?.trimmingCharacters(in: .whitespacesAndNewlines),
       origin.hasPrefix("https://github.com/") || origin.hasPrefix("git@github.com:"),
       GitHubRepository(remote: origin) == repository
@@ -291,6 +306,11 @@ enum RemoteWorkrooms {
     var record: @Sendable (_ workroom: String?, _ descriptor: HostDescriptor) async throws -> Void
     /// Drops a workroom whose host never came to be.
     var forget: @Sendable (_ workroom: String) async throws -> Void
+    /// SSH names the leaf after the CLI reserves its name.
+    var reserveInParent:
+      (@Sendable (_ parent: String, _ descriptor: HostDescriptor) async throws -> String)? = nil
+    /// Reads persisted config after the entry was dropped; includes creating workrooms.
+    var hasWorkrooms: @Sendable (UUID) async throws -> Bool = { _ in false }
 
     /// This recorder, taking each machine a record names off the pending list in `directory`
     /// once the record is written (#373): from then on config names it, so only a machine whose
@@ -311,6 +331,84 @@ enum RemoteWorkrooms {
   struct Created: Sendable {
     let name: String
     let instance: RemoteProvisioning.Instance
+  }
+
+  /// A folder on an existing server. Its cleanup never reaches the provisioning protocol.
+  static func createSSH(
+    repository: GitHubRepository, cloneURL: String, startBranch: String?, startCommit: String?,
+    parent: String, driver: SSHHostDriver, environment: RemoteProvisioning.Environment,
+    recorder: Recorder
+  ) async throws -> Created {
+    _ = try await driver.checkHost()
+    let parent = try driver.resolveParent(parent)
+    guard let reserve = recorder.reserveInParent else {
+      throw HostDriverError.invalidConfiguration("SSH folder reservation is unavailable")
+    }
+    let workroom = UUID()
+    var descriptor = HostDescriptor(
+      state: "creating", driver: sshDriver, provisioner: provisioner,
+      id: SSHHostDriver.id(for: driver.destination), workroomID: workroom,
+      repository: "\(repository.owner)/\(repository.name)", cloneURL: cloneURL,
+      sshDestination: driver.destination, sshHome: driver.home)
+    let name = try await reserve(parent, descriptor)
+    let path = parent + "/" + name
+    descriptor.path = path
+    var made = false
+    var connection: DaemonVCSConnection?
+    do {
+      ProvisioningProgress.reportStep?(.machine)
+      try await driver.prepareFolder(path: path, workroom: workroom)
+      made = true
+      ProvisioningProgress.reportStep?(.connect)
+      let connected = try await environment.connect(driver.hostID)
+      connection = connected
+      ProvisioningProgress.reportStep?(.clone)
+      do {
+        _ = try await RemoteProvisioning.git(
+          ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
+          on: connected, step: .clone)
+      } catch RemoteProvisioning.Failure.git(let command, let detail) {
+        throw RemoteProvisioning.Failure.git(
+          command: command, detail: detail + "\n\n" + (Place.ssh.credentialHint ?? ""))
+      }
+      ProvisioningProgress.reportStep?(.checkout)
+      _ = try await RemoteProvisioning.git(
+        [
+          "switch", "--quiet", "--no-track", "--create", branch(for: name),
+          startCommit ?? "refs/remotes/origin/\(startBranch ?? "HEAD")",
+        ],
+        in: path, on: connected, step: .checkout)
+      descriptor.state = nil
+      try await recorder.record(name, descriptor)
+      return Created(
+        name: name,
+        instance: .init(
+          host: driver.hostID, path: path, branch: branch(for: name),
+          connection: connected, relayed: false))
+    } catch {
+      let cause = error
+      let opened = connection
+      let hadFolder = made
+      let remaining = descriptor
+      let cleanup = await Task { () -> String? in
+        await opened?.close()
+        if hadFolder {
+          do { try await driver.removeFolder(path: path, workroom: workroom) } catch {
+            return error.localizedDescription
+          }
+        }
+        return nil
+      }.value
+      if let cleanup {
+        var failed = remaining
+        failed.state = "failed"
+        try? await recorder.record(name, failed)
+        throw RemoteProvisioning.Failure.rollbackIncomplete(
+          cause: cause.localizedDescription, host: driver.hostID, cleanup: [cleanup])
+      }
+      try? await recorder.forget(name)
+      throw cause
+    }
   }
 
   /// Creates a remote workroom for a project (#253): a name in config, then the workroom's own
@@ -458,6 +556,7 @@ enum RemoteWorkrooms {
     case .container(let runtime, _): runtime.rawValue
     case .boxd: boxdDriver
     case .exeDev: exeDevDriver
+    case .ssh: sshDriver
     }
   }
 
@@ -554,8 +653,13 @@ enum RemoteWorkrooms {
   /// again finishes the job. `environment` is needed only for a live one.
   static func delete(
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
-    recorder: Recorder, teardown: Teardown? = nil
+    recorder: Recorder, teardown: Teardown? = nil, hosts: RemoteHosts = .shared
   ) async throws {
+    if host.driver == sshDriver, !host.isDestroyed {
+      return try await deleteSSH(
+        name, host: host, environment: environment, recorder: recorder, teardown: teardown,
+        hosts: hosts)
+    }
     // The entry goes, and the host's port forwards with it (#380): one step for both ways out, so
     // a workroom with nothing live to take down keeps nothing made this launch.
     func forget() async throws {
@@ -609,6 +713,67 @@ enum RemoteWorkrooms {
     try await forget()
   }
 
+  private static func deleteSSH(
+    _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
+    recorder: Recorder, teardown: Teardown?, hosts: RemoteHosts
+  ) async throws {
+    _ = try checkDeletable([host])
+    guard let id = host.id, let workroom = host.workroomID,
+      let path = teardown?.path ?? host.path,
+      let environment, let driver = environment.driver as? SSHHostDriver
+    else {
+      throw HostDriverError.invalidConfiguration("The SSH workroom's folder record is incomplete")
+    }
+    let box = HostID.remote(id)
+    let state: SSHHostDriver.FolderState?
+    do {
+      // The guard precedes teardown too: its root fallback must never recreate a gone folder.
+      state = try await driver.folderState(path: path, workroom: workroom)
+    } catch {
+      guard teardown?.skip == true else { throw error }
+      teardown?.onLine("Left \(path) on \(driver.destination): \(error.localizedDescription)")
+      state = nil
+    }
+    do {
+      if state == .present {
+        if let teardown, !teardown.skip, host.state == nil {
+          let result = await teardown.run(
+            ScriptRequest(
+              script: .teardown, workroom: name, path: path, host: box,
+              key: .ssh(destination: driver.destination), driver: driver,
+              daemonBinary: environment.daemonBinary(on: box), rootScript: teardown.rootScript,
+              judge: teardown.judge, onLine: teardown.onLine))
+          switch result {
+          case .failed(let why): throw Failure.teardownScriptFailed(why)
+          case .notTrusted(let script): throw Failure.teardownScriptNotTrusted(script)
+          case .absent, .passed: break
+          }
+        }
+      }
+      try await hosts.ensureConnected(box, wake: true)
+      for session in try await HostConnectionManager.shared.sessions(on: box)
+      where session.value(forMetadataKey: SessionMetadataKey.workroom) == workroom.uuidString {
+        if let sessionID = session.identifier.uuid {
+          _ = try await HostConnectionManager.shared.endSession(sessionID, on: box)
+        }
+      }
+      if state != nil { try await driver.removeFolder(path: path, workroom: workroom) }
+    } catch {
+      // Delete Anyway explicitly forgets what could not be removed, naming the folder left there.
+      guard teardown?.skip == true || state == .gone else { throw error }
+      teardown?.onLine("Left \(path) on \(driver.destination): \(error.localizedDescription)")
+    }
+    try await recorder.forget(name)
+    await MainActor.run { PortForwardingModel.forgetWorkroom(workroom, on: box) }
+    // A failed config read keeps the shared connection: dropping it is safe only with evidence.
+    guard (try? await recorder.hasWorkrooms(id)) == false else { return }
+    await MainActor.run { ProgramStatusMonitor.shared.forget(box) }
+    if let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
+      await HostConnectionManager.shared.disconnect(lease)
+    }
+    await hosts.forgetRelay(id)
+  }
+
   /// Records what a failure left live (a machine). A record that fails too is logged with it named,
   /// since nothing else in the app will remember it (#356).
   private static func recordLeftBehind(_ host: HostID, _ write: () async throws -> Void) async {
@@ -639,9 +804,17 @@ final class RemoteHosts: @unchecked Sendable {
     case boxd(org: String?, account: String?)
     /// An exe.dev account, `whoami`'s email (#259).
     case exeDev(account: String?)
+    case ssh(destination: String)
 
     /// The driver a recorded host is in, or nil for a descriptor of no driver this build knows.
     init?(_ descriptor: HostDescriptor) {
+      if descriptor.driver == RemoteWorkrooms.sshDriver {
+        guard let destination = descriptor.sshDestination,
+          (try? SSHHostDriver.validateDestination(destination)) != nil
+        else { return nil }
+        self = .ssh(destination: destination)
+        return
+      }
       if descriptor.driver == RemoteWorkrooms.boxdDriver {
         self = .boxd(org: descriptor.org, account: descriptor.account)
         return
@@ -673,6 +846,7 @@ final class RemoteHosts: @unchecked Sendable {
       case .container: RemoteWorkrooms.user
       case .boxd: BoxdHostDriver.user
       case .exeDev: ExeDevHostDriver.user
+      case .ssh: ""
       }
     }
 
@@ -696,7 +870,7 @@ final class RemoteHosts: @unchecked Sendable {
     var account: String? {
       switch self {
       case .boxd(_, let account), .exeDev(let account): account
-      case .container: nil
+      case .container, .ssh: nil
       }
     }
 
@@ -706,6 +880,7 @@ final class RemoteHosts: @unchecked Sendable {
       case .container(let runtime, _): .container(runtime)
       case .boxd: .boxd
       case .exeDev: .exeDev
+      case .ssh: .ssh
       }
     }
   }
@@ -821,6 +996,11 @@ final class RemoteHosts: @unchecked Sendable {
         guard cli != nil else { return driver }
       } else if case .exeDev(let account) = key {
         driver = ExeDevHostDriver(configuration: .init(account: account), directory: hosts)
+      } else if case .ssh(let destination) = key {
+        driver = SSHHostDriver(
+          configuration: .init(
+            destination: destination, home: "", stateDirectoryName: Self.sshStateDirectoryName),
+          directory: hosts)
       } else {
         driver = ContainerHostDriver(
           hosts: [:], directory: hosts, provisioning: try Self.provisioning(key))
@@ -841,6 +1021,11 @@ final class RemoteHosts: @unchecked Sendable {
 
   /// Where every container driver writes its hosts' files.
   static var hosts: URL { directory.appendingPathComponent("hosts", isDirectory: true) }
+
+  static var sshStateDirectoryName: String {
+    RemoteWorkrooms.sharedHostBuilds.contains(RemoteWorkrooms.provisioner)
+      ? "workroom" : "workroom-dev"
+  }
 
   /// `hosts`, except under test (a hosted unit run or a UI-test launch), which must never sweep
   /// the developer's own runtime.
@@ -905,6 +1090,12 @@ final class RemoteHosts: @unchecked Sendable {
     // remote provider's host Release and Nightly share is both's (`ownsHost`).
     let recorded = descriptors.filter {
       DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
+    }
+    for descriptor in recorded where descriptor.driver == RemoteWorkrooms.sshDriver {
+      guard let key = DriverKey(descriptor), let home = descriptor.sshHome else { continue }
+      do { try (driver(key) as? SSHHostDriver)?.adopt(home: home) } catch {
+        Self.logger.error("SSH host record: \(error.localizedDescription, privacy: .public)")
+      }
     }
     // An older build's base, until `BaseRetirement` removes it: it never relays.
     let bases = Set(projects.flatMap { BaseRetirement.bases(of: $0.host).compactMap(\.id) })
@@ -997,7 +1188,10 @@ final class RemoteHosts: @unchecked Sendable {
               // Through `destroy`, which first checks the driver's account: another account's
               // "not found" would read as gone.
               let failures = await PendingMachines.sweep(ids, in: pendingIn) {
-                try await self.driver(key).destroy(.remote($0))
+                guard let driver = try self.driver(key) as? any ProvisioningHostDriver else {
+                  throw HostDriverError.invalidConfiguration("This host cannot be swept")
+                }
+                try await driver.destroy(.remote($0))
               }
               // Done for the launch either way: a removal that failed (another account signed
               // in, say) is tried at the next launch, not at every reload.
@@ -1019,6 +1213,8 @@ final class RemoteHosts: @unchecked Sendable {
   /// for boxd the org and account it is signed in to now (#356).
   func key(for place: RemoteWorkrooms.Place) async throws -> DriverKey {
     switch place {
+    case .ssh:
+      throw HostDriverError.invalidConfiguration("Choose an SSH host first")
     case .container(let runtime): return try await key(for: runtime)
     case .boxd:
       // The org and account boxd is signed in to now, which a new base is made in. Throws, naming
@@ -1075,6 +1271,11 @@ final class RemoteHosts: @unchecked Sendable {
     var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
       let key = try Self.deletionKey(host)
+      if case .ssh = key, let home = host.sshHome,
+        let ssh = try driver(key) as? SSHHostDriver
+      {
+        try ssh.adopt(home: home)
+      }
       if environments[key] == nil { environments[key] = try environment(key).1 }
       // Taking a box down needs it on its driver, whatever a reload adopted: one that has not
       // adopted it yet would read the box as unknown. A boxd driver needs nothing adopted.

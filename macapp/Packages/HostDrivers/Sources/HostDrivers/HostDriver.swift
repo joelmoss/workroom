@@ -4,9 +4,7 @@ import Foundation
 import WorkroomSystem
 import WorkroomVCS
 
-/// One provider. Three methods, and the only one that is not provisioning is `openStream`
-/// (design doc, Phase 3). `create` makes each workroom's host: there is no base to derive from
-/// (a derive measured slower than a fresh machine on boxd, 2026-10-10).
+/// Reaches a host, whether a provider made it or the user brought it over SSH.
 ///
 /// **Every driver must authenticate its peer as strongly as a shell login.** The daemon's exec
 /// service runs `git` with arbitrary arguments, which is arbitrary code execution, so a stream
@@ -17,10 +15,8 @@ public protocol HostDriver: Sendable {
   /// beside, and the relay and the attach connect to. A remote provider's is on the host's home
   /// disk, so its binary and screens survive a stop (#259).
   var daemonSocket: String { get }
-  /// Provisions a workroom's host.
-  func create() async throws -> HostID
-  /// Takes down a host.
-  func destroy(_ host: HostID) async throws
+  /// Whether connect starts an unsupervised daemon when nothing listens (SSH hosts).
+  var startsDaemon: Bool { get }
   /// A byte stream to the daemon on `host`, for
   /// `DaemonVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
   /// `DaemonBootstrap.connect` runs the bootstrap first (#231), which is what puts a daemon there.
@@ -33,6 +29,13 @@ public protocol HostDriver: Sendable {
   /// is the stream, its stdin a socket of its own that `communicate` closes for EOF (#305).
   /// `openStream` runs the same carrier with the relay as the command, as a `.connection`.
   func exec(_ command: String, on host: HostID) async throws -> HostStream
+}
+
+/// A driver that owns the hosts it creates. An SSH host is the user's server and deliberately
+/// has no conformance: neither a delete nor a failed create can destroy it (ADR 0056).
+public protocol ProvisioningHostDriver: HostDriver {
+  func create() async throws -> HostID
+  func destroy(_ host: HostID) async throws
 }
 
 extension HostDriver {
@@ -86,6 +89,7 @@ extension HostDriver {
   /// The container image's socket (`vcs/scripts/ssh-fixture/entrypoint.sh`), for a driver that
   /// doesn't say otherwise.
   public var daemonSocket: String { DaemonInstall.defaultSocket }
+  public var startsDaemon: Bool { false }
 }
 
 /// What a provider driver runs on a new host to set it up.
