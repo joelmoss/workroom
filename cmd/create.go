@@ -29,6 +29,8 @@ var (
 	// The desktop app's remote workrooms (#253): the descriptor and the checkout's path on the host.
 	createHost     string
 	createHostPath string
+	// SSH hosts share a parent folder; the generated workroom name supplies the leaf.
+	createHostParent string
 )
 
 var createCmd = &cobra.Command{
@@ -63,6 +65,9 @@ var createCmd = &cobra.Command{
 		}
 		if cmd.Flags().Changed("host") {
 			return createRemote(svc, dir)
+		}
+		if createHostPath != "" || createHostParent != "" {
+			return fmt.Errorf("%w: --host-path and --host-parent require --host", errs.ErrInvalidHost)
 		}
 
 		if jsonOutput {
@@ -215,10 +220,18 @@ func createRemote(svc *workroom.Service, dir string) error {
 	if err != nil {
 		return err
 	}
-	if createHostPath == "" {
-		return fmt.Errorf("%w: --host-path is required with --host", errs.ErrInvalidHost)
+	if createHostPath == "" && createHostParent == "" {
+		return fmt.Errorf("%w: --host-path or --host-parent is required with --host", errs.ErrInvalidHost)
 	}
-	res, err := svc.CreateRemote(dir, createHostPath, host)
+	if createHostPath != "" && createHostParent != "" {
+		return fmt.Errorf("%w: --host-path and --host-parent are mutually exclusive", errs.ErrInvalidHost)
+	}
+	var res workroom.CreateResult
+	if createHostParent != "" {
+		res, err = svc.CreateRemoteInParent(dir, createHostParent, host)
+	} else {
+		res, err = svc.CreateRemote(dir, createHostPath, host)
+	}
 	if err != nil {
 		return err
 	}
@@ -234,8 +247,10 @@ func createRemote(svc *workroom.Service, dir string) error {
 func init() {
 	createCmd.Flags().StringVar(&createHost, "host", "", "Record a remote workroom with this host descriptor, a JSON object (used by the desktop app)")
 	createCmd.Flags().StringVar(&createHostPath, "host-path", "", "The remote workroom's path on its host (with --host)")
+	createCmd.Flags().StringVar(&createHostParent, "host-parent", "", "The absolute parent folder on the host; the generated name supplies the workroom's folder (with --host)")
 	_ = createCmd.Flags().MarkHidden("host")
 	_ = createCmd.Flags().MarkHidden("host-path")
+	_ = createCmd.Flags().MarkHidden("host-parent")
 	createCmd.Flags().StringVar(&createStartCommit, "start-commit", "", "Start from this commit, the start_commit a refused create reported, without fetching (used by the desktop app)")
 	_ = createCmd.Flags().MarkHidden("start-commit")
 	createCmd.Flags().StringVar(&createProject, "project", "", "Project directory to create the workroom in (defaults to the current directory)")
