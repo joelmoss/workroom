@@ -37,7 +37,7 @@ enum BaseRetirement {
           try RemoteHosts.shared.environment(toDelete: [base])?.environment(for: base)
         }
         guard let id = base.id, let environment else { throw RemoteWorkrooms.Failure.signedOut }
-        try await environment.driver.destroy(.remote(id))
+        try await RemoteProvisioning.tearDown(host: .remote(id), in: environment)
       })
   }
 

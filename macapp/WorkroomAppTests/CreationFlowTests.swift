@@ -1017,7 +1017,7 @@ final class CreationFlowTests: XCTestCase {
     ) async throws -> [URL] { [] }
   }
 
-  private final class FakeDriver: HostTerminalDriver, @unchecked Sendable {
+  private final class FakeDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
     let destroyFails: Bool
     private let lock = NSLock()
     private var destroyed = 0

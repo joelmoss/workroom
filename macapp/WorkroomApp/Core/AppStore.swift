@@ -422,10 +422,12 @@ final class AppStore: ObservableObject {
   /// the workroom is when its dev server is wanted, whatever the inspector is showing. The read
   /// connects the host, as every inspector read does, and selecting it has already started it.
   private func forwardDeclaredPorts() {
-    guard let workroom = selectedWorkroom, workroom.isContainer, let id = workroom.reachableHost,
+    guard let workroom = selectedWorkroom, workroom.isContainer || workroom.isSSH,
+      let id = workroom.reachableHost,
       let location = try? RepositoryLocation.remote(host: id, path: workroom.path)
     else { return }
-    let model = PortForwardingModel.model(for: .remote(id))
+    let model = PortForwardingModel.model(
+      for: .remote(id), workroom: workroom.isSSH ? workroom.host?.workroomID : nil)
     guard !model.declared else { return }
     Task {
       await model.forwardDeclared {
@@ -2602,7 +2604,13 @@ final class AppStore: ObservableObject {
     present(error)
     errorTitle = "Teardown of ‘\(workroom.name)’ failed"
     errorLog = Self.scriptOutput(log)
-    guard Self.isTeardownFailure(error) else { return }
+    if workroom.isSSH {
+      errorDetails =
+        (errorDetails ?? "") + "\nDelete Anyway removes this workroom from Workroom. "
+        + "The folder \(workroom.path) on \(workroom.host?.sshDestination ?? "its SSH host") may remain."
+    } else {
+      guard Self.isTeardownFailure(error) else { return }
+    }
     let name = workroom.name
     let path = project.path
     // As it is now, after the failure's reload, not as it was when the delete began.
@@ -2777,7 +2785,7 @@ final class AppStore: ObservableObject {
             guard let id = base.id, let environment = remote?.environment(for: base) else {
               throw RemoteWorkrooms.Failure.signedOut
             }
-            try await environment.driver.destroy(.remote(id))
+            try await RemoteProvisioning.tearDown(host: .remote(id), in: environment)
           }
           _ = try await BaseRetirement.retireBases(of: project, effects: effects)
           // What that leaves can't be told apart (no id) or is another build's and not live (a live
@@ -2895,11 +2903,19 @@ final class AppStore: ObservableObject {
     present(error)
     errorTitle = "Delete of ‘\(project.displayName)’ failed"
     errorLog = Self.scriptOutput(log)
-    guard Self.isTeardownFailure(error) else { return }
+    let ssh = project.workrooms.filter(\.isSSH)
+    guard Self.isTeardownFailure(error) || !ssh.isEmpty else { return }
+    if !ssh.isEmpty {
+      errorDetails =
+        (errorDetails ?? "") + "\nFolders that can't be removed will stay on their hosts:\n"
+        + ssh.map { "\($0.path) on \($0.host?.sshDestination ?? "its SSH host")" }.joined(
+          separator: "\n")
+    }
     let path = project.path
     // Says what it does: every remaining workroom's teardown is skipped, not only the one that
     // failed, as the CLI's `delete-project --skip-teardown` does.
-    errorAction = ErrorAction(label: "Delete Without Teardowns") { [weak self] in
+    errorAction = ErrorAction(label: ssh.isEmpty ? "Delete Without Teardowns" : "Delete Anyway") {
+      [weak self] in
       // As it is now: a remote workroom taken down before the failure is gone from it (C4).
       guard let self, let project = self.projects.first(where: { $0.path == path }) else { return }
       self.deleteProject(project, scope: scope, skipTeardown: true)

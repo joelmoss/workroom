@@ -4,6 +4,8 @@
 # The loop below IS the fixture's supervisor, the per-driver piece the design doc puts on the far
 # side. It starts the daemon at boot and again whenever it exits, for any reason, so a crashed daemon
 # comes back without a client doing anything. A real host does the same with a systemd unit.
+# WR_FIXTURE_SUPERVISOR=0 models an SSH host with no supervisor: the app must start and restart
+# its own daemon. It still gets sshd and the same isolated user and credentials.
 #
 # Run it with `--init`: when the daemon dies, its sessions' shells are orphaned, and something at
 # PID 1 has to reap them.
@@ -56,6 +58,7 @@ fi
 # `--screens`: each session's screen is kept, so a pane that reattaches after the box reboots is
 # shown its last one (#232). In the home directory, never beside the socket: /run is tmpfs on a real
 # host, so a reboot would take them.
+if [ "${WR_FIXTURE_SUPERVISOR:-1}" != 0 ]; then
 (
   while :; do
     if [ -x "$DAEMON" ]; then
@@ -67,6 +70,7 @@ fi
     sleep 1
   done
 ) &
+fi
 
 # The fixture's GitHub (fake-github.py, #252), as the ssh user, with only the capability
 # it needs for 443. `/etc/hosts` is the runtime's, written afresh at every start and never

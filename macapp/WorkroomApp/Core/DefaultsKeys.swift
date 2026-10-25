@@ -54,6 +54,8 @@ struct RunConfig: Codable, Hashable, Defaults.Serializable {
 /// storage so existing users' stored preferences carry over on upgrade. Sparkle's
 /// `SUEnableAutomaticChecks` is deliberately absent — it's owned by `SPUUpdater`, not us.
 extension Defaults.Keys {
+  /// Parent folder last used for each ssh destination, also supplies the recent hosts list.
+  static let sshHostParents = Key<[String: String]>("sshHostParents", default: [:], suite: .app)
   /// Appearance: System (follows the OS) / Light / Dark. Stored as the bare raw string via
   /// `ThemePreference: PreferRawRepresentable` (matching the old `@AppStorage` encoding).
   static let theme = Key<ThemePreference>("themePreference", default: .system, suite: .app)

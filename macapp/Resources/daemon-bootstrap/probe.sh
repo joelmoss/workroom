@@ -3,7 +3,7 @@
 # host over the driver's transport before any service connects):
 #
 #   sh -c "$(cat probe.sh)" probe <binary> <socket> <hand-off 0|1> <sha256 aarch64> <sha256 x86_64> \
-#     <resources> [<former binary>]
+#     <resources> [<former binary>] [<app starts daemon 0|1>]
 #
 # A sha256 is `-` for an architecture the app bundles no daemon for (it never equals a hash).
 # <resources> is where Ghostty's terminfo and shell integration go (resources.sh, issue #239).
@@ -37,6 +37,7 @@ sha_aarch64=$4
 sha_x86_64=$5
 resources=$6
 former=${7:-}
+starts=${8:-0}
 
 arch=$(uname -m)
 echo "WRB host $(uname -s) $arch"
@@ -46,6 +47,22 @@ if [ ! -e "$binary" ] && [ -n "$former" ] && [ -x "$former" ]; then
   exit 0
 fi
 echo "WRB former no"
+
+# An SSH server has no supervisor to make the socket's private directory. The socket was resolved
+# from the remote home by the driver's checks, and this path may only be inside that home.
+if [ "$starts" = 1 ]; then
+  case "$socket" in
+    "$HOME"/*) ;;
+    *) echo "WRB error the daemon socket is outside the home folder"; exit 1 ;;
+  esac
+  umask 077
+  state=${socket%/*}
+  [ "${state##*/}" != daemon ] || state=${state%/*}
+  if ! mkdir -p "${socket%/*}" || ! chmod 700 "$state" "${socket%/*}"; then
+    echo "WRB error could not make the daemon's private folder"
+    exit 1
+  fi
+fi
 
 installed=none
 if [ -x "$binary" ]; then

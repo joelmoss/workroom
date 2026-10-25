@@ -352,7 +352,7 @@ final class RemoteTeardownTests: XCTestCase {
     func add(_ entry: String) { lock.withLock { entries.append(entry) } }
   }
 
-  private final class Driver: HostTerminalDriver, @unchecked Sendable {
+  private final class Driver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
     let log: Log
     init(_ log: Log) { self.log = log }
     var daemonSocket: String { "/home/boxd/.workroom/workroomd.sock" }

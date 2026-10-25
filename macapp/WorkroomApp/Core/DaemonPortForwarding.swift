@@ -999,15 +999,36 @@ final class PortForwardingModel: ObservableObject {
   /// Details pane showing another workroom and coming back, and a host's connection
   /// (`Transport.reconnect`, #380).
   static var models: [HostID: PortForwardingModel] = [:]
+  struct WorkroomKey: Hashable {
+    let host: HostID
+    let workroom: UUID
+  }
+  static var workroomModels: [WorkroomKey: PortForwardingModel] = [:]
+
+  static func forgetWorkroom(_ workroom: UUID, on host: HostID) {
+    guard let model = workroomModels.removeValue(forKey: .init(host: host, workroom: workroom))
+    else { return }
+    for entry in model.forwards { model.remove(entry.id) }
+  }
 
   /// A deleted host's forwards go with it: their listeners stop, and nothing reconnects a host that
   /// is gone. Its connection no longer drops them, since a remote host's forwards outlive it (#380).
   static func forgetHost(_ host: HostID) {
+    for key in workroomModels.keys.filter({ $0.host == host }) {
+      forgetWorkroom(key.workroom, on: host)
+    }
     guard let model = models.removeValue(forKey: host) else { return }
     for entry in model.forwards { model.remove(entry.id) }
   }
 
-  static func model(for host: HostID) -> PortForwardingModel {
+  static func model(for host: HostID, workroom: UUID? = nil) -> PortForwardingModel {
+    if let workroom {
+      let key = WorkroomKey(host: host, workroom: workroom)
+      if let model = workroomModels[key] { return model }
+      let model = PortForwardingModel(host: host, transport: .live(host))
+      workroomModels[key] = model
+      return model
+    }
     if let model = models[host] { return model }
     let model = PortForwardingModel(host: host, transport: .live(host))
     models[host] = model

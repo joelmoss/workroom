@@ -5,8 +5,8 @@ import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 
-/// Making remote workrooms the portable way (#252; design doc Phase 4, "Remote creation is one
-/// sequence"). Every workroom is a host of its own, made fresh, with its own clone:
+/// Making workrooms on provisioned hosts (#252; design doc Phase 4). Each provider or container
+/// workroom has a host of its own, made fresh, with its own clone:
 /// **create → clone and check out → serve.** A driver's speed differs, never the sequence.
 /// There is no base machine to derive from: a derive measured slower than a fresh machine on boxd,
 /// and saved about 2.5 s on exe.dev (2026-10-10).
@@ -151,7 +151,10 @@ enum RemoteProvisioning {
     if let makeHost = environment.makeHost {
       host = try await makeHost()
     } else {
-      host = try await environment.driver.create()
+      guard let driver = environment.driver as? any ProvisioningHostDriver else {
+        throw HostDriverError.invalidConfiguration("This host cannot be provisioned")
+      }
+      host = try await driver.create()
     }
     var connection: DaemonVCSConnection?
     do {
@@ -183,7 +186,7 @@ enum RemoteProvisioning {
       // In a task of its own, so a cancelled create still undoes itself.
       let failure = await Task { () -> String? in
         await opened?.close()
-        do { try await environment.driver.destroy(host) } catch {
+        do { try await tearDown(host: host, in: environment) } catch {
           return "destroying the instance: \(error.localizedDescription)"
         }
         return nil
@@ -204,7 +207,10 @@ enum RemoteProvisioning {
   /// `destroy` by what a workroom's record says is live (#253), with no connection to it. Removing a
   /// box already gone succeeds, so a delete can be tried again.
   static func tearDown(host: HostID, in environment: Environment) async throws {
-    do { try await environment.driver.destroy(host) } catch {
+    guard let driver = environment.driver as? any ProvisioningHostDriver else {
+      throw HostDriverError.invalidConfiguration("This host cannot be destroyed")
+    }
+    do { try await driver.destroy(host) } catch {
       throw Failure.rollbackIncomplete(
         cause: "", host: host,
         cleanup: ["destroying the instance: \(error.localizedDescription)"])
@@ -304,6 +310,7 @@ enum RemoteProvisioning {
     case .container(let runtime, _): runtime == .docker ? "docker" : "apple"
     case .boxd: "boxd"
     case .exeDev: "exedev"
+    case .ssh: "ssh"
     }
   }
 

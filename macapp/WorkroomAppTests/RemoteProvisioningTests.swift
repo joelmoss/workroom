@@ -38,6 +38,7 @@ final class RemoteProvisioningHostKindTests: XCTestCase {
     XCTAssertEqual(RemoteProvisioning.hostKind(.init(runtime: .apple)), "apple")
     XCTAssertEqual(RemoteProvisioning.hostKind(.boxd(org: nil, account: nil)), "boxd")
     XCTAssertEqual(RemoteProvisioning.hostKind(.exeDev(account: nil)), "exedev")
+    XCTAssertEqual(RemoteProvisioning.hostKind(.ssh(destination: "myserver")), "ssh")
   }
 }
 
@@ -291,7 +292,7 @@ private final class CheckpointLog: @unchecked Sendable {
 }
 
 /// Makes a host for every create, and counts what it makes and takes down.
-private final class CountingDriver: HostDriver, @unchecked Sendable {
+private final class CountingDriver: ProvisioningHostDriver, @unchecked Sendable {
   private let lock = NSLock()
   private var made = 0
   private var removed = 0

@@ -25,7 +25,7 @@ import os
 ///
 /// Everything the daemon keeps is on the machine's home disk (`daemonSocket`), so a machine that is
 /// stopped and started keeps its binary and its screens.
-public final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
+public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
   public struct Configuration: Sendable {
     /// The `boxd` CLI, signed in.
     public var cli: URL

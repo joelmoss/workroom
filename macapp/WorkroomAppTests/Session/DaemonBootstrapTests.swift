@@ -22,6 +22,7 @@ final class DaemonBootstrapTests: XCTestCase {
     private(set) var commands: [String] = []
     /// Where `openStream` connects, or nil for one that throws.
     var streamSocket: String?
+    var startsDaemon = false
 
     init(_ answers: [Answer]) { self.answers = answers }
 
@@ -209,6 +210,90 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertEqual(
       kept, .init(architecture: "aarch64", pushed: false, daemon: .keptOlder("hand-off is off")))
     XCTAssertTrue(off.commands[0].contains(" '0' '\(digest)'"), off.commands[0])
+  }
+
+  func testAnSSHHostRestartsForBothMissingAndStaleSockets() async throws {
+    for handOff in ["no-socket", "92 error: no daemon listening on /s"] {
+      let driver = StubDriver([
+        probe(installed: digest, handOff: handOff),
+        .init(output: "WRB started 42\nWRB serving yes\n"),
+        .init(output: ""),
+      ])
+      driver.startsDaemon = true
+      let outcome = try await ensure(driver)
+      XCTAssertEqual(outcome.daemon, .installed)
+      XCTAssertEqual(outcome.startedPID, 42)
+      XCTAssertFalse(outcome.pushed)
+      XCTAssertEqual(driver.commands.count, 3)
+      XCTAssertTrue(
+        driver.commands[1].hasSuffix(
+          "'start' '/run/workroom/workroomd' '/run/workroom/workroomd.sock' '/run/workroom/screens' 'never'"
+        ),
+        driver.commands[1])
+      XCTAssertEqual(
+        driver.commands[2],
+        "'/run/workroom/workroomd' 'list' '--socket' '/run/workroom/workroomd.sock'")
+    }
+  }
+
+  func testAnSSHInstallStartsWithoutWaitingForASupervisor() async throws {
+    let driver = StubDriver([
+      probe(installed: "none", handOff: "none"),
+      .init(output: "WRB outcome installed\nWRB serving no\n"),
+      .init(output: "WRB started 43\nWRB serving yes\n"),
+      .init(output: ""),
+    ])
+    driver.startsDaemon = true
+    let outcome = try await ensure(driver)
+    XCTAssertEqual(outcome.daemon, .installed)
+    XCTAssertEqual(outcome.startedPID, 43)
+    XCTAssertTrue(outcome.pushed)
+    XCTAssertEqual(driver.commands.count, 4)
+    XCTAssertTrue(driver.commands[0].hasSuffix("'/run/workroom/wr-agent' '1'"))
+    XCTAssertTrue(driver.commands[1].hasSuffix("'1' '\(digest)' '1'"))
+  }
+
+  func testAnSSHCurrentDaemonIsLeftRunning() async throws {
+    let driver = StubDriver([probe(installed: digest, handOff: "0 current")])
+    driver.startsDaemon = true
+    let outcome = try await ensure(driver)
+    XCTAssertEqual(outcome.daemon, .current)
+    XCTAssertNil(outcome.startedPID)
+    XCTAssertEqual(driver.commands.count, 1)
+  }
+
+  func testAnOlderAppStartsTheNewerDaemonAlreadyInstalledOnSSH() async throws {
+    let daemon = try numberedDaemon(100)
+    let driver = StubDriver([
+      probe(installed: String(repeating: "0", count: 64), build: 200),
+      .init(output: "WRB started 44\nWRB serving yes\n"),
+      .init(output: ""),
+    ])
+    driver.startsDaemon = true
+    let outcome = try await ensure(driver, daemon: { $0 == "aarch64" ? daemon : nil })
+    XCTAssertEqual(outcome.daemon, .keptNewer("the host runs build 200, newer than this app's 100"))
+    XCTAssertEqual(outcome.startedPID, 44)
+    XCTAssertFalse(outcome.pushed)
+    XCTAssertEqual(driver.commands.count, 3)
+    XCTAssertTrue(driver.commands[1].contains("'start' '/run/workroom/workroomd' "))
+  }
+
+  func testAnSSHStartThatDoesNotSurviveLogoutNamesLogind() async throws {
+    let driver = StubDriver([
+      probe(installed: digest, handOff: "no-socket"),
+      .init(output: "WRB started 45\nWRB serving yes\n"),
+      .init(output: "", status: 92),
+    ])
+    driver.startsDaemon = true
+    do {
+      _ = try await ensure(driver)
+      XCTFail("a daemon killed when ssh logged out counted as ready")
+    } catch DaemonBootstrap.Error.installFailed(let detail) {
+      XCTAssertTrue(detail.contains("SSH login closed"), detail)
+      XCTAssertTrue(detail.contains("KillUserProcesses"), detail)
+      XCTAssertTrue(detail.contains("loginctl enable-linger"), detail)
+    }
+    XCTAssertEqual(driver.commands.count, 3, "the survival check is a separate exec")
   }
 
   /// A link that dies mid-push (ssh's own 255, no report) is one failure classified one way,
@@ -619,7 +704,7 @@ final class DaemonBootstrapTests: XCTestCase {
 
   /// The scripts ship in the bundle, and parse.
   func testTheFarSideScriptsAreBundledAndParse() throws {
-    for name in ["probe", "install", "placed", "resources"] {
+    for name in ["probe", "install", "placed", "resources", "start"] {
       let script = try DaemonBootstrap.script(named: name)
       XCTAssertTrue(script.hasPrefix("#!/bin/sh\n"), name)
       let (status, output) = try SessionBackendProbe.run(

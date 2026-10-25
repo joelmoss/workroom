@@ -340,6 +340,7 @@ enum WorkroomPlace: Hashable {
     case .remote(.container(let runtime)): runtime.rawValue
     case .remote(.boxd): RemoteWorkrooms.boxdDriver
     case .remote(.exeDev): RemoteWorkrooms.exeDevDriver
+    case .remote(.ssh): RemoteWorkrooms.sshDriver
     }
   }
 
@@ -356,6 +357,7 @@ enum WorkroomPlace: Hashable {
     case .remote(.container(let runtime)): "A workroom in \(runtime.containerPhrase) on this Mac"
     case .remote(.boxd): "A workroom on a boxd machine"
     case .remote(.exeDev): "A workroom on an exe.dev VM"
+    case .remote(.ssh): "A folder on a Linux server you already have"
     }
   }
 }

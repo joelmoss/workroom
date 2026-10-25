@@ -387,6 +387,9 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
     var env = environment
     env["PATH"] = bin.path + ":" + (env["PATH"] ?? "")
+    // This fixture controls git's timing through PATH. Use the daemon's fallback environment
+    // rather than let the developer's login profile replace that wrapper (#378).
+    env["SHELL"] = "/nonexistent/workroom-test-shell/zsh"
     let daemon = try DaemonHarness.start(environment: env)
     daemons.append(daemon)
     let connection = try await DaemonVCSConnection.connect(
@@ -463,6 +466,8 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
     var env = environment
     env["PATH"] = bin.path + ":" + (env["PATH"] ?? "")
+    // Keep the timing wrapper when the daemon resolves its cached host environment (#378).
+    env["SHELL"] = "/nonexistent/workroom-test-shell/zsh"
     let daemon = try DaemonHarness.start(environment: env)
     daemons.append(daemon)
     let connection = try await DaemonVCSConnection.connect(

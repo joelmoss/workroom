@@ -32,7 +32,9 @@ struct DetailsPanel: View {
           }
         }
         fact("Running on", target.hostKind ?? "This Mac", link: dashboard)
-        if let machine = target.machineName { fact("Machine Name", machine, copyable: true) }
+        if let machine = target.machineName {
+          fact(target.hostPlace == .ssh ? "Host" : "Machine Name", machine, copyable: true)
+        }
         fact(target.hostKind == nil ? "Path" : "Path on its host", target.path, copyable: true)
         if let note = target.remoteNote {
           Text(note).font(.caption2).foregroundStyle(.secondary)
@@ -93,6 +95,11 @@ extension DetailsPanel {
     if case .container = target.hostPlace, let host = target.remoteHost {
       Divider()
       PortsSection(model: .model(for: .remote(host)))
+    } else if target.hostPlace == .ssh, let host = target.remoteHost,
+      let workroom = target.remoteWorkroomID
+    {
+      Divider()
+      PortsSection(model: .model(for: .remote(host), workroom: workroom))
     }
   }
 

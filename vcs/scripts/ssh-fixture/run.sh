@@ -24,6 +24,9 @@
 #   vcs/scripts/ssh-fixture/run.sh <linux workroomd> \
 #     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/RemoteHostIntegrationTests
 #
+# To test the SSH driver starting its own daemon, set WR_FIXTURE_SUPERVISOR=0 and select
+# WorkroomAppTests/SSHHostIntegrationTests instead.
+#
 # xcodebuild hands a test only the variables prefixed TEST_RUNNER_, so each is exported twice.
 set -euo pipefail
 
@@ -31,6 +34,7 @@ DAEMON="${1:?usage: run.sh <path to a Linux workroomd for the container architec
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VCS_DIR="$(cd "$HERE/../.." && pwd)"
 RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
+SUPERVISOR="${WR_FIXTURE_SUPERVISOR:-1}"
 NAME="wr-ssh-fixture-$$"
 # Fixed by entrypoint.sh.
 SOCKET="/run/workroom/workroomd.sock"
@@ -72,7 +76,8 @@ echo "ssh-fixture: $("$RUNTIME" run --rm --entrypoint workroomd "$IMAGE" protoco
 
 ssh-keygen -q -t ed25519 -N '' -C wr-ssh-fixture -f "$STAGE/id_ed25519"
 "$RUNTIME" run --detach --init --name "$NAME" --publish 127.0.0.1::22 \
-  --env "AUTHORIZED_KEY=$(cat "$STAGE/id_ed25519.pub")" "$IMAGE" >/dev/null
+  --env "AUTHORIZED_KEY=$(cat "$STAGE/id_ed25519.pub")" \
+  --env "WR_FIXTURE_SUPERVISOR=$SUPERVISOR" "$IMAGE" >/dev/null
 PORT="$("$RUNTIME" port "$NAME" 22/tcp | head -1 | sed 's/.*://')"
 
 # BatchMode cannot prompt to accept a host key, so the expected key is delivered out of band (here,
@@ -109,9 +114,15 @@ Host fixture
   LogLevel ERROR
 EOF
 
-# Up means sshd answers AND the supervisor has the agent serving: `list` handshakes with it.
+# Unsupervised SSH-driver tests must prove that the app starts the daemon. They wait for sshd
+# alone; every existing suite still waits for the fixture's supervisor to serve.
 for attempt in $(seq 1 100); do
-  if ssh -F "$STAGE/ssh_config" fixture workroomd list --socket "$SOCKET" >/dev/null 2>&1; then
+  if [ "$SUPERVISOR" = 0 ]; then
+    READY_COMMAND=true
+  else
+    READY_COMMAND="workroomd list --socket $SOCKET"
+  fi
+  if ssh -F "$STAGE/ssh_config" fixture "$READY_COMMAND" >/dev/null 2>&1; then
     break
   fi
   if [ "$attempt" = 100 ]; then
@@ -132,7 +143,7 @@ for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "POR
   "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "DAEMON=$STAGE/workroomd" \
   "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS" "IMAGE=$IMAGE" \
   "RUNTIME_PATH=$(command -v "$RUNTIME")" "PUBLIC_KEY=$(cat "$STAGE/id_ed25519.pub")" \
-  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN"; do
+  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN" "SUPERVISOR=$SUPERVISOR"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 

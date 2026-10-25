@@ -9,7 +9,7 @@ import XCTest
 /// One real provider, as the parity cases need it (#259): its driver and key, and what the cases
 /// do on its machines through its own control plane, never over the Mac's link to the daemon.
 struct LiveProvider {
-  let driver: any HostTerminalDriver
+  let driver: any HostTerminalDriver & ProvisioningHostDriver
   /// The key a workroom made the way the app does it records.
   let key: RemoteHosts.DriverKey
   /// The user its machines log in as.
@@ -102,8 +102,8 @@ class ProviderParityTestCase: XCTestCase {
   /// which would answer the real GitHub. Every setting is in the user's global config, not the
   /// system's: boxd rewrites `/etc/hosts` and `/etc/gitconfig` at every boot (measured), and
   /// exe.dev's system rewrite to its integration host is undone here.
-  struct WithFakeGitHub: HostTerminalDriver {
-    let driver: any HostTerminalDriver
+  struct WithFakeGitHub: HostTerminalDriver, ProvisioningHostDriver {
+    let driver: any HostTerminalDriver & ProvisioningHostDriver
     let user: String
     static let cloneToken = "ghs_fixture_clone_token_0123456789"
 

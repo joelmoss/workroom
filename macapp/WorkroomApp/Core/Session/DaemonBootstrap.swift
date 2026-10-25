@@ -29,6 +29,8 @@ import os
 /// its runtime puts the binary there (Docker copies it in beside the running one, Apple's mounts it
 /// from this Mac), and a third script (`placed.sh`) does the install's checks on it in place. The
 /// probe is the same, pointed at the entrypoint.
+/// An SSH host has no supervisor: its driver opts into `startsDaemon`, and connect runs start.sh
+/// when nothing listens, including a stale socket after a kill or reboot. The daemon stays running.
 ///
 /// Two hashes answer two questions. The app hashes its bundled binary (SHA-256) and the probe
 /// hashes the installed one, which decides whether to push at all: the same build pushes nothing.
@@ -42,10 +44,8 @@ enum DaemonBootstrap {
     enum Daemon: Equatable, Sendable {
       /// The daemon runs this app's binary.
       case current
-      /// Nothing was running, and this app's binary is the installed one: after a push, the
-      /// install waited for the supervisor to start it; for a file already there, that start is
-      /// the supervisor's (as after a reboot), and the connect that follows may find it not yet
-      /// up.
+      /// Nothing was running, and this app's binary is installed. The supervisor starts it on a
+      /// provider host; this connect starts it on an SSH host, including after a kill or reboot.
       case installed
       /// The running daemon replaced its program with this app's, keeping every session.
       case handedOff
@@ -74,6 +74,8 @@ enum DaemonBootstrap {
     let daemon: Daemon
     /// Nil when this build had no set to push (a test's).
     var resources: Resources? = nil
+    /// A daemon this connect started on an unsupervised host, recorded in the bootstrap log.
+    var startedPID: Int32? = nil
   }
 
   enum Error: Swift.Error, Equatable, LocalizedError {
@@ -145,6 +147,24 @@ enum DaemonBootstrap {
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
     handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
   ) async throws -> Outcome {
+    var outcome = try await prepare(
+      host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
+      resources: resources)
+    guard driver.startsDaemon else { return outcome }
+    switch outcome.daemon {
+    case .current, .handedOff: break
+    case .installed, .keptOlder, .keptNewer:
+      // A retained newer build must be started too: an older Mac can be the first to reconnect
+      // after the server reboots. start.sh first checks for a listener, so a live daemon is kept.
+      outcome.startedPID = try await start(host: host, driver: driver, socket: socket)
+    }
+    return outcome
+  }
+
+  private static func prepare(
+    host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
+    handOff: Bool, resources: URL?
+  ) async throws -> Outcome {
     // A container's driver places its daemon itself (#308), outside the socket's folder.
     let placing = driver as? any DaemonPlacingDriver
     let placed = placing?.daemonPath(on: host)
@@ -166,7 +186,7 @@ enum DaemonBootstrap {
         + architectures.map { bundled[$0]?.digest ?? "-" } + [
           DaemonInstall.resources(besideSocket: socket),
           DaemonInstall.formerBinary(besideSocket: socket),
-        ])
+        ] + (driver.startsDaemon ? ["1"] : []))
     let report = try parseProbe(probe.output)
     if report.former { throw Error.olderLayout }
     // A probe cut off part way (its hand-off is the long step) would read as "not asked".
@@ -246,7 +266,8 @@ enum DaemonBootstrap {
     do {
       install = try await run(
         script: "install", on: host, driver: driver, input: elf,
-        arguments: [binary, socket, handOff ? "1" : "0", digest])
+        arguments: [binary, socket, handOff ? "1" : "0", digest]
+          + (driver.startsDaemon ? ["1"] : []))
     } catch Error.transportFailed(let detail) {
       // Refuse rather than kill, at the transport too: an install that could not be carried out
       // (a link that dropped mid-push, or went silent) leaves whatever daemon is there, and the
@@ -258,19 +279,51 @@ enum DaemonBootstrap {
     }
     return Outcome(
       architecture: architecture, pushed: true,
-      daemon: try installed(after: install, hasDaemon: report.installed != nil), resources: set)
+      daemon: try installed(
+        after: install, hasDaemon: report.installed != nil, startsDaemon: driver.startsDaemon),
+      resources: set)
+  }
+
+  /// SSH hosts have no supervisor. Once the start exchange has ended, a separate exec proves the
+  /// daemon survived that ssh login closing: some servers' logind policy kills its whole scope.
+  private static func start(host: HostID, driver: any HostDriver, socket: String) async throws
+    -> Int32?
+  {
+    let binary = DaemonInstall.binary(besideSocket: socket)
+    let directory = (socket as NSString).deletingLastPathComponent
+    let result = try await run(
+      script: "start", on: host, driver: driver, input: nil,
+      arguments: [binary, socket, directory + "/screens", "never"])
+    guard result.status == 0, reports(in: result.output)["serving"]?.first == "yes" else {
+      let reason = reports(in: result.output)["error"]?.joined(separator: " ")
+      throw Error.installFailed(
+        reason ?? "the daemon did not start; check \(directory)/workroomd.log on the host")
+    }
+    let check = try await driver.exec(
+      ([binary, "list", "--socket", socket].map(PosixShell.quoted).joined(separator: " ")),
+      on: host)
+    let answer = try await check.communicate(nil, timeout: timeout)
+    if answer.status == 255 {
+      throw Error.transportFailed(answer.output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    guard answer.status == 0 else {
+      throw Error.installFailed(
+        "the server ended the daemon after the SSH login closed. Its systemd-logind KillUserProcesses setting may end background processes. Ask the server's administrator about loginctl enable-linger or that setting, then try again."
+      )
+    }
+    return reports(in: result.output)["started"]?.first.flatMap(Int32.init)
   }
 
   /// What became of the daemon, by the outcome install.sh or placed.sh ended on.
   private static func installed(
-    after script: (status: Int32, output: String), hasDaemon: Bool
+    after script: (status: Int32, output: String), hasDaemon: Bool, startsDaemon: Bool = false
   ) throws -> Outcome.Daemon {
     let (outcome, serving) = parseInstall(script.output)
     switch outcome.first {
     case "installed":
       // `serving` is always printed after `installed`; its absence is an install cut short.
       guard let serving else { throw Error.installFailed("the install did not finish") }
-      guard serving else {
+      guard serving || startsDaemon else {
         throw Error.installFailed("installed, but the supervisor did not start it within 10s")
       }
       return .installed

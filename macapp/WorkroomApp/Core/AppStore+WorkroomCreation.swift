@@ -343,6 +343,7 @@ extension AppStore {
     case .container(let runtime): await runRemoteCreate(retry, place: .container(runtime))
     case .boxd: await runRemoteCreate(retry, place: .boxd)
     case .exeDev: await runRemoteCreate(retry, place: .exeDev)
+    case .ssh: await runRemoteCreate(retry, place: .ssh)
     }
   }
 
@@ -492,6 +493,16 @@ extension AppStore {
           project: path, workroom: workroom,
           descriptor: try JSONEncoder().encode(HostDescriptor(state: "destroyed")))
         try await cli.delete(name: workroom, project: path, onLog: nil)
+      },
+      reserveInParent: { parent, descriptor in
+        try await cli.createRemote(
+          project: path, hostParent: parent, descriptor: try JSONEncoder().encode(descriptor)
+        ).name
+      },
+      hasWorkrooms: { id in
+        try await cli.list(warnings: "fast", project: nil).projects.contains { project in
+          project.workrooms.contains { $0.host?.id == id && $0.host?.isDestroyed == false }
+        }
       })
   }
 
@@ -587,9 +598,15 @@ extension AppStore {
       }
       // After the project's own checks, so nobody signs up or picks a plan for a project the
       // provider can't take.
+      var sshSetup: SSHHostSetup?
       if run.steps.contains(where: { $0.id == "account" }) {
         run.begin("account")
-        if let setup = await services.setupNeeded(place) {
+        if let proposed = await services.setupNeeded(place) {
+          // A second create shares the actual host choice shown in the existing sheet.
+          let setup =
+            projectStore.remoteSetupWaits.first(where: { $0.place == place })?.setup
+            ?? proposed
+          sshSetup = setup as? SSHHostSetup
           guard await waitForRemoteSetup(run, place: place, setup: setup) else {
             run.cancel()
             closeCreation(run)
@@ -598,7 +615,15 @@ extension AppStore {
           run.begin("account")
         }
       }
-      let host = try await services.host(place)
+      let host: RemoteCreateHost
+      if let sshSetup, let driver = sshSetup.driver {
+        host = RemoteCreateHost(
+          key: .ssh(destination: driver.destination), driver: driver,
+          environment: .init(driver: driver, daemonSocket: driver.daemonSocket),
+          sshParent: sshSetup.parent)
+      } else {
+        host = try await services.host(place)
+      }
       let (created, prepared) = try await provisionRemote(
         run, plan: plan, host: host, start: status.start, devcontainer: devcontainer)
       await Self.drainMainQueue()  // the last step's lines, before it is marked done
@@ -701,6 +726,15 @@ extension AppStore {
         TerminalTarget.workroomID(project: path, name: name), in: run.project)
       return name
     }
+    if let reserveInParent = recorder.reserveInParent {
+      recorder.reserveInParent = { [weak self] parent, descriptor in
+        let name = try await reserveInParent(parent, descriptor)
+        await self?.nameCreationRun(run, name)
+        await self?.armAutoRunIfConfigured(
+          TerminalTarget.workroomID(project: path, name: name), in: run.project)
+        return name
+      }
+    }
     let forget = recorder.forget
     recorder.forget = { [weak self] name in
       try await forget(name)
@@ -743,6 +777,15 @@ extension AppStore {
               }
             }
             environment.makeHost = { try await container.create(spec: made.spec) }
+          }
+          if let ssh = host.driver as? SSHHostDriver, let parent = host.sshParent {
+            let cloneURL = RemoteWorkrooms.cloneURL(
+              for: plan.repository, origin: plan.origin ?? plan.cloneURL, onSSHHost: true)
+            let created = try await RemoteWorkrooms.createSSH(
+              repository: plan.repository, cloneURL: cloneURL, startBranch: plan.startBranch,
+              startCommit: start, parent: parent, driver: ssh,
+              environment: environment, recorder: recorder)
+            return (created, nil)
           }
           let created = try await RemoteWorkrooms.create(
             repository: plan.repository, cloneURL: plan.cloneURL, startBranch: plan.startBranch,
@@ -939,6 +982,7 @@ struct RemoteCreatePlan: Sendable {
   let startBranch: String?
   /// The app-wide default base branch, when a remote machine can't use it.
   let defaultNotUsed: String?
+  var origin: String? = nil
 }
 
 /// Where a remote create makes its workroom.
@@ -946,6 +990,7 @@ struct RemoteCreateHost {
   let key: RemoteHosts.DriverKey
   let driver: any HostTerminalDriver
   let environment: RemoteProvisioning.Environment
+  var sshParent: String? = nil
 }
 
 /// What a remote create reaches beyond the app (#483): GitHub and the project's git, the provider's
@@ -982,6 +1027,8 @@ struct RemoteCreateServices {
           return await BoxdSetup.needed()
         case .container:
           return nil
+        case .ssh:
+          return SSHHostSetup()
         }
       },
       host: { place in
@@ -1039,11 +1086,12 @@ extension AppStore {
         startBranch = branch
       }
     }
+    let origin = await resolver.originURL(in: project.path)
     return RemoteCreatePlan(
       repository: repository,
       cloneURL: RemoteWorkrooms.cloneURL(
-        for: repository, origin: await resolver.originURL(in: project.path)),
-      startBranch: startBranch, defaultNotUsed: defaultNotUsed)
+        for: repository, origin: origin),
+      startBranch: startBranch, defaultNotUsed: defaultNotUsed, origin: origin)
   }
 }
 
