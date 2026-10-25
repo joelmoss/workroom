@@ -17,6 +17,18 @@ daemon applies whenever nothing listens, including a stale socket after a kill o
 why; existing scrub and pins are applied on top. See [remote host states](../remote-host-states.md)
 for the failure handling and parity table.
 
+The live check on a server with SSH connection-rate limiting exposed the cost of a new TCP
+connection for every bootstrap and service exchange. SSH hosts reuse a private control connection
+for those exchanges (`ControlMaster=auto`, `ControlPersist=60`), scoped to this app launch and
+destination, under an owned 0700 directory with a short socket path. It never joins a master from
+the user's config. exe.dev keeps its existing overrides. Terminal panes keep independent SSH
+connections, including their LocalCommand screen clearing, so the server's per-connection
+MaxSessions limit does not cap the number of panes. Fingerprint capture remains independent too.
+Daemon startup uses its own SSH login, so the next probe still checks survival after logout.
+After a failed wake/network ping, the app drops its own private SSH transport before reconnecting;
+this does not stop workroomd or other Macs' connections. Deleting one workroom leaves the shared
+transport alone; an unused private master expires after 60 seconds.
+
 Rejected: one host per workroom (people have one server); the typed path as the workroom's folder itself (a slip like `~` would be deleted); a hosts list in Settings; refusing an unknown host key and sending the user to Terminal; `systemctl --user` with lingering or root units (Workroom shouldn't install services on a server it doesn't own, and a supervisor's only extra, restarting the daemon while the app is away, saves no sessions); relaying the Mac's `gh` (it dies when the laptop disconnects); one daemon per workroom (isolation from a crash nobody has seen, for many more processes); stopping the daemon after the last workroom when it reports no sessions (the daemon has no stop request, and a list-then-kill races another Mac opening a terminal); one port-forward list per host (a second workroom's `devcontainer.json` ports would never be forwarded, and every list would show the others' forwards); removing the recorded path with no marker (a wrong path in config would delete real data on the user's server); the daemon's fixed environment for the app's git (a git, `gh` or token set up in the user's profile works in the terminal and fails in the app's fetch and push).
 
 Source: [#378](https://github.com/joelmoss/workroom/issues/378) (triage decisions, and the agent brief as updated 2026-10-25 for the eng review's D1 to D7), [`CONTEXT.md`](../../CONTEXT.md) ("SSH host").

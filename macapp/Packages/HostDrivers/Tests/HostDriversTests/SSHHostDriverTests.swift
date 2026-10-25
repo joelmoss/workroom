@@ -108,6 +108,82 @@ final class SSHHostDriverTests: XCTestCase {
     XCTAssertEqual(id.uuidString.split(separator: "-")[2].first, "5")
   }
 
+  func testControlExchangesShareAPrivateMasterWhilePanesStayIndependent() throws {
+    let driver = try driver(runner: Recording())
+    let route = try driver.route(spawned: true)
+    XCTAssertTrue(route.options.contains("ControlMaster=auto"))
+    XCTAssertTrue(route.options.contains("ControlPersist=60"))
+    let option = try XCTUnwrap(
+      route.options.first { $0.hasPrefix("ControlPath=") && $0 != "ControlPath=none" })
+    let path = String(option.dropFirst("ControlPath=".count))
+    XCTAssertTrue(path.hasSuffix("/%C"))
+    // OpenSSH expands %C to 40 characters, then adds a temporary suffix when binding.
+    XCTAssertLessThan(path.utf8.count - 2 + 40 + 17, 104)
+    let directory = (path as NSString).deletingLastPathComponent
+    let attributes = try FileManager.default.attributesOfItem(atPath: directory)
+    XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    XCTAssertEqual(try driver.route(spawned: true).options, route.options)
+    let pane = try driver.attachCommand(
+      to: driver.hostID, session: UUID(), workingDirectory: "/home/joel", restored: false,
+      metadata: [], runCommand: nil)
+    XCTAssertTrue(pane.contains("ControlMaster=no"))
+    XCTAssertTrue(pane.contains("ControlPath=none"))
+    XCTAssertFalse(pane.contains("ControlMaster=auto"))
+  }
+
+  func testPrivateMastersAreScopedToTheAppDirectoryAndDestination() throws {
+    let first = try driver(runner: Recording())
+    let same = try driver(runner: Recording())
+    let otherDirectory = SSHHostDriver(
+      configuration: first.configuration,
+      directory: URL(fileURLWithPath: "/private/tmp/another-app"), runner: Recording())
+    let otherHost = SSHHostDriver(
+      configuration: .init(destination: "another-server", home: "/home/joel"),
+      directory: first.directory, runner: Recording())
+    let path = { (driver: SSHHostDriver) throws in
+      try driver.route(spawned: true).options.first { $0.hasPrefix("ControlPath=") }
+    }
+    XCTAssertEqual(try path(first), try path(same))
+    XCTAssertNotEqual(try path(first), try path(otherDirectory))
+    XCTAssertNotEqual(try path(first), try path(otherHost))
+  }
+
+  func testPrivateMasterRejectsSymlinksAndDirectoriesOtherUsersCanWrite() throws {
+    let parent = try temporaryHome()
+    let root = URL(fileURLWithPath: "/tmp/wssh-\(UUID().uuidString.prefix(8))")
+    defer {
+      try? FileManager.default.removeItem(at: root)
+      try? FileManager.default.removeItem(at: parent)
+    }
+    try FileManager.default.createDirectory(
+      at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let control = SSHControlConnection(namespace: "test", root: root)
+    // Prove this exact path passes the length guard before testing its ownership protection.
+    XCTAssertNoThrow(try control.options())
+    try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: root.path)
+    XCTAssertThrowsError(try control.options())
+    try FileManager.default.removeItem(at: root)
+    let target = parent.appendingPathComponent("target")
+    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+    try FileManager.default.createSymbolicLink(at: root, withDestinationURL: target)
+    XCTAssertThrowsError(try control.options())
+  }
+
+  func testInvalidationIsALocalExitRequestToOnlyThePrivateMaster() async throws {
+    let runner = Recording()
+    let driver = try driver(runner: runner)
+    let path = try XCTUnwrap(
+      driver.route(spawned: true).options.first { $0.hasPrefix("ControlPath=") })
+    await driver.invalidateConnection()
+    let calls = runner.calls.withLock { $0 }
+    XCTAssertEqual(calls.count, 1)
+    XCTAssertEqual(calls[0].arguments.suffix(3), ["-O", "exit", "myserver"])
+    XCTAssertTrue(calls[0].arguments.contains(path))
+    XCTAssertEqual(calls[0].timeout, 2)
+    XCTAssertFalse(calls[0].arguments.contains("serve"))
+    XCTAssertFalse(calls[0].arguments.contains("kill"))
+  }
+
   func testChecksReadOnlyAndHomeAdopted() async throws {
     let runner = Recording { _ in
       CommandResult(
@@ -215,6 +291,8 @@ final class SSHHostDriverTests: XCTestCase {
     XCTAssertTrue(capture.arguments.contains("PreferredAuthentications=none"))
     XCTAssertTrue(capture.arguments.contains("StrictHostKeyChecking=accept-new"))
     XCTAssertTrue(capture.arguments.contains("GlobalKnownHostsFile=/dev/null"))
+    XCTAssertTrue(capture.arguments.contains("ControlPath=none"))
+    XCTAssertFalse(capture.arguments.contains("ControlMaster=auto"))
   }
 
   func testMarkedLeafCreationExistingRefusalAndRemovalAreFolderOnly() async throws {

@@ -146,7 +146,7 @@ One capability a workroomd serves over its stream, such as terminal sessions, ve
 Replacing a running workroomd's program with a newer binary in place, keeping its process and every session.
 
 **Bootstrap**:
-Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect; the host's supervisor starts the daemon.
+Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect. A provider or container's supervisor starts the daemon; on an SSH host, the app starts it when nothing is listening.
 
 ## Coding agents
 

@@ -522,7 +522,12 @@ enum DaemonBootstrap {
   ) async throws -> (status: Int32, output: String) {
     let command = (["sh", "-c", try script(named: name), name] + arguments)
       .map(PosixShell.quoted).joined(separator: " ")
-    let stream = try await driver.exec(command, on: host)
+    let stream: HostStream
+    if name == "start", let ssh = driver as? SSHHostDriver {
+      stream = try await ssh.execIndependently(command, on: host)
+    } else {
+      stream = try await driver.exec(command, on: host)
+    }
     let result: (status: Int32, output: String)
     do {
       result = try await stream.communicate(input, timeout: timeout)
