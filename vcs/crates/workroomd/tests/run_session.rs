@@ -60,6 +60,53 @@ fn start_run(socket: &Path, session: &str, command: &str) -> (common::Spawned, C
 fn running(socket: &Path, session: &str) -> bool {
     read_status(socket, session).starts_with("running ")
 }
+
+/// Opt-in Linux counterpart to the macOS release daemon benchmark. The fixture's /tmp socket
+/// retains its one-second fallback tick; the run reader must not add four timer wakes per second.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "performance measurement: run explicitly with --ignored --nocapture"]
+fn a_parked_run_does_not_poll_its_child_on_a_timer() {
+    fn switches(pid: u32) -> u64 {
+        std::fs::read_dir(format!("/proc/{pid}/task"))
+            .unwrap()
+            .map(|entry| {
+                std::fs::read_to_string(entry.unwrap().path().join("status"))
+                    .unwrap()
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("voluntary_ctxt_switches:")
+                            || line.starts_with("nonvoluntary_ctxt_switches:")
+                    })
+                    .map(|line| {
+                        line.split_whitespace()
+                            .last()
+                            .unwrap()
+                            .parse::<u64>()
+                            .unwrap()
+                    })
+                    .sum::<u64>()
+            })
+            .sum()
+    }
+    let workspace = Workspace::new("parked-run-idle-bench");
+    let socket = workspace.socket();
+    let daemon = start_daemon(&socket);
+    let (_client, _reader) = start_run(&socket, SESSION, "true");
+    assert!(wait_for(Duration::from_secs(10), || {
+        read_status(&socket, SESSION) == "exited 0 1"
+    }));
+    std::thread::sleep(Duration::from_secs(8));
+    let before = switches(daemon.id());
+    std::thread::sleep(Duration::from_secs(10));
+    let delta = switches(daemon.id()) - before;
+    println!("parked daemon: {delta} context switches in 10 seconds");
+    assert!(
+        delta <= 20,
+        "a parked reader still wakes on a timer: {delta}"
+    );
+}
+
 /// Stop parks the run with its pane kept, and restart runs the command again in the same session:
 /// the #7 controls, now asked of the daemon rather than signalled by the app itself.
 #[test]

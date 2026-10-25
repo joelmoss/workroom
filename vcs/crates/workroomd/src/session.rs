@@ -1630,10 +1630,13 @@ impl SessionStore {
 }
 
 /// How often a run session's reader looks in on its supervisor while its pty is quiet.
+/// Only a fallback for Linux kernels that cannot provide a pidfd.
+#[cfg(target_os = "linux")]
 const RUN_EXIT_POLL: Duration = Duration::from_millis(250);
 
 /// Whether `pid` has exited, without reaping it: `child_gone` reaps it as the session is removed,
 /// under `TERMINATING`, so a hand-off never carries a session whose shell is already reaped.
+#[cfg(any(target_os = "linux", test))]
 fn child_exited(pid: i32) -> bool {
     if pid <= 0 {
         return true;
@@ -1916,29 +1919,45 @@ fn read_session(
     // pty open. On Linux a master reads EIO only once every holder of the slave has closed it, so
     // a server its launcher forked out of the run's process group, which `sweep_run_session` is
     // there to end, would otherwise keep the session, and so itself, alive (#522, R8). macOS
-    // reports the end as soon as the supervisor exits. Looked in on every `RUN_EXIT_POLL` whether
-    // or not the pty is quiet, since a leftover that logs more often would otherwise keep it from
-    // ever being looked at.
+    // reports the end as soon as the supervisor exits, so its ordinary pty wait is sufficient.
+    // Linux waits on a pidfd alongside the pty. If one cannot be opened, the timed fallback still
+    // checks under chatty output so a leftover cannot hide its supervisor's end.
+    #[cfg(target_os = "linux")]
     let run = store.lock().is_ok_and(|store| {
         store.get(&id).is_some_and(|session| {
             session.number == number && crate::run::is_run(&session.metadata)
         })
     });
-    let mut supervisor_exited = false;
+    #[cfg(target_os = "linux")]
+    let exit_fd = run.then(|| pty.child_exit_fd().ok()).flatten();
+    #[cfg(target_os = "linux")]
     let mut looked_in = Instant::now();
     loop {
         // Wait OUTSIDE the lock, read under it. A blocked wait holding the attachment lock would
         // stall every attach and every hand-off freeze until the shell next spoke. A failed wait
         // is not acted on here: the read below sees the same condition and classifies it.
-        if run {
-            let quiet = matches!(pty.wait_readable_within(RUN_EXIT_POLL), Ok(false));
-            if quiet || looked_in.elapsed() >= RUN_EXIT_POLL {
-                looked_in = Instant::now();
-                supervisor_exited = child_exited(pty.child_pid());
+        #[cfg(target_os = "linux")]
+        let supervisor_exited = if run {
+            if let Some(exit_fd) = &exit_fd {
+                pty.wait_readable_or_exit(exit_fd).unwrap_or(false)
+            } else {
+                let quiet = matches!(pty.wait_readable_within(RUN_EXIT_POLL), Ok(false));
+                if quiet || looked_in.elapsed() >= RUN_EXIT_POLL {
+                    looked_in = Instant::now();
+                    child_exited(pty.child_pid())
+                } else {
+                    false
+                }
             }
         } else {
             let _ = pty.wait_readable();
-        }
+            false
+        };
+        #[cfg(not(target_os = "linux"))]
+        let supervisor_exited = {
+            let _ = pty.wait_readable();
+            false
+        };
         // Read UNDER the attachment lock, and write to the shadow before releasing it. A byte
         // then leaves the pty only while this lock is held and is in the shadow by the time it is
         // released, so whoever holds every session's lock (`SessionStore::frozen`) holds a shadow
