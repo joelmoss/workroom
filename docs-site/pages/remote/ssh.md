@@ -10,7 +10,7 @@ panels work there as they do on other [remote workrooms](overview.md).
 
 ## Before you start
 
-- The server must run Linux on x86_64 or aarch64, with `git` installed.
+- The server must run Linux on x86_64 or aarch64, with `git` and `setsid` installed.
 - You must be able to sign in with your own `ssh`, without a password or passphrase prompt. Add
   your key to ssh-agent or the Keychain if it needs a passphrase.
 - Your project's `origin` must be on github.com, and its base branch must be on `origin`.
@@ -30,8 +30,8 @@ connection-rate limit can still apply when opening many panes at once.
 2. Under **Remote**, choose **SSH**.
 3. Enter the host as you would after `ssh`: an alias such as `myserver`, or a destination such as
    `joel@example.com`. Hosts you used before are offered again.
-4. Choose a parent folder. It defaults to the folder last used on that host, or `~/workrooms` the
-   first time. `~` means your home on the server.
+4. Choose a parent folder inside your home on the server. It defaults to the folder last used on
+   that host, or `~/workrooms` the first time. `~` means your home on the server.
 5. Continue the create and watch the checklist in its pane.
 
 The workroom goes in `<parent folder>/<workroom name>`. An existing folder with that name stops
