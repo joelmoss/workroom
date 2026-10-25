@@ -13,7 +13,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean docs-check docs-cli docs-preview \
         app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-preflight app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
-        app-check app-bench-title app-bench-output-flood app-bench-status app-bench-usage app-bench-restore app-bench-startup-reads app-bench-memory app-bench-sentry actions-lint vcs-lint vcs-test
+        app-check app-bench-title app-bench-output-flood app-bench-status app-bench-usage app-bench-restore app-bench-startup-reads app-bench-memory app-bench-sentry actions-lint vcs-lint vcs-lint-linux vcs-test
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -71,6 +71,9 @@ actions-lint: ## Lint workflows, composite actions and dependabot.yml with jacti
 # between releases, so another toolchain can pass here and fail there; the PATH above puts
 # Homebrew's cargo first, so the recipe puts this one ahead of it. Keep in step with ci.yml.
 VCS_RUST := 1.96.1
+
+vcs-lint-linux: ## Run the pinned Rust lint gate inside Linux (container, Docker or Podman on macOS)
+	bash vcs/scripts/lint-linux.sh "$(VCS_RUST)"
 
 vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and without terminal-state
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" && \

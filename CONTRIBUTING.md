@@ -78,6 +78,16 @@ the v2-format `.golangci.yml`.
 pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
 code already passes; never silence one with an `allow` without asking first.
 
+Use `make vcs-lint-linux` before landing Linux-specific Rust changes from a Mac: native lint
+does not compile `cfg(target_os = "linux")` code. It runs the same Makefile gate in a Linux
+image with pinned Rust and checksum-verified Zig, using the host's architecture. The first run
+downloads the image, crates and Ghostty; later runs reuse caches under
+`${XDG_CACHE_HOME:-~/.cache}/workroom/linux-lint/<architecture>`. The checkout is mounted read-only,
+and Linux Cargo output and credentials are separate from the Mac's. A working `container`, Docker
+or Podman runtime is required; the compiler container gets 4 GB of memory. The command fails rather
+than reporting a skipped check as a pass.
+On Linux it runs the canonical gate natively, with its normal Rust/Zig prerequisites.
+
 **To change a GitHub workflow:** **`jactionlint` 2.1.0** for `make actions-lint`
 (`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.1.0`, or
 `mise use -g github:jdx/jactionlint@2.1.0`), with `shellcheck` on `PATH` so `run:` blocks are
@@ -490,6 +500,7 @@ executor and a temp config — no real repo required.
 | `cli-lint` | `golangci-lint run` |
 | `cli-clean` | Remove the built binary |
 | `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.96.1 |
+| `vcs-lint-linux` | The same pinned lint gate on Linux, including Linux-only code; uses a working container, Docker or Podman runtime on macOS |
 
 ---
 

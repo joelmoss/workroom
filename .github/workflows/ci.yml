@@ -67,6 +67,11 @@ jobs:
       - name: Test the download stats report
         run: python3 scripts/ci/test_download_stats.py
 
+      - name: Test the Linux lint launcher
+        run: |
+          shellcheck vcs/scripts/lint-linux.sh
+          python3 scripts/ci/test_linux_lint.py
+
   cli:
     runs-on: ubuntu-latest
     timeout-minutes: 10
