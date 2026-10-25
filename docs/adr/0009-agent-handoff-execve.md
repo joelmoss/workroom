@@ -2,4 +2,4 @@
 
 A newer app asks a running `workroomd` to `execve` the bundled binary in place, keeping its pid, every pty master, the listening socket and the instance lock. A pty master handed to a separate process would keep the shell alive but orphan it, because `waitpid` only works for a child's parent. The screen crosses as VT bytes, not a snapshot, since two daemon revisions share no snapshot format but do share VT. The new binary first runs `handoff-check` on the session table, and any failure before the exec leaves the old program running. The cost is accepted: a binary that passes the check and then fails while restoring loses every shell.
 
-Source: [`vcs/crates/workroomd/src/handoff.rs`](../../vcs/crates/workroomd/src/handoff.rs) (module comment), [`macapp/AGENTS.md`](../../macapp/AGENTS.md) ("Terminal sessions").
+Source: [`vcs/crates/workroomd/src/handoff.rs`](../../vcs/crates/workroomd/src/handoff.rs) (module comment), [app VCS and sessions](../macapp/vcs-and-sessions.md) ("Terminal sessions").

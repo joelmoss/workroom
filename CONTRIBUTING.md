@@ -436,9 +436,11 @@ install.
 The Xcode build runs `macapp/Scripts/build-helper.sh` as a phase, which compiles the Go CLI and
 embeds it in the app bundle — so a Go toolchain must be on `PATH` when building the app. The app
 targets also build the embedded `workroomd` (`macapp/Scripts/build-daemon.sh`), which needs a Rust
-toolchain on `PATH`; a universal release build additionally needs the two Apple targets. See [`macapp/README.md`](macapp/README.md) and
-[`macapp/AGENTS.md`](macapp/AGENTS.md) for the full architecture, the VCS core, the libghostty
-integration notes (`macapp/QA-libghostty.md`), and signing details.
+toolchain on `PATH`; a universal release build additionally needs the two Apple targets. See
+[`macapp/README.md`](macapp/README.md) for setup and signing, the
+[app instructions](macapp/AGENTS.md) for working rules and reference navigation, and
+[VCS and sessions](docs/macapp/vcs-and-sessions.md) for their architecture.
+The [runtime reference](docs/macapp/runtime.md) links the libghostty integration and pin procedure.
 
 ### Working on the Go CLI (engine)
 
