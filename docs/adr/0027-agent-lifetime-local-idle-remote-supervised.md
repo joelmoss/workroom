@@ -1,5 +1,9 @@
 # A local workroomd exits when idle, and a remote workroomd is supervised and never idles out
 
+Narrowed by [ADR 0056](0056-ssh-hosts-are-the-users.md) for SSH hosts: the app starts the daemon on
+connect when nothing listens, without a supervisor, and never stops it. The supervised lifetime
+below stands for provider and container hosts.
+
 The local workroomd has no supervisor. `workroomd attach` spawns it detached when a connect finds nothing listening, a lock file allows one instance, and it exits when its last pty and last client are gone, because diffs, history and watches are things a connected client asks for, so a workroomd with no clients and no ptys holds nothing to lose. An earlier draft of the design claimed local needed supervision and was corrected. A remote workroomd must keep its sessions with no client attached, so each host runs it under a supervisor (a systemd unit on boxd and exe.dev, the image's entrypoint loop in a container host) with `--idle-timeout never` and `--screens`, restarted whenever it exits, and the app reaches it through `workroomd relay --socket`, which only copies bytes. `serve --stdio` ties its sessions to one connection and kills them when the stream ends, so it stays a transport test entry point and never owns a host's sessions. The cost is a long-lived daemon on every host.
 
 Source: [`docs/designs/remote-workrooms.md`](../designs/remote-workrooms.md) ("Phase 3": local needs no supervisor, a stream is not persistence; "Next Steps", Phase 3), [`vcs/crates/workroomd/src/serve.rs`](../../vcs/crates/workroomd/src/serve.rs) (module comment), [`vcs/crates/workroomd/src/main.rs`](../../vcs/crates/workroomd/src/main.rs) (usage text), [`macapp/Resources/host-setup/systemd.sh`](../../macapp/Resources/host-setup/systemd.sh) (the `workroom-daemon` unit).

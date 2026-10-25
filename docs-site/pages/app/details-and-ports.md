@@ -1,10 +1,11 @@
 ---
 title: Details and ports
-description: See where a workroom runs, copy its path, and forward ports from a container workroom to your Mac.
+description: See where a workroom runs, copy its path, and forward ports from a container or SSH workroom to your Mac.
 nightly: true
 ---
 
-The Details pane tells you where the selected workroom runs. For a workroom in a Docker or Apple container, it also lists the ports forwarded to your Mac and lets you add more.
+The Details pane tells you where the selected workroom runs. For a workroom in a Docker or Apple
+container, or on an SSH host, it also lists the ports forwarded to your Mac and lets you add more.
 
 ## Open the Details pane
 
@@ -25,7 +26,9 @@ confirmation appears when you copy a port address, an error report, or a path or
 
 ## Ports
 
-The **Ports** list appears only for a workroom in a Docker or Apple container. A dev server there listens inside the container, where your Mac's browser cannot reach it. Workroom forwards its ports to your Mac, and each row shows one:
+The **Ports** list appears for a Docker, Apple container or SSH workroom. A dev server there
+listens on the host, where your Mac's browser cannot reach it. Workroom forwards its loopback
+ports to your Mac. A container row shows:
 
 ```text
 localhost:5173 → container 5173
@@ -39,8 +42,8 @@ Workrooms on boxd and exe.dev have no Ports list, because those providers publis
 
 ### Forward another port
 
-1. Click the **+** at the right of the **Ports** heading. Its tooltip reads **Forward a port from this workroom's container**.
-2. Type the container's port number in **New port number…**.
+1. Click the **+** at the right of the **Ports** heading.
+2. Type the host's port number in **New port number…**.
 3. Press <kbd>Return</kbd>.
 
 If the port cannot be forwarded, the row stays and says why. Press <kbd>Esc</kbd>, or leave the field empty, to cancel.
@@ -58,4 +61,4 @@ Forwards do not carry over a relaunch. The ports your `devcontainer.json` declar
 
 ### When it is not connected
 
-If the list says **No daemon is connected.**, Workroom has no connection to the container's Workroom daemon yet, and the controls will not work. **Not connected. A forward reconnects when it is used.** means a forward you already made will reconnect the next time something uses it.
+If the list says **No daemon is connected.**, Workroom has no connection to the host's Workroom daemon yet, and the controls will not work. **Not connected. A forward reconnects when it is used.** means a forward you already made will reconnect the next time something uses it.

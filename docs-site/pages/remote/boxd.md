@@ -6,6 +6,8 @@ nightly: true
 
 [boxd](https://boxd.sh) is a cloud service that runs each workroom on a machine of its own. This page covers the one-time setup, which Workroom walks you through, and creating a workroom on boxd. For what remote workrooms are, see [Remote workrooms](overview.md).
 
+To use a server you already have, choose an [SSH host](ssh.md) instead.
+
 ## Before you start
 
 - Your project's `origin` must be on github.com, and its base branch must be on `origin`. See [Remote workrooms](overview.md#what-a-project-needs).

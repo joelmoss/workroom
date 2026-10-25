@@ -51,6 +51,8 @@
       page: remote/boxd
     - title: exe.dev
       page: remote/exe-dev
+    - title: SSH hosts
+      page: remote/ssh
     - title: Containers
       page: remote/containers
     - title: Port forwarding

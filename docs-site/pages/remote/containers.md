@@ -6,7 +6,9 @@ nightly: true
 
 A container workroom runs in a container on your Mac instead of in a git worktree. Its terminals, files and coding agents live inside the container, so what you install or run there stays out of your Mac. For what remote workrooms are, see [Remote workrooms](overview.md).
 
-A container is a remote workroom in every way that matters: it has a fresh host of its own, a fresh clone of your repository, and the same panes and inspector. Unlike boxd and exe.dev, the host is on your Mac and no account is needed.
+A container workroom has a fresh host of its own, a fresh clone of your repository, and the same
+panes and inspector as other remote workrooms. Its host runs on your Mac and needs no cloud
+account. To use a Linux server you already have, choose an [SSH host](ssh.md).
 
 > [!IMPORTANT]
 > Container workrooms made by an earlier Nightly, before containers were made from `devcontainer.json`, can't be opened by this one. Their status, Changes panel and terminals say the workroom was set up by an older Workroom Nightly. Delete each one and create it again. Deleting it destroys the container, with any work in it you haven't pushed.

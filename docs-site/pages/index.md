@@ -1,6 +1,6 @@
 ---
 title: Workroom documentation
-description: Learn to run every task in its own workroom, with its own branch, terminals and diffs, on your Mac or on a host of its own.
+description: Learn to run every task in its own workroom, with its own branch, terminals and diffs, on your Mac or on a remote host.
 ---
 
 Workroom is a Mac app for working on many tasks at once. Each task gets its own workroom, with its own
