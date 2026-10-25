@@ -77,6 +77,7 @@ def main():
         "-framework", "Sentry", "-framework", "AppKit", "-lc++", "-lz",
         str(root / "macapp/WorkroomApp/Core/SentryConfig.swift"),
         str(root / "macapp/WorkroomApp/Core/LaunchSignposts.swift"),
+        str(Path(__file__).with_name("Failure.swift")),
         str(Path(__file__).with_name("main.swift")), "-o", str(executable),
     ]
     subprocess.run(command, check=True)
@@ -85,6 +86,7 @@ def main():
         for path in (
             root / "macapp/WorkroomApp/Core/SentryConfig.swift",
             root / "macapp/WorkroomApp/Core/LaunchSignposts.swift",
+            Path(__file__).with_name("Failure.swift"),
             Path(__file__).with_name("main.swift"),
         )
     }

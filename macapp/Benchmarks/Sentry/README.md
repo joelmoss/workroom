@@ -32,6 +32,10 @@ every comparison. The make target runs both parts; the runner's `--verify-chunk`
 Invalid state produces an error report and a normal exit status 2; it does not deliberately crash
 the helper. The runner stops so an invalid comparison cannot silently enter the results.
 
+`python3 macapp/Scripts/benchmark-safety_test.py` checks the real failure functions headlessly:
+invalid state must write an error report and exit with status 2. It also rejects crash-producing
+Swift assertion calls throughout `macapp/Benchmarks/`. This check runs in `make app-test-scripts`.
+
 Telemetry goes only to an ephemeral `127.0.0.1` HTTP server. Each process has an owned cache and
 the helper uses a temporary user home. No production DSN, installed app, personal terminal,
 project, saved session or daemon participates. Raw owned-fixture envelopes, per-process logs,

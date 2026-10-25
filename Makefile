@@ -368,6 +368,7 @@ app-test-supervisor: ## Run the run-command supervisor PTY integration test (rea
 	python3 vcs/scripts/test-parked-supervisor.py
 
 app-test-scripts: ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, daemon name, exe.dev git setup, test summary, red proof, restore mtime)
+	python3 macapp/Scripts/benchmark-safety_test.py
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-daemon_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
