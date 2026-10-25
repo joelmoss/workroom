@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Workroom
@@ -40,12 +41,13 @@ final class CodingAgentUsagePollingTests: XCTestCase {
 
   private func monitor(
     _ pollers: CodingAgentUsagePollers, enabled: Bool = true, interval: TimeInterval = 180,
-    start: Bool = false
+    start: Bool = false, initialDelay: TimeInterval = 1
   ) -> CodingAgentUsageMonitor {
     CodingAgentUsageMonitor(
       codexSessionsURL: root.appendingPathComponent("sessions", isDirectory: true),
       claudeCacheURL: root.appendingPathComponent("claude-rate-limits.json"),
       now: { self.now }, startAutomatically: start, pollers: pollers, pollInterval: interval,
+      initialPollDelay: initialDelay,
       pollingEnabled: { enabled })
   }
 
@@ -112,19 +114,75 @@ final class CodingAgentUsagePollingTests: XCTestCase {
           await calls.bump()
           return .notInstalled
         }),
-      enabled: false, interval: 0.05, start: true)
+      enabled: false, interval: 0.05, start: true, initialDelay: 0.01)
+    monitor.startPollingAfterDisplay()
     monitor.poll()
     try? await Task.sleep(nanoseconds: 300_000_000)
     let count = await calls.value
     XCTAssertEqual(count, 0)
   }
 
-  func testTheTimerPolls() async {
+  func testADisplayedWindowStartsOneAutomaticPollingCadence() async throws {
     let monitor = monitor(
       CodingAgentUsagePollers(cswap: { _ in .notInstalled }, codexServer: { _ in .notInstalled }),
-      interval: 0.05, start: true)
+      interval: 0.05, start: true, initialDelay: 0.01)
+    let hosting = NSHostingView(
+      rootView: Text("Usage polling fixture").frame(width: 300, height: 100)
+        .background(UsagePollingAfterDisplay(monitor: monitor)))
+    let window = NSWindow(
+      contentRect: NSRect(x: 100, y: 100, width: 300, height: 100),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = hosting
+    defer { window.close() }
+    hosting.layoutSubtreeIfNeeded()
+    hosting.displayIfNeeded()
+    NSApp.updateWindows()
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(monitor.completedPollCount, 0, "a hidden window cannot release the pollers")
+    window.makeKeyAndOrderFront(nil)
+    window.displayIfNeeded()
+    NSApp.updateWindows()
     await waitForPoll(monitor, count: 2)
     XCTAssertGreaterThanOrEqual(monitor.completedPollCount, 2)
+  }
+
+  func testAManualReadSupersedesTheDelayedFirstPoll() async {
+    for displayFirst in [false, true] {
+      let monitor = monitor(
+        CodingAgentUsagePollers(cswap: { _ in .notInstalled }, codexServer: { _ in .notInstalled }),
+        start: true, initialDelay: 0.05)
+      if displayFirst { monitor.startPollingAfterDisplay() }
+      monitor.poll()
+      await waitForPoll(monitor)
+      if !displayFirst { monitor.startPollingAfterDisplay() }
+      // Another restored window must not start a second timer or reset the first deadline.
+      monitor.startPollingAfterDisplay()
+      try? await Task.sleep(for: .milliseconds(150))
+      XCTAssertEqual(monitor.completedPollCount, 1)
+    }
+  }
+
+  func testDroppingTheMonitorCancelsThePendingFirstPoll() async {
+    let calls = PollCounter()
+    var usage: CodingAgentUsageMonitor? = monitor(
+      CodingAgentUsagePollers(
+        cswap: { _ in
+          await calls.bump()
+          return .notInstalled
+        },
+        codexServer: { _ in
+          await calls.bump()
+          return .notInstalled
+        }),
+      start: true, initialDelay: 0.05)
+    weak var released = usage
+    usage?.startPollingAfterDisplay()
+    usage = nil
+    try? await Task.sleep(for: .milliseconds(150))
+    XCTAssertNil(released)
+    let count = await calls.value
+    XCTAssertEqual(count, 0)
   }
 
   func testCswapAccountsStandInForTheBridgeAndAFailureKeepsThem() async {

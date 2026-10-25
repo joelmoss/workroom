@@ -550,6 +550,8 @@ final class CodingAgentUsageMonitor: ObservableObject {
   private var watchRetryDelay: TimeInterval = initialWatchRetryDelay
   private let pollers: CodingAgentUsagePollers
   private let pollInterval: TimeInterval
+  private let startAutomatically: Bool
+  private let initialPollDelay: TimeInterval
   private let pollingEnabled: @MainActor () -> Bool
   private var pollTask: Task<Void, Never>?
   // `nonisolated(unsafe)` for the same reason as `debounce`: invalidated only in `deinit`.
@@ -563,6 +565,7 @@ final class CodingAgentUsageMonitor: ObservableObject {
       .appendingPathComponent("claude-rate-limits.json"),
     now: @escaping () -> Date = Date.init, startAutomatically: Bool = true,
     pollers: CodingAgentUsagePollers = .live, pollInterval: TimeInterval = defaultPollInterval,
+    initialPollDelay: TimeInterval = 1,
     pollingEnabled: @escaping @MainActor () -> Bool = {
       Defaults[.usageInWindowFooter] || Defaults[.usageInPaneFooter]
     }
@@ -572,6 +575,8 @@ final class CodingAgentUsageMonitor: ObservableObject {
     self.now = now
     self.pollers = pollers
     self.pollInterval = pollInterval
+    self.startAutomatically = startAutomatically
+    self.initialPollDelay = initialPollDelay
     self.pollingEnabled = pollingEnabled
     if let fixture = UITestFixture.usageSnapshot {
       snapshots[fixture.backend] = fixture
@@ -589,11 +594,6 @@ final class CodingAgentUsageMonitor: ObservableObject {
     // costing a second recursive walk during window setup.
     if startAutomatically {
       refresh()
-      poll()
-      pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) {
-        [weak self] _ in
-        MainActor.assumeIsolated { self?.poll() }
-      }
       // Turning a footer setting on reads at once rather than at the next tick.
       settingsObservation = Defaults.observe(
         keys: .usageInWindowFooter, .usageInPaneFooter, options: []
@@ -601,6 +601,21 @@ final class CodingAgentUsageMonitor: ObservableObject {
         Task { @MainActor in self?.poll() }
       }
     }
+  }
+
+  /// A displayed workroom window starts the app-wide cadence once. Local file readings can load sooner;
+  /// only the two external usage processes wait until the first display and its short grace period.
+  func startPollingAfterDisplay() {
+    guard startAutomatically, pollTimer == nil else { return }
+    let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.poll() }
+    }
+    // A user may already have opened usage details or enabled a footer. Do not repeat that read
+    // at the startup deadline; the normal interval follows it instead.
+    let delay = pollTask != nil || completedPollCount > 0 ? pollInterval : initialPollDelay
+    timer.fireDate = Date(timeIntervalSinceNow: delay)
+    pollTimer = timer
+    RunLoop.main.add(timer, forMode: .default)
   }
 
   deinit {
@@ -621,12 +636,14 @@ final class CodingAgentUsageMonitor: ObservableObject {
   }
 
   /// Read cswap and the Codex app server, unless a poll is already running (then this joins it)
-  /// or no footer shows usage. Only the timer and an opened usage popover call this; file events
-  /// and new segments call `refresh`, which never starts either process.
+  /// or no footer shows usage. The timer, footer settings and an opened usage popover call this;
+  /// file events and new segments call `refresh`, which never starts either process.
   func poll() {
     guard UITestFixture.usageCodingAgentTitle == nil, UITestFixture.usageSnapshot == nil,
       !AppEnvironment.isUILaunch, pollTask == nil, pollingEnabled()
     else { return }
+    // An explicit refresh supersedes the pending automatic read, including the first one.
+    pollTimer?.fireDate = Date(timeIntervalSinceNow: pollInterval)
     let pollers = pollers
     let current = now()
     isPolling = true
