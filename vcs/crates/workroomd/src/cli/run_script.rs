@@ -28,7 +28,7 @@ const PROBE_SPAWN_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 /// Longer than the Mac's 3 s: a host has no cached environment to fall back on, and a fresh VM's
 /// first login (cold disk, nvm or conda in the rc files) can take more. A script runs once, so the
 /// wait costs little.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PROBE_BYTES: usize = 1024 * 1024;
 /// The probe shell's own state, and our marker, which must not reach the script.
 const DENYLIST: [&str; 5] = ["PWD", "OLDPWD", "SHLVL", "_", "WORKROOM_SHELL_PROBE"];
@@ -64,15 +64,11 @@ pub fn run_run_script(args: &[String]) -> ExitCode {
     let extra = env_flags(options);
     install_signal_handlers();
     let shell = crate::shell::user_shell(std::env::var_os("SHELL"));
-    let env = match probe(&shell, PROBE_TIMEOUT) {
-        Ok(probed) => merge(probed, &floor_path()),
-        Err(reason) => {
-            eprintln!(
-                "workroomd run-script: couldn't read the login shell's environment ({reason}); using the daemon's own"
-            );
-            fallback()
-        }
-    };
+    let env = login_environment(&shell, PROBE_TIMEOUT, |reason| {
+        eprintln!(
+            "workroomd run-script: couldn't read the login shell's environment ({reason}); using the daemon's own"
+        );
+    });
     ExitCode::from(run(
         Path::new(script),
         Path::new(&dir),
@@ -80,6 +76,23 @@ pub fn run_run_script(args: &[String]) -> ExitCode {
         &extra,
         Duration::from_secs(timeout),
     ))
+}
+
+/// One bounded read of the host's login environment, shared by scripts and remote git. The caller
+/// owns the fallback message: scripts print to the create/delete log, while the long-lived daemon
+/// records it in its own log. No process-wide environment is changed.
+pub(crate) fn login_environment(
+    shell: &str,
+    timeout: Duration,
+    on_fallback: impl FnOnce(&str),
+) -> BTreeMap<String, String> {
+    match probe(shell, timeout) {
+        Ok(probed) => merge(probed, &floor_path()),
+        Err(reason) => {
+            on_fallback(reason);
+            fallback()
+        }
+    }
 }
 
 /// Every `--env NAME=VALUE` in `options`, in order.
@@ -426,6 +439,18 @@ mod tests {
             Err("timedOut")
         );
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_failed_login_read_reports_the_reason_and_uses_the_own_environment() {
+        let dir = scratch("probe-fallback");
+        let shell = script(&dir, "bash", "#!/bin/sh\nexit 4\n", 0o755);
+        let mut reported = None;
+        let env = login_environment(shell.to_str().unwrap(), PROBE_TIMEOUT, |reason| {
+            reported = Some(reason.to_string());
+        });
+        assert_eq!(reported.as_deref(), Some("nonZeroExit"));
+        assert_eq!(env, fallback());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -37,6 +37,25 @@ const MAX_EXEC_TIMEOUT_MS: u64 = 610_000;
 const _: () = assert!(MAX_EXEC_TIMEOUT_MS > 600_000);
 /// Per-stream cap, matching `StatusCommandRunner.maxBytes`'s default on the Swift side.
 const MAX_EXEC_STREAM: usize = 4 * 1024 * 1024;
+
+/// Remote requests use this host's login environment, never the Mac's. Read it at the first remote
+/// exec and keep it for this daemon's lifetime; concurrent requests share one bounded probe. Local
+/// requests still use their supplied environment without reading a login profile.
+static HOST_LOGIN_ENVIRONMENT: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+
+fn cached_login_environment<'a>(
+    cache: &'a OnceLock<BTreeMap<String, String>>,
+    shell: &str,
+    timeout: Duration,
+) -> &'a BTreeMap<String, String> {
+    cache.get_or_init(|| {
+        crate::cli::run_script::login_environment(shell, timeout, |reason| {
+            crate::note!(
+                "remote git: couldn't read the login shell's environment ({reason}); using the daemon's own"
+            );
+        })
+    })
+}
 
 /// `file::listing_environment` over an explicit variable set, so the scrub and the pins can be tested
 /// without mutating this process's own environment — which other tests' child processes inherit.
@@ -151,7 +170,7 @@ struct ExecRequest {
     #[serde(default)]
     env: std::collections::BTreeMap<String, String>,
     /// Set by the app for a REMOTE host (#229): `env` is then only policy pins, and the child's
-    /// environment is built from this daemon's own, which is the host's (`host_environment`). The
+    /// environment is built from the host's cached login environment (`host_environment`). The
     /// app sends nothing from the Mac there: its `HOME` and `PATH` name nothing on this machine, and
     /// its `SSH_AUTH_SOCK` and git identity are the user's Mac credentials.
     #[serde(default)]
@@ -165,7 +184,7 @@ struct ExecRequest {
     _barrier_root: Option<String>,
 }
 
-/// The child environment for a remote host: this daemon's own, which is the host's, with the file
+/// The child environment for a remote host: its cached login environment, with the file
 /// service's scrub and pins (`scrubbed_environment`, so the two host-side paths agree), no graphical
 /// prompt helper, and the request's pins on top.
 ///
@@ -766,7 +785,16 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     let dir = absolute(&dir)?;
     let timeout = exec_timeout(timeout_ms);
     let env = if from_host {
-        host_environment(std::env::vars_os(), env)
+        let shell = crate::shell::user_shell(std::env::var_os("SHELL"));
+        let login = cached_login_environment(
+            &HOST_LOGIN_ENVIRONMENT,
+            &shell,
+            crate::cli::run_script::PROBE_TIMEOUT,
+        );
+        host_environment(
+            login.iter().map(|(key, value)| (key.into(), value.into())),
+            env,
+        )
     } else {
         env
     };
@@ -1429,6 +1457,82 @@ mod tests {
         )];
         let env = host_environment(latin1.into_iter(), Default::default());
         assert!(!env.contains_key("LEGACY"));
+    }
+
+    /// The daemon reads a host profile once, and every remote exec then applies the existing scrub
+    /// and request pins to that cached result. A profile may provide git/gh and credentials, but it
+    /// cannot redirect a repository or enable a graphical prompt.
+    #[test]
+    fn remote_git_uses_the_cached_login_environment_with_the_policy_on_top() {
+        let root = git_repo("host-login-env");
+        let shell = profile_shell(
+            &root,
+            "export FROM_PROFILE=host\nexport PATH=/home/u/.local/bin:$PATH\nexport GIT_DIR=/wrong/repo\nexport GIT_WORK_TREE=/wrong/worktree\nexport GIT_TERMINAL_PROMPT=1\nexport LC_ALL=fr_FR.UTF-8\nexport DISPLAY=:0\nexport SSH_ASKPASS=/host/ask\nexec /bin/sh -c \"$2\"\n",
+        );
+        let cache = OnceLock::new();
+        let login =
+            cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
+        assert_eq!(login["FROM_PROFILE"], "host");
+        assert!(login["PATH"].starts_with("/home/u/.local/bin:"));
+        assert!(!login.contains_key("WORKROOM_SHELL_PROBE"));
+        let env = host_environment(
+            login.iter().map(|(key, value)| (key.into(), value.into())),
+            BTreeMap::from([("LC_ALL".to_string(), "C".to_string())]),
+        );
+        assert_eq!(env["FROM_PROFILE"], "host");
+        assert_eq!(env["LC_ALL"], "C");
+        assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
+        assert!(!env.contains_key("GIT_DIR"));
+        assert!(!env.contains_key("GIT_WORK_TREE"));
+        assert!(!env.contains_key("DISPLAY"));
+        assert!(!env.contains_key("SSH_ASKPASS"));
+        assert_eq!(env["SSH_ASKPASS_REQUIRE"], "never");
+
+        // Removing the shell proves the next exec never probes again: an uncached read would
+        // fall back and lose FROM_PROFILE.
+        std::fs::remove_file(&shell).unwrap();
+        let again =
+            cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
+        assert!(std::ptr::eq(login, again));
+        assert_eq!(again["FROM_PROFILE"], "host");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_hanging_host_profile_falls_back_once_without_holding_remote_git() {
+        let root = git_repo("host-login-timeout");
+        let shell = profile_shell(&root, "sleep 30\n");
+        let cache = OnceLock::new();
+        let started = Instant::now();
+        let env =
+            cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_millis(100));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!env["PATH"].is_empty());
+        assert!(!env.contains_key("WORKROOM_SHELL_PROBE"));
+        assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
+        let again =
+            cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
+        assert!(std::ptr::eq(env, again), "the fallback is cached too");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn profile_shell(root: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let shell = root.join("bash");
+        let draft = root.join("profile.draft");
+        std::fs::write(&draft, format!("#!/bin/sh\n{body}")).unwrap();
+        // A simultaneous test fork must not inherit a writable descriptor to this executable
+        // (ETXTBSY on Linux), as in run_script's script helper.
+        assert!(
+            Command::new("cp")
+                .arg(&draft)
+                .arg(&shell)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shell
     }
 
     /// The regression that motivated bounding the drain: a child that exits promptly while leaving

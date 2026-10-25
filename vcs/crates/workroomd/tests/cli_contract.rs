@@ -5,7 +5,8 @@
 //! frozen contract: the binary and its help text may be renamed, this may not.
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// As `common::daemon_binary`, which this file doesn't pull in for one function.
 fn daemon_binary() -> PathBuf {
@@ -36,6 +37,16 @@ impl Workspace {
 impl Drop for Workspace {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A start-command failure must not leave its daemon behind when an assertion unwinds.
+struct Started(Child);
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -98,4 +109,39 @@ fn serve_takes_the_argv_a_hand_off_execs_it_with() {
         stderr.contains("could not take over from the program handed off"),
         "serve did not read --handoff: {stderr}"
     );
+}
+
+/// The app starts an unsupervised SSH daemon with this command. Neither a user session nor a
+/// systemd unit owns its lifetime; it must accept `never` and persistent screens together.
+#[test]
+fn serve_accepts_the_unsupervised_ssh_start_command() {
+    let workspace = Workspace::new("ssh");
+    let socket = workspace.socket();
+    let screens = workspace.dir.join("screens");
+    let child = Command::new(daemon_binary())
+        .args(["serve", "--socket"])
+        .arg(&socket)
+        .args(["--idle-timeout", "never", "--screens"])
+        .arg(&screens)
+        .env("SHELL", "/bin/sh")
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start SSH daemon");
+    let mut daemon = Started(child);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            assert!(daemon.0.try_wait().unwrap().is_none());
+            return;
+        }
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "serve rejected the SSH start command"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("SSH daemon never listened on {}", socket.display());
 }
