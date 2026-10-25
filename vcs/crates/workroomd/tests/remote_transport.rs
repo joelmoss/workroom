@@ -985,6 +985,166 @@ fn relay_command(socket: &Path) -> Command {
     command
 }
 
+/// Status needs a diff only when it has tracked rows to enrich. Every Git invocation still discovers
+/// its own filter overrides, including a driver configured before the next request.
+#[test]
+fn working_status_skips_unneeded_diff_and_rediscovers_filters() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = Workspace::new("status-process-count");
+    let root = workspace.dir.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let found = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(found.status.success());
+    let real_git = String::from_utf8(found.stdout).unwrap().trim().to_owned();
+    let git = |args: &[&str]| {
+        let result = Command::new(&real_git)
+            .args(args)
+            .current_dir(&root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{args:?}: {result:?}");
+    };
+    git(&["init", "-b", "main"]);
+    std::fs::write(root.join("tracked.txt"), "before\n").unwrap();
+    git(&["add", "tracked.txt"]);
+    git(&[
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "fixture",
+    ]);
+    std::fs::write(root.join("tracked.txt"), "after\n").unwrap();
+
+    let bin = workspace.dir.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let shim = bin.join("git");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WORKROOM_BENCH_GIT_LOG\"\nexec \"$WORKROOM_BENCH_REAL_GIT\" \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let log = workspace.dir.join("git.log");
+    let sentinel = workspace.dir.join("filter-ran");
+    let mut search_path = vec![bin];
+    search_path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut command = Command::new(daemon_binary());
+    command
+        .args(["serve", "--stdio"])
+        .env("PATH", std::env::join_paths(search_path).unwrap())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("WORKROOM_BENCH_GIT_LOG", &log)
+        .env("WORKROOM_BENCH_REAL_GIT", &real_git)
+        .env("WORKROOM_BENCH_FILTER_SENTINEL", &sentinel);
+    let mut relay = Relay::spawn(command);
+    relay.client.handshake();
+    let mut spawn_counts = Vec::new();
+    let mut discovery_counts = Vec::new();
+    for stream in 1..=4 {
+        if stream == 2 {
+            git(&[
+                "config",
+                "filter.later.clean",
+                "printf x > \"$WORKROOM_BENCH_FILTER_SENTINEL\"; cat",
+            ]);
+            std::fs::write(root.join(".gitattributes"), "tracked.txt filter=later\n").unwrap();
+        } else if stream == 3 {
+            std::fs::write(root.join("tracked.txt"), "before\n").unwrap();
+            std::fs::remove_file(root.join(".gitattributes")).unwrap();
+        } else if stream == 4 {
+            std::fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        }
+        std::fs::write(&log, "").unwrap();
+        let response = relay.client.request(
+            Service::Vcs,
+            stream,
+            &json!({"version": 1, "method": "working_status", "backend": "git", "root": root}),
+        );
+        assert!(response.get("error").is_none(), "{response}");
+        let files = response["result"]["files"].as_array().unwrap();
+        if stream <= 2 {
+            assert!(files.iter().any(|file| file["path"] == "tracked.txt"));
+        } else if stream == 3 {
+            assert!(files.is_empty(), "{response}");
+        } else {
+            assert_eq!(files.len(), 1, "{response}");
+            assert_eq!(files[0]["path"], "untracked.txt");
+            assert!(files[0]["line_stats"].is_null());
+        }
+        assert!(!sentinel.exists(), "a newly configured filter was executed");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        let calls: Vec<_> = calls.lines().collect();
+        println!("working_status subprocesses: {calls:?}");
+        spawn_counts.push(calls.len());
+        discovery_counts.push(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("config "))
+                .count(),
+        );
+    }
+    assert_eq!(
+        spawn_counts,
+        [4, 4, 2, 2],
+        "dirty, new-filter, clean, untracked-only"
+    );
+    assert_eq!(
+        discovery_counts,
+        [2, 2, 1, 1],
+        "rediscover before each Git command"
+    );
+
+    // A branch switch during status can activate a different conditional config before diff.
+    // The controlled switch stands in for another terminal; it does not change the commit/tree.
+    git(&["branch", "review-switch"]);
+    git(&[
+        "config",
+        "includeIf.onbranch:review-switch.path",
+        "review-filter.cfg",
+    ]);
+    git(&[
+        "config",
+        "--file",
+        ".git/review-filter.cfg",
+        "filter.review.clean",
+        "printf x > \"$WORKROOM_BENCH_FILTER_SENTINEL\"; cat",
+    ]);
+    std::fs::write(root.join(".gitattributes"), "tracked.txt filter=review\n").unwrap();
+    std::fs::write(root.join("tracked.txt"), "after\n").unwrap();
+    std::fs::write(
+        workspace.dir.join("bin/git"),
+        "#!/bin/sh\ncase \" $* \" in\n  *' status '*)\n    \"$WORKROOM_BENCH_REAL_GIT\" \"$@\"\n    result=$?\n    \"$WORKROOM_BENCH_REAL_GIT\" switch --quiet review-switch || exit 1\n    exit \"$result\" ;;\n  *) exec \"$WORKROOM_BENCH_REAL_GIT\" \"$@\" ;;\nesac\n",
+    )
+    .unwrap();
+    let response = relay.client.request(
+        Service::Vcs,
+        5,
+        &json!({"version": 1, "method": "working_status", "backend": "git", "root": root}),
+    );
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(
+        response["result"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "tracked.txt")
+    );
+    assert!(
+        !sentinel.exists(),
+        "a branch-conditional filter ran during an automatic read"
+    );
+}
+
 /// A socket file at `path` with nothing listening on it: what a daemon that died leaves behind.
 ///
 /// Bound in a forked child that exits at once, not here. On macOS, std creates a socket and only
