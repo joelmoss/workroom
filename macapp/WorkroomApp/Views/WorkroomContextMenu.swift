@@ -1,6 +1,36 @@
 import SwiftUI
 import WorkroomDomain
 
+/// Target-scoped run actions, shared by project, workroom and run-tab context menus.
+@MainActor
+@ViewBuilder
+func runCommandMenuItems(store: AppStore, target: TerminalTarget) -> some View {
+  let available = target.opensTerminals && !store.isRunBlocked(target.id)
+  let configured =
+    store.project(forTargetID: target.id).map {
+      store.hasRunCommand(forProject: $0.path)
+    } ?? false
+  let running = store.isRunCommandRunning(for: target.id)
+  Button {
+    store.runOrFocusRunCommand(for: target)
+  } label: {
+    Label("Run", systemImage: "play.fill")
+  }
+  .disabled(!available || !configured)
+  Button {
+    store.restartRunCommand(for: target)
+  } label: {
+    Label("Restart", systemImage: "arrow.clockwise")
+  }
+  .disabled(!available || !running)
+  Button {
+    store.stopRunCommand(for: target)
+  } label: {
+    Label("Stop", systemImage: "stop.fill")
+  }
+  .disabled(!available || !running)
+}
+
 /// The shared right-click menu items for a workroom, reused by the tab chip
 /// (`WorkroomTabBar`) and the split group title bar (`WorkroomSplitView`) — issue #112. One
 /// source of truth so the two menus can't drift.
@@ -104,6 +134,8 @@ func workroomContextMenu(
   store: AppStore, sid: SidebarID, target: TerminalTarget, closeName: String?,
   onRemoveFromSplit: (() -> Void)? = nil
 ) -> some View {
+  runCommandMenuItems(store: store, target: target)
+  Divider()
   if let closeName {
     // Close the whole workroom (all its tabs); the workroom's files stay. Confirmed via
     // RootView's `pendingWorkroomClose` dialog.

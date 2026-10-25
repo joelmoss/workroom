@@ -355,7 +355,7 @@ private struct RunToastView: View {
   // failure. A user-initiated stop produces no toast, so there's no neutral "stopped" glyph.
   @ViewBuilder private var statusIcon: some View {
     switch item.status {
-    case .running, .restarting:
+    case .running, .stopping, .restarting:
       ProgressView().controlSize(.small)
     case .exited:
       Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
@@ -367,6 +367,7 @@ private struct RunToastView: View {
   private var statusText: String {
     switch item.status {
     case .running: return "Running"
+    case .stopping: return "Stopping…"
     case .restarting: return "Restarting…"
     case .exited: return "Exited"
     case .failed(let code): return "Failed (exit \(code))"

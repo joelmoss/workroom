@@ -361,6 +361,90 @@ final class ProgramStatusMonitorTests: XCTestCase {
     await until(store.runStates[target.id] == .stopped(tab: tab))
     XCTAssertEqual(store.runOutcomes[target.id], .exited(code: 3))
   }
+
+  func testARemoteRunStopsWithoutClosingItsTerminal() async throws {
+    let (monitor, gate) = makeMonitor()
+    let connection = FakeProgramStatusConnection()
+    gate.yield(connection)
+    let (store, target, tab, session, host) = try restoredRemoteRun(monitor: monitor)
+    defer {
+      monitor.forget(host)
+      store.terminals.sessionService.forgetRemoteSession(session)
+    }
+    await until(
+      {
+        connection.push(
+          .status(
+            boot: "b", session: session, revision: 1, reporting: false, records: [],
+            run: "running 42"))
+        connection.push(.snapshotComplete(boot: "b", sessions: [session]))
+        return monitor.hosts[host] == .live
+      }())
+    await until(monitor.run(for: session) == "running 42")
+    store.stopRunCommand(for: target)
+    connection.push(
+      .status(
+        boot: "b", session: session, revision: 2, reporting: false, records: [], run: "stopped 1"))
+    await until(monitor.run(for: session) == "stopped 1")
+    await until(!store.isRunCommandRunning(for: target.id))
+    XCTAssertNotNil(store.terminals.tab(tab.id, for: target), "stopping keeps the run terminal")
+    XCTAssertEqual(store.runOutcomes[target.id], .stoppedByUser)
+  }
+
+  func testALocalSnapshotCannotEndARemoteRunAwaitingItsHostsSnapshot() async throws {
+    let monitor = ProgramStatusMonitor()
+    monitor.watchesHosts = true
+    let local = FakeProgramStatusConnection()
+    let remote = FakeProgramStatusConnection()
+    monitor.connect = { host in host == .local ? local : remote }
+    let (store, target, _, session, host) = try restoredRemoteRun(monitor: monitor)
+    defer {
+      monitor.forget(.local)
+      monitor.forget(host)
+      store.terminals.sessionService.forgetRemoteSession(session)
+    }
+    monitor.watch(.local)
+    await until(
+      {
+        local.push(.snapshotComplete(boot: "local", sessions: []))
+        return monitor.hosts[.local] == .live
+      }())
+    XCTAssertFalse(monitor.hasSnapshot(of: host))
+    XCTAssertTrue(store.isRunCommandRunning(for: target.id))
+    XCTAssertNil(store.runOutcomes[target.id], "this Mac cannot say a remote run has ended")
+  }
+
+  private func restoredRemoteRun(monitor: ProgramStatusMonitor) throws
+    -> (AppStore, TerminalTarget, TerminalTab, UUID, HostID)
+  {
+    let hostID = UUID()
+    let host = HostID.remote(hostID)
+    let store = AppStore()
+    store.confirmOnCloseOverrideForTesting = false
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    store.terminals.programStatus = monitor
+    store.signalSupervisorForTesting = { _, _ in .delivered }
+    store.projects = [
+      Project(
+        path: "/a", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "docker", path: "/workspaces/app", vcsName: "workroom/docker", warnings: [],
+            host: HostDescriptor(
+              driver: RemoteWorkrooms.Runtime.docker.rawValue,
+              provisioner: RemoteWorkrooms.provisioner, id: hostID))
+        ])
+    ]
+    let target = try XCTUnwrap(store.target(for: .workroom(project: "/a", name: "docker")))
+    XCTAssertEqual(target.remoteHost, hostID)
+    let session = UUID()
+    let tab = store.terminals.addRestoredRunTab(
+      for: target, command: "bin/dev", sessionID: session, focus: true)
+    store.adoptRestoredRun(tab: tab.id, targetID: target.id)
+    return (store, target, tab, session, host)
+  }
 }
 
 /// Holds every sleep handed to `wait` until the test releases them.

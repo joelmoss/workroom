@@ -35,6 +35,10 @@ final class ContainerProvisioningIntegrationTests: ContainerIntegrationTestCase 
 
   func testARunTabRunsItsCommand() async throws { try await aRunTabRunsItsCommand() }
 
+  func testAStoppedRunPublishesItsStateWhileItsTerminalStaysOpen() async throws {
+    try await aStoppedRunPublishesItsStateWhileItsTerminalStaysOpen()
+  }
+
   func testALaterLaunchAdoptsARecordedContainer() async throws {
     try await aLaterLaunchAdoptsARecordedContainer()
   }

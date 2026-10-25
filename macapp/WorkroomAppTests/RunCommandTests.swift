@@ -607,7 +607,7 @@ final class RunCommandTests: XCTestCase {
 
   /// Stop is one press: SIGUSR2 to the supervisor, which then SIGINTs the child and waits for it to
   /// exit (keeps the pane). `applyRunStatus("stopped")` drives the state to `.stopped`.
-  func testStopEscalatesToCloseOnSecondPress() {
+  func testStopShowsPendingStateUntilSupervisorConfirms() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
@@ -619,12 +619,33 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.runTabID(for: t.id), tab, "stop keeps the pane open")
     XCTAssertTrue(
       store.isRunCommandRunning(for: t.id), "still running until supervisor confirms stop")
+    XCTAssertEqual(store.runStates[t.id]?.isStopping, true, "Stop gives immediate feedback")
 
     // Supervisor confirms the stop via the status file.
     store.applyRunStatus("stopped", for: t)
     XCTAssertEqual(
       store.runTabID(for: t.id), tab, "pane stays open after stop (wait_after_command)")
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(store.runStates[t.id]?.isStopping, false)
+  }
+
+  func testDelayedRunningReportsKeepStopPendingUntilRestart() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    store.stopRunCommand(for: t)
+
+    for report in ["starting", "running 123"] {
+      store.applyRunStatus(report, for: t)
+      XCTAssertEqual(store.runStates[t.id]?.isStopping, true, report)
+    }
+
+    store.restartRunCommand(for: t)
+    XCTAssertEqual(store.runStates[t.id]?.isStopping, false)
+    store.applyRunStatus("running 456", for: t)
+    XCTAssertEqual(
+      store.runStates[t.id], .running(tab: store.runTabID(for: t.id)!, interrupted: false))
   }
 
   /// Regression (#3): a Stop pressed right after a Restart must send SIGUSR2 (graceful),
@@ -1070,6 +1091,23 @@ final class RunCommandTests: XCTestCase {
     let runID = try! XCTUnwrap(store.runTabID(for: t.id))
     store.terminals.focus(runID, for: t)
     XCTAssertTrue(store.runToastItems.isEmpty, "no toast for the run you're looking at")
+  }
+
+  func testBackgroundRunToastShowsStoppingUntilConfirmed() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)
+    store.startRunCommand(for: t)
+    XCTAssertEqual(store.runToastItems.first?.status, .running)
+
+    store.stopRunCommand(for: t)
+    XCTAssertEqual(store.runToastItems.first?.status, .stopping)
+    XCTAssertEqual(store.runToastItems.first?.status.isTerminal, false)
+
+    store.applyRunStatus("stopped", for: t)
+    XCTAssertTrue(store.runToastItems.isEmpty)
   }
 
   func testLiveRunToastOnlyForSelectedWorkroom() {

@@ -35,8 +35,8 @@ final class RunCommandController {
     /// While armed, `ensureInitialTerminal` starts the run as a backgrounded tab #1, with the always-on
     /// shell opened as the focused tab #2.
     case armed
-    /// Process alive in `tab`. `interrupted` = a Ctrl-C was already sent this stop cycle, so the next
-    /// Stop escalates to a hard kill (OV-D).
+    /// Process alive in `tab`. `interrupted` means a stop is in flight; the supervisor owns timeout
+    /// escalation while the app waits for confirmation.
     case running(tab: TerminalTab.ID, interrupted: Bool)
     /// Process alive in `tab`, Ctrl-C sent, awaiting child-exit to close + respawn (graceful restart, C1).
     case restarting(tab: TerminalTab.ID)
@@ -56,6 +56,12 @@ final class RunCommandController {
       case .running, .restarting: return true
       case .armed, .stopped: return false
       }
+    }
+
+    /// Stop was requested, but the supervisor has not confirmed that the command exited yet.
+    var isStopping: Bool {
+      if case .running(_, true) = self { return true }
+      return false
     }
   }
 
@@ -233,7 +239,8 @@ final class RunCommandController {
     let command: String  // the configured run command, e.g. "npm run dev"
     let status: Status
     enum Status: Equatable {
-      case running  // spinner (covers .running(interrupted:) too — still alive)
+      case running  // spinner, command executing
+      case stopping  // spinner, graceful stop in flight
       case restarting  // spinner, graceful restart in flight
       case exited  // clean exit, code 0
       case failed(code: Int32)  // non-zero exit (a crash)
@@ -242,7 +249,7 @@ final class RunCommandController {
       // deliberately no `.stopped` case — `runToastItems` returns nil for `.stoppedByUser`.
       var isTerminal: Bool {
         switch self {
-        case .running, .restarting: return false
+        case .running, .stopping, .restarting: return false
         case .exited, .failed, .failedToStart: return true
         }
       }
