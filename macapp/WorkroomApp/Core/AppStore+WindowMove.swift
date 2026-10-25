@@ -132,6 +132,17 @@ extension AppStore {
     }
     let wasAt = displayedWorkroomTargets().firstIndex { $0.target.id == id }
     terminals.adopt(handOff.sessions)
+    if target.remoteHost == nil, !target.isRemoteWorkroom,
+      handOff.sessions.tabs.contains(where: {
+        guard let view = $0.surface else { return false }
+        return view.persistentSessionIsRestored && view.persistentSessionID != nil
+          && view.surface == nil
+      })
+    {
+      // The old window's paced recovery no longer owns these views. Continue in their new window
+      // after it displays, including hidden panes that will not mount with the focused tab.
+      scheduleSessionRecoveryAfterDisplay()
+    }
     runCommand.adopt(run, for: id)
     notifications.adopt(handOff.notifications)
     adoptLastFinishes(handOff.lastFinishes)

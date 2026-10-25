@@ -361,7 +361,9 @@ final class GhosttySurfaceView: NSView {
       config.env_var_count = envPairs.count
     }
 
+    let creationInterval = LaunchSignposts.begin("Create terminal surface")
     surface = ghostty_surface_new(app, &config)
+    LaunchSignposts.end("Create terminal surface", creationInterval)
     guard let surface else {
       freeSurfaceCStrings()
       // No surface, no ssh: the attach its command recorded is gone (#356).

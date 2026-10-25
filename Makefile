@@ -13,7 +13,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean docs-check docs-cli docs-preview \
         app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
-        app-check app-bench-title app-bench-output-flood app-bench-status app-bench-usage actions-lint vcs-lint vcs-test
+        app-check app-bench-title app-bench-output-flood app-bench-status app-bench-usage app-bench-restore app-bench-startup-reads actions-lint vcs-lint vcs-test
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -283,6 +283,14 @@ app-bench-feedback: ## Benchmark sound and initial backend probe caller time (pl
 app-bench-usage: ## Benchmark usage poll placement around a window display [BENCH_OUT=file.json]
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/UsagePollingBenchmarkTests"
+
+app-bench-restore: ## Benchmark restored hidden panes and first mount [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/SessionRestoreBenchmarkTests"
+
+app-bench-startup-reads: ## Measure owned Claude settings and saved-session reads [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/StartupReadBenchmarkTests"
 
 app-bench-title: ## Benchmark title layout at 10 updates/s [BENCH_SECONDS=60] [BENCH_OUT=file.json]
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \

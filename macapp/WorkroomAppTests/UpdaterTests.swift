@@ -11,6 +11,18 @@ final class UpdaterTests: XCTestCase {
     XCTAssertNil(Updater().availableVersionString)
   }
 
+  func testUpdaterBecomesAvailableAfterDisplay() async throws {
+    let updater = Updater()
+    XCTAssertFalse(updater.canCheckForUpdates, "must not start before display")
+    updater.startAfterDisplay()
+    for _ in 0..<100 where !updater.canCheckForUpdates {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(updater.canCheckForUpdates, "deferral must not disable update checks")
+    updater.startAfterDisplay()
+    XCTAssertTrue(updater.canCheckForUpdates)
+  }
+
   func testSetAndClearAvailableDrivesPillState() {
     let updater = Updater()
     updater.setAvailable("2.0.0")

@@ -23,6 +23,8 @@ struct WorkroomApp: App {
   @StateObject private var whatsNew = WhatsNewService(fetcher: GitHubReleasesClient())
 
   init() {
+    let interval = LaunchSignposts.begin("App initialization")
+    defer { LaunchSignposts.end("App initialization", interval) }
     // Start Sentry first, before anything else can crash — the crash handler must be
     // installed as early as possible. Runs on the main thread (App.init does), as the SDK
     // requires. macOS-trimmed option set: see SentryConfig.start().
@@ -38,7 +40,9 @@ struct WorkroomApp: App {
     // sweep reads `ProcessInfo.processInfo.environment` from background threads
     // constantly. A later write would be a use-after-free race. Everything that
     // needs the enriched value reads `ShellEnvironment.path()` / `.environment()`.
+    let pathInterval = LaunchSignposts.begin("Initial PATH floor")
     setenv("PATH", ShellEnvironment.path(), 1)
+    LaunchSignposts.end("Initial PATH floor", pathInterval)
     // A Dev build's own config, for the bundled CLI and for `workroom` in its terminals, which
     // inherit this environment. Set here for the same reason as PATH above.
     if let config = WorkroomCLI.configPath() { setenv("WORKROOM_CONFIG", config, 1) }
@@ -95,7 +99,12 @@ struct WorkroomApp: App {
     // window gets `.launch` (restores the saved selection).
     WindowGroup(for: WindowSeed.self) { $seed in
       RootWindow(seed: seed ?? .launch)
-        .background(UsagePollingAfterDisplay(monitor: codingAgentUsage))
+        .background(
+          WindowDisplayObserver {
+            didDisplayWindow()
+            codingAgentUsage.startPollingAfterDisplay()
+          }
+        )
         .environmentObject(updater)
         .environmentObject(whatsNew)
         .environmentObject(codingAgentUsage)
@@ -138,16 +147,25 @@ struct WorkroomApp: App {
     //
     // `.commandsRemoved()` drops this scene's auto Window-menu entry ("Welcome to Workroom") —
     // reopening it is still possible via the explicit `openWindow(value:)` calls above, unaffected.
-    Window("Welcome to Workroom", id: OnboardingWindow.sceneID) { OnboardingWindow() }
-      .windowResizability(.contentSize)
-      .windowStyle(.hiddenTitleBar)
-      .defaultLaunchBehavior(onboardingMightShow ? .presented : .suppressed)
-      .commandsRemoved()
+    Window("Welcome to Workroom", id: OnboardingWindow.sceneID) {
+      OnboardingWindow()
+        .background(WindowDisplayObserver { didDisplayWindow() })
+    }
+    .windowResizability(.contentSize)
+    .windowStyle(.hiddenTitleBar)
+    .defaultLaunchBehavior(onboardingMightShow ? .presented : .suppressed)
+    .commandsRemoved()
 
     // The system menu-bar item (issue #33) is hand-managed by `AppDelegate`'s `MenuBarController`
     // (an `NSStatusItem`), not a SwiftUI `MenuBarExtra`, so a click with no pending notifications can
     // simply focus the app instead of opening an empty popover — `MenuBarExtra` gives no hook to
     // intercept its click. See `MenuBarController`.
+  }
+
+  private func didDisplayWindow() {
+    LaunchSignposts.didDisplayWindow()
+    updater.startAfterDisplay()
+    appDelegate.prewarmAfterDisplay()
   }
 }
 
@@ -211,6 +229,7 @@ struct RootWindow: View {
 
   var body: some View {
     RootView()
+      .background(WindowDisplayObserver { store.windowDidDisplay() })
       .environmentObject(store)
       .environmentObject(store.notifications)
       .environmentObject(store.terminals)
@@ -345,7 +364,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     registry.store(for: window)?.activePicker != nil
   }
 
+  private var didScheduleWarmups = false
+
+  /// The first visible normal or onboarding window has completed its update. Keep optional
+  /// preparation out of that update and give input/display a turn between the two warmups.
+  func prewarmAfterDisplay() {
+    guard !didScheduleWarmups else { return }
+    didScheduleWarmups = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16)) {
+      SwitcherPanelController.shared.prepare()
+      DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16)) {
+        MarkdownWebViewPool.shared.prewarm()
+      }
+    }
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
+    let interval = LaunchSignposts.begin("Application did finish launching")
+    defer { LaunchSignposts.end("Application did finish launching", interval) }
     // Disable native macOS window tabbing. It tabs whole app windows (each with its own
     // sidebar) — a level above our per-workroom terminal tabs and a poor fit for a
     // single-window, sidebar-driven app. Off, it also drops the auto-injected
@@ -371,15 +407,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       MainActor.assumeIsolated { RemoteLinkMonitor.shared.start() }
     }
 
-    // Build the switcher rail's panel now, ordered out, and connect it to the session controller
-    // (issue #132). Pre-created on purpose: the first `NSHostingView` render costs real milliseconds,
-    // and the 250 ms reveal is the worst possible moment to pay it.
-    SwitcherPanelController.shared.prepare()
+    // Wire shortcuts now; the optional panel render waits for the first window update. An earlier
+    // reveal still prepares it on demand through `show`, so input never depends on the warmup.
     SwitcherPanelController.shared.attach(to: .shared)
-
-    // Boot a Markdown preview page now, so the first preview doesn't wait for WebKit to spawn its
-    // content process and load the template.
-    MarkdownWebViewPool.shared.prewarm()
 
     // Save the session whenever the app goes to the background (issue #46). Belt and braces on top
     // of the coalesced writes: ⌘-tabbing away is the most common moment a user leaves a layout they

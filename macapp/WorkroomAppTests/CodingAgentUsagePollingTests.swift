@@ -128,7 +128,7 @@ final class CodingAgentUsagePollingTests: XCTestCase {
       interval: 0.05, start: true, initialDelay: 0.01)
     let hosting = NSHostingView(
       rootView: Text("Usage polling fixture").frame(width: 300, height: 100)
-        .background(UsagePollingAfterDisplay(monitor: monitor)))
+        .background(WindowDisplayObserver { monitor.startPollingAfterDisplay() }))
     let window = NSWindow(
       contentRect: NSRect(x: 100, y: 100, width: 300, height: 100),
       styleMask: [.titled], backing: .buffered, defer: false)

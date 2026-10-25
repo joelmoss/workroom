@@ -150,6 +150,102 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::canonicalize(&root).unwrap()
 }
 
+/// Real OS watch registration queued ahead of an independent VCS read on the same connection.
+/// Opt-in: records the lifecycle cost without imposing platform timing thresholds on normal CI.
+#[test]
+#[ignore = "performance measurement: run explicitly with --ignored --nocapture"]
+fn watch_registration_does_not_starve_other_requests() {
+    let workspace = common::Workspace::new("watch-registration-bench");
+    let mut roots = Vec::new();
+    for index in 0..16 {
+        let root = workspace.dir.join(format!("project-{index}"));
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec![
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            let result = Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{result:?}");
+        }
+        roots.push(root);
+    }
+    let mut client = Client::connect();
+    let start = Instant::now();
+    for (index, root) in roots.iter().enumerate() {
+        client.send(
+            &json!({"version": 1, "method": "watch", "subscription": index + 1,
+                           "root": root.join(".git")}),
+        );
+    }
+    let probe_stream = 17;
+    client
+        .stream
+        .write_all(
+            &Envelope::new(
+                Service::Vcs,
+                probe_stream,
+                serde_json::to_vec(
+                    &json!({"version":1,"method":"working_status","backend":"git",
+                                   "root":roots[0]}),
+                )
+                .unwrap(),
+            )
+            .encode(),
+        )
+        .unwrap();
+    let mut acknowledgements = Vec::new();
+    let mut probe_ms = None;
+    let deadline = start + Duration::from_secs(60);
+    while Instant::now() < deadline && (acknowledgements.len() < 16 || probe_ms.is_none()) {
+        let Some(envelope) = client.envelope() else {
+            continue;
+        };
+        if envelope.stream == 0 {
+            continue;
+        }
+        assert_eq!(envelope.payload[0], 1, "small replies must be final");
+        let reply: Value = serde_json::from_slice(&envelope.payload[1..]).unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        if envelope.service == Service::Vcs && envelope.stream == probe_stream {
+            probe_ms = Some(elapsed);
+        } else {
+            assert_eq!(envelope.service, Service::File);
+            acknowledgements.push(elapsed);
+        }
+    }
+    println!(
+        "watch registration benchmark: {}",
+        json!({
+            "watch_ack_ms": acknowledgements, "working_status_ms": probe_ms,
+            "total_ms": start.elapsed().as_secs_f64()*1000.0,
+        })
+    );
+    assert_eq!(acknowledgements.len(), 16, "all watches must become live");
+    let probe_ms = probe_ms.expect("the VCS request must answer");
+    assert!(
+        probe_ms < 1000.0,
+        "watch registration delayed a VCS read by {probe_ms:.1} ms"
+    );
+}
+
 /// Standard base64 decoder for tests, so a corrupted chunk is caught by CONTENT, not just length.
 fn base64_decode(text: &str) -> Vec<u8> {
     let value = |c: u8| match c {

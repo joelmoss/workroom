@@ -32,7 +32,9 @@ final class ProjectStore {
   }
 
   var prepareRepositories: @Sendable ([Project]) async throws -> [RepositoryRouter.Registration] = {
-    try await RepositoryRouter.prepare($0)
+    let interval = LaunchSignposts.begin("Prepare repositories")
+    defer { LaunchSignposts.end("Prepare repositories", interval) }
+    return try await RepositoryRouter.prepare($0)
   }
 
   private(set) var latestLoad: Load?
@@ -43,7 +45,11 @@ final class ProjectStore {
     loadGeneration += 1
     let load = Load(
       generation: loadGeneration,
-      task: Task { try await cli.list(warnings: warnings, project: nil) })
+      task: Task {
+        let interval = LaunchSignposts.begin("Project list")
+        defer { LaunchSignposts.end("Project list", interval) }
+        return try await cli.list(warnings: warnings, project: nil)
+      })
     latestLoad = load
     return load
   }
