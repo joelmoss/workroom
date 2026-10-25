@@ -540,6 +540,9 @@ components automatically when you push a version tag.
 
 ### Continuous integration
 
+For a background watcher that reports check transitions and failures promptly, see
+[PR watching](docs/agents/pr-watching.md), including the separate review checks before merge.
+
 `.github/workflows/ci.yml` runs on every push to `master` or a `release/**` maintenance branch,
 and every PR against either:
 

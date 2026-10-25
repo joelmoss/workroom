@@ -72,6 +72,9 @@ jobs:
           shellcheck vcs/scripts/lint-linux.sh
           python3 scripts/ci/test_linux_lint.py
 
+      - name: Test the PR check watcher
+        run: python3 scripts/ci/test_watch_pr_checks.py
+
   cli:
     runs-on: ubuntu-latest
     timeout-minutes: 10

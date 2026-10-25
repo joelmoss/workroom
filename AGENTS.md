@@ -74,6 +74,10 @@ Preserve the CLI `--json` contract; breaking changes require a `schema_version` 
 
 ## Agent skills
 
+### Pull requests
+
+For CI waits, use the transition watcher and review hand-off in [PR watching](docs/agents/pr-watching.md).
+
 ### Issue tracker
 
 Issues live as GitHub issues in `joelmoss/workroom`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
