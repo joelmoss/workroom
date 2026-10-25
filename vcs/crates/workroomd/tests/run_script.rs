@@ -33,12 +33,17 @@ fn alive(pid: i32) -> bool {
 /// `testdata/script-env`'s fixture, whose local expectation (`local.txt`) the Go CLI's tests check.
 #[test]
 fn a_script_sees_the_remote_contract() {
+    remote_contract("boxd", "remote.txt");
+    remote_contract("ssh", "ssh.txt");
+}
+
+fn remote_contract(host: &str, fixture: &str) {
     let contract = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/script-env");
     let dir = std::env::temp_dir().join(format!("wr-run-script-contract-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = std::fs::canonicalize(&dir).unwrap();
-    let want = std::fs::read_to_string(contract.join("remote.txt"))
+    let want = std::fs::read_to_string(contract.join(fixture))
         .unwrap()
         .replace("{DIR}", dir.to_str().unwrap());
 
@@ -48,7 +53,7 @@ fn a_script_sees_the_remote_contract() {
         .args(["--timeout", "60"])
         .args(["--env", "WORKROOM_NAME=contract", "--env"])
         .arg(format!("WORKROOM_PATH={}", dir.display()))
-        .args(["--env", "WORKROOM_HOST=boxd", "--"])
+        .args(["--env", &format!("WORKROOM_HOST={host}"), "--"])
         .arg(contract.join("workroom_script"))
         .env("SHELL", "/nonexistent/zsh")
         .env_remove("WORKROOM_ROOT_PATH")

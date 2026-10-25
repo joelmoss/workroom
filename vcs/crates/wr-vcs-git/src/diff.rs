@@ -1,6 +1,6 @@
 //! Git supplies both patch text and exact counts using the same comparison and repository config.
 //! NUL-delimited metadata preserves tabs/newlines in paths. No shell interprets request values.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -18,7 +18,7 @@ const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 /// Bounded subprocess read.
 /// Keep draining both pipes, kill the process group on timeout/overflow, then reap before returning.
 pub fn run(root: &Path, program: &str, args: &[&str]) -> model::Result<Vec<u8>> {
-    run_with_status(root, program, args, false)
+    run_with_status(root, program, args, false, None)
 }
 
 /// As `run`, plus child-process-scoped env overrides — never process-wide `std::env::set_var`,
@@ -31,7 +31,15 @@ pub fn run_with_env(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> model::Result<Vec<u8>> {
-    run_bounded(root, program, args, false, Duration::from_secs(30), env)
+    run_bounded(
+        root,
+        program,
+        args,
+        false,
+        Duration::from_secs(30),
+        env,
+        None,
+    )
 }
 
 fn run_with_status(
@@ -39,6 +47,7 @@ fn run_with_status(
     program: &str,
     args: &[&str],
     difference_is_success: bool,
+    environment: Option<&BTreeMap<String, String>>,
 ) -> model::Result<Vec<u8>> {
     run_bounded(
         root,
@@ -47,6 +56,7 @@ fn run_with_status(
         difference_is_success,
         Duration::from_secs(30),
         &[],
+        environment,
     )
 }
 
@@ -71,6 +81,7 @@ fn run_bounded(
     difference_is_success: bool,
     timeout: Duration,
     extra_env: &[(&str, &str)],
+    environment: Option<&BTreeMap<String, String>>,
 ) -> model::Result<Vec<u8>> {
     let mut command = Command::new(program);
     command
@@ -80,6 +91,9 @@ fn run_bounded(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    if let Some(environment) = environment {
+        command.env_clear().envs(environment);
+    }
     // An inherited repository override must never redirect a request to another checkout.
     for key in [
         "GIT_DIR",
@@ -219,8 +233,12 @@ fn run_bounded(
 /// with new commits is still reported; one with only working-tree changes is not. `diff` also
 /// passes `--submodule=short`: `diff.submodule=diff` would run a child `git diff` inside the
 /// submodule, which reads that config and inherits none of these flags (`diff.external`).
-fn git(root: &Path, args: &[&str]) -> model::Result<Vec<u8>> {
-    git_with_status(root, args, false)
+fn git(
+    root: &Path,
+    args: &[&str],
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<Vec<u8>> {
+    git_with_status(root, args, false, environment)
 }
 
 /// As `git`, but `--no-index`'s "found a difference" exit code 1 is success, not failure.
@@ -228,8 +246,9 @@ fn git_with_status(
     root: &Path,
     args: &[&str],
     difference_is_success: bool,
+    environment: Option<&BTreeMap<String, String>>,
 ) -> model::Result<Vec<u8>> {
-    let filters = repository_filter_overrides(root)?;
+    let filters = repository_filter_overrides(root, environment)?;
     let mut full = vec![
         "--literal-pathspecs",
         "-c",
@@ -241,14 +260,17 @@ fn git_with_status(
         full.extend(["-c", setting.as_str()]);
     }
     full.extend_from_slice(args);
-    run_with_status(root, "git", &full, difference_is_success)
+    run_with_status(root, "git", &full, difference_is_success, environment)
 }
 
 /// `-c` settings that disable every filter driver whose `clean` or `process` command comes from
 /// the repository's own config. Reading config runs no filter.
 // Discover before each Git invocation. Conditional includes can activate a different driver when
 // another terminal switches branches while a preceding status command is running.
-fn repository_filter_overrides(root: &Path) -> model::Result<Vec<String>> {
+fn repository_filter_overrides(
+    root: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<Vec<String>> {
     // Exit 1 is "no such keys", the common case.
     let listing = run_with_status(
         root,
@@ -261,6 +283,7 @@ fn repository_filter_overrides(root: &Path) -> model::Result<Vec<String>> {
             r"^filter\..*\.(clean|process)$",
         ],
         true,
+        environment,
     )?;
     let mut names: Vec<&str> = Vec::new();
     // `scope NUL key LF value NUL`, repeated.
@@ -314,6 +337,7 @@ fn read_diff(
     comparison: &[String],
     format: &[&str],
     paths: &[&str],
+    environment: Option<&BTreeMap<String, String>>,
 ) -> model::Result<Vec<u8>> {
     let mut args: Vec<&str> = comparison.iter().map(String::as_str).collect();
     // See `git`: a working-tree diff would otherwise run a status inside each submodule, and
@@ -328,7 +352,7 @@ fn read_diff(
     args.extend_from_slice(format);
     args.push("--");
     args.extend_from_slice(paths);
-    git(root, &args)
+    git(root, &args, environment)
 }
 
 fn text(bytes: &[u8]) -> model::Result<String> {
@@ -337,11 +361,29 @@ fn text(bytes: &[u8]) -> model::Result<String> {
 }
 
 pub fn committed_files(root: &Path, commit: &Commit) -> model::Result<Vec<ChangedFile>> {
-    files(root, &comparison(commit))
+    committed_files_with_environment(root, commit, None)
+}
+
+/// As `committed_files`, with a host's complete environment. It is applied to each git child,
+/// before the existing repository scrub and policy pins; no process-wide environment is changed.
+pub fn committed_files_with_environment(
+    root: &Path,
+    commit: &Commit,
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<Vec<ChangedFile>> {
+    files_with_environment(root, &comparison(commit), environment)
 }
 
 pub fn files(root: &Path, comparison: &[String]) -> model::Result<Vec<ChangedFile>> {
-    let names = read_diff(root, comparison, &["--name-status", "-z"], &[])?;
+    files_with_environment(root, comparison, None)
+}
+
+fn files_with_environment(
+    root: &Path,
+    comparison: &[String],
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<Vec<ChangedFile>> {
+    let names = read_diff(root, comparison, &["--name-status", "-z"], &[], environment)?;
     let mut fields = names.split(|b| *b == 0).filter(|s| !s.is_empty());
     let mut result = Vec::new();
     while let Some(status) = fields.next() {
@@ -379,7 +421,7 @@ pub fn files(root: &Path, comparison: &[String]) -> model::Result<Vec<ChangedFil
     for (position, file) in result.iter().enumerate() {
         index.insert(file.path.clone(), position);
     }
-    for (path, line_stats) in numstat(root, comparison)? {
+    for (path, line_stats) in numstat(root, comparison, environment)? {
         let &position = index.get(&path).ok_or(VcsError::StaleSnapshot)?;
         result[position].line_stats = Some(line_stats);
     }
@@ -392,8 +434,12 @@ pub fn files(root: &Path, comparison: &[String]) -> model::Result<Vec<ChangedFil
 /// the two `git` invocations would otherwise fail the WHOLE status read (`StaleSnapshot`) instead
 /// of just missing that one file's counts, and paying for a second full diff (with rename
 /// detection) whose classification `working_status` already has from its own `git status` pass.
-fn numstat(root: &Path, comparison: &[String]) -> model::Result<HashMap<String, LineStats>> {
-    let stats = read_diff(root, comparison, &["--numstat", "-z"], &[])?;
+fn numstat(
+    root: &Path,
+    comparison: &[String],
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<HashMap<String, LineStats>> {
+    let stats = read_diff(root, comparison, &["--numstat", "-z"], &[], environment)?;
     let mut fields = stats.split(|b| *b == 0);
     let mut result = HashMap::new();
     while let Some(field) = fields.next() {
@@ -431,8 +477,18 @@ fn numstat(root: &Path, comparison: &[String]) -> model::Result<HashMap<String, 
 }
 
 pub fn committed_patch(root: &Path, commit: &Commit, path: &str) -> model::Result<String> {
-    let files = committed_files(root, commit)?;
-    selected_patch(root, &comparison(commit), &files, path)
+    committed_patch_with_environment(root, commit, path, None)
+}
+
+/// As `committed_patch`, replacing each git child's inherited environment with `environment`.
+pub fn committed_patch_with_environment(
+    root: &Path,
+    commit: &Commit,
+    path: &str,
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<String> {
+    let files = committed_files_with_environment(root, commit, environment)?;
+    selected_patch(root, &comparison(commit), &files, path, environment)
 }
 
 fn selected_patch(
@@ -440,6 +496,7 @@ fn selected_patch(
     comparison: &[String],
     files: &[ChangedFile],
     path: &str,
+    environment: Option<&BTreeMap<String, String>>,
 ) -> model::Result<String> {
     let Some(index) = files.iter().position(|file| file.path == path).or_else(|| {
         files
@@ -459,12 +516,12 @@ fn selected_patch(
     if file.kind != ChangeKind::Copied {
         let mut paths = vec![file.path.as_str()];
         paths.extend(file.old_path.as_deref());
-        let patch = read_diff(root, comparison, &patch_args, &paths)?;
+        let patch = read_diff(root, comparison, &patch_args, &paths, environment)?;
         if let [only] = patch_groups(&patch)[..] {
             return text(only);
         }
     }
-    let patch = read_diff(root, comparison, &patch_args, &[])?;
+    let patch = read_diff(root, comparison, &patch_args, &[], environment)?;
     let groups = patch_groups(&patch);
     if groups.len() != files.len() {
         return Err(VcsError::PartialData("patch/file list mismatch".into()));
@@ -507,13 +564,20 @@ pub struct WorkingStatus {
     pub branch_for_ci: Option<String>,
 }
 
-fn working_comparison(root: &Path) -> model::Result<Vec<String>> {
+fn working_comparison(
+    root: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<Vec<String>> {
     let repo = gix::open(root).map_err(super::io)?;
     let base = if repo.head().map_err(super::io)?.is_unborn() {
         // Hash the empty tree without writing an object. Git knows the empty tree internally.
-        text(&git(root, &["hash-object", "-t", "tree", "--stdin"])?)?
-            .trim()
-            .to_owned()
+        text(&git(
+            root,
+            &["hash-object", "-t", "tree", "--stdin"],
+            environment,
+        )?)?
+        .trim()
+        .to_owned()
     } else {
         repo.head_id().map_err(super::io)?.to_string()
     };
@@ -521,6 +585,14 @@ fn working_comparison(root: &Path) -> model::Result<Vec<String>> {
 }
 
 pub fn working_status(root: &Path) -> model::Result<WorkingStatus> {
+    working_status_with_environment(root, None)
+}
+
+/// As `working_status`, with a host's complete environment for git and its config/filter checks.
+pub fn working_status_with_environment(
+    root: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<WorkingStatus> {
     let raw = git(
         root,
         &[
@@ -530,6 +602,7 @@ pub fn working_status(root: &Path) -> model::Result<WorkingStatus> {
             "--untracked-files=all",
             "--ignore-submodules=dirty",
         ],
+        environment,
     )?;
     let mut fields = raw.split(|b| *b == 0).filter(|s| !s.is_empty());
     let mut result = Vec::new();
@@ -583,7 +656,7 @@ pub fn working_status(root: &Path) -> model::Result<WorkingStatus> {
     // A clean tree or one with only untracked files has no tracked rows to enrich. The diff's
     // counts could not be attached to anything, even if the tree changed after the status read.
     if result.len() > untracked.len() {
-        let counted = numstat(root, &working_comparison(root)?)?;
+        let counted = numstat(root, &working_comparison(root, environment)?, environment)?;
         for file in &mut result {
             file.line_stats = counted.get(&file.path).copied();
         }
@@ -601,7 +674,16 @@ pub fn working_status(root: &Path) -> model::Result<WorkingStatus> {
 }
 
 pub fn working_patch(root: &Path, path: &str) -> model::Result<String> {
-    let status = working_status(root)?;
+    working_patch_with_environment(root, path, None)
+}
+
+/// As `working_patch`, with a host's complete environment for every child in the read.
+pub fn working_patch_with_environment(
+    root: &Path,
+    path: &str,
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<String> {
+    let status = working_status_with_environment(root, environment)?;
     let Some(file) = status.files.iter().find(|file| file.path == path) else {
         return Ok(String::new());
     };
@@ -621,11 +703,18 @@ pub fn working_patch(root: &Path, path: &str) -> model::Result<String> {
                 path,
             ],
             true,
+            environment,
         )?);
     }
     let _ = file;
-    let comparison = working_comparison(root)?;
-    selected_patch(root, &comparison, &files(root, &comparison)?, path)
+    let comparison = working_comparison(root, environment)?;
+    selected_patch(
+        root,
+        &comparison,
+        &files_with_environment(root, &comparison, environment)?,
+        path,
+        environment,
+    )
 }
 
 #[cfg(test)]
@@ -642,6 +731,7 @@ mod tests {
             false,
             Duration::from_millis(100),
             &[],
+            None,
         );
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -656,6 +746,7 @@ mod tests {
             false,
             Duration::from_secs(5),
             &[],
+            None,
         );
         assert!(matches!(result, Err(VcsError::PartialData(_))));
     }

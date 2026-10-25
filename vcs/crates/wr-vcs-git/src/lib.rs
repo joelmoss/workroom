@@ -190,6 +190,15 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
 }
 
 pub fn changeset(root: &Path, revision: &str) -> model::Result<model::Changeset> {
+    changeset_with_environment(root, revision, None)
+}
+
+/// As `changeset`, with the host's environment for the git subprocesses that read changed files.
+pub fn changeset_with_environment(
+    root: &Path,
+    revision: &str,
+    environment: Option<&BTreeMap<String, String>>,
+) -> model::Result<model::Changeset> {
     let repo = gix::open(root).map_err(io)?;
     let id = gix::ObjectId::from_hex(revision.as_bytes()).map_err(io)?;
     let commit = repo
@@ -199,7 +208,7 @@ pub fn changeset(root: &Path, revision: &str) -> model::Result<model::Changeset>
         .map_err(io)?;
     let push = push_states(&repo, id);
     let mapped = map_commit(&commit, &decorations(&repo)?, &push)?;
-    let files = diff::committed_files(root, &mapped)?;
+    let files = diff::committed_files_with_environment(root, &mapped, environment)?;
     Ok(model::Changeset {
         is_merge: mapped.parent_ids.len() > 1,
         commit: mapped,

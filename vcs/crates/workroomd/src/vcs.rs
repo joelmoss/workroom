@@ -57,6 +57,27 @@ fn cached_login_environment<'a>(
     })
 }
 
+fn login_environment() -> &'static BTreeMap<String, String> {
+    let shell = crate::shell::user_shell(std::env::var_os("SHELL"));
+    cached_login_environment(
+        &HOST_LOGIN_ENVIRONMENT,
+        &shell,
+        crate::cli::run_script::PROBE_TIMEOUT,
+    )
+}
+
+/// Read-side git children (diffs and the File service's listing) run on this host too. They use
+/// the same cached profile, scrub and pins as a remote exec, without changing the daemon's own
+/// process environment or the local exec requests whose environment belongs to the client.
+pub(crate) fn host_read_environment() -> BTreeMap<String, String> {
+    host_environment(
+        login_environment()
+            .iter()
+            .map(|(key, value)| (key.into(), value.into())),
+        BTreeMap::new(),
+    )
+}
+
 /// `file::listing_environment` over an explicit variable set, so the scrub and the pins can be tested
 /// without mutating this process's own environment — which other tests' child processes inherit.
 pub(crate) fn scrubbed_environment(
@@ -785,14 +806,10 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     let dir = absolute(&dir)?;
     let timeout = exec_timeout(timeout_ms);
     let env = if from_host {
-        let shell = crate::shell::user_shell(std::env::var_os("SHELL"));
-        let login = cached_login_environment(
-            &HOST_LOGIN_ENVIRONMENT,
-            &shell,
-            crate::cli::run_script::PROBE_TIMEOUT,
-        );
         host_environment(
-            login.iter().map(|(key, value)| (key.into(), value.into())),
+            login_environment()
+                .iter()
+                .map(|(key, value)| (key.into(), value.into())),
             env,
         )
     } else {
@@ -866,43 +883,58 @@ fn read(request: Request) -> model::Result<Value> {
         Some("parent") => false,
         _ => return Err(io("invalid working base")),
     };
-    let value =
-        match request.method.as_str() {
-            "log" => serde_json::to_value(wr_vcs_git::log_page(
+    let environment = host_read_environment();
+    let value = match request.method.as_str() {
+        "log" => serde_json::to_value(wr_vcs_git::log_page(
+            &root,
+            request.limit.unwrap_or(100).min(MAX_HISTORY_LIMIT),
+        )?),
+        "changeset" => serde_json::to_value(wr_vcs_git::changeset_with_environment(
+            &root,
+            &param(rev)?,
+            Some(&environment),
+        )?),
+        "current_ref" => serde_json::to_value(wr_vcs_git::current_ref(&root)?),
+        "working_status" => serde_json::to_value(
+            wr_vcs_git::diff::working_status_with_environment(&root, Some(&environment))?,
+        ),
+        "file_diff" => {
+            let change =
+                wr_vcs_git::changeset_with_environment(&root, &param(rev)?, Some(&environment))?;
+            serde_json::to_value(wr_vcs_git::diff::committed_patch_with_environment(
                 &root,
-                request.limit.unwrap_or(100).min(MAX_HISTORY_LIMIT),
-            )?),
-            "changeset" => serde_json::to_value(wr_vcs_git::changeset(&root, &param(rev)?)?),
-            "current_ref" => serde_json::to_value(wr_vcs_git::current_ref(&root)?),
-            "working_status" => serde_json::to_value(wr_vcs_git::diff::working_status(&root)?),
-            "file_diff" => {
-                let change = wr_vcs_git::changeset(&root, &param(rev)?)?;
-                serde_json::to_value(wr_vcs_git::diff::committed_patch(
-                    &root,
-                    &change.commit,
-                    &param(path)?,
-                )?)
-            }
-            "working_file_diff" if working => {
-                serde_json::to_value(wr_vcs_git::diff::working_patch(&root, &param(path)?)?)
-            }
-            "file_content" => serde_json::to_value(wr_vcs_git::file_content(
-                &root,
-                &param(rev)?,
+                &change.commit,
                 &param(path)?,
-                false,
-            )?),
-            "commit_parent_file_content" => serde_json::to_value(wr_vcs_git::file_content(
+                Some(&environment),
+            )?)
+        }
+        "working_file_diff" if working => {
+            serde_json::to_value(wr_vcs_git::diff::working_patch_with_environment(
                 &root,
-                &param(rev)?,
                 &param(path)?,
-                true,
-            )?),
-            "working_base_file_content" if working => serde_json::to_value(
-                wr_vcs_git::file_content(&root, "HEAD", &param(path)?, false)?,
-            ),
-            _ => return Err(VcsError::UnsupportedRepo("unsupported VCS read".into())),
-        };
+                Some(&environment),
+            )?)
+        }
+        "file_content" => serde_json::to_value(wr_vcs_git::file_content(
+            &root,
+            &param(rev)?,
+            &param(path)?,
+            false,
+        )?),
+        "commit_parent_file_content" => serde_json::to_value(wr_vcs_git::file_content(
+            &root,
+            &param(rev)?,
+            &param(path)?,
+            true,
+        )?),
+        "working_base_file_content" if working => serde_json::to_value(wr_vcs_git::file_content(
+            &root,
+            "HEAD",
+            &param(path)?,
+            false,
+        )?),
+        _ => return Err(VcsError::UnsupportedRepo("unsupported VCS read".into())),
+    };
     value.map_err(io)
 }
 

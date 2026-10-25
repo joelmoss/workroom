@@ -335,17 +335,13 @@ fn listing_command() -> (&'static str, Vec<String>) {
     )
 }
 
-/// The child's environment: this daemon's own, with the same pins and scrubs
-/// `StatusCommandRunner.childEnvironment` applies on the native path.
-///
-/// "This daemon's own" is the point of the file service on a remote host, where the app's environment
-/// does not exist. Locally it is a snapshot of whichever app launch first spawned the daemon — stale
-/// for identity, which a LISTING does not use, and current enough for `PATH`, `HOME` and the global
-/// ignore file, which it does. The pins and scrubs are what keep the two paths' output identical:
+/// The child's environment: the host's cached login profile, with the same pins and scrubs as
+/// remote VCS execs. It sees the host's git and global ignore file, never the Mac's environment.
+/// The pins and scrubs keep the read's repository and output stable:
 /// `LC_ALL=C` so a translated git cannot change a message a caller matches on, and no `GIT_DIR` family
 /// so an inherited override cannot list a different repository than the one asked about.
 fn listing_environment() -> Vec<(String, String)> {
-    vcs::scrubbed_environment(std::env::vars_os())
+    vcs::host_read_environment().into_iter().collect()
 }
 
 fn list(request: &Request) -> Result<Value, FileError> {
