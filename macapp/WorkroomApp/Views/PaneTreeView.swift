@@ -1000,38 +1000,37 @@ struct PaneLeafView: View {
   /// `sessions` and holds the store, and doing it once per pane keeps that churn out of the bar.
   private var titleBar: some View {
     let tab = sessions.tab(tabID, for: target)
-    // The bar is the one thing here that shows the title, so it alone re-renders when it changes.
-    return TabTitleReader(content: content) { title in
-      PaneTitleBar(
-        title: PaneTitlePresentation.title(for: content, tabTitle: title),
-        glyph: content.glyph,
-        controls: PaneToolbarPresentation.controls(for: content),
-        diffMode: tab?.diffViewModeOverride ?? defaultDiffViewMode,
-        markdownPreview: tab?.markdownPreviewOverride ?? true,
-        openFileEnabled: !isDeletedDiff,
-        focused: focused,
-        multiPane: multiPane,
-        help: helpText(title),
-        coordinateSpace: coordinateSpace,
-        onSetDiffMode: { sessions.setDiffViewMode($0, forTab: tabID, in: target) },
-        onSetMarkdownPreview: { sessions.setMarkdownPreview($0, forTab: tabID, in: target) },
-        // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
-        onOpenFile: {
-          if let path = content.filePath { store.openFilePreview(path: path, for: target) }
-        },
-        onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
-        onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
-        onClose: { store.requestCloseTerminalTab(tabID, for: target) },
-        onActivate: onActivate,
-        onPopOut: {
-          // Same screen placement a drag-out would produce, minus the drag: put the window under
-          // the pointer rather than somewhere arbitrary.
-          sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
-        },
-        onDragChanged: onDragChanged,
-        onDragEnded: onDragEnded
-      )
-    }
+    // The bar reads the changing title only in its text and accessibility leaves, keeping its
+    // adaptive toolbar and action closures out of every spinner frame.
+    return PaneTitleBar(
+      content: content,
+      glyph: content.glyph,
+      controls: PaneToolbarPresentation.controls(for: content),
+      diffMode: tab?.diffViewModeOverride ?? defaultDiffViewMode,
+      markdownPreview: tab?.markdownPreviewOverride ?? true,
+      openFileEnabled: !isDeletedDiff,
+      focused: focused,
+      multiPane: multiPane,
+      help: helpText,
+      coordinateSpace: coordinateSpace,
+      onSetDiffMode: { sessions.setDiffViewMode($0, forTab: tabID, in: target) },
+      onSetMarkdownPreview: { sessions.setMarkdownPreview($0, forTab: tabID, in: target) },
+      // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
+      onOpenFile: {
+        if let path = content.filePath { store.openFilePreview(path: path, for: target) }
+      },
+      onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
+      onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
+      onClose: { store.requestCloseTerminalTab(tabID, for: target) },
+      onActivate: onActivate,
+      onPopOut: {
+        // Same screen placement a drag-out would produce, minus the drag: put the window under
+        // the pointer rather than somewhere arbitrary.
+        sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
+      },
+      onDragChanged: onDragChanged,
+      onDragEnded: onDragEnded
+    )
   }
 
   /// A diff whose source file was deleted has no working copy to open (review D4).

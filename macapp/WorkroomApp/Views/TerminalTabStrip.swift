@@ -16,6 +16,9 @@ import WorkroomDomain
 /// `TabStripOverflow.pinsControls`, wired up by the shared `OverflowingTabScroller` (which
 /// `WorkroomTabBar` uses too, so the two strips can't drift).
 struct TerminalTabStrip: View {
+  #if DEBUG
+    static var bodyPasses = 0
+  #endif
   let tabs: [TerminalTab]
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
@@ -48,6 +51,8 @@ struct TerminalTabStrip: View {
   // chip simply follows the cursor (its slot never moves, so it can't jump), and the
   // other chips slide aside to open a gap. The reorder is committed once, on drop.
   @State private var drag = TabReorderDrag<TerminalTab.ID>()
+  /// Measurements stay current without publishing idle drag state for every spinner glyph.
+  @State private var measuredWidths = TerminalChipWidths()
 
   private let tabSpacing: CGFloat = 4
   /// The strip's own right inset, so a pinned "+" is never flush against the pane edge. The strip has
@@ -60,6 +65,9 @@ struct TerminalTabStrip: View {
   private static let leadingInset: CGFloat = 4
 
   var body: some View {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
     // Resolve the drag once per layout: which tab is dragging, and where it would land.
     let draggedIndex = drag.id.flatMap { id in tabs.firstIndex { $0.id == id } }
     // While dragging a chip down into a pane, the strip stops opening a reorder gap.
@@ -80,7 +88,7 @@ struct TerminalTabStrip: View {
     // #129. It went unnoticed because at the old strip width the default fixture's tabs still fit
     // INLINE, where the gap happened to be leftover slack; issue #139's card geometry narrowed the strip
     // enough to pin, and `TabStripOverflowUITests.testPinnedAddButtonKeepsGutterFromToolbar` caught it.
-    HStack(spacing: TabStripMetrics.gutter) {
+    return HStack(spacing: TabStripMetrics.gutter) {
       // The scrolling chips plus the adaptive "+" (issue #129), assembled by the shared
       // `OverflowingTabScroller`. The width it measures for the overflow predicate is the scroller's
       // own: it's the flexible child beside the `fixedSize` toolbar, so it already equals "strip minus
@@ -202,6 +210,7 @@ struct TerminalTabStrip: View {
         .gesture(
           DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
+              drag.setWidths(measuredWidths.values)
               drag.update(tab.id, translation: value.translation.width)
               // Dragged clear of the window → this is a tear-off (issue #172), so show the ghost of
               // the window it will become and stop previewing a drop into the panes.
@@ -277,7 +286,10 @@ struct TerminalTabStrip: View {
       }
     }
     .background(alignment: .leading) { splitWell(tabs, groupOf: groupOf) }
-    .onPreferenceChange(TabWidthKey.self) { drag.setWidths($0) }
+    .onPreferenceChange(TabWidthKey.self) { widths in
+      measuredWidths.values = widths
+      if drag.isDragging { drag.setWidths(widths) }
+    }
   }
 
   /// The "new terminal" (+) button, rendered in one of two positions (issue #129): inline as the last
@@ -385,7 +397,7 @@ struct TerminalTabStrip: View {
     x: CGFloat, width: CGFloat
   )] {
     guard !groupOf.isEmpty else { return [] }
-    let widths = tabs.map { drag.widths[$0.id] ?? 0 }
+    let widths = tabs.map { measuredWidths.values[$0.id] ?? 0 }
     // Bucket the chips by group in ONE pass over the strip (a filter per group would be
     // O(groups × chips)).
     var byGroup: [Int: [Int]] = [:]
@@ -609,7 +621,7 @@ private struct TerminalTabChip: View {
       // — `ToolLogoRegistry` only vends entries with a bundled image, so this never renders a
       // missing/broken asset. Dynamic (unlike the diff/file/changeset glyphs, which are fixed for the
       // tab's life), same category of mid-session width change as the ✦ agent badge above — no
-      // special-casing needed, `TabWidthKey` already re-measures on every body re-evaluation.
+      // special-casing needed, `TabWidthKey` already re-measures after layout.
       if let tool = tab.recognizedTool {
         Image(ToolLogoRegistry.assetName(for: tool.id))
           .resizable()
@@ -772,6 +784,12 @@ private struct TerminalTabChip: View {
     .scaleEffect(isDragging ? 1.04 : 1)
     .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
   }
+}
+
+/// Split brackets observe these widths live; a strip without groups leaves them unobserved.
+@Observable
+private final class TerminalChipWidths {
+  var values: [TerminalTab.ID: CGFloat] = [:]
 }
 
 /// Collects each tab chip's natural width for the drag gap math.

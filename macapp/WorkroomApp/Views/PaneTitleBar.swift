@@ -130,7 +130,10 @@ func panePathText(prefix: String, name: String) -> Text {
 /// closures — the same contract `WorkroomPaneTitleBar` documents. It also makes the two presentation
 /// enums above testable with no store in scope.
 struct PaneTitleBar: View {
-  let title: PaneTitlePresentation.Title
+  #if DEBUG
+    static var bodyPasses = 0
+  #endif
+  let content: TabContent
   /// Content-kind glyph from `TabContent.glyph` — nil for a terminal, matching the chip.
   let glyph: String?
   let controls: PaneToolbarPresentation.Controls
@@ -144,7 +147,7 @@ struct PaneTitleBar: View {
   /// Only a pane with peers can be dragged within a split, so the drag gesture is `multiPane`-only.
   let multiPane: Bool
   /// Full title + absolute path, for the tooltip.
-  let help: String
+  let help: (String) -> String
   let coordinateSpace: String
   let onSetDiffMode: (DiffViewMode) -> Void
   let onSetMarkdownPreview: (Bool) -> Void
@@ -163,6 +166,9 @@ struct PaneTitleBar: View {
   private let theme = ThemeService.shared
 
   var body: some View {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
     // Two complete title-plus-toolbar rows; `ViewThatFits` takes the first whose combined width fits.
     // It must wrap the WHOLE row: the title and the toolbar compete for the same width, so measuring
     // the toolbar alone would answer the wrong question. When neither fits — panes CAN render below
@@ -172,7 +178,7 @@ struct PaneTitleBar: View {
     // This branch is entirely inside the bar. It never wraps the pane's content, so the
     // single-structural-slot invariant (`PaneLeafView`, `WorkroomPaneLeaf`) is not in play: that rule
     // is about the libghostty surface's view identity, not about chrome.
-    ViewThatFits(in: .horizontal) {
+    return ViewThatFits(in: .horizontal) {
       row(titleMinWidth: PaneTitleBarMetrics.minTitle, collapsed: false)
       row(titleMinWidth: nil, collapsed: true)
     }
@@ -208,7 +214,9 @@ struct PaneTitleBar: View {
     .onTapGesture { onActivate() }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("terminal.pane.titlebar")
-    .accessibilityLabel(Text(title.plain))
+    .withTabTitle(content) { bar, title in
+      bar.accessibilityLabel(Text(PaneTitlePresentation.title(for: content, tabTitle: title).plain))
+    }
     .accessibilityHint(
       multiPane
         ? "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or out of the window to open in a new window"
@@ -227,15 +235,22 @@ struct PaneTitleBar: View {
           // before every file name is noise.
           .accessibilityHidden(true)
       }
-      panePathText(prefix: title.prefix, name: title.name)
-        .font(.subheadline)
-        .foregroundStyle(focused ? Color.primary : theme.tokens.fgMuted)
-        .lineLimit(1)
-        .truncationMode(title.truncation)
-        // No `TabStripMetrics.maxChipTitle` cap — the chip's 180pt cap is the thing issue #150 exists
-        // to escape. The title takes everything the toolbar leaves.
-        .frame(minWidth: titleMinWidth, maxWidth: .infinity, alignment: .leading)
-        .help(help)
+      // The slot sizes from the space left by the toolbar. Its overlay cannot change that size
+      // when a spinner glyph changes, while the text still gets the full available title width.
+      Color.clear
+        .frame(minWidth: titleMinWidth, maxWidth: .infinity)
+        .overlay(alignment: .leading) {
+          TabTitleReader(content: content) { text in
+            let title = PaneTitlePresentation.title(for: content, tabTitle: text)
+            panePathText(prefix: title.prefix, name: title.name)
+              .font(.subheadline)
+              .foregroundStyle(focused ? Color.primary : theme.tokens.fgMuted)
+              .lineLimit(1)
+              .truncationMode(title.truncation)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .help(help(text))
+          }
+        }
       trailing(collapsed: collapsed)
     }
     .padding(.leading, PaneTitleBarMetrics.leadingInset)
