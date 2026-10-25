@@ -95,6 +95,7 @@ struct WorkroomApp: App {
     // window gets `.launch` (restores the saved selection).
     WindowGroup(for: WindowSeed.self) { $seed in
       RootWindow(seed: seed ?? .launch)
+        .background(UsagePollingAfterDisplay(monitor: codingAgentUsage))
         .environmentObject(updater)
         .environmentObject(whatsNew)
         .environmentObject(codingAgentUsage)
