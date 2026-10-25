@@ -44,6 +44,8 @@ Workroom reads how much of each coding agent's usage allowance you have used and
 
 The footer along the bottom of the window shows each coding agent's usage on the left, once Workroom has a reading, whether or not an agent is running. Each agent has its logo and one bar per usage window. Hover a bar for the numbers, or click it to open the details: **Session** and **Weekly** percentages used, when each resets, and a note on your pace. The refresh button at the bottom reads the usage again.
 
+Workroom checks for fresh usage shortly after the first workroom window appears, then every three minutes. Local readings can appear sooner. Opening usage details or pressing Refresh checks immediately.
+
 Hide the footer usage with **Settings ▸ AI Agents ▸ Usage ▸ Show in the window footer**.
 
 ### The pane footer

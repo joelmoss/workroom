@@ -15,6 +15,10 @@ Workroom checks for updates in the background and tells you when one is ready. T
 
 **Settings ▸ About** also has **View release notes**, which opens the releases page on GitHub. See also [Release notes](../help/release-notes.md).
 
+### Checks after launch {nightly}
+
+Automatic update checks start after the first window appears. **Check for Updates…** still checks immediately when you choose it.
+
 ### Updating keeps your terminals {nightly}
 
 Next to the **Update** button, a short note scrolls past: Safe to update: workroom terminals and run commands keep running. The Quick Terminal stops. Terminals and run commands in your workrooms keep their sessions across the update, whatever you chose for quitting with dev servers running. The Quick Terminal has no session to keep.

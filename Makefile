@@ -13,7 +13,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean docs-check docs-cli docs-preview \
         app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
-        app-check app-bench-title app-bench-output-flood app-bench-status app-bench-usage app-bench-restore app-bench-startup-reads actions-lint vcs-lint vcs-test
+        app-check app-bench-title app-bench-output-flood app-bench-status app-bench-usage app-bench-restore app-bench-startup-reads app-bench-memory app-bench-sentry actions-lint vcs-lint vcs-test
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -292,6 +292,15 @@ app-bench-startup-reads: ## Measure owned Claude settings and saved-session read
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/StartupReadBenchmarkTests"
 
+app-bench-memory: ## Measure three owned terminal renderers visible, hidden and released [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/TerminalMemoryBenchmarkTests"
+
+app-bench-sentry: app-build ## Compare optimized local Sentry SDK arms [BENCH_OUT=new-directory]
+	python3 macapp/Scripts/gui-lock.py exclusive --label 'Sentry SDK benchmark' -- \
+	  python3 macapp/Benchmarks/Sentry/run.py --verify-chunk \
+	  --out "$(or $(BENCH_OUT),$(CURDIR)/macapp/DerivedData/sentry-benchmark-$(shell date +%s))"
+
 app-bench-title: ## Benchmark title layout at 10 updates/s [BENCH_SECONDS=60] [BENCH_OUT=file.json]
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  TEST_RUNNER_WORKROOM_BENCH_SECONDS="$(BENCH_SECONDS)" \
@@ -393,7 +402,7 @@ app-lsp: ## Write buildServer.json so SourceKit-LSP resolves the app's packages 
 
 # The Swift that app-format and app-lint cover, relative to macapp/. Each package's manifest, Sources
 # and Tests, never its .build: that holds its dependencies' checkouts.
-APP_SWIFT_PATHS := WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSession $(patsubst macapp/%,%,$(wildcard macapp/Packages/*/Package.swift \
+APP_SWIFT_PATHS := WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSession Benchmarks $(patsubst macapp/%,%,$(wildcard macapp/Packages/*/Package.swift \
   macapp/Packages/*/Sources macapp/Packages/*/Tests))
 
 app-format: ## Format Swift sources in place (swift-format)
