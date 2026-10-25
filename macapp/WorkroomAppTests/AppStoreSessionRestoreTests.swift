@@ -74,6 +74,31 @@ final class AppStoreSessionRestoreTests: XCTestCase {
 
   // MARK: Claiming
 
+  func testBootstrapPreparesBackendOffMainBeforeRestoringPersistentPanes() async throws {
+    let projects = [project("/p", workrooms: ["calm-otter"])]
+    let store = makeStore(
+      projects: projects,
+      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]))
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    store.terminals.sessionService = PersistentSessionService(
+      probe: { _ in
+        XCTAssertFalse(
+          Thread.isMainThread, "the first backend probe must not freeze session restore")
+        Thread.sleep(forTimeInterval: 0.2)
+        return .ready(version: "delayed fixture")
+      }, ownership: { _ in .notOwned })
+    defer { Task { await store.terminals.reapAll() } }
+    store.claimSessionIfNeeded()
+    await store.bootstrap(restore: true)
+    let target = try XCTUnwrap(store.selectedTarget)
+    let tab = try XCTUnwrap(store.terminals.tabs(for: target).first)
+    XCTAssertNotNil(
+      store.terminals.sessionID(forTab: tab.id, inTarget: target.id),
+      "waiting asynchronously must preserve persistence for the first restored pane")
+  }
+
   func testLaunchWindowClaimsTheSavedSessionOnce() {
     let projects = [project("/p", workrooms: ["calm-otter"])]
     let store = makeStore(

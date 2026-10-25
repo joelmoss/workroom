@@ -18,7 +18,7 @@ import XCTest
 /// would encode whatever the new engine does as correct and could never detect a regression.
 ///
 /// **What these do NOT test, and why:**
-///   - `GHOSTTY_ACTION_RING_BELL` calls `NSSound.beep()`, which produces audio and no UI. XCUITest
+///   - `GHOSTTY_ACTION_RING_BELL` requests `SoundFeedback`'s system bell, producing audio and no UI. XCUITest
 ///     cannot observe it, and adding a fixture-only counter to prove it would test the counter.
 ///     It stays manual QA (`QA-libghostty.md` §G) — where it belongs, and where it was caught the
 ///     one time it shipped silent.
