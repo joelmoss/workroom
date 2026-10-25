@@ -218,12 +218,15 @@ struct TerminalStatusBar: View {
     switch state {
     case .armed:
       return nil
-    case .running:
+    case .running(_, true):
+      return RunPresentation(
+        icon: "stop.fill", text: "Stopping…", color: AnyShapeStyle(theme.tokens.warning))
+    case .running(_, false):
       return RunPresentation(
         icon: "play.fill", text: "Running", color: AnyShapeStyle(theme.tokens.accent))
     case .restarting:
       return RunPresentation(
-        icon: "arrow.clockwise", text: "Restarting", color: AnyShapeStyle(theme.tokens.warning))
+        icon: "arrow.clockwise", text: "Restarting…", color: AnyShapeStyle(theme.tokens.warning))
     case .stopped:
       switch store.runOutcomes[target.id] {
       case .exited(let code) where code != 0:

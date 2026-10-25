@@ -28,7 +28,8 @@ extension AppStore {
       let status: RunToastItem.Status
       switch state {
       case .armed: return nil
-      case .running: status = .running
+      case .running(_, true): status = .stopping
+      case .running(_, false): status = .running
       case .restarting: status = .restarting
       case .stopped:
         switch runOutcomes[targetID] {
@@ -244,7 +245,9 @@ extension AppStore {
     let parts = line.split(separator: " ")
     switch parts.first.map(String.init) ?? "" {
     case "starting", "running":
-      runStates[target.id] = .running(tab: tab, interrupted: false)
+      // A first/delayed running report cannot acknowledge a Stop that is already in flight.
+      let stopping = runStates[target.id]?.isStopping == true
+      runStates[target.id] = .running(tab: tab, interrupted: stopping)
       runOutcomes[target.id] = nil
       runCommand.setRunStoppedAwaitingClose(false, tab: tab, target: target.id)
       guard !restored else {

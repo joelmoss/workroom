@@ -347,6 +347,8 @@ struct ProjectSidebar: View {
       // No tooltip here: a submenu's parent shows it on top of the submenu, over This Mac. Each
       // entry has its own.
       Divider()
+      runCommandMenuItems(store: store, target: project.rootTarget)
+      Divider()
       Button {
         store.pendingProjectSettings = PendingProjectSettings(project: project)
       } label: {
@@ -437,6 +439,9 @@ struct ProjectSidebar: View {
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
+      .contextMenu {
+        runCommandMenuItems(store: store, target: target)
+      }
   }
 
   @ViewBuilder
@@ -492,11 +497,10 @@ struct ProjectSidebar: View {
       // A waiting terminal (#358) takes the mark's place and stays on hover: the delete button
       // appears in its own slot, on the glyph's leading side, so nothing moves.
       needsYouButton(for: targetID, identifier: "sidebar.workroom.\(workroom.name).needsYou")
-      // Run/stop the project's command for this workroom straight from the row (issue #7), trailing-
-      // most. Shows its state (green = running) and toggles on click; distinct from the OSC-9;4
-      // `RunningSpinner` above (any terminal's agent activity). Hidden for a missing worktree, where
-      // the button would be a dead no-op (review #9).
-      if store.canRunCommand(for: target, inProject: project.path) {
+      // The run's stop control is only present while its command is running, as on the root row.
+      if store.canRunCommand(for: target, inProject: project.path),
+        store.isRunCommandRunning(for: targetID)
+      {
         RowRunButton(target: target)
           .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
       }
@@ -520,6 +524,8 @@ struct ProjectSidebar: View {
       .contextMenu {
         // A workroom still being made has nothing to open, label or delete yet.
         if !pending {
+          runCommandMenuItems(store: store, target: target)
+          Divider()
           // Open this workroom beside the current one (issue #163) — the same shared item the tab
           // chip and split pane title bar get from `workroomContextMenu`. Called directly because
           // this row's menu is its own inline list, not that shared builder; migrating it wholesale
@@ -672,6 +678,10 @@ struct ProjectSidebar: View {
       }
     }
     .contextMenu {
+      if store.runTabID(for: target.id) == tab.id {
+        runCommandMenuItems(store: store, target: target)
+        Divider()
+      }
       // The escape hatch for a program that left a request behind (#358).
       if tab.programStatus?.hasReport == true {
         Button {
@@ -945,6 +955,7 @@ private struct RowRunButton: View {
 
   var body: some View {
     let running = store.isRunCommandRunning(for: target.id)
+    let stopping = store.runStates[target.id]?.isStopping == true
     // The action's color: red to stop (like delete), green to start. Drives the hover icon tint AND
     // the rounded hover background, matching the row's other buttons (new-workroom / delete).
     let tokens = ThemeService.shared.tokens
@@ -952,23 +963,32 @@ private struct RowRunButton: View {
     Button {
       store.toggleRunCommand(for: target)
     } label: {
-      Image(systemName: running ? "stop.circle.fill" : "play.circle.fill")
-        .font(.system(size: 12))
-        .foregroundStyle(
-          running
-            ? (hovering ? tokens.failure : tokens.success)
-            : (hovering ? tokens.success : Color.secondary)
-        )
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: 5)
-            .fill(tint.opacity(hovering ? 0.18 : 0))
-        )
+      Group {
+        if stopping {
+          ProgressView().controlSize(.mini)
+            .tint(tokens.warning)
+            .frame(width: 12, height: 12)
+        } else {
+          Image(systemName: running ? "stop.circle.fill" : "play.circle.fill")
+            .font(.system(size: 12))
+            .foregroundStyle(
+              running
+                ? (hovering ? tokens.failure : tokens.success)
+                : (hovering ? tokens.success : Color.secondary)
+            )
+        }
+      }
+      .padding(4)
+      .background(
+        RoundedRectangle(cornerRadius: 5)
+          .fill(tint.opacity(hovering ? 0.18 : 0))
+      )
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help(running ? "Stop run command" : "Start run command")
-    .accessibilityLabel(running ? "Stop run command" : "Start run command")
+    .help(stopping ? "Stopping run command…" : (running ? "Stop run command" : "Start run command"))
+    .accessibilityLabel(
+      stopping ? "Stopping run command" : (running ? "Stop run command" : "Start run command"))
   }
 }
 

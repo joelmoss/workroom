@@ -320,6 +320,42 @@ class ContainerIntegrationTestCase: XCTestCase {
     try await driver.destroy(host)
   }
 
+  func aStoppedRunPublishesItsStateWhileItsTerminalStaysOpen() async throws {
+    let driver = driver()
+    let host = try await create(driver, image: try await gitImage(driver))
+    let connection = try await connect(driver, host)
+    let session = UUID()
+    let statuses = Lines()
+    let availability = try await connection.subscribeProgramStatus { event in
+      if case .status(_, let reported, _, _, _, let run?) = event, reported == session {
+        statuses.add(run)
+      }
+    }
+    XCTAssertEqual(availability, .available)
+    let pane = try pane(driver, host, session: session, run: "sleep 30")
+    defer { pane.dropLink() }
+
+    func waitForStatus(_ matches: (String) -> Bool) async throws -> Bool {
+      let deadline = ContinuousClock.now + .seconds(15)
+      while ContinuousClock.now < deadline {
+        if let last = statuses.all.last, matches(last) { return true }
+        try await Task.sleep(for: .milliseconds(50))
+      }
+      return statuses.all.last.map(matches) ?? false
+    }
+
+    let running = try await waitForStatus { $0.hasPrefix("running ") }
+    XCTAssertTrue(running, "the run never reported running: \(statuses.all)")
+    let stop = try await connection.signalSession(session, .stop)
+    XCTAssertEqual(stop, .delivered)
+    let stopped = try await waitForStatus { $0 == "stopped 1" }
+    XCTAssertTrue(stopped, "the stopped state was not published: \(statuses.all)")
+    let sessions = try await connection.sessions()
+    XCTAssertTrue(
+      sessions.contains { $0.identifier.uuid == session }, "stop must keep the run session open")
+    try await driver.destroy(host)
+  }
+
   /// A later launch's driver takes back what an earlier one made from its record alone (#253),
   /// reaches the same container, and destroys it.
   func aLaterLaunchAdoptsARecordedContainer() async throws {

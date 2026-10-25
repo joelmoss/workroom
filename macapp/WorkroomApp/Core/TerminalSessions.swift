@@ -2602,12 +2602,10 @@ final class TerminalSessions: ObservableObject {
   /// has not heard from the host yet.
   func applyRunStatus(_ change: ProgramStatusMonitor.Change) {
     for (targetID, tabs) in tabsByTarget {
-      guard let target = target(forID: targetID),
-        (target.remoteHost.map(HostID.remote) ?? .local) == change.host
-      else { continue }
       for (tabID, tab) in tabs {
         guard case .terminal(let state) = tab.content, state.view.isRunSession,
           let sessionID = state.sessionID,
+          (sessionService.remoteHost(of: sessionID) ?? .local) == change.host,
           change.isSnapshot || change.sessions.contains(sessionID)
         else { continue }
         reportRunStatus(of: sessionID, tab: tabID, target: targetID, gone: true)

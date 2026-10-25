@@ -100,7 +100,11 @@ The command runs in its own terminal tab, in your login shell, at the workroom's
 
 ### Stop from the sidebar {nightly}
 
-A project's root row shows its run control only while its run command is running. Click it to stop the command.
+Project-root and workroom rows show their run control only while the run command is running. Click it to stop the command. The run terminal's footer immediately shows **Stopping…**, and the run tab and sidebar control show spinners until the command stops. Then the sidebar control disappears even if its run terminal stays open, including for a workroom on a host.
+
+### Run from a context menu {nightly}
+
+Right-click a project row in the sidebar, a workroom, or its Run terminal tab to choose **Run**, **Restart**, or **Stop**. Project-row actions control the project's root directory; workroom and terminal actions control that workroom. **Run** needs a configured command. **Restart** and **Stop** are enabled while the command is running.
 
 ### Quitting with a run going {nightly}
 

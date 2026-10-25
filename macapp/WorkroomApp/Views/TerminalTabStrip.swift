@@ -137,12 +137,14 @@ struct TerminalTabStrip: View {
         // fill) instead of a count — a tab is too narrow for a number.
         let hasActivity = notifications.count(tab: tab.id) > 0
         // Run-command state for this tab's chip icon (issue #7): only the dedicated run tab
-        // carries one — running (green) vs failed (red octagon, #79) vs stopped/exited (dim).
+        // carries one — running, stopping, failed, or stopped/exited.
         // Process-based, distinct from the OSC-9;4 RunningUnderline below.
         let runState: TerminalTabChip.RunState? =
           store.runTabID(for: target.id) == tab.id
-          ? (store.isRunCommandRunning(for: target.id)
-            ? .running : (store.runFailed(for: target.id) ? .failed : .stopped))
+          ? (store.runStates[target.id]?.isStopping == true
+            ? .stopping
+            : (store.isRunCommandRunning(for: target.id)
+              ? .running : (store.runFailed(for: target.id) ? .failed : .stopped)))
           : nil
         // Dragged chip tracks the cursor; the rest shift to open the gap.
         let offsetX =
@@ -470,7 +472,7 @@ private struct TerminalTabChip: View {
   /// The run-command state shown as a leading chip icon — only the dedicated run tab has one (#7).
   /// `failed` (issue #79) renders a distinct glyph + colour, not just a red tint, so it stays legible
   /// for red/green colourblind users (the running/stopped play glyph vs the failed octagon).
-  enum RunState { case running, stopped, failed }
+  enum RunState { case running, stopping, stopped, failed }
 
   let tab: TerminalTab
   let isActive: Bool
@@ -498,6 +500,7 @@ private struct TerminalTabChip: View {
   private func runIconSpec(_ state: RunState) -> (glyph: String, color: Color, label: String) {
     switch state {
     case .running: return ("play.circle.fill", theme.tokens.success, "running")
+    case .stopping: return ("stop.circle.fill", theme.tokens.warning, "stopping")
     case .stopped: return ("play.circle.fill", theme.tokens.fgMuted, "stopped")
     case .failed: return ("xmark.octagon.fill", theme.tokens.failure, "failed")
     }
@@ -570,21 +573,27 @@ private struct TerminalTabChip: View {
         .accessibilityIdentifier("terminal.codingAgentBadge")
         .accessibilityLabel("Diagnosis available")
       }
-      // Leading state dot for the run tab (#7): green play while the command runs, dim play once it
-      // has cleanly exited, a red octagon if it failed (#79). The fixed 10pt size keeps the chip
-      // width stable across the glyph swap. Mirrors the sidebar/workroom run dot — one signal.
+      // Run state: green play while running, a warning spinner while stopping, dim play once it
+      // exits, and a red octagon if it failed (#79). Keep the slot stable across state changes.
       if let runState {
         let spec = runIconSpec(runState)
-        Image(systemName: spec.glyph)
-          .font(.system(size: 10))
-          .foregroundStyle(spec.color)
-          .help("Run command \(spec.label)")
-          // Purely visual: the chip's own `.accessibilityValue` below (not this glyph) is the
-          // XCUITest query handle for run state (#79) — the chip's explicit `.accessibilityLabel`
-          // (issue #141) makes it a single accessibility element, so this nested image's own
-          // label/identifier are unreachable regardless of `.accessibilityElement(children:)`
-          // policy (measured: `.contain` in either modifier position still didn't expose it).
-          .accessibilityHidden(true)
+        Group {
+          if runState == .stopping {
+            ProgressView().controlSize(.mini).tint(spec.color)
+          } else {
+            Image(systemName: spec.glyph)
+              .font(.system(size: 10))
+              .foregroundStyle(spec.color)
+          }
+        }
+        .frame(width: 12, height: 12)
+        .help("Run command \(spec.label)")
+        // Purely visual: the chip's own `.accessibilityValue` below (not this glyph) is the
+        // XCUITest query handle for run state (#79) — the chip's explicit `.accessibilityLabel`
+        // (issue #141) makes it a single accessibility element, so this nested image's own
+        // label/identifier are unreachable regardless of `.accessibilityElement(children:)`
+        // policy (measured: `.contain` in either modifier position still didn't expose it).
+        .accessibilityHidden(true)
       }
       // A content tab gets a leading glyph so it reads as not-a-terminal at a glance (#66 diff, #59
       // changeset). The symbol comes from `TabContent.glyph`, shared with the pane's own title bar
@@ -1063,6 +1072,10 @@ extension View {
     tab: TerminalTab, target: TerminalTarget, store: AppStore, sessions: TerminalSessions
   ) -> some View {
     self.contextMenu {
+      if store.runTabID(for: target.id) == tab.id {
+        runCommandMenuItems(store: store, target: target)
+        Divider()
+      }
       // The escape hatch for a program that left a request behind (#358).
       if tab.programStatus?.hasReport == true {
         Button {

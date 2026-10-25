@@ -59,6 +59,103 @@ final class RunStatusUITests: XCTestCase {
     return poll(timeout: timeout) { (chip.value as? String) == label }
   }
 
+  /// Only the open context menu's items have a frame; the menu bar keeps zero-frame copies.
+  private func assertRunMenu(_ app: XCUIApplication, running: Bool) throws {
+    XCTAssertNotNil(app.waitForHittableMenuItem(titled: "Run"))
+    for title in ["Restart", "Stop"] {
+      let item = try XCTUnwrap(
+        app.menuItems.matching(NSPredicate(format: "title == %@", title))
+          .allElementsBoundByIndex.first { !$0.frame.isEmpty }, title)
+      XCTAssertEqual(item.isEnabled, running, title)
+    }
+  }
+
+  func testRunContextMenusControlTheirOwnTargets() throws {
+    let app = launchedApp(runCommand: "trap : INT; while true; do sleep 1; done")
+    defer { app.terminate() }
+    XCTAssertTrue(app.buttons["runCommand.run"].waitForExistence(timeout: 15))
+    let project = app.otherElements["sidebar.project.UITestProject"]
+    if !project.exists { app.buttons["toolbar.toggleSidebar"].click() }
+    XCTAssertTrue(project.waitForExistence(timeout: 10))
+
+    // The project menu starts the root's run, even though the workroom was selected.
+    project.rightClick()
+    try assertRunMenu(app, running: false)
+    try XCTUnwrap(app.hittableMenuItem(titled: "Run")).click()
+    XCTAssertTrue(waitForRunState(app, "running"))
+
+    let workroom = app.descendants(matching: .any)
+      .matching(identifier: "sidebar.workroom.uitest-room").firstMatch
+    workroom.rightClick()
+    try assertRunMenu(app, running: false)
+    try XCTUnwrap(app.hittableMenuItem(titled: "Run")).click()
+    XCTAssertTrue(waitForRunState(app, "running"))
+
+    // The workroom's shared context menu can restart its run in place.
+    let titlebar = app.descendants(matching: .any)
+      .matching(identifier: "workroom.pane.titlebar").firstMatch
+    titlebar.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).rightClick()
+    try assertRunMenu(app, running: true)
+    try XCTUnwrap(app.hittableMenuItem(titled: "Restart")).click()
+    let restarting = app.staticTexts.matching(
+      NSPredicate(format: "value == %@", "Run command Restarting…")
+    ).firstMatch
+    // Run starts in the background, so reveal it before reading its footer.
+    runTabChip(app).click()
+    XCTAssertTrue(restarting.exists, app.debugDescription)
+    XCTAssertTrue(restarting.waitForNonExistence(timeout: 15))
+    XCTAssertTrue(waitForRunState(app, "running"))
+
+    runTabChip(app).rightClick()
+    try assertRunMenu(app, running: true)
+    try XCTUnwrap(app.hittableMenuItem(titled: "Stop")).click()
+    XCTAssertTrue(waitForRunState(app, "stopped"))
+    runTabChip(app).rightClick()
+    try assertRunMenu(app, running: false)
+    app.typeKey(.escape, modifierFlags: [])
+
+    // Stopping the workroom did not stop the root's independently running command.
+    project.rightClick()
+    try assertRunMenu(app, running: true)
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
+  /// The sidebar hides idle controls and removes Stop when the command ends, with its tab kept.
+  func testSidebarOnlyShowsRunControlWhileRunning() {
+    // Keep running after INT so the supervisor's grace period leaves feedback observable.
+    let app = launchedApp(runCommand: "trap : INT; while true; do sleep 1; done")
+    XCTAssertTrue(app.buttons["runCommand.run"].waitForExistence(timeout: 15))
+    let row = app.buttons.matching(identifier: "sidebar.workroom.uitest-room").firstMatch
+    if !row.exists { app.buttons["toolbar.toggleSidebar"].click() }
+    XCTAssertTrue(row.waitForExistence(timeout: 10), app.debugDescription)
+    // The row's identifier propagates to its children, overriding the nested button's own id.
+    let control = app.descendants(matching: .any).matching(
+      NSPredicate(
+        format: "identifier == %@ AND (label == %@ OR label == %@ OR label == %@)",
+        "sidebar.workroom.uitest-room", "Start run command", "Stop run command",
+        "Stopping run command")
+    ).firstMatch
+    XCTAssertFalse(control.exists, "an idle workroom has no sidebar run button")
+    startRun(app)
+    XCTAssertTrue(waitForRunState(app, "running"))
+    XCTAssertTrue(control.waitForExistence(timeout: 5), app.debugDescription)
+    XCTAssertEqual(control.label, "Stop run command")
+    runTabChip(app).click()
+    control.click()
+    XCTAssertTrue(control.exists, app.debugDescription)
+    XCTAssertEqual(control.label, "Stopping run command", "sidebar acknowledges Stop immediately")
+    XCTAssertEqual(
+      runTabChip(app).value as? String, "stopping", "the run tab also updates immediately")
+    let stopping = app.staticTexts.matching(
+      NSPredicate(
+        format: "value == %@ OR label == %@", "Run command Stopping…", "Run command Stopping…")
+    ).firstMatch
+    XCTAssertTrue(stopping.exists, app.debugDescription)
+    XCTAssertTrue(waitForRunState(app, "stopped"), "the stopped run reports its state")
+    XCTAssertTrue(control.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(runTabChip(app).exists, "the run terminal stays open after stopping")
+  }
+
   /// A run that exits non-zero on its own surfaces the failed run icon (red xmark octagon).
   func testFailedRunShowsFailedIndicator() {
     let app = launchedApp(runCommand: "sleep 3; exit 7")
