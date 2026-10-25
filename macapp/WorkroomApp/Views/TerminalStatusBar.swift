@@ -159,8 +159,7 @@ struct TerminalStatusBar: View {
     let menu = NSMenu()
     menu.addItem(
       ClosureMenuItem(title: "Copy to Clipboard") {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(cwd, forType: .string)
+        CopyConfirmation.copy(cwd, relativeTo: cwdMenuAnchor)
       })
     // `activateFileViewerSelecting`, matching the wording and the Room menu's own "Reveal in Finder"
     // (which reveals the selected target's directory the same way): the directory comes up selected in

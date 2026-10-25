@@ -211,6 +211,7 @@ struct VCSToolbar: View {
 /// how you read the whole thing — plus a right-click "Copy Branch Name". Neither is a click action.
 private struct VCSBranchSegment: View {
   let name: String?
+  @State private var copyAnchor: NSView?
 
   private let caption = "Current Branch"
   private var theme: ThemeTokens { ThemeService.shared.tokens }
@@ -259,14 +260,14 @@ private struct VCSBranchSegment: View {
     // is what a two-line label is anyway.
     .accessibilityLabel("\(caption): \(name ?? "unknown")")
     .accessibilityIdentifier("vcs.toolbar.branch")
+    .background(CopyConfirmationAnchor(view: $copyAnchor))
     .contextMenu {
       // Offered as a menu item rather than making the label selectable: `.textSelection(.enabled)`
       // swallows real mouseDown, which would stop this segment being clickable with an actual mouse
       // while synthetic test clicks kept passing.
       if let name {
         Button("Copy Branch Name") {
-          NSPasteboard.general.clearContents()
-          NSPasteboard.general.setString(name, forType: .string)
+          CopyConfirmation.copy(name, relativeTo: copyAnchor)
         }
       }
     }
@@ -296,6 +297,7 @@ private struct VCSSyncSegment: View {
   var onShowDetails: (() -> Void)?
 
   @State private var hovering = false
+  @State private var copyAnchor: NSView?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private var theme: ThemeTokens { ThemeService.shared.tokens }
 
@@ -340,6 +342,7 @@ private struct VCSSyncSegment: View {
     .accessibilityLabel(presentation.accessibility)
     .accessibilityValue(presentation.accessibilityValue)
     .accessibilityIdentifier("vcs.toolbar.sync")
+    .background(CopyConfirmationAnchor(view: $copyAnchor))
     // Only when a lock file is blocking the repo. Workroom deliberately doesn't delete it — telling a
     // live git's lock from an abandoned one isn't possible from outside the process, and deleting a live
     // one corrupts the index — so the fix is the user's to make, and these hand them the file rather
@@ -352,8 +355,7 @@ private struct VCSSyncSegment: View {
       }
       if let lockPath = presentation.lockPath {
         Button("Copy Lock File Path") {
-          NSPasteboard.general.clearContents()
-          NSPasteboard.general.setString(lockPath, forType: .string)
+          CopyConfirmation.copy(lockPath, relativeTo: copyAnchor)
         }
         Button("Reveal Lock File in Finder") {
           NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: lockPath)])

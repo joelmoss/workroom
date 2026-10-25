@@ -20,6 +20,9 @@ Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top
 
 A remote workroom may also show a short note under these.
 
+Copy buttons briefly show **Copied!** just above the button after copying to the clipboard. The same
+confirmation appears when you copy a port address, an error report, or a path or branch name from a menu.
+
 ## Ports
 
 The **Ports** list appears only for a workroom in a Docker or Apple container. A dev server there listens inside the container, where your Mac's browser cannot reach it. Workroom forwards its ports to your Mac, and each row shows one:

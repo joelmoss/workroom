@@ -102,9 +102,11 @@ struct VCSFailureSheet: View {
 
   private var buttons: some View {
     HStack(spacing: 8) {
-      Button("Copy") { copyReport() }
-        .help("Copy the message and the tool's output to the clipboard")
-        .accessibilityIdentifier("vcs.failure.copy")
+      CopyButton(
+        text: reportText, title: "Copy",
+        help: "Copy the message and the tool's output to the clipboard"
+      )
+      .accessibilityIdentifier("vcs.failure.copy")
       // Only for a located lock file: the fix is a file operation Workroom deliberately won't perform
       // (see `VCSRemoteFailure.locked`), so the least it can do is hand over the file.
       if let lockPath = dialog.lockPath {
@@ -136,12 +138,10 @@ struct VCSFailureSheet: View {
   ///
   /// The subtitle is part of it: it names the workroom the failure belongs to, which is the one fact a
   /// pasted report from a background workroom would otherwise lose — exactly what the subtitle exists for.
-  private func copyReport() {
+  private var reportText: String {
     let heading = [dialog.title, dialog.subtitle].compactMap { $0 }.joined(separator: " ")
-    let text = [heading, dialog.message, dialog.details].compactMap { $0 }
+    return [heading, dialog.message, dialog.details].compactMap { $0 }
       .joined(separator: "\n\n")
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
   }
 }
 

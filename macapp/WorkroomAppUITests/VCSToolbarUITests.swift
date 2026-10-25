@@ -283,6 +283,23 @@ final class VCSToolbarUITests: XCTestCase {
       "the bar goes on reporting the failure; got \(sync(app).label)")
   }
 
+  func testCopyReportShowsConfirmationBesideTheCopyButton() {
+    let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSyncFailure", "1"])
+    XCTAssertTrue(waitLabel(sync(app), contains: "Push"))
+    button(app, id: "vcs.toolbar.sync").click()
+    let copy = button(app, id: "vcs.failure.copy")
+    XCTAssertTrue(copy.waitForExistence(timeout: 10))
+    let copyFrame = copy.frame
+    copy.click()
+    let confirmation = app.staticTexts.matching(
+      NSPredicate(format: "label == %@ OR value == %@", "Copied!", "Copied!")
+    ).firstMatch
+    XCTAssertTrue(confirmation.waitForExistence(timeout: 2), "Copy must show its confirmation")
+    let confirmationFrame = confirmation.frame
+    XCTAssertLessThan(abs(confirmationFrame.midX - copyFrame.midX), 10)
+    XCTAssertLessThan(abs(confirmationFrame.midY - copyFrame.midY), 50)
+  }
+
   // MARK: A failed read
 
   /// **The reported defect.** A read that fails nils the snapshot, and a nil snapshot renders

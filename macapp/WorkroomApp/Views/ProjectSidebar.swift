@@ -402,10 +402,10 @@ struct ProjectSidebar: View {
       } else if failed || terminals.isRunning(forTargetID: target.id) {
         RunningSpinner(failed: failed)
       }
-      // Run/stop the project's command straight from the root row (issue #7), trailing-most — the
-      // root runs it in the project directory. Shows its state (green = running). Hidden for a missing
-      // directory, where the button would be a dead no-op (review #9).
-      if store.canRunCommand(for: target, inProject: project.path) {
+      // Only an active run gets a control on the project root: click it to stop the command.
+      if store.canRunCommand(for: target, inProject: project.path),
+        store.isRunCommandRunning(for: target.id)
+      {
         RowRunButton(target: target)
       }
     }.frame(height: rowHeight)
