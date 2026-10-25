@@ -12,6 +12,14 @@ import XCTest
 @MainActor
 final class MarkdownWebViewPoolTests: XCTestCase {
 
+  func testAnEarlyPreviewDoesNotBootAnOptionalSpareBeforeWarmup() {
+    let pool = MarkdownWebViewPool()
+    XCTAssertNil(pool.take(), "an early preview boots its own page")
+    XCTAssertNil(pool.spare, "the first preview must not also boot a spare before display")
+    pool.prewarm()
+    XCTAssertNotNil(pool.spare, "post-display warmup must still start the pool")
+  }
+
   // Value: protects=a preview gets a booted page and the next one starts booting at once;
   // fails_when=take() stops refilling (every later preview boots from scratch) or hands out a
   // page as loaded before its template is; why_new=the pool is new; seam=none; no_claim=timing.

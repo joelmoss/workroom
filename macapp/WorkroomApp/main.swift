@@ -54,4 +54,5 @@ if invokedAsGhosttyCLI {
   exit(1)
 }
 
+LaunchSignposts.beginLaunch()
 WorkroomApp.main()

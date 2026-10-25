@@ -2,12 +2,12 @@ import AppKit
 import SwiftUI
 
 /// A scene's `.task` / `onAppear` can run before AppKit displays it. Wait for AppKit to finish a
-/// window-update pass with this window visible before arming the optional usage processes.
-struct UsagePollingAfterDisplay: NSViewRepresentable {
-  let monitor: CodingAgentUsageMonitor
+/// window-update pass with this window visible before running the one-shot callback.
+struct WindowDisplayObserver: NSViewRepresentable {
+  let onDisplay: () -> Void
 
   func makeNSView(context: Context) -> NSView {
-    DisplayProbe { monitor.startPollingAfterDisplay() }
+    DisplayProbe(onDisplay: onDisplay)
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {}

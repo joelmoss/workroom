@@ -163,6 +163,8 @@ private final class WatchCore: @unchecked Sendable {
       var handle: FileWatchHandle?
       var providerCannotWatch = false
       do {
+        let interval = LaunchSignposts.begin("Register file watch")
+        defer { LaunchSignposts.end("Register file watch", interval) }
         let files = try await router.files(for: location)
         handle = try await files.watch(root: location.path) { continuation.yield($0) }
         providerCannotWatch = handle == nil

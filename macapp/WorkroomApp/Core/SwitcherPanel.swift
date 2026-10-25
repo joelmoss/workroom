@@ -28,7 +28,7 @@ final class HaloContentView: NSView {
   }
 }
 
-/// Owns the panel and its hosting view, and hands the rail its data. Pre-creates the panel at launch:
+/// Owns the panel and its hosting view, and hands the rail its data. Prepares after window display:
 /// the first `NSHostingView` render costs real milliseconds, and paying that at the 250 ms reveal is
 /// exactly the wrong moment.
 @MainActor
@@ -42,6 +42,8 @@ final class SwitcherPanelController {
   /// Build the panel and its hosting view, ordered out. Safe to call more than once.
   func prepare() {
     guard panel == nil else { return }
+    let interval = LaunchSignposts.begin("Prepare switcher panel")
+    defer { LaunchSignposts.end("Prepare switcher panel", interval) }
     let panel = SwitcherPanel(
       contentRect: NSRect(x: 0, y: 0, width: 600, height: 120),
       styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)

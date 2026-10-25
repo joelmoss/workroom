@@ -78,6 +78,33 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(destination.terminals.splits(for: t), splits)
     XCTAssertEqual(destination.terminals.focusedTab(for: t)?.id, focused)
     XCTAssertEqual(destination.selectedTargetID, sid, "the moved workroom is selected")
+    XCTAssertFalse(destination.pendingSessionRecovery, "fresh tabs need no restore recovery")
+  }
+
+  func testPendingRestoredAttachmentsFollowAMove() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    origin.terminals.sessionService = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated handover test") }, ownership: { _ in .notOwned })
+    let t = target(origin)
+    origin.terminals.restore(
+      TargetSession(
+        targetID: t.id,
+        tabs: [
+          TabSession(
+            key: "hidden", kind: TabSession.terminalKind,
+            terminal: TerminalPayload(defaultTitle: "Terminal 1", sessionID: UUID().uuidString))
+        ]),
+      for: t)
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertTrue(
+      destination.pendingSessionRecovery, "the new owner must finish hidden attachments")
+    XCTAssertFalse(
+      destination.hasDisplayedWindow, "recovery still waits for the destination display")
+    XCTAssertEqual(origin.terminals.tabCount(forTargetID: t.id), 0)
+    XCTAssertEqual(destination.terminals.tabCount(forTargetID: t.id), 1)
   }
 
   /// A surface reports to the window that holds it now. Left wired to the origin, a moved

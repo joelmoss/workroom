@@ -56,6 +56,8 @@ final class ClaudeUsageBridge: ObservableObject {
     fileManager: FileManager = .default,
     writer: ((Data, URL, Int) throws -> Void)? = nil
   ) {
+    let interval = LaunchSignposts.begin("Claude usage bridge initialization")
+    defer { LaunchSignposts.end("Claude usage bridge initialization", interval) }
     if AppEnvironment.current.isFixture {
       let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
         "workroom-agent-usage-ui-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)

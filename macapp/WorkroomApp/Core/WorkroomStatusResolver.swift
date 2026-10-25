@@ -77,6 +77,8 @@ struct WorkroomStatusResolver: Sendable {
   }
 
   func resolve(location: RepositoryLocation) async -> WorkroomStatus {
+    let interval = LaunchSignposts.begin("Working status")
+    defer { LaunchSignposts.end("Working status", interval) }
     var status: WorkroomStatus
     do {
       if location.host == .local {

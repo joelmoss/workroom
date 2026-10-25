@@ -137,6 +137,8 @@ extension AppStore {
   /// bootstrap (`load("none")` then `load("fast")`), and reloads come through it too.
   func restorePersistedSessionIfPending(in projects: [Project]) {
     guard let session = pendingSessionRestore else { return }
+    let interval = LaunchSignposts.begin("Restore saved terminals")
+    defer { LaunchSignposts.end("Restore saved terminals", interval) }
     pendingSessionRestore = nil
     defer { projectStore.finishSessionRestore() }
 
@@ -179,11 +181,27 @@ extension AppStore {
 
     refreshSelectionHasTabs()
 
-    // Asked after the daemon answers, of the projects then: a reload in between may have turned a
-    // workroom remote or taken its directory away.
+    scheduleSessionRecoveryAfterDisplay()
+  }
+
+  func scheduleSessionRecoveryAfterDisplay() {
+    pendingSessionRecovery = true
+    recoverSessionsAfterDisplayIfReady()
+  }
+
+  func windowDidDisplay() {
+    hasDisplayedWindow = true
+    recoverSessionsAfterDisplayIfReady()
+  }
+
+  /// Restore can finish before or after the window's first visible update. Latch both events
+  /// without a waiting task retaining a window that closed before display.
+  private func recoverSessionsAfterDisplayIfReady() {
+    guard hasDisplayedWindow, pendingSessionRecovery else { return }
+    pendingSessionRecovery = false
+    let terminals = terminals
     Task { [weak self] in
-      guard let self else { return }
-      await PersistentSessionRecovery.recover(in: self.terminals) { [weak self] in
+      await PersistentSessionRecovery.recover(in: terminals) { [weak self] in
         self?.reattachesLocally($0) ?? false
       }
     }

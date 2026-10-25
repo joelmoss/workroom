@@ -3,7 +3,7 @@ import Defaults
 import Sparkle
 
 /// Wraps Sparkle's standard updater so SwiftUI can drive it: the "Check for Updates…" menu command
-/// and the Settings toggle bind here. The controller starts the updater at launch, so (with
+/// and the Settings toggle bind here. The controller starts after the first window displays, so (with
 /// SUEnableAutomaticChecks on) it runs scheduled background checks against the appcast feed declared
 /// by SUFeedURL in Info.plist, verifying downloads against SUPublicEDKey.
 ///
@@ -20,6 +20,7 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate,
   @preconcurrency SPUStandardUserDriverDelegate
 {
   private var controller: SPUStandardUpdaterController!
+  private var hasStarted = false
 
   /// Mirrors `SPUUpdater.canCheckForUpdates` so the menu item disables itself while a check is
   /// already in flight.
@@ -37,9 +38,11 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate,
   @Published private(set) var isDownloading = false
 
   override init() {
+    let interval = LaunchSignposts.begin("Updater initialization")
+    defer { LaunchSignposts.end("Updater initialization", interval) }
     super.init()
     controller = SPUStandardUpdaterController(
-      startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
+      startingUpdater: false, updaterDelegate: self, userDriverDelegate: self)
     // The visual-QA seam holds a check "in flight", so the pill renders dimmed.
     let checking = UITestFixture.updateChecking
     controller.updater.publisher(for: \.canCheckForUpdates)
@@ -58,16 +61,32 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate,
       // build. Force scheduled checks off for Debug (the manual "Check for Updates…" menu item still
       // works if you explicitly want it). Release is unaffected.
       controller.updater.automaticallyChecksForUpdates = false
-    #else
+    #endif
+  }
+
+  func startAfterDisplay() {
+    guard startIfNeeded() else { return }
+    #if !DEBUG
       // Surface a previously-found update promptly on launch instead of waiting for the next
       // scheduled check (the pill would otherwise stay empty until then). Silent unless one is found.
       controller.updater.checkForUpdatesInBackground()
     #endif
   }
 
+  @discardableResult
+  private func startIfNeeded() -> Bool {
+    guard !hasStarted else { return false }
+    hasStarted = true
+    let interval = LaunchSignposts.begin("Start updater")
+    defer { LaunchSignposts.end("Start updater", interval) }
+    controller.startUpdater()
+    return true
+  }
+
   /// Show the updater UI now — the user-initiated "Check for Updates…" path (also the pill's action,
   /// which presents the already-found update).
   func checkForUpdates() {
+    startIfNeeded()
     controller.updater.checkForUpdates()
   }
 

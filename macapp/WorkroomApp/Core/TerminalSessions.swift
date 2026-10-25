@@ -2919,8 +2919,11 @@ final class TerminalSessions: ObservableObject {
     }
     let live = await load()
     for (target, tabs) in tabsByTarget where reattaches(target) {
-      for tab in tabs.values {
-        guard case .terminal(let state) = tab.content,
+      for tabID in tabs.keys {
+        // Earlier panes suspend while attaching. The dictionary snapshot can now describe a
+        // command that finished or a pane that moved; hydrate only its current model state.
+        guard reattaches(target), let tab = tabsByTarget[target]?[tabID],
+          case .terminal(let state) = tab.content,
           let sessionID = state.sessionID,
           let descriptor = live.first(where: { $0.identifier.uuid == sessionID })
         else { continue }
@@ -2940,7 +2943,16 @@ final class TerminalSessions: ObservableObject {
             if backend == .claude { $0.claudeProfile = Self.claudeProfile(from: descriptor) }
           }
         }
-        state.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
+        guard state.view.surface == nil else { continue }
+        // A yield alone may immediately re-enter the main actor without an AppKit update. Give
+        // display/input a frame between hidden engines; visible panes mount eagerly as usual.
+        do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+        // Closing, moving or reassigning a pane during the new suspension must not recreate it.
+        guard reattaches(target), let current = tabsByTarget[target]?[tab.id],
+          case .terminal(let currentState) = current.content,
+          currentState.sessionID == sessionID, currentState.view === state.view
+        else { continue }
+        currentState.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
       }
     }
   }

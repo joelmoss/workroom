@@ -229,6 +229,8 @@ final class PersistentSessionService {
   /// healthy answer and a failure are published before callers proceed with pane creation.
   func prepareBackend() async {
     guard lastProbeAt == nil else { return }
+    let interval = LaunchSignposts.begin("Prepare session backend")
+    defer { LaunchSignposts.end("Prepare session backend", interval) }
     let task: Task<SessionBackend?, Never>
     if let initialPreparation {
       task = initialPreparation

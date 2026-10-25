@@ -120,6 +120,8 @@ final class SessionStore: @unchecked Sendable {
   }
 
   func read() -> ReadOutcome {
+    let interval = LaunchSignposts.begin("Read saved session")
+    defer { LaunchSignposts.end("Read saved session", interval) }
     guard !isDisabled, fileManager.fileExists(atPath: url.path) else { return .none }
 
     // Refused BEFORE decoding: the element caps in `SessionLimits` bound how many things a file

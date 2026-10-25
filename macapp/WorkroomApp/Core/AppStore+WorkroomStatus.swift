@@ -107,6 +107,8 @@ extension AppStore {
     // `.utility` so this background sweep yields CPU to a mounting terminal surface + its login shell.
     statusSweepTask = Task(priority: .utility) { [weak self] in
       guard let self else { return }
+      let interval = LaunchSignposts.begin("Workroom status sweep")
+      defer { LaunchSignposts.end("Workroom status sweep", interval) }
       await self.runLocalSweep(localItems, resolver: resolver, cap: Self.localConcurrency)
       if Task.isCancelled { return }
       // Guard the network stage: if `gh` isn't installed/authenticated, skip the whole CI sweep

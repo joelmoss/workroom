@@ -916,6 +916,8 @@ final class AppStore: ObservableObject {
   var pendingRestoreSelection: TerminalTarget.ID?
   /// This window's claimed saved session (issue #46), consumed at the end of `apply`.
   var pendingSessionRestore: WindowSession?
+  @ObservationIgnored var hasDisplayedWindow = false
+  @ObservationIgnored var pendingSessionRecovery = false
   /// Saved targets held back from the restore (#253): remote workrooms this app couldn't reach
   /// then. Each is written back with every save, and restored whole once its workroom is
   /// reachable and opens its first pane (`restoreDeferredSession`).
@@ -1769,6 +1771,8 @@ final class AppStore: ObservableObject {
   /// at launch; combined with the one-shot `consumeInitialRestore()` it means exactly one window
   /// reapplies the persisted selection and every other (incl. every ⌘N) window starts blank (#70).
   func bootstrap(restore: Bool = true) async {
+    let interval = LaunchSignposts.begin("Window bootstrap")
+    defer { LaunchSignposts.end("Window bootstrap", interval) }
     // Exactly one window (the launch window) reapplies the saved selection; every other (incl. ⌘N)
     // window starts blank (issue #70).
     let shouldRestore = restore && projectStore.consumeInitialRestore()
@@ -2070,6 +2074,8 @@ final class AppStore: ObservableObject {
   }
 
   private func apply(_ incoming: [Project], registrations: [RepositoryRouter.Registration]) {
+    let interval = LaunchSignposts.begin("Publish projects and reconcile window")
+    defer { LaunchSignposts.end("Publish projects and reconcile window", interval) }
     // Inject GUI-only display labels (issue #41) onto the decoded workrooms from
     // `Defaults[.workroomLabels]` — the CLI JSON never carries them — and garbage-collect labels for
     // workrooms that no longer exist (deleted via the CLI or another build). `incoming` is the full

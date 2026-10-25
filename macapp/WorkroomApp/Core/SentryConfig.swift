@@ -20,6 +20,8 @@ enum SentryConfig {
 
   static func start() {
     guard shouldStart() else { return }
+    let interval = LaunchSignposts.begin("Sentry initialization")
+    defer { LaunchSignposts.end("Sentry initialization", interval) }
 
     SentrySDK.start { options in
       options.dsn = ProcessInfo.processInfo.environment["SENTRY_DSN"] ?? dsn

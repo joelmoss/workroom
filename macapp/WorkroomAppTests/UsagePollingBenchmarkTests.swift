@@ -68,7 +68,7 @@ final class UsagePollingBenchmarkTests: XCTestCase {
       XCTAssertEqual(beforeDisplay.count, 0, "automatic usage reads must wait for window display")
       let hosting = NSHostingView(
         rootView: Text("Usage launch fixture").frame(width: 400, height: 200)
-          .background(UsagePollingAfterDisplay(monitor: monitor)))
+          .background(WindowDisplayObserver { monitor.startPollingAfterDisplay() }))
       let window = NSWindow(
         contentRect: NSRect(x: 100, y: 100, width: 400, height: 200),
         styleMask: [.titled], backing: .buffered, defer: false)

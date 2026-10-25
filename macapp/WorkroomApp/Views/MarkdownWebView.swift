@@ -313,7 +313,7 @@ struct MarkdownWebView: NSViewRepresentable {
 
 /// Keeps one booted preview page ready, so a preview skips spawning a WebContent process and loading
 /// the template before it can render: a 2 KB file paints in ~70 ms instead of ~112 (measured with
-/// `make app-bench-markdown`). Prewarmed at launch and refilled whenever its page is taken.
+/// `make app-bench-markdown`). Prewarmed after window display and refilled when its page is taken.
 ///
 /// A closed preview's page is not taken back. A page booted for the next preview opens as fast as a
 /// reused one (~70 ms either way), even back to back, and a reused page would carry the previous
@@ -325,10 +325,14 @@ final class MarkdownWebViewPool: NSObject, WKNavigationDelegate {
   /// The page the next preview gets, and whether its template has finished loading.
   private(set) var spare: WKWebView?
   private(set) var spareIsLoaded = false
+  private var warmingHasStarted = false
 
   /// Starts booting the spare page, if there isn't one.
   func prewarm() {
+    warmingHasStarted = true
     guard spare == nil else { return }
+    let interval = LaunchSignposts.begin("Prewarm Markdown page")
+    defer { LaunchSignposts.end("Prewarm Markdown page", interval) }
     let webView = MarkdownWebView.makeWebView(bootThemeVars: nil)
     webView.navigationDelegate = self
     spare = webView
@@ -341,7 +345,9 @@ final class MarkdownWebViewPool: NSObject, WKNavigationDelegate {
   /// spare (its process was killed while idle) the caller boots its own, and the pool refills here
   /// rather than on termination, so a page that keeps crashing can't respawn in a loop.
   func take() -> (webView: WKWebView, isLoaded: Bool)? {
-    defer { prewarm() }
+    // A preview restored before the first window update boots its own page. Don't also create an
+    // optional spare in that update; the scheduled post-display warmup will start the pool.
+    defer { if warmingHasStarted { prewarm() } }
     guard let webView = spare else { return nil }
     let isLoaded = spareIsLoaded
     spare = nil

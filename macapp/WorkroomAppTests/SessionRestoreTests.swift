@@ -108,6 +108,41 @@ final class SessionRestoreTests: XCTestCase {
 
   // MARK: Shape
 
+  func testACommandFinishingWhileOtherPanesRecoverStaysFinished() async {
+    let sessions = makeSessions()
+    sessions.sessionService = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated recovery test") }, ownership: { _ in .notOwned })
+    sessions.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    sessions.restore(
+      TargetSession(
+        targetID: target.id,
+        tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")]),
+      for: target)
+    var descriptors: [SessionDescriptor] = []
+    for var tab in sessions.tabs(for: target) {
+      guard case .terminal(var state) = tab.content else { return XCTFail("expected terminal") }
+      let id = UUID()
+      state.sessionID = id
+      tab.content = .terminal(state)
+      sessions.replace(tab, for: target)
+      descriptors.append(
+        SessionDescriptor(
+          identifier: SessionIdentifier(id), shellProcessID: 123, ttyDevice: 0,
+          workingDirectory: "/tmp", isAttached: false,
+          metadata: [SessionEnvironmentEntry(key: "command", value: "claude")]))
+    }
+    let finish = Task {
+      try? await Task.sleep(for: .milliseconds(1))
+      // Whichever pane is first in the dictionary, both commands finish during its pause.
+      for tab in sessions.tabs(for: target) { tab.surface?.handleCommandFinished(rawExitCode: 0) }
+    }
+    await sessions.materializeLivePersistentSessions(reattaches: Self.every) { descriptors }
+    await finish.value
+    XCTAssertTrue(sessions.activeCodingAgentBackends.isEmpty, "must not resurrect a finished agent")
+  }
+
   /// A pane whose remembered directory is gone opens in the target's own path instead, through
   /// `restoredCwd` — not the dead path, which would just fail on shell startup.
   func testRestoredCwdFallsBackWhenTheRememberedDirectoryIsGone() {
