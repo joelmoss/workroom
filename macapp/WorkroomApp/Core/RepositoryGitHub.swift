@@ -55,22 +55,31 @@ struct RepositoryGitHub: Sendable {
   /// the answer across that project's workrooms); nil asks this service's own.
   ///
   /// A remote host has no commit source until the daemon supplies one (Phase 3), so its CI is absent.
-  func ci(branch: String?, repository resolution: GitHubRepositoryResolution? = nil) async
+  func ci(
+    branch: String?, repository resolution: GitHubRepositoryResolution? = nil, force: Bool = false
+  ) async
     -> CIResolution
   {
-    guard isLocal else { return .absent }
+    await ciSnapshot(branch: branch, repository: resolution, force: force).resolution
+  }
+
+  func ciSnapshot(
+    branch: String?, repository resolution: GitHubRepositoryResolution? = nil, force: Bool = false
+  ) async -> CIStatusSnapshot {
+    guard isLocal else { return CIStatusSnapshot(.absent) }
     // The branch tip is a cheap local read; do it before the network lookup, as before.
     guard
       let commit = await resolver.localCICommit(path: path, branch: branch)
-    else { return .absent }
+    else { return CIStatusSnapshot(.absent) }
     let found: GitHubRepositoryResolution
     if let resolution { found = resolution } else { found = await repository() }
     // Superseded while waiting on the lookup: spawn nothing (the caller discards the answer anyway).
-    if Task.isCancelled { return .keepPrior }
+    if Task.isCancelled { return CIStatusSnapshot(.keepPrior) }
     switch found {
-    case .absent: return .absent
-    case .keepPrior: return .keepPrior
-    case .found(let repo): return await resolver.resolveCI(repo: repo, commit: commit)
+    case .absent: return CIStatusSnapshot(.absent)
+    case .keepPrior: return CIStatusSnapshot(.keepPrior)
+    case .found(let repo):
+      return await resolver.resolveCISnapshot(repo: repo, commit: commit, force: force)
     }
   }
 

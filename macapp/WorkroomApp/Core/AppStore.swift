@@ -877,7 +877,7 @@ final class AppStore: ObservableObject {
   /// `AppStore+WorkroomStatus.swift` extension can drive them. Tasks are cancelled+replaced
   /// per sweep / per selection so a slow probe never writes stale status over a newer one. `var`
   /// (not `let`) so tests can inject a `WorkroomStatusResolver` with a mock command runner.
-  var statusResolver = WorkroomStatusResolver()
+  var statusResolver: WorkroomStatusResolver
   var statusSweepTask: Task<Void, Never>?
   var selectionStatusTask: Task<Void, Never>?
   /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
@@ -951,6 +951,7 @@ final class AppStore: ObservableObject {
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
     let store = projectStore ?? ProjectStore()
     self.projectStore = store
+    self.statusResolver = WorkroomStatusResolver(ciCache: store.ciResultCache)
     self.cli =
       cli
       ?? (AppEnvironment.current.isFixture && UITestFixture.scriptedCreate

@@ -77,6 +77,8 @@ final class ProjectStore {
   /// A `var` purely so tests can swap in an instance with millisecond TTLs; production never
   /// reassigns it.
   var ghAuthCache = GitHubAuthCache()
+  /// Commit-keyed CI facts shared by windows, with the same five-minute lifetime as the sweep.
+  let ciResultCache = GitHubCIResultCache()
 
   /// Owns the `git --version` probe: its freshness clock AND its single-flight, so N windows share
   /// one probe rather than racing two. `vcsToolReport` on `AppStore` mirrors what
