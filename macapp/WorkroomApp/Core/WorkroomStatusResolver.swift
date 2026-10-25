@@ -28,7 +28,7 @@ enum ChecksResolution: Equatable, Sendable {
   case keepPrior
 }
 
-/// Resolves a workroom's VCS + CI status app-side by shelling to git/gh. App-side (not in
+/// Resolves VCS status through the repository router and GitHub status through git/gh. App-side (not in
 /// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
 /// `list` instant, isolates a slow repo to its own row. Stage 1 (`resolveLocal`) is fast/local;
 /// stage 2 (`resolveCI`) is the slow network call and runs separately so it never blocks the
@@ -40,15 +40,18 @@ struct WorkroomStatusResolver: Sendable {
   /// Where local and remote status reads are routed. `.shared` in the app; tests inject a router
   /// whose `localReader` is a double, so the sweep's real path is the one under test.
   let router: RepositoryRouter
+  let ciCache: GitHubCIResultCache
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
-    ciTimeout: TimeInterval = 10, router: RepositoryRouter = .shared
+    ciTimeout: TimeInterval = 10, router: RepositoryRouter = .shared,
+    ciCache: GitHubCIResultCache = GitHubCIResultCache()
   ) {
     self.runner = runner
     self.timeout = timeout
     self.ciTimeout = ciTimeout
     self.router = router
+    self.ciCache = ciCache
   }
 
   /// `-c` overrides prepended to every `git` invocation. A workroom can be a clone of an *untrusted*
@@ -213,10 +216,23 @@ struct WorkroomStatusResolver: Sendable {
   /// goes through the
   /// authenticated `gh` token, so private repos work with no extra config. CI is hidden whenever the
   /// commit can't be resolved.
-  func resolveCI(repo: GitHubRepository, commit: String) async -> CIResolution {
+  func resolveCI(repo: GitHubRepository, commit: String, force: Bool = false) async -> CIResolution
+  {
+    await resolveCISnapshot(repo: repo, commit: commit, force: force).resolution
+  }
+
+  func resolveCISnapshot(repo: GitHubRepository, commit: String, force: Bool = false) async
+    -> CIStatusSnapshot
+  {
     // `commit` is interpolated into the query; a real one is hex. Anything else is not a commit.
     guard commit.count >= 7, commit.count <= 64, commit.allSatisfy(\.isHexDigit) else {
-      return .absent
+      return CIStatusSnapshot(.absent)
+    }
+    if Task.isCancelled { return CIStatusSnapshot(.keepPrior) }
+    let ticket: GitHubCIResultCache.Ticket
+    switch await ciCache.lookup(repository: repo, commit: commit, force: force) {
+    case .cached(let result): return result
+    case .probe(let issued): ticket = issued
     }
     let r = await gh(
       .api,
@@ -224,7 +240,8 @@ struct WorkroomStatusResolver: Sendable {
         "api", "graphql", "-f",
         "query=\(Self.checkRollupQuery(owner: repo.owner, name: repo.name, oid: commit))",
       ], repo: repo)
-    return Self.classifyCheckRollup(r)
+    let result = Self.classifyCheckRollup(r)
+    return await ciCache.record(result, for: ticket, cancelled: Task.isCancelled)
   }
 
   /// GraphQL query for a commit's status-check rollup state. Uses `repository(owner:name:)` +

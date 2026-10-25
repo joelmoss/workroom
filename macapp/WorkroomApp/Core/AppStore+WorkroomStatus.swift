@@ -14,7 +14,7 @@ import WorkroomVCS
 /// `mergeLocalStatus` drops a result stamped earlier than the one already recorded.
 extension AppStore {
   fileprivate static let localStatusTTL: TimeInterval = 15  // git dirty/changed-files
-  fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
+  fileprivate static let ciStatusTTL = GitHubCIResultCache.defaultTTL  // gh CI (network)
   // The `gh auth status` TTL lives in `GitHubAuthCache`, which owns that probe's freshness outright.
   static let localConcurrency = 5
   static let ciConcurrency = 2
@@ -123,7 +123,7 @@ extension AppStore {
         return now.timeIntervalSince(c) >= ciTTL
       }
       if Task.isCancelled { return }
-      await self.runCISweep(ciItems, resolver: resolver, cap: Self.ciConcurrency)
+      await self.runCISweep(ciItems, resolver: resolver, cap: Self.ciConcurrency, force: force)
     }
   }
 
@@ -177,8 +177,9 @@ extension AppStore {
     }
   }
 
-  /// Freshen just the selected workroom (local + CI, forced), debounced so arrow-key cycling
+  /// Freshen the selected workroom, debounced so arrow-key cycling
   /// through rows doesn't fork a probe per row. Cancels the prior pending refresh.
+  /// CI reuses a recent answer only for the exact current commit; PR details/checks stay fresh.
   func scheduleSelectedStatusRefresh() {
     selectionStatusTask?.cancel()
     // (Re)point the filesystem watcher at the newly-selected workroom so its local status stays live
@@ -221,11 +222,11 @@ extension AppStore {
       guard self.githubCLIStatus == .available else { return }
       // CI and the PR list are independent — run them concurrently. Apply CI the moment it lands so
       // the sidebar/tab glyph never waits on the PR probe.
-      async let ciRes = github.ci(branch: fresh.branchForCI)
+      async let ciRes = github.ciSnapshot(branch: fresh.branchForCI)
       async let prRawRes = github.pullRequest(branch: fresh.branchForCI)
       let ci = await ciRes
       guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.applyCIStatus(ci, to: sid)
+      self.applyCIStatus(ci.resolution, to: sid, checkedAt: ci.checkedAt)
       let prRaw = await prRawRes
       guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
       self.applyPRStatus(prRaw, to: sid)
@@ -346,7 +347,9 @@ extension AppStore {
     }
   }
 
-  private func runCISweep(_ items: [StatusWorkItem], resolver: WorkroomStatusResolver, cap: Int)
+  private func runCISweep(
+    _ items: [StatusWorkItem], resolver: WorkroomStatusResolver, cap: Int, force: Bool
+  )
     async
   {
     var services: [(StatusWorkItem, RepositoryGitHub)] = []
@@ -371,7 +374,7 @@ extension AppStore {
       } catch { continue }
     }
     let branches = workroomStatuses.mapValues(\.branchForCI)
-    await withTaskGroup(of: (StatusWorkItem, CIResolution).self) { group in
+    await withTaskGroup(of: (StatusWorkItem, CIStatusSnapshot).self) { group in
       var index = 0
       func enqueue() {
         guard index < services.count else { return }
@@ -380,13 +383,15 @@ extension AppStore {
         let branch = branches[item.sid] ?? nil
         let key = service.context.sharedLocation ?? service.context.location
         let repository = repositories[key]
-        group.addTask { (item, await service.ci(branch: branch, repository: repository)) }
+        group.addTask {
+          (item, await service.ciSnapshot(branch: branch, repository: repository, force: force))
+        }
       }
       for _ in 0..<min(cap, services.count) { enqueue() }
       while let (item, result) = await group.next() {
         if Task.isCancelled { break }
         if selectedStatusWorkItem(for: item.sid) == item {
-          applyCIStatus(result, to: item.sid)
+          applyCIStatus(result.resolution, to: item.sid, checkedAt: result.checkedAt)
         }
         enqueue()
       }
@@ -452,21 +457,21 @@ extension AppStore {
     setResolvedBranchName(nil, for: sid)
   }
 
-  private func applyCIStatus(_ res: CIResolution, to sid: SidebarID) {
+  private func applyCIStatus(_ res: CIResolution, to sid: SidebarID, checkedAt: Date) {
     guard var s = workroomStatuses[sid] else { return }
     switch res {
     case .state(let x):
       s.ci = x
-      s.ciCheckedAt = Date()
+      s.ciCheckedAt = checkedAt
     case .absent:
       s.ci = nil
-      s.ciCheckedAt = Date()
+      s.ciCheckedAt = checkedAt
     case .keepPrior:
       // Transient rate-limit / network blip. Stamp `ciCheckedAt` so the TTL throttles re-probes —
       // but ONLY if we've probed before (ciCheckedAt set). On a first-ever probe that blips, leave
       // it nil so the next sweep retries instead of hiding CI for the full TTL on one blip. Coarse
       // but cheap; true exponential backoff is a future refinement.
-      if s.ciCheckedAt != nil { s.ciCheckedAt = Date() }
+      if s.ciCheckedAt != nil { s.ciCheckedAt = checkedAt }
     }
     workroomStatuses[sid] = s
   }

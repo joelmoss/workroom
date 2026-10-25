@@ -13,7 +13,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean docs-check docs-cli docs-preview \
         app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
-        app-check app-bench-title app-bench-output-flood actions-lint vcs-lint vcs-test
+        app-check app-bench-title app-bench-output-flood app-bench-status actions-lint vcs-lint vcs-test
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -287,6 +287,10 @@ app-bench-output-flood: ## Profile a live terminal running yes (owns its child) 
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  TEST_RUNNER_WORKROOM_BENCH_SECONDS="$(BENCH_SECONDS)" \
 	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/OutputFloodBenchmarkTests"
+
+app-bench-status: ## Count status subprocesses at launch, focus and selection [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_FLAGS="-only-testing:WorkroomAppTests/StatusSweepBenchmarkTests"
 
 # Times the diff viewer's per-line coloured strings (DiffHighlightBenchmarkTests) on a 2000-line
 # new-file diff over a generated Swift source, in the app test host (a Debug build).
