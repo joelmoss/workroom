@@ -86,6 +86,8 @@ final class PersistentSessionService {
   private var lastProbeAt: Double?
   /// One background re-probe at a time; a burst of panes must not spawn one each.
   private var isReprobing = false
+  /// Shared by startup windows before any of them publishes projects or restores panes.
+  private var initialPreparation: Task<SessionBackend?, Never>?
   /// When a helper last failed to ANSWER, per backend.
   ///
   /// `ownership` has its own 2-second deadline and, unlike the daemon probe, it is asked once per
@@ -198,10 +200,11 @@ final class PersistentSessionService {
   /// are resolved individually — see `backend(forSession:)`.
   /// **The first probe is synchronous; every retry is not.** That split is the whole design.
   ///
-  /// The probe is a `Process()` with a 2-second watchdog, and this runs on the main actor during
-  /// terminal creation. Making the FIRST one async would cost the common case its persistence —
-  /// the healthy daemon answers in milliseconds, and a pane that opened before the answer arrived
-  /// would be a plain shell for no reason. Making the RETRIES synchronous costs a broken daemon a
+  /// Startup awaits `prepareBackend` before publishing projects or restoring panes: the first
+  /// pane keeps its persistence without waiting on a subprocess on main. Direct readers outside
+  /// that prepared startup retain the synchronous first-call fallback. A pane must not be created
+  /// while preparation is pending, since it would open as a plain shell before health is known.
+  /// Making the RETRIES synchronous costs a broken daemon a
   /// >=2s frozen main actor once per cooldown window, for the life of the launch, which is Sentry's
   /// AppHang threshold in a repo that has spent this month fixing AppHangs.
   ///
@@ -209,6 +212,7 @@ final class PersistentSessionService {
   /// app freezes every 30 seconds" to "this pane has no persistence, the next one does".
   var backend: SessionBackend? {
     if let cachedPreferred { return cachedPreferred }
+    guard initialPreparation == nil else { return nil }
     let currentTime = now()
     guard let lastProbeAt else {
       self.lastProbeAt = currentTime
@@ -219,6 +223,29 @@ final class PersistentSessionService {
     self.lastProbeAt = currentTime
     reprobeInBackground()
     return nil
+  }
+
+  /// Await the first health check off main, sharing it across concurrent startup windows. Both a
+  /// healthy answer and a failure are published before callers proceed with pane creation.
+  func prepareBackend() async {
+    guard lastProbeAt == nil else { return }
+    let task: Task<SessionBackend?, Never>
+    if let initialPreparation {
+      task = initialPreparation
+    } else {
+      let probe = self.probe
+      task = Task.detached(priority: .userInitiated) {
+        SessionBackend.preferred(probe: probe)
+      }
+      initialPreparation = task
+    }
+    let resolved = await task.value
+    // Several windows can resume from the same answer; only the first publishes it.
+    if lastProbeAt == nil {
+      cachedPreferred = resolved
+      lastProbeAt = now()
+    }
+    initialPreparation = nil
   }
 
   /// Re-probe off the main actor and publish the answer back onto it.

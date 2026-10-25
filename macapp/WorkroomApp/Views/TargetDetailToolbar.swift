@@ -24,7 +24,7 @@ enum PaneToolbarIcon {
   ///   so this button would become visibly taller than its neighbours.
   /// - **24pt** still fits `WorkroomPaneTitleBar`'s 28pt row with 2pt of clearance; 26pt leaves 1pt; past
   ///   28pt the row clips or has to grow.
-  /// - `EditorCache` rasterizes the icon at 20pt nominal, so going much beyond that also wants that render
+  /// - `EditorIconCache` rasterizes at 20pt nominal, so going much beyond that also wants that render
   ///   size raised to match.
   /// - For *exact optical parity* with the 13pt symbols the number is ~16-17pt (13 ÷ 0.8, the artwork's
   ///   usable fraction). 18pt sits just past parity, chosen by eye against a real editor icon.
@@ -72,11 +72,7 @@ struct OpenInControl: View {
           // nothing. `.resizable().scaledToFit()` then a `.frame` sizes the icon itself.
           // `PaneToolbarIcon.appIcon`, not `.glyph` — see there for why the bitmap needs a bigger box
           // than the symbols to read the same size as them.
-          Image(nsImage: remembered.icon)
-            .renderingMode(.original)
-            .resizable()
-            .scaledToFit()
-            .frame(width: PaneToolbarIcon.appIcon, height: PaneToolbarIcon.appIcon)
+          ExternalEditorIcon(editor: remembered, size: PaneToolbarIcon.appIcon)
         }
         .help("Open in \(remembered.name) (⇧⌘O)")
         .accessibilityLabel("Open in \(remembered.name)")
@@ -93,7 +89,7 @@ struct OpenInControl: View {
               Label {
                 Text(editor.name)
               } icon: {
-                Image(nsImage: editor.icon).renderingMode(.original)
+                ExternalEditorIcon(editor: editor)
               }
             }
           }

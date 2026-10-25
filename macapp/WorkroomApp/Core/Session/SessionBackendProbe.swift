@@ -91,8 +91,8 @@ enum SessionBackendProbe {
     // The deadline has to be armed BEFORE the read, not after it. `readDataToEndOfFile` returns
     // only at EOF — when every writer has closed stdout — so a helper that starts and then hangs
     // with the pipe open blocks here forever and the timeout below is never reached. This runs
-    // synchronously on the main actor during terminal creation, so that is a frozen app rather
-    // than a fall back to the Swift helper.
+    // synchronously, including callers outside the background startup preparation, so the timeout
+    // must bound the read itself rather than only the subsequent exit wait.
     //
     // A watchdog rather than a read with a timeout: killing the process closes its end of the
     // pipe, which is what makes the blocking read return. Same shape as `ShellEnvironment`'s probe

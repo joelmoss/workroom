@@ -250,6 +250,43 @@ final class PersistentSessionRoutingTests: XCTestCase {
     XCTAssertNil(service.attachCommand(forSession: UUID()))
   }
 
+  @MainActor
+  func testStartupWindowsShareBackendPreparation() async {
+    let probeCount = Counter()
+    let started = expectation(description: "first background probe")
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        if probeCount.value == 1 { started.fulfill() }
+        Thread.sleep(forTimeInterval: 0.2)
+        return .ready(version: "protocol 1")
+      }, ownership: { _ in .notOwned })
+    let first = Task { await service.prepareBackend() }
+    await fulfillment(of: [started], timeout: 2)
+    let second = Task { await service.prepareBackend() }
+    await first.value
+    await second.value
+    XCTAssertEqual(service.backend, .daemon)
+    XCTAssertEqual(probeCount.value, 1, "restoring another window must share the initial probe")
+  }
+
+  @MainActor
+  func testFailedStartupPreparationIsCachedForTheCooldown() async {
+    let probeCount = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        return .unhealthy(reason: "fixture failure")
+      }, ownership: { _ in .notOwned }, now: { 1000 })
+    await service.prepareBackend()
+    await service.prepareBackend()
+    for _ in 0..<5 {
+      XCTAssertNil(service.backend)
+      XCTAssertFalse(service.isAvailable)
+    }
+    XCTAssertEqual(probeCount.value, 1, "failed preparation must not repeat once per pane")
+  }
+
   /// The probe runs ONCE even when its answer is nil.
   ///
   /// `cachedPreferred` uses nil for the cached value, so before `preferredResolved` existed the

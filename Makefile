@@ -269,6 +269,15 @@ app-bench-menu: ## Benchmark real main-menu rebuilds (macOS 26+) [BENCH_OUT=file
 	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
 	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/MenuRebuildBenchmarkTests"
 
+app-bench-editor-icon: ## Benchmark editor icons [BENCH_OUT=file.json] [PREPARED_FIRST=1]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  TEST_RUNNER_WORKROOM_EDITOR_ICON_PREPARED_FIRST="$(PREPARED_FIRST)" \
+	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/EditorIconBenchmarkTests"
+
+app-bench-feedback: ## Benchmark sound and initial backend probe caller time (plays audio) [BENCH_OUT=file.json]
+	TEST_RUNNER_WORKROOM_BENCH=1 TEST_RUNNER_WORKROOM_BENCH_OUT="$(BENCH_OUT)" \
+	  $(MAKE) app-test APP_TEST_GUI_MODE=exclusive APP_TEST_FLAGS="-only-testing:WorkroomAppTests/FeedbackBenchmarkTests"
+
 # Times the diff viewer's per-line coloured strings (DiffHighlightBenchmarkTests) on a 2000-line
 # new-file diff over a generated Swift source, in the app test host (a Debug build).
 app-bench-diff-highlight: ## Benchmark the diff viewer's highlight mapping (app test host) [BENCH_OUT=file.json]

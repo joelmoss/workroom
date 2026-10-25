@@ -1794,6 +1794,7 @@ final class AppStore: ObservableObject {
     } else {
       // Another window already loaded the shared project list — don't refork the CLI (issue #70,
       // OV #2). Just resolve this (possibly blank) window's selection against the existing list.
+      await terminals.sessionService.prepareBackend()
       reconcileWindow(with: projectStore.projects)
     }
   }
@@ -1878,6 +1879,9 @@ final class AppStore: ObservableObject {
           }
           if surfaceErrors, load.generation == issuedGeneration { present(error) }
           return
+        }
+        if !response.projects.isEmpty {
+          await terminals.sessionService.prepareBackend()
         }
         if let latest = projectStore.latestLoad, latest.generation != load.generation {
           load = latest
@@ -3500,7 +3504,7 @@ final class AppStore: ObservableObject {
   /// frontmost, a native banner otherwise.
   private func surface(_ note: WorkroomNotification, stillWanted: @escaping () -> Bool = { true }) {
     if NotificationGate.shouldPresentInApp(recorded: true, appActive: isAppActive()) {
-      // App is focused: sound on every arrival, then pop a toast. Notifications now live in the
+      // App is focused: request a chime (bursts share one), then pop a toast. Notifications live in the
       // always-visible left-sidebar strip + the title-bar bell badge (issue #118), so the transient
       // toast is the arrival signal regardless of what else is on screen. Previously this flashed the
       // notifications row when the *right* inspector was open/edge-revealed and only toasted otherwise

@@ -162,7 +162,7 @@ final class GhosttyRuntimeAdapter {
       // libghostty delegates the bell to the host — it does NOT produce audio/flash itself, so
       // without this the bell would be silent. Ring the system bell. We intentionally do not record
       // it as a notification (plan C1: the bell is a content-free, high-frequency signal).
-      NSSound.beep()
+      SoundFeedback.shared.request(.terminalBell)
       return true
 
     default:

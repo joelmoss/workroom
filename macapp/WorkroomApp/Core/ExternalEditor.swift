@@ -49,19 +49,9 @@ struct ExternalEditor: Identifiable {
   }
 
   /// The app's Finder icon, sized for inline display beside its name in the
-  /// "Open in…" button and menu. **Cached**, for the same reason `installed` is.
-  ///
-  /// Drawing into a fresh image rather than assigning `.size` on the returned one is load-bearing:
-  /// `NSWorkspace.icon(forFile:)` may hand back an image from its own cache, so resizing it in place
-  /// mutates shared state and every other caller silently gets a 20×20 icon.
-  var icon: NSImage {
-    EditorCache.shared.icon(for: id) {
-      let source = NSWorkspace.shared.icon(forFile: appURL.path)
-      return NSImage(size: NSSize(width: 20, height: 20), flipped: false) { rect in
-        source.draw(in: rect)
-        return true
-      }
-    }
+  /// "Open in…" button and menu. Nil while its shared bitmap is prepared off main.
+  @MainActor var icon: NSImage? {
+    EditorIconCache.shared.image(for: appURL)
   }
 
   /// Open `path` (a workroom directory) in this editor.
@@ -74,11 +64,11 @@ struct ExternalEditor: Identifiable {
   }
 }
 
-/// Memoizes the LaunchServices work behind `ExternalEditor.installed` / `.icon`, which are read from
+/// Memoizes the LaunchServices work behind `ExternalEditor.installed`, which is read from
 /// SwiftUI view bodies — since issue #139 once per visible workroom pane, on every pane rebuild.
-/// Uncached, one `OpenInControl` evaluation cost three `urlForApplication` lookups plus an
-/// `icon(forFile:)`; a three-member split re-rendering per frame of a divider drag made that
-/// hundreds of LaunchServices round-trips a second.
+/// Uncached, one `OpenInControl` evaluation cost three `urlForApplication` lookups; a three-member
+/// split re-rendering per frame of a divider drag made that hundreds of lookups a second.
+/// Icon preparation is separately cached by `EditorIconCache` and runs off main.
 ///
 /// Invalidated when any app launches or quits, so installing (or deleting) an editor is picked up
 /// without relaunching Workroom. Main-thread-confined in practice: every reader is a view body or a
@@ -88,7 +78,6 @@ private final class EditorCache: @unchecked Sendable {
   static let shared = EditorCache()
 
   private var cachedEditors: [ExternalEditor]?
-  private var cachedIcons: [String: NSImage] = [:]
 
   private init() {
     let center = NSWorkspace.shared.notificationCenter
@@ -96,9 +85,16 @@ private final class EditorCache: @unchecked Sendable {
       NSWorkspace.didLaunchApplicationNotification,
       NSWorkspace.didTerminateApplicationNotification,
     ] {
-      center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+      center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
         self?.cachedEditors = nil
-        self?.cachedIcons.removeAll()
+        // Only the application that changed can have new icon artwork. Dropping every editor's
+        // image on any app launch/quit repeated its first-display work in every visible pane.
+        if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+          as? NSRunningApplication,
+          let url = app.bundleURL
+        {
+          Task { @MainActor in EditorIconCache.shared.invalidate(url) }
+        }
       }
     }
   }
@@ -110,10 +106,4 @@ private final class EditorCache: @unchecked Sendable {
     return resolved
   }
 
-  func icon(for id: String, _ render: () -> NSImage) -> NSImage {
-    if let cached = cachedIcons[id] { return cached }
-    let rendered = render()
-    cachedIcons[id] = rendered
-    return rendered
-  }
 }
