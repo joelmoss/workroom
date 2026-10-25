@@ -4,6 +4,10 @@ Status: built (2026-10-20) in workroom PR #512 and Codaset PR #58, not yet merge
 Every decision below was made by the owner in a grilling session (Q1–Q32); "As built" notes record
 where the build differs.
 
+Later change (#378, 2026-10-25): SSH hosts were added after this design. The historical driver list
+below is unchanged; current host kinds are documented in
+[`docs-site/pages/remote/overview.md`](../../docs-site/pages/remote/overview.md).
+
 Workroom has no user documentation beyond `README.md`. This plan builds a full docs site, served by
 the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this repo.
 

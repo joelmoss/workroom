@@ -134,7 +134,8 @@ x86_64-unknown-linux-musl`, which the CI and release workflows install. `release
 present and static, and the `daemon-linux` CI job runs `protocol` on each under Linux.
 `DaemonBootstrap.connect` (#231) pushes the matching one to a remote host on first connect, beside
 the daemon's socket, and hands the running daemon off to it; the far side is
-`Resources/daemon-bootstrap/{probe,install,resources}.sh`, run through `HostDriver.exec`. The same
+`Resources/daemon-bootstrap/{probe,install,resources}.sh`, run through `HostDriver.exec` (plus
+`start.sh` for an SSH host with no listener). The same
 connect pushes Ghostty's terminfo and shell integration beside the daemon (#239), so a remote pane
 runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.

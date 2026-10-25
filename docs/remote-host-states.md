@@ -14,13 +14,14 @@ something on a host: a connect, an exec, a script, a delete.
   asleep boxd box asleep, reports a gone one, and after a failure refuses the host for `retryAfter`
   (30 s). A host selected in any window, or one the user opened (`activate`), is connected as if
   the user had asked, so a box on screen doesn't keep reading as asleep after the Mac wakes.
-- **After a wake or a network change** (`RemoteLinkMonitor`): each boxd or exe.dev host's daemon is
+- **After a wake or a network change** (`RemoteLinkMonitor`): each boxd, exe.dev or SSH host's daemon is
   pinged over its service connection (the VCS `capabilities` request, which no repaint holds up). One that doesn't answer within 2 s has the
   connection dropped and its remote panes attach again, rather than wait the minute ssh's keepalive
   takes to notice a dead link; a pane's attach reconnects the host. One that answers keeps its links.
   A container's link is loopback and is left alone.
-- `RemoteHosts.connect(host, driver:)` is the bootstrap step inside `ensureConnected`. Called on its
-  own it starts nothing, and it fails while another connect to the host is under way:
+- `RemoteHosts.connect(host, driver:)` is the bootstrap step inside `ensureConnected`. It starts no
+  container or provider host itself; on SSH hosts its bootstrap starts the daemon when nothing
+  listens. It fails while another connect to the host is under way:
   `HostConnectionManager.connectIfDisconnected` throws `.unavailable` for a `.connecting` host.
 
 ## States
@@ -35,9 +36,17 @@ something on a host: a connect, an exec, a script, a delete.
 | Unreachable | the connect threw | `ensureConnected` logs the cause and throws `.unavailable`, whose text is "Repository service unavailable." Say what failed in your feature's own words (`runScript`: "couldn't reach the host") |
 | Older or newer daemon | `DaemonBootstrap.Outcome.Daemon` | An older daemon is handed off to this build's (`.handedOff`) unless it refuses (`.keptOlder`); a newer one is never downgraded (`.keptNewer`). Either way a subcommand this build added may be missing on the host |
 | Older Nightly's host | a host from before the daemon's rename, #525 (`DaemonBootstrap.Error.olderLayout`), or a container made before #308, whose record has an ssh host key (`HostDriverError.olderContainer`) | `ensureConnected` throws `RepositoryRoutingError.olderLayout`, also through the backoff, which says to delete the workroom and create it again. A pre-#308 container is adopted only so its delete can take it down; every other reach of it throws |
-| Fresh host | first login on a new machine | No cached login environment, and a cold first login (nvm, conda) can be slow. `workroomd run-script` gives its login-shell probe 10 s, then falls back to its own environment and says so |
+| Fresh host | first login on a new machine | No cached login environment, and a cold first login (nvm, conda) can be slow. `workroomd run-script` and the daemon's cached environment for remote git give the login-shell probe 10 s, then fall back to the daemon's own environment and log why |
 | Mid-create or failed delete | `HostDescriptor.state` is `creating` or `failed` | The host may not be whole. `RemoteWorkrooms.delete` runs a teardown only when `state` is nil, and otherwise just finishes taking it down |
 | Another build's host | its key and labels aren't this build's | `RemoteWorkrooms.checkDeletable` refuses (`Failure.anotherBuildsHost`) |
+| Unknown SSH host key | strict ssh refuses a host absent from `known_hosts` | Create captures the key through the user's ssh into a scratch known_hosts, shows its fingerprint, then appends that exact key only after Trust. A jump host that also needs trust is handled in Terminal first |
+| Changed SSH host key | ssh reports the existing key differs | Refuse and name the destination. Never replace the saved key automatically |
+| SSH needs a password or passphrase | batch ssh cannot authenticate | Stop before reserve or folder creation; ask the user to add their key to ssh-agent or the Keychain |
+| Unsupported SSH host | not Linux on aarch64/x86_64, no git, or an absolute socket path of 108 bytes or more | The host checks refuse before reserve or folder creation. Resolve the remote home and parent here |
+| SSH daemon not running | missing socket, stale socket / hand-off 92, or install reports no listener | Bootstrap runs `start.sh` with `--idle-timeout never` and saved screens, then checks from a second ssh exec. If the login's end killed it, name logind's `KillUserProcesses` policy; change no server setting |
+| SSH folder gone | successful host check says the recorded folder no longer exists | Skip teardown and count it as deleted. A transport failure never counts as a missing folder |
+| SSH marker missing or different | the state-folder marker doesn't exactly name the recorded path | Keep the folder and stop the delete; Delete Anyway forgets the entry and names the folder left on the host |
+| SSH host unreachable during delete | folder/marker check, teardown or removal can't reach the host | Keep the entry; Delete Anyway forgets it and names the folder left on the host |
 
 ## Exit statuses over ssh
 
@@ -62,3 +71,25 @@ behaviour beside its remote equivalent: the time limit, exit codes and failure k
 environment, who starts the host, and what the user sees when it fails. The review checks every
 row. #498's review found two missing rows only in its third cycle: local scripts had an overall
 600 s bound, and opening a workroom starts its container.
+
+## SSH parity with other remote hosts
+
+An SSH destination is keyed exactly as typed; one host id and connection serve its workrooms
+across every project. Release and Nightly share the state folder, while Dev uses its own. A
+creating entry already carries the host id, so it counts when deciding whether a delete is the
+last workroom on that host.
+
+| Behaviour | boxd / exe.dev | SSH host |
+|---|---|---|
+| Who creates the host | provider, on create | nobody; the user's server exists |
+| Who starts the daemon | systemd, at boot and after exit | the app's connect whenever nothing listens |
+| What ends the daemon | never idles out; supervised | never stopped by the app, even after the last workroom |
+| App git environment | host login shell, cached bounded probe | same; scrub and request pins still win |
+| GitHub access | provider integration | user's credentials on the host; origin's GitHub URL scheme retained |
+| Host key | provider pin or HostKeyAlias | user's known_hosts; fingerprint and Trust for a new key |
+| Port forwards | provider publishes ports | one list per workroom; loopback on the host |
+| Teardown | host login environment, 600 s overall bound | same; check folder and marker before running it |
+| Delete | teardown, destroy machine | teardown, end sessions tagged with this workroom id, marker-guarded folder removal with a 600 s bound |
+| Unreachable delete | fails, entry kept | same; Delete Anyway forgets and names the folder left behind |
+| Shared state after delete | one host per workroom | drop connection/status watch only after the last workroom; forwards go with their own workroom |
+| Wake/network ping | 2 s rule | same |

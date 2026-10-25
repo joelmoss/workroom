@@ -1,14 +1,17 @@
 ---
 title: Port forwarding
-description: Reach a dev server running in a container workroom from your Mac's browser, and publish a port on boxd or exe.dev.
+description: Reach a dev server in a container or SSH workroom from your Mac's browser, and publish a port on boxd or exe.dev.
 nightly: true
 ---
 
-A dev server running in a remote workroom listens on its host, where your Mac's browser can't reach it. For a Docker or Apple container workroom, Workroom forwards ports to `localhost` on your Mac and lists them in the **Ports** list. For boxd and exe.dev, you publish the port with the provider.
+A dev server running in a remote workroom listens on its host, where your Mac's browser can't reach it. For a Docker, Apple container or SSH workroom, Workroom forwards ports to `localhost` on your Mac and lists them in the **Ports** list. For boxd and exe.dev, you publish the port with the provider.
 
-## Ports in container workrooms
+## Ports in containers and on SSH hosts
 
-Workroom forwards a container workroom's ports to your Mac, and shows each one in the **Ports** list in the inspector's **Details** pane. Open the pane with <kbd>⌥⌘I</kbd>. Each row reads like `localhost:5173 → container 5173`, with a copy button and a button to stop forwarding.
+Container and SSH workrooms use the same port controls. Workroom forwards the host's loopback
+ports to your Mac, and shows each one in the **Ports** list in the inspector's **Details** pane.
+Open the pane with <kbd>⌥⌘I</kbd>. A container row reads like `localhost:5173 → container 5173`,
+with a copy button and a button to stop forwarding.
 
 A forward answers on `localhost`, on both `127.0.0.1` and `::1`. Only your Mac can reach it.
 
@@ -35,6 +38,13 @@ For ports, only these fields are read. A `"host:port"` entry, port ranges and pa
 
 The forwards are made when you open the workroom, from the workroom's own copy of the file. At most 32 ports are forwarded from one file. When the file declares more, the Ports list says that only the first 32 are forwarded.
 
+### Several workrooms on one SSH host
+
+Each SSH workroom reads its own `devcontainer.json` and has its own Ports list. Other fields in
+that file don't change the server or create a container. Forwarding the same server port from two
+workrooms gets two ports on your Mac. Deleting one workroom drops its forwards and keeps the
+others. Both forwards reach the same loopback port on the server.
+
 ### Which port number you get
 
 Each port keeps its own number on your Mac when that number is free, so port 5173 is `http://localhost:5173`. When something on your Mac already uses the number, the port gets a free number instead, and the Ports list shows which one.
@@ -60,7 +70,7 @@ Click the **x** button on a row, which is titled **Stop forwarding port** and th
 
 Forwards are not saved. When you open the workroom after relaunching Workroom, the ports in `devcontainer.json` are forwarded again, and each one gets the same port number back when it is free. A port you added by hand is not remembered, so add it again.
 
-If the connection to the container drops, the Ports list says `Not connected. A forward reconnects when it is used.` or `No daemon is connected.` See [Reconnecting](reconnecting.md).
+If the connection to the host drops, the Ports list says `Not connected. A forward reconnects when it is used.` or `No daemon is connected.` See [Reconnecting](reconnecting.md).
 
 ## boxd and exe.dev
 

@@ -41,11 +41,29 @@ asks the Mac's own `gh` through `CredentialRelay` (#309), whose daemon side is `
 exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
 `make app-run-exedev-fresh`.
 
+An SSH host uses the credentials its user set up on the server, with the origin's GitHub URL
+scheme retained (ADR 0056); it gets no Mac credential relay. For every remote kind, the daemon
+builds the app's git environment from a cached, bounded login-shell probe, then applies the
+existing scrub and pins (`vcs/crates/workroomd/src/vcs.rs`).
+
+## SSH driver (#378)
+
+`SSHHostDriver` reaches an existing Linux server; only `ProvisioningHostDriver` exposes
+create/destroy. Route it through `SSHTransport.userOwnedOptions`, without a provider key or
+HostKeyAlias. Reserve with `create --host-parent` after the host checks, so the generated name
+determines its folder. The descriptor records `ssh_destination` and `ssh_home`; the exact
+destination determines a shared UUIDv5 host id across projects. An SSH create has no
+`PendingMachines` entry. Preserve the marker guard on folder removal and end sessions by the
+workroom UUID tag; per-host cleanup belongs only to the last workroom, including creating entries.
+Port-forward lists belong to host plus workroom. The daemon stays running after deletion.
+Before changing this lifecycle, read [remote host states](../remote-host-states.md) and
+[ADR 0056](../adr/0056-ssh-hosts-are-the-users.md) for its safety and parity rules.
+
 ## boxd driver (#256)
 
 `HostDrivers/ExeDevHostDriver.swift` is the second (#259): exe.dev VMs driven through exe.dev's ssh API
 (`ssh exe.dev <cmd> --json`) and reached over the user's own ssh: their `~/.ssh/config`, keys, agent
-and Keychain, as `ssh exe.dev` in Terminal, with only `ExeDevHostDriver.sshOptions` set over them
+and Keychain, as `ssh exe.dev` in Terminal, with only `SSHTransport.userOwnedOptions` set over them
 (nothing registered on the account). An app opened from Finder gives every ssh it runs, account
 commands and VMs alike, the login shell's `SSH_AUTH_SOCK`; a VM's spawned ssh also gets the login
 shell's `PATH`, for a `ProxyCommand` helper. A VM's host key is checked as `exe.dev`'s
@@ -58,7 +76,7 @@ CLI (`--json`) and reached over `SSHTransport` (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
 `Resources/host-setup/systemd.sh` (an identity unit and the daemon's supervisor, both systemd; shared
-with every provider driver whose machines run systemd, #259). Every remote workroom is a fresh
+with every provider driver whose machines run systemd, #259). Each provider workroom is a fresh
 machine of its own: `RemoteProvisioning.provision` has the driver `create()` it, then
 clones and checks out the branch, and no driver derives a host from another. The identity unit
 stays: every fresh boxd machine boots with the image's machine-id and ssh host key (measured,
@@ -100,7 +118,8 @@ or a remote workroom silently turns local. What the app relies on:
 - A remote workroom's `path` is not a path on this Mac. Code that probes, watches or registers
   paths must skip `Workroom.isRemote`, as `RepositoryRouter.prepare`, `statusWorkItems` and
   `selectedStatusWorkItem` do.
-- Deleting a live remote workroom is app-only: the app destroys the host, then has the CLI drop
+- Deleting a live remote workroom is app-only: the app destroys a provider host or removes an SSH
+  workroom's marked folder, then has the CLI drop
   the entry. The CLI deletes only a workroom whose host is already `destroyed`, and refuses the
   rest with `RemoteWorkroomUnsupported` (ADR 0040).
 - Session restore is gated on availability (#253): `PersistentSessionRecovery` reattaches only

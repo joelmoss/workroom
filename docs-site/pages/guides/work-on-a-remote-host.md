@@ -4,7 +4,7 @@ description: Run a workroom on a cloud machine or in a container, from choosing 
 nightly: true
 ---
 
-A remote workroom runs on a host of its own, so a coding agent can keep working with your Mac asleep,
+A remote workroom runs on a host, so a coding agent can keep working with your Mac asleep,
 or a heavy build can run without slowing your Mac down. You still work in it from the Workroom window,
 as you would a local one. This guide takes you from a project on your Mac to a running remote workroom.
 
@@ -14,9 +14,11 @@ as you would a local one. This guide takes you from a project on your Mac to a r
 | -------------------------------------------------------- | ---------------------------------------- |
 | Work that keeps running with your Mac asleep or closed   | [boxd](../remote/boxd.md) or [exe.dev](../remote/exe-dev.md) |
 | An isolated Linux environment on this Mac, with no cloud account | [Docker or Apple Container](../remote/containers.md) |
+| Folders on a Linux server you already reach with ssh | [SSH](../remote/ssh.md) |
 
 boxd and exe.dev are cloud services that need an account and a paid plan; Workroom walks you through
-signing up the first time you use one. A container runs on your Mac. See
+signing up the first time you use one. A container runs on your Mac. An SSH host is your own server,
+which can hold several workrooms. See
 [Remote workrooms](../remote/overview.md) for how they differ.
 
 ## Get your project ready
@@ -39,10 +41,10 @@ A remote workroom clones your project from GitHub, so:
 ## Create the workroom
 
 1. Click the **+** on the project in the sidebar.
-2. Choose the host: Docker or Apple Container under **Local containers**, or boxd or exe.dev under
+2. Choose the host: Docker or Apple Container under **Local containers**, or boxd, exe.dev or SSH under
    **Remote**.
 3. The first time you use boxd or exe.dev, a setup sheet opens. Follow it, then click **Create
-   Workroom**.
+   Workroom**. For SSH, enter your host and the parent folder, and trust its host key if asked.
 4. Watch the checklist in the workroom's pane. When it finishes, click **Done**.
 
 ## Work in it
@@ -58,7 +60,9 @@ review, commit and push as you would locally: see [Review and ship](review-and-s
 
 ## Delete it
 
-Push anything you want to keep first: deleting a remote workroom destroys its host and everything on
-it. Hover over the workroom in the sidebar, click its trash button and confirm. Its teardown script, if
+Push anything you want to keep first. Deleting a boxd, exe.dev or container workroom destroys its
+host and everything on it. Deleting an SSH workroom removes only its own folder and ends its
+sessions; the server and the other workrooms stay. Hover over the workroom in the sidebar, click
+its trash button and confirm. Its teardown script, if
 your project has one, runs on the host first. See
 [Delete a remote workroom](../remote/overview.md#delete-a-remote-workroom).

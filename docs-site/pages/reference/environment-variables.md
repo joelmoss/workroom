@@ -15,7 +15,7 @@ Workroom sets these for both the setup script and the teardown script. The scrip
 | `WORKROOM_PATH` | The absolute path of the workroom directory. |
 | `WORKROOM_ROOT_PATH` | The absolute path of the root, the project the workroom belongs to. Scripts run inside the workroom, so use this to reach files in the root. |
 | `WORKROOM_PARENT_DIR` | A deprecated alias for `WORKROOM_ROOT_PATH`, still set so existing scripts keep working. Use `WORKROOM_ROOT_PATH` in new scripts. |
-| `WORKROOM_HOST` | Where the script runs: `local` on your Mac, or the kind of host for a remote workroom: `boxd`, `exedev`, `docker` or `apple`. Nightly only. |
+| `WORKROOM_HOST` | Where the script runs: `local` on your Mac, or the kind of host for a remote workroom: `boxd`, `exedev`, `docker`, `apple` or `ssh`. Nightly only. |
 
 Scripts also receive the rest of your login shell's environment, such as anything you export in your dotfiles. See [Prepare a project](../guides/prepare-a-project.md) for writing the scripts.
 
@@ -34,13 +34,17 @@ A script for a remote workroom runs on its host, and the environment differs fro
   Under `set -u`, an unguarded `$WORKROOM_ROOT_PATH` fails the script, and so fails the create.
 - The rest of the environment is the host user's login shell, never your Mac's. Your Mac's environment, secrets included, stays on your Mac.
 
+In Nightly, the app's Git commands on every kind of remote host also use that host user's login
+environment. The daemon reads it once and keeps it until it restarts. A login profile that fails or
+takes longer than 10 seconds falls back to the daemon's own environment, and the daemon logs why.
+
 See [Work on a remote host](../guides/work-on-a-remote-host.md).
 
 ## Variables you can set
 
 ### `WORKROOM_SHELL_PROBE`
 
-Workroom sets this to `1` while it reads your login shell's environment, so your shell startup file can skip slow work. The macOS app reads your environment each time it creates or deletes a workroom, and on Nightly the same happens on a remote host before a script runs. It is not passed on to your script.
+Workroom sets this to `1` while it reads your login shell's environment, so your shell startup file can skip slow work. The macOS app reads your environment each time it creates or deletes a workroom, and on Nightly the same happens on a remote host before a script runs. The remote daemon also reads the login environment once for the app's Git commands. It is not passed on to your script.
 
 In your `.zshrc`:
 
