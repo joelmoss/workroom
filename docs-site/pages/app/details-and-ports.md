@@ -14,7 +14,7 @@ Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top
 ## What it shows
 
 - **Running on** shows **This Mac**, or the kind of host a remote workroom runs on. On boxd or exe.dev, click the provider's name to open the machine's page on its dashboard in your browser.
-- **Machine Name** appears for a remote workroom that has one. Click its copy button to copy it.
+- **Machine Name** appears for a provider or container workroom that has one. An SSH workroom shows its destination as **Host** instead. Click its copy button to copy it.
 - **Path** is the workroom's folder. For a workroom on a host it reads **Path on its host**, and names the folder on that host. Click the copy button beside it to copy the path.
 
 - **Made From** appears for a container workroom: the `devcontainer.json` it was made from, or the image when it had none. A note under it says when the repository's file has changed since, or has been added or removed, since a change applies only to workrooms created after it. See [Your dev container](../remote/containers.md#when-the-file-changes).

@@ -51,7 +51,7 @@ An SSH host uses the GitHub credentials you set up on that server. The app's Git
 kind of remote host use that host user's login-shell environment, so they can find tools and
 credentials from the user's profile.
 
-The **Details** pane in the inspector shows where a workroom runs: **Running on**, **Machine Name** (the name the host is listed under, in boxd's or exe.dev's dashboard or in `docker ps`) and **Path on its host**. Open it with <kbd>⌥⌘I</kbd>. See [Details and ports](../app/details-and-ports.md).
+The **Details** pane in the inspector shows where a workroom runs: **Running on**, **Machine Name** (the name the host is listed under, in boxd's or exe.dev's dashboard or in `docker ps`) or **Host** (the SSH destination), and **Path on its host**. Open it with <kbd>⌥⌘I</kbd>. See [Details and ports](../app/details-and-ports.md).
 
 ## Create one
 
