@@ -1040,6 +1040,9 @@ fn working_status_skips_unneeded_diff_and_rediscovers_filters() {
     let mut command = Command::new(daemon_binary());
     command
         .args(["serve", "--stdio"])
+        // Keep this fixture's counting Git wrapper: a user's login profile may replace PATH.
+        // The missing recognized shell makes the bounded profile read use the inherited env.
+        .env("SHELL", "/nonexistent/workroom-test-shell/zsh")
         .env("PATH", std::env::join_paths(search_path).unwrap())
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
