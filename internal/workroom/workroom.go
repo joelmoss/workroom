@@ -7,6 +7,7 @@ import (
 	"iter"
 	"math/rand/v2"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/joelmoss/workroom/internal/config"
+	"github.com/joelmoss/workroom/internal/errs"
 	"github.com/joelmoss/workroom/internal/namegen"
 	"github.com/joelmoss/workroom/internal/script"
 	"github.com/joelmoss/workroom/internal/ui"
@@ -475,7 +477,20 @@ func findScript(name, wrPath, dir string) (string, bool) {
 // host and checks the repository out there; path is the checkout's path on it, and host its
 // descriptor, which the app owns. Names are drawn as CreateNamed draws them, so a remote and a
 // local workroom never share one.
-func (s *Service) CreateRemote(dir, path string, host map[string]any) (CreateResult, error) {
+func (s *Service) CreateRemote(dir, remotePath string, host map[string]any) (CreateResult, error) {
+	return s.createRemote(dir, host, func(string) string { return remotePath })
+}
+
+// CreateRemoteInParent reserves a remote workroom in parent/name, where name is chosen by the
+// same operation. Parent is an absolute POSIX path already resolved on the host, not on this Mac.
+func (s *Service) CreateRemoteInParent(dir, parent string, host map[string]any) (CreateResult, error) {
+	if !path.IsAbs(parent) || strings.ContainsRune(parent, '\x00') {
+		return CreateResult{}, fmt.Errorf("%w: --host-parent must be an absolute path on the host", errs.ErrInvalidHost)
+	}
+	return s.createRemote(dir, host, func(name string) string { return path.Join(parent, name) })
+}
+
+func (s *Service) createRemote(dir string, host map[string]any, pathForName func(string) string) (CreateResult, error) {
 	var res CreateResult
 	if err := s.CheckNotInWorkroom(dir); err != nil {
 		return res, err
@@ -487,13 +502,14 @@ func (s *Service) CreateRemote(dir, path string, host map[string]any) (CreateRes
 	if err != nil {
 		return res, err
 	}
+	remotePath := pathForName(name)
 	if !s.Pretend {
-		if err := s.Config.AddRemoteWorkroom(dir, name, path, host); err != nil {
+		if err := s.Config.AddRemoteWorkroom(dir, name, remotePath, host); err != nil {
 			return res, err
 		}
 	}
 	// git: the host's checkout is a clone, whatever the project uses on this Mac.
-	return CreateResult{Name: name, Path: path, VCS: string(vcs.TypeGit), Project: dir}, nil
+	return CreateResult{Name: name, Path: remotePath, VCS: string(vcs.TypeGit), Project: dir}, nil
 }
 
 func (s *Service) generateUniqueName(dir string) (string, error) {
