@@ -88,9 +88,12 @@ final class SSHHostLiveTests: XCTestCase {
       host: driver.hostID, driver: driver, socket: driver.daemonSocket)
     let binary = DaemonInstall.binary(besideSocket: driver.daemonSocket)
     let foundPID = try await shell(
-      "ps -eo pid=,args= | awk -v target=\(q(binary)) '$2 == target && $3 == \"serve\" { print $1 }'",
+      "ps -ww -eo pid=,args= | awk -v socket=\(q(driver.daemonSocket))"
+        + " '$3 == \"serve\" { for (i=4; i<NF; i++) if ($i == \"--socket\" && $(i+1) == socket) print $1 }'",
       driver: driver)
-    let daemonPID = try XCTUnwrap(outcome.startedPID ?? Int32(foundPID))
+    let daemonPID = try XCTUnwrap(
+      outcome.startedPID ?? Int32(foundPID),
+      "no unique serve PID for \(driver.daemonSocket): \(foundPID); bootstrap=\(outcome)")
     print(
       "SSH live check: \(destination), \(info.architecture), parent=\(parent), socket=\(driver.daemonSocket), pid=\(daemonPID)"
     )

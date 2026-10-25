@@ -20,6 +20,10 @@ panels work there as they do on other [remote workrooms](overview.md).
 Workroom uses your `/usr/bin/ssh`, with your `~/.ssh/config`, keys, agent and Keychain. Put a port,
 jump host or other connection settings in your ssh config, then enter that host's alias in Workroom.
 
+Startup and service checks reuse a private Workroom SSH connection to reduce new connections on
+servers that rate-limit SSH. Terminal panes open their own connections, so the server's SSH
+connection-rate limit can still apply when opening many panes at once.
+
 ## Create a workroom
 
 1. Click the **+** on a project, or right-click it and choose **New Workroom**.

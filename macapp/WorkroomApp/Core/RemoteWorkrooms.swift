@@ -1563,11 +1563,14 @@ final class RemoteHosts: @unchecked Sendable {
     return await withTaskGroup(of: (HostID, Bool).self) { group in
       for host in hosts {
         group.addTask {
-          (
-            host,
-            await HostConnectionManager.shared.dropUnlessAnswering(
-              host, within: Self.answerDeadline)
-          )
+          let answered = await HostConnectionManager.shared.dropUnlessAnswering(
+            host, within: Self.answerDeadline)
+          if !answered, case .remote(let id) = host,
+            let ssh = self.existingDriver(holding: id) as? SSHHostDriver
+          {
+            await ssh.invalidateConnection()
+          }
+          return (host, answered)
         }
       }
       var unanswering: Set<HostID> = []

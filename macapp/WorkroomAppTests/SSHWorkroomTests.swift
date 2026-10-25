@@ -56,6 +56,45 @@ final class SSHWorkroomTests: XCTestCase {
     }
   }
 
+  private struct ControlRunner: StatusCommandRunning {
+    let calls: Calls
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    {
+      calls.add(args.joined(separator: " "))
+      return .init(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+    }
+  }
+
+  func testNetworkChangeInvalidatesAnUnansweringSSHHostsPrivateTransport() async throws {
+    let calls = Calls()
+    let destination = "wake-test-\(UUID().uuidString)"
+    let driver = SSHHostDriver(
+      configuration: .init(destination: destination, home: "/home/joel"),
+      directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+      runner: ControlRunner(calls: calls))
+    let id = SSHHostDriver.id(for: destination)
+    let hosts = RemoteHosts(makeDriver: { _ in driver }, pendingIn: nil)
+    hosts.adopt(
+      [
+        Project(
+          path: "/ssh-wake-test", vcs: "git",
+          workrooms: [
+            Workroom(
+              name: "w", path: "/home/joel/w", vcsName: "git", warnings: [],
+              host: .init(
+                driver: "ssh", provisioner: RemoteWorkrooms.provisioner, id: id,
+                sshDestination: destination, sshHome: "/home/joel"))
+          ])
+      ], sweep: false)
+    let unanswering = await hosts.unansweringProviderHosts()
+    XCTAssertEqual(unanswering, [.remote(id)])
+    XCTAssertEqual(calls.all.count, 1)
+    XCTAssertTrue(calls.all[0].contains("-O exit \(destination)"))
+    XCTAssertTrue(calls.all[0].contains("ControlMaster=auto"))
+    XCTAssertFalse(calls.all[0].contains("kill"))
+  }
+
   private func driver(_ calls: Calls, checkExit: Int32 = 0, folderExit: Int32 = 0) -> SSHHostDriver
   {
     SSHHostDriver(

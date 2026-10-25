@@ -75,6 +75,7 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
   public let directory: URL
   private let runner: any StatusCommandRunning
   private let adoptedHome: Mutex<String>
+  private let control: SSHControlConnection
 
   public init(
     configuration: Configuration, directory: URL,
@@ -84,6 +85,8 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
     self.directory = directory
     self.runner = runner
     adoptedHome = Mutex(configuration.home)
+    control = SSHControlConnection(
+      namespace: directory.standardizedFileURL.path + "\0" + configuration.destination)
   }
 
   public var destination: String { configuration.destination }
@@ -248,9 +251,16 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
   }
 
   public func route(spawned: Bool) throws -> SSHTransport.Route {
+    try route(spawned: spawned, reusingConnection: spawned)
+  }
+
+  private func route(spawned: Bool, reusingConnection: Bool) throws -> SSHTransport.Route {
     try Self.validateDestination(destination)
+    // These precede the shared defaults: OpenSSH takes the first value. Terminal panes keep
+    // independent connections and their LocalCommand screen clearing, without a MaxSessions cap.
+    let reuse = reusingConnection ? try control.options() : []
     return SSHTransport.Route(
-      options: configuration.sshOptions + SSHTransport.userOwnedOptions()
+      options: reuse + configuration.sshOptions + SSHTransport.userOwnedOptions()
         + ["-o", "StrictHostKeyChecking=yes"],
       destination: destination, environment: routeEnvironment(spawned: spawned))
   }
@@ -281,6 +291,22 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
   public func exec(_ command: String, on host: HostID) async throws -> HostStream {
     try check(host)
     return try SSHTransport.exec(command, via: route(spawned: true), purpose: .exchange)
+  }
+
+  /// Startup must survive its own SSH login closing, even when other exchanges share a master.
+  public func execIndependently(_ command: String, on host: HostID) async throws -> HostStream {
+    try check(host)
+    return try SSHTransport.exec(
+      command, via: route(spawned: true, reusingConnection: false), purpose: .exchange)
+  }
+
+  /// Drop only this launch's SSH transport after a failed wake/network probe. This is a local
+  /// control request; it neither connects a new SSH peer nor stops the host's workroomd.
+  public func invalidateConnection() async {
+    guard let route = try? route(spawned: true) else { return }
+    _ = await runner.run(
+      "/usr/bin/ssh", route.options + ["-O", "exit", destination], in: NSHomeDirectory(),
+      timeout: 2, environment: route.environment)
   }
 
   public func attachCommand(

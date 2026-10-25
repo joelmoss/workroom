@@ -50,6 +50,12 @@ something on a host: a connect, an exec, a script, a delete.
 
 ## Exit statuses over ssh
 
+SSH hosts reuse a private app-owned connection for bootstrap and service exchanges, reducing new
+connections on servers that rate-limit SSH. After a failed wake/network ping the app invalidates
+that transport before reconnecting, so new exchanges cannot inherit its dead TCP link. Terminal
+panes and daemon startup use independent SSH logins; closing a workroom never stops the server's
+daemon. An unused private SSH master expires after 60 seconds.
+
 - `HostDriver.exec(...).communicate` returns ssh's exit status rather than throwing when the link
   drops. 255 is ssh's own failure and also a command's own exit 255, so a status alone can't tell
   the two apart.

@@ -157,6 +157,18 @@ final class SSHHostIntegrationTests: XCTestCase {
     throw VCSError.io("the restarted SSH fixture didn't answer")
   }
 
+  private func acceptedConnections() async throws -> Int {
+    let variables = ProcessInfo.processInfo.environment
+    let runtime = try XCTUnwrap(variables["WR_SSH_FIXTURE_RUNTIME_PATH"])
+    let container = try XCTUnwrap(variables["WR_SSH_FIXTURE_CONTAINER"])
+    let log = await StatusCommandRunner().run(
+      runtime, ["logs", container], in: NSHomeDirectory(), timeout: 10)
+    guard log.ok else { throw VCSError.io(log.stderr) }
+    return (log.stdout + log.stderr).components(separatedBy: "\n").filter {
+      $0.contains("Accepted publickey for workroom from ")
+    }.count
+  }
+
   func testUnknownKeyRequiresTrustAndThenUsesTheExactCapturedKey() async throws {
     let fixture = try fixture()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -183,16 +195,105 @@ final class SSHHostIntegrationTests: XCTestCase {
     XCTAssertEqual(try String(contentsOf: known, encoding: .utf8), captured.lines + "\n")
   }
 
+  func testChecksAndExecReuseOneSSHConnection() async throws {
+    let fixture = try fixture()
+    let driver = driver(fixture)
+    let before = try await acceptedConnections()
+    var connections = Set<String>()
+    for _ in 0..<12 {
+      _ = try await driver.checkHost()
+      let result = try await driver.exec("printf '%s\\n' \"$SSH_CONNECTION\"", on: driver.hostID)
+        .communicate(nil, timeout: 20)
+      XCTAssertEqual(result.status, 0, result.output)
+      let connection = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+      XCTAssertEqual(connection.split(separator: " ").count, 4, connection)
+      connections.insert(connection)
+    }
+    XCTAssertEqual(
+      connections.count, 1,
+      "preflight and exec exchanges opened multiple SSH transports: \(connections)")
+    let accepted = try await acceptedConnections() - before
+    // SSH_CONNECTION proves the exec path; sshd's authentication log also catches a preflight
+    // path that still opens fresh transports even if exec alone learned to reuse one.
+    XCTAssertLessThanOrEqual(
+      accepted, 1, "preflight and exec authenticated \(accepted) SSH transports")
+    await driver.invalidateConnection()
+  }
+
+  func testInvalidationReplacesOnlyTheSSHTransport() async throws {
+    let fixture = try fixture()
+    let driver = driver(fixture)
+    let before = try await acceptedConnections()
+    _ = try await driver.checkHost()
+    let first = try await driver.exec("printf '%s\\n' \"$SSH_CONNECTION\"", on: driver.hostID)
+      .communicate(nil, timeout: 20)
+    XCTAssertEqual(first.status, 0, first.output)
+    await driver.invalidateConnection()
+    let second = try await driver.exec("printf '%s\\n' \"$SSH_CONNECTION\"", on: driver.hostID)
+      .communicate(nil, timeout: 20)
+    XCTAssertEqual(second.status, 0, second.output)
+    XCTAssertNotEqual(first.output, second.output)
+    let accepted = try await acceptedConnections() - before
+    XCTAssertEqual(
+      accepted, 2, "an invalidated SSH transport was reused or redialled more than once")
+    await driver.invalidateConnection()
+  }
+
+  func testMoreThanTenPanesKeepIndependentSSHConnections() async throws {
+    let fixture = try fixture()
+    let driver = driver(fixture)
+    _ = try await driver.checkHost()
+    _ = try await ensure(driver, daemon: fixture.daemon)
+    // Keep the service channel open too. A pane accidentally using the private control master
+    // would reach sshd's default MaxSessions=10 rather than open all twelve panes.
+    let service = try await connect(driver)
+    var panes: [RemoteHostIntegrationTests.Pane] = []
+    defer { for pane in panes { pane.dropLink() } }
+    var sessions: [UUID] = []
+    var connections = Set<String>()
+    for index in 0..<12 {
+      let session = UUID()
+      sessions.append(session)
+      let pane = try RemoteHostIntegrationTests.Pane(
+        command: driver.attachCommand(
+          to: driver.hostID, session: session, workingDirectory: driver.home, restored: false))
+      panes.append(pane)
+      pane.type(
+        "printf 'PANE_CONNECTION:%s\\n' \"$SSH_CONNECTION\"; echo PA\"\"NE_READY_\(index)\n")
+      let seen = pane.read(until: "PANE_READY_\(index)")
+      XCTAssertTrue(seen.contains("PANE_READY_\(index)"), seen)
+      XCTAssertTrue(
+        seen.hasPrefix("\u{1b}7workroom: waiting for this terminal's host...\u{1b}8\u{1b}[J"), seen)
+      let reported = seen.components(separatedBy: "PANE_CONNECTION:").dropFirst().compactMap {
+        tail in
+        tail.split(whereSeparator: { $0.isNewline }).first.map(String.init)
+      }.first { $0.split(separator: " ").count == 4 && !$0.contains("%s") }
+      connections.insert(try XCTUnwrap(reported, seen))
+    }
+    XCTAssertEqual(connections.count, 12, "terminal panes shared SSH transports: \(connections)")
+    for session in sessions { _ = try await service.endSession(session) }
+    await service.close()
+    await driver.invalidateConnection()
+  }
+
   func testAppStartsDaemonAndRestartsItWithAStaleSocket() async throws {
     let fixture = try fixture()
     let driver = driver(fixture)
     _ = try await driver.checkHost()
+    let before = try await acceptedConnections()
     let socket = PosixShell.quoted(driver.daemonSocket)
-    let absent = try await onHost(fixture, "test ! -e \(socket) && echo absent")
-    XCTAssertEqual(absent, "absent")
+    let absent = try await driver.exec("test ! -e \(socket) && echo absent", on: driver.hostID)
+      .communicate(nil, timeout: 20)
+    XCTAssertEqual(absent.status, 0, absent.output)
+    XCTAssertEqual(absent.output.trimmingCharacters(in: .whitespacesAndNewlines), "absent")
     let first = try await ensure(driver, daemon: fixture.daemon)
     XCTAssertEqual(first.daemon, .installed)
     let firstPID = try XCTUnwrap(first.startedPID, "the app didn't report starting the daemon")
+    let coldStartAuthentications = try await acceptedConnections() - before
+    XCTAssertEqual(
+      coldStartAuthentications, 1,
+      "cold daemon startup must close its own SSH login; probe/install should reuse the established transport"
+    )
     let alive = try await onHost(fixture, "kill -0 \(firstPID) && echo alive")
     XCTAssertEqual(alive, "alive")
     let connection = try await connect(driver)
