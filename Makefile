@@ -12,7 +12,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean docs-check docs-cli docs-preview \
-        app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
+        app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof app-package-test app-uitest app-identity app-test-supervisor app-test-preflight app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release app-icon app-tool-logos app-clean \
         app-check app-bench-title app-bench-output-flood app-bench-status app-bench-usage app-bench-restore app-bench-startup-reads app-bench-memory app-bench-sentry actions-lint vcs-lint vcs-test
 
 help: ## List available targets
@@ -367,13 +367,15 @@ app-test-supervisor: ## Run the run-command supervisor PTY integration test (rea
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 	python3 vcs/scripts/test-parked-supervisor.py
 
-app-test-scripts: ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, daemon name, exe.dev git setup, test summary, red proof, restore mtime)
+app-test-preflight: ## Check Makefile/workflow invariants and benchmark failure safety without building the app
+	sh macapp/Scripts/test-invariants_test.sh
 	python3 macapp/Scripts/benchmark-safety_test.py
+
+app-test-scripts: app-test-preflight ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, daemon name, exe.dev git setup, test summary, red proof, restore mtime)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-daemon_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
 	sh macapp/Scripts/appcast-feed_test.sh
-	sh macapp/Scripts/test-invariants_test.sh
 	sh macapp/Scripts/daemon-protocol_test.sh
 	sh macapp/Scripts/daemon-name_test.sh
 	sh macapp/Scripts/exedev-github_test.sh

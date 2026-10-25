@@ -678,6 +678,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # Catch infrastructure drift before installing tools or cross-compiling packaging fixtures.
+      # The headless benchmark check needs only the runner's existing Swift toolchain.
+      - name: Test infrastructure preflight
+        run: make app-test-preflight
+
       # The script tests run xcrun, lipo and codesign; the image's default Xcode is 27.0, not the app job's 27.1.
       - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:

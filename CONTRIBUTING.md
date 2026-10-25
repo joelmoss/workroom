@@ -478,6 +478,8 @@ executor and a temp config — no real repo required.
 | `app-uitest` | Run `WorkroomAppUITests` (XCUITest; needs a GUI session) |
 | `app-generate` | Regenerate the `.xcodeproj` from `project.yml` |
 | `app-format` / `app-lint` | Format / lint Swift via swift-format |
+| `app-test-preflight` | Fast Makefile/workflow invariants and headless benchmark failure checks; run after changing test infrastructure |
+| `app-test-scripts` | Run the preflight, then packaging and helper script tests |
 | `app-scripts-lint` | shellcheck over `macapp/Scripts/*.sh` (needs `shellcheck` on `PATH`) |
 | `app-release` | Build → sign → notarize → staple → DMG (full release) |
 | `app-icon` | Regenerate the AppIcon PNGs |
