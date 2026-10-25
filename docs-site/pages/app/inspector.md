@@ -90,6 +90,12 @@ When the branch has a pull request:
 
 With no pull request the section says **No pull request**. Workroom does not open pull requests itself. Create one with `gh pr create` in a terminal, or on GitHub. See [Review and ship](../guides/review-and-ship.md).
 
+### CI freshness {nightly}
+
+Workroom reuses a CI result for up to five minutes when the repository and commit are unchanged. Selecting a workroom still reloads its pull request details and individual checks. A different commit gets its own CI result.
+
+To check CI again right away, click the refresh button in the **Changes** header (**Refresh workroom status**).
+
 ## Files
 
 **Files** shows the workroom's working tree as a list you can expand. A click on a file opens it read-only in the main pane, in a preview tab. Click again quickly to keep it open. <kbd>⌘</kbd>-click opens it in your editor. Markdown files open as a rendered preview, with a switch to the source. A `mermaid` code block is drawn as a diagram in the preview. A diagram Workroom cannot draw shows its source instead. Files are shown with syntax highlighting.

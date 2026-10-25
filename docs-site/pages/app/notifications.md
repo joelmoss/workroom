@@ -15,6 +15,12 @@ Click the bell to open the list. Each entry shows the notification's title and t
 
 When a terminal in the background posts a notification, its tab and its project in the sidebar show an unread dot. If Workroom is not the app in front, you also get a desktop banner. Click the banner to jump to the terminal.
 
+The history keeps the newest 500 entries. Dismissing a notification, clearing the history or moving
+its workroom to another window updates the counts on its terminal and project too.
+
+In Nightly, rapid foreground notifications share a chime. Bursts of terminal bells are limited
+across panes too. Every notification still appears in the history.
+
 ## The menu bar
 
 Workroom can show its logo in the macOS menu bar. The logo turns yellow while any of your windows has an unread notification or a request waiting. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**. In Workroom 2.1.0 this switch is in **Settings ▸ General**.

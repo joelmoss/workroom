@@ -118,7 +118,11 @@ for target in app-build app-test app-uitest; do
     fails=$((fails + 1))
   fi
 done
-if ! recipe app-test | grep -q '[$](call gui_lock,shared,app-test)'; then
+# Benchmarks can request exclusive access; normal tests must still default to shared access.
+# Check the default and its use, so an unused shared default cannot conceal a missing lock.
+app_test_gui_mode="$(sed -n 's/^APP_TEST_GUI_MODE ?= //p' "$MAKEFILE")"
+if [ "$app_test_gui_mode" != shared ] \
+  || ! recipe app-test | grep -q '[$](call gui_lock,[$](APP_TEST_GUI_MODE),app-test)'; then
   echo "FAIL: app-test no longer runs its tests under the shared GUI lock — a unit run's host windows"
   echo "      would land on top of another workroom's XCUITest run."
   fails=$((fails + 1))

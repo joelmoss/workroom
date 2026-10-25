@@ -15,6 +15,8 @@ While a program in a terminal reports that it is working, such as a coding agent
 
 A workroom can hold as many terminals as you like. They sit in a tab strip that you can reorder by dragging. A tab names itself after the running command. When the command ends it goes back to its own name, such as **Terminal 1**, unless your shell sets a title of its own, such as the working directory.
 
+For long titles, the pane's title bar provides more room than the tab. Hover over the pane title to read it in full.
+
 | To do this | Use |
 | --- | --- |
 | Open a new terminal | <kbd>⌘T</kbd>, or the new-terminal button in the tab strip |
@@ -46,6 +48,8 @@ A <kbd>⌘</kbd>-click on anything else goes to the terminal as an ordinary clic
 
 To open the whole workroom, use **Room ▸ Open in** your editor, for example **Open in Zed** (<kbd>⇧⌘O</kbd>), or the editor button in the workroom's title bar. Its small arrow lets you pick a different editor. **Room ▸ Reveal in Finder** shows the workroom's folder in Finder. In Workroom 2.1.0 these are **Go ▸ Open in** and **File ▸ Reveal in Finder**. Click the folder path in a pane's footer to copy it or reveal it.
 
+In Nightly, the editor button may briefly show a generic app symbol while its icon loads. The button still opens your editor immediately.
+
 ## Shell integration
 
 Workroom turns on Ghostty's shell integration for zsh, bash, fish, elvish and Nushell. It lets Workroom know when a command starts and ends and where your shell is. Failed-command diagnosis, the tab title reset after a command and working-directory tracking depend on it, and so does the [command result mark](notifications.md#command-results).
@@ -66,6 +70,10 @@ A terminal's shell is held by a background helper, not by its tab. That is why t
 
 > [!NOTE]
 > In Workroom 2.1.0 this was a setting named **Persist sessions**. Nightly removed the setting, and terminals always survive a quit.
+
+### Restoring hidden terminals {nightly}
+
+When you reopen Workroom, visible panes reconnect immediately. Hidden terminal tabs reconnect gradually after the window appears, so restoring many panes leaves room for clicks and typing. Their shells and commands keep running in the background helper throughout.
 
 ### Detached sessions
 
@@ -120,6 +128,10 @@ When you open Workroom again, every other run's tab comes back where you left it
 - A run that ended because your Mac or its host restarted comes back stopped, and says so. Nothing starts by itself.
 
 If Workroom's background helper isn't running, the run tab says so and runs nothing. Press Run to try again.
+
+### Idle stopped runs {nightly}
+
+Stopped Run tabs keep their output and remain ready for Run or Restart. If a stopped tab kept from an earlier Nightly does not restart, close it and open a new Run tab. Restart reuses the existing session, so closing and reopening the tab is how it picks up the fix.
 
 ### Run on a remote workroom {nightly}
 

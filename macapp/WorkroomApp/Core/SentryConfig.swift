@@ -23,43 +23,47 @@ enum SentryConfig {
     let interval = LaunchSignposts.begin("Sentry initialization")
     defer { LaunchSignposts.end("Sentry initialization", interval) }
 
-    SentrySDK.start { options in
-      options.dsn = ProcessInfo.processInfo.environment["SENTRY_DSN"] ?? dsn
+    SentrySDK.start { configure($0) }
+  }
 
-      // Tag dev builds so local crashes/traces don't pollute the production environment in Sentry.
-      // `SENTRY_ENVIRONMENT` overrides either default.
-      options.environment =
-        ProcessInfo.processInfo.environment["SENTRY_ENVIRONMENT"] ?? defaultEnvironment()
-      // releaseName defaults to "<bundle id>@<version>+<build>", which release.sh already drives.
+  /// Shared by the app and the isolated, optimized SDK overhead benchmark.
+  static func configure(_ options: Options) {
+    options.dsn = ProcessInfo.processInfo.environment["SENTRY_DSN"] ?? dsn
 
-      // Error monitoring: crashes + app hangs. Watchdog-termination tracking and the
-      // non-fully-blocking app-hang report (`enableReportNonFullyBlockingAppHangs`) are both
-      // iOS/tvOS/visionOS-only — unavailable on macOS — so they're left out entirely.
-      options.enableCrashHandler = true
-      options.enableAppHangTracking = true
+    // Tag dev builds so local crashes/traces don't pollute the production environment in Sentry.
+    // `SENTRY_ENVIRONMENT` overrides either default.
+    options.environment =
+      ProcessInfo.processInfo.environment["SENTRY_ENVIRONMENT"] ?? defaultEnvironment()
+    // releaseName defaults to "<bundle id>@<version>+<build>", which release.sh already drives.
 
-      // Don't attach PII (IP address / user context). The SDK default, restated for intent: a local
-      // dev tool gains little from it, and it keeps user-identifying data out of events.
-      options.sendDefaultPii = false
+    // Error monitoring: crashes + app hangs. Watchdog-termination tracking and the
+    // non-fully-blocking app-hang report (`enableReportNonFullyBlockingAppHangs`) are both
+    // iOS/tvOS/visionOS-only — unavailable on macOS — so they're left out entirely.
+    options.enableCrashHandler = true
+    options.enableAppHangTracking = true
 
-      // Tracing — auto-instruments app launch, network, and SwiftUI. A desktop app sees low
-      // transaction volume, so full sampling is affordable; lower this if that ever changes.
-      options.tracesSampleRate = 1.0
+    // Don't attach PII (IP address / user context). The SDK default, restated for intent: a local
+    // dev tool gains little from it, and it keeps user-identifying data out of events.
+    options.sendDefaultPii = false
 
-      // Profiling (macOS-supported). `.trace` lifecycle ties profiles to sampled transactions.
-      options.configureProfiling = {
-        $0.sessionSampleRate = 1.0
-        $0.lifecycle = .trace
-      }
+    // Full sampling of eligible traces. On macOS, SwiftUI tracing needs explicit traced views;
+    // network tracking adds children to an existing root. UIKit's automatic launch/view tracing
+    // does not run here. A sample rate of 1.0 alone does not keep the profiler running.
+    options.tracesSampleRate = 1.0
 
-      // Metrics are on by default in SDK 9.12+; explicit for intent.
-      options.enableMetrics = true
+    // Profiling (macOS-supported). `.trace` lifecycle ties profiles to sampled transactions.
+    options.configureProfiling = {
+      $0.sessionSampleRate = 1.0
+      $0.lifecycle = .trace
+    }
 
-      // Regroup app hangs before they're sent. See `appHangFingerprint`.
-      options.beforeSend = { event in
-        if let fingerprint = appHangFingerprint(for: event) { event.fingerprint = fingerprint }
-        return event
-      }
+    // Metrics are on by default in SDK 9.12+; explicit for intent.
+    options.enableMetrics = true
+
+    // Regroup app hangs before they're sent. See `appHangFingerprint`.
+    options.beforeSend = { event in
+      if let fingerprint = appHangFingerprint(for: event) { event.fingerprint = fingerprint }
+      return event
     }
   }
 
