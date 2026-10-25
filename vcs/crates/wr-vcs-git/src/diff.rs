@@ -246,8 +246,8 @@ fn git_with_status(
 
 /// `-c` settings that disable every filter driver whose `clean` or `process` command comes from
 /// the repository's own config. Reading config runs no filter.
-// ponytail: one extra `git config` spawn per git call (a few ms); compute once per public entry
-// point and pass it down if status polling cost ever shows.
+// Discover before each Git invocation. Conditional includes can activate a different driver when
+// another terminal switches branches while a preceding status command is running.
 fn repository_filter_overrides(root: &Path) -> model::Result<Vec<String>> {
     // Exit 1 is "no such keys", the common case.
     let listing = run_with_status(
@@ -580,9 +580,13 @@ pub fn working_status(root: &Path) -> model::Result<WorkingStatus> {
     // fail the WHOLE status read rather than just missing that file's counts, since `files` cross-
     // checks numstat paths against a name-status list from what is, on a live worktree, a
     // genuinely separate moment in time.
-    let counted = numstat(root, &working_comparison(root)?)?;
-    for file in &mut result {
-        file.line_stats = counted.get(&file.path).copied();
+    // A clean tree or one with only untracked files has no tracked rows to enrich. The diff's
+    // counts could not be attached to anything, even if the tree changed after the status read.
+    if result.len() > untracked.len() {
+        let counted = numstat(root, &working_comparison(root)?)?;
+        for file in &mut result {
+            file.line_stats = counted.get(&file.path).copied();
+        }
     }
     // Untracked files are rows, but (like git diff HEAD) do not contribute to the tracked diffstat.
     let current = super::current_ref(root)?;

@@ -110,11 +110,13 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     let store = fixture.store
     store.statusSweepTask?.cancel()
     store.selectionStatusTask?.cancel()
+    store.watchRefreshTask?.cancel()
     store.workroomFileWatcher.stop()
     store.projects = []
     store.updateRootBranchWatches()
     await store.statusSweepTask?.value
     await store.selectionStatusTask?.value
+    await store.watchRefreshTask?.value
     await store.terminals.reapAll()
     try? FileManager.default.removeItem(at: fixture.directory)
   }
@@ -218,5 +220,39 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     XCTAssertEqual(
       fixture.recorder.counts["gh api graphql"], 4,
       "manual Refresh must query both root and workroom even with cached CI")
+  }
+
+  func testIgnoredFileBatchesDoNotSpawnStatusCommandsLocally() async throws {
+    let fixture = try await fixture(workrooms: 1)
+    addTeardownBlock { await self.cleanUp(fixture) }
+    let store = fixture.store
+    try "ignored/\n".write(
+      toFile: fixture.project.path + "/.git/info/exclude", atomically: true, encoding: .utf8)
+    store.projects = [fixture.project]
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    let sid = SidebarID.workroom(project: fixture.project.path, name: "room-0")
+    store.selectedTargetID = sid
+    await store.selectionStatusTask?.value
+    store.workroomFileWatcher.stop()
+    fixture.recorder.reset()
+    let path = fixture.project.workrooms[0].path + "/ignored/output.txt"
+    try FileManager.default.createDirectory(
+      atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    for index in 0..<3 {
+      try "build output \(index)\n".write(toFile: path, atomically: true, encoding: .utf8)
+      // Delivered batches are the consumer seam: OS notification/coalescing is not timed here.
+      store.handleWorkroomFileChange([path])
+      await store.watchRefreshTask?.value
+    }
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, false, "Git ignores the generated output")
+    let visible = fixture.project.workrooms[0].path + "/source.txt"
+    try "visible edit\n".write(toFile: visible, atomically: true, encoding: .utf8)
+    store.handleWorkroomFileChange([visible])
+    await store.watchRefreshTask?.value
+    XCTAssertEqual(
+      store.workroomStatuses[sid]?.dirty, true, "the native refresh must still detect real edits")
+    XCTAssertTrue(
+      fixture.recorder.counts.isEmpty,
+      "local filesystem refreshes must stay on the native read path and never query GitHub")
   }
 }
