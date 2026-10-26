@@ -17,10 +17,12 @@ if "$binary" list --socket "$socket" > /dev/null 2>&1; then
   exit 0
 fi
 
-umask 077
 state=${socket%/*}
 [ "${state##*/}" != daemon ] || state=${state%/*}
-if ! mkdir -p "${socket%/*}" "$screens" || ! chmod 700 "$state" "${socket%/*}" "$screens"; then
+if ! (
+  umask 077
+  mkdir -p "${socket%/*}" "$screens" && chmod 700 "$state" "${socket%/*}" "$screens"
+); then
   echo "WRB serving no"
   exit 1
 fi

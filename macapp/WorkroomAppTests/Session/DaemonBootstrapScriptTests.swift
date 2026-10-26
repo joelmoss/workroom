@@ -175,6 +175,7 @@ final class DaemonBootstrapScriptTests: XCTestCase {
         list) test -f \(PosixShell.quoted(alive.path)); exit ;;
         serve)
           printf '%s\\n' "$*" "$HOME" "$USER" "$SHELL" "$PATH" "${MUST_NOT_LEAK:-unset}" > \(PosixShell.quoted(record.path))
+          umask >> \(PosixShell.quoted(record.path))
           echo $$ > \(PosixShell.quoted(pidFile.path))
           : > \(PosixShell.quoted(alive.path))
           exec /bin/sleep 30 ;;
@@ -197,7 +198,7 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     ]
     let command = arguments.map(PosixShell.quoted).joined(separator: " ")
     let stream = try HostStream.spawn(
-      URL(fileURLWithPath: "/bin/sh"), ["-c", command],
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "umask 027; " + command],
       environment: [
         "PATH": host.driver.path, "HOME": host.directory.path, "USER": "server-user",
         "SHELL": "/bin/sh", "MUST_NOT_LEAK": "from-ssh",
@@ -213,11 +214,16 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     let lines = try String(contentsOf: record, encoding: .utf8).split(separator: "\n").map(
       String.init)
     XCTAssertEqual(
-      lines,
+      Array(lines.dropLast()),
       [
         "serve --socket \(host.socket) --idle-timeout never --screens \(host.directory.path)/screens",
         host.directory.path, "server-user", "/bin/sh", "/usr/local/bin:/usr/bin:/bin", "unset",
       ])
+    XCTAssertEqual(Int(try XCTUnwrap(lines.last), radix: 8), 0o27)
+    for directory in [host.directory.path, host.directory.appendingPathComponent("screens").path] {
+      let attributes = try FileManager.default.attributesOfItem(atPath: directory)
+      XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    }
     let again = try await host.driver.exec(command, on: self.host).communicate(nil, timeout: 5)
     XCTAssertEqual(again.status, 0, again.output)
     XCTAssertEqual(again.output, "WRB serving yes\n", "the live daemon was started twice")
