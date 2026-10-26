@@ -13,6 +13,7 @@ panels work there as they do on other [remote workrooms](overview.md).
 - The server must run Linux on x86_64 or aarch64, with `git` and `setsid` installed.
 - You must be able to sign in with your own `ssh`, without a password or passphrase prompt. Add
   your key to ssh-agent or the Keychain if it needs a passphrase.
+- Bash and fish login shells are supported.
 - Your project's `origin` must be on github.com, and its base branch must be on `origin`.
 - Set up GitHub access on the server itself. Workroom uses that access for cloning, fetching and
   pushing; your Mac's `gh` sign-in stays on your Mac.
@@ -43,6 +44,9 @@ to your ssh `known_hosts`, a prompt shows its key's fingerprint. Check the finge
 **Trust** to save that key. A changed key fails the connection; Workroom never replaces it
 automatically. If the unknown key belongs to a jump host, connect with `ssh` in Terminal once to
 check and trust that host first.
+
+Trust needs a persistent known-hosts file. If your SSH config sets `UserKnownHostsFile` to
+`/dev/null` or another non-file target, change it to a regular file before trusting the host.
 
 Two destinations count as different hosts when they are typed differently, even if both reach the
 same server. Reuse the same destination to keep the workrooms grouped under one host record.
@@ -79,6 +83,10 @@ Workroom checks the folder against the marker it wrote when it created the workr
 or different marker stops the delete and keeps the folder. If the server can't be reached, the
 delete also stops. **Delete Anyway** removes the entry from Workroom and tells you which folder
 was left on which host. A folder already removed on the server counts as deleted.
+
+If the host refuses to create or remove the folder, Workroom shows the host's error. For example,
+files created by a container running as root can cause a permission error. Fix their ownership or
+permissions on the server, then retry. Workroom does not use `sudo` to remove them.
 
 Workroom leaves its daemon and installed files on the server, even after the last workroom goes.
 The daemon runs until the server restarts or you end it. Workroom installs no system service and

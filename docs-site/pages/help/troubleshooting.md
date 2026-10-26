@@ -110,9 +110,9 @@ Voice input from a program in a Workroom terminal, such as Claude Code's voice m
 
 Opening a workroom starts its container again if your Mac stopped it. If Workroom still can't connect, the host may have been removed by its provider. `workroom list` marks such a workroom with the `HostDestroyed` warning.
 
-After your Mac wakes or its network changes, the app checks each boxd and exe.dev host and reattaches the panes of any that stopped answering. You don't need to do anything.
+After your Mac wakes or its network changes, the app checks each boxd, exe.dev and SSH host and reattaches the panes of any that stopped answering. You don't need to do anything.
 
-A delete that can't reach the host stops and removes nothing. Choose **Delete Anyway** to remove the workroom without its teardown script. See [Reconnecting](../remote/reconnecting.md).
+A delete that can't reach the host stops and removes nothing. Choose **Delete Anyway** to remove the workroom without its teardown script. For an unreachable SSH host, this forgets the entry and names the folder left on the server. See [Reconnecting](../remote/reconnecting.md) and [Delete an SSH workroom](../remote/ssh.md#delete-a-workroom).
 
 ## The CLI and the app seem out of sync
 

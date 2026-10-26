@@ -67,9 +67,9 @@ Deleting a project removes it from Workroom. What happens to the files depends o
 3. Type the project's name to confirm. The delete button stays off until the name matches exactly, including case.
 4. Click the delete button. Its label follows your choice: **Delete Project**, **Delete Project & N Workrooms** or **Delete Everything to Bin**.
 
-With either option that removes workrooms, each workroom's teardown script runs before its directory goes, and a failing teardown stops the delete. **Remove from Workroom only** runs no scripts. See [Delete a workroom](workrooms.md#delete-a-workroom).
+With either option that removes local workrooms, each workroom's teardown script runs before its directory goes, and a failing teardown stops the delete. **Remove from Workroom only** runs no local teardown scripts. Remote workrooms are deleted, with their teardowns, whichever option you choose. After a failure, **Delete Without Teardowns** skips the scripts for every remaining workroom. See [Delete a workroom](workrooms.md#delete-a-workroom).
 
 Deleting a project also closes its terminals. If a coding agent started with **Investigate** is still running there, the sheet warns you that deleting stops it. Workroom will not delete a project while a workroom in it is still being created.
 
 > [!WARNING]
-> Whichever option you choose, deleting a project destroys its remote workrooms and the hosts they run on, with everything on them that is not pushed.
+> Whichever option you choose, deleting a project also deletes its remote workrooms. For boxd, exe.dev and containers, this destroys their hosts and everything on them that is not pushed. For SSH, it removes each workroom's marked folder and sessions; the server stays. See [Delete a remote workroom](../remote/overview.md#delete-a-remote-workroom).
