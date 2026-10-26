@@ -43,6 +43,14 @@ public enum SSHTransport {
   }
 
   public static func appendKnownHost(_ line: String, to file: URL) throws {
+    if let attributes = try? FileManager.default.attributesOfItem(
+      atPath: file.resolvingSymlinksInPath().path),
+      attributes[.type] as? FileAttributeType != .typeRegular
+    {
+      throw HostDriverError.invalidConfiguration(
+        "UserKnownHostsFile must name a regular file that can save the host key. "
+          + "Update this host's SSH configuration before trusting it.")
+    }
     try FileManager.default.createDirectory(
       at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
@@ -159,14 +167,30 @@ public enum SSHTransport {
       + route.options + [
         "-E", log, "-o", "PermitLocalCommand=yes", "-o", "LocalCommand=printf '\\0338\\033[J'",
         "-t", route.destination,
-        remoteAttachCommand(
-          binary: DaemonInstall.binary(besideSocket: daemonSocket), session: session,
-          socket: daemonSocket, resources: DaemonInstall.resources(besideSocket: daemonSocket),
-          workingDirectory: workingDirectory, restored: restored, metadata: metadata,
-          runCommand: runCommand),
+        loginShellCommand(
+          remoteAttachCommand(
+            binary: DaemonInstall.binary(besideSocket: daemonSocket), session: session,
+            socket: daemonSocket, resources: DaemonInstall.resources(besideSocket: daemonSocket),
+            workingDirectory: workingDirectory, restored: restored, metadata: metadata,
+            runCommand: runCommand)),
       ]
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
       .map(shellQuoted).joined(separator: " ")
+  }
+
+  /// sshd evaluates its command with the account's login shell, which may be fish. Keep the
+  /// attach script in sh, and quote its bytes for both POSIX shells and fish: fish consumes a
+  /// pair of backslashes even inside single quotes, so isolate each backslash in double quotes.
+  static func loginShellCommand(_ script: String) -> String {
+    var quoted = "'"
+    for character in script {
+      switch character {
+      case "'": quoted += "'\"'\"'"
+      case "\\": quoted += "'\"\\\\\"'"
+      default: quoted.append(character)
+      }
+    }
+    return "sh -c " + quoted + "'"
   }
 
   /// What a pane runs around its ssh (#241), as `sh -c <this> workroom-attach <log> <ssh argv>`.

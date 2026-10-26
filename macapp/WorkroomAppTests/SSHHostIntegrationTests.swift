@@ -496,6 +496,108 @@ final class SSHHostIntegrationTests: XCTestCase {
     _ = try await connection.endSession(session)
   }
 
+  @MainActor
+  func testBashAndFishLoginShellsAttachWithoutChangingScriptBytesOrPTY() async throws {
+    let fixture = try fixture()
+    let variables = ProcessInfo.processInfo.environment
+    let runtime = try XCTUnwrap(variables["WR_SSH_FIXTURE_RUNTIME_PATH"])
+    let container = try XCTUnwrap(variables["WR_SSH_FIXTURE_CONTAINER"])
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    for user in ["workroom", "workroom-fish"] {
+      let config = directory.appendingPathComponent(user + ".config")
+      let original = try String(contentsOfFile: fixture.config, encoding: .utf8)
+      try original.replacingOccurrences(of: "User workroom", with: "User " + user)
+        .write(to: config, atomically: true, encoding: .utf8)
+      let driver = driver(fixture, config: config.path)
+      _ = try await driver.checkHost()
+      _ = try await ensure(driver, daemon: fixture.daemon)
+      let connection = try await connect(driver)
+      // These bytes cross the user's login shell before sh interprets the attach script.
+      let unusual = "quote' slashes\\\\\nsecond line"
+      let path = driver.home + "/" + unusual
+      let made = await StatusCommandRunner().run(
+        runtime, ["exec", "--user", user, container, "mkdir", "-p", path],
+        in: NSHomeDirectory(), timeout: 20)
+      XCTAssertTrue(made.ok, made.stderr)
+      let workroom = UUID().uuidString
+      let session = UUID()
+      let pane = try RemoteHostIntegrationTests.Pane(
+        command: driver.attachCommand(
+          to: driver.hostID, session: session, workingDirectory: path, restored: false,
+          metadata: [
+            (SessionMetadataKey.workroom, workroom), (SessionMetadataKey.title, unusual),
+          ], runCommand: nil))
+      defer { pane.dropLink() }
+      pane.type("sh -c 'test -t 0 && echo PTY_\"\"READY'\n")
+      let said = pane.read(until: "PTY_READY")
+      XCTAssertTrue(said.contains("PTY_READY"), said)
+      let sessions = try await connection.sessions()
+      let attached = try XCTUnwrap(sessions.first { $0.identifier.uuid == session })
+      XCTAssertEqual(attached.value(forMetadataKey: SessionMetadataKey.title), unusual)
+      XCTAssertEqual(attached.value(forMetadataKey: SessionMetadataKey.workroom), workroom)
+      pane.dropLink()
+      let restored = try RemoteHostIntegrationTests.Pane(
+        command: driver.attachCommand(
+          to: driver.hostID, session: session, workingDirectory: path, restored: true))
+      defer { restored.dropLink() }
+      restored.type("echo RESTORED_\"\"READY\n")
+      let reattached = restored.read(until: "RESTORED_READY")
+      XCTAssertTrue(reattached.contains("RESTORED_READY"), reattached)
+      _ = try await connection.endSession(session)
+      let runSession = UUID()
+      let run = try RemoteHostIntegrationTests.Pane(
+        command: driver.attachCommand(
+          to: driver.hostID, session: runSession, workingDirectory: path, restored: false,
+          metadata: [],
+          runCommand: "printf '%s' \"$PWD\" > run-pwd; "
+            + "printf '%s' \"quote' slashes\\\\\\\\\nsecond line\" > result; "
+            + "echo RUN_READY; sleep 60"))
+      defer { run.dropLink() }
+      let ran = run.read(until: "RUN_READY")
+      XCTAssertTrue(ran.contains("RUN_READY"), ran)
+      let content = await StatusCommandRunner().run(
+        runtime, ["exec", "--user", user, container, "cat", path + "/result"],
+        in: NSHomeDirectory(), timeout: 20)
+      XCTAssertTrue(content.ok, content.stderr)
+      XCTAssertEqual(content.stdout, unusual)
+      let runPath = await StatusCommandRunner().run(
+        runtime, ["exec", "--user", user, container, "cat", path + "/run-pwd"],
+        in: NSHomeDirectory(), timeout: 20)
+      XCTAssertTrue(runPath.ok, runPath.stderr)
+      XCTAssertEqual(runPath.stdout, path)
+      _ = try await connection.endSession(runSession)
+      // A restored unknown id must not silently create a fresh shell.
+      let missing = UUID()
+      let unknown = try RemoteHostIntegrationTests.Pane(
+        command: driver.attachCommand(
+          to: driver.hostID, session: missing, workingDirectory: path, restored: true))
+      defer { unknown.dropLink() }
+      let ended = unknown.read(until: "This terminal has ended. Close it to start again.")
+      XCTAssertTrue(ended.contains("This terminal has ended. Close it to start again."), ended)
+      unknown.type("echo NO\"\"SHELL\n")
+      XCTAssertFalse(unknown.read(until: "NOSHELL", within: 2).contains("NOSHELL"))
+      let after = try await connection.sessions()
+      XCTAssertFalse(after.contains { $0.identifier.uuid == missing })
+      unknown.dropLink()
+      let binary = DaemonInstall.binary(besideSocket: driver.daemonSocket)
+      let hidden = await StatusCommandRunner().run(
+        runtime, ["exec", "--user", user, container, "mv", binary, binary + ".saved"],
+        in: NSHomeDirectory(), timeout: 20)
+      XCTAssertTrue(hidden.ok, hidden.stderr)
+      let unavailable = try RemoteHostIntegrationTests.Pane(
+        command: driver.attachCommand(
+          to: driver.hostID, session: UUID(), workingDirectory: path, restored: false))
+      let notInstalled = unavailable.read(until: "no daemon is installed")
+      unavailable.dropLink()
+      // Restore before asserting: this fixture's running daemon needs its client binary again.
+      let replaced = await StatusCommandRunner().run(
+        runtime, ["exec", "--user", user, container, "mv", binary + ".saved", binary],
+        in: NSHomeDirectory(), timeout: 20)
+      XCTAssertTrue(replaced.ok, replaced.stderr)
+      XCTAssertTrue(notInstalled.contains("no daemon is installed"), notInstalled)
+    }
+  }
+
   func testCreatesCloneOnTheHostAndRunScriptsWithSSHEnvironment() async throws {
     let fixture = try fixture()
     let driver = driver(fixture)
