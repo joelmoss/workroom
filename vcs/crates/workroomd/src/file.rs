@@ -335,8 +335,8 @@ fn listing_command() -> (&'static str, Vec<String>) {
     )
 }
 
-/// The child's environment: the host's cached login profile, with the same pins and scrubs as
-/// remote VCS execs. It sees the host's git and global ignore file, never the Mac's environment.
+/// The child's environment: the host's cached login profile on a remote daemon, or the app-supplied
+/// inherited environment locally, with the same pins and scrubs as other git reads.
 /// The pins and scrubs keep the read's repository and output stable:
 /// `LC_ALL=C` so a translated git cannot change a message a caller matches on, and no `GIT_DIR` family
 /// so an inherited override cannot list a different repository than the one asked about.

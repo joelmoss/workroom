@@ -42,6 +42,14 @@ const MAX_EXEC_STREAM: usize = 4 * 1024 * 1024;
 /// exec and keep it for this daemon's lifetime; concurrent requests share one bounded probe. Local
 /// requests still use their supplied environment without reading a login profile.
 static HOST_LOGIN_ENVIRONMENT: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+/// The serve command chooses this once, before any request threads start. Workroom's remote
+/// daemons use `--idle-timeout never`; the Mac's local daemon uses the default idle lifetime and
+/// keeps the environment the app supplied when it spawned it.
+static READS_LOGIN_ENVIRONMENT: OnceLock<bool> = OnceLock::new();
+
+pub(crate) fn configure_read_environment(remote: bool) {
+    let _ = READS_LOGIN_ENVIRONMENT.set(remote);
+}
 
 fn cached_login_environment<'a>(
     cache: &'a OnceLock<BTreeMap<String, String>>,
@@ -66,10 +74,16 @@ fn login_environment() -> &'static BTreeMap<String, String> {
     )
 }
 
-/// Read-side git children (diffs and the File service's listing) run on this host too. They use
-/// the same cached profile, scrub and pins as a remote exec, without changing the daemon's own
-/// process environment or the local exec requests whose environment belongs to the client.
+/// Read-side git children (diffs and the File service's listing) use the cached profile on a remote
+/// daemon, and the app-supplied inherited environment on a local one. Both keep the existing scrub
+/// and pins, without changing the daemon's own process environment. Local exec requests still use
+/// their explicit client environment; remote exec requests explicitly select the login profile.
 pub(crate) fn host_read_environment() -> BTreeMap<String, String> {
+    if !READS_LOGIN_ENVIRONMENT.get().copied().unwrap_or(false) {
+        return scrubbed_environment(std::env::vars_os())
+            .into_iter()
+            .collect();
+    }
     host_environment(
         login_environment()
             .iter()
