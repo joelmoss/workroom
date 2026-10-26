@@ -2914,7 +2914,7 @@ final class AppStore: ObservableObject {
     let path = project.path
     // Says what it does: every remaining workroom's teardown is skipped, not only the one that
     // failed, as the CLI's `delete-project --skip-teardown` does.
-    errorAction = ErrorAction(label: ssh.isEmpty ? "Delete Without Teardowns" : "Delete Anyway") {
+    errorAction = ErrorAction(label: "Delete Without Teardowns") {
       [weak self] in
       // As it is now: a remote workroom taken down before the failure is gone from it (C4).
       guard let self, let project = self.projects.first(where: { $0.path == path }) else { return }

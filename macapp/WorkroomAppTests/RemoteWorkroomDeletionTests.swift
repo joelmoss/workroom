@@ -259,6 +259,37 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       cli.calls.all, ["host r destroyed", "delete r", "delete-project", "delete-project"])
   }
 
+  @MainActor
+  func testMixedProjectDeleteRecoveryNamesEverySkippedTeardown() async throws {
+    let cli = RecordingCLI()
+    let store = AppStore(cli: cli)
+    // An incomplete saved home fails the folder check before any SSH process can start.
+    let destination = "delete-test-\(UUID().uuidString)"
+    let ssh = Workroom(
+      name: "ssh", path: "/home/workroom/r", vcsName: "workroom/ssh", warnings: [],
+      host: HostDescriptor(
+        driver: RemoteWorkrooms.sshDriver, provisioner: mine,
+        id: SSHHostDriver.id(for: destination), workroomID: UUID(), path: "/home/workroom/r",
+        sshDestination: destination))
+    let local = Workroom(
+      name: "local", path: "/proj/local", vcsName: "workroom/local", warnings: [])
+    let project = Project(path: "/proj", vcs: "git", workrooms: [ssh, local])
+    store.projects = [project]
+    cli.listed = [project]
+
+    store.deleteProject(project, scope: .workrooms)
+    let deadline = ContinuousClock.now + .seconds(10)
+    while store.errorAction == nil, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let action = try XCTUnwrap(store.errorAction)
+    XCTAssertEqual(action.label, "Delete Without Teardowns")
+    XCTAssertTrue(store.errorDetails?.contains(ssh.path) == true)
+    XCTAssertFalse(
+      cli.calls.all.contains("delete-project"), "the first failure must retain the project")
+  }
+
   /// One remote workroom's delete records it destroyed, then has the CLI drop it.
   @MainActor
   func testAWorkroomDeleteDropsADestroyedRemoteWorkroom() async {
