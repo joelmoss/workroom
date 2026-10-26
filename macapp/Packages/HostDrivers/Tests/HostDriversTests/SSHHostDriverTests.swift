@@ -295,6 +295,70 @@ final class SSHHostDriverTests: XCTestCase {
     XCTAssertFalse(capture.arguments.contains("ControlMaster=auto"))
   }
 
+  func testFolderFailuresKeepTheHostFilesystemReasonAndSSHFailuresStayDistinct() async throws {
+    let path = "/home/joel/workrooms/one"
+    for code: Int32 in [44, 255] {
+      let said =
+        code == 255
+        ? "ssh: connect to host myserver: Connection refused"
+        : "rm: node_modules: Permission denied"
+      let runner = Recording { _ in
+        CommandResult(
+          stdout: "", stderr: said, exitCode: code,
+          timedOut: false)
+      }
+      let driver = try driver(runner: runner)
+      for operation in ["create", "check", "remove"] {
+        do {
+          switch operation {
+          case "create": try await driver.prepareFolder(path: path, workroom: UUID())
+          case "check": _ = try await driver.folderState(path: path, workroom: UUID())
+          default: try await driver.removeFolder(path: path, workroom: UUID())
+          }
+          XCTFail("accepted exit \(code) from \(operation)")
+        } catch {
+          if code == 255 {
+            XCTAssertEqual(error as? SSHHostDriver.Failure, .unreachable("myserver: \(said)"))
+          } else {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("Couldn't \(operation) \(path) on myserver."), message)
+            XCTAssertTrue(message.contains("node_modules: Permission denied"), message)
+            XCTAssertFalse(message.contains("Couldn't reach"), message)
+          }
+        }
+      }
+    }
+  }
+
+  /// A real leaf mkdir failure must preserve the host's reason, rather than suggest a new name.
+  func testUnwritableParentReportsTheLeafMkdirErrorWithoutRecordingAWorkroom() async throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(at: home) }
+    let parent = home.appendingPathComponent("workrooms")
+    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: parent.path)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
+    }
+    let driver = try driver(home: home.path, runner: Recording(local: true))
+    let path = parent.appendingPathComponent("one").path
+    let id = UUID()
+    do {
+      try await driver.prepareFolder(path: path, workroom: id)
+      XCTFail("created a leaf in an unwritable parent")
+    } catch let failure as SSHHostDriver.Failure {
+      guard case .folderOperationFailed(let message) = failure else {
+        return XCTFail("misclassified the failed mkdir: \(failure)")
+      }
+      XCTAssertTrue(message.contains("Permission denied"), message)
+      XCTAssertTrue(message.contains(path), message)
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: "\(driver.stateDirectory)/workrooms/\(id.uuidString.lowercased())"))
+  }
+
   func testMarkedLeafCreationExistingRefusalAndRemovalAreFolderOnly() async throws {
     let home = try temporaryHome()
     defer { try? FileManager.default.removeItem(at: home) }

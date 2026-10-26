@@ -50,6 +50,7 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
     case unsupportedHost(String)
     case folderExists(String)
     case markerMismatch(String)
+    case folderOperationFailed(String)
 
     public var errorDescription: String? {
       switch self {
@@ -66,6 +67,7 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
         return "\(path) already exists on the host. Choose another folder."
       case .markerMismatch(let path):
         return "Workroom couldn't verify the marker for \(path), so it kept the folder."
+      case .folderOperationFailed(let detail): return detail
       }
     }
   }
@@ -354,14 +356,17 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
       mkdir -p -- "$parent" || exit 44
       physical=$(cd -P -- "$parent" && pwd) || exit 44
       case "$physical/" in "$homePhysical/"*) ;; *) exit 44 ;; esac
-      mkdir -- "$path" || exit 43
+      if ! mkdir -- "$path"; then
+        if test -e "$path" || test -L "$path"; then exit 43; fi
+        exit 44
+      fi
       if ! mkdir -p -- "$(dirname "$marker")" || ! printf '%s\\n' "$path" > "$marker"; then
         rmdir -- "$path"; rm -f -- "$marker"; exit 44
       fi
       """
     let result = try await command("sh -c " + PosixShell.quoted(script), timeout: 30)
     if result.exitCode == 43 { throw Failure.folderExists(path) }
-    guard result.ok else { throw Failure.unreachable("couldn't make \(path) on \(destination)") }
+    guard result.ok else { throw folderFailure("create", path: path, result: result) }
   }
 
   /// Checked before teardown as well as before removal, so a vanished or unverified folder never
@@ -372,7 +377,7 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
     let result = try await command("sh -c " + PosixShell.quoted(script), timeout: 20)
     if result.exitCode == 45 { return .gone }
     if result.exitCode == 46 { throw Failure.markerMismatch(path) }
-    guard result.ok else { throw Failure.unreachable("couldn't check \(path) on \(destination)") }
+    guard result.ok else { throw folderFailure("check", path: path, result: result) }
     return .present
   }
 
@@ -387,7 +392,15 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
     let result = try await command("sh -c " + PosixShell.quoted(script), timeout: 600)
     if result.exitCode == 45 { return }
     if result.exitCode == 46 { throw Failure.markerMismatch(path) }
-    guard result.ok else { throw Failure.unreachable("couldn't remove \(path) on \(destination)") }
+    guard result.ok else { throw folderFailure("remove", path: path, result: result) }
+  }
+
+  private func folderFailure(_ operation: String, path: String, result: CommandResult) -> Failure {
+    let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+    let output = stderr.isEmpty ? result.stdout : stderr
+    let detail = String(output.suffix(4096)).trimmingCharacters(in: .whitespacesAndNewlines)
+    return .folderOperationFailed(
+      "Couldn't \(operation) \(path) on \(destination)." + (detail.isEmpty ? "" : "\n\n" + detail))
   }
 
   private func folderArguments(path: String, workroom: UUID) throws -> (String, String) {
