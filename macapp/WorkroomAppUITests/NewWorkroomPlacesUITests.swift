@@ -132,7 +132,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     let image = app.descendants(matching: .any)
       .matching(identifier: "CreationPane.step.image").firstMatch
     XCTAssertTrue(image.waitForExistence(timeout: 5), "the row doesn't show the create's pane")
-    XCTAssertEqual(image.label, "Pull host image, running")
+    XCTAssertEqual(image.label, "Pull image, running")
     attach(app, "image-pull-pane")
 
     // Meanwhile the project's New Workroom offers every place it would anyway.

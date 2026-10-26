@@ -21,7 +21,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
   /// Launch with the deterministic UI-test fixture (fake projects, auto-selected workroom). Fixture
   /// mode also suppresses the close/quit confirmations in-app, so ⌘W closes synchronously and teardown
   /// never blocks. Pass `fixture: false` to exercise the real bootstrap path (no fake projects).
-  private func launchedApp(fixture: Bool = true, extraArgs: [String] = []) -> XCUIApplication {
+  private func launchedApp(
+    fixture: Bool = true, extraArgs: [String] = [], liveDaemon: Bool = false
+  ) -> XCUIApplication {
     let app = XCUIApplication()
     if fixture { app.launchArguments += ["-WorkroomUITestFixture", "1"] }
     // Preferences stay out of the real domain even on the `fixture: false` path, which has no
@@ -31,6 +33,7 @@ final class WorkroomWorkflowUITests: XCTestCase {
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launchArguments += extraArgs
+    if liveDaemon { app.useScratchDaemon() }
     app.launch()
     return app
   }
@@ -101,7 +104,8 @@ final class WorkroomWorkflowUITests: XCTestCase {
   ///    is re-selected first, because the unscoped `runCommand.run` lookup depends on the selected
   ///    pane.
   func testSidebarTabsNotificationsAndRunCommandWorkflow() throws {
-    let app = launchedApp()
+    // Run commands require daemon sessions (#522); fixture mode otherwise has no daemon.
+    let app = launchedApp(liveDaemon: true)
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     let project = app.descendants(matching: .any)
       .matching(identifier: "sidebar.project.UITestProject").firstMatch
@@ -208,7 +212,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
 
     // The main window must be key again: Keyboard Shortcuts… only opens its sheet when it is
     // (`RootView`'s `.showKeyboardShortcuts` handler guards on `hostWindow?.isKeyWindow`).
-    app.menuBars.menuItems["Keyboard Shortcuts…"].click()
+    let help = app.menuBars.menuBarItems["Help"]
+    help.click()
+    help.menuItems["Keyboard Shortcuts…"].click()
     let shortcuts = app.sheets.firstMatch
     XCTAssertTrue(
       shortcuts.waitForExistence(timeout: 5),

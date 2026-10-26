@@ -160,10 +160,15 @@ final class HistoryStressUITests: XCTestCase {
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     openHistory(app)
 
+    let row = els(app, "HistoryRow").element(boundBy: 0)
+    let detail = el(app, "ChangesetDetail")
+    XCTAssertFalse(detail.exists, "the click must open a new changeset")
     let started = Date()
-    els(app, "HistoryRow").element(boundBy: 0).click()
+    row.click()
+    // XCTest waits about a second before its first existence poll, even when the detail is
+    // already present. Check immediately first; the same two-second clock still covers the click.
     XCTAssertTrue(
-      el(app, "ChangesetDetail").waitForExistence(timeout: 2),
+      detail.exists || detail.waitForExistence(timeout: 2),
       "clicking a row on an 800-commit page must open its changeset within 2s — a budget under the "
         + "2000 ms app-hang threshold, so a stalled main thread fails instead of passing slowly")
     XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
