@@ -21,7 +21,7 @@ The workroom opens with a terminal in its directory when the create finishes. If
 
 ### Choose where it runs {nightly}
 
-After you pick a project, Workroom asks where the workroom goes: **This Mac**, a local container, or a remote provider. The sidebar **+** and **New Workroom** menus offer the same choices. Press <kbd>←</kbd> or click the back arrow to return to the project list.
+After you pick a project, Workroom asks where the workroom goes: **This Mac**, a local container, a remote provider, or an SSH host. The sidebar **+** and **New Workroom** menus offer the same choices. Press <kbd>←</kbd> or click the back arrow to return to the project list.
 
 Anything other than **This Mac** is a remote workroom. See [Remote workrooms](../remote/overview.md).
 
@@ -123,7 +123,7 @@ A window's only workroom cannot move, because that would leave an empty window. 
 
 ## Delete a workroom
 
-Deleting removes the workroom's directory. Workroom keeps the `workroom/<name>` branch in your repository.
+Deleting removes the workroom's directory. For a workroom on your Mac, Workroom keeps the `workroom/<name>` branch in your repository.
 
 1. Hover the workroom in the sidebar and click the trash button, right-click it and choose **Delete Workroom…**, or choose **Room ▸ Delete Workroom…** (not in Workroom 2.1.0).
 2. Confirm in the **Delete 'name'?** dialog.
@@ -139,4 +139,4 @@ If the teardown script fails or can't start, the delete stops. The workroom come
 The sheet has a **Delete Anyway** button that deletes the workroom without running the teardown script. If the script has not been approved on this Mac, the sheet shows it with an **Approve** button, which runs it and deletes the workroom. See [Prepare a project](../guides/prepare-a-project.md).
 
 > [!NOTE]
-> Deleting a remote workroom destroys its host and everything on it, including changes and commits that are not pushed. The confirmation dialog says so.
+> Deleting a boxd, exe.dev or container workroom destroys its host and everything on it, including changes and commits that are not pushed. Deleting an SSH workroom removes only its marked folder and sessions; the server stays. See [Delete an SSH workroom](../remote/ssh.md#delete-a-workroom).
