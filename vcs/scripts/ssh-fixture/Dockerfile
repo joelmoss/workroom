@@ -15,14 +15,15 @@ ARG FIXTURE=1
 # GitHub (#252).
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      openssh-server git procps ca-certificates python3 openssl \
+      openssh-server git procps ca-certificates python3 openssl fish \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --shell /bin/bash --password '*' workroom \
+ && useradd --create-home --shell /usr/bin/fish --password '*' workroom-fish \
  && printf '%s\n' \
       'PasswordAuthentication no' \
       'KbdInteractiveAuthentication no' \
       'PermitRootLogin no' \
-      'AllowUsers workroom' \
+      'AllowUsers workroom workroom-fish' \
       > /etc/ssh/sshd_config.d/fixture.conf
 
 # A repository a base machine clones (#252): the fixture has no GitHub, so the app's provisioning

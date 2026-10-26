@@ -37,6 +37,10 @@ install -d -o workroom -g workroom -m 700 /run/workroom /home/workroom/.ssh
 printf '%s\n' "$AUTHORIZED_KEY" > /home/workroom/.ssh/authorized_keys
 chown workroom:workroom /home/workroom/.ssh/authorized_keys
 chmod 600 /home/workroom/.ssh/authorized_keys
+install -d -o workroom-fish -g workroom-fish -m 700 /home/workroom-fish/.ssh
+printf '%s\n' "$AUTHORIZED_KEY" > /home/workroom-fish/.ssh/authorized_keys
+chown workroom-fish:workroom-fish /home/workroom-fish/.ssh/authorized_keys
+chmod 600 /home/workroom-fish/.ssh/authorized_keys
 
 # The agent the supervisor runs lives beside the socket, in the ssh user's own 0700 directory: that
 # is where the app installs the one it bundles (issue #231, `DaemonBootstrap`), by renaming a
