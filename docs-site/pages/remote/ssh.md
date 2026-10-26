@@ -58,9 +58,13 @@ server. For an HTTPS origin, run `gh auth login` and `gh auth setup-git` there, 
 own Git credential helper there.
 
 The app's Git commands use the server user's login-shell environment, as do setup and teardown
-scripts. Tools and credentials you export in that shell are available on the host. Setup and
-teardown scripts receive `WORKROOM_HOST=ssh`, with no `WORKROOM_ROOT_PATH` because the root project
-stays on your Mac. See [Environment variables](../reference/environment-variables.md).
+scripts. For fish and other non-POSIX shells, environment discovery falls back to `/bin/sh`;
+tools or credentials exported only in `config.fish` are not imported into Git or scripts. Fish
+terminal sessions still use fish. See [Troubleshooting](../help/troubleshooting.md) for the existing
+shell-environment limitations.
+
+Setup and teardown scripts receive `WORKROOM_HOST=ssh`, with no `WORKROOM_ROOT_PATH` because the
+root project stays on your Mac. See [Environment variables](../reference/environment-variables.md).
 
 ## Terminals and ports
 
