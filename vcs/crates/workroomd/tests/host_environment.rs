@@ -1,5 +1,6 @@
 //! A real daemon whose inherited PATH has no git. Remote writes, diffs and the file listing must
 //! all find the host profile's git, while a local exec still gets only the client's environment.
+//! A daemon started as the Mac starts its own must never probe the profile for ordinary reads.
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -12,8 +13,8 @@ use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 struct Workspace(PathBuf);
 
 impl Workspace {
-    fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("wrhe-{}", std::process::id()));
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("wrhe-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
@@ -108,7 +109,7 @@ fn request(socket: &Path, service: Service, request: Value) -> Value {
 
 #[test]
 fn host_profile_git_reaches_exec_diffs_and_file_listing_and_is_read_only_once() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new("remote");
     let root = workspace.0.join("repo");
     std::fs::create_dir_all(&root).unwrap();
     git(&root, &["init", "-q", "-b", "main"]);
@@ -215,4 +216,93 @@ fn host_profile_git_reaches_exec_diffs_and_file_listing_and_is_read_only_once() 
     );
     assert!(listing.to_string().contains("tracked"), "{listing}");
     assert_eq!(std::fs::read_to_string(count).unwrap(), "probe\n");
+}
+
+#[test]
+fn local_daemon_reads_and_file_listing_keep_the_apps_environment_without_probing_a_profile() {
+    let workspace = Workspace::new("local");
+    let root = workspace.0.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("tracked"), "before\n").unwrap();
+    git(&root, &["add", "tracked"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "first",
+        ],
+    );
+    std::fs::write(root.join("tracked"), "after\n").unwrap();
+    let bin = workspace.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let shell = workspace.0.join("bash");
+    let sentinel = workspace.0.join("profile-was-launched");
+    executable(
+        &shell,
+        &format!("#!/bin/sh\necho probed > {}\nexit 17\n", quote(&sentinel)),
+    );
+    // A profile failure would fall back to this same environment. The sentinel below must still
+    // catch that redundant probe, rather than only asserting that the eventual listing worked.
+    executable(
+        &bin.join("git"),
+        "#!/bin/sh\ntest \"$FROM_APP\" = inherited || exit 91\ntest \"$GIT_TERMINAL_PROMPT\" = 0 || exit 92\ntest \"$LC_ALL\" = C || exit 93\nexec /usr/bin/git \"$@\"\n",
+    );
+    let socket = workspace.0.join("d.sock");
+    let binary = std::env::var_os("WORKROOMD_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_workroomd")));
+    let _daemon = Daemon(
+        Command::new(binary)
+            // Exactly the local app's lifetime: it supplies no --idle-timeout flag.
+            .args(["serve", "--socket"])
+            .arg(&socket)
+            .env_clear()
+            .env("HOME", &workspace.0)
+            .env("SHELL", &shell)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("USER", "fixture")
+            .env("FROM_APP", "inherited")
+            .env("GIT_TERMINAL_PROMPT", "1")
+            .env("LC_ALL", "C.UTF-8")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists());
+    for method in ["log", "working_status", "working_file_diff"] {
+        let result = request(
+            &socket,
+            Service::Vcs,
+            json!({
+                "version":1,"method":method,"backend":"git","root":root,"path":"tracked",
+            }),
+        );
+        assert!(!result.is_null(), "{method}: {result}");
+    }
+    let listing = request(
+        &socket,
+        Service::File,
+        json!({
+            "version":1,"method":"list","backend":"git","root":root,
+        }),
+    );
+    assert!(listing.to_string().contains("tracked"), "{listing}");
+    assert!(
+        !sentinel.exists(),
+        "an ordinary local read launched the login profile"
+    );
 }
