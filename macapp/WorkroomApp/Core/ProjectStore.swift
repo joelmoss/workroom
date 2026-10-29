@@ -165,6 +165,16 @@ final class ProjectStore {
     return pendingInitialRestore
   }
 
+  private var launchRoleTaken = false
+
+  /// Claim the launch window's role (restore the session, open its siblings). True exactly once,
+  /// for the first window that attaches — whatever seed it carries: macOS can bring a window back
+  /// from an older build's saved state with a sibling or ⌘N seed, and no `.launch` window opens then.
+  func takeLaunchRole() -> Bool {
+    defer { launchRoleTaken = true }
+    return !launchRoleTaken
+  }
+
   // MARK: Saved session (issue #46)
 
   /// Windows from the saved session that no window has adopted yet. Loaded once, lazily, by the first

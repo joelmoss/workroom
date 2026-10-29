@@ -268,11 +268,13 @@ struct RootWindow: View {
           store.placeHandOffWindow(window)
           store.opensForHandOff = false
         }
-        await store.bootstrap(restore: seed.restore)
+        // The store's flags, not the seed's: `attachWindow` may have given this window the launch
+        // role (`ProjectStore.takeLaunchRole`).
+        await store.bootstrap(restore: store.claimsSavedSession)
         if let handOff = seed.handOff { WorkroomHandOffs.shared.complete(handOff, into: store) }
         // Reopen the windows that were open at the last quit (issue #46). Only the launch window
         // fans out, and each key is handed out once, so a `.task` re-fire cannot double-open.
-        guard seed.isLaunch else { return }
+        guard store.isRestoreWindow else { return }
         for key in ProjectStore.shared.pendingSessionKeys() {
           openWindow(value: WindowSeed.restoring(key: key))
         }
