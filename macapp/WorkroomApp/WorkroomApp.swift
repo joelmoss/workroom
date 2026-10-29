@@ -124,6 +124,9 @@ struct WorkroomApp: App {
     // Explicit `openWindow(value:)` calls later (from `OnboardingWindow`, once it's done) are
     // unaffected by this — it only governs automatic launch behavior.
     .defaultLaunchBehavior(onboardingMightShow ? .suppressed : .automatic)
+    // `session.json` reopens the windows; macOS restoring one too adds a window. See
+    // `AppStore.attachWindow` for why `isRestorable = false` isn't enough on its own.
+    .restorationBehavior(.disabled)
 
     Settings {
       SettingsView()
@@ -131,6 +134,7 @@ struct WorkroomApp: App {
         .environmentObject(codingAgentUsage)
         .environmentObject(claudeUsageBridge)
     }
+    .restorationBehavior(.disabled)
 
     // The first-run onboarding wizard (issue #151). A plain `Window` scene, like `Settings` — no
     // `AppStore`, so it falls through the same aux-window carve-outs (⌘W fallback, shortcut/switcher

@@ -1238,12 +1238,14 @@ final class AppStore: ObservableObject {
     // the app restores sessions itself (issue #46) — otherwise an OS-restored window and an
     // app-restored one would both appear.
     //
-    // The built-in is real and would even solve cross-launch window identity for free (a value-based
-    // `WindowGroup` brings each `WindowSeed` back with its original id — which is why `WindowSeed` is
-    // `Codable`). It is declined because it is gated on a system preference that ships OFF: "Close
-    // windows when quitting an application" is checked by default, so `NSQuitAlwaysKeepsWindows` is
-    // unset on a default install and the built-in silently does nothing for most users. Panels and
-    // frames are restored from `session.json` instead, which behaves the same for everyone.
+    // This alone does NOT opt out: with "Close windows when quitting an application" unchecked
+    // (`NSQuitAlwaysKeepsWindows` on), SwiftUI still saved one main window per quit and brought it
+    // back with its old `WindowSeed`, beside the ones `session.json` reopens. The scene-level
+    // `.restorationBehavior(.disabled)` in `WorkroomApp.body` is what keeps it out.
+    //
+    // The built-in is declined because it is gated on that preference, which ships checked, so it
+    // silently does nothing for most users. Panels and frames are restored from `session.json`
+    // instead, which behaves the same for everyone.
     window.isRestorable = false
     // Set the window's size before it's shown (issue #70): `WindowAccessor` resolves it in
     // `viewDidMoveToWindow`, which fires during window setup (pre-display), so SwiftUI's value-based
