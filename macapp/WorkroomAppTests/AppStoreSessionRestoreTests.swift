@@ -132,10 +132,8 @@ final class AppStoreSessionRestoreTests: XCTestCase {
   /// the session (and so reopen the rest), or windows go missing and the watchdog stops saving.
   func testFirstAttachedWindowTakesTheLaunchRoleWhateverItsSeed() {
     let projects = [project("/p", workrooms: ["calm-otter"])]
-    let store = makeStore(
-      projects: projects,
-      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]),
-      isLaunchWindow: false)
+    let saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])
+    let store = makeStore(projects: projects, session: saved, isLaunchWindow: false)
 
     store.attachWindow(offscreenWindow())
     XCTAssertTrue(store.isRestoreWindow)
