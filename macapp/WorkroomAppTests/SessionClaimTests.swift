@@ -92,6 +92,20 @@ final class SessionClaimTests: XCTestCase {
     XCTAssertEqual(claimed.windowKey, second.uuidString)
   }
 
+  /// macOS restored the launch window with a sibling's seed (the first launch after updating from a
+  /// build that let it): the window must take its own saved session, not the first. Taking the first
+  /// leaves its own key unclaimed, and the fan-out's window for that key is the same scene value as
+  /// this one, so SwiftUI only focuses it and the key never opens.
+  func testLaunchWindowWithASavedKeyClaimsThatSession() throws {
+    let first = UUID()
+    let second = UUID()
+    let store = makeProjectStore(windows: [window(key: first), window(key: second)])
+
+    let claimed = try XCTUnwrap(store.claimSession(for: second, isLaunchWindow: true))
+    XCTAssertEqual(claimed.windowKey, second.uuidString)
+    XCTAssertEqual(store.pendingSessionKeys(), [first])
+  }
+
   func testSiblingWithAnUnknownKeyClaimsNothing() {
     let store = makeProjectStore(windows: [window(key: UUID())])
     XCTAssertNil(store.claimSession(for: UUID(), isLaunchWindow: false))

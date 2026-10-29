@@ -218,20 +218,20 @@ final class ProjectStore {
   /// both early enough for the frame and late enough that a speculative SwiftUI view init cannot
   /// consume a session no window ever uses.
   ///
-  /// The launch window adopts the first unclaimed session (its own seed id is freshly minted, so it
-  /// cannot match anything on disk) and takes that session's key as its own. A sibling was opened FOR
-  /// a specific key and claims exactly that one — never another window's.
+  /// A window claims the session saved under its own key. The launch window's seed id is normally
+  /// freshly minted, so it matches nothing and it adopts the first unclaimed session, taking that
+  /// session's key as its own. Matching first matters when macOS restored the launch window with a
+  /// sibling's seed: the fan-out reopens every unclaimed key, and SwiftUI answers a seed that is
+  /// already on screen by focusing that window, so a key left unclaimed here would never open.
   func claimSession(for key: UUID, isLaunchWindow: Bool) -> WindowSession? {
     loadSessionIfNeeded()
     if let already = claimedSessions[key] { return already }
 
     let claimed: WindowSession?
-    if isLaunchWindow {
-      claimed = unclaimedSessionWindows.isEmpty ? nil : unclaimedSessionWindows.removeFirst()
-    } else if let index = unclaimedSessionWindows.firstIndex(
-      where: { $0.windowKey == key.uuidString })
-    {
+    if let index = unclaimedSessionWindows.firstIndex(where: { $0.windowKey == key.uuidString }) {
       claimed = unclaimedSessionWindows.remove(at: index)
+    } else if isLaunchWindow, !unclaimedSessionWindows.isEmpty {
+      claimed = unclaimedSessionWindows.removeFirst()
     } else {
       claimed = nil
     }
