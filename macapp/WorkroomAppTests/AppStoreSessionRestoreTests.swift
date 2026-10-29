@@ -127,6 +127,31 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertNil(store.pendingSessionRestore)
   }
 
+  /// The first launch after updating from a build that let macOS restore windows: macOS brings one
+  /// window back with its old ⌘N seed and no `.launch` window opens. That window must still restore
+  /// the session (and so reopen the rest), or windows go missing and the watchdog stops saving.
+  func testFirstAttachedWindowTakesTheLaunchRoleWhateverItsSeed() {
+    let projects = [project("/p", workrooms: ["calm-otter"])]
+    let store = makeStore(
+      projects: projects,
+      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]),
+      isLaunchWindow: false)
+
+    store.attachWindow(offscreenWindow())
+    XCTAssertTrue(store.isRestoreWindow)
+    XCTAssertNotNil(store.pendingSessionRestore)
+
+    let later = AppStore(projectStore: store.projectStore)
+    later.attachWindow(offscreenWindow())
+    XCTAssertFalse(later.isRestoreWindow, "only the first window of the launch takes the role")
+  }
+
+  private func offscreenWindow() -> NSWindow {
+    NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 900, height: 560), styleMask: [.titled],
+      backing: .buffered, defer: true)
+  }
+
   /// **CRITICAL REGRESSION.** A restored sibling window keeps the selection its own session recorded.
   ///
   /// `bootstrap` gates on `consumeInitialRestore()`, which is app-wide and one-shot: the launch window

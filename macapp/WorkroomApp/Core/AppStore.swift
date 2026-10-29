@@ -85,9 +85,9 @@ final class AppStore: ObservableObject {
   /// tab bar lives in a title-bar accessory, so SwiftUI's own frames are not in the window's space.
   @ObservationIgnored weak var workroomTabRun: NSView?
   private var didApplyInitialSize = false
-  /// True only for the window SwiftUI brings up at launch (`WindowSeed.restore`). Set by
-  /// `RootWindow.init`. The What's-New auto-check runs only from this window so a relaunch with
-  /// several restored windows doesn't fan out duplicate dialogs.
+  /// True only for the launch window: the `.launch` seed, or the first window to attach in the
+  /// process (`ProjectStore.takeLaunchRole`). It restores the session and reopens its siblings, and
+  /// runs the What's-New auto-check, so a relaunch with several windows doesn't duplicate dialogs.
   var isRestoreWindow = false
   /// Retained `NSWindow` frame-change observers that persist this window's size for the next launch.
   // `nonisolated(unsafe)`: appended on the main actor, read again only in `deinit`.
@@ -1206,6 +1206,10 @@ final class AppStore: ObservableObject {
     // discarded init would consume a session no real window ever shows. `attachWindow` runs from
     // `WindowAccessor` in `viewDidMoveToWindow` — a real window exists, and it is still pre-display,
     // which is what the restored frame needs.
+    if !didClaimSession, projectStore.takeLaunchRole() {
+      isRestoreWindow = true
+      claimsSavedSession = true
+    }
     claimSessionIfNeeded()
     // Keep the title out of the title bar (issue #70). The title we give the window (selected
     // project/workroom, via `navigationTitle` → `windowTitle`) exists only to name it in the Window
