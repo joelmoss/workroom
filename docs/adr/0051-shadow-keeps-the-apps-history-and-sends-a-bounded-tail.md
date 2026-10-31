@@ -27,11 +27,13 @@ Measured (release, Apple silicon, 200 by 50, `measure_shadow_history` and `measu
 
 A hand-off of ten sessions like the first row, each under a full-screen program, captured five with their history and five with their screen alone in 257 ms, and encoded and wrote its 7.5 MiB table in 10 ms. Because the copy can take ~100 ms, the primary's paint is kept while a program runs, and dropped when the pane resizes or output switches screens or resets the terminal.
 
+Re-measured at Ghostty 83fb95624 (1.4.0) on 2026-10-31 (#553), and the numbers above still hold. Compressed history came to 1.26, 0.92 and 16.81 MiB, and repaints to 2.49 MiB, 3.42 MiB and 3.51 MiB. The hand-off captured six sessions with their history and four with their screen alone in 254 ms, and encoded and wrote its 8.83 MiB table in 5 ms.
+
 Alternatives rejected: a byte cap on what is kept (bounds memory, not what is sent, and the densest record still exceeded `MAX_RECORD`); a line cap (the same, and fewer rows than the app); paging history to the client on demand (#470: GhosttyKit cannot insert history above what a surface shows, so it needs an app-side history view); a hand-off by snapshot (TODOS.md: snapshots have no cross-revision guarantee, ADR 0031, so it needs a same-engine check); refusing a hand-off that runs out of time (above).
 
 Residual risks, accepted:
 
-- History that compresses poorly (random base64) keeps about 17 MB per full session, about 340 MB for twenty such panes on one host. The app's own panes keep their 50 MB uncompressed.
+- History that compresses poorly (random base64) keeps about 17 MB per full session, about 340 MB for twenty such panes on one host. The app's own panes compress idle history too (`scrollback-compression`, on by default, driven by the renderer), though their memory has not been measured (amended 2026-10-31, #553).
 - A row guess can still overshoot when density changes sharply, by at most 8 times the rows of the last format (measured peak 4.6 MB for a 4 MiB repaint over truecolour history).
 
 Source: [`vcs/crates/workroomd/src/terminal.rs`](../../vcs/crates/workroomd/src/terminal.rs), [`vcs/crates/workroomd/src/session.rs`](../../vcs/crates/workroomd/src/session.rs) (`frozen_formatting`, `compress_shadows`), [`vcs/crates/workroomd/src/screens.rs`](../../vcs/crates/workroomd/src/screens.rs), [`vcs/crates/workroomd/src/handoff.rs`](../../vcs/crates/workroomd/src/handoff.rs).
