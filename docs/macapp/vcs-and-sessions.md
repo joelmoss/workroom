@@ -78,7 +78,8 @@ attaches to older Swift helpers that are still running (issue #154):
   `serve | attach`, multiplexing services over one stream with a versioned envelope
   (`service:u8 | stream:u32 | length:u32 | payload`). It keeps a **shadow terminal** (libghostty-vt,
   behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
-  rather than a byte replay. A newer app does not kill a running daemon: it asks it to replace its
+  rather than a byte replay, with the images on its active screen following in the background (ADR
+  0062). A newer app does not kill a running daemon: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
   (`DaemonHandOff.start()`, protocol 6, `workroomd hand-off`, #230), in every build; see
   the module comment in `vcs/crates/workroomd/src/handoff.rs` for the mechanics, and ADR 0009 for

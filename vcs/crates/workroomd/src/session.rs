@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::images::{self, ImageRef, Transfer};
 use crate::input::InputClassifier;
 use crate::program_status::{Hub, Store};
 use crate::pty::{Pty, PtyError, Size};
@@ -69,6 +70,8 @@ struct Client {
     pixels: (u16, u16),
     /// Per-client, because it holds the tail of an unfinished escape sequence.
     classifier: InputClassifier,
+    /// Its images on their way after a repaint, if it has any. Only the reader sends them.
+    transfer: Option<Arc<Transfer>>,
 }
 
 impl Client {
@@ -879,8 +882,10 @@ impl SessionStore {
         let mut painted = true;
         let size = {
             let mut attached = attached.lock().expect("attachment lock poisoned");
-            let replay = live_replay(&pty, &shadow);
+            let mut replay = live_replay(&pty, &shadow);
             if !replay.is_empty() {
+                // First, in case this surface was left in a transfer cut off midway.
+                replay.splice(0..0, images::ABORT.iter().copied());
                 if let Ok(mut writer) = writer.lock() {
                     // CHUNKED, because `replay()` can be up to ~4 MiB (`REPAINT_MAX_BYTES`) and
                     // `Frame::encode` PANICS above the 1 MiB cap rather than truncating.
@@ -973,6 +978,8 @@ impl SessionStore {
                 }
             }
             if painted {
+                let visible = shadow.lock().map(|s| s.visible_images());
+                let transfer = images::start_transfer(visible.unwrap_or_default(), &shadow, &pty);
                 attached.clients.push(Client {
                     writer,
                     stream,
@@ -981,6 +988,7 @@ impl SessionStore {
                     rows: size.rows,
                     pixels: (size.x_pixels, size.y_pixels),
                     classifier: InputClassifier::new(),
+                    transfer,
                 });
                 // Attaching does not TAKE the size from a client that has it — that needs an act.
                 // It only fills a vacancy.
@@ -1210,7 +1218,7 @@ impl SessionStore {
         let started = Instant::now();
         let format_until = started + format_within;
         let mut late = 0;
-        let sessions: Vec<FrozenSession> = parts
+        let mut sessions: Vec<FrozenSession> = parts
             .iter()
             .map(|(id, (pty, shadow, _), metadata)| {
                 // The kernel's size, which is what the shell was last told.
@@ -1253,6 +1261,13 @@ impl SessionStore {
                 sessions.len()
             );
         }
+        let shadows: Vec<_> = parts.iter().map(|(_, (_, shadow, _), _)| shadow).collect();
+        carry_images(
+            &shadows,
+            &mut sessions,
+            Instant::now() + HANDOFF_IMAGE_DEADLINE,
+            HANDOFF_IMAGE_BYTES,
+        );
         let result = f(&sessions);
         drop(held);
         drop(store);
@@ -1706,6 +1721,9 @@ struct Target {
     writer: SharedWriter,
     stream: u32,
     token: u64,
+    /// Where this client's output takes an `images::ABORT`, when its transfer has just been
+    /// stopped part way through a load.
+    abort_at: Option<usize>,
 }
 
 impl Client {
@@ -1714,6 +1732,7 @@ impl Client {
             writer: Arc::clone(&self.writer),
             stream: self.stream,
             token: self.token,
+            abort_at: None,
         }
     }
 }
@@ -1798,6 +1817,51 @@ fn live_replay(pty: &Pty, shadow: &Mutex<Shadow>) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// One step of the image transfers on this session, for the reader between reads: at ground, a
+/// placement or a chunk per client. Every client has the shadow's bytes by now, because this
+/// thread delivered them, so the shadow's parser and positions are theirs too. Comes back through
+/// the wait while chunks remain, so the pty is always looked at first.
+fn send_images(pty: &Pty, shadow: &Mutex<Shadow>, attached: &Arc<Mutex<Attached>>, work: &Wake) {
+    let mut more = false;
+    let sends = {
+        let Ok(mut held) = attached.lock() else {
+            return;
+        };
+        if held.clients.iter().all(|client| client.transfer.is_none()) {
+            return;
+        }
+        let Ok(mut shadow) = shadow.lock() else {
+            return;
+        };
+        // Output finishes the sequence, and brings the reader back here.
+        if !shadow.at_ground() {
+            return;
+        }
+        let mut sends = Vec::new();
+        for client in &mut held.clients {
+            let Some(transfer) = client.transfer.clone() else {
+                continue;
+            };
+            if let Some(bytes) = transfer.next_bytes(&shadow) {
+                sends.push((client.target(), bytes));
+            }
+            more |= transfer.has_more();
+            if transfer.is_finished() {
+                client.transfer = None;
+            }
+        }
+        sends
+    };
+    for (target, bytes) in sends {
+        let frame = Frame::new(FrameKind::Output, bytes);
+        let size = deliver(attached, &target, &terminal_envelope(target.stream, frame));
+        apply_size(pty, shadow, attached, size, work);
+    }
+    if more {
+        pty.wake_reader();
+    }
+}
+
 fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
     Envelope::new(Service::Terminal, stream, frame.encode()).encode()
 }
@@ -1840,6 +1904,61 @@ const HANDOFF_TOTAL_BYTES: usize = 16 << 20;
 /// captured with their screen alone (`frozen_formatting`). Counted in the hand-off's timeout sum
 /// (`handoff.rs`).
 pub(crate) const HANDOFF_FORMAT_DEADLINE: Duration = Duration::from_millis(250);
+
+/// How long a hand-off spends encoding images, after every screen's text, with every session still
+/// stopped. Counted in the hand-off's timeout sum too.
+pub(crate) const HANDOFF_IMAGE_DEADLINE: Duration = Duration::from_millis(250);
+
+/// What a hand-off's images share between them, encoded. A session past this or the deadline keeps
+/// its text and loses its images.
+const HANDOFF_IMAGE_BYTES: usize = 32 << 20;
+
+/// Adds each session's visible images to its frozen screen, newest first, ahead of the parser
+/// continuation. Nothing can interleave with a frozen screen, so they travel whole.
+fn carry_images(
+    shadows: &[&Arc<Mutex<Shadow>>],
+    sessions: &mut [FrozenSession],
+    until: Instant,
+    budget: usize,
+) {
+    let mut images: Vec<(usize, ImageRef)> = Vec::new();
+    for (index, shadow) in shadows.iter().enumerate() {
+        if let Ok(shadow) = shadow.lock() {
+            images.extend(shadow.visible_images().into_iter().map(|i| (index, i)));
+        }
+    }
+    images.sort_by_key(|(_, image)| std::cmp::Reverse(image.generation));
+    carry_listed(shadows, sessions, images, until, budget);
+}
+
+fn carry_listed(
+    shadows: &[&Arc<Mutex<Shadow>>],
+    sessions: &mut [FrozenSession],
+    images: Vec<(usize, ImageRef)>,
+    until: Instant,
+    budget: usize,
+) {
+    let mut left = budget;
+    for (index, image) in images {
+        if Instant::now() >= until {
+            return;
+        }
+        let Ok(shadow) = shadows[index].lock() else {
+            continue;
+        };
+        let Some(bytes) = shadow.hand_off_image(image) else {
+            continue;
+        };
+        // Past the total, the rest would be encoded only to be refused, with every session stopped.
+        let Some(remaining) = left.checked_sub(bytes.len()) else {
+            return;
+        };
+        left = remaining;
+        let screen = &mut sessions[index].screen;
+        let at = screen.len().saturating_sub(shadow.continuation_len());
+        screen.splice(at..at, bytes);
+    }
+}
 
 /// The slowest a peer may take its repaint before the daemon gives up on it, in bytes per second.
 ///
@@ -2000,9 +2119,12 @@ fn read_session(
             let read = pty.read(&mut buffer);
             let mut answer = Vec::new();
             let mut published = None;
+            let mut disturbed = None;
             let clients = match read {
                 Ok(n) if n > 0 => {
                     if let Ok(mut shadow) = shadow.lock() {
+                        shadow
+                            .watch_for_transfers(held.clients.iter().any(|c| c.transfer.is_some()));
                         let (replies, changed) =
                             shadow.write_from_pty(&buffer[..n], || pty.foreground_pgid());
                         answer = replies;
@@ -2010,10 +2132,27 @@ fn read_session(
                             let status = shadow.status()?;
                             Some((status.event(hub.boot(), id), blocked))
                         });
+                        disturbed = shadow.take_disturbed();
                     }
                     held.changed = true;
                     work.raise();
-                    held.clients.iter().map(Client::target).collect::<Vec<_>>()
+                    held.clients
+                        .iter_mut()
+                        .map(|client| {
+                            let mut target = client.target();
+                            if let Some(disturbed) = &disturbed {
+                                let loading = client
+                                    .transfer
+                                    .as_ref()
+                                    .is_some_and(|transfer| transfer.is_loading());
+                                if loading || !disturbed.only_if_loading {
+                                    client.transfer.take().map(|transfer| transfer.stop());
+                                    target.abort_at = disturbed.abort_at.filter(|_| loading);
+                                }
+                            }
+                            target
+                        })
+                        .collect::<Vec<_>>()
                 }
                 _ => Vec::new(),
             };
@@ -2058,6 +2197,9 @@ fn read_session(
             if !child_gone(pty.child_pid(), &mut status) {
                 drop(terminating);
                 std::thread::sleep(Duration::from_millis(5));
+                // A quiet master can read this way for as long as its shell says nothing, which
+                // is when a transfer has the stream to itself.
+                send_images(&pty, &shadow, &attached, &work);
                 continue;
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
@@ -2119,10 +2261,12 @@ fn read_session(
                 // Every attached client sees the same bytes — that is what makes two windows on
                 // one session show the same terminal rather than half of it each.
                 for target in &clients {
-                    let bytes = terminal_envelope(
-                        target.stream,
-                        Frame::new(FrameKind::Output, buffer[..n].to_vec()),
-                    );
+                    let mut output = buffer[..n].to_vec();
+                    if let Some(at) = target.abort_at {
+                        output.splice(at..at, images::ABORT.iter().copied());
+                    }
+                    let bytes =
+                        terminal_envelope(target.stream, Frame::new(FrameKind::Output, output));
                     let size = deliver(&attached, target, &bytes);
                     apply_size(&pty, &shadow, &attached, size, &work);
                 }
@@ -2173,6 +2317,7 @@ fn read_session(
                 return;
             }
         }
+        send_images(&pty, &shadow, &attached, &work);
     }
 }
 
@@ -2890,6 +3035,398 @@ mod tests {
             .lines()
             .position(|line| line.contains("BELOW"));
         assert_eq!(row, Some(2));
+        store.kill_all();
+    }
+
+    /// What a client was sent, out of its envelopes and frames.
+    #[cfg(feature = "terminal-state")]
+    fn sent_bytes(capture: &Capture) -> Vec<u8> {
+        use wr_protocol::envelope::EnvelopeDecoder;
+        use wr_protocol::frame::FrameDecoder;
+        let mut envelopes = EnvelopeDecoder::new();
+        envelopes.push(&capture.0.lock().expect("capture"));
+        let mut frames = FrameDecoder::new();
+        while let Ok(Some(envelope)) = envelopes.next_envelope() {
+            frames.push(&envelope.payload);
+        }
+        let mut out = Vec::new();
+        while let Ok(Some(frame)) = frames.next_frame() {
+            if frame.kind == FrameKind::Output {
+                out.extend_from_slice(&frame.payload);
+            }
+        }
+        out
+    }
+
+    /// A raw 2x2 image, shown where the cursor is.
+    #[cfg(feature = "terminal-state")]
+    fn program_image(id: u32) -> Vec<u8> {
+        let mut out = format!("\x1b_Ga=T,f=24,s=2,v=2,i={id},q=2;").into_bytes();
+        out.extend_from_slice(&[b'A'; 16]);
+        out.extend_from_slice(b"\x1b\\");
+        out
+    }
+
+    /// Noise, so its PNG takes several chunks and leaves a load open between them.
+    #[cfg(feature = "terminal-state")]
+    fn noise_image(id: u32) -> Vec<u8> {
+        let mut noise = format!("\x1b_Ga=T,f=24,s=100,v=100,i={id},q=2;").into_bytes();
+        let mut seed = 0x2545_F491_u32;
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        noise.extend((0..40_000).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            alphabet[(seed % 64) as usize]
+        }));
+        noise.extend_from_slice(b"\x1b\\");
+        noise
+    }
+
+    /// 10x20 pixels a cell, as a client's: an image covers no cells at zero.
+    #[cfg(feature = "terminal-state")]
+    const PIXEL_SIZE: Size = Size {
+        columns: 80,
+        rows: 24,
+        x_pixels: 800,
+        y_pixels: 480,
+    };
+
+    /// `attach_capture` for a client that says its pixels, as a real one does.
+    #[cfg(feature = "terminal-state")]
+    fn attach_with_pixels(store: &SessionStore, session: SessionId) -> (Capture, u64) {
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        let (_, token) = store
+            .attach(session, writer, 1, PIXEL_SIZE)
+            .expect("attach");
+        (capture, token)
+    }
+
+    #[cfg(feature = "terminal-state")]
+    fn shadow_write(store: &SessionStore, session: SessionId, bytes: &[u8]) {
+        let shadow = store.shadow(session).expect("shadow");
+        let mut shadow = shadow.lock().expect("shadow");
+        shadow.resize(PIXEL_SIZE);
+        shadow.write(bytes);
+    }
+
+    /// Lets a test act between a client's first image chunk and the rest.
+    #[cfg(feature = "terminal-state")]
+    #[derive(Clone)]
+    struct GatedCapture {
+        capture: Capture,
+        reached: Arc<std::sync::atomic::AtomicBool>,
+        open: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[cfg(feature = "terminal-state")]
+    impl Write for GatedCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let written = self.capture.write(bytes)?;
+            if has(bytes, b"a=t,f=100") {
+                self.reached.store(true, Ordering::SeqCst);
+                while !self.open.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Ok(written)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Value: protects=an image on screen comes back after a reattach, after its text (#551);
+    /// fails_when=the transfer, its order or its placement breaks; why_new=no test restored an
+    /// image; seam=none; no_claim=the app's drawing, checked in the app
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_reattaching_client_gets_its_text_then_its_image() {
+        let store = SessionStore::new();
+        sized_session(&store, id(37));
+        shadow_write(&store, id(37), &program_image(7));
+        shadow_write(&store, id(37), b"\r\nBELOW");
+
+        let (capture, _) = attach_with_pixels(&store, id(37));
+        let sent = wait_for_bytes(b"a=p,i=7", || sent_bytes(&capture));
+        let at = |needle: &[u8]| sent.windows(needle.len()).position(|w| w == needle);
+        let text = at(b"BELOW").expect("the text");
+        let chunk = at(b"a=t,f=100,i=7").expect("the image");
+        let placed = at(b"a=p,i=7").expect("its placement");
+        assert_eq!(at(images::ABORT), Some(0), "first, for a cut-off transfer");
+        assert!(text < chunk && chunk < placed, "{sent:?}");
+
+        let mut client = crate::terminal::ShadowTerminal::new(80, 24).expect("client");
+        client.set_cell_pixels(10, 20);
+        client.resize(80, 24);
+        client.write(&sent);
+        assert_eq!(client.visible_images().len(), 1);
+        assert!(client.visible_text().contains("BELOW"));
+        store.kill_all();
+    }
+
+    /// Value: protects=a session with no images sends no image bytes; fails_when=a transfer starts
+    /// regardless; why_new=new; seam=none; no_claim=none beyond protects
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_session_without_images_starts_no_transfer() {
+        let store = SessionStore::new();
+        sized_session(&store, id(38));
+        shadow_write(&store, id(38), b"text");
+        let (capture, _) = attach_capture(&store, id(38));
+        let (_, _, attached) = store.parts(id(38)).expect("parts");
+        assert!(attached.lock().expect("lock").clients[0].transfer.is_none());
+        assert!(!has(&sent_bytes(&capture), b"a=t"));
+        store.kill_all();
+    }
+
+    /// Value: protects=image bytes never land inside a long sequence (#551); fails_when=the
+    /// reader's ground check goes, or uses the capped continuation; why_new=the terminal test
+    /// covers the check, not the reader's use of it; seam=none; no_claim=none beyond protects
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn image_data_waits_through_an_unfinished_8_kb_sequence() {
+        let store = SessionStore::new();
+        sized_session(&store, id(39));
+        shadow_write(&store, id(39), &program_image(7));
+        let mut long = b"\x1b]52;c;".to_vec();
+        long.extend(std::iter::repeat_n(b'A', 8192));
+        shadow_write(&store, id(39), &long);
+
+        let (capture, _) = attach_with_pixels(&store, id(39));
+        std::thread::sleep(Duration::from_millis(300));
+        store
+            .with_pty(id(39), |pty| pty.wake_reader())
+            .expect("session");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!has(&sent_bytes(&capture), b"a=t"), "mid-sequence");
+
+        shadow_write(&store, id(39), b"\x07");
+        store
+            .with_pty(id(39), |pty| pty.wake_reader())
+            .expect("session");
+        assert!(has(
+            &wait_for_bytes(b"a=t", || sent_bytes(&capture)),
+            b"a=t"
+        ));
+        store.kill_all();
+    }
+
+    /// A session that prints `image` when it is sent a line.
+    #[cfg(feature = "terminal-state")]
+    fn session_printing_on_input(store: &SessionStore, session: SessionId, image: &[u8]) {
+        let octal: String = image.iter().map(|byte| format!("\\{byte:03o}")).collect();
+        // No echo, which would be output of its own ahead of the image.
+        let script = format!("stty -echo; read line; printf '{octal}'; sleep 30");
+        let args = [OsString::from("-c"), OsString::from(script)];
+        let e = env();
+        store.create(spec(session, &args, &e)).expect("create");
+    }
+
+    /// Value: protects=a program's image survives our transfer, the one case that can lose its
+    /// data (#551); fails_when=the stop or its abort goes; why_new=new; seam=none;
+    /// no_claim=real Ghostty, the same engine at the same revision
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_programs_image_ends_a_transfer_with_an_abort_ahead_of_it() {
+        let store = SessionStore::new();
+        session_printing_on_input(&store, id(40), &program_image(99));
+        shadow_write(&store, id(40), &noise_image(7));
+
+        let gate = GatedCapture {
+            capture: Capture::default(),
+            reached: Arc::default(),
+            open: Arc::default(),
+        };
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(gate.clone())));
+        let (_, token) = store.attach(id(40), writer, 1, PIXEL_SIZE).expect("attach");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gate.reached.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(gate.reached.load(Ordering::SeqCst), "no transfer began");
+        store.write_input(id(40), token, b"go\n");
+        std::thread::sleep(Duration::from_millis(100));
+        gate.open.store(true, Ordering::SeqCst);
+
+        let sent = wait_for_bytes(b"i=99", || sent_bytes(&gate.capture));
+        let at = |needle: &[u8]| sent.windows(needle.len()).rposition(|w| w == needle);
+        let program = at(b"i=99").expect("the program's image");
+        assert!(at(images::ABORT) < Some(program), "the abort goes first");
+        assert!(!has(&sent[program..], b"m=1"), "no chunk after it");
+
+        let mut client = crate::terminal::ShadowTerminal::new(80, 24).expect("client");
+        client.set_cell_pixels(10, 20);
+        client.resize(80, 24);
+        client.write(&sent);
+        let stored = client.visible_images();
+        assert!(stored.iter().any(|image| image.id == 99), "{stored:?}");
+        store.kill_all();
+    }
+
+    /// Value: protects=a stopped transfer sends no more, and the program's image is stored;
+    /// fails_when=the reader keeps sending, or an abort lands late; why_new=new; seam=none;
+    /// no_claim=none beyond protects
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_held_transfer_is_dropped_when_a_program_sends_an_image() {
+        let store = SessionStore::new();
+        // Finishes the sequence below in the same read as its image.
+        let output = [b"1m".as_slice(), &program_image(99)].concat();
+        session_printing_on_input(&store, id(41), &output);
+        shadow_write(&store, id(41), &program_image(7));
+        // Held from the start, so the program's image arrives before any chunk.
+        shadow_write(&store, id(41), b"\x1b[3");
+        let (capture, token) = attach_with_pixels(&store, id(41));
+        std::thread::sleep(Duration::from_millis(200));
+
+        store.write_input(id(41), token, b"go\n");
+        let sent = wait_for_bytes(b"i=99", || sent_bytes(&capture));
+        assert!(has(&sent, b"i=99"), "{sent:?}");
+        store
+            .with_pty(id(41), |pty| pty.wake_reader())
+            .expect("session");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!has(&sent_bytes(&capture), b"i=7,"), "dropped");
+
+        let (_, _, attached) = store.parts(id(41)).expect("parts");
+        assert!(attached.lock().expect("lock").clients[0].transfer.is_none());
+        store.kill_all();
+    }
+
+    /// Value: protects=a hand-off carries images, ahead of the continuation (#551);
+    /// fails_when=carry_images goes, or splices after the continuation; why_new=new; seam=none;
+    /// no_claim=a real exec and its check, which tests/hand_off.rs runs without images
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_hand_off_carries_images_ahead_of_the_continuation() {
+        let store = SessionStore::new();
+        sized_session(&store, id(42));
+        shadow_write(&store, id(42), &program_image(7));
+        shadow_write(&store, id(42), b"\r\nBELOW\x1b[3");
+
+        let screen = store
+            .frozen(Duration::from_secs(1), |sessions| {
+                sessions[0].screen.clone()
+            })
+            .expect("frozen");
+        assert!(has(&screen, b"a=t,f=100,i=7"), "the pixels");
+        assert!(has(&screen, b"a=p,i=7"), "the placement");
+        assert!(screen.ends_with(b"\x1b[3"), "the continuation stays last");
+        store.kill_all();
+
+        let adopted = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+        pty.resize(PIXEL_SIZE).expect("resize");
+        adopted
+            .adopt(pty, frozen_with(id(42), &screen))
+            .expect("adopt");
+        let shadow = adopted.shadow(id(42)).expect("shadow");
+        assert_eq!(shadow.lock().expect("shadow").visible_images().len(), 1);
+        adopted.kill_all();
+    }
+
+    /// Value: protects=a hand-off out of time keeps its text; fails_when=carry_images ignores its
+    /// deadline; why_new=new; seam=none; no_claim=the measured freeze, reported in the PR
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_hand_off_past_its_image_deadline_keeps_the_text() {
+        let shadow = Arc::new(Mutex::new(Shadow::new(80, 24)));
+        {
+            let mut shadow = shadow.lock().expect("shadow");
+            shadow.resize(PIXEL_SIZE);
+            shadow.write(&program_image(7));
+        }
+        let mut sessions = [frozen_with(id(43), b"text")];
+        carry_images(
+            &[&shadow],
+            &mut sessions,
+            Instant::now(),
+            HANDOFF_IMAGE_BYTES,
+        );
+        assert_eq!(sessions[0].screen, b"text");
+
+        let later = Instant::now() + Duration::from_secs(5);
+        carry_images(&[&shadow], &mut sessions, later, 10);
+        assert_eq!(sessions[0].screen, b"text", "past its total");
+
+        carry_images(&[&shadow], &mut sessions, later, HANDOFF_IMAGE_BYTES);
+        assert!(has(&sessions[0].screen, b"a=t,f=100,i=7"), "fixture");
+    }
+
+    /// Value: protects=an image that cannot be sent costs that image alone; fails_when=one failure
+    /// ends the pass; why_new=the other test has one image; seam=none; no_claim=none beyond protects
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_hand_off_skips_an_image_it_cannot_send_and_carries_the_rest() {
+        let broken = Arc::new(Mutex::new(Shadow::new(80, 24)));
+        let good = Arc::new(Mutex::new(Shadow::new(80, 24)));
+        for (shadow, id) in [(&broken, 7), (&good, 8)] {
+            let mut shadow = shadow.lock().expect("shadow");
+            shadow.resize(PIXEL_SIZE);
+            shadow.write(&program_image(id));
+        }
+        let mut sessions = [frozen_with(id(44), b""), frozen_with(id(45), b"")];
+        let later = Instant::now() + Duration::from_secs(5);
+        // Replaced since it was listed, so it has nothing to send.
+        let stale = ImageRef {
+            id: 7,
+            generation: u64::MAX,
+        };
+        let listed = good.lock().expect("shadow").visible_images()[0];
+        carry_listed(
+            &[&broken, &good],
+            &mut sessions,
+            vec![(0, stale), (1, listed)],
+            later,
+            HANDOFF_IMAGE_BYTES,
+        );
+        assert_eq!(sessions[0].screen, b"", "that image alone");
+        assert!(has(&sessions[1].screen, b"i=8"));
+    }
+
+    /// Value: protects=a program image split across two reads survives an open load (#551), the
+    /// one way left to lose it; fails_when=a read ending on ESC does not close the load;
+    /// why_new=the other test has the whole string in one read; seam=none; no_claim=real Ghostty
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_programs_image_split_after_its_escape_still_survives_a_transfer() {
+        let store = SessionStore::new();
+        let rest = &program_image(99)[1..];
+        let octal: String = rest.iter().map(|byte| format!("\\{byte:03o}")).collect();
+        let script =
+            format!("stty -echo; read line; printf '\\033'; sleep 0.3; printf '{octal}'; sleep 30");
+        let args = [OsString::from("-c"), OsString::from(script)];
+        let e = env();
+        store.create(spec(id(46), &args, &e)).expect("create");
+        shadow_write(&store, id(46), &noise_image(7));
+
+        let gate = GatedCapture {
+            capture: Capture::default(),
+            reached: Arc::default(),
+            open: Arc::default(),
+        };
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(gate.clone())));
+        let (_, token) = store.attach(id(46), writer, 1, PIXEL_SIZE).expect("attach");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gate.reached.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(gate.reached.load(Ordering::SeqCst), "no transfer began");
+        store.write_input(id(46), token, b"go\n");
+        std::thread::sleep(Duration::from_millis(100));
+        gate.open.store(true, Ordering::SeqCst);
+
+        let sent = wait_for_bytes(b"i=99", || sent_bytes(&gate.capture));
+        let mut client = crate::terminal::ShadowTerminal::new(80, 24).expect("client");
+        client.set_cell_pixels(10, 20);
+        client.resize(80, 24);
+        client.write(&sent);
+        let stored = client.visible_images();
+        assert!(stored.iter().any(|image| image.id == 99), "{stored:?}");
         store.kill_all();
     }
 

@@ -14,6 +14,7 @@ pub mod credential;
 mod file;
 pub mod forward;
 mod handoff;
+mod images;
 mod input;
 mod layout;
 mod log;

@@ -76,6 +76,10 @@ pub enum PtyError {
 pub struct Pty {
     master: libc::c_int,
     pid: libc::pid_t,
+    /// A pipe that wakes the session's reader out of its wait for the pty, when it has images to
+    /// send and the program is quiet (`wake_reader`). Read end, then write end; `None` if the
+    /// pipe could not be made, which costs that session's images and nothing else.
+    wake: Option<(libc::c_int, libc::c_int)>,
 }
 
 impl Pty {
@@ -265,7 +269,11 @@ impl Pty {
 
         set_nonblocking(master);
         set_cloexec(master, true);
-        Ok(Pty { master, pid })
+        Ok(Pty {
+            master,
+            pid,
+            wake: wake_pipe(),
+        })
     }
 
     /// A pty an earlier program in this process started, handed over across `execve` (see
@@ -277,7 +285,11 @@ impl Pty {
     pub fn adopt(master: libc::c_int, pid: libc::pid_t) -> Pty {
         set_cloexec(master, true);
         set_nonblocking(master);
-        Pty { master, pid }
+        Pty {
+            master,
+            pid,
+            wake: wake_pipe(),
+        }
     }
 
     pub fn master_fd(&self) -> libc::c_int {
@@ -367,6 +379,34 @@ impl Pty {
         self.poll_readable(i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX))
     }
 
+    /// Makes the reader's next or current wait return. Its read then finds nothing, which it
+    /// already takes in its stride. A pipe that is full has a wake pending already.
+    pub fn wake_reader(&self) {
+        if let Some((_, write)) = self.wake {
+            // SAFETY: `write` is this `Pty`'s own open descriptor, and the byte is a live local.
+            let _ = unsafe { libc::write(write, [0u8].as_ptr().cast(), 1) };
+        }
+    }
+
+    /// Empties the wake pipe, so a wake that has been seen does not spin the wait.
+    fn drain_wake(&self) {
+        let Some((read, _)) = self.wake else {
+            return;
+        };
+        let mut buffer = [0u8; 64];
+        // SAFETY: `read` is this `Pty`'s own non-blocking descriptor, and the buffer is live.
+        while unsafe { libc::read(read, buffer.as_mut_ptr().cast(), buffer.len()) } > 0 {}
+    }
+
+    fn wake_descriptor(&self) -> libc::pollfd {
+        libc::pollfd {
+            // poll ignores a negative descriptor.
+            fd: self.wake.map_or(-1, |(read, _)| read),
+            events: libc::POLLIN,
+            revents: 0,
+        }
+    }
+
     /// Linux can keep the slave open after its session leader exits. A pidfd wakes the same reader
     /// for that exit without reaping it, and closes across a daemon hand-off like the other watches.
     #[cfg(target_os = "linux")]
@@ -405,26 +445,32 @@ impl Pty {
                 events: libc::POLLIN,
                 revents: 0,
             },
+            self.wake_descriptor(),
         ];
-        // SAFETY: both descriptors remain open for the call; the array has exactly two entries.
-        if unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) } < 0 {
+        // SAFETY: the descriptors remain open for the call; the array has exactly three entries.
+        if unsafe { libc::poll(descriptors.as_mut_ptr(), 3, -1) } < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        self.drain_wake();
         Ok(descriptors[1].revents != 0)
     }
 
     fn poll_readable(&self, timeout_ms: i32) -> std::io::Result<bool> {
-        let mut descriptor = libc::pollfd {
-            fd: self.master,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one live pollfd, for a master descriptor open while `self` is.
-        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        let mut descriptors = [
+            libc::pollfd {
+                fd: self.master,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            self.wake_descriptor(),
+        ];
+        // SAFETY: two live pollfds, for descriptors open while `self` is.
+        let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, timeout_ms) };
         if ready < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(ready > 0)
+        self.drain_wake();
+        Ok(descriptors[0].revents != 0)
     }
 
     /// Non-blocking; `Ok(0)` means the child has gone.
@@ -506,8 +552,30 @@ impl Pty {
     }
 }
 
+/// A non-blocking, close-on-exec pipe for `Pty::wake`. Made after the fork, so the shell never
+/// has it, and a hand-off makes a new one.
+fn wake_pipe() -> Option<(libc::c_int, libc::c_int)> {
+    let mut ends = [-1 as libc::c_int; 2];
+    // SAFETY: `ends` has room for the two descriptors pipe writes.
+    if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    for end in ends {
+        set_cloexec(end, true);
+        set_nonblocking(end);
+    }
+    Some((ends[0], ends[1]))
+}
+
 impl Drop for Pty {
     fn drop(&mut self) {
+        if let Some((read, write)) = self.wake {
+            // SAFETY: the `Pty` owns both ends, and this is their only close.
+            unsafe {
+                libc::close(read);
+                libc::close(write);
+            }
+        }
         if self.master >= 0 {
             // SAFETY: the `Pty` owns `master`, and this is its only close.
             unsafe { libc::close(self.master) };
