@@ -55,7 +55,7 @@ These override the Design sections below where they differ; each links to its re
 | `WORKROOM_NAME`, `WORKROOM_PATH` | Set | Set (`WORKROOM_PATH` is the clone's path on the host) |
 | `WORKROOM_ROOT_PATH`, `WORKROOM_PARENT_DIR` | Set | Unset (D2) |
 | `WORKROOM_HOST` (new) | `local` | `boxd`, `exedev`, `docker`, `apple` |
-| Environment | The Mac user's login shell, read by `$SHELL -ilc` with `WORKROOM_SHELL_PROBE=1`, falling back to `/etc/paths` | The host user's login shell, read the same way on the host, falling back to the agent's own environment (new) |
+| Environment | The Mac user's login shell in the workroom, read by `$SHELL -ilc` with `WORKROOM_SHELL_PROBE=1` just before the script, falling back to what the CLI was given (the app's own read from home, else `/etc/paths`) | The host user's login shell in the clone, read the same way on the host, falling back to the agent's own environment (new) |
 | Time limit | 600 s wall clock, then the whole process tree is killed | The same, on the host (new) |
 | Live output | Into the "Run setup script" row | The same row (new) |
 | Setup fails | The workroom stays; Open Anyway or Delete | The same; the host stays up until you choose (new) |
@@ -83,7 +83,8 @@ A subcommand of the agent that is already on every host, run over the driver's o
 
 It:
 
-- reads the host user's login-shell environment the way `ShellEnvironment.refresh` does on the Mac:
+- reads the host user's login-shell environment the way `ShellEnvironment.refresh` does on the Mac,
+  but in `--dir` ([ADR 0063](../adr/0063-scripts-get-the-login-shell-of-their-workroom.md)):
   one `<shell> -ilc` (the shell from `shell.rs`) with `WORKROOM_SHELL_PROBE=1`, bounded, falling
   back to its own environment on any failure (timeout, `exec tmux`, a prompt, an unknown shell);
 - runs the script with that environment plus the `WORKROOM_*` variables it is passed, in `--dir`, in

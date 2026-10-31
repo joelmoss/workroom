@@ -32,8 +32,10 @@ The script runs with the new workroom as its working directory. Workroom runs th
 of the script, so a workroom made from a newer commit runs that commit's version. If the workroom has
 no copy, because the script is gitignored say, Workroom runs the root's copy.
 
-The script gets your login shell's environment, so tools you set up in your dotfiles, such as version
-managers, are there. It also gets these variables:
+The script runs as if you had started it from a terminal opened in the workroom. It gets what your
+login shell sets up in that folder, so tools from your dotfiles are there, and a version manager
+picks the versions the workroom pins, such as its `.ruby-version` or `.nvmrc`. It also gets these
+variables:
 
 | Variable             | Value                                                               |
 | -------------------- | ------------------------------------------------------------------- |

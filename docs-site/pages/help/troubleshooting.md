@@ -61,13 +61,13 @@ You are on a `dev` build, one built without version information. Install from a 
 
 ## My setup script can't find a tool, or is slow to start
 
-The app reads your login shell's environment to give it to your scripts, so a slow `.zshrc` slows Workroom down. It sets `WORKROOM_SHELL_PROBE=1` while it does. Skip the slow part when it is set:
+Workroom reads your login shell's environment in the workroom to give it to your scripts, so a slow `.zshrc` slows Workroom down. It sets `WORKROOM_SHELL_PROBE=1` while it does. Skip the slow part when it is set, but not your version manager:
 
 ```sh
 [ -n "$WORKROOM_SHELL_PROBE" ] || eval "$(something-slow init)"
 ```
 
-The app waits 3 seconds. If your shell takes longer, or ends in `exec tmux`, or waits for input, or is `fish` or `nushell`, the app falls back to the system path files. Your script then gets the basics but not what only your dotfiles add. See [Environment variables](../reference/environment-variables.md#workroom_shell_probe).
+Workroom waits 10 seconds. If your shell takes longer, or ends in `exec tmux`, or waits for input, the script still runs, with the environment Workroom already had, and its output says why. That may be only the basics, without what your dotfiles add or the workroom's pinned tool versions. If your shell is `fish` or `nushell`, your interactive config isn't read at all. See [Environment variables](../reference/environment-variables.md#workroom_shell_probe).
 
 ## Terminals have no shell integration under bash
 
