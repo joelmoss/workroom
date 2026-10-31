@@ -1,6 +1,6 @@
 {
   "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
-  "runner": "for f in {files}; do case \"$f\" in *.py) python3 \"$f\" || exit 1 ;; *_test.go) go test \"./$(dirname \"$f\")\" || exit 1 ;; *) echo \"pregate: no runner for $f\" >&2; exit 1 ;; esac; done",
+  "runner": "for f in {files}; do case \"$f\" in *.py) python3 \"$f\" || exit 1 ;; *_test.go) go test \"./$(dirname \"$f\")\" || exit 1 ;; *.rs) ;; *) echo \"pregate: no runner for $f\" >&2; exit 1 ;; esac; done",
   "dependencies": {
     "macapp/WorkroomApp/**": [
       "macapp/Tests/pregate/app_gate_test.py"
@@ -28,6 +28,9 @@
     ],
     "macapp/Scripts/**": [
       "macapp/Tests/pregate/scripts_gate_test.py"
+    ],
+    "macapp/GhosttyKit/**": [
+      "macapp/Tests/pregate/app_gate_test.py"
     ],
     "macapp/Packages/**": [
       "macapp/Tests/pregate/app_gate_test.py",
@@ -80,5 +83,13 @@
   },
   "strays": {
     "allow": ["macapp/Resources/daemon-bootstrap/probe.sh"]
-  }
+  },
+  "allowlist": [
+    {
+      "finding": "env.kv",
+      "paths": [".github/workflows/*.yml"],
+      "pattern": "(\\s*key: )?ghostty-vt-.*",
+      "reason": "an actions/cache key expression, which names no credential"
+    }
+  ]
 }
