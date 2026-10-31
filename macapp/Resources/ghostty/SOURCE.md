@@ -25,15 +25,20 @@ derived `terminfo/x/xterm-ghostty` with `terminfo/78/xterm-ghostty`). So a file 
 
 ## Provenance
 
-The `libghostty-spm` package ships no terminfo or shell-integration, so both are vendored here (once,
+The GhosttyKit xcframework carries no terminfo or shell-integration, so both are vendored here (once,
 in `b81d5c6d`, the SwiftTerm → libghostty commit). This section records what was previously unknown.
 `CHECKSUMS` in this directory pins the exact bytes of everything below, and
 `GhosttyResourcesTests.testBundledResourceChecksumsMatch` recomputes and compares them.
 
-**Engine the measurements below were taken against:** whatever `macapp/project.yml` pinned on
-2026-08-09 — read it, it is the single source of truth for the engine version and this file
-deliberately does not duplicate it. The comparison baseline was a stock Ghostty.app install of that
-same version. Re-measure after a pin bump; these findings expire with it.
+**Engine the measurements below were taken against:** whatever was pinned on 2026-08-09 — see git
+history; `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` is the single source of truth for the
+engine version and this file deliberately does not duplicate it. The comparison baseline was a stock
+Ghostty.app install of that same version. Re-measure after a pin bump; these findings expire with it.
+
+**Regenerated 2026-10-30 for the move to stock Ghostty v1.4.0** (engine `1e9e14af` → `83fb9562`).
+Two files changed: `shell-integration/bash/ghostty.bash` and `zsh/ghostty-integration` now strip
+control bytes from the OSC 7 hostname and directory, so a directory name cannot smuggle in its own
+escape sequence. The only `src/terminfo` change is Zig code, so the compiled entries are unchanged.
 
 **Checked 2026-10-13 for the 2.2.2026100901 → 2.2.2026101301 pin bump** (engine `35a81a98` →
 `1e9e14af`). Nothing to regenerate: only `src/shell-integration/README.md` changed between the refs,

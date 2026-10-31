@@ -50,12 +50,12 @@ Release channels and Sparkle feeds are documented in
   asserts the link exists, is relative, and can actually dispatch `+ssh-cache` on the shipped
   artifact; `GhosttyCLITests` covers the rest. See `Resources/ghostty/SOURCE.md`.
 
-- **The terminal is libghostty** (`libghostty-spm`'s `GhosttyKit` xcframework). The embedding C API
-  is not yet stable, so the pin is EXACT — don't float it. **`project.yml` is the single source of
-  truth for which package version and which ghostty engine we ship** — read the comment there rather
-  than trusting a version quoted anywhere else, and note the trap it documents: the package versions
-  itself independently of ghostty, so package `1.3.1` is not ghostty `v1.3.1`. Bumping it is not a
-  one-line change (see the procedure under §N of `macapp/QA-libghostty.md`). The terminal surface
+- **The terminal is libghostty** (the `GhosttyKit` xcframework, built from stock upstream with no
+  patches; ADR 0061). The embedding C API is not yet stable, so the engine is pinned to one commit.
+  **`GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` is the single source of truth for the engine
+  the app and the daemon ship** — read it there rather than trusting a version quoted anywhere else.
+  Bumping it is not a one-line change (see the procedure under §N of `macapp/QA-libghostty.md`). The
+  build needs Zig and Xcode's Metal toolchain; `xcodegen generate` runs it. The terminal surface
   (`Core/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
   bundled `Resources/ghostty` (terminfo + shell-integration) must ship for the engine to start.
 

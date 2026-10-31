@@ -151,26 +151,19 @@ bump is worthless.
 
 **Procedure (learned on the 1.3.2 and 1.5.20260903 bumps; the TODOS entries that held it were removed
 2026-10-11, see git history):**
-- Package version is not ghostty's version. `libghostty-spm` versions itself; read the release body
-  ("Ghostty commit: …") and `Ghostty.ref`, never the tag. Do not take a build that rebuilds an older
-  ghostty (package `1.5.2` and `upstream.1.3.1-*` were rebuilds of March's v1.3.1).
+- Bump `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh`, and `ZIG_VERSION` to `build.zig.zon`'s
+  `minimum_zig_version` at that sha. Both the app and the daemon's shadow terminal build from that one
+  pin. A new Zig also means its checksums in `ci.yml`, `nightly.yml`, `release.yml` and
+  `vcs/scripts/linux-lint/Dockerfile`, from ziglang.org/download/index.json.
 - Sweep the whole of `include/ghostty.h` with `diff -u` between the two refs, then grep `WorkroomApp*`
   for every removed or changed symbol. The 1.5.20260903 bump rewrote the clipboard API wholesale.
-- The packager's `Script/apply-patches.sh` feature-probes ghostty's source to pick patch variants,
-  and falls back to `git apply --3way` when context drifted, which only echoes "context drifted" and
-  does not fail the build. Read the packager's CI log for that string (`gh run view <id> -R
-  Lakr233/libghostty-spm --log`) before accepting the artifact.
-- SPM leaves `checkouts/libghostty-spm` read-only, so resolving the new pin fails with
-  `Unable to create '.git/index.lock': Permission denied`. `chmod -R u+w` then `rm -rf` that checkout.
-- A `BUILD SUCCEEDED` straight after the resolve proves nothing: Xcode does not recompile Swift
+- A `BUILD SUCCEEDED` straight after the bump proves nothing: Xcode does not recompile Swift
   when only the binary artifact's header changed. `touch` every file that imports GhosttyKit
   (`grep -rl 'import GhosttyKit' macapp`, tests included) and rebuild, or do a clean build.
 - Regenerate `Resources/ghostty/` (terminfo via `infocmp`/`tic`, `shell-integration/`) from the
-  pinned commit; see `Resources/ghostty/SOURCE.md`. Update `GhosttyPinIntegrityTests.expectedRevision`
-  in the same commit.
-- Bump `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` to the same engine sha `project.yml` records, so
-  the daemon's shadow terminal parses what the app does. `make app-test-scripts` fails
-  (`Scripts/test-invariants_test.sh`) if the two disagree.
+  pinned commit; see `Resources/ghostty/SOURCE.md`.
+- Check whether ghostty#14444 (the pane-close freeze, #547) has merged, and whether the new sha holds
+  it. We carry no patches, so a fix arrives only through a bump (ADR 0061).
 - Check the app's terminal still ignores OSC 7501: `src/termio/stream_handler.zig` at the new sha
   must keep `.program_status` a no-op. The daemon answers a program's probe for every daemon-backed
   pane (#358), so if the app's terminal starts answering too, the program reads two replies. If it
@@ -178,20 +171,16 @@ bump is worthless.
 - Check upstream still skips Apple's bash: `detectShell` in `src/termio/shell_integration.zig` at
   the new sha must still return no integration for `/bin/bash` on Darwin. `workroomd`'s
   `shell::invocation` mirrors that skip by hand, so if upstream changes it, change both.
-- Re-check the GhosttyKit modulemap-collision workaround (`macapp/AGENTS.md`). `release.sh` refuses a
-  bundle with a thin Mach-O, and `nightly.yml` builds universal daily, so no separate universal build
-  is needed.
+- Re-check the GhosttyKit modulemap-collision workaround (`macapp/AGENTS.md`).
 - The bake gate (how many clean nightlies before the bump enters a `pre` tag) has never been decided.
 - Rollback is not one line: revert, `rm -rf macapp/DerivedData/SourcePackages`, rebuild. CI's
   `spm-`/`xcbuild-` cache `restore-keys` can restore a mixed state.
 
-**Scope note:** the risk in a bump is the **patch swap**
-(`0002-host-managed-io.patch` → `-modern`, which rewrites PTY hosting), not the C enum. A mid-enum
-`ghostty_action_tag_e` insert renumbers tags, but header and static archive ship together and
-`GhosttyRuntimeAdapter.handleAction` dispatches on symbolic labels — don't spend the retest budget
-there.
+**Scope note:** the risk in a bump is not the C enum. A mid-enum `ghostty_action_tag_e` insert
+renumbers tags, but header and static archive ship together and `GhosttyRuntimeAdapter.handleAction`
+dispatches on symbolic labels — don't spend the retest budget there.
 
-### IO layer (the patch swap)
+### IO layer
 - [ ] **Surface churn**: open/close ~20 panes in one workroom (⌘T then ⌘W, repeatedly) → no crash,
       no beachball. Record RSS before and after (Activity Monitor or `vmmap`), note the delta — not
       just "roughly its starting point," so a slow leak across future bumps is comparable, not
@@ -233,9 +222,8 @@ there.
       was fixed and the workaround must go.
 - [ ] **⌃Tab** reaches a TUI in a single-pane workroom (the pinned engine sends no bytes for it, so
       "nothing happens" is the expected baseline, not a regression).
-- [ ] **Scrollbar overlay** — `0010-fix-scroll-remainder-zeroing.patch` is new in the target
-      package. Scroll a long buffer to the middle, to the top, to the bottom → the overlay tracks
-      without jumping or sticking.
+- [ ] **Scrollbar overlay** — scroll a long buffer to the middle, to the top, to the bottom → the
+      overlay tracks without jumping or sticking.
 
 ### Resource contract (silent-failure class)
 - [ ] `echo $TERM` → `xterm-ghostty`, and `infocmp xterm-ghostty >/dev/null` succeeds.
@@ -275,8 +263,6 @@ there.
       missing binary used to produce.
 
 ### Build shapes CI doesn't cover
-- [ ] **Universal Release build links**: `nightly.yml` builds universal daily and `release.sh` refuses
-      a bundle with a thin Mach-O, so this is covered. To see it before pushing:
-      `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`, then
-      `lipo -info` the binary → both slices.
+- [ ] **Release build links**: `nightly.yml` builds Release-style daily, so this is covered. To see
+      it before pushing: `xcodebuild -configuration Release build`.
 - [ ] **Bake gate**: N clean nightlies before this enters a `pre` tag.
