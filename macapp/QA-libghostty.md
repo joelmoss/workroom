@@ -247,9 +247,11 @@ dispatches on symbolic labels — don't spend the retest budget there.
       are covered by `GhosttyCLITests` and `GhosttyCLIUITests`; **what is left here is the part that
       needs a real remote host.**
 
-      `GHOSTTY_SHELL_FEATURES` is an *injected* env var, not a config key: enable the feature with
-      `shell-integration-features = ssh-env,ssh-terminfo` in `~/.config/ghostty/config`, then open a
-      new pane and confirm `echo $GHOSTTY_SHELL_FEATURES` actually lists them.
+      Both ssh features are off by default, and Workroom has no way to turn them on: it doesn't load
+      `~/.config/ghostty/config`, and it rewrites its generated config. For this test, add
+      `export GHOSTTY_SHELL_FEATURES=cursor,title,path,ssh-env,ssh-terminfo` to your `~/.zshrc` or
+      `~/.bashrc` (the integration reads the variable after those files run), then open a new pane
+      and confirm `echo $GHOSTTY_SHELL_FEATURES` lists them. Remove the line when you're done.
       Then `type ssh` → must report a shell *function*, not `/usr/bin/ssh` (that's what proves the
       wrapper loaded at all). `ssh <a host you control> env | grep -E 'COLORTERM|TERM_PROGRAM'` →
       the variables arrive. **Do not** assert merely on the absence of "command not found": a failing
