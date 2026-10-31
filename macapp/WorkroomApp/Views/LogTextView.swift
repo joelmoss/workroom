@@ -25,6 +25,8 @@ import SwiftUI
 
     textView.isEditable = false
     textView.isSelectable = true
+    // Copies plain text: the theme's colours mean nothing where it is pasted.
+    textView.isRichText = false
     textView.textContainerInset = NSSize(width: padding, height: padding)
     textView.textContainer?.lineFragmentPadding = 0
     textView.textContainer?.widthTracksTextView = true
@@ -71,10 +73,12 @@ import SwiftUI
   }
 
   func setColors(text: NSColor, background: NSColor) {
-    attributes[.foregroundColor] = text
-    textView.textColor = text
     textView.backgroundColor = background
     scrollView.backgroundColor = background
+    // SwiftUI calls this on every update, and recolouring touches the whole log.
+    guard attributes[.foregroundColor] as? NSColor != text else { return }
+    attributes[.foregroundColor] = text
+    textView.textColor = text
   }
 
   func scrollToEnd() {
@@ -86,10 +90,20 @@ import SwiftUI
 
   /// New lines, or a width that wraps them differently.
   @objc private func contentChanged() {
-    let height = textView.frame.height
     // Deferred: this runs inside SwiftUI's layout when the pane is resized.
-    DispatchQueue.main.async { [weak self] in self?.contentHeight = height }
+    DispatchQueue.main.async { [weak self] in self?.measureContent() }
     if following { scrollToEnd() }
+  }
+
+  /// From the laid-out text, as the text view's frame never goes below its viewport: a log widened
+  /// so its lines wrap less would keep its old height.
+  private func measureContent() {
+    guard let manager = textView.layoutManager, let container = textView.textContainer else {
+      return
+    }
+    manager.ensureLayout(for: container)
+    contentHeight =
+      manager.usedRect(for: container).height + 2 * textView.textContainerInset.height
   }
 
   /// The user's scroll, a jump or a new frame. New lines move only the content's end, so they don't
