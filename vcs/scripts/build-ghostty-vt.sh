@@ -5,35 +5,34 @@
 # is what lets a reattaching client be repainted instead of arriving at a blank terminal.
 #
 #   ./build-ghostty-vt.sh [--target <triple>] [--print-prefix]
+#   ./build-ghostty-vt.sh --kit
 #
 # Targets are Zig triples: aarch64-macos, x86_64-macos, x86_64-linux-musl, aarch64-linux-musl.
 # Defaults to the host.
 #
-# THE PIN IS THE POINT. This must build the same engine revision the app's GhosttyKit is built
-# from, because a snapshot written by one and decoded by another is not a supported combination —
-# snapshot format v1 carries no binary-compatibility guarantee, and the header says the API is
-# "definitely going to change". macapp/project.yml is the single source of truth for which engine
-# the app ships; GHOSTTY_SHA below must match the sha recorded there, and the two are bumped
-# together. See docs/designs/remote-workrooms.md, Distribution Plan.
+# --kit builds the app's arm64 GhosttyKit.xcframework instead and prints its path. It needs Xcode's
+# Metal toolchain, and macapp/project.yml's preGenCommand runs it.
 #
-# PARITY IS THE OTHER HALF. The app's engine is the package's Ghostty PLUS its patch stack, and a few
-# of those patches change what the terminal itself does. ghostty-patches/ holds those, vendored
-# unchanged, and they are applied here to a scratch worktree so the shadow behaves as the app does.
-# See ghostty-patches/README.md for which are carried and why.
+# THE PIN IS THE POINT. The daemon and the app must run the same engine revision, because a snapshot
+# written by one and decoded by another is not a supported combination — snapshot format v1 carries
+# no binary-compatibility guarantee, and the header says the API is "definitely going to change".
+# GHOSTTY_SHA below is the single source of truth for both. See docs/designs/remote-workrooms.md,
+# Distribution Plan.
 set -euo pipefail
 
-# Must match `ghostty engine` in macapp/project.yml.
-GHOSTTY_SHA="1e9e14af5"
+GHOSTTY_SHA="83fb95624"
 GHOSTTY_REPO="https://github.com/ghostty-org/ghostty.git"
 # build.zig.zon's `minimum_zig_version` at the pinned sha.
-ZIG_VERSION="0.16.0"
+ZIG_VERSION="0.17.0"
 
 target=""
 print_prefix=false
+kit=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) target="$2"; shift 2 ;;
     --print-prefix) print_prefix=true; shift ;;
+    --kit) kit=true; target="kit"; shift ;;
     *) echo "error: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
@@ -55,11 +54,7 @@ CACHE_ROOT="${WR_GHOSTTY_VT_CACHE:-${HOME}/.cache/workroom/ghostty-vt}"
 # values yields a non-reproducible second binary — a trap exe-scroll's own build script documents.
 # And by the Zig version, since both pins above decide what gets built: keyed by sha alone, a
 # Zig-only bump found the old archive here and kept linking it.
-# And by the parity patches: a changed patch is a different engine at the same sha. Only the
-# authored files count: a `__pycache__` left by an older build would change the hash on its own.
-PATCH_DIR="$(cd "$(dirname "$0")" && pwd)/ghostty-patches"
-PATCH_HASH="$(cd "$PATCH_DIR" && find . -type f \( -name '*.sh' -o -name '*.py' \) | LC_ALL=C sort | xargs cat | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
-PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}-p${PATCH_HASH}-zig${ZIG_VERSION}/${target}"
+PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}-zig${ZIG_VERSION}/${target}"
 
 if $print_prefix; then
   echo "$PREFIX"
@@ -68,7 +63,13 @@ fi
 
 # Already built? The archive plus the header it must ship with is the completeness check; a
 # half-populated prefix from an interrupted build would otherwise look done.
-if [ -f "${PREFIX}/lib/libghostty-vt.a" ] && [ -f "${PREFIX}/include/ghostty/vt/snapshot.h" ]; then
+KIT="${PREFIX}/GhosttyKit.xcframework"
+if $kit && [ -f "${KIT}/Info.plist" ]; then
+  echo "GhosttyKit: cached ($GHOSTTY_SHA)" >&2
+  echo "$KIT"
+  exit 0
+fi
+if ! $kit && [ -f "${PREFIX}/lib/libghostty-vt.a" ] && [ -f "${PREFIX}/include/ghostty/vt/snapshot.h" ]; then
   echo "libghostty-vt: cached ($target, $GHOSTTY_SHA)" >&2
   echo "$PREFIX"
   exit 0
@@ -148,41 +149,38 @@ if [ "$actual" != "$GHOSTTY_SHA" ]; then
   exit 1
 fi
 
-echo "libghostty-vt: building ($target, $GHOSTTY_SHA + parity patches $PATCH_HASH)" >&2
+echo "libghostty-vt: building ($target, $GHOSTTY_SHA)" >&2
 BUILD_TMP="${PREFIX}.building.$$"
-PATCHED_SRC="${PREFIX}.src.$$"
-rm -rf "$BUILD_TMP" "$PATCHED_SRC"
-cleanup() {
-  rm -rf "$BUILD_TMP"
-  # `worktree remove` also drops the entry from $SRC's metadata, which `rm -rf` alone would leave.
-  git -C "$SRC" worktree remove --force "$PATCHED_SRC" >/dev/null 2>&1 || rm -rf "$PATCHED_SRC"
-  git -C "$SRC" worktree prune >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
+rm -rf "$BUILD_TMP"
+trap 'rm -rf "$BUILD_TMP"' EXIT
 
-# Patch a scratch worktree, never $SRC: it may be a checkout somebody else is working in. No
-# bytecode, so the patch helper writes nothing into the repo's patch directory.
-export PYTHONDONTWRITEBYTECODE=1
-git -C "$SRC" worktree add --quiet --detach "$PATCHED_SRC" "$GHOSTTY_SHA" >&2
-for patch in "$PATCH_DIR"/*.sh; do
-  [ -e "$patch" ] || continue
-  bash "$patch" "$PATCHED_SRC" >&2 || {
-    echo "error: parity patch $(basename "$patch") does not apply to ghostty ${GHOSTTY_SHA}." >&2
-    echo "       Upstream moved the code it edits; see ghostty-patches/README.md." >&2
+if $kit; then
+  # Compiling Ghostty's shaders needs this component, which Xcode 26+ does not install by default.
+  xcrun --find metal >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain >&2
+  # Upstream writes the xcframework into the source tree. Its Zig cache runs to a gigabyte and a
+  # rebuild only follows a pin change, so that stays in the scratch directory, out of CI's cache.
+  mkdir -p "$BUILD_TMP"
+  ( cd "$SRC" && rm -rf macos/GhosttyKit.xcframework && $ZIG build \
+      -Demit-xcframework=true \
+      -Demit-macos-app=false \
+      -Dxcframework-target=native \
+      -Di18n=false \
+      -Doptimize=ReleaseFast \
+      --cache-dir "${BUILD_TMP}/zig-cache" >&2 )
+  mv "${SRC}/macos/GhosttyKit.xcframework" "$BUILD_TMP/"
+  rm -rf "${BUILD_TMP}/zig-cache"
+else
+  ( cd "$SRC" && $ZIG build \
+      -Demit-lib-vt=true \
+      -Doptimize=ReleaseFast \
+      -Dtarget="$target" \
+      --cache-dir "${CACHE_ROOT}/zig-cache-${target}" \
+      --prefix "$BUILD_TMP" >&2 )
+
+  if [ ! -f "${BUILD_TMP}/lib/libghostty-vt.a" ]; then
+    echo "error: build produced no libghostty-vt.a for $target." >&2
     exit 1
-  }
-done
-
-( cd "$PATCHED_SRC" && $ZIG build \
-    -Demit-lib-vt=true \
-    -Doptimize=ReleaseFast \
-    -Dtarget="$target" \
-    --cache-dir "${CACHE_ROOT}/zig-cache-${target}" \
-    --prefix "$BUILD_TMP" >&2 )
-
-if [ ! -f "${BUILD_TMP}/lib/libghostty-vt.a" ]; then
-  echo "error: build produced no libghostty-vt.a for $target." >&2
-  exit 1
+  fi
 fi
 
 # Publish atomically, so a concurrent reader never sees a half-written prefix.
@@ -190,4 +188,4 @@ rm -rf "$PREFIX"
 mkdir -p "$(dirname "$PREFIX")"
 mv "$BUILD_TMP" "$PREFIX"
 
-echo "$PREFIX"
+if $kit; then echo "$KIT"; else echo "$PREFIX"; fi

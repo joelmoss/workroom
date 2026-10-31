@@ -194,8 +194,9 @@ final class GhosttyCLITests: XCTestCase {
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
     let script = dir.appendingPathComponent("ssh")
-    try "#!/bin/bash\necho \"FAKE_SSH_ARGS: $@\" >&2\nexit 0\n".write(
-      to: script, atomically: true, encoding: .utf8)
+    try "#!/bin/bash\necho \"FAKE_SSH_ARGS: $@\" >&2\necho \"FAKE_SSH_TERM: $TERM\" >&2\nexit 0\n"
+      .write(
+        to: script, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
     return dir
   }
@@ -224,6 +225,7 @@ final class GhosttyCLITests: XCTestCase {
     process.environment = ProcessInfo.processInfo.environment.merging([
       "GHOSTTY_SHELL_FEATURES": features,
       "GHOSTTY_BIN_DIR": try macOSDir().path,
+      "TERM": "xterm-ghostty",
       "PATH": fakeSSHDir.path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? ""),
     ]) { _, new in new }
 
@@ -247,9 +249,12 @@ final class GhosttyCLITests: XCTestCase {
       result.stderr.contains("FAKE_SSH_ARGS:"),
       "the stub ssh was never invoked at all; got: \(result.stderr)")
     XCTAssertTrue(
-      result.stderr.contains("SetEnv=TERM=xterm-256color")
-        && result.stderr.contains("SendEnv=COLORTERM"),
+      result.stderr.contains("SendEnv=COLORTERM"),
       "ssh-env was enabled, so env-forwarding flags must reach the real ssh call; got: \(result.stderr)"
+    )
+    XCTAssertTrue(
+      result.stderr.contains("FAKE_SSH_TERM: xterm-256color"),
+      "the stub host has no terminfo, so ssh must run with a TERM it can use; got: \(result.stderr)"
     )
     XCTAssertTrue(
       result.stderr.contains("myhost.example") && result.stderr.contains("-p 2222"),

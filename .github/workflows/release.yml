@@ -81,12 +81,11 @@ jobs:
 
       # The bundled `workroomd` links libghostty-vt so a reattaching pane can be repainted, which
       # needs Zig — pinned by version AND checksum, as ci.yml's daemon job pins it: an unpinned
-      # toolchain silently changes the terminal emulator the app ships against. Universal builds
-      # need the library for BOTH darwin architectures; the cache holds one prefix per (sha, arch).
+      # toolchain silently changes the terminal emulator the app ships against.
       - name: Install Zig
         env:
-          ZIG_VERSION: "0.16.0"
-          ZIG_SHA256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+          ZIG_VERSION: "0.17.0"
+          ZIG_SHA256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
         run: |
           url="https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
           curl -fsSL "$url" -o zig.tar.xz
@@ -94,10 +93,9 @@ jobs:
           mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
           echo "$HOME/.zig" >> "$GITHUB_PATH"
 
-      # Scripts/build-daemon.sh builds workroomd per darwin arch and lipos the slices for the universal
-      # app. Homebrew rust can't cross-compile, so ensure rustup has both darwin targets.
-      - name: Add Rust darwin targets (universal workroomd)
-        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      # Homebrew rust can't cross-compile, so ensure rustup has the darwin target.
+      - name: Add Rust darwin target (workroomd)
+        run: rustup target add aarch64-apple-darwin
 
       # The app bundle carries a static Linux workroomd per arch for remote hosts (issue #227),
       # cross-built by build-daemon.sh with cargo-zigbuild and the Zig installed above.

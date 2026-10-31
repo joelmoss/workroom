@@ -18,6 +18,8 @@ CLAUDE.local.md
 # `swift test` output and SwiftPM's editor state in each local package (make app-package-test).
 /macapp/Packages/*/.build/
 /macapp/Packages/*/.swiftpm/
+# Link to vcs/scripts/build-ghostty-vt.sh's build, made by project.yml's preGenCommand.
+/macapp/GhosttyKit/GhosttyKit.xcframework
 /macapp/WorkroomApp.xcodeproj/*
 # ...except the SPM lockfile. `exactVersion` in project.yml pins a git TAG, which is mutable — the
 # libghostty packager has already re-cut one (arm64e shipped 2026-07-21, reverted three days later),
