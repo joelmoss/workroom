@@ -69,9 +69,10 @@ enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
 ///
 /// Deliberately **not** added to `GhosttySurfaceView.isAppShortcut`. That list is a static allowlist,
 /// and whether Tab belongs to the app depends on runtime state — a workroom with one pane has nothing
-/// to switch to, so ⌃Tab must reach the TUI. ⌃⌘arrows is unreserved the same way, though libghostty's
-/// own default binding takes it when there is no other pane. The `AppDelegate`
-/// monitor runs inside `NSApp.sendEvent` *before* key-equivalent dispatch, so when the switcher does
+/// to switch to, so ⌃Tab is left to the terminal. It never reaches a TUI: Ghostty's default `next_tab`
+/// binding consumes it, and unbinding that would put junk on a shell prompt (#555). ⌃⌘arrows is
+/// unreserved the same way, and libghostty's own default binding takes that too when there is no
+/// other pane. The `AppDelegate` monitor runs inside `NSApp.sendEvent` *before* key-equivalent dispatch, so when the switcher does
 /// act the surface never sees the key regardless.
 enum QuickSwitcherKey {
   /// Tab. Matched by keyCode, not characters, so it is layout-stable (and ⇧Tab still reads as Tab).
@@ -110,7 +111,7 @@ enum QuickSwitcherKey {
 @MainActor
 enum QuickSwitcher {
   /// Act on a switcher keystroke. Returns whether it actually switched — the key monitor consumes the
-  /// event only then, so ⌃Tab still reaches a TUI in a workroom that has nothing to switch to.
+  /// event only then, so a workroom with nothing to switch to leaves ⌃Tab to the terminal.
   @discardableResult
   static func step(
     _ kind: QuickSwitcherKind, reverse: Bool, in store: AppStore,
