@@ -193,9 +193,9 @@ jobs:
       - name: Install Zig
         uses: ./.github/actions/install-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           archive: x86_64-linux
-          sha256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
 
       # Keyed on the pinned engine sha, so a bump refetches and rebuilds and nothing else does.
       # Without this every run clones Ghostty and spends ~75s building the emulator.
@@ -203,7 +203,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -252,9 +252,9 @@ jobs:
       - name: Install Zig
         uses: ./.github/actions/install-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           archive: x86_64-linux
-          sha256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
 
       # Its own key per arch. Sharing `daemon-terminal-state`'s key would restore that job's glibc
       # prefix, count as a hit, never save the musl one, and rebuild it on every run.
@@ -262,7 +262,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
+          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -398,9 +398,9 @@ jobs:
       - name: Install Zig
         uses: ./.github/actions/install-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           archive: aarch64-macos
-          sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+          sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
 
       # The Debug build bundles the Linux daemons too (#227), cross-built by build-daemon.sh with
       # cargo-zigbuild and the Zig above.
@@ -419,12 +419,13 @@ jobs:
         run: cargo install cargo-zigbuild --locked --version 0.23.4
 
       # Keyed on the pinned engine sha, as in `daemon-terminal-state`: a bump refetches and
-      # rebuilds, nothing else does.
-      - name: Cache libghostty-vt
+      # rebuilds, nothing else does. `kit` because this job's cache also holds GhosttyKit, which
+      # `app-scripts`, on the same OS and script, never builds: sharing a key would restore that.
+      - name: Cache libghostty-vt and GhosttyKit
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
+          key: ghostty-vt-kit-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
       # Xcode builds the bundled workroomd (Scripts/build-daemon.sh) on the stable toolchain, the
       # macOS tests below build it again in debug, and all of it is cached here, the workspace's
@@ -477,10 +478,8 @@ jobs:
       # places this one file — the rest of the gitignored .xcodeproj doesn't exist yet) so an
       # unchanged set skips the network entirely. Package.resolved is in the key, not just
       # project.yml, because a pin can be re-reviewed to a different revision under the SAME
-      # version string (GhosttyPinIntegrityTests exists for exactly this: the packager has re-cut an
-      # already-published tag before) — keying on project.yml alone let a stale cache silently keep
-      # serving the old revision after such a bump, failing that test on every run until the cache
-      # aged out.
+      # version string — keying on project.yml alone let a stale cache silently keep serving the old
+      # revision after such a bump until the cache aged out.
       #
       # Deliberately NO restore-keys fallback: a fuzzy prefix match can restore an older cache whose
       # checked-out `workspace-state.json` disagrees with the CURRENT Package.resolved — and SPM
@@ -704,15 +703,15 @@ jobs:
       - name: Install Zig
         uses: ./.github/actions/install-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           archive: aarch64-macos
-          sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+          sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
 
       - name: Cache libghostty-vt
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
       # The target directory build-daemon_test.sh builds into (BUILD_DAEMON_TEST_TARGET_DIR on the test
       # step below); without one the test compiles from scratch in vcs/target/build-daemon-test. Not

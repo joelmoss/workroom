@@ -106,9 +106,9 @@ def main() -> int:
     log.terminate()
     log.wait()
     # Directories too, deepest first, each to the newest time among its entries: git tracks no
-    # directory, so a checkout leaves every one at now, and cargo's `rerun-if-changed` on one
-    # (workroomd's build.rs watches vcs/scripts/ghostty-patches) reads the directory's own mtime,
-    # which reran the build script, and so rebuilt the crate, on every CI run.
+    # directory, so a checkout leaves every one at now, and cargo's `rerun-if-changed` on one reads
+    # the directory's own mtime, which reran the build script, and so rebuilt the crate, on every
+    # CI run.
     # Over tracked entries only: an untracked build dir inside would otherwise carry its "now" up.
     children: dict[str, set[str]] = {}
     for path in tracked:

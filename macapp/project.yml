@@ -5,7 +5,7 @@
 #     cd macapp && xcodegen generate && open WorkroomApp.xcodeproj
 #
 # If you'd rather not use XcodeGen, create a SwiftUI macOS App target in Xcode,
-# add the libghostty-spm Swift Package, drop in the WorkroomApp/ sources, and add the
+# add the local GhosttyKit package, drop in the WorkroomApp/ sources, and add the
 # Scripts/build-helper.sh as a post-build Run Script phase (see README.md).
 
 name: WorkroomApp
@@ -14,6 +14,8 @@ options:
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
+  # Before generation, not a build phase: SwiftPM needs the package's binary target at resolve time.
+  preGenCommand: kit="$(../vcs/scripts/build-ghostty-vt.sh --kit)" && ln -sfn "$kit" GhosttyKit/GhosttyKit.xcframework
 
 # Build configurations. Debug ("Workroom Dev") and Nightly ("Workroom Nightly") are distinct
 # side-by-side identities (issue #91) layered on the base identity via per-config settings below;
@@ -22,6 +24,11 @@ configs:
   Debug: debug
   Release: release
   Nightly: release
+
+settings:
+  base:
+    # Apple silicon only (ADR 0061). build-helper.sh and build-daemon.sh follow ARCHS.
+    ARCHS: arm64
 
 packages:
   # The app's own local packages (macapp/Packages), each in Swift 6 with tests that run under plain
@@ -61,33 +68,17 @@ packages:
     url: https://github.com/sparkle-project/Sparkle
     from: "2.9.3"
   libghostty:
-    # Prebuilt GhosttyKit.xcframework (the libghostty C API as a static archive) distributed
-    # as a Swift package. We link the `GhosttyKit` product (raw C API) and roll our own
-    # terminal surface view — NOT the higher-level `GhosttyTerminal` wrapper. The embedding
-    # API is not yet stable, so pin EXACT.
+    # The libghostty C API as a static archive. We link the `GhosttyKit` product (raw C API) and
+    # roll our own terminal surface view. The embedding API is not yet stable, so the engine is
+    # pinned to one commit: GHOSTTY_SHA in vcs/scripts/build-ghostty-vt.sh, the single source of
+    # truth, which builds the daemon's libghostty-vt too. Do not restate it elsewhere.
     #
-    # THIS IS THE SINGLE SOURCE OF TRUTH FOR THE TERMINAL ENGINE VERSION. Do not restate it in
-    # docs or code comments — point here instead. Two numbers, and they are NOT the same number:
+    # The package's xcframework is a gitignored link to that script's cached build, made by
+    # preGenCommand above.
     #
-    #   package version : 2.2.2026101301   (Lakr233/libghostty-spm's OWN version — the pin below)
-    #   ghostty engine  : untagged        (what that package is built from; sha 1e9e14af, 2026-10-12)
-    #
-    # The package versions itself independently of ghostty: package 2.2.2026101301 is not a ghostty
-    # version at all, and package 1.3.2 was NOT ghostty v1.3.2.
-    #
-    # CHECK THE DATES, NOT THE VERSION NUMBERS. ghostty's newest TAG is v1.3.1 (332b2aef,
-    # 2026-03-13) — four months OLDER than the engine we ship. The packager's `upstream.1.3.1-*`
-    # builds (and package 1.5.2 with them) are rebuilds of that March release, so taking one would
-    # be an engine DOWNGRADE. This has now misled two separate readings of this pin.
-    # Reading the package version as a ghostty version once put a false premise into the
-    # roadmap and made a P1 out of it. To check what a package release actually contains, read its release body
-    # ("Ghostty commit: …") and the repo's hand-maintained `Ghostty.ref` — never the tag alone.
-    #
-    # Bumping this is NOT a one-line change: see the procedure under §N of
-    # macapp/QA-libghostty.md for the patch-swap risk, the resources that must be regenerated with
-    # it, and the bake gate.
-    url: https://github.com/Lakr233/libghostty-spm
-    exactVersion: 2.2.2026101301
+    # Bumping the engine is NOT a one-line change: see the procedure under §N of
+    # macapp/QA-libghostty.md for the resources that must be regenerated with it, and the bake gate.
+    path: GhosttyKit
   Sentry:
     # Crash reporting, app-hang detection, tracing, profiling, and metrics. We link the `Sentry`
     # SPM product (the recommended static framework — it also re-exports the SwiftUI APIs since

@@ -145,15 +145,13 @@ echo "==> Exporting (Developer ID; re-signs nested code with a secure timestamp)
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \
   -exportOptionsPlist "$EXPORT_PLIST"
 
-# A release must be universal all the way down. This is asserted, not assumed, because it silently
-# regressed once: `ARCHS` is a space-separated list ("arm64 x86_64") and build-helper.sh used to
-# match it as a single token, falling back to an arm64-only Go build with nothing but a `warn:` in
-# the xcodebuild log. The result shipped as a fat app wrapping a thin CLI — and since the app drives
-# every workroom operation through that CLI, it launched fine on an Intel Mac and then failed at
-# everything. Nothing downstream catches this: codesign, notarization and Gatekeeper are all happy
-# with a thin nested binary.
+# A release must be arm64 all the way down (ADR 0061). This is asserted, not assumed, because it
+# silently regressed once: `ARCHS` is a space-separated list and build-helper.sh used to match it as
+# a single token, falling back to the wrong Go build with nothing but a `warn:` in the xcodebuild
+# log. Nothing downstream catches this: codesign, notarization and Gatekeeper are all happy with a
+# nested binary for the wrong architecture.
 echo "==> Verifying architectures (app + embedded CLI)"
-check_universal() {
+check_arm64() {
   local label="$1" path="$2" archs
   # Distinguish the three ways this can go wrong. Collapsing them into one "missing the arm64 slice"
   # message sends whoever hits it at 2am hunting an architecture problem that isn't one.
@@ -161,16 +159,14 @@ check_universal() {
   [ -f "$path" ] || { echo "error: $label not found at $path." >&2; exit 1; }
   archs="$(lipo -archs "$path" 2>/dev/null || true)"
   [ -n "$archs" ] || { echo "error: $label is not a Mach-O binary (lipo read no architectures) — $path" >&2; exit 1; }
-  for want in arm64 x86_64; do
-    case " $archs " in
-      *" $want "*) ;;
-      *) echo "error: $label is missing the $want slice (has: ${archs:-none}) — $path" >&2; exit 1 ;;
-    esac
-  done
+  case " $archs " in
+    *" arm64 "*) ;;
+    *) echo "error: $label is missing the arm64 slice (has: ${archs:-none}) — $path" >&2; exit 1 ;;
+  esac
   echo "    $label: $archs"
 }
-check_universal "app binary" "$APP/Contents/MacOS/${APP_NAME}"
-check_universal "embedded workroom CLI" "$APP/Contents/Resources/workroom"
+check_arm64 "app binary" "$APP/Contents/MacOS/${APP_NAME}"
+check_arm64 "embedded workroom CLI" "$APP/Contents/Resources/workroom"
 
 # Naming only those two would leave the invariant narrower than the sentence above claims: Sparkle
 # ships XPC services, an Autoupdate tool and an Updater app, and notarization is just as happy with
@@ -181,7 +177,7 @@ while IFS= read -r macho; do
   case "$macho" in
     "$APP/Contents/MacOS/${APP_NAME}" | "$APP/Contents/Resources/workroom") continue ;;
   esac
-  check_universal "nested: ${macho#"$APP/"}" "$macho"
+  check_arm64 "nested: ${macho#"$APP/"}" "$macho"
 done < <(find "$APP" -type f -perm -u+x -exec sh -c 'file -b "$1" | grep -q "Mach-O" && echo "$1"' _ {} \;)
 
 # Ghostty's shell integration reaches the engine's `+action` CLI through Contents/MacOS/ghostty, a

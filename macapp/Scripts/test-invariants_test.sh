@@ -80,6 +80,15 @@ if ! grep -Eq '^[[:space:]]*echo "MIN_OS=' "$RELEASE_SH"; then
   fails=$((fails + 1))
 fi
 
+# --- the appcast keeps Intel Macs off arm64-only builds --------------------------------------
+# The minimum system version cannot do this: Intel Macs run macOS 15 and 26. Without this element,
+# Sparkle offers every Intel install a DMG it cannot launch, and the feed still publishes green.
+if ! grep -q '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' "$APPCAST_SH"; then
+  echo "FAIL: appcast.sh no longer marks items arm64-only; Sparkle would offer Intel Macs an app"
+  echo "      they cannot launch."
+  fails=$((fails + 1))
+fi
+
 # --- Workroom Nightly keeps its own Sparkle feed --------------------------------------------
 # Sparkle offers every UNTAGGED item — the stable channel — to every client, whatever
 # `allowedChannels` says. While Nightly shared appcast.xml it was therefore offered the main
@@ -183,31 +192,6 @@ if ! grep -q '^[[:space:]]*CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlem
   echo "      (or a config overrides it) — the audio-input and apple-events entitlements would vanish"
   echo "      from the signed app while every test stays green."
   fails=$((fails + 1))
-fi
-
-# --- The app and the daemon's shadow terminal run the same Ghostty engine --------------------
-# workroomd's shadow repaints every reattaching pane, so it must parse exactly what the app's
-# GhosttyKit parses (vcs/scripts/build-ghostty-vt.sh: "THE PIN IS THE POINT"). The two pins are
-# bumped by hand in two files, and GhosttyPinIntegrityTests only covers Package.resolved, so a
-# half-done bump builds and tests green. Both are abbreviations of one sha, so one must prefix the
-# other.
-GHOSTTY_VT_SH="${TEST_INVARIANTS_GHOSTTY_VT_SH:-$ROOT/vcs/scripts/build-ghostty-vt.sh}"
-app_engine="$(sed -n 's/^[[:space:]]*#[[:space:]]*ghostty engine[[:space:]]*:.*sha \([0-9a-f]\{7,\}\).*/\1/p' "$PROJECT_YML")"
-shadow_engine="$(sed -n 's/^GHOSTTY_SHA="\([0-9a-f]\{7,\}\)"$/\1/p' "$GHOSTTY_VT_SH")"
-if [ -z "$app_engine" ] || [ -z "$shadow_engine" ]; then
-  echo "FAIL: could not read the engine sha from project.yml ('ghostty engine : ... sha <sha>')"
-  echo "      or build-ghostty-vt.sh (GHOSTTY_SHA=\"<sha>\"): got '$app_engine' and '$shadow_engine'."
-  fails=$((fails + 1))
-else
-  case "$app_engine:$shadow_engine" in
-    "$shadow_engine"*:* | *:"$app_engine"*) ;;
-    *)
-      echo "FAIL: project.yml ships Ghostty $app_engine but build-ghostty-vt.sh builds the shadow"
-      echo "      from $shadow_engine. Bump both together, or reattached panes repaint from a"
-      echo "      different engine."
-      fails=$((fails + 1))
-      ;;
-  esac
 fi
 
 if [ "$fails" -ne 0 ]; then

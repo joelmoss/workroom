@@ -153,6 +153,7 @@ ITEM=$(
       <sparkle:version>${BUILD_NUMBER}</sparkle:version>
       <sparkle:shortVersionString>${SHORT_VERSION}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>${MIN_OS}</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
       ${CHANNEL_ELEM}
       <link>${NOTES_URL}</link>
       ${NOTES_DESC}
