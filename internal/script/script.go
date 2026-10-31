@@ -16,8 +16,9 @@ import (
 // Combined stdout+stderr is always captured and returned. When stream is non-nil it also
 // receives that output live as the script runs, letting callers render a log panel.
 //
-// The script (setup or teardown) runs with its working directory set to the workroom, and with
-// these environment variables available:
+// The script (setup or teardown) runs as if started from a terminal opened in the workroom: with its
+// working directory set there, the environment the user's login shell sets up there
+// (loginEnvironment), and these environment variables available:
 //
 //	WORKROOM_NAME        the workroom's name
 //	WORKROOM_PATH        absolute path to the workroom directory
@@ -42,7 +43,16 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	// writing files a teardown was already removing.
 	setProcessGroup(cmd)
 	cmd.Dir = workroomDir
-	cmd.Env = append(os.Environ(),
+	var buf bytes.Buffer
+	var sink io.Writer = &buf
+	if stream != nil {
+		sink = io.MultiWriter(&buf, stream)
+	}
+	env, problem := loginEnvironment(workroomDir)
+	if problem != "" {
+		fmt.Fprintf(sink, "workroom: couldn't read the login shell's environment (%s); using the current one\n", problem)
+	}
+	cmd.Env = append(env,
 		"WORKROOM_NAME="+name,
 		"WORKROOM_PATH="+workroomDir,
 		"WORKROOM_ROOT_PATH="+rootPath,
@@ -51,12 +61,6 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 		// Where the script runs; a remote workroom's host sets its own kind instead.
 		"WORKROOM_HOST=local",
 	)
-
-	var buf bytes.Buffer
-	var sink io.Writer = &buf
-	if stream != nil {
-		sink = io.MultiWriter(&buf, stream)
-	}
 	cmd.Stdout = sink
 	cmd.Stderr = sink
 
