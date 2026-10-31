@@ -33,6 +33,25 @@ final class LogTextControllerTests: XCTestCase {
     XCTAssertEqual(log.textView.string, "first\n\nthird\nfourth")
   }
 
+  /// Value: protects=D9, a log reports its text's height, so widening one whose lines wrap less
+  /// shrinks it; fails_when=the height comes from the text view's frame, which stays at its viewport;
+  /// no_claim=SwiftUI's use of the value
+  func testContentHeightComesFromTheLaidOutText() {
+    let log = LogTextController(padding: 10)
+    log.scrollView.frame = NSRect(x: 0, y: 0, width: 100, height: 200)
+    log.textView.frame.size.width = 100
+    log.show([String(repeating: "word ", count: 40)][...])
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    let wrapped = log.contentHeight
+    XCTAssertGreaterThan(wrapped, 60, "the line should wrap at this width")
+
+    log.scrollView.frame.size.width = 1000
+    log.textView.frame.size.width = 1000
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+    XCTAssertLessThan(log.contentHeight, 60, "two lines and padding, under the 200pt viewport")
+  }
+
   /// Value: protects=D10, a log at its end follows new lines, and one scrolled up stays put until
   /// Jump to latest; fails_when=a reader is dragged down by new output, or the log stops following;
   /// no_claim=the Jump to latest button's drawing
@@ -59,5 +78,8 @@ final class LogTextControllerTests: XCTestCase {
     log.scrollToEnd()
     XCTAssertTrue(log.following)
     XCTAssertTrue(atEnd())
+
+    log.scrollView.frame.size.height = 60
+    XCTAssertTrue(atEnd(), "keeps its end in view through a resize")
   }
 }
