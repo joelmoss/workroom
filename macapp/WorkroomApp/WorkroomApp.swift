@@ -343,7 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   ///
   /// Three outcomes, because this shortcut is the first one whose consumption is *conditional*:
   /// - `.passThrough` — not one of our windows (Settings, About, the quick terminal). The key belongs
-  ///   to whatever is focused there, so ⌃Tab still reaches a TUI in the quick terminal.
+  ///   to whatever is focused there; a terminal's own ⌃Tab binding then consumes it (#555).
   /// - `.swallow` — one of ours with a modal up. Raising a window and moving its selection under its
   ///   own sheet would leave that sheet acting on a workroom the user never chose (for the commit
   ///   sheet, a wrong-target VCS write). Gated on the FULL `hasModalPresentation` predicate, not
@@ -473,8 +473,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // window by most-recent use, ⌃Tab steps the current workroom's panes. Caught here for the same
       // reason as ⌘1–9, and *only* here: Tab is deliberately NOT in `isAppShortcut`, because whether
       // the app owns it depends on runtime state (a workroom with one pane has nothing to switch to,
-      // so ⌃Tab must still reach a TUI). Both trigger modifiers are preferences — a global hotkey
-      // grabber like AltTab beats this monitor and can't be detected.
+      // so the key is left to the terminal, where Ghostty's `next_tab` binding consumes it, #555).
+      // Both trigger modifiers are preferences — a global hotkey grabber like AltTab beats this
+      // monitor and can't be detected.
       if QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) != nil {
         // Decided on the main actor; the event itself goes back out here, since `NSEvent` isn't
         // Sendable and can't be the closure's result.
@@ -485,13 +486,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           case .act(let store):
             // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
             // Tested INSIDE `.act`, not above the gate: above it, a held ⌃Tab in the quick terminal or
-            // in a single-pane workroom — the cases deliberately handed to the TUI — passed its first
-            // keystroke through and had every repeat after it silently eaten.
+            // in a single-pane workroom — the cases deliberately left to the terminal — passed its
+            // first keystroke through and had every repeat after it silently eaten.
             if event.isARepeat { return false }
             guard let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) else {
               return true
             }
-            // Consumed only when it switched, so ⌃Tab still reaches a TUI in a single-pane workroom —
+            // Consumed only when it switched, so a single-pane workroom leaves ⌃Tab to the terminal —
             // the same rule as the ⌥⌘digit / ⌥⌘arrow branches below.
             return QuickSwitcherController.shared.handleTrigger(
               hit.kind, reverse: hit.reverse, in: store) == false

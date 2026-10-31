@@ -410,7 +410,7 @@ final class QuickSwitcherControllerTests: XCTestCase {
     XCTAssertFalse(
       controller.handleTrigger(
         .panes, reverse: false, in: store, registry: registry, recency: recency),
-      "one pane ⇒ nothing to switch to, so ⌃Tab must reach the TUI")
+      "one pane ⇒ nothing to switch to, so ⌃Tab is left to the terminal")
     XCTAssertFalse(controller.isLive)
   }
 

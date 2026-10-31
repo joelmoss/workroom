@@ -223,8 +223,9 @@ dispatches on symbolic labels — don't spend the retest budget there.
       (`isControl` in `src/input/key_encode.zig`, checked on v1.4.0). If that stops being true,
       `filterSpecialCharacters` needs another look.
 - [ ] **⌃Tab** does nothing in a TUI in a single-pane workroom. The engine has bytes for the key, but
-      Ghostty's default `next_tab` binding consumes it first and Workroom ignores that action, so
-      "nothing happens" is the current baseline until #555 is fixed.
+      Ghostty's default `next_tab` binding consumes it first and Workroom ignores that action. We
+      keep it that way: unbinding it puts `;5;9~` on a shell prompt (#555, won't fix). If it starts
+      reaching a TUI, the engine's default binding changed.
 - [ ] **Scrollbar overlay** — scroll a long buffer to the middle, to the top, to the bottom → the
       overlay tracks without jumping or sticking.
 

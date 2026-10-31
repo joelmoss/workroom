@@ -10,7 +10,8 @@ For user-facing wording, follow [app copy](../app-copy.md).
 
 - **⌥Tab / ⌃Tab (the quick switchers, issue #132) are monitor-only and deliberately NOT in
   `GhosttySurfaceView.isAppShortcut`.** That list is static, but whether the app owns Tab depends on
-  runtime state: a workroom with one pane has nothing to switch to, so ⌃Tab must reach the TUI. The
+  runtime state: a workroom with one pane has nothing to switch to, so ⌃Tab is left to the terminal,
+  where Ghostty's default `next_tab` binding consumes it (#555 keeps it that way). The
   monitor branch consumes the event only when a switch actually happened, exactly as ⌥⌘digit and
   ⌥⌘arrows already do — same reasoning as the unreserved ⌃⌘arrows. `AppShortcutReservationTests` pins
   Tab as never-reserved so a later "defence in depth" edit can't take `<C-Tab>` from every TUI. Both
