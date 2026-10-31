@@ -35,6 +35,8 @@ import SwiftUI
     textView.isHorizontallyResizable = false
     textView.autoresizingMask = [.width]
 
+    textView.setAccessibilityIdentifier("CreationPane.log")
+
     scrollView.borderType = .noBorder
     scrollView.hasVerticalScroller = true
     scrollView.autohidesScrollers = true
