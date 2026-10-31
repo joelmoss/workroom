@@ -17,7 +17,7 @@ Workroom sets these for both the setup script and the teardown script. The scrip
 | `WORKROOM_PARENT_DIR` | A deprecated alias for `WORKROOM_ROOT_PATH`, still set so existing scripts keep working. Use `WORKROOM_ROOT_PATH` in new scripts. |
 | `WORKROOM_HOST` | Where the script runs: `local` on your Mac, or the kind of host for a remote workroom: `boxd`, `exedev`, `docker`, `apple` or `ssh`. Nightly only. |
 
-Scripts also receive the rest of your login shell's environment, such as anything you export in your dotfiles. See [Prepare a project](../guides/prepare-a-project.md) for writing the scripts.
+Scripts also receive the rest of the environment your login shell sets up in the workroom, such as anything you export in your dotfiles and the tool versions the workroom pins. See [Prepare a project](../guides/prepare-a-project.md) for writing the scripts.
 
 ### On a remote host
 
@@ -32,7 +32,7 @@ A script for a remote workroom runs on its host, and the environment differs fro
   ```
 
   Under `set -u`, an unguarded `$WORKROOM_ROOT_PATH` fails the script, and so fails the create.
-- The rest of the environment is the host user's login shell, never your Mac's. Your Mac's environment, secrets included, stays on your Mac.
+- The rest of the environment is what the host user's login shell sets up in the workroom, never your Mac's. Your Mac's environment, secrets included, stays on your Mac.
 
 In Nightly, the app's Git commands on every kind of remote host also use that host user's login
 environment. The daemon reads it once and keeps it until it restarts. A login profile that fails or
@@ -44,7 +44,7 @@ See [Work on a remote host](../guides/work-on-a-remote-host.md).
 
 ### `WORKROOM_SHELL_PROBE`
 
-Workroom sets this to `1` while it reads your login shell's environment, so your shell startup file can skip slow work. The macOS app reads your environment each time it creates or deletes a workroom, and on Nightly the same happens on a remote host before a script runs. The remote daemon also reads the login environment once for the app's Git commands. It is not passed on to your script.
+Workroom sets this to `1` while it reads your login shell's environment, so your shell startup file can skip slow work. The macOS app reads your environment each time it creates or deletes a workroom. Workroom reads it again in the workroom just before a setup or teardown script runs, on your Mac and on a remote host. The remote daemon also reads the login environment once for the app's Git commands. It is not passed on to your script.
 
 In your `.zshrc`:
 
@@ -52,7 +52,9 @@ In your `.zshrc`:
 [ -n "$WORKROOM_SHELL_PROBE" ] || eval "$(something-slow init)"
 ```
 
-On your Mac the app waits 3 seconds for the shell. If the shell doesn't finish, the app falls back to the system's own path files, so your script still gets the basics but not what only your dotfiles add. A `.zshrc` that ends with `exec tmux`, or waits for input, makes the shell fail. See [Troubleshooting](../help/troubleshooting.md#my-setup-script-cant-find-a-tool-or-is-slow-to-start).
+Don't skip your version manager this way: your script needs it to pick the workroom's tool versions.
+
+The read just before a script waits 10 seconds for the shell. If the shell doesn't finish or fails, the script still runs, with the environment Workroom already had, and its output says why. A `.zshrc` that ends with `exec tmux`, or waits for input, makes the shell fail. See [Troubleshooting](../help/troubleshooting.md#my-setup-script-cant-find-a-tool-or-is-slow-to-start).
 
 ### `WORKROOM_CONFIG`
 
