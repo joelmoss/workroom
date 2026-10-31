@@ -25,13 +25,10 @@ func loginShellWith(t *testing.T, profile string) {
 	t.Setenv("SHELL", "/bin/bash")
 }
 
-// A workroom script that prints the given lines, one shell word each.
-func scriptPrinting(t *testing.T, dir string, lines ...string) string {
+// A workroom script that echoes line, which the shell expands.
+func scriptPrinting(t *testing.T, line string) string {
 	t.Helper()
-	body := "#!/bin/sh\n"
-	for _, line := range lines {
-		body += "echo \"" + line + "\"\n"
-	}
+	body := "#!/bin/sh\necho \"" + line + "\"\n"
 	// Outside the workroom's own listing, as a root's script is; the name doesn't matter to Run.
 	path := filepath.Join(t.TempDir(), "workroom_script")
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
@@ -57,7 +54,7 @@ func TestRunGivesTheScriptWhatTheLoginShellSelectsInTheWorkroom(t *testing.T) {
 			loginShellWith(t, "export SELECTED_FOR=\"$(pwd -P)\"\n")
 			dir := workroomDir(t)
 
-			output, err := Run(scriptType, scriptPrinting(t, dir, "selected=$SELECTED_FOR"), dir, "wr", "/root", nil)
+			output, err := Run(scriptType, scriptPrinting(t, "selected=$SELECTED_FOR"), dir, "wr", "/root", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -86,7 +83,7 @@ func TestRunStillRunsTheScriptWhenTheLoginShellMisbehaves(t *testing.T) {
 			dir := workroomDir(t)
 
 			var streamed bytes.Buffer
-			output, err := Run("teardown", scriptPrinting(t, dir, "ran with $FROM_THE_CALLER"), dir, "wr", "/root", &streamed)
+			output, err := Run("teardown", scriptPrinting(t, "ran with $FROM_THE_CALLER"), dir, "wr", "/root", &streamed)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -104,7 +101,7 @@ func TestRunKeepsTheLoginShellsOutputOutOfTheLog(t *testing.T) {
 	loginShellWith(t, "echo welcome to this machine\necho on stderr >&2\n")
 	dir := workroomDir(t)
 
-	output, err := Run("setup", scriptPrinting(t, dir, "ran"), dir, "wr", "/root", nil)
+	output, err := Run("setup", scriptPrinting(t, "ran"), dir, "wr", "/root", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,11 +114,11 @@ func TestRunScriptNeverSeesTheProbeMarker(t *testing.T) {
 	loginShellWith(t, "")
 	dir := workroomDir(t)
 
-	output, err := Run("setup", scriptPrinting(t, dir, "probe=${WORKROOM_SHELL_PROBE-unset} shlvl=${SHLVL-unset}"), dir, "wr", "/root", nil)
+	output, err := Run("setup", scriptPrinting(t, "probe=${WORKROOM_SHELL_PROBE-unset}"), dir, "wr", "/root", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(output, "probe=unset ") {
+	if output != "probe=unset\n" {
 		t.Fatalf("the script saw %q", output)
 	}
 }
@@ -132,7 +129,7 @@ func TestRunKeepsTheCallersGitSafetySettingsOverAnyRc(t *testing.T) {
 	t.Setenv("GIT_OPTIONAL_LOCKS", "0")
 	dir := workroomDir(t)
 
-	output, err := Run("setup", scriptPrinting(t, dir, "$GIT_TERMINAL_PROMPT$GIT_OPTIONAL_LOCKS"), dir, "wr", "/root", nil)
+	output, err := Run("setup", scriptPrinting(t, "$GIT_TERMINAL_PROMPT$GIT_OPTIONAL_LOCKS"), dir, "wr", "/root", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +143,7 @@ func TestRunPutsTheLoginShellsPathFirstAndLosesNothing(t *testing.T) {
 	t.Setenv("PATH", "/only/the/caller:"+os.Getenv("PATH"))
 	dir := workroomDir(t)
 
-	output, err := Run("setup", scriptPrinting(t, dir, "$PATH"), dir, "wr", "/root", nil)
+	output, err := Run("setup", scriptPrinting(t, "$PATH"), dir, "wr", "/root", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -219,7 +216,7 @@ func TestRunInATerminalChild(t *testing.T) {
 	loginReadTimeout = 3 * time.Second
 	dir := workroomDir(t)
 
-	output, err := Run("setup", scriptPrinting(t, dir, "selected=$SELECTED_FOR"), dir, "wr", "/root", nil)
+	output, err := Run("setup", scriptPrinting(t, "selected=$SELECTED_FOR"), dir, "wr", "/root", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
