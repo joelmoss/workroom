@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -73,6 +76,8 @@ func TestRunStillRunsTheScriptWhenTheLoginShellMisbehaves(t *testing.T) {
 		"exit":    {"exit 0\n", "noMarkers"},
 		"failure": {"exit 3\n", "nonZeroExit"},
 		"hang":    {"sleep 30\n", "timedOut"},
+		"no path": {"unset PATH\n", "noPath"},
+		"flood":   {"head -c 2097152 /dev/zero\n", "noMarkers"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			loginShellWith(t, tc.profile)
@@ -95,6 +100,112 @@ func TestRunStillRunsTheScriptWhenTheLoginShellMisbehaves(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A shell that doesn't take -lic gets a login /bin/sh, as a fish user's does.
+func TestRunReadsALoginShForAnUnknownShell(t *testing.T) {
+	loginShellWith(t, "")
+	home := os.Getenv("HOME")
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("export FROM_PROFILE=yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", "/nonexistent/fish")
+	dir := workroomDir(t)
+
+	output, err := Run("setup", scriptPrinting(t, "profile=$FROM_PROFILE"), dir, "wr", "/root", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output != "profile=yes\n" {
+		t.Fatalf("the script saw %q", output)
+	}
+}
+
+// The shell has its own session and only the CLI holds its deadline, so a hung rc would outlive a
+// cancelled `workroom create`. The child test is the CLI here: this one signals it mid-read.
+func TestRunEndsTheLoginShellWhenCancelled(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "shell.pid")
+	loginShellWith(t, "echo $$ > "+pidFile+"\nsleep 30\n")
+	child, _ := startRunChild(t, "ran")
+	shell := readShellPid(t, pidFile)
+	if err := child.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err == nil {
+		t.Fatal("the cancelled run carried on and exited cleanly")
+	}
+	waitFor(t, "the shell to end", func() bool { return syscall.Kill(shell, 0) != nil })
+}
+
+// A background shell job inherits an ignored SIGINT, and nohup an ignored SIGHUP. Ignored, they
+// aren't a cancel: the read and the script carry on as if nothing had been sent.
+func TestRunTreatsAnIgnoredSignalAsNoCancel(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "shell.pid")
+	loginShellWith(t, "echo $$ > "+pidFile+"\nsleep 1\nexport READ_FINISHED=yes\n")
+	signal.Ignore(syscall.SIGINT)
+	t.Cleanup(func() { signal.Reset(syscall.SIGINT) })
+	child, stdout := startRunChild(t, "read=$READ_FINISHED")
+	readShellPid(t, pidFile)
+	if err := child.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err != nil {
+		t.Fatalf("the run ended: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(stdout.String(), "read=yes") {
+		t.Fatalf("the read didn't finish: %s", stdout)
+	}
+}
+
+// startRunChild runs the script through Run in another process, which is the CLI to a signal test.
+func startRunChild(t *testing.T, line string) (*exec.Cmd, *bytes.Buffer) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	child := exec.Command(self, "-test.run=^TestRunInAChild$")
+	child.Stdout = &stdout
+	child.Env = append(os.Environ(),
+		"WORKROOM_CHILD_SCRIPT="+scriptPrinting(t, line), "WORKROOM_CHILD_DIR="+workroomDir(t))
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	return child, &stdout
+}
+
+func TestRunInAChild(t *testing.T) {
+	script := os.Getenv("WORKROOM_CHILD_SCRIPT")
+	if script == "" {
+		t.Skip("run by startRunChild")
+	}
+	output, _ := Run("setup", script, os.Getenv("WORKROOM_CHILD_DIR"), "wr", "/root", nil)
+	fmt.Println(output)
+}
+
+func readShellPid(t *testing.T, pidFile string) int {
+	t.Helper()
+	var shell int
+	waitFor(t, "the shell to start", func() bool {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			return false
+		}
+		shell, err = strconv.Atoi(strings.TrimSpace(string(data)))
+		return err == nil
+	})
+	return shell
+}
+
+func waitFor(t *testing.T, what string, done func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if done() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }
 
 func TestRunKeepsTheLoginShellsOutputOutOfTheLog(t *testing.T) {

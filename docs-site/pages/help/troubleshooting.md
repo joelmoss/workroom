@@ -69,6 +69,8 @@ Workroom reads your login shell's environment in the workroom to give it to your
 
 Workroom waits 10 seconds. If your shell takes longer, or ends in `exec tmux`, or waits for input, the script still runs, with the environment Workroom already had, and its output says why. That may be only the basics, without what your dotfiles add or the workroom's pinned tool versions. If your shell is `fish` or `nushell`, your interactive config isn't read at all. See [Environment variables](../reference/environment-variables.md#workroom_shell_probe).
 
+Workroom's shell never shows a prompt, so a tool that only acts at one doesn't run. If your project uses direnv, wrap the commands that need it, such as `direnv exec . bin/setup`.
+
 ## Terminals have no shell integration under bash
 
 If your login shell is `/bin/bash`, Apple's bash 3.2, terminals get no shell integration. The inline agent, the tab title reset when a command ends, and working-directory tracking don't work. Homebrew bash 4.4 or newer gets all of them:

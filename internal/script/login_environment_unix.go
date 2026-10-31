@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -59,17 +60,42 @@ func readLoginShell(dir, shell string) (map[string]string, string) {
 	var out cappedBuffer
 	cmd.Stdout = &out // stdin and stderr stay nil, /dev/null: an rc can prompt, and its noise isn't ours
 
+	// Only this process holds the shell's deadline, and the shell's new session keeps it from a
+	// terminal's Ctrl-C, so ending this process has to end the shell first.
+	sigs := make(chan os.Signal, 1)
+	for _, sig := range []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP} {
+		if !signal.Ignored(sig) { // nohup's SIGHUP, a background job's SIGINT: not a cancel
+			signal.Notify(sigs, sig)
+		}
+	}
+	defer signal.Stop(sigs)
 	if err := cmd.Start(); err != nil {
 		return nil, "spawnFailed"
 	}
-	err := cmd.Wait()
+	var err error
+	waited := make(chan struct{})
+	go func() {
+		err = cmd.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case sig := <-sigs:
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-waited
+		signal.Stop(sigs)
+		// Unlike Run's handler, this re-raises: no script has run, so there's no result to lose, and
+		// returning would start one. The signal wasn't ignored, so it ends this process here.
+		_ = syscall.Kill(syscall.Getpid(), sig.(syscall.Signal))
+		select {}
+	}
 	switch {
 	case ctx.Err() != nil:
 		return nil, "timedOut"
 	case err != nil && !errors.Is(err, exec.ErrWaitDelay):
 		return nil, "nonZeroExit"
 	}
-	probed := parseLoginOutput(out.Bytes(), mark)
+	probed := parseLoginOutput(out.kept.Bytes(), mark)
 	if probed == nil {
 		return nil, "noMarkers"
 	}
@@ -142,11 +168,12 @@ func unionPath(first, second string) string {
 }
 
 // cappedBuffer keeps the first maxLoginOutput bytes and drains the rest, so the shell never blocks.
-type cappedBuffer struct{ bytes.Buffer }
+// A named field: embedded, Buffer's ReadFrom would let exec's io.Copy past Write and so past the cap.
+type cappedBuffer struct{ kept bytes.Buffer }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if room := maxLoginOutput - b.Len(); room > 0 {
-		b.Buffer.Write(p[:min(room, len(p))])
+	if room := maxLoginOutput - b.kept.Len(); room > 0 {
+		b.kept.Write(p[:min(room, len(p))])
 	}
 	return len(p), nil
 }
