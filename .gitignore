@@ -52,3 +52,4 @@ __pycache__/
 /tmp/
 /.impeccable/
 .gbrain-source
+.claude/settings.local.json
