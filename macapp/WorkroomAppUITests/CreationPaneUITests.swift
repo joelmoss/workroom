@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 /// A create opens its pane on the click and shows its checklist until the workroom's own UI takes
@@ -15,6 +16,86 @@ final class CreationPaneUITests: XCTestCase {
 
   private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
     app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+  }
+
+  /// A scripted create run to its end with its setup script's two-line log open.
+  private func finishedCreateWithLogOpen() -> (XCUIApplication, XCUIElement) {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1", "-WorkroomUITestScriptedCreate", "1",
+      "-ApplePersistenceIgnoreState", "YES",
+    ]
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    let file = app.menuBars.menuBarItems["File"]
+    file.click()
+    file.menuItems["New Workroom…"].click()
+    let project = element(app, "newWorkroom.project.UITestProject")
+    XCTAssertTrue(project.waitForExistence(timeout: 5), "the picker didn't list the project")
+    project.click()
+    let thisMac = app.buttons["newWorkroom.place.thisMac"]
+    XCTAssertTrue(thisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
+    thisMac.click()
+    XCTAssertTrue(
+      element(app, "CreationPane.Done").waitForExistence(timeout: 20), "the create never finished")
+    let row = element(app, "CreationPane.step.script")
+    if row.value as? String == "Collapsed" { row.click() }
+    let log = element(app, "CreationPane.log")
+    XCTAssertTrue(log.waitForExistence(timeout: 5), "the log didn't open")
+    return (app, log)
+  }
+
+  private func copiedText(_ app: XCUIApplication) -> String? {
+    NSPasteboard.general.clearContents()
+    app.typeKey("c", modifierFlags: .command)
+    let deadline = Date().addingTimeInterval(3)
+    while Date() < deadline {
+      if let text = NSPasteboard.general.string(forType: .string) { return text }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+    return nil
+  }
+
+  private func keepClipboard() {
+    let saved = NSPasteboard.general.string(forType: .string)
+    addTeardownBlock {
+      NSPasteboard.general.clearContents()
+      if let saved { NSPasteboard.general.setString(saved, forType: .string) }
+    }
+  }
+
+  // Value: protects=the reported bug, ⌘A then ⌘C takes a whole log after a click in it;
+  // fails_when=selection stops at one line, or the keys never reach the log;
+  // no_claim=a log still receiving lines (LogTextControllerTests)
+  func testSelectAllCopiesAWholeLog() {
+    keepClipboard()
+    let (app, log) = finishedCreateWithLogOpen()
+    log.click()
+    app.typeKey("a", modifierFlags: .command)
+    XCTAssertEqual(copiedText(app), "Installing dependencies…\nDone.")
+  }
+
+  // Value: protects=the reported bug, a mouse drag selects across lines; fails_when=a drag stops at
+  // the line it started on; no_claim=a drag past the log's edge
+  func testDraggingSelectsAcrossLines() {
+    keepClipboard()
+    let (app, log) = finishedCreateWithLogOpen()
+    let width = log.frame.width
+    let origin = log.coordinate(withNormalizedOffset: .zero)
+    origin.withOffset(CGVector(dx: 11, dy: 16)).press(
+      forDuration: 0.3, thenDragTo: origin.withOffset(CGVector(dx: width - 4, dy: 30)))
+    let copied = copiedText(app)
+    XCTAssertTrue(copied?.contains("\nDone.") == true, "copied \(copied ?? "nothing")")
+  }
+
+  // Value: protects=D16, Return answers the pane's footer even with focus in its log;
+  // fails_when=the text view swallows Return after a click in it; no_claim=Escape, the arrow keys
+  func testReturnAnswersDoneAfterAClickInTheLog() {
+    let (app, log) = finishedCreateWithLogOpen()
+    log.click()
+    app.typeKey(.return, modifierFlags: [])
+    XCTAssertTrue(
+      element(app, "CreationPane").waitForNonExistence(timeout: 5), "Return didn't answer Done")
   }
 
   func testALocalCreateWithTheSidebarHiddenShowsItsChecklistThenItsTerminal() {
