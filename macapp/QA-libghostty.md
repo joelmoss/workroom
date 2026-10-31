@@ -270,3 +270,21 @@ dispatches on symbolic labels — don't spend the retest budget there.
 - [ ] **Release build links**: `nightly.yml` builds Release-style daily, so this is covered. To see
       it before pushing: `xcodebuild -configuration Release build`.
 - [ ] **Bake gate**: N clean nightlies before this enters a `pre` tag.
+
+## O. Config defaults reviewed (Ghostty 1.4.0, #553)
+
+Checked at pin 83fb95624 against the previous pin, 1e9e14af5 (1.3.2-dev). None of these differs
+between the two, so Ghostty's 1.4 release notes overstate what changed for us: they compare against
+the 1.3 release. Workroom loads only its generated config, so every setting not written there stays
+at the engine's default. On a pin change, check each of these still holds.
+
+| Setting | Decision | Why |
+|---|---|---|
+| `vt-window-resize-allowed` | Keep off | A program must not resize the window from a pane. |
+| `vt-xt-checksum-report` | Keep off | Nothing we run uses DECRQCRA. |
+| `link-osc8` | Keep on | ⌘-click leaves OSC 8 links to the engine's `OPEN_URL` action and only resolves files for other words. |
+| `clipboard-write-limit-bytes` | Keep 64 MiB | It applies only to Kitty clipboard writes, not OSC 52, and `writeClipboard` handles that size. |
+| `copy-on-select` | Leave unset | The macOS default is `none`, so the engine can't double up with our own copy-on-select. |
+| `scrollback-limit` | Nothing to do | We don't write the old name. `scrollback-limit-bytes` defaults to 50 MB, matching `SCROLLBACK_MAX_BYTES`. |
+| ⌘↑ / ⌘↓ | Keep scroll to top and bottom | Decided in #42 and shown in the Go menu. The engine binds them to `jump_to_prompt`, but `handleScrollKeyEquivalent` runs first. ⇧⌘↑ / ⇧⌘↓ fall through to the engine's own `jump_to_prompt` (read from the source, not pressed). |
+| `GHOSTTY_SURFACE_ID` | No use | Daemon panes appear to get the creating surface's ID, stale after a reattach. Its only reader is `ghostty +new-tab`, and the embedded runtime's IPC returns false. |

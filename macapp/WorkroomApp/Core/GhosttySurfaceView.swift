@@ -1589,10 +1589,11 @@ final class GhosttySurfaceView: NSView {
     return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r", "f", "g", "b"].contains(key)
   }
 
-  /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty has no
-  /// default binding for these, so we intercept them before forwarding the keystroke — that way they
-  /// work even while a TUI in an enhanced keyboard mode (Claude/Codex) is running. Command-only (any
-  /// extra modifier falls through to the terminal). Returns true when it consumed the event.
+  /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty's macOS
+  /// default binds these to `jump_to_prompt`, so we intercept them before forwarding the keystroke:
+  /// our scroll wins, and it works even while a TUI in an enhanced keyboard mode (Claude/Codex) is
+  /// running. Command-only (any extra modifier falls through to the terminal, so ⇧⌘↑ / ⇧⌘↓ reach the
+  /// engine's own `jump_to_prompt`). Returns true when it consumed the event.
   private func handleScrollKeyEquivalent(_ event: NSEvent) -> Bool {
     guard surface != nil else { return false }
     let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
