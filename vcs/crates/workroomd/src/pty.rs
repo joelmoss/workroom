@@ -34,6 +34,27 @@ pub const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5
 pub const DEFAULT_COLUMNS: u16 = 80;
 pub const DEFAULT_ROWS: u16 = 24;
 
+/// A terminal's size. Zero pixels means nobody has said: a client with no terminal, or one older
+/// than pixel sizes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Size {
+    pub columns: u16,
+    pub rows: u16,
+    pub x_pixels: u16,
+    pub y_pixels: u16,
+}
+
+impl Size {
+    /// A size with no pixels.
+    pub fn cells(columns: u16, rows: u16) -> Size {
+        Size {
+            columns,
+            rows,
+            ..Size::default()
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PtyError {
     #[error("pipe failed: {0}")]
@@ -267,16 +288,20 @@ impl Pty {
         self.pid
     }
 
-    pub fn resize(&self, columns: u16, rows: u16) -> std::io::Result<()> {
+    pub fn resize(&self, size: Size) -> std::io::Result<()> {
         let size = libc::winsize {
-            ws_row: if rows == 0 { DEFAULT_ROWS } else { rows },
-            ws_col: if columns == 0 {
+            ws_row: if size.rows == 0 {
+                DEFAULT_ROWS
+            } else {
+                size.rows
+            },
+            ws_col: if size.columns == 0 {
                 DEFAULT_COLUMNS
             } else {
-                columns
+                size.columns
             },
-            ws_xpixel: 0,
-            ws_ypixel: 0,
+            ws_xpixel: size.x_pixels,
+            ws_ypixel: size.y_pixels,
         };
         // SAFETY: TIOCSWINSZ reads one `winsize` through the pointer, which is a live local.
         let rc = unsafe { libc::ioctl(self.master, libc::TIOCSWINSZ, &size) };
@@ -291,6 +316,18 @@ impl Pty {
     /// Read from the kernel rather than remembered, so a test asserting the size-owner policy is
     /// asserting what the SHELL sees rather than what the daemon believes it set.
     pub fn size(&self) -> std::io::Result<(u16, u16)> {
+        let size = self.winsize()?;
+        Ok((size.ws_col, size.ws_row))
+    }
+
+    /// The pty's size in pixels, read from the kernel like `size`. It is there across a hand-off
+    /// too: the master survives the exec, so the table does not carry it.
+    pub fn pixels(&self) -> std::io::Result<(u16, u16)> {
+        let size = self.winsize()?;
+        Ok((size.ws_xpixel, size.ws_ypixel))
+    }
+
+    fn winsize(&self) -> std::io::Result<libc::winsize> {
         let mut size = libc::winsize {
             ws_row: 0,
             ws_col: 0,
@@ -302,7 +339,7 @@ impl Pty {
         if rc != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok((size.ws_col, size.ws_row))
+        Ok(size)
     }
 
     /// The process group currently in the foreground of this pty — the one that owns the screen,
@@ -910,9 +947,35 @@ mod tests {
             24,
         )
         .expect("spawn");
-        pty.resize(100, 30).expect("resize");
+        pty.resize(Size::cells(100, 30)).expect("resize");
         let output = read_until(&pty, "30 100", Duration::from_secs(5));
         assert!(output.contains("30 100"), "got {output:?}");
+    }
+
+    /// Value: protects=a pane reports its pixel size, which `kitten icat` refuses to run without
+    /// (#551); fails_when=resize stops setting the winsize pixels; why_new=stty only shows cells;
+    /// seam=none; no_claim=a program reading it (the attach tests cover the path to here)
+    #[test]
+    fn a_resize_reaches_the_kernel_with_its_pixels() {
+        let pty = spawn(
+            OsStr::new("/bin/sh"),
+            &[OsString::from("-c"), OsString::from("sleep 10")],
+            &env(),
+            None,
+            80,
+            24,
+        )
+        .expect("spawn");
+        assert_eq!(pty.pixels().expect("pixels"), (0, 0));
+        let size = Size {
+            columns: 100,
+            rows: 30,
+            x_pixels: 1000,
+            y_pixels: 600,
+        };
+        pty.resize(size).expect("resize");
+        assert_eq!(pty.size().expect("size"), (100, 30));
+        assert_eq!(pty.pixels().expect("pixels"), (1000, 600));
     }
 
     #[test]

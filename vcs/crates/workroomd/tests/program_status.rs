@@ -326,7 +326,9 @@ mod live {
 
     fn attach(store: &SessionStore, session: SessionId, writer: impl Write + Send + 'static) {
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(writer)));
-        store.attach(session, writer, 1, 80, 24).expect("attach");
+        store
+            .attach(session, writer, 1, workroomd::pty::Size::cells(80, 24))
+            .expect("attach");
     }
 
     /// Value: protects=the probe's answer reaches the program through the pty exactly once, attached or not; fails_when=the reader stops writing replies, writes them per client, or only while attached; why_new=Claude reports nothing without the answer (Step 0); seam=none

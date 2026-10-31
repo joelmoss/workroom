@@ -192,6 +192,9 @@ pub struct ShadowTerminal {
     /// paint is dropped when output switches screens or resets the terminal (`write`) and on a
     /// resize.
     primary_paint: std::cell::RefCell<Option<(usize, Vec<u8>)>>,
+    /// One cell's size in pixels, zero until a client says. An image's height in rows comes from
+    /// it, so at zero the screen drifts from the client's under every image (#551).
+    cell_pixels: (u32, u32),
 }
 
 /// The callbacks' userdata.
@@ -437,6 +440,7 @@ impl ShadowTerminal {
             inner,
             effects: Box::into_raw(Box::default()),
             primary_paint: Default::default(),
+            cell_pixels: (0, 0),
         };
         terminal.enable_continuation_tracking();
         terminal.limit_scrollback();
@@ -579,17 +583,27 @@ impl ShadowTerminal {
         }
     }
 
-    /// Cell pixel dimensions are zero: they feed image protocols and size reports, and the shadow
-    /// renders nothing — the real client owns the pixels and reports its own.
-    ///
+    /// The pixels of one cell, applied at the next `resize`. Images use them; the shadow draws
+    /// nothing, and a size report is still the client's to answer.
+    pub fn set_cell_pixels(&mut self, width: u32, height: u32) {
+        self.cell_pixels = (width, height);
+    }
+
     /// A width change reflows, which decompresses the whole history (1.33 to 40 MB measured at 200
     /// to 160 columns), so it is compressed again before this returns rather than at the next
     /// tick. A height change touches no history.
     pub fn resize(&mut self, columns: u16, rows: u16) {
         let width = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS);
+        let (cell_width, cell_height) = self.cell_pixels;
         // SAFETY: `inner` is a live terminal, and both dimensions are at least 1, as required.
         unsafe {
-            ghostty_terminal_resize(self.inner, columns.max(1), rows.max(1), 0, 0);
+            ghostty_terminal_resize(
+                self.inner,
+                columns.max(1),
+                rows.max(1),
+                cell_width,
+                cell_height,
+            );
         }
         *self.primary_paint.get_mut() = None;
         if width != Some(u32::from(columns.max(1))) {
@@ -934,6 +948,7 @@ impl ShadowTerminal {
             inner,
             effects: Box::into_raw(Box::default()),
             primary_paint: Default::default(),
+            cell_pixels: self.cell_pixels,
         })
     }
 

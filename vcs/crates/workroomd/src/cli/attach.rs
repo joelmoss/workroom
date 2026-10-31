@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use super::{DAEMON_UNAVAILABLE, flag, handshake};
+use crate::pty::Size;
 use crate::serve;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
@@ -240,9 +241,11 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // The pty's initial size comes from the terminal this relay was forked into, so a session is
     // created at the size it will actually be shown at rather than at 80x24 and then resized —
     // which a full-screen program would see as a resize on its first frame.
-    let (columns, rows) = terminal_size();
-    request.columns = columns;
-    request.rows = rows;
+    let size = terminal_size();
+    request.columns = size.columns;
+    request.rows = size.rows;
+    request.x_pixels = size.x_pixels;
+    request.y_pixels = size.y_pixels;
 
     // Spawn-on-connect-failure: the daemon is started by whoever needs it first rather than by an
     // installed service, so there is no install footprint. (The Swift attach client used to do the
@@ -406,7 +409,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // resizing a pane left the shell — and any full-screen program in it — rendering at the old
     // geometry forever.
     if let Ok(resize_stream) = stream.try_clone() {
-        std::thread::spawn(move || relay_resizes(resize_stream, columns, rows));
+        std::thread::spawn(move || relay_resizes(resize_stream, size));
     }
 
     let mut stdout = std::io::stdout();
@@ -548,15 +551,31 @@ fn await_attached(
 
 /// The size of the terminal this process was forked into, or zero when there is none (a pipe, a
 /// test harness) so the daemon applies its own default rather than creating a 0x0 pty.
-fn terminal_size() -> (u16, u16) {
+fn terminal_size() -> Size {
     // SAFETY: `winsize` is plain old data, for which all zeroes is a valid value.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
     // SAFETY: TIOCGWINSZ writes one `winsize` through the pointer, which is a live local.
     let rc = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut size) };
     if rc != 0 {
-        return (0, 0);
+        return Size::default();
     }
-    (size.ws_col, size.ws_row)
+    Size {
+        columns: size.ws_col,
+        rows: size.ws_row,
+        x_pixels: size.ws_xpixel,
+        y_pixels: size.ws_ypixel,
+    }
+}
+
+/// What to tell the daemon, if anything, now the terminal reads `next`. Any change counts: moving
+/// a window to another display changes the pixels alone.
+fn size_to_send(current: Size, next: Size) -> Option<Size> {
+    // Zero means there is no terminal — a pipe, a test harness. Sending it would reset the
+    // session to the daemon's default and reflow everything for no reason.
+    if next.columns == 0 || next.rows == 0 || next == current {
+        return None;
+    }
+    Some(next)
 }
 
 /// Watches this relay's terminal for size changes and forwards them.
@@ -566,30 +585,16 @@ fn terminal_size() -> (u16, u16) {
 /// anyway — and polling `TIOCGWINSZ` is also correct when a signal is missed or coalesced, which
 /// happens when several resizes land while the process is busy. A tenth of a second is far below
 /// the point a person notices a reflow lagging.
-fn relay_resizes(
-    mut stream: std::os::unix::net::UnixStream,
-    initial_columns: u16,
-    initial_rows: u16,
-) {
-    let (mut columns, mut rows) = (initial_columns, initial_rows);
+fn relay_resizes(mut stream: std::os::unix::net::UnixStream, initial: Size) {
+    let mut size = initial;
     loop {
         std::thread::sleep(Duration::from_millis(100));
-        let (next_columns, next_rows) = terminal_size();
-        // Zero means there is no terminal — a pipe, a test harness. Sending it would reset the
-        // session to the daemon's default and reflow everything for no reason.
-        if next_columns == 0 || next_rows == 0 {
+        let Some(next) = size_to_send(size, terminal_size()) else {
             continue;
-        }
-        if (next_columns, next_rows) == (columns, rows) {
-            continue;
-        }
-        columns = next_columns;
-        rows = next_rows;
+        };
+        size = next;
 
-        let mut payload = Vec::with_capacity(4);
-        payload.extend_from_slice(&columns.to_be_bytes());
-        payload.extend_from_slice(&rows.to_be_bytes());
-        let frame = Frame::new(FrameKind::Resize, payload);
+        let frame = Frame::new(FrameKind::Resize, serve::encode_resize(size));
         if stream
             .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
             .is_err()
@@ -670,5 +675,36 @@ fn relay_stdin(mut stream: std::os::unix::net::UnixStream) {
                 let _ = stream.flush();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    const WINDOW: Size = Size {
+        columns: 100,
+        rows: 30,
+        x_pixels: 1000,
+        y_pixels: 600,
+    };
+
+    /// Value: protects=moving a window between displays reaches the daemon (#551);
+    /// fails_when=only rows and columns are compared; why_new=the poll loop had no test;
+    /// seam=size_to_send; no_claim=the kernel's report (pty tests cover it)
+    #[test]
+    fn a_change_of_pixels_alone_is_sent() {
+        let moved = Size {
+            x_pixels: 2000,
+            y_pixels: 1200,
+            ..WINDOW
+        };
+        assert_eq!(size_to_send(WINDOW, moved), Some(moved));
+    }
+
+    #[test]
+    fn no_change_and_no_terminal_send_nothing() {
+        assert_eq!(size_to_send(WINDOW, WINDOW), None);
+        assert_eq!(size_to_send(WINDOW, Size::default()), None);
     }
 }

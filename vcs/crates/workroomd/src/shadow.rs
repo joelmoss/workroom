@@ -8,6 +8,7 @@
 //! before the shadow existed.
 
 use crate::program_status::Store;
+use crate::pty::Size;
 
 /// What a write from the pty asks of the session: bytes to answer the program with (a program
 /// status probe's reply), and `Some(blocked)` when its program status changed (#358).
@@ -98,9 +99,14 @@ impl Shadow {
         Some(&mut self.status)
     }
 
-    pub fn resize(&mut self, columns: u16, rows: u16) {
+    pub fn resize(&mut self, size: Size) {
         if let Some(terminal) = self.terminal.as_mut() {
-            terminal.resize(columns, rows);
+            let cell = |pixels: u16, cells: u16| u32::from(pixels) / u32::from(cells.max(1));
+            terminal.set_cell_pixels(
+                cell(size.x_pixels, size.columns),
+                cell(size.y_pixels, size.rows),
+            );
+            terminal.resize(size.columns, size.rows);
         }
     }
 
@@ -196,7 +202,7 @@ impl Shadow {
     pub fn status(&mut self) -> Option<&mut Store> {
         None
     }
-    pub fn resize(&mut self, _columns: u16, _rows: u16) {}
+    pub fn resize(&mut self, _size: Size) {}
     /// No shadow, so nothing to repaint: a reattaching client resumes the live stream, which is
     /// how the daemon behaved before terminal state existed.
     pub fn replay(&self) -> Vec<u8> {
@@ -235,6 +241,35 @@ mod tests {
 
     fn has(hay: &[u8], needle: &[u8]) -> bool {
         hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// The row after an image 2 cells tall at 10x20 pixels a cell.
+    fn row_below_image(shadow: &mut Shadow) -> Option<usize> {
+        let mut image = b"\x1b_Ga=T,f=24,s=40,v=40,i=7,q=2;".to_vec();
+        image.extend_from_slice(&[b'A'; 6400]);
+        image.extend_from_slice(b"\x1b\\");
+        shadow.write(&image);
+        shadow.write(b"\r\nBELOW");
+        let text = shadow.terminal.as_ref()?.visible_text();
+        text.lines().position(|line| line.contains("BELOW"))
+    }
+
+    /// Value: protects=text below an image stays on its rows after a reattach (#551);
+    /// fails_when=the shadow's cell size stays zero; why_new=no test placed an image; seam=none;
+    /// no_claim=the app's own cell size, which the attach tests carry here
+    #[test]
+    fn an_image_takes_its_rows_once_the_pixel_size_is_known() {
+        let mut unsized_shadow = Shadow::new(80, 24);
+        assert_eq!(row_below_image(&mut unsized_shadow), Some(1), "fixture");
+
+        let mut shadow = Shadow::new(80, 24);
+        shadow.resize(Size {
+            columns: 80,
+            rows: 24,
+            x_pixels: 800,
+            y_pixels: 480,
+        });
+        assert_eq!(row_below_image(&mut shadow), Some(2));
     }
 
     fn busy_from(owner: Option<libc::pid_t>) -> Shadow {
