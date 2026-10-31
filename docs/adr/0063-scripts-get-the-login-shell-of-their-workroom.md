@@ -10,6 +10,8 @@ The rc now runs with the clone's directory-local config active. That's accepted:
 
 Rejected: running the script through the shell (`$SHELL -lic 'exec "$0"'`), so that it is a real child of it. An rc that ends in `exec` or `exit` then skips the script and still reports success, which for a teardown means skipped cleanup with no error; the rc's output lands in the script's log; and a script that can't start stops being reported as one. The read has none of these and falls back to the environment it had, saying why. It gives up only state outside the environment, such as an rc's `umask` or `ulimit`, which a script can set itself.
 
-The local read starts its shell in a new session, not just a new process group: under a real terminal, interactive zsh in a background group is stopped by SIGTTOU, which would hang `workroom create`. `workroomd run-script` has no terminal (`RequestTTY no`), so it keeps its process group.
+The read shows no prompt, so hooks that only run at one, such as a zsh `precmd`, don't fire; direnv's is one, and its docs line says so (owner, review of #560). Running them would run prompt themes in every read, and a new workroom's `.envrc` needs `direnv allow` first anyway.
+
+The local read starts its shell in a new session, not just a new process group: under a real terminal, interactive zsh in a background group is stopped by SIGTTOU, which would hang `workroom create`. That also keeps it from a terminal's Ctrl-C, so a signal to the CLI during the read ends the shell before the CLI goes. `workroomd run-script` has no terminal (`RequestTTY no`), so it keeps its process group.
 
 Source: [`internal/script/login_environment_unix.go`](../../internal/script/login_environment_unix.go), [`vcs/crates/workroomd/src/cli/run_script.rs`](../../vcs/crates/workroomd/src/cli/run_script.rs), #560.
