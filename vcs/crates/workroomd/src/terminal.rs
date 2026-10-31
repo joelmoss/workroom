@@ -15,13 +15,15 @@
 //! 1. **Screen + state** from the formatter, with its `extra` flags on. With the default options
 //!    the formatter emits 8 bytes and the client loses *every* negotiated mode — it looks correct
 //!    and is completely dead: no mouse, wrong key encoding, not even on the alternate screen.
-//! 2. **The cursor**, by hand. `GhosttyFormatterTerminalExtra` covers palette, modes, scrolling
-//!    region, tabstops, pwd, keyboard and charsets — but has no cursor field. The formatter homes
+//! 2. **The cursor**, by hand. `GhosttyFormatterTerminalExtra` covers modes, scrolling region,
+//!    tabstops, pwd, keyboard and charsets — but has no cursor field. The formatter homes
 //!    the cursor, paints, and leaves it wherever the last cell landed, so without an explicit CUP
 //!    the next byte lands in the wrong place.
 //! 3. **Kitty keyboard flags**, by hand. `extra.keyboard` covers ModifyOtherKeys and not the kitty
 //!    stack. The snapshot carries the flags correctly, so nothing is lost across persistence; they
 //!    simply are not emitted.
+//!
+//! The palette goes by hand too, and only the colours a program set (`palette_overrides`).
 //!
 //! Then **the last OSC 9;4 progress report**, or an explicit REMOVE when there is none (#359). A
 //! program reports busy once, at the start of its work, so a client attaching mid-turn learns it
@@ -648,6 +650,14 @@ impl ShadowTerminal {
         (rc == OK).then_some(usage)
     }
 
+    /// The 256 colours of `data`, one of the two `COLOR_PALETTE` kinds.
+    fn palette(&self, data: GhosttyTerminalData) -> Option<[[u8; 3]; 256]> {
+        let mut colours = [GhosttyColorRgb { r: 0, g: 0, b: 0 }; 256];
+        // SAFETY: both palette kinds write a `GhosttyColorRgb[256]`, and `colours` is a live one.
+        let rc = unsafe { ghostty_terminal_get(self.inner, data, colours.as_mut_ptr().cast()) };
+        (rc == OK).then(|| colours.map(|colour| [colour.r, colour.g, colour.b]))
+    }
+
     /// Whether `compress` can free memory on this target. Where it cannot, each session's history
     /// stays uncompressed, up to `SCROLLBACK_MAX_BYTES`.
     pub fn compression_supported(&self) -> bool {
@@ -798,7 +808,6 @@ impl ShadowTerminal {
         options.emit = GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT;
         options.extra.size = std::mem::size_of::<GhosttyFormatterTerminalExtra>();
         if extras {
-            options.extra.palette = true;
             options.extra.modes = true;
             options.extra.scrolling_region = true;
             options.extra.tabstops = true;
@@ -836,7 +845,37 @@ impl ShadowTerminal {
         };
         // SAFETY: `formatter` is live and freed exactly once, here.
         unsafe { ghostty_formatter_free(formatter) };
+        if extras && !bytes.is_empty() {
+            let mut painted = self.palette_overrides();
+            painted.extend_from_slice(&bytes);
+            return painted;
+        }
         bytes
+    }
+
+    /// The colours a program set, for a repaint. Not `extra.palette`, which sends all 256: each is
+    /// a message in the app's 64-slot mailbox, so every attach filled it, and a pane freed before
+    /// the next tick deadlocked (#547). They also replaced the client's theme with this terminal's
+    /// built-in colours. The reset first is for a pane that reconnects and still holds colours the
+    /// program has since reset; a fresh pane holds none, so it costs no messages.
+    ///
+    /// shortcut: a colour set to its built-in value counts as unset, so a client with another theme
+    /// shows the theme's. Upgrade if the C API ever exposes the terminal's override mask.
+    fn palette_overrides(&self) -> Vec<u8> {
+        let (Some(current), Some(default)) = (
+            self.palette(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_PALETTE),
+            self.palette(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT),
+        ) else {
+            return Vec::new();
+        };
+        let mut out = b"\x1b]104\x1b\\".to_vec();
+        for (index, ([r, g, b], default)) in current.iter().zip(&default).enumerate() {
+            if [*r, *g, *b] != *default {
+                let set = format!("\x1b]4;{index};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\");
+                out.extend_from_slice(set.as_bytes());
+            }
+        }
+        out
     }
 
     /// A byte-for-byte copy of this terminal, via the snapshot format.
@@ -1355,6 +1394,84 @@ mod tests {
             b"\x1b[1;31mbold red\x1b[0m \x1b[4;32munderline\x1b[0m\r\n\x1b[38;2;10;200;30mtruecolor\x1b[0m\r\n",
             "styles",
         );
+    }
+
+    fn colour_sets(bytes: &[u8]) -> usize {
+        bytes.windows(3).filter(|bytes| *bytes == b"]4;").count()
+    }
+
+    fn colours(terminal: &ShadowTerminal) -> [[u8; 3]; 256] {
+        terminal
+            .palette(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_PALETTE)
+            .expect("palette")
+    }
+
+    /// Each colour set is one message in the app's 64-slot mailbox. 256 of them fill it, and a
+    /// pane freed before the next tick then deadlocks (#547).
+    ///
+    /// Value: protects=an attach sends no colours nobody set; fails_when=the formatter's palette
+    /// comes back; why_new=the formatter sent all 256 unnoticed; seam=none; no_claim=the deadlock
+    /// itself (needs a real surface)
+    #[test]
+    fn a_default_palette_repaints_no_colours() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"hello\r\n");
+        assert_eq!(colour_sets(&producer.replay()), 0);
+    }
+
+    /// Value: protects=a program's colours survive a reattach; fails_when=overrides are dropped or
+    /// the whole palette is sent; why_new=only a default palette was covered; seam=none;
+    /// no_claim=none beyond protects
+    #[test]
+    fn only_the_colours_a_program_set_are_repainted() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"\x1b]4;1;rgb:12/34/56\x1b\\\x1b]4;200;rgb:ab/cd/ef\x1b\\hello");
+        let replay = producer.replay();
+        assert_eq!(colour_sets(&replay), 2);
+
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&replay);
+        assert_eq!(colours(&client)[1], [0x12, 0x34, 0x56]);
+        assert_eq!(colours(&client), colours(&producer));
+    }
+
+    /// A pane that reconnects keeps its surface, so it still holds what the program set before.
+    ///
+    /// Value: protects=a colour the program reset while detached does not linger; fails_when=the
+    /// repaint stops resetting; why_new=sending every colour used to cover this; seam=none;
+    /// no_claim=none beyond protects
+    #[test]
+    fn a_repaint_clears_colours_the_session_no_longer_has() {
+        let producer = ShadowTerminal::new(80, 24).expect("producer");
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(b"\x1b]4;1;rgb:12/34/56\x1b\\");
+        assert_ne!(colours(&client), colours(&producer));
+
+        client.write(&producer.replay());
+        assert_eq!(colours(&client), colours(&producer));
+    }
+
+    /// Value: protects=a reattached pane keeps the app's theme; fails_when=a repaint sends colours
+    /// nobody set; why_new=a client with the same default palette cannot show this; seam=none;
+    /// no_claim=the app's own theme handling (a shadow terminal stands in for the client)
+    #[test]
+    fn a_repaint_keeps_the_clients_theme() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"hello\r\n");
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        let theme = [GhosttyColorRgb { r: 1, g: 2, b: 3 }; 256];
+        // SAFETY: COLOR_PALETTE reads a `GhosttyColorRgb[256]`, and `theme` is a live one.
+        let rc = unsafe {
+            ghostty_terminal_set(
+                client.inner,
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_PALETTE,
+                theme.as_ptr().cast(),
+            )
+        };
+        assert_eq!(rc, OK);
+
+        client.write(&producer.replay());
+        assert_eq!(colours(&client)[1], [1, 2, 3]);
     }
 
     /// The case the design doc singles out: a full-screen program's screen must come back, and
@@ -1956,9 +2073,9 @@ mod tests {
     }
 
     /// A paint that fits within 80% of the budget is scaled up once more. Fixed-length rows make
-    /// the landing deterministic: the sample (the newest rows, with the screen and the palette)
-    /// comes to more bytes a row than the history behind it, so the first guess comes in at about
-    /// three fifths of the budget.
+    /// the landing deterministic: the sample (the newest rows, with the screen) comes to more bytes
+    /// a row than the history behind it, so the first guess comes in at about three fifths of the
+    /// budget.
     ///
     /// Value: protects=the 80% stop; fails_when=the search stops at a lower fill; why_new=no
     /// search existed; seam=none
