@@ -6,11 +6,17 @@ import XCTest
 /// The creation pane's log, driven through its real `NSTextView`, without a window.
 @MainActor
 final class LogTextControllerTests: XCTestCase {
+  /// A log scrolls to its end on the turn after AppKit has laid it out.
+  private func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+
   private func makeLog(lines: Int) -> (LogTextController, [String]) {
     let log = LogTextController(padding: 10)
+    // A classic scroller, as with a mouse attached and on CI: appearing, it narrows the log.
+    log.scrollView.scrollerStyle = .legacy
     log.scrollView.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
     let text = (0..<lines).map { "line \($0)" }
     log.show(text[...])
+    settle()
     return (log, text)
   }
 
@@ -41,13 +47,13 @@ final class LogTextControllerTests: XCTestCase {
     log.scrollView.frame = NSRect(x: 0, y: 0, width: 100, height: 200)
     log.textView.frame.size.width = 100
     log.show([String(repeating: "word ", count: 40)][...])
-    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    settle()
     let wrapped = log.contentHeight
     XCTAssertGreaterThan(wrapped, 60, "the line should wrap at this width")
 
     log.scrollView.frame.size.width = 1000
     log.textView.frame.size.width = 1000
-    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    settle()
 
     XCTAssertLessThan(log.contentHeight, 60, "two lines and padding, under the 200pt viewport")
   }
@@ -67,12 +73,14 @@ final class LogTextControllerTests: XCTestCase {
 
     lines.append("next")
     log.show(lines[...])
+    settle()
     XCTAssertTrue(atEnd(), "follows a new line")
 
     clip.scroll(to: NSPoint(x: 0, y: 20))
     XCTAssertFalse(log.following)
     lines.append("another")
     log.show(lines[...])
+    settle()
     XCTAssertEqual(clip.bounds.origin.y, 20, "stays put")
 
     log.scrollToEnd()
@@ -80,6 +88,7 @@ final class LogTextControllerTests: XCTestCase {
     XCTAssertTrue(atEnd())
 
     log.scrollView.frame.size.height = 60
+    settle()
     XCTAssertTrue(atEnd(), "keeps its end in view through a resize")
   }
 }
