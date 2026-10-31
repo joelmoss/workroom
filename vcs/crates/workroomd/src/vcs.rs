@@ -57,7 +57,9 @@ fn cached_login_environment<'a>(
     timeout: Duration,
 ) -> &'a BTreeMap<String, String> {
     cache.get_or_init(|| {
-        crate::cli::run_script::login_environment(shell, timeout, |reason| {
+        // Home, never a clone: this runs unattended, for reads of directories nobody has trusted.
+        let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
+        crate::cli::run_script::login_environment(shell, Path::new(&home), timeout, |reason| {
             crate::note!(
                 "remote git: couldn't read the login shell's environment ({reason}); using the daemon's own"
             );
@@ -1508,6 +1510,20 @@ mod tests {
     /// The daemon reads a host profile once, and every remote exec then applies the existing scrub
     /// and request pins to that cached result. A profile may provide git/gh and credentials, but it
     /// cannot redirect a repository or enable a graphical prompt.
+    #[test]
+    fn remote_git_reads_the_login_environment_from_home_not_a_clone() {
+        let root = git_repo("host-login-home");
+        let shell = profile_shell(
+            &root,
+            "export READ_FROM=\"$(pwd -P)\"\nexec /bin/sh -c \"$2\"\n",
+        );
+        let cache = OnceLock::new();
+        let login =
+            cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
+        let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
+        assert_eq!(login["READ_FROM"], home.to_str().unwrap());
+    }
+
     #[test]
     fn remote_git_uses_the_cached_login_environment_with_the_policy_on_top() {
         let root = git_repo("host-login-env");

@@ -65,6 +65,42 @@ fn remote_contract(host: &str, fixture: &str) {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), want);
 }
 
+/// What the login shell selects in the workroom is what the script gets, as from a terminal opened
+/// there (#560), and what it would select at home isn't.
+#[test]
+fn a_script_gets_what_the_login_shell_selects_in_the_workroom() {
+    let root = std::env::temp_dir().join(format!("wr-run-script-pwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (home, room) = (root.join("home"), root.join("room"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&room).unwrap();
+    let room = std::fs::canonicalize(&room).unwrap();
+    std::fs::write(
+        home.join(".bash_profile"),
+        "export SELECTED_FOR=\"$(pwd -P)\"\n",
+    )
+    .unwrap();
+    let script = root.join("workroom_setup");
+    std::fs::write(&script, "#!/bin/sh\necho \"$SELECTED_FOR\"\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(daemon_binary())
+        .args(["run-script", "--dir"])
+        .arg(&room)
+        .args(["--timeout", "60", "--"])
+        .arg(&script)
+        .env("HOME", &home)
+        .env("SHELL", "/bin/bash")
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim_end(),
+        room.to_str().unwrap()
+    );
+}
+
 #[test]
 fn output_streams_while_the_script_runs_and_a_sigterm_ends_its_tree() {
     let dir = std::env::temp_dir().join(format!("wr-run-script-it-{}", std::process::id()));

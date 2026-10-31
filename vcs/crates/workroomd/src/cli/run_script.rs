@@ -2,7 +2,8 @@
 //! Mac's CLI runs one locally (`internal/script`), so the two behave the same
 //! (`docs/designs/scripts-on-every-workroom.md`).
 //!
-//! The environment is the host user's login shell's, read the way the app reads the Mac user's
+//! The environment is what the host user's login shell sets up in the script's directory, as a
+//! terminal opened there would (#560), read the way the app reads the Mac user's
 //! (`ShellEnvironment.probe`): one `<shell> -lic` printing `env -0` between two markers, bounded,
 //! with `WORKROOM_SHELL_PROBE=1` set so an rc file can skip slow work. Any failure falls back to
 //! this process's own environment, and says so. The script runs in a process group of its own, its
@@ -64,7 +65,9 @@ pub fn run_run_script(args: &[String]) -> ExitCode {
     let extra = env_flags(options);
     install_signal_handlers();
     let shell = crate::shell::user_shell(std::env::var_os("SHELL"));
-    let env = login_environment(&shell, PROBE_TIMEOUT, |reason| {
+    // The app has passed the script's trust check before it runs this, so the rc may read the
+    // directory's local tool config: the script is about to run there anyway.
+    let env = login_environment(&shell, Path::new(&dir), PROBE_TIMEOUT, |reason| {
         eprintln!(
             "workroomd run-script: couldn't read the login shell's environment ({reason}); using the daemon's own"
         );
@@ -78,15 +81,16 @@ pub fn run_run_script(args: &[String]) -> ExitCode {
     ))
 }
 
-/// One bounded read of the host's login environment, shared by scripts and remote git. The caller
-/// owns the fallback message: scripts print to the create/delete log, while the long-lived daemon
-/// records it in its own log. No process-wide environment is changed.
+/// One bounded read of the host's login environment in `dir`, shared by scripts and remote git. The
+/// caller owns the fallback message: scripts print to the create/delete log, while the long-lived
+/// daemon records it in its own log. No process-wide environment is changed.
 pub(crate) fn login_environment(
     shell: &str,
+    dir: &Path,
     timeout: Duration,
     on_fallback: impl FnOnce(&str),
 ) -> BTreeMap<String, String> {
-    match probe(shell, timeout) {
+    match probe(shell, dir, timeout) {
         Ok(probed) => merge(probed, &floor_path()),
         Err(reason) => {
             on_fallback(reason);
@@ -200,8 +204,13 @@ pub(crate) fn probe_invocation(shell: &str) -> (&str, &'static str) {
     }
 }
 
-/// The login shell's environment, or why it couldn't be read.
-pub fn probe(shell: &str, timeout: Duration) -> Result<BTreeMap<String, String>, &'static str> {
+/// The login shell's environment in `dir`, or why it couldn't be read. An interactive rc can read
+/// `dir`'s local tool config, so `dir` is a trusted script's or the user's home, never an unread clone.
+pub fn probe(
+    shell: &str,
+    dir: &Path,
+    timeout: Duration,
+) -> Result<BTreeMap<String, String>, &'static str> {
     let marker = marker();
     let (program, shell_flag) = probe_invocation(shell);
     let line = format!("printf '%s' '{marker}'; env -0; printf '%s' '{marker}'");
@@ -209,8 +218,7 @@ pub fn probe(shell: &str, timeout: Duration) -> Result<BTreeMap<String, String>,
     command
         .arg(shell_flag)
         .arg(line)
-        // Home, never the workroom: an interactive rc can read directory-local tool config.
-        .current_dir(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
+        .current_dir(dir)
         .env("PATH", PROBE_SPAWN_PATH)
         .env("WORKROOM_SHELL_PROBE", "1")
         .stdin(Stdio::null())
@@ -421,7 +429,7 @@ mod tests {
             "#!/bin/sh\nexport FROM_PROFILE=yes\necho \"probe=$WORKROOM_SHELL_PROBE\" >&2\nexec /bin/sh -c \"$2\"\n",
             0o755,
         );
-        let env = probe(shell.to_str().unwrap(), PROBE_TIMEOUT).unwrap();
+        let env = probe(shell.to_str().unwrap(), &dir, PROBE_TIMEOUT).unwrap();
         assert_eq!(env.get("FROM_PROFILE").map(String::as_str), Some("yes"));
         assert_eq!(
             env.get("WORKROOM_SHELL_PROBE").map(String::as_str),
@@ -435,7 +443,7 @@ mod tests {
         let shell = script(&dir, "zsh", "#!/bin/sh\nsleep 30\n", 0o755);
         let started = Instant::now();
         assert_eq!(
-            probe(shell.to_str().unwrap(), Duration::from_millis(300)),
+            probe(shell.to_str().unwrap(), &dir, Duration::from_millis(300)),
             Err("timedOut")
         );
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -446,7 +454,7 @@ mod tests {
         let dir = scratch("probe-fallback");
         let shell = script(&dir, "bash", "#!/bin/sh\nexit 4\n", 0o755);
         let mut reported = None;
-        let env = login_environment(shell.to_str().unwrap(), PROBE_TIMEOUT, |reason| {
+        let env = login_environment(shell.to_str().unwrap(), &dir, PROBE_TIMEOUT, |reason| {
             reported = Some(reason.to_string());
         });
         assert_eq!(reported.as_deref(), Some("nonZeroExit"));
@@ -458,7 +466,7 @@ mod tests {
         let dir = scratch("probe-exec");
         let shell = script(&dir, "zsh", "#!/bin/sh\nexec true\n", 0o755);
         assert_eq!(
-            probe(shell.to_str().unwrap(), PROBE_TIMEOUT),
+            probe(shell.to_str().unwrap(), &dir, PROBE_TIMEOUT),
             Err("noMarkers")
         );
     }
