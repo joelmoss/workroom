@@ -152,22 +152,33 @@ fi
 echo "libghostty-vt: building ($target, $GHOSTTY_SHA)" >&2
 BUILD_TMP="${PREFIX}.building.$$"
 rm -rf "$BUILD_TMP"
-trap 'rm -rf "$BUILD_TMP"' EXIT
+KIT_SRC="${PREFIX}.src.$$"
+cleanup() {
+  rm -rf "$BUILD_TMP"
+  # `worktree remove` also drops the entry from $SRC's metadata, which `rm -rf` alone would leave.
+  git -C "$SRC" worktree remove --force "$KIT_SRC" >/dev/null 2>&1 || rm -rf "$KIT_SRC"
+  git -C "$SRC" worktree prune >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
 if $kit; then
   # Compiling Ghostty's shaders needs this component, which Xcode 26+ does not install by default.
-  xcrun --find metal >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain >&2
-  # Upstream writes the xcframework into the source tree. Its Zig cache runs to a gigabyte and a
-  # rebuild only follows a pin change, so that stays in the scratch directory, out of CI's cache.
+  xcodebuild -showComponent MetalToolchain 2>/dev/null | grep -q 'Status: installed' \
+    || xcodebuild -downloadComponent MetalToolchain >&2
+  # Upstream writes the xcframework into the source tree, so build in a scratch worktree: $SRC may
+  # be a checkout somebody else is working in, and every workroom shares the cache's. The Zig cache
+  # runs to a gigabyte and a rebuild only follows a pin change, so that stays scratch too, out of
+  # CI's cache.
   mkdir -p "$BUILD_TMP"
-  ( cd "$SRC" && rm -rf macos/GhosttyKit.xcframework && $ZIG build \
+  git -C "$SRC" worktree add --quiet --detach "$KIT_SRC" "$GHOSTTY_SHA" >&2
+  ( cd "$KIT_SRC" && $ZIG build \
       -Demit-xcframework=true \
       -Demit-macos-app=false \
       -Dxcframework-target=native \
       -Di18n=false \
       -Doptimize=ReleaseFast \
       --cache-dir "${BUILD_TMP}/zig-cache" >&2 )
-  mv "${SRC}/macos/GhosttyKit.xcframework" "$BUILD_TMP/"
+  mv "${KIT_SRC}/macos/GhosttyKit.xcframework" "$BUILD_TMP/"
   rm -rf "${BUILD_TMP}/zig-cache"
 else
   ( cd "$SRC" && $ZIG build \

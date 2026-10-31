@@ -377,6 +377,7 @@ app-test-preflight: ## Check Makefile/workflow invariants and benchmark failure 
 app-test-scripts: app-test-preflight ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, daemon name, exe.dev git setup, test summary, red proof, restore mtime)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-daemon_test.sh
+	sh macapp/Scripts/build-ghostty-vt_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
 	sh macapp/Scripts/appcast-feed_test.sh
 	sh macapp/Scripts/daemon-protocol_test.sh

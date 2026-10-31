@@ -33,7 +33,7 @@ What follows from it in this app:
 
 ## libghostty skips an unchanged size and scale
 
-At the pinned engine (sha 1e9e14af, `macapp/project.yml`), `ghostty_surface_set_size` lands in
+At the pinned engine (`GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh`), `ghostty_surface_set_size` lands in
 the embedded runtime's `updateSize`, which returns when width and height match the last call
 (`src/apprt/embedded.zig:1024-1029`: "Runtimes sometimes generate superfluous resize events even if
 the size did not actually change (SwiftUI)"). The core checks again
