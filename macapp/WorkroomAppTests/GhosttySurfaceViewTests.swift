@@ -7,8 +7,8 @@ import XCTest
 
 /// Guards the keyboard-input regression we hit during QA: macOS reports arrows / F-keys / nav keys
 /// as function-key private-use scalars (U+F700–U+F8FF), which must NOT be forwarded as text (else
-/// they insert a stray glyph), while DEL (U+007F, the Backspace key) MUST be kept and forwarded so
-/// the shell receives the erase byte. See `GhosttySurfaceView.filterSpecialCharacters`.
+/// they insert a stray glyph), while DEL (U+007F, the Backspace key) stays as text, matching upstream
+/// (it encodes to the same `\x7f` either way). See `GhosttySurfaceView.filterSpecialCharacters`.
 final class TerminalKeyTextFilterTests: XCTestCase {
   private func filter(_ s: String) -> String { GhosttySurfaceView.filterSpecialCharacters(s) }
 
@@ -36,8 +36,8 @@ final class TerminalKeyTextFilterTests: XCTestCase {
   }
 
   func testDelIsKept() {
-    // The backspace fix: DEL (0x7F) must be forwarded as text (the pinned libghostty mis-encodes the
-    // backspace *keycode*, so we send the byte instead).
+    // DEL (0x7F) stays as text, as upstream's `ghosttyCharacters` leaves it. Unlike C0 controls, it
+    // is not in the range this filter drops.
     XCTAssertEqual(filter("\u{007F}"), "\u{007F}")
   }
 }

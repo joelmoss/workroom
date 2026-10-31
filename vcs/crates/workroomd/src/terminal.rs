@@ -46,11 +46,9 @@
 //! **Scrollback comes back too, and needs no help.** An earlier reading of this concluded the
 //! formatter was screen-scoped and history was lost — it is not. With a NULL selection the
 //! formatter emits the *entire* screen in Ghostty's sense, scrollback included: a terminal holding
-//! 37 history rows and 24 visible ones emits 59 newlines, and a client fed that ends up with the
-//! history and the right visible screen. A hand-rolled history emission on top of it only
-//! double-counts. The one measurable difference is a single row: the emission ends without a
-//! trailing newline, so the last line does not scroll, and the client reports 36 history rows
-//! where the producer has 37.
+//! 37 history rows and 24 visible ones emits 60 newlines, and a client fed that ends up with the
+//! same 37 rows of history and the right visible screen. A hand-rolled history emission on top of
+//! it only double-counts.
 //!
 //! **Only the newest history that fits is sent.** The shadow keeps as much as the app's pane
 //! (50 MB), and a paint of all of it can run to tens of MiB, so every repaint, record and hand-off
@@ -136,12 +134,6 @@ pub type Progress = Option<(GhosttyTerminalProgressState, i8)>;
 
 /// A terminal's memory as libghostty counts it (`ShadowTerminal::memory`).
 pub type MemoryUsage = GhosttyTerminalMemoryUsage;
-
-/// What `format_tail` sends: the paint, and how many history rows it carries.
-struct Tail {
-    bytes: Vec<u8>,
-    history_rows: u32,
-}
 
 #[cfg(test)]
 thread_local! {
@@ -806,6 +798,8 @@ impl ShadowTerminal {
         let mut options: GhosttyFormatterTerminalOptions = unsafe { std::mem::zeroed() };
         options.size = std::mem::size_of::<GhosttyFormatterTerminalOptions>();
         options.emit = GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT;
+        // `trim` stays false: untrimmed VT output keeps the blank rows at the end of the screen, so
+        // a client scrolls as far as the producer did and the next write lands below the last line.
         options.extra.size = std::mem::size_of::<GhosttyFormatterTerminalExtra>();
         if extras {
             options.extra.modes = true;
@@ -975,12 +969,12 @@ impl ShadowTerminal {
         }
         let mut copy = self.clone_via_snapshot()?;
         copy.write(b"\x1b[?1049l");
-        let mut out = copy.paint(budget, until);
+        let mut out = copy.format_tail(budget, until);
         // Each screen has its own kitty flags, so the primary's go before `DECSET 1049` too, or a
         // client gets them back only from the alternate screen's, which are usually clear.
         out.extend_from_slice(&copy.kitty_flags());
         // The primary's cursor, explicitly, for the same reason `replay` emits one: the formatter
-        // homes the cursor and leaves it after the last painted cell. Here it matters twice over,
+        // homes the cursor and leaves it at the end of the paint. Here it matters twice over,
         // because `DECSET 1049` SAVES the cursor as it switches — so without this the position the
         // client restores when the program exits is wherever the paint ended, and the shell's next
         // line is written onto the end of the last history line instead of below it.
@@ -989,21 +983,6 @@ impl ShadowTerminal {
             *self.primary_paint.borrow_mut() = Some((budget, out.clone()));
         }
         Some(out)
-    }
-
-    /// The active screen as `format_tail` sends it within `budget`, then the newlines that bring
-    /// a client to the row its cursor is on (`scroll_padding`).
-    fn paint(&self, budget: usize, until: Option<Instant>) -> Vec<u8> {
-        let Tail {
-            mut bytes,
-            history_rows,
-            ..
-        } = self.format_tail(budget, until);
-        // How far down the client's content the paint leaves it. The formatter emits one line per
-        // non-empty row and no trailing newline, so this is where its cursor ends up.
-        let painted_rows = bytes.iter().filter(|byte| **byte == b'\n').count() as u32;
-        bytes.extend_from_slice(&self.scroll_padding(painted_rows, history_rows));
-        bytes
     }
 
     /// The screen and the newest history rows whose paint fits `budget` bytes.
@@ -1026,7 +1005,7 @@ impl ShadowTerminal {
     /// when it does not fit a budget smaller than itself: a caller is sent the screen, never
     /// nothing. Past `until`, no more guesses are made: the best fit so far, or the screen alone,
     /// and a call that starts past it formats the screen alone.
-    fn format_tail(&self, budget: usize, until: Option<Instant>) -> Tail {
+    fn format_tail(&self, budget: usize, until: Option<Instant>) -> Vec<u8> {
         let history = self
             .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
             .unwrap_or(0);
@@ -1048,10 +1027,7 @@ impl ShadowTerminal {
         };
 
         if late() {
-            return Tail {
-                bytes: format(0),
-                history_rows: 0,
-            };
+            return format(0);
         }
         let mut best: Option<(u32, Vec<u8>)> = None;
         let mut rows = history.min(TAIL_SAMPLE_ROWS);
@@ -1059,10 +1035,7 @@ impl ShadowTerminal {
         let (mut next, mut held_back) = guess(rows, sample.len());
         if sample.len() <= budget {
             if rows == history {
-                return Tail {
-                    bytes: sample,
-                    history_rows: rows,
-                };
+                return sample;
             }
             best = Some((rows, sample));
         }
@@ -1089,49 +1062,17 @@ impl ShadowTerminal {
                 }
             }
         }
-        let (history_rows, bytes) = match best {
-            Some(best) => best,
+        match best {
+            Some((_, bytes)) => bytes,
             // Only after every guess overshot, or the time ran out first.
             None => loop {
                 rows = if late() { 0 } else { rows / 2 };
                 let bytes = format(rows);
                 if bytes.len() <= budget || rows == 0 {
-                    break (rows, bytes);
+                    break bytes;
                 }
             },
-        };
-        Tail {
-            bytes,
-            history_rows,
         }
-    }
-
-    /// Newlines to make up rows the formatter did not emit.
-    ///
-    /// The formatter stops at the last row with something on it, so a session whose cursor sits on
-    /// a blank row — every session that has just printed a newline, which is most of them — leaves
-    /// the client one or more rows short. That is invisible in the painted screen and wrong the
-    /// moment the next byte arrives: the client's cursor is at the same VIEWPORT coordinate over
-    /// content that is shifted up, so the next line of output lands on top of the last one instead
-    /// of below it. Measured as one dropped line of output per mid-stream attach, on every session
-    /// that had scrolled at all.
-    ///
-    /// The cursor's row in what was sent is `history_rows + cursor_y`, `history_rows` being the
-    /// history `format_tail` sent rather than all this terminal keeps, and the paint leaves the
-    /// client at `painted_rows`; the difference is what has to be scrolled through.
-    fn scroll_padding(&self, painted_rows: u32, history_rows: u32) -> Vec<u8> {
-        let Some(cursor_y) = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y)
-        else {
-            return Vec::new();
-        };
-        let wanted = history_rows + cursor_y;
-        if wanted <= painted_rows {
-            return Vec::new();
-        }
-        // `\r\n` rather than `\n`: the client may have `LNM` unset, where a bare newline moves down
-        // without returning to column 0, and the CUP that follows would then be applied from the
-        // wrong place on every intermediate row.
-        b"\r\n".repeat((wanted - painted_rows) as usize)
     }
 
     /// The active screen's kitty keyboard flags, which the formatter does not emit (module doc), or
@@ -1191,9 +1132,8 @@ impl ShadowTerminal {
     /// is the newest that fits (`format_tail`).
     ///
     /// The parts whose size the history does not change are sized first, and the history gets what
-    /// is left: the leading erase, the kitty flags, the cursor, the scroll padding (counted at its
-    /// most, `\r\n` for each screen row and one more) and, on the alternate screen, that screen's
-    /// paint, which has no history. The output keeps the order a real session produced it in:
+    /// is left: the leading erase, the kitty flags, the cursor and, on the alternate screen, that
+    /// screen's paint, which has no history. The output keeps the order a real session produced it in:
     /// primary, `DECSET 1049`, alternate.
     ///
     /// Past `until` (a hand-off out of time) a session sends its screen alone, and on the alternate
@@ -1204,27 +1144,20 @@ impl ShadowTerminal {
         // The longest CUP `cursor_position` writes, and the longest `kitty_flags`.
         const CURSOR: usize = b"\x1b[65535;65535H".len();
         const KITTY: usize = b"\x1b[>255u".len();
-        let rows = self
-            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)
-            .unwrap_or(0) as usize;
-        let padding = 2 * (rows + 1);
         let kitty = self.kitty_flags();
         let cursor = self.cursor_position();
         let fixed = ERASE.len() + kitty.len() + cursor.len();
         let late = until.is_some_and(|until| Instant::now() >= until);
 
         let mut out = if self.mode(modes::ALT_SCREEN) == Some(true) {
-            let alternate = self.paint(
-                budget.saturating_sub(fixed + padding + ALTERNATE.len()),
-                None,
-            );
+            let alternate = self.format_tail(budget.saturating_sub(fixed + ALTERNATE.len()), None);
             let left = budget.saturating_sub(fixed + alternate.len() + ALTERNATE.len());
             // The primary screen first, then re-entering the alt screen, then the alt screen's own
             // paint below — the order a real session produced them in.
             let primary = if late {
                 None
             } else {
-                self.primary_screen(left.saturating_sub(padding + CURSOR + KITTY), until)
+                self.primary_screen(left.saturating_sub(CURSOR + KITTY), until)
             };
             // The switch whether or not the primary was painted. The formatter's mode extras set
             // it again within the paint (measured), but the screen switch is what separates the
@@ -1234,7 +1167,7 @@ impl ShadowTerminal {
             out.extend_from_slice(&alternate);
             out
         } else {
-            self.paint(budget.saturating_sub(fixed + padding), until)
+            self.format_tail(budget.saturating_sub(fixed), until)
         };
         out.extend_from_slice(&kitty);
         out.extend_from_slice(&cursor);
@@ -1594,11 +1527,9 @@ mod tests {
         let mut client = ShadowTerminal::new(80, 24).expect("client");
         client.write(&producer.replay());
 
-        // Exactly the producer's depth. This was once asserted as "within one row", because the
-        // formatter's emission ends without a trailing newline and the final line does not scroll
-        // — and that missing row was not a rounding difference, it was a dropped line of output on
-        // the next write. `scroll_padding` makes it up, so the bound is now an equality and the
-        // old one must not come back.
+        // Exactly the producer's depth. This was once asserted as "within one row", but a missing
+        // row is not a rounding difference: it is a dropped line of output on the next write, so
+        // the bound is an equality and the old one must not come back.
         let want = producer
             .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
             .unwrap_or(0);
@@ -1866,7 +1797,7 @@ mod tests {
         attempts();
         let tail = terminal.format_tail(1 << 20, None);
         let sizes = attempts();
-        assert!(tail.bytes.len() <= 1 << 20, "{} bytes", tail.bytes.len());
+        assert!(tail.len() <= 1 << 20, "{} bytes", tail.len());
         assert!(
             sizes.iter().all(|size| *size < whole / 8),
             "a format approached the whole history ({whole} bytes): {sizes:?}"
@@ -1948,9 +1879,9 @@ mod tests {
     }
 
     /// A client fed a cut record holds the newest part of the producer's terminal, rows and modes,
-    /// and the next output lands where the producer's does: the padding follows the history sent,
-    /// not the history kept. A cut can start inside a soft-wrapped line, whose first row then
-    /// arrives as a line of its own, which is still the end of the producer's line.
+    /// and the next output lands where the producer's does. A cut can start inside a soft-wrapped
+    /// line, whose first row then arrives as a line of its own, which is still the end of the
+    /// producer's line.
     fn assert_lands(producer: &mut ShadowTerminal, client: &mut ShadowTerminal, label: &str) {
         let (want, got) = (producer.visible_text(), client.visible_text());
         assert!(
@@ -1977,8 +1908,8 @@ mod tests {
     }
 
     /// Value: protects=a cut record's client holds the newest rows, its modes and the producer's
-    /// cursor row, at every cut point; fails_when=scroll_padding pads to the history kept rather
-    /// than sent, or modes are cut with the history; why_new=no record was ever cut; seam=none
+    /// cursor row, at every cut point; fails_when=the paint drops the blank rows at the end of
+    /// the screen, or modes are cut with the history; why_new=no record was ever cut; seam=none
     #[test]
     fn a_cut_history_lands_where_the_producer_has_it() {
         // Budgets from tiny to the whole, so cuts land on plain rows, wide rows and wrapped rows.
@@ -1995,11 +1926,11 @@ mod tests {
         }
     }
 
-    /// The same under a full-screen program: the primary's paint is cut and padded on its own,
+    /// The same under a full-screen program: the primary's paint is cut on its own,
     /// so quitting the program brings back the shell's newest history and its cursor row.
     ///
-    /// Value: protects=the primary's cut paint under the alternate screen; fails_when=the primary
-    /// gets no scroll padding or the alternate screen's budget is not taken first; why_new=the
+    /// Value: protects=the primary's cut paint under the alternate screen; fails_when=the primary's
+    /// paint drops its blank rows or the alternate screen's budget is not taken first; why_new=the
     /// primary was always painted whole; seam=none
     #[test]
     fn quitting_a_program_after_a_cut_brings_back_the_shell() {
@@ -2046,11 +1977,14 @@ mod tests {
                 let tail = terminal.format_tail(budget, None);
                 let sizes = attempts();
                 let history = history_rows(&terminal);
-                assert!(tail.history_rows <= history, "{label}");
+                let mut client = ShadowTerminal::new(columns, 24).expect("client");
+                client.write(&tail);
+                let sent = history_rows(&client);
+                assert!(sent <= history, "{label}");
                 assert!(
-                    tail.bytes.len() <= budget || tail.history_rows == 0,
+                    tail.len() <= budget || sent == 0,
                     "{label}: {} bytes",
-                    tail.bytes.len()
+                    tail.len()
                 );
                 let bits = u32::BITS - history.leading_zeros();
                 let bound = TAIL_GUESSES + bits / 3 + 1 + bits + 1;
@@ -2099,9 +2033,9 @@ mod tests {
             "fixture: no format landed between 50% and 80% of the budget: {sizes:?}"
         );
         assert!(
-            (budget / 10 * 8..=budget).contains(&tail.bytes.len()),
+            (budget / 10 * 8..=budget).contains(&tail.len()),
             "the search stopped at {} of {budget} bytes: {sizes:?}",
-            tail.bytes.len()
+            tail.len()
         );
     }
 
@@ -2386,8 +2320,9 @@ mod tests {
     /// The named cases plus the one that combines them: negotiated modes over content deep enough
     /// to have scrolled.
     ///
-    /// This is the case that found `scroll_padding`'s bug: every split from the moment the session
-    /// first scrolled — which is to say every realistic mid-stream attach — dropped a line.
+    /// This is the case that finds a paint ending short of the producer's last row: every split
+    /// from the moment the session first scrolled, which is every realistic mid-stream attach,
+    /// would drop a line.
     #[test]
     fn every_split_of_modes_over_scrollback_converges() {
         let mut source = Vec::new();
@@ -2422,9 +2357,8 @@ mod tests {
 
     /// A TUI that draws a few rows and parks the cursor far below them, on the alternate screen.
     ///
-    /// Worth its own case because `scroll_padding` reasons in absolute rows — scrollback plus the
-    /// cursor's row — and the alternate screen has no scrollback. Padding that made sense for a
-    /// scrolling primary screen could have scrolled a TUI's screen out from under it. Measured: it
+    /// Worth its own case because the paint keeps every blank row and the alternate screen has no
+    /// scrollback: one newline too many would scroll a TUI's screen out from under it. Measured: it
     /// does not, at any split.
     #[test]
     fn every_split_of_a_parked_alt_cursor_converges() {
