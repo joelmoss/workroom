@@ -1171,8 +1171,9 @@ final class GhosttySurfaceView: NSView {
   /// inline agent. Call this **synchronously** when a command finishes (we are on the main thread in
   /// the runtime callback, before the next prompt renders), so the captured region is the
   /// just-finished command's, not a later one. Returns `nil` when nothing meaningful is on screen.
-  /// The exact command-start boundary isn't exposed by the pinned libghostty; reading the active screen
-  /// captures recent output (errors live at the end), and the host trims/caps via `TerminalCapture`.
+  /// `ghostty.h` has no call for the exact command-start boundary (checked on v1.4.0); reading the
+  /// active screen captures recent output (errors live at the end), and the host trims/caps via
+  /// `TerminalCapture`.
   func readCommandRegion(maxBytes: Int = 16_384) -> String? {
     guard let surface else { return nil }
     var selection = ghostty_selection_s()
@@ -1190,7 +1191,8 @@ final class GhosttySurfaceView: NSView {
 
   /// Read the rendered text for one point tag, or nil when the region is empty or unreadable.
   ///
-  /// Measured tag semantics on the pinned libghostty (issue #144 spike):
+  /// Tag semantics measured in the issue #144 spike. On v1.4.0 they were re-read from the source
+  /// (`SURFACE` is the core `history` tag), not re-measured:
   /// - `SURFACE` — the **scrollback only**; the current viewport is NOT included, and the call
   ///   returns false when nothing has scrolled off yet (a fresh pane has no history to read).
   /// - `VIEWPORT` / `ACTIVE` — what is on screen now.
@@ -1449,10 +1451,9 @@ final class GhosttySurfaceView: NSView {
       keyEvent.composing = hasMarkedText() || hadMarkedText
       // Derive text from `event.characters`, dropping AppKit sentinels (see `filterSpecialCharacters`):
       // function keys / arrows resolve to "" here and fall through to the keycode-only branch, which
-      // libghostty encodes correctly. DEL (U+7F, the Backspace key) is intentionally KEPT and sent as
-      // text — the pinned libghostty's *keycode* encoding for backspace is broken (it emits a space for the
-      // backspace keycode), but forwarding the literal 0x7f byte as text delivers the correct erase.
-      // (Confirmed by raw-PTY byte probing; matches Muxy's filter. Revisit if we move off 1.2.3.)
+      // libghostty encodes correctly. DEL (U+7F, the Backspace key) stays as text, as upstream's
+      // `ghosttyCharacters` leaves it: the encoder sends a lone control character through its
+      // function-key table, so Backspace gives `\x7f` by either path (checked in the v1.4.0 source).
       let text = Self.filterSpecialCharacters(event.characters ?? "")
       if !text.isEmpty, !keyEvent.composing {
         text.withCString {
@@ -1728,7 +1729,7 @@ final class GhosttySurfaceView: NSView {
   /// (U+F700–U+F8FF: arrows, F-keys, Home/End, Page Up/Down, forward-delete) and C0 control chars
   /// via codepoints < 0x20; for those we send the key by keycode only and let libghostty encode the
   /// escape sequence (so arrows navigate instead of inserting a glyph). DEL (U+007F — the
-  /// Backspace/Delete key) IS kept and forwarded as text so the shell receives the erase byte.
+  /// Backspace/Delete key) is kept; it encodes to the same `\x7f` as the keycode-only path.
   /// Mirrors Ghostty's own macOS surface: first scalar decides; pass or drop the whole string.
   /// `static` so it's unit-testable as a pure function (it uses no instance state).
   static func filterSpecialCharacters(_ s: String) -> String {

@@ -216,12 +216,15 @@ dispatches on symbolic labels — don't spend the retest budget there.
 - [ ] **⌘F wrap + ordering** — `TerminalSearch.navigationPlan` inverts the engine's direction and
       synthesizes wrap host-side. On a needle with many matches: Find Next must walk **down** the
       screen and the counter must count **up**. If either reversed, the engine's ordering moved and
-      `navigationPlan` is now wrong, not merely redundant. Re-run §M in full.
-- [ ] **Backspace** erases (we forward a literal `0x7f` as text because the pinned engine's keycode
-      encoding is broken — `GhosttySurfaceView.swift:1171`). If it now double-deletes, the engine
-      was fixed and the workaround must go.
-- [ ] **⌃Tab** reaches a TUI in a single-pane workroom (the pinned engine sends no bytes for it, so
-      "nothing happens" is the expected baseline, not a regression).
+      `navigationPlan` is now wrong, not merely redundant. Re-run §M in full. Source re-read on
+      v1.4.0: `src/terminal/search/` and `navigate_search` select in the same directions as before.
+- [ ] **Backspace** erases exactly one character. We forward `0x7f` as text, as upstream's
+      `ghosttyCharacters` does, and the encoder gives it the same `\x7f` as the keycode-only path
+      (`isControl` in `src/input/key_encode.zig`, checked on v1.4.0). If that stops being true,
+      `filterSpecialCharacters` needs another look.
+- [ ] **⌃Tab** does nothing in a TUI in a single-pane workroom. The engine has bytes for the key, but
+      Ghostty's default `next_tab` binding consumes it first and Workroom ignores that action, so
+      "nothing happens" is the current baseline until #555 is fixed.
 - [ ] **Scrollbar overlay** — scroll a long buffer to the middle, to the top, to the bottom → the
       overlay tracks without jumping or sticking.
 
