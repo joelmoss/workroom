@@ -761,7 +761,7 @@ fn open_read_file(
 
 /// Standard base64 with padding. Hand-rolled because it is fifteen lines and the crate has no other
 /// use for a base64 dependency; `Data(base64Encoded:)` is its decoder on the Swift side.
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

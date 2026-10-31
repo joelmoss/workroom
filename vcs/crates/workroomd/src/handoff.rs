@@ -176,6 +176,7 @@ const _: () = assert!(
     QUIET_TIMEOUT.as_millis()
         + FREEZE_TIMEOUT.as_millis()
         + crate::session::HANDOFF_FORMAT_DEADLINE.as_millis()
+        + crate::session::HANDOFF_IMAGE_DEADLINE.as_millis()
         + TABLE_WRITE_ALLOWANCE.as_millis()
         + CHECK_TIMEOUT.as_millis()
         + REPORT_GRACE.as_millis()

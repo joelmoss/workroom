@@ -7,8 +7,29 @@
 //! feature they do nothing and `replay()` returns no bytes, which is precisely the behaviour
 //! before the shadow existed.
 
+use crate::images::{ImageRef, Placement};
 use crate::program_status::Store;
 use crate::pty::Size;
+#[cfg(feature = "terminal-state")]
+use crate::terminal::{Disturbed, Pixels};
+
+/// No shadow, so no images to encode.
+#[cfg(not(feature = "terminal-state"))]
+pub struct Pixels;
+
+#[cfg(not(feature = "terminal-state"))]
+impl Pixels {
+    pub fn to_png(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// No shadow, so nothing to disturb.
+#[cfg(not(feature = "terminal-state"))]
+pub struct Disturbed {
+    pub abort_at: Option<usize>,
+    pub only_if_loading: bool,
+}
 
 /// What a write from the pty asks of the session: bytes to answer the program with (a program
 /// status probe's reply), and `Some(blocked)` when its program status changed (#358).
@@ -36,6 +57,10 @@ pub struct Shadow {
     progress_owner: Option<libc::pid_t>,
     /// The session's program status records (#358).
     status: Store,
+    /// Whether a transfer is running (`watch_for_transfers`).
+    watching: bool,
+    /// What the last write did to it.
+    disturbed: Option<Disturbed>,
 }
 
 #[cfg(not(feature = "terminal-state"))]
@@ -48,6 +73,8 @@ impl Shadow {
             terminal: crate::terminal::ShadowTerminal::new(columns, rows),
             progress_owner: None,
             status: Store::default(),
+            watching: false,
+            disturbed: None,
         }
     }
 
@@ -77,7 +104,11 @@ impl Shadow {
         let Some(terminal) = self.terminal.as_mut() else {
             return (Vec::new(), None);
         };
-        terminal.write(bytes);
+        if self.watching {
+            self.disturbed = terminal.write_watched(bytes);
+        } else {
+            terminal.write(bytes);
+        }
         let (events, replies) = terminal.take_program_status();
         let fresh = terminal.take_fresh_report();
         let sender = (fresh || !events.is_empty()).then(foreground).flatten();
@@ -97,6 +128,60 @@ impl Shadow {
     /// The session's program status records; `None` in a build that keeps none.
     pub fn status(&mut self) -> Option<&mut Store> {
         Some(&mut self.status)
+    }
+
+    /// Makes the next `write_from_pty` report what would disturb an image transfer, for
+    /// `take_disturbed`. Off whenever no transfer is running, so output pays nothing.
+    pub fn watch_for_transfers(&mut self, on: bool) {
+        self.watching = on;
+    }
+
+    /// What disturbed a transfer in the last write, if anything did.
+    pub fn take_disturbed(&mut self) -> Option<Disturbed> {
+        self.disturbed.take()
+    }
+
+    pub fn at_ground(&mut self) -> bool {
+        self.terminal
+            .as_mut()
+            .is_some_and(|terminal| terminal.at_ground())
+    }
+
+    pub fn visible_images(&self) -> Vec<ImageRef> {
+        self.terminal
+            .as_ref()
+            .map(|terminal| terminal.visible_images())
+            .unwrap_or_default()
+    }
+
+    pub fn pixels(&self, image: ImageRef) -> Option<Pixels> {
+        self.terminal.as_ref()?.pixels(image)
+    }
+
+    pub fn placement(&self, image: u32, force: bool) -> Placement {
+        self.terminal
+            .as_ref()
+            .map_or(Placement::Ready(Vec::new()), |terminal| {
+                terminal.placement(image, force)
+            })
+    }
+
+    /// `image`'s bytes in full, for a screen nothing can interleave with: what a hand-off carries,
+    /// ahead of the parser continuation.
+    pub fn hand_off_image(&self, image: ImageRef) -> Option<Vec<u8>> {
+        let png = self.pixels(image)?.to_png()?;
+        let mut out = crate::images::transmit_bytes(image.id, &png);
+        if let Placement::Ready(bytes) = self.placement(image.id, true) {
+            out.extend_from_slice(&bytes);
+        }
+        Some(out)
+    }
+
+    /// How many bytes at the end of a replay are the parser continuation.
+    pub fn continuation_len(&self) -> usize {
+        self.terminal
+            .as_ref()
+            .map_or(0, |terminal| terminal.continuation_len())
     }
 
     pub fn resize(&mut self, size: Size) {
@@ -203,6 +288,28 @@ impl Shadow {
         None
     }
     pub fn resize(&mut self, _size: Size) {}
+    pub fn watch_for_transfers(&mut self, _on: bool) {}
+    pub fn take_disturbed(&mut self) -> Option<Disturbed> {
+        None
+    }
+    pub fn at_ground(&mut self) -> bool {
+        false
+    }
+    pub fn visible_images(&self) -> Vec<ImageRef> {
+        Vec::new()
+    }
+    pub fn pixels(&self, _image: ImageRef) -> Option<Pixels> {
+        None
+    }
+    pub fn placement(&self, _image: u32, _force: bool) -> Placement {
+        Placement::Ready(Vec::new())
+    }
+    pub fn hand_off_image(&self, _image: ImageRef) -> Option<Vec<u8>> {
+        None
+    }
+    pub fn continuation_len(&self) -> usize {
+        0
+    }
     /// No shadow, so nothing to repaint: a reattaching client resumes the live stream, which is
     /// how the daemon behaved before terminal state existed.
     pub fn replay(&self) -> Vec<u8> {

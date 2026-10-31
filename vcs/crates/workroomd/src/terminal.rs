@@ -64,6 +64,7 @@
 use std::ptr;
 use std::time::Instant;
 
+use crate::images::{ImageRef, Placement};
 use crate::program_status::{Event, Kind, Report, State};
 
 mod sys {
@@ -132,6 +133,122 @@ const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
 /// The last OSC 9;4 a session reported, as (state, percent); percent is -1 when omitted.
 pub type Progress = Option<(GhosttyTerminalProgressState, i8)>;
 
+/// The image data the shadow keeps per screen, in decoded bytes (#551). libghostty-vt's own default
+/// is 10 MB, which refuses a single full-size Retina screenshot outright (2880x1800 RGBA is 20.7).
+/// The app keeps 320 MB; this bounds a daemon holding many sessions.
+pub(crate) const IMAGE_STORAGE_LIMIT: u64 = 32_000_000;
+
+/// The pixels of one stored image, copied out so it can be encoded without the shadow's lock.
+pub struct Pixels {
+    width: u32,
+    height: u32,
+    color: png::ColorType,
+    data: Vec<u8>,
+}
+
+impl Pixels {
+    /// As a PNG, at the encoder's fastest: about 3 ms a MB, smaller than zlib at level 1 and about
+    /// four times as fast on one fast core (measured for #551).
+    pub fn to_png(&self) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, self.width, self.height);
+        encoder.set_color(self.color);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(&self.data).ok()?;
+        writer.finish().ok()?;
+        Some(out)
+    }
+}
+
+/// `bytes` as 8-bit RGBA, or `None` for anything that is not a PNG this shadow could store. The
+/// size is checked from the header, before anything is allocated for the pixels: a program can
+/// claim any dimensions it likes in a few bytes.
+fn decode_png_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let (width, height) = {
+        let info = reader.info();
+        (info.width, info.height)
+    };
+    if u64::from(width) * u64::from(height) * 4 > IMAGE_STORAGE_LIMIT {
+        return None;
+    }
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut buffer).ok()?;
+    buffer.truncate(frame.buffer_size());
+    let rgba = match frame.color_type {
+        png::ColorType::Rgba => buffer,
+        png::ColorType::Rgb => buffer
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => buffer
+            .chunks_exact(2)
+            .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
+            .collect(),
+        png::ColorType::Grayscale => buffer
+            .iter()
+            .flat_map(|gray| [*gray, *gray, *gray, 255])
+            .collect(),
+        png::ColorType::Indexed => return None,
+    };
+    Some((width, height, rgba))
+}
+
+/// `GHOSTTY_SYS_OPT_DECODE_PNG`. Without a decoder the shadow rejects every PNG, which is what
+/// `kitten icat` sends.
+unsafe extern "C" fn decode_png(
+    _userdata: *mut std::ffi::c_void,
+    allocator: *const GhosttyAllocator,
+    data: *const u8,
+    data_len: usize,
+    out: *mut GhosttySysImage,
+) -> bool {
+    if data.is_null() || out.is_null() {
+        return false;
+    }
+    // SAFETY: libghostty passes `data_len` bytes at `data`, valid for this call.
+    let bytes = unsafe { std::slice::from_raw_parts(data, data_len) };
+    let Some((width, height, rgba)) = decode_png_rgba(bytes) else {
+        return false;
+    };
+    // SAFETY: the allocator is the one this call was given, which is the one libghostty frees with.
+    let pixels = unsafe { ghostty_alloc(allocator, rgba.len()) };
+    if pixels.is_null() {
+        return false;
+    }
+    // SAFETY: `pixels` has room for `rgba.len()` bytes and cannot overlap a live `Vec`, and `out`
+    // is the live struct libghostty gave this call.
+    unsafe {
+        ptr::copy_nonoverlapping(rgba.as_ptr(), pixels, rgba.len());
+        *out = GhosttySysImage {
+            width,
+            height,
+            data: pixels,
+            data_len: rgba.len(),
+        };
+    }
+    true
+}
+
+/// Sets the process's PNG decoder, once, before any terminal needs it.
+fn install_png_decoder() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let decode: GhosttySysDecodePngFn = Some(decode_png);
+        // SAFETY: a function pointer option is passed directly, and `decode_png` matches it.
+        unsafe {
+            ghostty_sys_set(
+                GhosttySysOption_GHOSTTY_SYS_OPT_DECODE_PNG,
+                decode.map_or(ptr::null(), |function| function as *const std::ffi::c_void),
+            );
+        }
+    });
+}
+
 /// A terminal's memory as libghostty counts it (`ShadowTerminal::memory`).
 pub type MemoryUsage = GhosttyTerminalMemoryUsage;
 
@@ -171,12 +288,179 @@ struct Effects {
     progress: ProgressSlot,
     command: CommandSlot,
     program: Vec<Event>,
+    /// A RIS since `write_watched` last looked, which a transfer must not outlive.
+    reset: bool,
     /// Bytes for the pty: only the answer to a program status probe.
     replies: Vec<u8>,
 }
 
 /// What `OSC 7501 ; ?` is answered with, up to the states and kinds that follow it.
 const PROBE_REPLY: &[u8] = b"\x1b]7501;";
+
+/// What disturbed a transfer (`write_watched`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Disturbed {
+    /// Where in the bytes an `images::ABORT` can go, ahead of whatever disturbed it: an abort must
+    /// reach the screen whose storage holds the load, and must not land inside a sequence.
+    /// `None` when there is no such place, as after a reset, which clears the load itself.
+    pub abort_at: Option<usize>,
+    /// Nothing happened yet, but the read ended on an ESC at ground. If `_` follows, the next read
+    /// starts a string with no place left for an abort ahead of it, so an open load has to end
+    /// now. With no load open, the transfer just waits for ground as usual.
+    pub only_if_loading: bool,
+}
+
+/// One placement, as `each_placement` reads it.
+struct Placed {
+    image: u32,
+    generation: u64,
+    id: u32,
+    is_virtual: bool,
+    x_offset: u32,
+    y_offset: u32,
+    columns: u32,
+    rows: u32,
+    z: i32,
+    info: GhosttyKittyGraphicsPlacementRenderInfo,
+}
+
+impl Placed {
+    fn read(
+        graphics: GhosttyKittyGraphics,
+        iterator: GhosttyKittyGraphicsPlacementIterator,
+        terminal: GhosttyTerminal,
+    ) -> Option<Placed> {
+        /// # Safety
+        /// `T` must be the output type of `data`, and `iterator` positioned on a placement.
+        unsafe fn get<T: Default>(
+            iterator: GhosttyKittyGraphicsPlacementIterator,
+            data: GhosttyKittyGraphicsPlacementData,
+        ) -> Option<T> {
+            let mut value = T::default();
+            // SAFETY: the caller's contract, and `value` is live.
+            let rc = unsafe {
+                ghostty_kitty_graphics_placement_get(iterator, data, (&raw mut value).cast())
+            };
+            (rc == OK).then_some(value)
+        }
+        // SAFETY: each `T` is that data kind's documented output type, and the caller has
+        // positioned `iterator` on a placement.
+        unsafe {
+            let id: u32 = get(
+                iterator,
+                GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+            )?;
+            let image = ghostty_kitty_graphics_image(graphics, id);
+            if image.is_null() {
+                return None;
+            }
+            let mut generation = 0u64;
+            let rc = ghostty_kitty_graphics_image_get(
+                image,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
+                (&raw mut generation).cast(),
+            );
+            if rc != OK {
+                return None;
+            }
+            let mut info: GhosttyKittyGraphicsPlacementRenderInfo = std::mem::zeroed();
+            info.size = std::mem::size_of::<GhosttyKittyGraphicsPlacementRenderInfo>();
+            // A virtual placement has no position, and says so in `info`.
+            let _ =
+                ghostty_kitty_graphics_placement_render_info(iterator, image, terminal, &mut info);
+            Some(Placed {
+                image: id,
+                generation,
+                id: get(
+                    iterator,
+                    GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_PLACEMENT_ID,
+                )?,
+                is_virtual: get(
+                    iterator,
+                    GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
+                )?,
+                x_offset: get(
+                    iterator,
+                    GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET,
+                )?,
+                y_offset: get(
+                    iterator,
+                    GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET,
+                )?,
+                columns: get(
+                    iterator,
+                    GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_COLUMNS,
+                )?,
+                rows: get(
+                    iterator,
+                    GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_ROWS,
+                )?,
+                z: get(
+                    iterator,
+                    GhosttyKittyGraphicsPlacementData_GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
+                )?,
+                info,
+            })
+        }
+    }
+
+    /// Appends the sequence for this placement. One whose top has scrolled away is cropped to what
+    /// is left, at the top row; one that has gone altogether adds nothing.
+    fn write(&self, out: &mut Vec<u8>, cell_height: u32) {
+        let id = self.image;
+        let placement = if self.id == 0 {
+            String::new()
+        } else {
+            format!(",p={}", self.id)
+        };
+        if self.is_virtual {
+            let (columns, rows) = (self.columns, self.rows);
+            out.extend_from_slice(
+                format!(
+                    "\x1b_Ga=p,U=1,i={id}{placement},c={columns},r={rows},z={z},q=2\x1b\\",
+                    z = self.z
+                )
+                .as_bytes(),
+            );
+            return;
+        }
+        let info = &self.info;
+        if !info.viewport_visible || info.grid_rows == 0 {
+            return;
+        }
+        let above = info.viewport_row.min(0).unsigned_abs();
+        let rows = info.grid_rows.saturating_sub(above);
+        if rows == 0 {
+            return;
+        }
+        // In pixels, not a share of the rows: an image rarely ends on a row's edge.
+        let gone = u64::from(above) * u64::from(cell_height);
+        let drawn = u64::from(info.pixel_height.max(1));
+        let cut = (u64::from(info.source_height) * gone / drawn).min(u64::from(info.source_height));
+        let cut = cut as u32;
+        let (y, h) = (info.source_y + cut, info.source_height - cut);
+        // The offset is into a top row that has gone.
+        let y_offset = if above == 0 { self.y_offset } else { 0 };
+        let (row, column) = (info.viewport_row.max(0) + 1, info.viewport_col.max(0) + 1);
+        let (x, w, x_offset, z) = (info.source_x, info.source_width, self.x_offset, self.z);
+        // Only the size the program asked for. Grid sizes are rounded up to whole cells, so
+        // asking for those would stretch an image drawn at its natural size.
+        let mut size = String::new();
+        if self.columns > 0 {
+            size.push_str(&format!(",c={}", self.columns));
+        }
+        if self.rows > 0 {
+            size.push_str(&format!(",r={}", self.rows.saturating_sub(above)));
+        }
+        out.extend_from_slice(
+            format!(
+                "\x1b[{row};{column}H\x1b_Ga=p,i={id}{placement},C=1{size},\
+                 x={x},y={y},w={w},h={h},X={x_offset},Y={y_offset},z={z},q=2\x1b\\"
+            )
+            .as_bytes(),
+        );
+    }
+}
 
 /// A terminal shadowing one session.
 pub struct ShadowTerminal {
@@ -417,6 +701,7 @@ unsafe extern "C" fn on_reset(_terminal: GhosttyTerminal, userdata: *mut std::ff
     // SAFETY: libghostty passes the userdata `register_effects` set, from inside a write.
     if let Some(effects) = unsafe { effects(userdata) } {
         effects.program.push(Event::Reset);
+        effects.reset = true;
     }
 }
 
@@ -436,6 +721,7 @@ impl ShadowTerminal {
         if rc != OK || inner.is_null() {
             return None;
         }
+        install_png_decoder();
         let terminal = ShadowTerminal {
             inner,
             effects: Box::into_raw(Box::default()),
@@ -444,6 +730,7 @@ impl ShadowTerminal {
         };
         terminal.enable_continuation_tracking();
         terminal.limit_scrollback();
+        terminal.limit_images();
         terminal.register_effects();
         Some(terminal)
     }
@@ -547,6 +834,20 @@ impl ShadowTerminal {
         }
     }
 
+    /// `IMAGE_STORAGE_LIMIT`. Direct transfers only stays libghostty's default: a temp file or
+    /// shared memory is deleted by whoever reads it first, and that must be the app.
+    fn limit_images(&self) {
+        let limit = IMAGE_STORAGE_LIMIT;
+        // SAFETY: `inner` is a live terminal, and the option reads a `uint64_t` before returning.
+        unsafe {
+            ghostty_terminal_set(
+                self.inner,
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                (&raw const limit).cast(),
+            );
+        }
+    }
+
     /// A byte limit and no line limit, as the app's pane has.
     fn limit_scrollback(&self) {
         let bytes: usize = SCROLLBACK_MAX_BYTES;
@@ -581,6 +882,273 @@ impl ShadowTerminal {
         {
             *self.primary_paint.get_mut() = None;
         }
+    }
+
+    /// `write` for output a transfer is running through. Returns what disturbed the transfer, if
+    /// anything did: a program's own string (its image, most likely), a switch of screen, or a
+    /// reset. Any of them ends the transfer, since a chunk after a program's image start would land
+    /// in its load, and one after a switch in the wrong screen's storage.
+    pub fn write_watched(&mut self, bytes: &[u8]) -> Option<Disturbed> {
+        let was_alternate = self.mode(modes::ALT_SCREEN);
+        // SAFETY: `effects` is live for `self`'s life and nothing else holds it between writes.
+        unsafe { (*self.effects).reset = false };
+        let mut abort_at = None;
+        let mut disturbed = false;
+        let (mut rest, trailing_escape) = match bytes.split_last() {
+            Some((0x1b, body)) => (body, true),
+            _ => (bytes, false),
+        };
+        loop {
+            // SAFETY: all zeroes is valid for this C struct of integers.
+            let mut stop: GhosttyTerminalWriteStop = unsafe { std::mem::zeroed() };
+            stop.size = std::mem::size_of::<GhosttyTerminalWriteStop>();
+            // SAFETY: `inner` is live, the pointer and length come from one live slice, and `stop`
+            // is live with its `size` set.
+            let rc = unsafe {
+                ghostty_terminal_vt_write_until(
+                    self.inner,
+                    rest.as_ptr(),
+                    rest.len(),
+                    GhosttyTerminalBoundary_GHOSTTY_TERMINAL_BOUNDARY_APC_START as u32,
+                    &mut stop,
+                )
+            };
+            if rc != OK {
+                break;
+            }
+            let end = bytes.len() - rest.len() + stop.consumed;
+            disturbed = true;
+            // The ESC can be in an earlier read, which has gone: then the stream is not between
+            // sequences anywhere in this one before the string starts.
+            if abort_at.is_none() {
+                abort_at = match stop.introducer {
+                    GhosttyTerminalStringIntroducer_GHOSTTY_TERMINAL_STRING_INTRODUCER_C1 => {
+                        end.checked_sub(1)
+                    }
+                    _ => end
+                        .checked_sub(2)
+                        .filter(|at| bytes.get(*at) == Some(&0x1b)),
+                };
+            }
+            rest = &rest[stop.consumed..];
+            if rest.is_empty() {
+                break;
+            }
+        }
+        let escape_at_ground = trailing_escape && self.at_ground();
+        if trailing_escape {
+            // SAFETY: `inner` is a live terminal, and the byte is a live local.
+            unsafe { ghostty_terminal_vt_write(self.inner, [0x1bu8].as_ptr(), 1) }
+        }
+        let switch = screen_switch_at(bytes);
+        let switched = switch.is_some() || self.mode(modes::ALT_SCREEN) != was_alternate;
+        // SAFETY: as above.
+        let reset = unsafe { (*self.effects).reset };
+        if self.primary_paint.get_mut().is_some()
+            && (self.mode(modes::ALT_SCREEN) != Some(true) || switch.is_some())
+        {
+            *self.primary_paint.get_mut() = None;
+        }
+        if disturbed || switched || reset {
+            return Some(Disturbed {
+                abort_at: [abort_at, switch].into_iter().flatten().min(),
+                only_if_loading: false,
+            });
+        }
+        escape_at_ground.then(|| Disturbed {
+            abort_at: Some(bytes.len() - 1),
+            only_if_loading: true,
+        })
+    }
+
+    /// Whether the parser is between sequences, where a client's stream can take other bytes. Not
+    /// `continuation()`, which is capped: an unfinished 8 KB OSC 52 reports nothing.
+    pub fn at_ground(&mut self) -> bool {
+        // SAFETY: all zeroes is valid for this C struct of integers.
+        let mut stop: GhosttyTerminalWriteStop = unsafe { std::mem::zeroed() };
+        stop.size = std::mem::size_of::<GhosttyTerminalWriteStop>();
+        // SAFETY: `inner` is live, a NULL pointer is allowed at length zero, and `stop` is live
+        // with its `size` set. Asking for ground with no input consumes nothing.
+        let rc = unsafe {
+            ghostty_terminal_vt_write_until(
+                self.inner,
+                ptr::null(),
+                0,
+                GhosttyTerminalBoundary_GHOSTTY_TERMINAL_BOUNDARY_GROUND as u32,
+                &mut stop,
+            )
+        };
+        rc == OK
+    }
+
+    /// Calls `f` for each placement on the active screen. The storage is borrowed until the next
+    /// write, which `&self` rules out here.
+    fn each_placement(&self, mut f: impl FnMut(&Placed)) {
+        let mut graphics: GhosttyKittyGraphics = ptr::null_mut();
+        // SAFETY: DATA_KITTY_GRAPHICS's output type is `GhosttyKittyGraphics *`.
+        let rc = unsafe {
+            ghostty_terminal_get(
+                self.inner,
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+                (&raw mut graphics).cast(),
+            )
+        };
+        if rc != OK || graphics.is_null() {
+            return;
+        }
+        let mut iterator: GhosttyKittyGraphicsPlacementIterator = ptr::null_mut();
+        // SAFETY: a null allocator selects the default one, and `iterator` is a live out-pointer.
+        if unsafe { ghostty_kitty_graphics_placement_iterator_new(ptr::null(), &mut iterator) }
+            != OK
+        {
+            return;
+        }
+        // SAFETY: the data kind's output is the iterator to fill, which is live.
+        let filled = unsafe {
+            ghostty_kitty_graphics_get(
+                graphics,
+                GhosttyKittyGraphicsData_GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+                (&raw mut iterator).cast(),
+            )
+        };
+        // SAFETY: `iterator` is live, and is only advanced here.
+        while filled == OK && unsafe { ghostty_kitty_graphics_placement_next(iterator) } {
+            if let Some(placed) = Placed::read(graphics, iterator, self.inner) {
+                f(&placed);
+            }
+        }
+        // SAFETY: `iterator` came from `iterator_new`, and is freed exactly once, here.
+        unsafe { ghostty_kitty_graphics_placement_iterator_free(iterator) };
+    }
+
+    /// The images a client should be sent: those with a placement on the active screen, in part
+    /// or whole, or through Unicode placeholders. Newest first.
+    pub fn visible_images(&self) -> Vec<ImageRef> {
+        let mut images: Vec<ImageRef> = Vec::new();
+        self.each_placement(|placed| {
+            if (placed.is_virtual || placed.info.viewport_visible)
+                && !images.iter().any(|image| image.id == placed.image)
+            {
+                images.push(ImageRef {
+                    id: placed.image,
+                    generation: placed.generation,
+                });
+            }
+        });
+        images.sort_by_key(|image| std::cmp::Reverse(image.generation));
+        images
+    }
+
+    /// A copy of `image`'s pixels, or `None` if a program has replaced or deleted it since.
+    pub fn pixels(&self, image: ImageRef) -> Option<Pixels> {
+        let mut graphics: GhosttyKittyGraphics = ptr::null_mut();
+        // SAFETY: DATA_KITTY_GRAPHICS's output type is `GhosttyKittyGraphics *`.
+        let rc = unsafe {
+            ghostty_terminal_get(
+                self.inner,
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+                (&raw mut graphics).cast(),
+            )
+        };
+        if rc != OK || graphics.is_null() {
+            return None;
+        }
+        // SAFETY: `graphics` is live until the next write, which `&self` rules out.
+        let handle = unsafe { ghostty_kitty_graphics_image(graphics, image.id) };
+        if handle.is_null() {
+            return None;
+        }
+        /// # Safety
+        /// `T` must be the output type of `data`.
+        unsafe fn get<T: Default>(
+            image: GhosttyKittyGraphicsImage,
+            data: GhosttyKittyGraphicsImageData,
+        ) -> Option<T> {
+            let mut value = T::default();
+            // SAFETY: the caller's contract, and `value` is live.
+            let rc =
+                unsafe { ghostty_kitty_graphics_image_get(image, data, (&raw mut value).cast()) };
+            (rc == OK).then_some(value)
+        }
+        // SAFETY: each `T` is that data kind's documented output type.
+        unsafe {
+            let generation: u64 = get(
+                handle,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
+            )?;
+            if generation != image.generation {
+                return None;
+            }
+            let width: u32 = get(
+                handle,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
+            )?;
+            let height: u32 = get(
+                handle,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
+            )?;
+            let format: GhosttyKittyImageFormat = get(
+                handle,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_FORMAT,
+            )?;
+            let length: usize = get(
+                handle,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
+            )?;
+            let mut pointer: *const u8 = ptr::null();
+            let rc = ghostty_kitty_graphics_image_get(
+                handle,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+                (&raw mut pointer).cast(),
+            );
+            if rc != OK || pointer.is_null() {
+                return None;
+            }
+            let color = match format {
+                GhosttyKittyImageFormat_GHOSTTY_KITTY_IMAGE_FORMAT_RGB => png::ColorType::Rgb,
+                GhosttyKittyImageFormat_GHOSTTY_KITTY_IMAGE_FORMAT_RGBA => png::ColorType::Rgba,
+                GhosttyKittyImageFormat_GHOSTTY_KITTY_IMAGE_FORMAT_GRAY => {
+                    png::ColorType::Grayscale
+                }
+                GhosttyKittyImageFormat_GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA => {
+                    png::ColorType::GrayscaleAlpha
+                }
+                _ => return None,
+            };
+            Some(Pixels {
+                width,
+                height,
+                color,
+                // The storage holds `length` bytes at `pointer` until the next write.
+                data: std::slice::from_raw_parts(pointer, length).to_vec(),
+            })
+        }
+    }
+
+    /// The bytes that put `image` where its placements are now.
+    ///
+    /// A plain cursor move there and back, as the repaint restores the cursor, never ESC 7 and
+    /// ESC 8: a terminal has one saved cursor, and it is the program's. Live output waits for a
+    /// moment that costs nothing (`force` is for a hand-off, whose screen ends in its own CUP): a
+    /// CUP clears a pending wrap, so the next character would overwrite the last column, and origin
+    /// mode changes what a CUP means.
+    pub fn placement(&self, image: u32, force: bool) -> Placement {
+        let wrapping = self
+            .get_bool(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP)
+            .unwrap_or(false);
+        if !force && (wrapping || self.mode(modes::ORIGIN) == Some(true)) {
+            return Placement::Hold;
+        }
+        let mut out = Vec::new();
+        self.each_placement(|placed| {
+            if placed.image == image {
+                placed.write(&mut out, self.cell_pixels.1);
+            }
+        });
+        if !out.is_empty() {
+            out.extend_from_slice(&self.cursor_position());
+        }
+        Placement::Ready(out)
     }
 
     /// The pixels of one cell, applied at the next `resize`. Images use them; the shadow draws
@@ -696,6 +1264,13 @@ impl ShadowTerminal {
     /// A count or position, widened to `u32`, read into a variable exactly `width_of(data)` bytes
     /// wide, because that is how many bytes the library writes. A `u32` for every kind overran
     /// the stack for the scrollback rows. A kind with no known width is refused.
+    fn get_bool(&self, data: GhosttyTerminalData) -> Option<bool> {
+        let mut value = false;
+        // SAFETY: the data kinds passed here have `bool *` as their output type.
+        let rc = unsafe { ghostty_terminal_get(self.inner, data, (&raw mut value).cast()) };
+        (rc == OK).then_some(value)
+    }
+
     fn get_u32(&self, data: GhosttyTerminalData) -> Option<u32> {
         /// # Safety
         /// `width` must be how many bytes `ghostty_terminal_get` writes for `data`.
@@ -737,6 +1312,11 @@ impl ShadowTerminal {
             )
         };
         (rc == OK).then_some(config.value)
+    }
+
+    /// How many bytes `replay` ends with for the parser continuation.
+    pub fn continuation_len(&self) -> usize {
+        self.continuation().len()
     }
 
     fn continuation(&self) -> Vec<u8> {
@@ -1255,11 +1835,17 @@ impl Drop for ShadowTerminal {
 /// a program's output is not a switch. A sequence cut across two writes is not seen; the leave half
 /// of a switch is still caught, as a write that ends off the alternate screen.
 fn switches_screens(bytes: &[u8]) -> bool {
+    screen_switch_at(bytes).is_some()
+}
+
+/// Where in `bytes` the first screen switch or reset starts, which is `switches_screens`' answer.
+fn screen_switch_at(bytes: &[u8]) -> Option<usize> {
     let mut rest = bytes;
     while let Some(at) = rest.iter().position(|byte| *byte == 0x1b) {
+        let start = bytes.len() - rest.len() + at;
         rest = &rest[at + 1..];
         if rest.first() == Some(&b'c') {
-            return true;
+            return Some(start);
         }
         if let Some(params) = rest.strip_prefix(b"[?") {
             let end = params
@@ -1271,11 +1857,11 @@ fn switches_screens(bytes: &[u8]) -> bool {
                     .split(|byte| *byte == b';')
                     .any(|param| matches!(param, b"47" | b"1047" | b"1049"))
             {
-                return true;
+                return Some(start);
             }
         }
     }
-    false
+    None
 }
 
 /// Modes worth naming, for tests and for anything that needs to reason about what survived.
@@ -1292,6 +1878,7 @@ pub mod modes {
     #[cfg(test)]
     pub const BRACKETED_PASTE: GhosttyMode = mode_new(2004, false);
     pub const ALT_SCREEN: GhosttyMode = mode_new(1049, false);
+    pub const ORIGIN: GhosttyMode = mode_new(6, false);
 }
 
 #[cfg(test)]
@@ -2621,5 +3208,371 @@ mod tests {
             "a D with no exit code"
         );
         assert_eq!(commands(b"\x1b]133;D;0\x07"), [], "a D with no C");
+    }
+
+    /// A terminal whose cells are 10x20 pixels, as a client's are.
+    fn sized_terminal(columns: u16, rows: u16) -> ShadowTerminal {
+        let mut terminal = ShadowTerminal::new(columns, rows).expect("terminal");
+        terminal.set_cell_pixels(10, 20);
+        terminal.resize(columns, rows);
+        terminal
+    }
+
+    /// Black RGB pixels sent as a raw image.
+    fn raw_image(id: u32, width: u32, height: u32) -> Vec<u8> {
+        let mut out = format!("\x1b_Ga=T,f=24,s={width},v={height},i={id},q=2;").into_bytes();
+        out.extend(std::iter::repeat_n(b'A', (width * height * 4) as usize));
+        out.extend_from_slice(b"\x1b\\");
+        out
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        Pixels {
+            width,
+            height,
+            color: png::ColorType::Rgb,
+            data: vec![0; (width * height * 3) as usize],
+        }
+        .to_png()
+        .expect("png")
+    }
+
+    fn sent_as_png(id: u32, width: u32, height: u32) -> Vec<u8> {
+        let mut out = format!("\x1b_Ga=T,f=100,i={id},q=2;").into_bytes();
+        out.extend_from_slice(crate::file::base64(&png_bytes(width, height)).as_bytes());
+        out.extend_from_slice(b"\x1b\\");
+        out
+    }
+
+    fn image_bytes(terminal: &ShadowTerminal) -> u64 {
+        terminal.memory().expect("memory").primary_image_bytes
+    }
+
+    fn has(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|window| window == needle)
+    }
+
+    fn ready(placement: Placement) -> Vec<u8> {
+        match placement {
+            Placement::Ready(bytes) => bytes,
+            Placement::Hold => panic!("held"),
+        }
+    }
+
+    /// Value: protects=what `kitten icat` sends reaches the shadow (#551); fails_when=the PNG
+    /// decoder is not installed; why_new=no test stored an image; seam=none; no_claim=a real
+    /// program's PNG, which the app check covers
+    #[test]
+    fn a_png_is_stored_decoded() {
+        let mut terminal = sized_terminal(80, 24);
+        terminal.write(&sent_as_png(7, 3, 2));
+        assert_eq!(image_bytes(&terminal), 3 * 2 * 4);
+    }
+
+    /// Value: protects=a full-size Retina screenshot can come back; fails_when=the limit is left
+    /// at libghostty's 10 MB; why_new=new; seam=none; no_claim=none beyond protects
+    #[test]
+    fn a_retina_sized_image_fits_the_limit() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        // 2880x1800 RGBA in chunks: the size that libghostty's default limit refuses.
+        let bytes = 2880 * 1800 * 4 / 3 * 4;
+        let chunk = 1 << 16;
+        let mut sent = 0;
+        while sent < bytes {
+            let length = chunk.min(bytes - sent);
+            sent += length;
+            let more = u8::from(sent < bytes);
+            let head = if sent == length {
+                "a=T,f=32,s=2880,v=1800,i=7,"
+            } else {
+                ""
+            };
+            let mut out = format!("\x1b_G{head}q=2,m={more};").into_bytes();
+            out.extend(std::iter::repeat_n(b'A', length));
+            out.extend_from_slice(b"\x1b\\");
+            terminal.write(&out);
+        }
+        assert_eq!(image_bytes(&terminal), 2880 * 1800 * 4);
+    }
+
+    /// Value: protects=a small file cannot make the daemon hold an image past the limit;
+    /// fails_when=the size check goes; why_new=new; seam=none; no_claim=none beyond protects
+    #[test]
+    fn a_valid_png_over_the_limit_is_refused() {
+        let over = png_bytes(4000, 2048);
+        assert!(over.len() < 1 << 20, "a few bytes of file: {}", over.len());
+        assert!(decode_png_rgba(&over).is_none());
+        assert!(decode_png_rgba(&png_bytes(3, 2)).is_some(), "fixture");
+    }
+
+    /// Value: protects=image data is only inserted between sequences; fails_when=at_ground reads
+    /// continuation(); why_new=the 8 KB case is past continuation's cap; seam=none;
+    /// no_claim=none beyond protects
+    #[test]
+    fn ground_is_false_inside_any_unfinished_sequence() {
+        let mut long = b"\x1b]52;c;".to_vec();
+        long.extend(std::iter::repeat_n(b'A', 8192));
+        let cases: [(&[u8], bool); 6] = [
+            (b"plain", true),
+            (b"\x1b[31m", true),
+            (b"\x1b[3", false),
+            (b"\xe2\x82", false),
+            (b"\x1b", false),
+            (&long, false),
+        ];
+        for (bytes, ground) in cases {
+            let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+            terminal.write(bytes);
+            assert_eq!(
+                terminal.at_ground(),
+                ground,
+                "{:?}",
+                &bytes[..bytes.len().min(8)]
+            );
+        }
+    }
+
+    /// The regression contract for ADR 0010: output renders the same with image data going in
+    /// wherever `at_ground` allows, at every place a read could end.
+    ///
+    /// Value: protects=program output is never corrupted by a transfer (#551); fails_when=a chunk
+    /// goes in mid-sequence; why_new=new; seam=none; no_claim=real Ghostty, which the shadow's
+    /// engine stands in for at the same revision
+    #[test]
+    fn output_renders_the_same_at_every_split_with_chunks_at_ground() {
+        const STREAM: &[u8] =
+            b"plain \x1b[31mred\x1b[0m caf\xc3\xa9 \xe2\x82\xac \x1b]0;title\x07 end\r\nnext";
+        const CHUNK: &[u8] = b"\x1b_Ga=t,f=24,s=2,v=1,i=7,q=2,m=1;AAAA\x1b\\";
+        let mut control = ShadowTerminal::new(80, 24).expect("control");
+        control.write(STREAM);
+        let expected = (control.visible_text(), control.replay());
+        let mut injected = 0;
+        for split in 1..STREAM.len() {
+            let (first, second) = STREAM.split_at(split);
+            let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+            let mut client = ShadowTerminal::new(80, 24).expect("client");
+            producer.write(first);
+            client.write(first);
+            if producer.at_ground() {
+                client.write(CHUNK);
+                injected += 1;
+            }
+            producer.write(second);
+            client.write(second);
+            assert_eq!(client.visible_text(), expected.0, "split at {split}");
+            assert_eq!(client.replay(), expected.1, "split at {split}");
+        }
+        assert!(
+            injected > 10,
+            "the fixture must exercise injection: {injected}"
+        );
+    }
+
+    /// Value: protects=a transfer stops for a program's image, and an abort goes ahead of it;
+    /// fails_when=write_watched misses the APC or its offset; why_new=new; seam=none;
+    /// no_claim=the reader's use of it, which session.rs covers
+    #[test]
+    fn a_program_image_disturbs_a_transfer_at_its_start() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        assert_eq!(terminal.write_watched(b"hello"), None);
+        let disturbed = terminal.write_watched(b"ab\x1b_Ga=T,s=1,v=1,f=24;AAAA\x1b\\");
+        assert_eq!(disturbed.map(|d| d.abort_at), Some(Some(2)));
+    }
+
+    /// Value: protects=a load is closed before a string that starts across two reads, the last
+    /// chance there is; fails_when=the trailing ESC is not seen; why_new=the offset test has the
+    /// ESC in the same read; seam=none; no_claim=the reader's use of it, which session.rs covers
+    #[test]
+    fn a_read_ending_on_an_escape_warns_an_open_load() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        let disturbed = terminal.write_watched(b"ab\x1b").expect("warned");
+        assert_eq!(disturbed.abort_at, Some(2));
+        assert!(disturbed.only_if_loading);
+        assert!(!terminal.at_ground(), "the ESC is in the parser");
+        let disturbed = terminal.write_watched(b"_Ga=T,s=1,v=1,f=24;AAAA\x1b\\");
+        assert_eq!(disturbed.map(|d| d.abort_at), Some(None));
+    }
+
+    /// A string's own terminator is not at ground, and an abort there would land inside it.
+    #[test]
+    fn an_escape_ending_a_string_warns_nothing() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        assert_eq!(terminal.write_watched(b"\x1b]0;title\x1b"), None);
+    }
+
+    /// Value: protects=a transfer does not outlive the screen it was for; fails_when=the switch or
+    /// reset is not seen; why_new=new; seam=none; no_claim=none beyond protects
+    #[test]
+    fn a_screen_switch_or_a_reset_disturbs_a_transfer() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        let disturbed = terminal.write_watched(b"ab\x1b[?1049h");
+        assert_eq!(disturbed.map(|d| d.abort_at), Some(Some(2)));
+
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        assert!(terminal.write_watched(b"\x1bc").is_some());
+
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        assert_eq!(terminal.write_watched(b"\x1b[?10"), None);
+        assert!(
+            terminal.write_watched(b"49h").is_some(),
+            "a switch cut across reads is still seen"
+        );
+    }
+
+    /// Value: protects=only what is on screen is sent; fails_when=visible_images ignores the
+    /// viewport; why_new=new; seam=none; no_claim=none beyond protects
+    #[test]
+    fn only_images_on_the_active_screen_are_visible() {
+        let mut terminal = sized_terminal(80, 10);
+        assert_eq!(terminal.visible_images(), []);
+        terminal.write(&raw_image(7, 20, 40));
+        let images = terminal.visible_images();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].id, 7);
+
+        terminal.write(b"\x1b[?1049h");
+        assert_eq!(
+            terminal.visible_images(),
+            [],
+            "behind a full-screen program"
+        );
+        terminal.write(b"\x1b[?1049l");
+        terminal.write(&b"\r\n".repeat(20));
+        assert_eq!(terminal.visible_images(), [], "scrolled off");
+    }
+
+    /// Value: protects=a replaced image is not sent; fails_when=the generation is ignored;
+    /// why_new=new; seam=none; no_claim=none beyond protects
+    #[test]
+    fn pixels_are_refused_once_a_program_has_replaced_the_image() {
+        let mut terminal = sized_terminal(80, 24);
+        terminal.write(&raw_image(7, 2, 2));
+        let image = terminal.visible_images()[0];
+        assert!(terminal.pixels(image).is_some());
+        terminal.write(&raw_image(7, 2, 2));
+        assert!(terminal.pixels(image).is_none());
+    }
+
+    /// Value: protects=a restored image lands where it was, cursor unmoved; fails_when=the
+    /// sequence changes shape; why_new=new; seam=none; no_claim=the app's drawing
+    #[test]
+    fn a_placement_goes_to_its_cell_and_back() {
+        let mut producer = sized_terminal(80, 24);
+        producer.write(b"\r\n\r\n");
+        producer.write(&raw_image(7, 20, 40));
+        producer.write(b"\r\nBELOW");
+        let image = producer.visible_images()[0];
+        let png = producer
+            .pixels(image)
+            .and_then(|p| p.to_png())
+            .expect("png");
+
+        let mut client = sized_terminal(80, 24);
+        client.write(&producer.replay());
+        client.write(&crate::images::transmit_bytes(7, &png));
+        client.write(&ready(producer.placement(7, false)));
+        assert_eq!(client.visible_images().len(), 1);
+        assert_eq!(
+            ready(client.placement(7, false)),
+            ready(producer.placement(7, false)),
+            "the same cell, cursor and size"
+        );
+        client.write(b"X");
+        producer.write(b"X");
+        assert_eq!(client.visible_text(), producer.visible_text());
+    }
+
+    /// Value: protects=the program's saved cursor; fails_when=placement uses ESC 7 or ESC 8;
+    /// why_new=new; seam=none; no_claim=none beyond protects
+    #[test]
+    fn a_placement_leaves_the_saved_cursor_alone() {
+        let mut terminal = sized_terminal(80, 24);
+        terminal.write(&raw_image(7, 20, 40));
+        let bytes = ready(terminal.placement(7, false));
+        assert!(
+            !has(&bytes, b"\x1b7") && !has(&bytes, b"\x1b8"),
+            "{bytes:?}"
+        );
+    }
+
+    /// Value: protects=the top of a tall image scrolling away crops it, as agreed for #551;
+    /// fails_when=the crop arithmetic changes; why_new=new; seam=none; no_claim=the app's crop,
+    /// checked by hand on 2026-10-31
+    #[test]
+    fn an_image_partly_above_the_top_is_cropped_to_what_is_left() {
+        let mut terminal = sized_terminal(80, 10);
+        // 5 rows tall from the top row: its cursor ends on the last of them.
+        terminal.write(&raw_image(7, 20, 100));
+        // Seven more lines take the cursor to the bottom and two rows off the top.
+        terminal.write(&b"\r\n".repeat(7));
+        let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
+        assert!(text.starts_with("\x1b[1;1H\x1b_Ga=p,i=7,"), "{text:?}");
+        assert!(!text.contains(",r="), "it had no size of its own: {text:?}");
+        assert!(text.contains("x=0,y=40,w=20,h=60"), "{text:?}");
+
+        // 90 pixels ends part-way through its fifth row, and two rows are still 40 pixels.
+        let mut terminal = sized_terminal(80, 10);
+        terminal.write(&raw_image(7, 20, 90));
+        terminal.write(&b"\r\n".repeat(7));
+        let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
+        assert!(text.contains("x=0,y=40,w=20,h=50"), "{text:?}");
+    }
+
+    /// Value: protects=a restored image keeps its size: natural stays natural, and an asked-for
+    /// size stays, less what is cropped; fails_when=the grid size is sent; why_new=seen in the app,
+    /// 1% stretched; seam=none; no_claim=the app's drawing
+    #[test]
+    fn a_placement_keeps_the_size_the_program_asked_for() {
+        let mut terminal = sized_terminal(80, 10);
+        let mut image = b"\x1b_Ga=T,f=24,s=20,v=100,i=7,c=4,r=5,q=2;".to_vec();
+        image.extend(std::iter::repeat_n(b'A', 20 * 100 * 4));
+        image.extend_from_slice(b"\x1b\\");
+        terminal.write(&image);
+        let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
+        assert!(text.contains("C=1,c=4,r=5,"), "{text:?}");
+
+        terminal.write(&b"\r\n".repeat(7));
+        let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
+        assert!(text.contains("C=1,c=4,r=3,"), "{text:?}");
+    }
+
+    #[test]
+    fn a_placement_scrolled_away_adds_nothing() {
+        let mut terminal = sized_terminal(80, 10);
+        terminal.write(&raw_image(7, 20, 40));
+        terminal.write(&b"\r\n".repeat(20));
+        assert_eq!(ready(terminal.placement(7, false)), b"");
+    }
+
+    /// Value: protects=a character at the last column still wraps, and CUP means what it says;
+    /// fails_when=placement stops holding; why_new=new; seam=none; no_claim=none beyond protects
+    #[test]
+    fn a_placement_waits_out_a_pending_wrap_and_origin_mode() {
+        let mut terminal = sized_terminal(20, 10);
+        terminal.write(&raw_image(7, 20, 40));
+        terminal.write(b"\r\n");
+        terminal.write(&[b'x'; 20]);
+        assert_eq!(terminal.placement(7, false), Placement::Hold);
+        assert!(matches!(terminal.placement(7, true), Placement::Ready(_)));
+        terminal.write(b"y");
+        assert!(matches!(terminal.placement(7, false), Placement::Ready(_)));
+
+        terminal.write(b"\x1b[?6h");
+        assert_eq!(terminal.placement(7, false), Placement::Hold);
+    }
+
+    /// Value: protects=images drawn through placeholders come back; fails_when=virtual placements
+    /// are dropped; why_new=new; seam=none; no_claim=the placeholder cells, which are text
+    #[test]
+    fn a_virtual_placement_comes_back_without_moving_the_cursor() {
+        let mut terminal = sized_terminal(80, 24);
+        let mut image = b"\x1b_Ga=T,f=24,s=2,v=2,i=7,U=1,c=4,r=2,q=2;".to_vec();
+        image.extend(std::iter::repeat_n(b'A', 16));
+        image.extend_from_slice(b"\x1b\\");
+        terminal.write(&image);
+        assert_eq!(terminal.visible_images().len(), 1);
+        let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
+        assert!(text.contains("a=p,U=1,i=7"), "{text:?}");
+        assert!(text.contains("c=4,r=2,z=0"), "{text:?}");
     }
 }
