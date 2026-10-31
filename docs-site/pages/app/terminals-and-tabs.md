@@ -71,6 +71,17 @@ A terminal's shell is held by a background helper, not by its tab. That is why t
 > [!NOTE]
 > In Workroom 2.1.0 this was a setting named **Persist sessions**. Nightly removed the setting, and terminals always survive a quit.
 
+### Images {nightly}
+
+Programs that use the Kitty graphics protocol, such as `kitten icat`, work in local and remote terminals. An image on screen comes back when you reopen Workroom, when a remote terminal reconnects, and after a background update. It follows the text, so a large image can take a moment on a slow connection. If its top has scrolled off, the part still on screen comes back.
+
+These images don't come back:
+
+- Images in scrollback.
+- Images behind a full-screen program.
+- Images sent by file path, temp file or shared memory, rather than directly.
+- Images over 32 MB once decoded. During an update, a very large image that doesn't compress can be lost too.
+
 ### Restoring hidden terminals {nightly}
 
 When you reopen Workroom, visible panes reconnect immediately. Hidden terminal tabs reconnect gradually after the window appears, so restoring many panes leaves room for clicks and typing. Their shells and commands keep running in the background helper throughout.
