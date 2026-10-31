@@ -141,6 +141,22 @@ final class CodingAgentPromptTests: XCTestCase {
     XCTAssertNil(CodingAgentPrompt.parseInner(#"{"summary":"x","fix":"  "}"#).fixCommand)
   }
 
+  /// Without bracketed paste a line break in the terminal is a Return, so line 1 would run (#550).
+  func testParseInnerDropsAFixWithALineBreakAndKeepsTheRest() {
+    for fix in [#"touch a\nrm -rf b"#, #"touch a\rrm -rf b"#, #"touch a\r\nrm -rf b"#] {
+      let d = CodingAgentPrompt.parseInner(
+        #"{"summary":"missing dep","fix":"\#(fix)","detail":"gem not installed"}"#)
+      XCTAssertNil(d.fixCommand, "should drop: \(fix)")
+      XCTAssertEqual(d.summary, "missing dep")
+      XCTAssertEqual(d.detail, "gem not installed")
+    }
+  }
+
+  func testParseInnerKeepsAOneLineFixWithATrailingNewline() {
+    let d = CodingAgentPrompt.parseInner(#"{"summary":"x","fix":"npm ci\n"}"#)
+    XCTAssertEqual(d.fixCommand, "npm ci")
+  }
+
   func testParseInnerNonJSONFallsBackToSummary() {
     let d = CodingAgentPrompt.parseInner("The build failed because the port is taken.")
     XCTAssertEqual(d.summary, "The build failed because the port is taken.")

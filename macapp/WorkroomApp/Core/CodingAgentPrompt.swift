@@ -114,7 +114,7 @@ enum CodingAgentPrompt {
     {
       return CodingAgentDiagnosis(
         summary: summary,
-        fixCommand: nonNullString(object["fix"]),
+        fixCommand: nonNullString(object["fix"]).flatMap(singleLine),
         detail: nonNullString(object["detail"]))
     }
     return CodingAgentDiagnosis(
@@ -135,6 +135,13 @@ enum CodingAgentPrompt {
   private static func nonBlank(_ s: String?) -> String? {
     guard let s = s?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
     return s
+  }
+
+  /// Nil for text with a line break: at a prompt without bracketed paste a line break is a Return,
+  /// so inserting it would run everything before it unreviewed (#550). Flattening would change what
+  /// the command means, so the fix is dropped instead.
+  private static func singleLine(_ s: String) -> String? {
+    s.rangeOfCharacter(from: .newlines) == nil ? s : nil
   }
 
   /// A JSON string field, treating absent / `null` / the literal "null" / empty as nil.
