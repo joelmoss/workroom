@@ -1222,8 +1222,10 @@ final class GhosttySurfaceView: NSView {
     return TerminalCapture.tidy(raw, maxBytes: maxBytes)
   }
 
-  /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the
-  /// user reviews and presses Return themselves — we never auto-execute an AI-suggested command.
+  /// Send literal text to the surface as an unconfirmed paste, with no newline added ("Insert fix",
+  /// issue #49): the user reviews and presses Return themselves — we never auto-execute an
+  /// AI-suggested command. Paste protection is skipped, and without bracketed paste a line break in
+  /// `string` is a Return, so `CodingAgentPrompt` drops multi-line fixes before they get here (#550).
   func sendText(_ string: String) {
     guard let surface, !string.isEmpty else { return }
     string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
