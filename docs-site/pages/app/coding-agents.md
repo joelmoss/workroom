@@ -18,7 +18,7 @@ When a command fails in a terminal, the pane footer shows **Command failed (exit
 The diagnosis has these buttons:
 
 - **Diagnose** asks a coding agent for the cause and a suggested fix.
-- **Insert fix** types the suggested command into the terminal without running it. Press <kbd>Return</kbd> yourself to run it. If the command looks destructive, Workroom asks you to confirm before it inserts it.
+- **Insert fix** types the suggested command into the terminal without running it. Press <kbd>Return</kbd> yourself to run it. If the command looks destructive, Workroom asks you to confirm before it inserts it. A suggestion that runs over more than one line is dropped, because a line break could run it before you review it, so that diagnosis has no **Insert fix**. Use **Investigate** instead. In Workroom 2.1.0 a multi-line suggestion is still offered.
 - **Investigate** opens an interactive Claude Code or Codex session in the same folder, seeded with the failure, to dig deeper. **Settings ▸ AI Agents ▸ Investigate with** picks which. It appears once a diagnosis has arrived.
 - The **x** button dismisses it.
 
