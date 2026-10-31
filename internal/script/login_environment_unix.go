@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -42,11 +41,7 @@ func loginEnvironment(dir string) (env []string, problem string) {
 }
 
 func readLoginShell(dir, shell string) (map[string]string, string) {
-	marker := make([]byte, 16)
-	if _, err := rand.Read(marker); err != nil {
-		return nil, "noMarker"
-	}
-	mark := hex.EncodeToString(marker)
+	mark := rand.Text()
 	line := "printf '%s' '" + mark + "'; env -0; printf '%s' '" + mark + "'"
 
 	ctx, cancel := context.WithTimeout(context.Background(), loginReadTimeout)
@@ -106,7 +101,7 @@ func parseLoginOutput(data []byte, mark string) map[string]string {
 		return nil
 	}
 	vars := map[string]string{}
-	for _, entry := range bytes.Split(payload, []byte{0}) {
+	for entry := range bytes.SplitSeq(payload, []byte{0}) {
 		if name, value, ok := strings.Cut(string(entry), "="); ok && name != "" {
 			vars[name] = value
 		}
@@ -137,7 +132,7 @@ func mergeLoginEnvironment(probed map[string]string) []string {
 func unionPath(first, second string) string {
 	seen := map[string]bool{}
 	var entries []string
-	for _, entry := range strings.Split(first+":"+second, ":") {
+	for entry := range strings.SplitSeq(first+":"+second, ":") {
 		if entry != "" && !seen[entry] {
 			seen[entry] = true
 			entries = append(entries, entry)

@@ -1507,9 +1507,6 @@ mod tests {
         assert!(!env.contains_key("LEGACY"));
     }
 
-    /// The daemon reads a host profile once, and every remote exec then applies the existing scrub
-    /// and request pins to that cached result. A profile may provide git/gh and credentials, but it
-    /// cannot redirect a repository or enable a graphical prompt.
     #[test]
     fn remote_git_reads_the_login_environment_from_home_not_a_clone() {
         let root = git_repo("host-login-home");
@@ -1524,6 +1521,9 @@ mod tests {
         assert_eq!(login["READ_FROM"], home.to_str().unwrap());
     }
 
+    /// The daemon reads a host profile once, and every remote exec then applies the existing scrub
+    /// and request pins to that cached result. A profile may provide git/gh and credentials, but it
+    /// cannot redirect a repository or enable a graphical prompt.
     #[test]
     fn remote_git_uses_the_cached_login_environment_with_the_policy_on_top() {
         let root = git_repo("host-login-env");
