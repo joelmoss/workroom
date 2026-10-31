@@ -302,12 +302,13 @@ final class HostStreamTests: XCTestCase {
     let connecting = directory.appendingPathComponent("connecting").path
     // `script` runs the wrapper on a pty of its own, as a pane does, and copies its input there:
     // the Ctrl-C reaches the wrapper and its stand-in for a connecting ssh through the line
-    // discipline, as a key typed in the pane does.
+    // discipline, as a key typed in the pane does. The stand-in is one process from its marker on,
+    // as ssh is: a Ctrl-C landing as a child `touch` exits leaves the shell to start the `sleep` (#513).
     let attach = Process()
     attach.executableURL = URL(fileURLWithPath: "/usr/bin/script")
     attach.arguments = [
       "-q", "/dev/null", "/bin/sh", "-c", SSHTransport.attachWrapper, "workroom-attach", log,
-      "/bin/sh", "-c", "touch \"$0\"; sleep 10", connecting,
+      "/bin/sh", "-c", ": > \"$0\"; exec sleep 10", connecting,
     ]
     let input = Pipe()
     attach.standardInput = input
