@@ -16,7 +16,8 @@ import SwiftUI
 
   private var attributes: [NSAttributedString.Key: Any]
   private var shownLines = 0
-  private var visibleHeight: CGFloat = 0
+  private var visibleSize = NSSize.zero
+  private var isPinning = false
 
   init(padding: CGFloat) {
     let size = NSFont.preferredFont(forTextStyle: .footnote).pointSize
@@ -92,7 +93,19 @@ import SwiftUI
   @objc private func contentChanged() {
     // Deferred: this runs inside SwiftUI's layout when the pane is resized.
     DispatchQueue.main.async { [weak self] in self?.measureContent() }
-    if following { scrollToEnd() }
+    pinToEnd()
+  }
+
+  /// On the next turn, as AppKit moves the clip view itself while it lays out (a classic scroller
+  /// appearing put a log back near its top), and that isn't the user scrolling.
+  private func pinToEnd() {
+    guard following, !isPinning else { return }
+    isPinning = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      isPinning = false
+      if following { scrollToEnd() }
+    }
   }
 
   /// From the laid-out text, as the text view's frame never goes below its viewport: a log widened
@@ -110,10 +123,11 @@ import SwiftUI
   /// land here. A log that was following keeps its end in view as its frame changes.
   @objc private func clipChanged() {
     let clip = scrollView.contentView
-    let resized = clip.bounds.height != visibleHeight
-    visibleHeight = clip.bounds.height
+    let resized = clip.bounds.size != visibleSize
+    visibleSize = clip.bounds.size
+    guard !isPinning else { return }
     if resized, following {
-      scrollToEnd()
+      pinToEnd()
     } else {
       following = CreationPanePresentation.isAtBottom(
         offset: clip.bounds.origin.y, visible: clip.bounds.height, content: textView.frame.height)
