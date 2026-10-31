@@ -377,78 +377,43 @@ private struct CreationStepRow: View {
 }
 
 /// A step's log, open under its row: monospaced, selectable and dense (approved mockup C), on the
-/// `surface` fill with a hairline. It follows new lines only while it is scrolled to its bottom; once
-/// scrolled up it stays put, with "Jump to latest" over its corner until it is back (design D10).
+/// `surface` fill with a hairline. It opens at the latest output, where a running or failed step's
+/// news is, and follows new lines only while it is scrolled to its bottom; once scrolled up it stays
+/// put, with "Jump to latest" over its corner until it is back (design D10).
 private struct CreationLogView: View {
   /// Never empty: only a row with output opens (`isExpandable`).
   let lines: ArraySlice<String>
   let onContentHeight: (CGFloat) -> Void
-  /// Opens at the latest output, where a running or failed step's news is: through
-  /// `defaultScrollAnchor`, as a `ScrollPosition(edge: .bottom)` start left a log a little shorter
-  /// than its frame drawing only its last few lines, the lazy rows above it never laid out.
-  @State private var position = ScrollPosition()
-  @State private var following = true
+  @StateObject private var log = LogTextController(padding: Self.padding)
   private let theme = ThemeService.shared
 
   static let padding: CGFloat = 10
 
-  private struct Metrics: Equatable {
-    var offset: CGFloat
-    var visible: CGFloat
-    var content: CGFloat
-  }
-
   var body: some View {
-    ScrollView {
-      LazyVStack(alignment: .leading, spacing: 0) {
-        ForEach(lines.indices, id: \.self) { index in
-          Text(lines[index].isEmpty ? " " : lines[index])
-            .font(.system(.footnote, design: .monospaced))
-            .frame(maxWidth: .infinity, alignment: .leading)
+    LogTextView(controller: log, tokens: theme.tokens)
+      .onChange(of: lines.count, initial: true) { log.show(lines) }
+      .onChange(of: log.contentHeight) { onContentHeight(log.contentHeight) }
+      .overlay(alignment: .bottomTrailing) {
+        if !log.following {
+          Button {
+            log.scrollToEnd()
+          } label: {
+            Image(systemName: "arrow.down.circle.fill")
+              .font(.title2)
+              .foregroundStyle(theme.tokens.accent)
+          }
+          .buttonStyle(.plain)
+          .help("Jump to latest")
+          .accessibilityLabel("Jump to latest")
+          .padding(8)
         }
       }
-      .textSelection(.enabled)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(Self.padding)
-    }
-    .scrollPosition($position)
-    .defaultScrollAnchor(.bottom)
-    .onScrollGeometryChange(for: Metrics.self) { geometry in
-      Metrics(
-        offset: geometry.contentOffset.y, visible: geometry.containerSize.height,
-        content: geometry.contentSize.height)
-    } action: { old, new in
-      onContentHeight(new.content)
-      // New lines move only the content's end; the user's scroll (or a jump) moves the offset.
-      if new.offset != old.offset || new.visible != old.visible {
-        following = CreationPanePresentation.isAtBottom(
-          offset: new.offset, visible: new.visible, content: new.content)
-      }
-    }
-    .onChange(of: lines.count) {
-      if following { position.scrollTo(edge: .bottom) }
-    }
-    .overlay(alignment: .bottomTrailing) {
-      if !following {
-        Button {
-          position.scrollTo(edge: .bottom)
-        } label: {
-          Image(systemName: "arrow.down.circle.fill")
-            .font(.title2)
-            .foregroundStyle(theme.tokens.accent)
-        }
-        .buttonStyle(.plain)
-        .help("Jump to latest")
-        .accessibilityLabel("Jump to latest")
-        .padding(8)
-      }
-    }
-    .background(theme.tokens.surface)
-    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .strokeBorder(theme.tokens.border, lineWidth: 1)
-    )
+      .background(theme.tokens.surface)
+      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .strokeBorder(theme.tokens.border, lineWidth: 1)
+      )
   }
 }
 
