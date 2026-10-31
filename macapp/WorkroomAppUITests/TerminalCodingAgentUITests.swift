@@ -16,12 +16,13 @@ final class TerminalCodingAgentUITests: XCTestCase {
     continueAfterFailure = false
   }
 
-  private func launchedApp(runCommand: String) -> XCUIApplication {
+  private func launchedApp(runCommand: String, multilineFix: Bool = false) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-WorkroomUITestCodingAgentStub", "1"]
     app.launchArguments += ["-WorkroomUITestRunCommand", runCommand]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    if multilineFix { app.launchArguments += ["-WorkroomUITestCodingAgentMultilineFix", "1"] }
     app.useScratchDaemon()
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
@@ -145,6 +146,65 @@ final class TerminalCodingAgentUITests: XCTestCase {
       seededCommand.contains("UITEST diagnosis: port already in use"),
       "the seeded command must carry the diagnosis text, not a bare `claude` invocation — got: "
         + seededCommand)
+  }
+
+  /// A multi-line fix could run its first line with no Return pressed, so the real banner must not
+  /// offer it (#550). The diagnosis itself and Investigate stay.
+  func testMultiLineFixOffersNoInsertFix() {
+    let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7", multilineFix: true)
+    startRun(app)
+    revealRunTab(app)
+
+    let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
+    XCTAssertTrue(diagnosis.waitForExistence(timeout: 20))
+    diagnosis.click()
+
+    XCTAssertTrue(
+      app.staticTexts["UITEST diagnosis: port already in use"].waitForExistence(timeout: 5),
+      "the diagnosis still shows")
+    XCTAssertTrue(app.buttons["Investigate"].exists, "Investigate is still offered")
+    XCTAssertFalse(app.buttons["Insert fix"].exists, "a multi-line fix must not offer Insert")
+  }
+
+  /// A one-line fix lands at a live prompt and waits for the user: its output only appears once
+  /// Return is pressed (#550). Uses the plain terminal tab, since a failed run leaves no prompt.
+  func testOneLineFixLandsAtThePromptUnexecuted() {
+    let app = launchedApp(runCommand: "true")
+    let chip = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.")).firstMatch
+    XCTAssertTrue(chip.waitForExistence(timeout: 20), "the fixture workroom has a terminal tab")
+    chip.click()
+    let surface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
+      .firstMatch
+    XCTAssertTrue(surface.waitForExistence(timeout: 10))
+    func screen() -> String { (surface.value as? String) ?? "" }
+
+    XCTAssertTrue(poll(timeout: 20, until: { !screen().isEmpty }), "the shell started")
+    // Without bracketed paste a stray Return in the inserted text runs it; with it, zsh would hold
+    // the text whatever was sent, and this test could not fail.
+    app.typeText("unset zle_bracketed_paste\r(echo boom; exit 7)\r")
+    let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
+    XCTAssertTrue(
+      diagnosis.waitForExistence(timeout: 20),
+      "the failed command is diagnosed. Screen:\n\(screen())")
+    diagnosis.click()
+
+    let insert = app.buttons["Insert fix"]
+    XCTAssertTrue(insert.waitForExistence(timeout: 5), "a one-line fix offers Insert")
+    insert.click()
+
+    XCTAssertTrue(
+      poll(timeout: 10, until: { screen().contains("echo WRFIX$((40+2))") }),
+      "the fix lands at the prompt. Screen:\n\(screen())")
+    // Long enough for an executed command to have printed; `WRFIX42` is not in the inserted text.
+    RunLoop.current.run(until: Date().addingTimeInterval(2))
+    XCTAssertFalse(screen().contains("WRFIX42"), "the fix ran unasked. Screen:\n\(screen())")
+
+    chip.click()
+    app.typeText("\r")
+    XCTAssertTrue(
+      poll(timeout: 10, until: { screen().contains("WRFIX42") }),
+      "Return runs the inserted fix, so it really was at a live prompt. Screen:\n\(screen())")
   }
 
   private func poll(timeout: TimeInterval, until condition: () -> Bool) -> Bool {

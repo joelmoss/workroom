@@ -535,10 +535,14 @@ enum UITestFixture {
   }
 
   /// The canned claude `--output-format json` envelope the stub agent returns. Its inner JSON is the
-  /// compact diagnosis the XCUITest asserts on (a recognisable `UITEST` summary + a safe fix).
+  /// compact diagnosis the XCUITest asserts on (a recognisable `UITEST` summary + a safe fix). The fix
+  /// prints `WRFIX42` only if it runs, so a test can tell inserted text from an executed command.
+  /// `-WorkroomUITestCodingAgentMultilineFix 1` gives it a line break (#550).
   static let codingAgentStubEnvelope: String = {
-    let inner =
-      #"{\"summary\":\"UITEST diagnosis: port already in use\",\"fix\":\"kill $(lsof -ti:3000)\"}"#
+    let fix =
+      flag("WorkroomUITestCodingAgentMultilineFix")
+      ? #"echo WRFIX$((40+2))\\necho two"# : #"echo WRFIX$((40+2))"#
+    let inner = #"{\"summary\":\"UITEST diagnosis: port already in use\",\"fix\":\"\#(fix)\"}"#
     return #"{"type":"result","is_error":false,"result":"\#(inner)"}"#
   }()
 
