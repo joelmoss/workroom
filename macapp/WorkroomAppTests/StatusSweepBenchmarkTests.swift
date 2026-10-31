@@ -76,7 +76,11 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     for index in 0..<workrooms {
       let name = "room-\(index)"
       let path = directory.appendingPathComponent(name).path
-      try await git(["worktree", "add", "-b", name, path])
+      // An identity, or git looks up the hostname for one, which can outlast the timeout above.
+      try await git([
+        "-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.invalid", "worktree",
+        "add", "-b", name, path,
+      ])
       rooms.append(Workroom(name: name, path: path, vcsName: "git", warnings: []))
     }
     let script = directory.appendingPathComponent("gh.sh")
