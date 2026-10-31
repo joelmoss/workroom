@@ -250,8 +250,9 @@ dispatches on symbolic labels — don't spend the retest budget there.
       Both ssh features are off by default, and Workroom has no way to turn them on: it doesn't load
       `~/.config/ghostty/config`, and it rewrites its generated config. For this test, add
       `export GHOSTTY_SHELL_FEATURES=cursor,title,path,ssh-env,ssh-terminfo` to your `~/.zshrc` or
-      `~/.bashrc` (the integration reads the variable after those files run), then open a new pane
-      and confirm `echo $GHOSTTY_SHELL_FEATURES` lists them. Remove the line when you're done.
+      `~/.bash_profile` (the integration reads the variable after those files run, and a pane's
+      bash is a login shell, so `~/.bashrc` only counts if that profile sources it), then open a
+      new pane and confirm `echo $GHOSTTY_SHELL_FEATURES` lists them. Remove the line when you're done.
       Then `type ssh` → must report a shell *function*, not `/usr/bin/ssh` (that's what proves the
       wrapper loaded at all). `ssh <a host you control> env | grep -E 'COLORTERM|TERM_PROGRAM'` →
       the variables arrive. **Do not** assert merely on the absence of "command not found": a failing
