@@ -852,6 +852,9 @@ extension AppStore {
   /// Falls back to a plain shell if the armed command can't start (e.g. config cleared between arming
   /// and mount) — the shell below opens regardless.
   func ensureInitialTerminal(for target: TerminalTarget) {
+    // A delete drops the target first, and a failed create's pane still runs this as it leaves: the
+    // terminal would be freed moments later, mid-attach, which is the #547 freeze.
+    guard Self.sidebarID(forTargetID: target.id, in: projects) != nil else { return }
     // A remote workroom whose host keeps its layout waits for it rather than open a fresh pane
     // (#255, D4): `applyHostLayout` comes back here once the host has answered, or not in time.
     if fetchHostLayoutIfNeeded(for: target) {
