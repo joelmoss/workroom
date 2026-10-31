@@ -212,7 +212,10 @@ unsafe extern "C" fn decode_png(
     }
     // SAFETY: libghostty passes `data_len` bytes at `data`, valid for this call.
     let bytes = unsafe { std::slice::from_raw_parts(data, data_len) };
-    let Some((width, height, rgba)) = decode_png_rgba(bytes) else {
+    // These bytes are whatever a program printed, and a panic cannot cross this C boundary: it
+    // would abort the daemon, and every session with it, over one image.
+    let Ok(Some((width, height, rgba))) = std::panic::catch_unwind(|| decode_png_rgba(bytes))
+    else {
         return false;
     };
     // SAFETY: the allocator is the one this call was given, which is the one libghostty frees with.
@@ -434,7 +437,8 @@ impl Placed {
             return;
         }
         // In pixels, not a share of the rows: an image rarely ends on a row's edge.
-        let gone = u64::from(above) * u64::from(cell_height);
+        let gone =
+            (u64::from(above) * u64::from(cell_height)).saturating_sub(u64::from(self.y_offset));
         let drawn = u64::from(info.pixel_height.max(1));
         let cut = (u64::from(info.source_height) * gone / drawn).min(u64::from(info.source_height));
         let cut = cut as u32;
@@ -898,6 +902,7 @@ impl ShadowTerminal {
             Some((0x1b, body)) => (body, true),
             _ => (bytes, false),
         };
+        let body_length = rest.len();
         loop {
             // SAFETY: all zeroes is valid for this C struct of integers.
             let mut stop: GhosttyTerminalWriteStop = unsafe { std::mem::zeroed() };
@@ -916,7 +921,7 @@ impl ShadowTerminal {
             if rc != OK {
                 break;
             }
-            let end = bytes.len() - rest.len() + stop.consumed;
+            let end = body_length - rest.len() + stop.consumed;
             disturbed = true;
             // The ESC can be in an earlier read, which has gone: then the stream is not between
             // sequences anywhere in this one before the string starts.
@@ -3393,6 +3398,16 @@ mod tests {
         assert_eq!(disturbed.map(|d| d.abort_at), Some(None));
     }
 
+    /// Value: protects=the abort still lands ahead of a program's string when the read also ends
+    /// on an ESC; fails_when=the offset counts that held-back byte; why_new=found in review, the
+    /// other tests have one or the other; seam=none; no_claim=none beyond protects
+    #[test]
+    fn an_abort_lands_ahead_of_a_string_in_a_read_ending_on_an_escape() {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        let disturbed = terminal.write_watched(b"ab\x1b_Ga=T,s=1,v=1,f=24;AAAA\x1b");
+        assert_eq!(disturbed.map(|d| d.abort_at), Some(Some(2)));
+    }
+
     /// A string's own terminator is not at ground, and an abort there would land inside it.
     #[test]
     fn an_escape_ending_a_string_warns_nothing() {
@@ -3516,6 +3531,16 @@ mod tests {
         terminal.write(&b"\r\n".repeat(7));
         let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
         assert!(text.contains("x=0,y=40,w=20,h=50"), "{text:?}");
+
+        // An offset of 10 into the first row: two rows gone hide 30 of its pixels, not 40.
+        let mut terminal = sized_terminal(80, 10);
+        let mut image = b"\x1b_Ga=T,f=24,s=20,v=100,i=7,Y=10,q=2;".to_vec();
+        image.extend(std::iter::repeat_n(b'A', 20 * 100 * 4));
+        image.extend_from_slice(b"\x1b\\");
+        terminal.write(&image);
+        terminal.write(&b"\r\n".repeat(6));
+        let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
+        assert!(text.contains("x=0,y=30,w=20,h=70"), "{text:?}");
     }
 
     /// Value: protects=a restored image keeps its size: natural stays natural, and an asked-for
