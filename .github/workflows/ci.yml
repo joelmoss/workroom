@@ -524,11 +524,11 @@ jobs:
           path: macapp/DerivedData/Build
           key: >-
             xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
-            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'vcs/scripts/build-ghostty-vt.sh') }}-${{
             github.sha }}
           restore-keys: >-
             xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
-            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'vcs/scripts/build-ghostty-vt.sh') }}-
 
       # xcodebuild's incremental check keys on mtimes, and a checkout stamps every file with now, so
       # against the restored build dir above every one of our own sources read as changed and the
