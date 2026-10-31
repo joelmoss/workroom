@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::InputClassifier;
 use crate::program_status::{Hub, Store};
-use crate::pty::{Pty, PtyError};
+use crate::pty::{Pty, PtyError, Size};
 use crate::rpc::SharedWriter;
 use crate::screens::Screens;
 use crate::shadow::Shadow;
@@ -65,6 +65,8 @@ struct Client {
     /// lets a client that claims ownership later have its size take effect at once.
     columns: u16,
     rows: u16,
+    /// The pixels of that size, zero if the client did not say.
+    pixels: (u16, u16),
     /// Per-client, because it holds the tail of an unfinished escape sequence.
     classifier: InputClassifier,
 }
@@ -109,17 +111,22 @@ impl Attached {
     }
 
     /// The size the pty should be at, or none if nobody owns it.
-    fn owned_size(&self) -> Option<(u16, u16)> {
+    fn owned_size(&self) -> Option<Size> {
         let owner = self.owner?;
         self.clients
             .iter()
             .find(|client| client.token == owner)
             .filter(|client| client.may_own())
-            .map(|client| (client.columns, client.rows))
+            .map(|client| Size {
+                columns: client.columns,
+                rows: client.rows,
+                x_pixels: client.pixels.0,
+                y_pixels: client.pixels.1,
+            })
     }
 
     /// Gives `token` the size, if it is allowed to have it. Returns the size to apply.
-    fn claim(&mut self, token: u64) -> Option<(u16, u16)> {
+    fn claim(&mut self, token: u64) -> Option<Size> {
         let eligible = self.client(token).is_some_and(|client| client.may_own());
         if !eligible {
             return None;
@@ -860,8 +867,7 @@ impl SessionStore {
         id: SessionId,
         writer: SharedWriter,
         stream: u32,
-        columns: u16,
-        rows: u16,
+        size: Size,
     ) -> Result<(SessionInfo, u64), SessionError> {
         let (pty, shadow, attached) = self
             .parts(id)
@@ -971,8 +977,9 @@ impl SessionStore {
                     writer,
                     stream,
                     token,
-                    columns,
-                    rows,
+                    columns: size.columns,
+                    rows: size.rows,
+                    pixels: (size.x_pixels, size.y_pixels),
                     classifier: InputClassifier::new(),
                 });
                 // Attaching does not TAKE the size from a client that has it — that needs an act.
@@ -1039,7 +1046,7 @@ impl SessionStore {
     ///
     /// Always recorded, applied only if that client owns the size or nobody does. A background
     /// window resizing must not move the pty out from under the person typing in another one.
-    pub fn resize(&self, id: SessionId, token: u64, columns: u16, rows: u16) {
+    pub fn resize(&self, id: SessionId, token: u64, size: Size) {
         let Some((pty, shadow, attached)) = self.parts(id) else {
             return;
         };
@@ -1048,8 +1055,9 @@ impl SessionStore {
             let Some(client) = attached.client(token) else {
                 return;
             };
-            client.columns = columns;
-            client.rows = rows;
+            client.columns = size.columns;
+            client.rows = size.rows;
+            client.pixels = (size.x_pixels, size.y_pixels);
             match attached.owner {
                 Some(owner) if owner == token => attached.owned_size(),
                 Some(_) => None,
@@ -1272,6 +1280,15 @@ impl SessionStore {
             ..
         } = frozen;
         let mut shadow = Shadow::new(columns, rows);
+        // Before the screen, so an image in it takes the rows it took for the client.
+        if let Ok((x_pixels, y_pixels)) = pty.pixels() {
+            shadow.resize(Size {
+                columns,
+                rows,
+                x_pixels,
+                y_pixels,
+            });
+        }
         // A hand-off keeps the processes, so whoever owns the pty now sent any report in `screen`.
         // The screen is the old program's paint, not the program's output: it asks nothing.
         let _ = shadow.write_from_pty(&screen, || pty.foreground_pgid());
@@ -1719,7 +1736,7 @@ fn targets(attached: &Arc<Mutex<Attached>>) -> Vec<Target> {
 /// Returns a size to apply if evicting left exactly one client, which then owns it — the same rule
 /// `detach` follows, for the same reason: a peer that died must not strand the survivor at a
 /// geometry belonging to a window nobody is looking at.
-fn deliver(attached: &Arc<Mutex<Attached>>, target: &Target, bytes: &[u8]) -> Option<(u16, u16)> {
+fn deliver(attached: &Arc<Mutex<Attached>>, target: &Target, bytes: &[u8]) -> Option<Size> {
     let delivered = match target.writer.lock() {
         Ok(mut writer) => writer
             .write_all(bytes)
@@ -1755,16 +1772,16 @@ fn apply_size(
     pty: &Pty,
     shadow: &Mutex<Shadow>,
     attached: &Mutex<Attached>,
-    size: Option<(u16, u16)>,
+    size: Option<Size>,
     work: &Wake,
 ) {
-    let Some((columns, rows)) = size else {
+    let Some(size) = size else {
         return;
     };
     let mut held = attached.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = pty.resize(columns, rows);
+    let _ = pty.resize(size);
     if let Ok(mut shadow) = shadow.lock() {
-        shadow.resize(columns, rows);
+        shadow.resize(size);
     }
     // A resize reflows the screen even when the program prints nothing after it.
     held.changed = true;
@@ -2419,7 +2436,9 @@ mod tests {
     fn attach_capture(store: &SessionStore, session: SessionId) -> (Capture, u64) {
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (_, token) = store.attach(session, writer, 1, 80, 24).expect("attach");
+        let (_, token) = store
+            .attach(session, writer, 1, Size::cells(80, 24))
+            .expect("attach");
         (capture, token)
     }
 
@@ -2473,7 +2492,7 @@ mod tests {
                     break;
                 }
                 assert_ne!(descriptor.revents & libc::POLLIN, 0, "no pending output");
-                store.attach(id(80), writer, 1, 80, 24)
+                store.attach(id(80), writer, 1, Size::cells(80, 24))
             })
             .expect("create and attach");
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -2839,6 +2858,41 @@ mod tests {
         assert!(store.is_refused(id(47)));
     }
 
+    /// Value: protects=a hand-off keeps an image's rows, with no pixels in the table (#551);
+    /// fails_when=adopt stops reading the pixels from the pty; why_new=no adoption test had an
+    /// image; seam=none; no_claim=a real exec, which tests/hand_off.rs covers without images
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn adopting_takes_the_pixels_from_the_pty_before_the_screen() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+        pty.resize(Size {
+            columns: 80,
+            rows: 24,
+            x_pixels: 800,
+            y_pixels: 480,
+        })
+        .expect("resize");
+        // 40x40 pixels, so 2 rows tall at 10x20 a cell: BELOW is on the third row.
+        let mut screen = b"\x1b_Ga=T,f=24,s=40,v=40,i=7,q=2;".to_vec();
+        screen.extend_from_slice(&[b'A'; 6400]);
+        screen.extend_from_slice(b"\x1b\\\r\nBELOW");
+        store
+            .adopt(pty, frozen_with(id(10), &screen))
+            .expect("adopt");
+
+        let mut client = crate::terminal::ShadowTerminal::new(80, 24).expect("client");
+        client.write(&store.replay_bytes(id(10)));
+        let row = client
+            .visible_text()
+            .lines()
+            .position(|line| line.contains("BELOW"));
+        assert_eq!(row, Some(2));
+        store.kill_all();
+    }
+
     /// Adopting a hand-off's session under an id already in use is refused, as creating one is.
     #[test]
     fn adopt_refuses_a_duplicate_id() {
@@ -3055,7 +3109,7 @@ mod tests {
             store.create(spec(id(150 + n), &args, &e)).expect("create");
             let shadow = store.shadow(id(150 + n)).expect("shadow");
             let mut shadow = shadow.lock().expect("shadow");
-            shadow.resize(200, 50);
+            shadow.resize(Size::cells(200, 50));
             for line in 0..150_000 {
                 let pad = "x".repeat(line % 120);
                 shadow.write(format!("\x1b[3{}mline {line}\x1b[0m {pad}\r\n", line % 8).as_bytes());
@@ -3441,7 +3495,8 @@ mod tests {
         );
 
         let (pty, shadow, attached) = store.parts(id(13)).expect("parts");
-        apply_size(&pty, &shadow, &attached, Some((100, 30)), &Wake::default());
+        let size = Some(Size::cells(100, 30));
+        apply_size(&pty, &shadow, &attached, size, &Wake::default());
         let taken: Vec<(SessionId, u16, u16)> = store
             .changed_screens()
             .into_iter()
@@ -3534,7 +3589,7 @@ mod tests {
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(first.clone())));
         let (_, token) = store
             .create_then(spec(id(3), &args, &e), |_| {
-                store.attach(id(3), writer, 1, 80, 24)
+                store.attach(id(3), writer, 1, Size::cells(80, 24))
             })
             .expect("create and attach");
         let before = wait_for(&first, "ready", Duration::from_secs(5));
@@ -3660,7 +3715,9 @@ mod tests {
         }
 
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Flaky(Arc::clone(&broken)))));
-        store.attach(id(7), writer, 1, 80, 24).expect("attach");
+        store
+            .attach(id(7), writer, 1, Size::cells(80, 24))
+            .expect("attach");
         assert!(store.list()[0].attached);
         broken.store(true, Ordering::SeqCst);
 
@@ -3699,7 +3756,7 @@ mod tests {
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
         let (_, token) = store
-            .attach(session, writer, 1, columns, rows)
+            .attach(session, writer, 1, Size::cells(columns, rows))
             .expect("attach");
         (capture, token)
     }
@@ -3751,6 +3808,64 @@ mod tests {
         store.kill_all();
     }
 
+    /// Value: protects=the pane's pixel size follows the size owner, and only the owner (#551);
+    /// fails_when=a client's pixels are dropped, or a non-owner's are applied; why_new=the other
+    /// owner tests assert cells only; seam=none; no_claim=none beyond protects
+    #[test]
+    fn the_size_owner_sets_the_pixels_and_another_client_does_not() {
+        let store = SessionStore::new();
+        sized_session(&store, id(36));
+        let pixels = |store: &SessionStore| {
+            store
+                .with_pty(id(36), |pty| pty.pixels())
+                .expect("session")
+                .expect("pixels")
+        };
+        let owner_size = Size {
+            columns: 100,
+            rows: 30,
+            x_pixels: 1000,
+            y_pixels: 600,
+        };
+        let attach = |size: Size| {
+            let capture = Capture::default();
+            let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+            let (_, token) = store.attach(id(36), writer, 1, size).expect("attach");
+            (capture, token)
+        };
+        let (_first, first) = attach(owner_size);
+        assert_eq!(
+            pixels(&store),
+            (1000, 600),
+            "the first client owns the size"
+        );
+
+        let (_second, second) = attach(Size::cells(120, 40));
+        store.resize(
+            id(36),
+            second,
+            Size {
+                x_pixels: 2400,
+                y_pixels: 1600,
+                ..Size::cells(120, 40)
+            },
+        );
+        assert_eq!(pixels(&store), (1000, 600), "not the owner");
+
+        // The same grid at a new scale: a window moved to another display.
+        store.resize(
+            id(36),
+            first,
+            Size {
+                x_pixels: 2000,
+                y_pixels: 1200,
+                ..owner_size
+            },
+        );
+        assert_eq!(pixels(&store), (2000, 1200));
+        store.kill_all();
+    }
+
     /// The core of the policy: a second client's window does not move the pty.
     #[test]
     fn a_second_clients_resize_is_recorded_but_not_applied() {
@@ -3766,7 +3881,7 @@ mod tests {
         );
         assert_eq!(pty_size(&store, id(22)), (100, 30));
 
-        store.resize(id(22), second, 200, 50);
+        store.resize(id(22), second, Size::cells(200, 50));
         assert_eq!(
             pty_size(&store, id(22)),
             (100, 30),
@@ -3783,7 +3898,7 @@ mod tests {
         sized_session(&store, id(23));
         let (_first, first) = attach_sized(&store, id(23), 100, 30);
         let (_second, second) = attach_sized(&store, id(23), 120, 40);
-        store.resize(id(23), second, 200, 50);
+        store.resize(id(23), second, Size::cells(200, 50));
 
         store.write_input(id(23), second, b"x");
         assert_eq!(store.size_owner(id(23)), Some(second));
@@ -3882,7 +3997,7 @@ mod tests {
         store.detach(id(27), first);
         assert_eq!(store.size_owner(id(27)), None);
 
-        store.resize(id(27), second, 90, 20);
+        store.resize(id(27), second, Size::cells(90, 20));
         assert_eq!(store.size_owner(id(27)), Some(second));
         assert_eq!(pty_size(&store, id(27)), (90, 20));
         store.kill_all();
@@ -3894,7 +4009,7 @@ mod tests {
         let store = SessionStore::new();
         sized_session(&store, id(28));
         let (_client, token) = attach_sized(&store, id(28), 100, 30);
-        store.resize(id(28), token, 132, 43);
+        store.resize(id(28), token, Size::cells(132, 43));
         assert_eq!(pty_size(&store, id(28)), (132, 43));
         store.kill_all();
     }
@@ -3923,7 +4038,7 @@ mod tests {
         let store = SessionStore::new();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
         assert!(matches!(
-            store.attach(id(9), writer, 1, 80, 24),
+            store.attach(id(9), writer, 1, Size::cells(80, 24)),
             Err(SessionError::NotFound(_))
         ));
     }
@@ -4174,7 +4289,7 @@ mod tests {
 
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Broken)));
         let before = store.screens_work();
-        let result = store.attach(id(73), writer, 1, 80, 24);
+        let result = store.attach(id(73), writer, 1, Size::cells(80, 24));
 
         assert!(
             matches!(result, Err(SessionError::RepaintFailed(_))),

@@ -158,7 +158,7 @@ impl Screens {
         let mut shadow = Shadow::new(record_columns, record_rows);
         shadow.write(&screen);
         let (columns, rows) = if columns > 0 && rows > 0 {
-            shadow.resize(columns, rows);
+            shadow.resize(crate::pty::Size::cells(columns, rows));
             (columns, rows)
         } else {
             (record_columns, record_rows)

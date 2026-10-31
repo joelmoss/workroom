@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::pty::Size;
 use crate::rpc::SharedWriter;
 use crate::session::{RunSignalError, SessionId, SessionSpec, SessionStore};
 use crate::shell;
@@ -593,8 +594,12 @@ fn dispatch(
                     id,
                     Arc::clone(writer),
                     envelope.stream,
-                    request.columns,
-                    request.rows,
+                    Size {
+                        columns: request.columns,
+                        rows: request.rows,
+                        x_pixels: request.x_pixels,
+                        y_pixels: request.y_pixels,
+                    },
                 )
             };
             // Refused, not created, for a client that asked to attach only to what exists: see
@@ -713,13 +718,11 @@ fn dispatch(
         }
         FrameKind::Resize => {
             let id = (*attached)?;
-            if frame.payload.len() >= 4 {
-                let columns = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
-                let rows = u16::from_be_bytes([frame.payload[2], frame.payload[3]]);
+            if let Some(size) = decode_resize(&frame.payload) {
                 // Recorded always, applied only if this client owns the size or nobody does — a
                 // background window resizing must not move the pty out from under whoever is
                 // typing in another one.
-                sessions.resize(id, *token, columns, rows);
+                sessions.resize(id, *token, size);
             }
             None
         }
@@ -1131,6 +1134,31 @@ pub fn session_metadata(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
     metadata
 }
 
+/// A Resize frame's payload: columns and rows, then the pixels. An older daemon reads the first
+/// two and ignores the rest.
+pub fn encode_resize(size: Size) -> Vec<u8> {
+    [size.columns, size.rows, size.x_pixels, size.y_pixels]
+        .iter()
+        .flat_map(|value| value.to_be_bytes())
+        .collect()
+}
+
+/// The size in a Resize frame's payload. An older client sends no pixels.
+fn decode_resize(payload: &[u8]) -> Option<Size> {
+    let value = |at: usize| {
+        Some(u16::from_be_bytes([
+            *payload.get(at)?,
+            *payload.get(at + 1)?,
+        ]))
+    };
+    Some(Size {
+        columns: value(0)?,
+        rows: value(2)?,
+        x_pixels: value(4).unwrap_or(0),
+        y_pixels: value(6).unwrap_or(0),
+    })
+}
+
 /// How a client asks for a session to exist: the id, plus what to run if it does not yet.
 ///
 /// These travel in the Attach frame rather than being read from the daemon's own environment,
@@ -1149,6 +1177,8 @@ pub struct AttachRequest {
     pub resources: Option<OsString>,
     pub columns: u16,
     pub rows: u16,
+    pub x_pixels: u16,
+    pub y_pixels: u16,
     /// Passed to the child verbatim. The client's environment, not the daemon's.
     pub env: Vec<(OsString, OsString)>,
     /// Attach only if the session exists; never create it (`CREATE=0`). A restored pane sends it,
@@ -1188,6 +1218,8 @@ impl AttachRequest {
         }
         put("COLS", self.columns.to_string().as_bytes());
         put("ROWS", self.rows.to_string().as_bytes());
+        put("XPIXELS", self.x_pixels.to_string().as_bytes());
+        put("YPIXELS", self.y_pixels.to_string().as_bytes());
         if self.existing_only {
             put("CREATE", b"0");
         }
@@ -1228,6 +1260,12 @@ impl AttachRequest {
                 b"ROWS" => {
                     request.rows = value.to_string_lossy().parse().unwrap_or(0);
                 }
+                b"XPIXELS" => {
+                    request.x_pixels = value.to_string_lossy().parse().unwrap_or(0);
+                }
+                b"YPIXELS" => {
+                    request.y_pixels = value.to_string_lossy().parse().unwrap_or(0);
+                }
                 b"CREATE" => request.existing_only = value == "0",
                 _ => {
                     if let Some(name) = key.strip_prefix(b"ENV:") {
@@ -1266,6 +1304,8 @@ impl AttachRequest {
             resources: var("WORKROOM_SESSION_RESOURCES"),
             columns: 0,
             rows: 0,
+            x_pixels: 0,
+            y_pixels: 0,
             env,
             existing_only: false,
         }
@@ -1812,6 +1852,24 @@ mod tests {
     }
 
     #[test]
+    fn a_resize_round_trips_with_its_pixels() {
+        let size = Size {
+            columns: 120,
+            rows: 40,
+            x_pixels: 1200,
+            y_pixels: 800,
+        };
+        assert_eq!(decode_resize(&encode_resize(size)), Some(size));
+    }
+
+    /// An older client's resize still works, with no pixels, and a short one is ignored.
+    #[test]
+    fn a_resize_without_pixels_still_resizes() {
+        assert_eq!(decode_resize(&[0, 120, 0, 40]), Some(Size::cells(120, 40)));
+        assert_eq!(decode_resize(&[0, 120, 0]), None);
+    }
+
+    #[test]
     fn attach_request_round_trips() {
         let request = AttachRequest {
             id: Some(SessionId([7u8; 16])),
@@ -1823,6 +1881,8 @@ mod tests {
             )),
             columns: 120,
             rows: 40,
+            x_pixels: 1200,
+            y_pixels: 800,
             env: vec![
                 (OsString::from("TERM"), OsString::from("xterm-ghostty")),
                 (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
