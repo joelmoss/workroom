@@ -112,7 +112,7 @@ nothing is listening, which is a definitive "not owned" (the Swift helper leaves
 behind on any `pkill`, so this case is common, not exotic).
 
 **Building it.** `macapp/Scripts/build-daemon.sh` is a build phase, mirroring `build-helper.sh` (the
-Go CLI): it iterates `ARCHS`, so a universal Release build produces both slices and `lipo`s them. The
+Go CLI): it iterates `ARCHS` and `lipo`s the slices, though the app itself is arm64 only (ADR 0061). The
 built binary is staged beside `$DEST` and **renamed into place, never written over it** — a running
 daemon executes that file, and macOS SIGKILLs a process whose signed binary changes under it ("Code
 Signature Invalid"); writing in place used to kill every Dev session, and any hand-off (#230), on
@@ -141,10 +141,6 @@ runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
 
 The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`
-(cached per `(engine sha, parity patches, target)` outside the repo). That pin must stay in step
-with the GhosttyKit the app links — see the comment in `project.yml`; `Scripts/test-invariants_test.sh`
-fails when that sha and `GHOSTTY_SHA` in `build-ghostty-vt.sh` disagree. So must its behavior: the
-package patches that change what the terminal itself does are vendored in
-`vcs/scripts/ghostty-patches/` and applied to the shadow build, so a remote pane's shadow and the
-local engine agree. A package bump means re-diffing the package's `Patches/ghostty/` against that
-directory (see its README).
+(cached per `(engine sha, Zig version, target)` outside the repo). The same script builds the
+GhosttyKit the app links, so a remote pane's shadow and the local engine are one stock revision with
+no patches on either side (ADR 0061).

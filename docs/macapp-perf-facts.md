@@ -67,7 +67,6 @@ every title event for that tool pay the miss.
 
 `vcs/scripts/build-ghostty-vt.sh` keeps the pinned engine's source at
 `~/.cache/workroom/ghostty-vt/src-<GHOSTTY_SHA>` (`WR_GHOSTTY_VT_CACHE` moves the root), cloned
-on the script's first run, unless `WR_GHOSTTY_SRC` or a `vcs/vendor/ghostty` checkout supplies it. GhosttyKit is built from the same upstream sha (its package
-adds patches; see `vcs/scripts/ghostty-patches/README.md`), so this source answers what a
+on the script's first run, unless `WR_GHOSTTY_SRC` or a `vcs/vendor/ghostty` checkout supplies it. GhosttyKit is built from the same upstream sha, so this source answers what a
 `ghostty_surface_*` call does (`src/apprt/embedded.zig` for the C API, `src/Surface.zig` for the
 core).

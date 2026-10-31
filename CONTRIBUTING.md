@@ -60,8 +60,10 @@ maintainer follows.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
 - **Rust** (rustup `stable`) — the app build compiles the embedded `workroomd` from the `vcs/` workspace
-  (`macapp/Scripts/build-daemon.sh`). A universal release build also needs the
-  `x86_64`/`aarch64-apple-darwin` targets.
+  (`macapp/Scripts/build-daemon.sh`).
+- **Zig 0.17.0** (installed through mise when it is available) — `xcodegen generate` builds the pinned
+  Ghostty on its first run, which also needs Xcode's Metal toolchain (the build downloads it, about
+  840 MB, if it is missing).
 - **Go 1.25+** (the module targets `go 1.25.7`; CI and the maintainer build with Go 1.26) — the app
   embeds the CLI engine at build time, so a Go toolchain must be on `PATH`.
 
@@ -74,7 +76,7 @@ the v2-format `.golangci.yml`.
 
 **To change the Rust workspace (`vcs/`):** Rust **1.96.1** with rustfmt and clippy for `make vcs-lint`
 (`rustup toolchain install 1.96.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
-`terminal-state` half also needs Zig 0.16.0 (installed through mise when it is available) and builds a
+`terminal-state` half also needs Zig 0.17.0 (installed through mise when it is available) and builds a
 pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
 code already passes; never silence one with an `allow` without asking first.
 
@@ -109,8 +111,8 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 
 | Component | Technology |
 | --- | --- |
-| **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+; Release builds are universal, arm64 and x86_64) |
-| **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm`, Metal-rendered) |
+| **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+, Apple silicon only) |
+| **Terminal engine** | [libghostty](https://ghostty.org) (stock upstream built from source, Metal-rendered) |
 | **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); daemon-routed reads and writes via the Rust `workroomd` |
 | **Syntax highlighting** | [tree-sitter](https://github.com/tree-sitter/tree-sitter) C runtime + grammars |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.6 (EdDSA-signed appcast) |
@@ -220,7 +222,7 @@ SwiftUI app. The core loop:
 7. **Preferences** live in `DefaultsKeys` (via the `Defaults` library); **auto-update** is Sparkle
    (`Updater`); **themes** load from bundled CSS theme families.
 
-Key dependencies: **libghostty-spm** (terminal), **SwiftGitX**
+Key dependencies: **libghostty** (terminal), **SwiftGitX**
 (VCS reading), **Sparkle** (update), **Sentry** (crash reporting), **Defaults** (preferences), and
 the **tree-sitter** C runtime + grammars (syntax highlighting). The app is **non-sandboxed** with the
 **hardened runtime** enabled (it spawns `git`/`workroom` and opens arbitrary directories), and
@@ -436,7 +438,7 @@ install.
 The Xcode build runs `macapp/Scripts/build-helper.sh` as a phase, which compiles the Go CLI and
 embeds it in the app bundle — so a Go toolchain must be on `PATH` when building the app. The app
 targets also build the embedded `workroomd` (`macapp/Scripts/build-daemon.sh`), which needs a Rust
-toolchain on `PATH`; a universal release build additionally needs the two Apple targets. See
+toolchain on `PATH`. See
 [`macapp/README.md`](macapp/README.md) for setup and signing, the
 [app instructions](macapp/AGENTS.md) for working rules and reference navigation, and
 [VCS and sessions](docs/macapp/vcs-and-sessions.md) for their architecture.

@@ -7,7 +7,7 @@ Install the Mac app and you have everything: the `workroom` command-line tool is
 
 ## Install the app
 
-You need macOS 15 Sequoia or later.
+You need a Mac with Apple silicon, running macOS 15 Sequoia or later.
 
 1. [Download the latest Workroom](https://codaset.dev/workroom/download). Older versions are on the
    [Releases page](https://github.com/joelmoss/workroom/releases).

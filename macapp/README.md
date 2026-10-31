@@ -15,6 +15,8 @@ binary** and shelling out over its `--json` contract — no cgo, no duplicated l
 - Xcode 15+ (macOS 14+ deployment target)
 - Go (to build the embedded helper) — must be on `PATH`, or edit `Scripts/build-helper.sh`
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
+- Zig, at the `ZIG_VERSION` in `vcs/scripts/build-ghostty-vt.sh` (through mise when it is available),
+  which `xcodegen generate` uses to build GhosttyKit on its first run
 
 > **Runtime (not build):** the inspector's pull-request / CI section shells out to the GitHub CLI.
 > It needs **`gh` ≥ 2.57.0** on `PATH` and an authenticated active account — the auth probe uses
@@ -48,18 +50,16 @@ make app-release    # notarized Release build + DMG installer (see below)
 > (`make app-run`/`make app-build` only regenerate when the `.xcodeproj` is missing, so
 > regenerate by hand after adding files.)
 
-Xcode resolves the libghostty-spm Swift Package, and the `Build & embed workroom helper`
+Xcode resolves the local GhosttyKit package, and the `Build & embed workroom helper`
 script phase (`Scripts/build-helper.sh`) compiles the Go CLI into
 `Workroom.app/Contents/Resources/workroom` and signs it. (Resources, not
 `Contents/MacOS`: a helper named `workroom` there would collide with the `Workroom`
 app executable on the case-insensitive filesystem.)
 
-The helper is built **once per architecture in `ARCHS` and `lipo`'d**, so a universal app
-carries a universal CLI. That is asserted, not assumed: `release.sh` refuses to notarize a
-bundle containing any thin Mach-O, and `Scripts/build-helper_test.sh` covers the arch
-matrix. It shipped wrong once — `ARCHS` is a space-separated list, was matched as a single
-token, and every release up to `v2.0.0-beta.23` embedded an arm64-only CLI inside a fat app,
-which broke every workroom operation on Intel while passing codesign and notarization.
+The helper is built **once per architecture in `ARCHS` and `lipo`'d**. The app is arm64 only
+(ADR 0061), and that is asserted, not assumed: `release.sh` refuses to notarize a bundle
+containing any Mach-O without an arm64 slice, and `Scripts/build-helper_test.sh` covers the
+arch matrix.
 
 ## Signing & distribution
 
@@ -113,8 +113,9 @@ CI authenticates notarytool with an App Store Connect API key instead of the key
 profile — set `NOTARY_KEY_PATH` (a `.p8`), `NOTARY_KEY_ID`, and `NOTARY_ISSUER_ID` and the
 script uses those automatically.
 
-Prefer not to use XcodeGen? Create a SwiftUI macOS App target manually, add the
-libghostty-spm package, add the `WorkroomApp/` sources, and add `Scripts/build-helper.sh`
+Prefer not to use XcodeGen? Create a SwiftUI macOS App target manually, link the output of
+`vcs/scripts/build-ghostty-vt.sh --kit` to `GhosttyKit/GhosttyKit.xcframework`, add the
+`GhosttyKit/` package, add the `WorkroomApp/` sources, and add `Scripts/build-helper.sh`
 as a Run Script phase **after Compile Sources**.
 
 ## Auto-update (Sparkle)
@@ -186,9 +187,9 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 
 ## Things to verify on first build (marked `TODO` in code)
 
-1. **libghostty pin**: `libghostty-spm`'s `GhosttyKit` xcframework, pinned EXACT because the
-   embedding C API is not yet stable. `project.yml` is the single source of truth for the package
-   version and the ghostty engine it's built from — don't restate them here. ✓ the app builds + links.
+1. **libghostty pin**: the `GhosttyKit` xcframework, built from one upstream commit because the
+   embedding C API is not yet stable. `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` is the
+   single source of truth for the engine — don't restate it here. ✓ the app builds + links.
 2. **Terminal teardown** (`TerminalSessions` → `GhosttySurfaceView.tearDown`): ✓ frees the
    surface via `ghostty_surface_free` (callbacks cleared first). Still worth a runtime check:
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.
