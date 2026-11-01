@@ -277,7 +277,8 @@ extension Defaults.Keys {
   /// successful add) — not gated behind which button the user then uses to close the window. The
   /// show-gate (`OnboardingGate.shouldShow`) also checks `projects.isEmpty`, so a project added some
   /// other way suppresses the wizard too — this flag only needs writing from the wizard itself, not
-  /// from `AppStore.addProject`'s general path.
+  /// from `AppStore.addProject`'s general path. The wizard also sets it when it finds it opened on
+  /// an install that already has projects.
   static let hasCompletedOnboarding = Key<Bool>(
     "onboarding.hasCompleted", default: false, suite: .app)
 

@@ -85,6 +85,9 @@ final class AppStore: ObservableObject {
   /// tab bar lives in a title-bar accessory, so SwiftUI's own frames are not in the window's space.
   @ObservationIgnored weak var workroomTabRun: NSView?
   private var didApplyInitialSize = false
+  /// The saved frame `attachWindow` gave this window, until it shows: SwiftUI places a window over
+  /// it afterwards, so `applyRestoredFrame` puts it back.
+  @ObservationIgnored var restoredFrame: NSRect?
   /// True only for the launch window: the `.launch` seed, or the first window to attach in the
   /// process (`ProjectStore.takeLaunchRole`). It restores the session and reopens its siblings, and
   /// runs the What's-New auto-check, so a relaunch with several windows doesn't duplicate dialogs.
@@ -1290,12 +1293,14 @@ final class AppStore: ObservableObject {
         let frame = Self.frameOnAVisibleScreen(restored)
       {
         window.setFrame(frame, display: false)
+        restoredFrame = frame
       } else if opensForHandOff {
         placeHandOffWindow(window)
       } else if let size = pendingInitialWindowSize {
         window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
       } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
         window.setFrame(frame, display: false)
+        restoredFrame = frame
       } else {
         window.setContentSize(Self.newWindowContentSize)
         window.center()

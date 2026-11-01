@@ -173,9 +173,10 @@ struct OnboardingWindow: View {
       NSApp.appearance = themePreference.nsAppearance
     }
     .onChange(of: step) {
-      // The ONE place the completion flag is set — firing on entry to `.done` by any path (skip or a
-      // successful add), not gated behind which button later closes the window (issue #151: a user who
-      // reaches Done and then closes via ⌘W instead of "Get Started" still finished the flow).
+      // The one place finishing the wizard sets the completion flag — firing on entry to `.done` by
+      // any path (skip or a successful add), not gated behind which button later closes the window
+      // (issue #151: a user who reaches Done and then closes via ⌘W instead of "Get Started" still
+      // finished the flow).
       if step == .done {
         Defaults[.hasCompletedOnboarding] = true
       }
@@ -203,8 +204,9 @@ struct OnboardingWindow: View {
         hasCompleted: Defaults[.hasCompletedOnboarding], projectsEmpty: probe.projects.isEmpty
       ) {
         // The real gate disagrees — an existing install with projects that just never completed
-        // onboarding. This window shouldn't have opened; hand off to the real main window instead.
-        openWindow(value: WindowSeed.launch)
+        // onboarding. This window shouldn't have opened; closing it opens the real main window, via
+        // the close observer above. Recording that it isn't needed means later launches skip it.
+        Defaults[.hasCompletedOnboarding] = true
         dismissWindow(id: Self.sceneID)
       }
     }
