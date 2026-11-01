@@ -197,7 +197,7 @@ struct OnboardingWindow: View {
       // A throwaway store purely to trigger the same project-list bootstrap `RootWindow` would have
       // — this window owns no `AppStore` of its own by design (see the type doc comment).
       // `restore: false` so it does NOT consume `ProjectStore.consumeInitialRestore()`'s one-shot
-      // flag; the real main window (opened below, or later via the close-handler) still needs that.
+      // flag; the real main window (opened by the close-handler) still needs that.
       let probe = AppStore(projectStore: .shared)
       await probe.bootstrap(restore: false)
       if !OnboardingGate.shouldShow(
