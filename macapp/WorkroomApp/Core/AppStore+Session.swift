@@ -191,7 +191,16 @@ extension AppStore {
 
   func windowDidDisplay() {
     hasDisplayedWindow = true
+    applyRestoredFrame()
+    restoredFrame = nil
     recoverSessionsAfterDisplayIfReady()
+  }
+
+  /// Twice: before display, so a window normally shows where it was, and at display, because one
+  /// opened as the onboarding window closes is only placed by SwiftUI after its `.task` has run.
+  func applyRestoredFrame() {
+    guard let restoredFrame, let hostWindow, hostWindow.frame != restoredFrame else { return }
+    hostWindow.setFrame(restoredFrame, display: true)
   }
 
   /// Restore can finish before or after the window's first visible update. Latch both events

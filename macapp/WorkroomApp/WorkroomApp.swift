@@ -250,7 +250,7 @@ struct RootWindow: View {
       // The action alone: a closure over `openWindow` would hold this view, and with it this
       // window's store and terminals, for as long as the registry keeps it.
       .onAppear { [openWindow] in WindowRegistry.shared.openWindow = { openWindow(value: $0) } }
-      .task {
+      .task(id: store.hostWindow != nil) {
         // Not under XCTest: `WorkroomAppTests` hosts this app to get `@testable import Workroom`,
         // which means this real WindowGroup scene renders too — and without this guard, its `.task`
         // ran on every `make app-test`, unconditionally `bootstrap()`ing the SHARED, non-fake
@@ -262,12 +262,17 @@ struct RootWindow: View {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else {
           return
         }
+        // Everything below reads what `attachWindow` claims, and a window opened as the onboarding
+        // window closes gets here first. Going on would reopen this window's own saved session as a
+        // sibling and leave this one blank.
+        guard store.hostWindow != nil else { return }
         // Again now it shows: SwiftUI has placed it by now, over where it was set up to go.
         // Once: a `.task` that re-fires must not put back a window the user has since moved.
         if store.opensForHandOff, let window = store.hostWindow {
           store.placeHandOffWindow(window)
           store.opensForHandOff = false
         }
+        store.applyRestoredFrame()
         // The store's flags, not the seed's: `attachWindow` may have given this window the launch
         // role (`ProjectStore.takeLaunchRole`).
         await store.bootstrap(restore: store.claimsSavedSession)
