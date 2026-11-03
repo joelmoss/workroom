@@ -42,8 +42,10 @@ struct CreationPane: View {
       let narrow = geo.size.width < Self.narrowWidth
       VStack(spacing: 0) {
         checklist(inset: narrow ? 16 : 32)
-        if run.outcome == .succeeded {
-          CreationDoneFooter(inset: narrow ? 16 : 32) { store.finishCreation(run) }
+        // From the first frame, so "Close automatically when done" can be changed while the create
+        // runs; gone once it fails or stops to ask, where the notice says what to do instead.
+        if run.outcome == .running || run.outcome == .succeeded {
+          CreationDoneFooter(inset: narrow ? 16 : 32, isDone: isDone) { store.finishCreation(run) }
             .transition(.move(edge: .bottom))
         }
       }
@@ -499,6 +501,9 @@ struct StartChoicePresenter: ViewModifier {
 /// by itself from now on, as Settings › General also says.
 private struct CreationDoneFooter: View {
   let inset: CGFloat
+  /// Whether the create succeeded: Done shows only then, in a slot kept from the start so the
+  /// checkbox never moves.
+  let isDone: Bool
   let done: () -> Void
   @Default(.closeCreationPaneWhenDone) private var closeWhenDone
   private let theme = ThemeService.shared
@@ -516,6 +521,9 @@ private struct CreationDoneFooter: View {
         Button("Done", action: done)
           .buttonStyle(.borderedProminent)
           .fixedSize()
+          .opacity(isDone ? 1 : 0)
+          .disabled(!isDone)
+          .accessibilityHidden(!isDone)
           .accessibilityIdentifier("CreationPane.Done")
       }
       .padding(.horizontal, inset)
