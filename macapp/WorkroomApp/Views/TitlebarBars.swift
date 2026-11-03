@@ -201,7 +201,7 @@ struct TrailingTitlebarBar: View {
       .accessibilityIdentifier("toolbar.theme")
       .popover(isPresented: $showThemePicker, arrowEdge: .bottom) { ThemePicker() }
 
-      // Quick Terminal (⌥§) — a ~/ shell in its own window, always at the trailing edge.
+      // Quick Terminal (⌥§) — a shell in its own slide-in window, always at the trailing edge.
       Button {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       } label: {

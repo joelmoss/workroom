@@ -71,6 +71,15 @@ The **Stop Detached Terminals…** button counts the background terminals that n
 
 In Workroom 2.1.0 this pane has a **Persist sessions** switch instead, and terminals only survive a quit while it is on.
 
+### Quick Terminal {nightly}
+
+| Setting | What it does |
+| --- | --- |
+| **Slides in from** | The screen edge the Quick Terminal slides in from: **Top** (the default), **Bottom**, **Left** or **Right**. It sits centred along that edge. |
+| **Opens in** | The folder a new Quick Terminal shell starts in. **Choose…** picks one and **Use Home** goes back to your home folder, the default. If the folder is gone, it opens in your home folder. |
+
+A Quick Terminal that is only hidden keeps its shell, so a new folder applies once you close it and open a new one. See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
+
 ## AI Agents
 
 This pane is called **Agent** in Workroom 2.1.0.

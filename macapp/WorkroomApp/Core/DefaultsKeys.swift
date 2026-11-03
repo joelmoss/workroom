@@ -94,6 +94,14 @@ extension Defaults.Keys {
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
 
+  /// The screen edge the Quick Terminal slides in from (Settings ▸ Terminal).
+  static let quickTerminalEdge = Key<QuickTerminalEdge>(
+    "quickTerminalEdge", default: .top, suite: .app)
+
+  /// The folder a new Quick Terminal shell starts in; "" = the home folder.
+  static let quickTerminalDirectory = Key<String>(
+    "quickTerminalDirectory", default: "", suite: .app)
+
   /// Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   static let filePathEditor = Key<String>("filePathEditorBundleID", default: "", suite: .app)
 

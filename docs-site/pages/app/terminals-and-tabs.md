@@ -150,10 +150,14 @@ On a remote or container workroom, the run command runs on the workroom's host, 
 
 ## Quick Terminal
 
-The Quick Terminal is a plain shell in your home folder, in a small window of its own. It is not part of any workroom.
+The Quick Terminal is a plain shell, in your home folder unless you choose another, in a window of its own that slides in from the top of the screen. It is not part of any workroom.
 
-- Press <kbd>⌥§</kbd> from any app to show it, and press it again to hide it. Hiding keeps the shell and its scrollback.
+- Press <kbd>⌥§</kbd> from any app to slide it in, and press it again to slide it away. Hiding keeps the shell and its scrollback.
+- It appears on the screen your pointer is on, centred along the edge. Drag its edges to resize it, and it keeps that size.
 - You can also open it from **File ▸ Quick Terminal** or the Quick Terminal button in the title bar.
-- <kbd>⌘W</kbd> or the red button closes it and ends its shell. The next time you open it, you get a new shell.
+- <kbd>⌘W</kbd> closes it and ends its shell. The next time you open it, you get a new shell.
+- **Settings ▸ Terminal ▸ Quick Terminal** chooses the edge it slides in from and the folder it opens in. A new folder applies from the next new shell. See [Settings](settings.md#quick-terminal).
+
+In Workroom 2.1.0 the Quick Terminal is an ordinary window you can move, with a red button that closes it, and it always opens in your home folder.
 
 The <kbd>⌥§</kbd> hotkey is on while **Settings ▸ General ▸ Global show/hide hotkey (⌘§)** is on. The same switch controls the <kbd>⌘§</kbd> show and hide hotkey. See [Settings](settings.md#general) and [Splits and windows](splits-and-windows.md#show-or-hide-workroom-from-anywhere).
