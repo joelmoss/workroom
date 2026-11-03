@@ -21,9 +21,16 @@ the background. To check for an update yourself, choose **Workroom ▸ Check for
 The first time you open it, a short welcome walks you through what Workroom does and asks you to add
 your first project. You can skip that and add a project later from the sidebar.
 
+## Use the workroom command in Workroom's terminals {nightly}
+
+Every terminal pane in the app has `workroom` on its `PATH`, so you can run it there without installing
+anything. It is the app's own copy. If you have also installed `workroom` yourself, with the menu item
+below or the installer, your shell runs that one instead.
+
 ## Use the workroom command in your shell
 
-You don't need the CLI to use the app. If you also want the `workroom` command in your own terminal:
+You don't need the CLI to use the app. If you also want the `workroom` command in other terminals, such
+as Terminal:
 
 1. Choose **Workroom ▸ Install ‘workroom’ Command in PATH…**.
 2. Enter your password if macOS asks for it.
