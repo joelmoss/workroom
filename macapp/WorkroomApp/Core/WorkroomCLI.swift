@@ -631,7 +631,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   }
 
   /// A pane's PATH: this app's own CLI first, so `workroom` works in every pane with nothing
-  /// installed and always matches the running app. Nil when the app has no bundled CLI.
+  /// installed. Nil when the app has no bundled CLI.
   static func panePath(
     cliDirectory: String? = try? bundledBinaryURL().deletingLastPathComponent().path,
     inheritedPath: String = ProcessInfo.processInfo.environment["PATH"] ?? ""

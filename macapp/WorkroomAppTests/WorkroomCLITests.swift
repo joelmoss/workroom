@@ -23,5 +23,7 @@ final class WorkroomCLITests: XCTestCase {
         cliDirectory: "/Apps/Workroom.app/Contents/Resources", inheritedPath: "/usr/bin:/bin"),
       "/Apps/Workroom.app/Contents/Resources:/usr/bin:/bin")
     XCTAssertNil(WorkroomCLI.panePath(cliDirectory: nil, inheritedPath: "/usr/bin"))
+    // No trailing ':', which would put the working directory on PATH.
+    XCTAssertEqual(WorkroomCLI.panePath(cliDirectory: "/d", inheritedPath: ""), "/d")
   }
 }
