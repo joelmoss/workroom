@@ -124,9 +124,10 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
       // BEFORE the `safeAreaInset` below, always: masking *after* it would let the ramp dissolve the
       // pinned control itself.
       .mask { trailingFade }
-      // `mask` composites away hit testing in its transparent region, so restore the full-rect
-      // interaction shape — a partially faded chip must keep its tap/close/drag targets.
-      .contentShape(.interaction, Rectangle())
+      // `mask` composites away hit testing in its transparent region, so restore the interaction
+      // shape — a partially faded chip must keep its tap/close/drag targets. Only as wide as the
+      // content, never the empty tail, which must stay window drag region (see `RootView.detail`).
+      .contentShape(.interaction, LeadingRect(width: overflowing ? .infinity : inlineContentWidth))
       // Overflowing: the controls lift OUT of the scroller and pin here, always visible (issue #129).
       // `safeAreaInset` both places them and *reserves* their width, so the chips stop before them
       // rather than sliding underneath (the idiom's documented behaviour — see `ProjectSidebar`'s
@@ -221,6 +222,13 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
     }
   }
 
+  /// Width the row takes while everything fits.
+  private var inlineContentWidth: CGFloat {
+    TabStripOverflow.inlineWidth(
+      runWidth: chipRunWidth, add: controlsWidth, leadingInset: leadingInset,
+      inlineAddLead: spacing + inlineLead)
+  }
+
   /// Whether a real layout pass has produced both measurements the initial scroll waits on. Combined
   /// into one value so the `.onChange` above has a single edge to fire on, rather than racing two.
   private var initialScrollReady: Bool { chipRunWidth > 0 && availableWidth > 0 }
@@ -252,5 +260,14 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
       )
       .frame(width: TabStripMetrics.fade)
     }
+  }
+}
+
+/// A rectangle from the leading edge, at most `width` wide (a value, so the scroller keeps identity).
+private struct LeadingRect: Shape {
+  var width: CGFloat
+
+  func path(in rect: CGRect) -> Path {
+    Path(CGRect(x: rect.minX, y: rect.minY, width: min(width, rect.width), height: rect.height))
   }
 }

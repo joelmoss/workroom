@@ -56,7 +56,9 @@ struct ActivityBar: View {
     .padding(.vertical, 6)
     .frame(width: Self.width)
     .frame(maxHeight: .infinity)
-    .background(theme.tokens.panel)
+    // Not under the title bar: a fill there leaves the bar out of the window's drag region — see
+    // `RootView.detail`.
+    .background(theme.tokens.panel, ignoresSafeAreaEdges: [])
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
   }
 
