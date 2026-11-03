@@ -1085,6 +1085,10 @@ final class AppStore: ObservableObject {
     case .remoteCloseFailed(let target, let title):
       guard !WindowRegistry.shared.isTerminating else { return }
       self.reportRemoteCloseFailure(target: target, title: title)
+    // A workroom now shows more or fewer terminals across one axis, so the workroom split it sits
+    // in re-evens by pane count: every terminal in the window ends up the same size.
+    case .paneCountChanged(let targetID, let axis):
+      self.reEvenWorkroomSplit(holding: targetID, along: axis)
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
     // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
     // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs

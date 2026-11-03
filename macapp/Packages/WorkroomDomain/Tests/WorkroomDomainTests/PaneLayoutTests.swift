@@ -188,4 +188,32 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertEqual(row, 0.5, accuracy: 0.0001)
     XCTAssertEqual(column, 0.8, accuracy: 0.0001)
   }
+  /// Value: protects=a leaf weighted 2 along an axis takes two shares there and one on the other;
+  /// fails_when=leafSlots is ignored, read for the wrong orientation, or a zero weight divides by
+  /// zero; seam=none; no_claim=what weight a workroom gets (AppStore's job)
+  func testEqualizedWeightsEachLeafByItsSlotsAlongTheSplitsAxis() {
+    // A | B with B two columns wide: A gets a third.
+    let row = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    let wide = b
+    let widths: (UUID, SplitOrientation) -> Int = { leaf, o in
+      leaf == wide && o == .horizontal ? 2 : 1
+    }
+    guard case .split(_, _, let r, _, _) = row.equalized(leafSlots: widths) else {
+      return XCTFail("expected a split")
+    }
+    XCTAssertEqual(r, 1.0 / 3.0, accuracy: 0.0001)
+    // A / B with the same weights: B is two columns, not two rows, so the heights stay even.
+    let column = PaneLayout.split(
+      id: UUID(), orientation: .vertical, ratio: 0.2, first: .leaf(a), second: .leaf(b))
+    guard case .split(_, _, let rc, _, _) = column.equalized(leafSlots: widths) else {
+      return XCTFail("expected a split")
+    }
+    XCTAssertEqual(rc, 0.5, accuracy: 0.0001)
+    // A weight below one still counts as one pane.
+    guard case .split(_, _, let rz, _, _) = row.equalized(leafSlots: { _, _ in 0 }) else {
+      return XCTFail("expected a split")
+    }
+    XCTAssertEqual(rz, 0.5, accuracy: 0.0001)
+  }
 }

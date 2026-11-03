@@ -25,7 +25,7 @@ import Foundation
 /// `settingRatio` / `equalized`); callers never walk the tree inline (DRY). Anything that needs a
 /// MEASURED answer (does this still fit? would evening actually render evenly?) belongs on
 /// `PaneTreeLayout` instead — this type has no geometry.
-public enum SplitOrientation: Equatable, Sendable {
+public enum SplitOrientation: Hashable, Sendable {
   case horizontal  // panes side by side — a vertical divider   (⌘D "split right")
   case vertical  // panes stacked    — a horizontal divider (⇧⌘D "split down")
 }
@@ -216,9 +216,20 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   /// bottom half of `A / B` sideways made the tree `A / (B | C)`, and three leaves against one gave
   /// the untouched pane A a third of the HEIGHT it had before. Splitting one pane must never resize
   /// a pane in a different row (issue #126).
-  public func slots(along orientation: SplitOrientation) -> Int {
-    guard case .split(_, let o, _, let first, let second) = self, o == orientation else { return 1 }
-    return first.slots(along: orientation) + second.slots(along: orientation)
+  ///
+  /// `leafSlots` weights each leaf (at least one): a workroom showing two terminals side by side
+  /// counts as two columns, so evening the workroom split gives every terminal the same width.
+  public func slots(
+    along orientation: SplitOrientation, leafSlots: (Leaf, SplitOrientation) -> Int = { _, _ in 1 }
+  ) -> Int {
+    switch self {
+    case .leaf(let leaf):
+      return max(1, leafSlots(leaf, orientation))
+    case .split(_, let o, _, let first, let second):
+      guard o == orientation else { return 1 }
+      return first.slots(along: orientation, leafSlots: leafSlots)
+        + second.slots(along: orientation, leafSlots: leafSlots)
+    }
   }
 
   /// "Resize splits evenly" (issue #83, reshaped by #126): rebalance every split node so the panes
@@ -237,17 +248,23 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   /// it is: adding or removing a pane in a left/right split must never change any pane's height,
   /// nor in a top/bottom split any pane's width. nil evens every divider (the menu's "Resize
   /// Splits Evenly").
-  public func equalized(along axis: SplitOrientation? = nil) -> PaneLayout<Leaf> {
+  ///
+  /// `leafSlots` weights each leaf as `slots(along:leafSlots:)` does.
+  public func equalized(
+    along axis: SplitOrientation? = nil,
+    leafSlots: (Leaf, SplitOrientation) -> Int = { _, _ in 1 }
+  ) -> PaneLayout<Leaf> {
     switch self {
     case .leaf:
       return self
     case .split(let sid, let o, let r, let first, let second):
-      let ours = first.slots(along: o)
-      let theirs = second.slots(along: o)
+      let ours = first.slots(along: o, leafSlots: leafSlots)
+      let theirs = second.slots(along: o, leafSlots: leafSlots)
       let ratio = axis == nil || axis == o ? CGFloat(ours) / CGFloat(ours + theirs) : r
       return .split(
         id: sid, orientation: o, ratio: PaneRatio.sanitize(ratio),
-        first: first.equalized(along: axis), second: second.equalized(along: axis))
+        first: first.equalized(along: axis, leafSlots: leafSlots),
+        second: second.equalized(along: axis, leafSlots: leafSlots))
     }
   }
 }
