@@ -246,8 +246,7 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   ///
   /// `axis` limits the rebalance to dividers of that orientation, keeping every other divider where
   /// it is: adding or removing a pane in a left/right split must never change any pane's height,
-  /// nor in a top/bottom split any pane's width. nil evens every divider (the menu's "Resize
-  /// Splits Evenly").
+  /// nor in a top/bottom split any pane's width. nil evens every divider.
   ///
   /// `leafSlots` weights each leaf as `slots(along:leafSlots:)` does.
   public func equalized(

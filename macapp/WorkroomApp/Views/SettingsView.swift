@@ -438,11 +438,11 @@ private struct AppearanceSettingsPane: View {
       // one leaves the survivors budgeted for a pane that's gone. Only the dividers running the same
       // way as that pane move, and workrooms side by side are weighted by their terminals. Off keeps
       // every divider put.
-      Toggle("Keep split panes the same size", isOn: $autoResizeSplitsEvenly)
+      Toggle("Automatically resize splits evenly", isOn: $autoResizeSplitsEvenly)
         .help(
           "When you add or close a pane, the panes in its row or column resize to match. With "
             + "workrooms side by side, every terminal in the window ends up the same size. Off "
-            + "leaves the dividers where you put them. View ▸ Resize Splits Evenly works either way."
+            + "leaves the dividers where you put them."
         )
         .accessibilityIdentifier("settings.control.autoResizeSplitsEvenly")
 

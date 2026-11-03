@@ -3262,13 +3262,6 @@ final class AppStore: ObservableObject {
     terminals.splitFocusedPane(for: target, edge: .top)
   }
 
-  /// Resize the focused target's terminal split so every pane is the same size (issue #83). Driven by
-  /// View ▸ "Resize Splits Evenly"; the menu item is disabled unless a terminal split is visible.
-  func equalizeFocusedSplit() {
-    guard let target = selectedTarget else { return }
-    terminals.equalizeSplit(for: target)
-  }
-
   /// Move keyboard focus to the adjacent pane in a split (⌃⌘arrows). Returns whether focus moved, so
   /// the key monitor passes the event through to the terminal when there's no pane that way.
   @discardableResult

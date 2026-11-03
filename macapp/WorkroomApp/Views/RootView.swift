@@ -533,9 +533,6 @@ struct RootView: View {
           canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !store.hasModalPresentation,
           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
           canOpenInEditor: store.canOpenInEditor && !store.hasModalPresentation,
-          // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
-          // member of a workroom-into-workroom split.
-          workroomSplitVisible: store.isWorkroomSplitVisible && !store.hasModalPresentation,
           canMoveWorkroom: store.selectedTargetID.map(store.canMoveWorkroom) == true
             && !store.hasModalPresentation,
           modalPresented: store.hasModalPresentation))
@@ -806,7 +803,6 @@ private struct MenuStateValues: ViewModifier {
   let multipleWorkroomTabs: Bool
   let canSwitchWorkrooms: Bool
   let canOpenInEditor: Bool
-  let workroomSplitVisible: Bool
   let canMoveWorkroom: Bool
   /// Published for the items that have no other boolean to fold it into (see `ModalPresentedKey`).
   /// The booleans above already have it ANDed in at the call site, so they need nothing here.
@@ -831,7 +827,6 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
       .focusedSceneValue(\.canSwitchWorkrooms, canSwitchWorkrooms)
       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
-      .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
       .focusedSceneValue(\.canMoveWorkroom, canMoveWorkroom)
   }
 }

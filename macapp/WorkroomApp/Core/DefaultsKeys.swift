@@ -108,8 +108,8 @@ extension Defaults.Keys {
   /// default: a third pane otherwise lands at a quarter width, and removing one leaves the survivors
   /// budgeted for a pane that's gone. Only dividers along the axis of the pane that joined or left
   /// move, and a workroom split weights each workroom by its terminals along that axis
-  /// (`AppStore.workroomLeafSlots`). Off keeps every divider where it is; View ▸ Resize Splits
-  /// Evenly stays available either way. Shown as "Keep split panes the same size".
+  /// (`AppStore.workroomLeafSlots`). Off keeps every divider where it is. Shown as "Automatically
+  /// resize splits evenly".
   static let autoResizeSplitsEvenly = Key<Bool>(
     "autoResizeSplitsEvenly", default: true, suite: .app)
 

@@ -747,35 +747,6 @@ final class TerminalSessionsTests: XCTestCase {
       "its sibling group did not")
   }
 
-  /// "Resize Splits Evenly" acts on what is ON SCREEN. With the focused tab solo there is no visible
-  /// group, so an off-screen group must keep the divider the user dragged rather than being evened
-  /// behind their back. Skewed to 0.8 first \u2014 asserting the even value would pass either way.
-  func testEqualizeSplitIsANoOpWhenTheFocusedTabIsSolo() throws {
-    let s = makeSessions()
-    s.addTab(for: target)
-    let a = s.activeTab(for: target)!.id
-    s.splitFocusedPane(for: target, orientation: .horizontal)
-    let group = try XCTUnwrap(s.split(containing: a, for: target))
-    guard case .split(let rootID, _, _, _, _) = group else { return XCTFail("expected a split") }
-    s.setRatio(0.8, forSplit: rootID, for: target)
-
-    let solo = s.addTab(for: target).id  // focus leaves the group
-    XCTAssertEqual(s.activeTab(for: target)?.id, solo)
-    XCTAssertFalse(s.isSplitVisible(for: target))
-
-    s.equalizeSplit(for: target)
-    XCTAssertEqual(
-      s.split(containing: a, for: target)?.ratio(forSplit: rootID) ?? -1, 0.8, accuracy: 0.0001,
-      "an off-screen group keeps its dividers")
-
-    // ...and with a member focused again, the same call DOES even it \u2014 so the no-op above is the
-    // solo-focus branch, not a broken equalizeSplit.
-    s.focus(a, for: target)
-    s.equalizeSplit(for: target)
-    XCTAssertEqual(
-      s.split(containing: a, for: target)?.ratio(forSplit: rootID) ?? -1, 0.5, accuracy: 0.0001)
-  }
-
   func testVisibleTabIDsTracksSplitVsSolo() {
     let s = makeSessions()
     s.addTab(for: target)
@@ -1038,34 +1009,6 @@ final class TerminalSessionsTests: XCTestCase {
     let groups = s.splits(for: target)
     XCTAssertEqual(groups[first].tabIDs, [a, b])
     XCTAssertEqual(Set(groups[second].tabIDs), Set([c, d]))
-  }
-
-  /// "Resize Splits Evenly" is addressed by the FOCUSED tab's group index, so among several groups it
-  /// must even that one and leave the rest at the dividers the user dragged. BOTH groups are skewed to
-  /// 0.8 first — asserting the even value on the untouched group would pass either way.
-  func testEqualizeSplitOnlyEvensTheFocusedGroup() {
-    let s = makeSessions()
-    s.addTab(for: target)
-    let a = s.activeTab(for: target)!.id
-    s.splitFocusedPane(for: target, orientation: .horizontal)  // group 0: [a, b]
-    let c = s.addTab(for: target).id
-    let d = s.addTab(for: target).id
-    s.moveTabIntoSplit(d, ontoEdge: .right, of: c, for: target)  // group 1: [c, d], d focused
-
-    guard case .split(let firstID, _, _, _, _) = s.split(containing: a, for: target),
-      case .split(let secondID, _, _, _, _) = s.split(containing: c, for: target)
-    else { return XCTFail("both groups are split nodes") }
-    s.setRatio(0.8, forSplit: firstID, for: target)
-    s.setRatio(0.8, forSplit: secondID, for: target)
-
-    s.equalizeSplit(for: target)
-
-    XCTAssertEqual(
-      s.split(containing: c, for: target)?.ratio(forSplit: secondID) ?? -1, 0.5, accuracy: 0.0001,
-      "the group holding the focused tab is evened")
-    XCTAssertEqual(
-      s.split(containing: a, for: target)?.ratio(forSplit: firstID) ?? -1, 0.8, accuracy: 0.0001,
-      "the off-screen group keeps the divider the user dragged")
   }
 
   func testExtractFromSplitMakesItSolo() throws {
@@ -1833,16 +1776,6 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(
       rootRatio(s) ?? -1, 0.8, accuracy: 0.0001,
       "the close freed height only, so the left/right divider the user dragged stays")
-  }
-
-  func testTheMenuActionStillEvensWithThePrefOff() {
-    let s = makeSessions()
-    s.autoEvenSplits = { false }
-    s.addTab(for: target)
-    s.splitFocusedPane(for: target, orientation: .horizontal)
-    s.setRatio(0.9, forSplit: rootSplitID(s)!, for: target)
-    s.equalizeSplit(for: target)
-    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   // MARK: Theme sweep (WORKROOM-3R)

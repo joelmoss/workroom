@@ -46,18 +46,13 @@ To take a workroom out of the split, right-click its title bar and choose **Remo
 
 ## Even out a split
 
-With **Keep split panes the same size** on, Workroom evens out the dividers whenever a pane joins or leaves a split. A third pane then never lands at a quarter of the width. Only the dividers that run the same way as the pane that joined or left are evened: adding or closing a pane beside another never changes a pane's height, and adding or closing one above or below never changes its width. In Workroom 2.1.0 the setting is called **Resize splits evenly automatically**, and every divider is evened. It is on by default. Turn it off in **Settings ▸ Appearance**.
+With **Automatically resize splits evenly** on, Workroom evens out the dividers whenever a pane joins or leaves a split. A third pane then never lands at a quarter of the width. Only the dividers that run the same way as the pane that joined or left are evened: adding or closing a pane beside another never changes a pane's height, and adding or closing one above or below never changes its width. In Workroom 2.1.0 the setting is called **Resize splits evenly automatically**, and every divider is evened. It is on by default. Turn it off in **Settings ▸ Appearance**.
 
 ### Workrooms side by side {nightly}
 
 When workrooms are side by side, each one gets a share of the width for every terminal it shows across. With one terminal in the left workroom and two side by side in the right, the right workroom takes two thirds, so all three terminals are the same width. Workrooms above and below each other share the height the same way, by terminal rows. The divider between the workrooms moves when you add or close a terminal, unless that would make a terminal narrower or shorter than the smallest pane size, in which case it stays where it is.
 
-You can even a split out by hand at any time, whatever the setting:
-
-- **View ▸ Resize Splits Evenly** for the focused terminal split.
-- **View ▸ Resize Workroom Splits Evenly** for the workrooms side by side.
-
-An item is off when there is no split of that kind on screen.
+Workroom 2.1.0 also has **View ▸ Resize Splits Evenly** and **View ▸ Resize Workroom Splits Evenly**, which even a split out by hand. Nightly no longer has them.
 
 ## Pop a pane out into its own window
 
