@@ -620,7 +620,11 @@ struct RootView: View {
     // The detail column (tab bar + region around the panes) uses the theme *panel* colour — a
     // subtle step off the terminal background (issue #36) — so the chrome reads as a distinct
     // surface framing the terminals rather than one flat colour.
-    .background(ThemeService.shared.tokens.panel)
+    //
+    // Not under the title bar (`ignoresSafeAreaEdges: []`): SwiftUI counts a fill there as not-the-drag
+    // region, and AppKit only zooms the window on a title-bar double-click inside the drag region. The
+    // window background behind the bar is already this colour (`WindowBackgroundThemer`).
+    .background(ThemeService.shared.tokens.panel, ignoresSafeAreaEdges: [])
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar

@@ -200,8 +200,18 @@ enum TabStripOverflow {
     // Nothing measured yet (first layout pass): render inline. Every input is branch-independent, so
     // the correction that follows happens exactly once — it can't become a loop.
     guard available > 0, runWidth > 0, add > 0 else { return false }
-    let inlineWidth = leadingInset + runWidth + inlineAddLead + add + gutter
-    return inlineWidth > available + epsilon
+    let width =
+      inlineWidth(
+        runWidth: runWidth, add: add, leadingInset: leadingInset, inlineAddLead: inlineAddLead)
+    return width + gutter > available + epsilon
+  }
+
+  /// Width of the row laid out inline: inset, chip run, the gap, then the controls. Shared by the pin
+  /// predicate (which adds the gutter) and the strip's interaction shape.
+  static func inlineWidth(
+    runWidth: CGFloat, add: CGFloat, leadingInset: CGFloat, inlineAddLead: CGFloat
+  ) -> CGFloat {
+    leadingInset + runWidth + inlineAddLead + add
   }
 }
 
