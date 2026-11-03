@@ -377,15 +377,18 @@ enum PaneTreeLayout {
     leafSlots: (Leaf, SplitOrientation) -> Int = { _, _ in 1 }
   ) -> Bool {
     guard container.width > 0, container.height > 0 else { return true }
-    guard case .split(_, let orientation, let ratio, let first, let second) = tree else {
-      guard case .leaf(let leaf) = tree else { return true }
-      return [SplitOrientation.horizontal, .vertical].allSatisfy { axis in
+    if case .leaf(let leaf) = tree {
+      return SplitOrientation.allCases.allSatisfy { axis in
+        guard evenedAxis == nil || evenedAxis == axis else { return true }
         let count = leafSlots(leaf, axis)
-        guard count > 1, evenedAxis == nil || evenedAxis == axis else { return true }
         let length = axis == .horizontal ? container.width : container.height
-        return length >= CGFloat(count) * minPane(along: axis) + CGFloat(count - 1)
-          * dividerThickness
+        return count <= 1
+          || length >= CGFloat(count) * minPane(along: axis) + CGFloat(count - 1)
+            * dividerThickness
       }
+    }
+    guard case .split(_, let orientation, let ratio, let first, let second) = tree else {
+      return true
     }
     let axis = orientation == .horizontal ? container.width : container.height
     let usable = max(0, axis - dividerThickness)

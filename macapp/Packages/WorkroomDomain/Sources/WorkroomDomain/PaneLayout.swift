@@ -25,7 +25,7 @@ import Foundation
 /// `settingRatio` / `equalized`); callers never walk the tree inline (DRY). Anything that needs a
 /// MEASURED answer (does this still fit? would evening actually render evenly?) belongs on
 /// `PaneTreeLayout` instead — this type has no geometry.
-public enum SplitOrientation: Hashable, Sendable {
+public enum SplitOrientation: Hashable, CaseIterable, Sendable {
   case horizontal  // panes side by side — a vertical divider   (⌘D "split right")
   case vertical  // panes stacked    — a horizontal divider (⇧⌘D "split down")
 }
