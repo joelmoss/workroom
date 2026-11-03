@@ -608,7 +608,8 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Axes a pane joined or left along during the operation in progress, per target, announced as
-  /// one `.paneCountChanged` when it finishes (`announcePaneCountChange`). Held rather than fired
+  /// one `.paneCountChanged` when it finishes (`announcePaneCountChange`, from `reconcileOcclusion`).
+  /// Held rather than fired
   /// from `setSplit` because the workroom's weight is read from the group it SHOWS, and a close or
   /// an extract only moves focus after the split edit.
   private var paneCountChanges: [TerminalTarget.ID: Set<SplitOrientation>] = [:]
@@ -963,9 +964,6 @@ final class TerminalSessions: ObservableObject {
 
   /// Alias kept so existing call sites/tests read naturally. "The active tab" is the focused pane.
   func activeTab(for target: TerminalTarget) -> TerminalTab? { focusedTab(for: target) }
-
-  /// Whether the content area should render the split (the focused tab belongs to it) vs a solo tab.
-  func isSplitVisible(for target: TerminalTarget) -> Bool { split(for: target) != nil }
 
   /// The tab ids currently on screen: the split's members when the split is visible, else the focused
   /// solo tab — PLUS this target's detached panes, which are on screen in their own windows. Drives
@@ -1557,7 +1555,6 @@ final class TerminalSessions: ObservableObject {
     insertID(newTab.id, after: focused.id, for: target)
     setFocused(newTab.id, for: target.id)
     reconcileOcclusion(for: target)
-    announcePaneCountChange(for: target)
   }
 
   /// The tab to spawn when splitting `anchor`. A **terminal** anchor → a new shell in its cwd. A
@@ -1677,7 +1674,6 @@ final class TerminalSessions: ObservableObject {
     insertID(movedID, after: destID, for: target)  // display normalises the contiguous run
     setFocused(movedID, for: target.id)
     reconcileOcclusion(for: target)
-    announcePaneCountChange(for: target)
   }
 
   /// Move a pane into its own window (issue #172). One coordinated transition: the model half here,
@@ -1701,7 +1697,6 @@ final class TerminalSessions: ObservableObject {
     detachedTabIDs.insert(tabID)
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
-    announcePaneCountChange(for: target)
     onEvent?(.paneDetached(target.id, tabID, at: screenPoint))
   }
 
@@ -1829,7 +1824,6 @@ final class TerminalSessions: ObservableObject {
     removeFromGroup(tabID, for: target.id, evening: true)
     setFocused(tabID, for: target.id)  // show the extracted tab on its own
     reconcileOcclusion(for: target)
-    announcePaneCountChange(for: target)
   }
 
   /// Focus a tab (and, if it's a split member, show the split). Single entry point: chip tap, ⌘1–9,
@@ -1960,7 +1954,6 @@ final class TerminalSessions: ObservableObject {
     if wasFocused { setFocused(successor, for: target.id) }
     recency.forgetPanes([tabID])  // after the successor is picked, before anyone else looks
     reconcileOcclusion(for: target)
-    announcePaneCountChange(for: target)
     codingAgentManager.tabClosed(tabID)
     onEvent?(.tabsRemoved(target.id, [tabID]))
   }
@@ -2032,8 +2025,10 @@ final class TerminalSessions: ObservableObject {
 
   /// One reconciliation pass: exactly the on-screen tabs render; every other surface for the target is
   /// paused (its shell keeps running — `setVisible(false)` toggles GPU occlusion, not the PTY). Called
-  /// from every state change that can alter what's on screen (focus / split / close / move / reap).
+  /// from every state change that can alter what's on screen (focus / split / close / move / reap),
+  /// once focus has settled — which is why a pane joining or leaving a split is announced from here.
   func reconcileOcclusion(for target: TerminalTarget) {
+    defer { announcePaneCountChange(for: target) }
     let visible = Set(visibleTabIDs(for: target))
     for tab in (tabsByTarget[target.id] ?? [:]).values {
       // Only terminal tabs own a GPU surface to occlude; a content tab (diff) pauses itself by
@@ -2373,7 +2368,7 @@ final class TerminalSessions: ObservableObject {
   ) {
     if evening {
       paneCountChanges[targetID, default: []].formUnion(
-        axis.map { [$0] } ?? [.horizontal, .vertical])
+        axis.map { [$0] } ?? SplitOrientation.allCases)
     }
     var groups = splitsByTarget[targetID] ?? []
     guard let tree, tree.tabIDs.count >= 2 else {
@@ -2403,8 +2398,8 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Tell `AppStore` that a pane joined or left `target`'s splits during the operation now ending,
-  /// once, along every axis it happened on. Called last by each operation that adds or removes a
-  /// pane, after focus has settled. No-op when nothing joined or left.
+  /// once, along every axis it happened on. Called from `reconcileOcclusion`, which every such
+  /// operation runs last, after focus has settled. No-op when nothing joined or left.
   private func announcePaneCountChange(for target: TerminalTarget) {
     guard let axes = paneCountChanges.removeValue(forKey: target.id) else { return }
     onEvent?(.paneCountChanged(target.id, along: axes.count == 1 ? axes.first : nil))
@@ -2431,7 +2426,7 @@ final class TerminalSessions: ObservableObject {
   ///
   /// When the closed tab was a split member, only the members that survive it are candidates —
   /// including the lone survivor of a two-pane split, which stops being a split at all. Focus drives
-  /// what is on screen (`isSplitVisible`, `visibleTabIDs`), so landing on a most-recent tab from
+  /// what is on screen (`split(for:)`, `visibleTabIDs`), so landing on a most-recent tab from
   /// outside would sweep a pane the user was looking at a moment ago off screen.
   private func closeSuccessor(of tabID: TerminalTab.ID, for target: TerminalTarget) -> TerminalTab
     .ID?

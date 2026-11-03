@@ -151,8 +151,8 @@ struct WorkroomTerminalsView: View {
   }
 
   /// The layout the content area renders: the focused tab's group when it has one, else that tab
-  /// solo. No `isSplitVisible` branch — it is now defined as exactly `split(for:) != nil`, so the
-  /// nil-coalesce below already is the whole decision.
+  /// solo. `split(for:)` is nil exactly when the focused tab is solo, so the nil-coalesce below is
+  /// the whole decision.
   private func contentLayout(active: TerminalTab) -> TerminalPaneLayout {
     sessions.split(for: target) ?? .leaf(active.id)
   }
