@@ -1045,20 +1045,6 @@ struct CanOpenInEditorKey: FocusedValueKey {
   typealias Value = Bool
 }
 
-/// Whether the focused target's terminal split is currently visible (issue #83) — published by
-/// WorkroomTerminalsView, which mounts only in the single-workroom path and only once a blocking
-/// setup script is dismissed, so "Resize Splits Evenly" enables only when a real terminal split is
-/// on screen (never behind a setup overlay, never in workroom-into-workroom split mode).
-struct TerminalSplitVisibleKey: FocusedValueKey {
-  typealias Value = Bool
-}
-
-/// Whether the selected workroom is part of a visible workroom-into-workroom split (issue #83) —
-/// published by RootView, so "Resize Workroom Splits Evenly" enables only when it's a live member.
-struct WorkroomSplitVisibleKey: FocusedValueKey {
-  typealias Value = Bool
-}
-
 /// Whether a modal presentation owns the focused window (`AppStore.hasModalPresentation`). Backs the
 /// menu items that have no other enablement boolean to fold it into — the `@Default`-bound toggles
 /// (⌘B, ⌥⌘C/F/Y/P, ⇧⌘K, ⇧⌘L) and Quick Terminal, which is "always enabled" and whose ⌥§ carries no
@@ -1144,14 +1130,6 @@ extension FocusedValues {
     get { self[ModalPresentedKey.self] }
     set { self[ModalPresentedKey.self] = newValue }
   }
-  var terminalSplitVisible: Bool? {
-    get { self[TerminalSplitVisibleKey.self] }
-    set { self[TerminalSplitVisibleKey.self] = newValue }
-  }
-  var workroomSplitVisible: Bool? {
-    get { self[WorkroomSplitVisibleKey.self] }
-    set { self[WorkroomSplitVisibleKey.self] = newValue }
-  }
   var canMoveWorkroom: Bool? {
     get { self[CanMoveWorkroomKey.self] }
     set { self[CanMoveWorkroomKey.self] = newValue }
@@ -1202,8 +1180,6 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
   @FocusedValue(\.canSwitchWorkrooms) private var canSwitchWorkrooms
   @FocusedValue(\.canOpenInEditor) private var canOpenInEditor
-  @FocusedValue(\.terminalSplitVisible) private var terminalSplitVisible
-  @FocusedValue(\.workroomSplitVisible) private var workroomSplitVisible
   @FocusedValue(\.canMoveWorkroom) private var canMoveWorkroom
   @FocusedValue(\.modalPresented) private var modalPresented
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
@@ -1592,15 +1568,6 @@ struct WorkroomCommands: Commands {
         .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Split Up") { store?.splitFocusedUp() }
         .disabled(!workroomCommandEnabled(hasTerminal))
-
-      // Resize a split's panes back to even (issue #83): one item per split kind, each enabled only
-      // when that kind of split is actually on screen (a focused terminal split / the selected
-      // workroom inside a workroom split). Menu-only, like Split Left/Up.
-      Divider()
-      Button("Resize Splits Evenly") { store?.equalizeFocusedSplit() }
-        .disabled(!workroomCommandEnabled(terminalSplitVisible))
-      Button("Resize Workroom Splits Evenly") { store?.equalizeWorkroomSplit() }
-        .disabled(!workroomCommandEnabled(workroomSplitVisible))
 
       // Separate our View items from the system "Enter Full Screen" item that follows.
       Divider()

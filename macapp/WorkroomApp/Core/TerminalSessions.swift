@@ -1925,16 +1925,6 @@ final class TerminalSessions: ObservableObject {
       ratio, forSplit: splitID)
   }
 
-  /// Rebalance the VISIBLE group so every pane renders the same size (issue #83 "Resize Splits
-  /// Evenly"). No-op when the focused tab is solo — the menu item acts on what is on screen, and an
-  /// off-screen group keeps the dividers the user left it with.
-  func equalizeSplit(for target: TerminalTarget) {
-    guard let focused = focusedTabByTarget[target.id],
-      let index = splitIndex(containing: focused, for: target.id)
-    else { return }
-    splitsByTarget[target.id]![index] = splitsByTarget[target.id]![index].equalized()
-  }
-
   /// Close a tab. If it's a split member the split collapses to the surviving sibling subtree (and
   /// dissolves when only one member would remain). Closing the last tab leaves the target with none.
   func closeTab(_ tabID: TerminalTab.ID, for target: TerminalTarget) {

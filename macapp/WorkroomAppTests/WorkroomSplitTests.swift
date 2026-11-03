@@ -520,67 +520,6 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.3, accuracy: 0.0001)
   }
 
-  // MARK: equalize (issue #83 — "Resize Workroom Splits Evenly")
-
-  func testEqualizeWeightsBySameAxisSlots() {
-    let store = store3()
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    // tree: main | (feature / bugfix). Skew the outer divider, then equalize.
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
-    store.equalizeWorkroomSplit()
-    XCTAssertEqual(
-      rootRatio(store) ?? -1, 0.5, accuracy: 0.0001,
-      "the stacked pair is ONE column, so the outer divider is a half — not a third (#126)")
-  }
-
-  func testEqualizeStillDividesASameAxisChainEvenly() {
-    let store = store3()
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
-    store.equalizeWorkroomSplit()
-    XCTAssertEqual(
-      rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "three columns in one chain are thirds")
-  }
-
-  func testEqualizeNoOpWithoutSplit() {
-    let store = store3()
-    store.equalizeWorkroomSplit()
-    XCTAssertNil(onlySplit(store))
-  }
-
-  func testEqualizePrunesDeadLeavesFirst() {
-    // A stored split holding a dead leaf (not in the project list, so `target(for:)` is nil) must be
-    // pruned before weighting — otherwise it budgets space for a ghost pane and the visible panes end
-    // uneven (Codex #2). Set the tree directly since `insertWorkroomSplit` rejects non-resolving leaves.
-    let store = store3()
-    store.workroomSplits = [
-      .split(
-        id: UUID(), orientation: .horizontal, ratio: 0.9,
-        first: .leaf(wr("deleted")),
-        second: .split(
-          id: UUID(), orientation: .horizontal, ratio: 0.9,
-          first: .leaf(wr("main")), second: .leaf(wr("feature"))))
-    ]
-    store.selectedTargetID = wr("main")  // equalize acts on the VISIBLE group
-    store.equalizeWorkroomSplit()
-    XCTAssertEqual(onlySplit(store)?.tabIDs, [wr("main"), wr("feature")], "ghost leaf pruned")
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "two live panes split evenly")
-  }
-
-  func testEqualizeDissolvesWhenOneLiveLeafRemains() {
-    let store = store3()
-    store.workroomSplits = [
-      .split(
-        id: UUID(), orientation: .horizontal, ratio: 0.7,
-        first: .leaf(wr("deleted")), second: .leaf(wr("main")))
-    ]
-    store.selectedTargetID = wr("main")
-    store.equalizeWorkroomSplit()
-    XCTAssertNil(onlySplit(store), "only one live leaf → no split")
-  }
-
   // MARK: resolve / self-heal
 
   func testResolvedSplitLeavesDropsDeletedAndNilsBelowTwo() {
@@ -842,34 +781,6 @@ final class WorkroomSplitTests: XCTestCase {
     store.setWorkroomSplitRatio(0.25, forSplit: rootSplitID(store, group: 1)!)
     XCTAssertEqual(rootRatio(store, group: 1) ?? -1, 0.25, accuracy: 0.0001)
     XCTAssertEqual(rootRatio(store, group: 0) ?? -1, 0.5, accuracy: 0.0001, "group A untouched")
-  }
-
-  func testEqualizeResizesOnlyTheVisibleGroup() {
-    let store = store4()
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // group A
-    store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)  // group B, selected
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store, group: 0)!)  // skew group A
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store, group: 1)!)  // skew group B
-
-    store.equalizeWorkroomSplit()  // selection is in group B
-    XCTAssertEqual(
-      rootRatio(store, group: 1) ?? -1, 0.5, accuracy: 0.0001, "the visible group evens")
-    XCTAssertEqual(
-      rootRatio(store, group: 0) ?? -1, 0.9, accuracy: 0.0001,
-      "an off-screen group keeps its dividers — the menu item acts on what you see")
-  }
-
-  func testEqualizeIsNoOpWhenSelectionIsUngrouped() {
-    // Selection outside every group with groups still stored: nothing is on screen to even out, so no
-    // group may be touched (the old code would have equalized "the" split regardless of selection).
-    let store = store4()
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store, group: 0)!)
-    store.selectedTargetID = wr("docs")  // ungrouped
-    store.equalizeWorkroomSplit()
-    XCTAssertEqual(
-      rootRatio(store, group: 0) ?? -1, 0.9, accuracy: 0.0001, "the hidden group is untouched")
-    XCTAssertEqual(store.workroomSplits.count, 1, "and it isn't dissolved either")
   }
 
   func testPrunePrunesEveryGroup() {
@@ -1240,18 +1151,6 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.9, accuracy: 0.0001, "and so did the removal")
   }
 
-  func testTheMenuActionStillEvensWithThePrefOff() {
-    // An explicit command must work regardless of the setting — that's what the setting turns off,
-    // the automatic behaviour, not the feature.
-    let store = makeStore(["main", "feature"])
-    store.autoEvenSplits = { false }
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
-    store.selectedTargetID = wr("main")
-    store.equalizeWorkroomSplit()
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
-  }
-
   /// The insert below is REFUSED by the group floor (three 300pt columns do not fit in 800pt), so
   /// this asserts the refusal, not the honourability check — the earlier version claimed the latter
   /// and would have passed with that check deleted.
@@ -1367,7 +1266,9 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
 @MainActor
 final class WorkroomSplitPaneWeightTests: XCTestCase {
 
-  private func makeStore(width: CGFloat = 1800, height: CGFloat = 1000) -> AppStore {
+  private func makeStore(
+    names: [String] = ["main", "feature"], width: CGFloat = 1800, height: CGFloat = 1000
+  ) -> AppStore {
     let store = AppStore()
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
@@ -1375,7 +1276,7 @@ final class WorkroomSplitPaneWeightTests: XCTestCase {
     store.projects = [
       Project(
         path: "/a", vcs: "git",
-        workrooms: ["main", "feature"].map {
+        workrooms: names.map {
           Workroom(name: $0, path: "/a/\($0)", vcsName: "workroom/\($0)", warnings: [])
         })
     ]
@@ -1461,15 +1362,14 @@ final class WorkroomSplitPaneWeightTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
   }
 
-  /// Value: protects=View ▸ Resize Workroom Splits Evenly weights by terminal panes too, pref or
-  /// not; fails_when=equalizeWorkroomSplit evens without the weight; seam=none; no_claim=rendering
-  func testResizeWorkroomSplitsEvenlyWeightsByTerminalPanes() throws {
-    let store = makeStore()
+  /// Value: protects=adding a workroom to the split weights by terminal panes too; fails_when=the
+  /// insert path evens without the weight; seam=none; no_claim=rendering
+  func testAddingAWorkroomWeightsTheOthersByTheirTerminals() throws {
+    let store = makeStore(names: ["main", "feature", "bugfix"])
     let feature = try pair(store, .right)
-    store.autoEvenSplits = { false }
     store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
-    store.selectedTargetID = wr("main")
-    store.equalizeWorkroomSplit()
-    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+    XCTAssertTrue(store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right))
+    // main | (feature | bugfix) with feature two terminals wide: one share of four for main.
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.25, accuracy: 0.0001)
   }
 }

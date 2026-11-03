@@ -469,31 +469,14 @@ extension AppStore {
       leafSlots: workroomLeafSlots)
   }
 
-  /// Resize the **visible** split group so every terminal in it is the same size (issue #83 "Resize
-  /// Workroom Splits Evenly"), each workroom weighted by its panes (`workroomLeafSlots`) — the menu
-  /// item is enabled only while a split is on screen, so that's the group the user means. Prunes dead-workroom leaves FIRST — the renderer drops them on read
-  /// (`visibleWorkroomLayout`) while the stored tree still holds them, so equalizing the raw tree
-  /// would budget space for a ghost pane and leave the visible panes uneven. Dissolves the group when
-  /// fewer than two leaves remain live (a lone leaf is "no split"). No-op when no group is visible.
-  func equalizeWorkroomSplit() {
-    guard let sid = selectedTargetID, let index = splitIndex(containing: sid) else { return }
-    if let evened = prunedAndEvened(workroomSplits[index]) {
-      workroomSplits[index] = evened
-    } else {
-      workroomSplits.remove(at: index)
-    }
-  }
-
   /// Strip leaves whose workroom no longer resolves, then even what's left. nil ⇒ fewer than two
   /// live leaves, so the caller must dissolve the group (a lone leaf is "no split").
   ///
   /// The prune has to come FIRST: the renderer drops dead leaves on read (`visibleWorkroomLayout`)
   /// while the stored tree still counts them, so evening the raw tree budgets space for a pane
-  /// nobody can see and leaves the visible ones uneven. Shared by the View menu action above and by
-  /// `insertWorkroomSplit` (issue #126) so the manual and automatic paths can't drift.
+  /// nobody can see and leaves the visible ones uneven. Used by `insertWorkroomSplit` (issue #126).
   ///
-  /// Deliberately unconditional — the menu item must work with the auto-even pref off — and
-  /// deliberately NOT called by `removeWorkroomSplitMember`, which picks the survivor to focus
+  /// Deliberately NOT called by `removeWorkroomSplitMember`, which picks the survivor to focus
   /// before its structural edit: a prune that dissolved the group afterwards would leave the
   /// selection on a workroom that no longer resolves, so that path evens without pruning.
   private func prunedAndEvened(
