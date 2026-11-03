@@ -630,6 +630,16 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     throw WorkroomCLIError.binaryMissing
   }
 
+  /// A pane's PATH: this app's own CLI first, so `workroom` works in every pane with nothing
+  /// installed and always matches the running app. Nil when the app has no bundled CLI.
+  static func panePath(
+    cliDirectory: String? = try? bundledBinaryURL().deletingLastPathComponent().path,
+    inheritedPath: String = ProcessInfo.processInfo.environment["PATH"] ?? ""
+  ) -> String? {
+    guard let cliDirectory else { return nil }
+    return inheritedPath.isEmpty ? cliDirectory : cliDirectory + ":" + inheritedPath
+  }
+
   // MARK: Decoding
 
   private func decode<T: Decodable>(_ type: T.Type, from result: CLIResult) throws -> T {
