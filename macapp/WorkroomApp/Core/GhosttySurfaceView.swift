@@ -325,6 +325,11 @@ final class GhosttySurfaceView: NSView {
     if let terminfo = GhosttyApp.shared.terminfoDirectory {
       envPairs.append(("TERMINFO", terminfo))
     }
+    // Every pane, attached or a plain fallback shell: the attach client forwards its environment to
+    // the daemon's shell, and a login shell's path_helper moves /etc/paths ahead of it but keeps it.
+    if let path = WorkroomCLI.panePath() {
+      envPairs.append(("PATH", path))
+    }
 
     let startedPersistent = applyPersistentSession(
       to: &config, environment: &envPairs)
