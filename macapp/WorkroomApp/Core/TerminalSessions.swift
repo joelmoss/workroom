@@ -601,7 +601,17 @@ final class TerminalSessions: ObservableObject {
     /// A run tab's session is not on its daemon any more (#522): the host's snapshot did not name
     /// it, or the daemon said it ended.
     case runSessionGone(TerminalTarget.ID, TerminalTab.ID)
+    /// A pane joined or left one of this target's splits along `axis` (nil: both ways), and the
+    /// operation that did it has finished, focus included. Its workroom now shows a different
+    /// number of panes, so a workroom split it sits in re-evens to match.
+    case paneCountChanged(TerminalTarget.ID, along: SplitOrientation?)
   }
+
+  /// Axes a pane joined or left along during the operation in progress, per target, announced as
+  /// one `.paneCountChanged` when it finishes (`announcePaneCountChange`). Held rather than fired
+  /// from `setSplit` because the workroom's weight is read from the group it SHOWS, and a close or
+  /// an extract only moves focus after the split edit.
+  private var paneCountChanges: [TerminalTarget.ID: Set<SplitOrientation>] = [:]
 
   /// The project's run command for a target, for a run tab rebuilt from a saved session (#522). Set
   /// by `AppStore`, which owns the run configs.
@@ -1547,6 +1557,7 @@ final class TerminalSessions: ObservableObject {
     insertID(newTab.id, after: focused.id, for: target)
     setFocused(newTab.id, for: target.id)
     reconcileOcclusion(for: target)
+    announcePaneCountChange(for: target)
   }
 
   /// The tab to spawn when splitting `anchor`. A **terminal** anchor → a new shell in its cwd. A
@@ -1666,6 +1677,7 @@ final class TerminalSessions: ObservableObject {
     insertID(movedID, after: destID, for: target)  // display normalises the contiguous run
     setFocused(movedID, for: target.id)
     reconcileOcclusion(for: target)
+    announcePaneCountChange(for: target)
   }
 
   /// Move a pane into its own window (issue #172). One coordinated transition: the model half here,
@@ -1689,6 +1701,7 @@ final class TerminalSessions: ObservableObject {
     detachedTabIDs.insert(tabID)
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
+    announcePaneCountChange(for: target)
     onEvent?(.paneDetached(target.id, tabID, at: screenPoint))
   }
 
@@ -1816,6 +1829,7 @@ final class TerminalSessions: ObservableObject {
     removeFromGroup(tabID, for: target.id, evening: true)
     setFocused(tabID, for: target.id)  // show the extracted tab on its own
     reconcileOcclusion(for: target)
+    announcePaneCountChange(for: target)
   }
 
   /// Focus a tab (and, if it's a split member, show the split). Single entry point: chip tap, ⌘1–9,
@@ -1956,6 +1970,7 @@ final class TerminalSessions: ObservableObject {
     if wasFocused { setFocused(successor, for: target.id) }
     recency.forgetPanes([tabID])  // after the successor is picked, before anyone else looks
     reconcileOcclusion(for: target)
+    announcePaneCountChange(for: target)
     codingAgentManager.tabClosed(tabID)
     onEvent?(.tabsRemoved(target.id, [tabID]))
   }
@@ -2366,6 +2381,10 @@ final class TerminalSessions: ObservableObject {
     evening: Bool,
     along axis: SplitOrientation? = nil
   ) {
+    if evening {
+      paneCountChanges[targetID, default: []].formUnion(
+        axis.map { [$0] } ?? [.horizontal, .vertical])
+    }
     var groups = splitsByTarget[targetID] ?? []
     guard let tree, tree.tabIDs.count >= 2 else {
       if let index, groups.indices.contains(index) { groups.remove(at: index) }
@@ -2391,6 +2410,14 @@ final class TerminalSessions: ObservableObject {
       groups.append(stored)
     }
     splitsByTarget[targetID] = groups
+  }
+
+  /// Tell `AppStore` that a pane joined or left `target`'s splits during the operation now ending,
+  /// once, along every axis it happened on. Called last by each operation that adds or removes a
+  /// pane, after focus has settled. No-op when nothing joined or left.
+  private func announcePaneCountChange(for target: TerminalTarget) {
+    guard let axes = paneCountChanges.removeValue(forKey: target.id) else { return }
+    onEvent?(.paneCountChanged(target.id, along: axes.count == 1 ? axes.first : nil))
   }
 
   /// Drop `tabID` from whatever group holds it, deleting the group when fewer than two leaves would

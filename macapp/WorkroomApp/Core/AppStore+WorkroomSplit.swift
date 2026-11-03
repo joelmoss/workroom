@@ -186,7 +186,8 @@ extension AppStore {
         sid, beside: beside, orientation: edge.orientation,
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
       let stored = PaneTreeLayout.evenedIfHonourable(
-        prospective, in: space, enabled: autoEvenSplits(), along: edge.orientation)
+        prospective, in: space, enabled: autoEvenSplits(), along: edge.orientation,
+        leafSlots: workroomLeafSlots)
       return PaneTreeLayout.fitsEveryPane(
         stored, in: space, notWorseThan: base, splitting: beside)
     }
@@ -239,7 +240,8 @@ extension AppStore {
       let sourceIndex = splitIndex(containing: sourceSurvivor)
     {
       workroomSplits[sourceIndex] = PaneTreeLayout.evenedIfHonourable(
-        workroomSplits[sourceIndex], in: workroomPaneSpace, enabled: true, along: sourceAxis)
+        workroomSplits[sourceIndex], in: workroomPaneSpace, enabled: true, along: sourceAxis,
+        leafSlots: workroomLeafSlots)
     }
     if let index = splitIndex(containing: beside) {
       let grown = workroomSplits[index].inserting(
@@ -251,7 +253,8 @@ extension AppStore {
       // tree it is handed), so this one site asks the honourability question directly.
       if adds, autoEvenSplits(), let evened = prunedAndEvened(grown, along: edge.orientation),
         workroomPaneSpace.map({
-          PaneTreeLayout.plansEvenly(evened, in: $0, evenedAxis: edge.orientation)
+          PaneTreeLayout.plansEvenly(
+            evened, in: $0, evenedAxis: edge.orientation, leafSlots: workroomLeafSlots)
         }) ?? true
       {
         workroomSplits[index] = evened
@@ -364,7 +367,8 @@ extension AppStore {
     // selection on it. Indices shift when a group dissolves, so re-derive.
     if autoEvenSplits(), let survivor, let index = splitIndex(containing: survivor) {
       workroomSplits[index] = PaneTreeLayout.evenedIfHonourable(
-        workroomSplits[index], in: workroomPaneSpace, enabled: true, along: axis)
+        workroomSplits[index], in: workroomPaneSpace, enabled: true, along: axis,
+        leafSlots: workroomLeafSlots)
     }
     if wasFocused, let survivor { focusWorkroomMember(survivor) }
   }
@@ -441,9 +445,33 @@ extension AppStore {
     workroomSplits[index] = workroomSplits[index].settingRatio(ratio, forSplit: splitID)
   }
 
-  /// Resize the **visible** split group so every one of its panes is the same size (issue #83 "Resize
-  /// Workroom Splits Evenly") — the menu item is enabled only while a split is on screen, so that's the
-  /// group the user means. Prunes dead-workroom leaves FIRST — the renderer drops them on read
+  /// How many terminal panes `sid` shows across `axis`: two side by side are two columns, two
+  /// stacked are two rows. Every workroom even weights its leaves by this, so the terminals across
+  /// the whole window come out the same size rather than each workroom getting an equal share.
+  /// Counted the way a terminal split counts its own panes (`slots(along:)`), over the group the
+  /// workroom is showing.
+  var workroomLeafSlots: (SidebarID, SplitOrientation) -> Int {
+    { [self] sid, axis in
+      target(for: sid).flatMap { terminals.split(for: $0) }?.slots(along: axis) ?? 1
+    }
+  }
+
+  /// A terminal pane joined or left `targetID`'s shown split along `axis` (nil: both ways), so its
+  /// workroom's weight changed: re-even the workroom split it sits in along that axis, the same way
+  /// the terminal split itself was just evened. No-op when auto-even is off, the workroom isn't in
+  /// a workroom split, or the even wouldn't leave every terminal at its minimum size.
+  func reEvenWorkroomSplit(holding targetID: TerminalTarget.ID, along axis: SplitOrientation?) {
+    guard autoEvenSplits(), let sid = Self.sidebarID(forTargetID: targetID, in: projects),
+      let index = splitIndex(containing: sid)
+    else { return }
+    workroomSplits[index] = PaneTreeLayout.evenedIfHonourable(
+      workroomSplits[index], in: workroomPaneSpace, enabled: true, along: axis,
+      leafSlots: workroomLeafSlots)
+  }
+
+  /// Resize the **visible** split group so every terminal in it is the same size (issue #83 "Resize
+  /// Workroom Splits Evenly"), each workroom weighted by its panes (`workroomLeafSlots`) — the menu
+  /// item is enabled only while a split is on screen, so that's the group the user means. Prunes dead-workroom leaves FIRST — the renderer drops them on read
   /// (`visibleWorkroomLayout`) while the stored tree still holds them, so equalizing the raw tree
   /// would budget space for a ghost pane and leave the visible panes uneven. Dissolves the group when
   /// fewer than two leaves remain live (a lone leaf is "no split"). No-op when no group is visible.
@@ -473,7 +501,7 @@ extension AppStore {
   ) -> PaneLayout<SidebarID>? {
     let live = liveLeavesOnly(group)
     guard live.tabIDs.count >= 2 else { return nil }
-    return live.equalized(along: axis)
+    return live.equalized(along: axis, leafSlots: workroomLeafSlots)
   }
 
   /// `group` with every leaf whose workroom no longer resolves dropped — what the renderer shows and
@@ -523,7 +551,7 @@ extension AppStore {
         kept.append(
           PaneTreeLayout.evenedIfHonourable(
             pruned, in: workroomPaneSpace, enabled: autoEvenSplits(),
-            along: axes.count == 1 ? axes.first : nil))
+            along: axes.count == 1 ? axes.first : nil, leafSlots: workroomLeafSlots))
       } else if let survivor = live.first {
         survivors.append(survivor)
       }

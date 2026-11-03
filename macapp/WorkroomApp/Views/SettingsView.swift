@@ -436,12 +436,13 @@ private struct AppearanceSettingsPane: View {
 
       // Auto-even splits (issue #126): a third pane otherwise lands at a quarter width, and removing
       // one leaves the survivors budgeted for a pane that's gone. Only the dividers running the same
-      // way as that pane move. Off keeps every divider put.
-      Toggle("Resize splits evenly automatically", isOn: $autoResizeSplitsEvenly)
+      // way as that pane move, and workrooms side by side are weighted by their terminals. Off keeps
+      // every divider put.
+      Toggle("Keep split panes the same size", isOn: $autoResizeSplitsEvenly)
         .help(
-          "Even out the dividers whenever a pane is added to or removed from a split, only those "
-            + "running the same way as that pane. Off leaves them where they are; View ▸ Resize "
-            + "Splits Evenly still works either way."
+          "When you add or close a pane, the panes in its row or column resize to match. With "
+            + "workrooms side by side, every terminal in the window ends up the same size. Off "
+            + "leaves the dividers where you put them. View ▸ Resize Splits Evenly works either way."
         )
         .accessibilityIdentifier("settings.control.autoResizeSplitsEvenly")
 

@@ -1360,3 +1360,116 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001, "and no width changed")
   }
 }
+
+/// Workroom evening weighted by each workroom's terminal panes: with `main | feature` side by side,
+/// splitting a terminal in `feature` gives it two thirds, so all three terminals are the same width.
+/// Drives real terminal splits through `TerminalSessions` and its `.paneCountChanged` event.
+@MainActor
+final class WorkroomSplitPaneWeightTests: XCTestCase {
+
+  private func makeStore(width: CGFloat = 1800, height: CGFloat = 1000) -> AppStore {
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    store.projects = [
+      Project(
+        path: "/a", vcs: "git",
+        workrooms: ["main", "feature"].map {
+          Workroom(name: $0, path: "/a/\($0)", vcsName: "workroom/\($0)", warnings: [])
+        })
+    ]
+    // Set directly, not through `Defaults` (see `WorkroomSplitAutoEvenTests`).
+    store.autoEvenSplits = { true }
+    store.terminals.autoEvenSplits = { true }
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: width, height: height)
+    return store
+  }
+
+  private func wr(_ name: String) -> SidebarID { .workroom(project: "/a", name: name) }
+
+  private func rootRatio(_ store: AppStore) -> CGFloat? {
+    if case .split(_, _, let ratio, _, _) = store.workroomSplits.first { return ratio }
+    return nil
+  }
+
+  /// `main` and `feature` each with one terminal, split `edge` of each other.
+  private func pair(_ store: AppStore, _ edge: PaneEdge) throws -> TerminalTarget {
+    let main = try XCTUnwrap(store.target(for: wr("main")))
+    let feature = try XCTUnwrap(store.target(for: wr("feature")))
+    store.terminals.addTab(for: main)
+    store.terminals.addTab(for: feature)
+    XCTAssertTrue(store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: edge))
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
+    return feature
+  }
+
+  /// Value: protects=a terminal split beside another in one workroom re-evens the workroom divider
+  /// by pane count, and closing it evens back; fails_when=the event is not fired or not handled, or
+  /// the weight is ignored; seam=none; no_claim=the rendered sizes (renderer clamps, manual QA)
+  func testSplittingATerminalSideBySideGivesItsWorkroomAShareForEachPane() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    XCTAssertEqual(
+      rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001,
+      "main has one of three terminals across the window")
+    let added = try XCTUnwrap(store.terminals.focusedTab(for: feature)).id
+    store.terminals.closeTab(added, for: feature)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "and halves again on close")
+  }
+
+  /// Value: protects=the same for workrooms above and below each other, by terminal rows;
+  /// fails_when=only horizontal axes are weighted; seam=none; no_claim=rendering
+  func testSplittingATerminalDownGivesAStackedWorkroomAShareForEachRow() throws {
+    let store = makeStore()
+    let feature = try pair(store, .bottom)
+    store.terminals.splitFocusedPane(for: feature, orientation: .vertical)
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
+
+  /// Value: protects=a split across the other axis never moves the workroom divider (#126's
+  /// axis rule); fails_when=the workroom re-evens along both axes; seam=none; no_claim=rendering
+  func testATerminalSplitAcrossTheOtherAxisKeepsTheWorkroomDivider() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    guard case .split(let rootID, _, _, _, _) = store.workroomSplits.first else {
+      return XCTFail("expected a workroom split")
+    }
+    store.setWorkroomSplitRatio(0.7, forSplit: rootID)
+    store.terminals.splitFocusedPane(for: feature, orientation: .vertical)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.7, accuracy: 0.0001)
+  }
+
+  /// Value: protects=the even is skipped when a workroom could not hold its terminals at the
+  /// minimum width; fails_when=plansEvenly ignores the leaf weight; seam=none; no_claim=rendering
+  func testTheDividerStaysWhenTheWeightedEvenWouldSqueezeTerminals() throws {
+    // 900pt: a third leaves feature 598pt for two terminals that each need 300.
+    let store = makeStore(width: 900)
+    let feature = try pair(store, .right)
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
+  }
+
+  /// Value: protects=the setting turns the automatic re-even off; fails_when=reEvenWorkroomSplit
+  /// ignores the pref; seam=none; no_claim=none beyond protects
+  func testThePrefOffKeepsTheWorkroomDivider() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    store.autoEvenSplits = { false }
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
+  }
+
+  /// Value: protects=View ▸ Resize Workroom Splits Evenly weights by terminal panes too, pref or
+  /// not; fails_when=equalizeWorkroomSplit evens without the weight; seam=none; no_claim=rendering
+  func testResizeWorkroomSplitsEvenlyWeightsByTerminalPanes() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    store.autoEvenSplits = { false }
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    store.selectedTargetID = wr("main")
+    store.equalizeWorkroomSplit()
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
+}
