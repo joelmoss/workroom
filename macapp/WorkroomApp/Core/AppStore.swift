@@ -2422,7 +2422,7 @@ final class AppStore: ObservableObject {
 
   /// How long a finished create's checklist stays on screen before the workroom's own UI replaces
   /// it, when it closes automatically (design D13). Tests shorten it.
-  var creationSuccessHold: Duration = .seconds(3)
+  var creationSuccessHold: Duration = .milliseconds(1500)
 
   /// Whether a finished create's checklist closes by itself, else it waits for Done. Tests replace it.
   var closesFinishedCreations: () -> Bool = { Defaults[.closeCreationPaneWhenDone] }

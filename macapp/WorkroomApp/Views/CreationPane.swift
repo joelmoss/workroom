@@ -56,11 +56,13 @@ struct CreationPane: View {
     // approval sheet's, where Return doesn't answer it.
     .onKeyPress(.return) { answer { $0.primary } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
-    // Once the run ends, focus moves into the pane (to its last row, which draws no ring), so Return
-    // answers Done or the footer without a click first; only in the window's active pane, so a
-    // terminal being typed in beside it keeps its keys.
-    .onChange(of: !run.isRunning && isActive, initial: true) { _, ended in
-      if ended, focusedRow == nil { focusedRow = run.steps.last?.id }
+    // Focus moves into the pane as it appears (to its last row, which draws no ring), so Return
+    // answers Done or the footer without a click first, and the terminal that replaces the pane
+    // takes the focus it held. Only in the window's active pane, so a terminal being typed in beside
+    // it keeps its keys, and once the New Workroom dialog is gone (it disables the window under it).
+    // Never at the run's end: focus moved away meanwhile stays where the user put it.
+    .onChange(of: isActive && store.activePicker == nil, initial: true) { _, takes in
+      if takes, focusedRow == nil { focusedRow = run.steps.last?.id }
     }
   }
 
