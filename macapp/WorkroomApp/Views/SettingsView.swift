@@ -543,9 +543,64 @@ private struct TerminalSettingsPane: View {
         }
       }
       .help("The app used to open ⌘-clicked file paths.")
+
+      QuickTerminalSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+  }
+}
+
+/// Where the Quick Terminal slides in from, and the folder its new shells start in.
+private struct QuickTerminalSection: View {
+  @Default(.quickTerminalEdge) private var edge
+  // "" = the home folder.
+  @Default(.quickTerminalDirectory) private var directory
+
+  var body: some View {
+    Section {
+      Picker("Slides in from", selection: $edge) {
+        ForEach(QuickTerminalEdge.allCases, id: \.self) { edge in
+          Text(edge.label).tag(edge)
+        }
+      }
+      .help("The screen edge the Quick Terminal slides in from, centred along it.")
+      .accessibilityIdentifier("settings.control.quickTerminalEdge")
+
+      LabeledContent("Opens in") {
+        HStack {
+          Text(
+            directory.isEmpty ? "Home folder" : (directory as NSString).abbreviatingWithTildeInPath
+          )
+          .lineLimit(1)
+          .truncationMode(.middle)
+          // Always laid out (disabled at home) so picking a folder doesn't shift the row.
+          Button("Use Home") { directory = "" }
+            .disabled(directory.isEmpty)
+            .accessibilityIdentifier("settings.control.quickTerminalDirectoryReset")
+          Button("Choose…", action: choose)
+            .accessibilityIdentifier("settings.control.quickTerminalDirectory")
+        }
+      }
+      .help("The folder a new Quick Terminal shell starts in.")
+    } header: {
+      Text("Quick Terminal")
+    } footer: {
+      Text(
+        "The folder applies to the next new shell: a hidden Quick Terminal keeps its own. A "
+          + "folder that is gone opens the home folder instead.")
+    }
+  }
+
+  private func choose() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.directoryURL = URL(
+      fileURLWithPath: QuickTerminalController.workingDirectory(for: directory))
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    directory = url.path == NSHomeDirectory() ? "" : url.path
   }
 }
 
