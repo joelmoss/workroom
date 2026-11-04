@@ -149,12 +149,7 @@ struct WorkroomTabBar: View {
         )
         // A Quick Terminal pane dragged over this window would join this workroom.
         .overlay {
-          if store.incomingQuickTerminalPane == tab.sid {
-            RoundedRectangle(cornerRadius: 6)
-              .fill(ThemeService.shared.tokens.accent.opacity(0.25))
-              .strokeBorder(ThemeService.shared.tokens.accent, lineWidth: 2)
-              .allowsHitTesting(false)
-          }
+          if store.incomingQuickTerminalPane == tab.sid { DropAccent(cornerRadius: 6) }
         }
         .onHover { inside in
           if inside { hoveredID = tab.sid } else if hoveredID == tab.sid { hoveredID = nil }

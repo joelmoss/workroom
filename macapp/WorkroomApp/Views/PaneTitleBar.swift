@@ -219,13 +219,17 @@ struct PaneTitleBar: View {
     .withTabTitle(content) { bar, title in
       bar.accessibilityLabel(Text(PaneTitlePresentation.title(for: content, tabTitle: title).plain))
     }
-    .accessibilityHint(
-      (multiPane
-        ? "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or "
-        : "Drag ")
-        + (moveToWorkroom == nil
-          ? "out of the window to open this pane in a new window"
-          : "onto a Workroom window to move this pane into it"))
+    .accessibilityHint(dragHint)
+  }
+
+  /// What dragging the bar does, for VoiceOver.
+  private var dragHint: String {
+    let out =
+      moveToWorkroom == nil
+      ? "out of the window to open this pane in a new window"
+      : "onto a Workroom window to move this pane into it"
+    guard multiPane else { return "Drag \(out)" }
+    return "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or \(out)"
   }
 
   /// One complete row. `titleMinWidth` is what makes the full-toolbar candidate fail to fit in a
@@ -288,7 +292,7 @@ struct PaneTitleBar: View {
       }
       if let onPopOut {
         PaneToolbarButton(
-          systemImage: "macwindow.badge.plus", image: .moveToNewWindow, help: "Move to new window",
+          image: .moveToNewWindow, help: "Move to new window",
           accessibilityLabel: "Move pane into new window", identifier: "pane.toolbar.popOut",
           action: onPopOut)
       }
@@ -368,19 +372,50 @@ struct PaneTitleBar: View {
 /// Internal, not private: the workroom title bar's "Close all tabs" uses it too, so the two bars a
 /// pane sits between build their buttons the same way.
 struct PaneToolbarButton: View {
-  let systemImage: String
-  /// A composed icon (`NSImage.badged`) in place of `systemImage`.
-  var image: NSImage? = nil
+  let icon: Image
   let help: String
   let accessibilityLabel: String
   let identifier: String
   let action: () -> Void
   @State private var hovering = false
 
+  init(
+    systemImage: String, help: String, accessibilityLabel: String, identifier: String,
+    action: @escaping () -> Void
+  ) {
+    self.init(
+      icon: Image(systemName: systemImage), help: help, accessibilityLabel: accessibilityLabel,
+      identifier: identifier, action: action)
+  }
+
+  /// A composed icon (`NSImage.badged`) where no symbol fits.
+  init(
+    image: NSImage, help: String, accessibilityLabel: String, identifier: String,
+    action: @escaping () -> Void
+  ) {
+    self.init(
+      icon: Image(nsImage: image).renderingMode(.template), help: help,
+      accessibilityLabel: accessibilityLabel, identifier: identifier, action: action)
+  }
+
+  private init(
+    icon: Image, help: String, accessibilityLabel: String, identifier: String,
+    action: @escaping () -> Void
+  ) {
+    self.icon = icon
+    self.help = help
+    self.accessibilityLabel = accessibilityLabel
+    self.identifier = identifier
+    self.action = action
+  }
+
+  /// The bar's glyph colour, brighter under the pointer. Shared with the Quick Terminal's
+  /// "Move to workroom" menu button, which is no `PaneToolbarButton`.
+  static func tint(hovering: Bool) -> Color { hovering ? .primary : .secondary }
+
   var body: some View {
     Button(action: action) {
-      (image.map { Image(nsImage: $0).renderingMode(.template) } ?? Image(systemName: systemImage))
-        .foregroundStyle(hovering ? .primary : .secondary)
+      icon.foregroundStyle(Self.tint(hovering: hovering))
     }
     .onHover { hovering = $0 }
     .help(help)

@@ -220,36 +220,24 @@ struct TerminalTabStrip: View {
               drag.setWidths(measuredWidths.values)
               // Kept within the tab run, as a workroom tab is: not past the last chip.
               drag.update(tab.id, translation: clampReorder(value.translation.width, index))
-              // Dragged clear of the window → this is a tear-off (issue #172), so show the ghost of
-              // the window it will become and stop previewing a drop into the panes.
-              // The Quick Terminal's panes have no window of their own: one goes into a Workroom
-              // window instead, and shows its ghost only over one that can take it.
+              // Dragged clear of the window → a tear-off (issue #172), or into a workroom from the
+              // Quick Terminal: show where it goes and stop previewing a drop into the panes.
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
-                if sessions.allowsDetach {
-                  DetachedPaneDragPreview.shared.show(
-                    title: tab.title, glyph: tab.content.glyph, at: NSEvent.mouseLocation)
-                } else {
-                  QuickTerminalPaneDrag.update(title: tab.title, glyph: tab.content.glyph)
-                }
+                sessions.showDragOutside(tab)
                 return
               }
-              hideOutsideDrag()
+              sessions.hideDragOutside()
               // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
               chipPaneDrag = localize(value.location)
                 .map { PaneDragState(tabID: tab.id, location: $0) }
             }
             .onEnded { value in
-              hideOutsideDrag()
+              sessions.hideDragOutside()
               if isDragOutsideWindow(value.location) {
-                // A chip dragged out of the window tears its pane off, exactly as dragging the pane's
-                // own title bar out does — the chip is the other handle on the same pane. A Quick
-                // Terminal pane moves into the Workroom window it was let go over.
-                if sessions.allowsDetach {
-                  sessions.detachPane(tab.id, for: target, at: NSEvent.mouseLocation)
-                } else {
-                  sessions.dropOutsideWindow?(tab.id, target)
-                }
+                // A chip dragged out of the window does what dragging the pane's own title bar out
+                // does — the chip is the other handle on the same pane.
+                sessions.dropOutside(tab.id, for: target)
                 drag.cancel()
                 chipPaneDrag = nil
                 return
@@ -428,16 +416,6 @@ struct TerminalTabStrip: View {
     return byGroup.keys.sorted().compactMap { group in
       TabStripSplitRun.rect(
         widths: widths, memberIndices: byGroup[group] ?? [], spacing: tabSpacing)
-    }
-  }
-
-  /// Take down what a drag outside the window shows: the tear-off ghost, or for a Quick Terminal
-  /// pane, also the highlight in the window it was over and the "can't drop" cursor.
-  private func hideOutsideDrag() {
-    if sessions.allowsDetach {
-      DetachedPaneDragPreview.shared.hide()
-    } else {
-      QuickTerminalPaneDrag.cancel()
     }
   }
 
