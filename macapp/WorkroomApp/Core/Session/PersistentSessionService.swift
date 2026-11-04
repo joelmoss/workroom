@@ -84,6 +84,8 @@ final class PersistentSessionService {
   /// all enough to trip it once. Re-probing on a cooldown keeps the fix for the real problem — the
   /// per-access re-probe that froze the main actor for ~2s a time — while leaving a way out.
   private var lastProbeAt: Double?
+  /// Whether the first health check has answered, so a pane created now knows its backend.
+  var isBackendPrepared: Bool { lastProbeAt != nil }
   /// One background re-probe at a time; a burst of panes must not spawn one each.
   private var isReprobing = false
   /// Shared by startup windows before any of them publishes projects or restores panes.

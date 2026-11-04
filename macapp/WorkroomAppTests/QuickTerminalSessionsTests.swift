@@ -3,14 +3,16 @@ import XCTest
 @testable import Workroom
 
 /// The Quick Terminal runs a workroom's own `TerminalSessions`, with three differences: its shells
-/// are never kept, its panes never move to a window of their own, and each pane reads its own
-/// folder's branch, since no workroom knows it.
+/// are ended at quit rather than kept, its panes never move to a window of their own, and each pane
+/// reads its own folder's branch, since no workroom knows it.
 @MainActor
 final class QuickTerminalSessionsTests: XCTestCase {
   private let target = TerminalTarget(
     id: "workroom.quickTerminal", title: "Quick Terminal", path: "/a", unavailability: nil)
 
-  private func makeSessions(quickTerminal: Bool = true) -> TerminalSessions {
+  private func makeSessions(
+    quickTerminal: Bool = true, backend: SessionBackendAvailability = .notBundled
+  ) -> TerminalSessions {
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
@@ -18,11 +20,11 @@ final class QuickTerminalSessionsTests: XCTestCase {
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()
     sessions.resolveBranch = { "branch\($0)" }
-    // No real background helper: a workroom pane here must not open a session on this Mac's.
+    // No real background helper: a test surface never attaches, so no session is ever opened.
     sessions.sessionService = PersistentSessionService(
-      probe: { _ in .notBundled }, ownership: { _ in .notOwned })
+      probe: { _ in backend }, ownership: { _ in .notOwned })
     if quickTerminal {
-      sessions.persistsSessions = false
+      sessions.readsPaneBranches = true
       sessions.allowsDetach = false
     }
     return sessions
@@ -33,19 +35,27 @@ final class QuickTerminalSessionsTests: XCTestCase {
     return state
   }
 
-  func testPolicyKeepsNoSessionWhereSessionsDontPersist() {
-    XCTAssertFalse(
-      TerminalPersistentSessionPolicy.usesPersistentSession(
-        isAvailable: true, inProcessCommand: false, hasExistingSession: true, persists: false,
-        isFixture: false))
+  /// Value: protects=a Quick Terminal pane running in a background session like a workroom's, so it
+  /// gets "needs you" and "finished" alerts (ADR 0064); fails_when=its sessions are switched off
+  /// again; why_new=the old test pinned the opposite; seam=none; no_claim=a real attach.
+  func testAQuickTerminalPaneRunsInABackgroundSession() throws {
+    let sessions = makeSessions(backend: .ready(version: "test"))
+    let tab = sessions.addTab(for: target)
+    XCTAssertNotNil(try XCTUnwrap(state(tab.id, in: sessions)).sessionID)
   }
 
-  func testAQuickTerminalPaneHasNoSessionEvenWhenHandedOne() throws {
-    let sessions = makeSessions()
-    let tab = sessions.addTab(for: target, sessionID: UUID())
-    let state = try XCTUnwrap(state(tab.id, in: sessions))
-    XCTAssertNil(state.sessionID, "never a background session, so never kept")
-    XCTAssertNil(state.view.persistentSessionID)
+  /// Value: protects=its shells ending at quit while its panes stay open, since a quit must not free
+  /// surfaces (ADR 0064); fails_when=a session is missed or the tabs are closed; why_new=new path;
+  /// seam=none; no_claim=the daemon actually ending the session (no helper in a unit test).
+  func testAtQuitItsSessionsEndAndItsPanesStay() throws {
+    let sessions = makeSessions(backend: .ready(version: "test"))
+    let first = sessions.addTab(for: target)
+    let second = sessions.addTab(for: target)
+    let ids = [first, second].compactMap { state($0.id, in: sessions)?.sessionID }
+    XCTAssertEqual(ids.count, 2)
+
+    XCTAssertEqual(Set(sessions.endSessionsAtQuit(for: target)), Set(ids))
+    XCTAssertEqual(sessions.tabs(for: target).count, 2, "no tab closed, no surface freed")
   }
 
   func testAQuickTerminalPaneNeverMovesToAWindow() {

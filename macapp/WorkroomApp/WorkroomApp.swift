@@ -418,6 +418,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if !AppEnvironment.current.isTestProcess {
       // Hand an older running daemon to the bundled one (#230), before panes are likely to attach.
       MainActor.assumeIsolated { DaemonHandOff.start() }
+      // A crash or force quit leaves the Quick Terminal's shells running, unseen: end them. Its own
+      // sweep, since the workroom one waits for a project list, which may be empty (ADR 0064). A
+      // live Quick Terminal opened meanwhile is attached, and attached sessions are spared.
+      if !AppEnvironment.current.isFixture {
+        Task { @MainActor in
+          let service = PersistentSessionService.shared
+          await service.prepareBackend()
+          await service.endOrphanedSessions(resolves: QuickTerminalController.sweepResolves)
+        }
+      }
       // Remote panes reattach on wake and network changes, not a minute later.
       MainActor.assumeIsolated { RemoteLinkMonitor.shared.start() }
     }
@@ -866,6 +876,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let registry = WindowRegistry.shared
     // Mark the app as terminating so a window's own close handler doesn't also prompt/stop (#70).
     registry.isTerminating = true
+    // The Quick Terminal's shells are not kept across a quit (ADR 0064). Ended before the close-kill
+    // wait below, which counts them.
+    quickTerminal.endSessionsAtQuit()
     // Write the session and stop writing (issue #46). Deliberately HERE and not at the top of
     // `applicationShouldTerminate`: that method can still return `.terminateCancel` at the confirm
     // dialog, and freezing above that guard would silently kill session saving for the rest of the

@@ -115,10 +115,15 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     TerminalTarget(
       id: targetID, title: "Quick Terminal", path: newTabDirectory(), unavailability: nil)
   }
-  static let targetID: TerminalTarget.ID = "workroom.quickTerminal"
+  nonisolated static let targetID: TerminalTarget.ID = "workroom.quickTerminal"
   private var themeObserver: NSObjectProtocol?
   /// Guards `tearDownState` against the re-entrancy of `window.close()` → `windowWillClose`.
   private var tearingDown = false
+  /// Set while a summon waits for the session backend's first health check (`show`).
+  private var preparingBackend = false
+  /// Where its panes' background sessions live, `.shared` unless a test stands in its own.
+  var sessionServiceOverride: PersistentSessionService?
+  private var sessionService: PersistentSessionService { sessionServiceOverride ?? .shared }
   /// Set while a slide-out runs; a summon during it clears it, cancelling the pending `orderOut`.
   private var hiding = false
 
@@ -182,7 +187,22 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// Button / summon semantics: never hides — create if ABSENT, then slide in + focus. Called
   /// for the toolbar button and as the second half of `toggle()` from ABSENT/HIDDEN.
   func show() {
-    if window == nil { createWindow() }
+    if window == nil {
+      // Its first pane waits for the session backend's first health check, as a workroom's do:
+      // created before, it would open as a plain shell, with no "needs you" alerts (#573).
+      guard sessionService.isBackendPrepared else {
+        guard !preparingBackend else { return }
+        preparingBackend = true
+        Task { [weak self] in
+          guard let self else { return }
+          await self.sessionService.prepareBackend()
+          self.preparingBackend = false
+          self.show()
+        }
+        return
+      }
+      createWindow()
+    }
     guard let window, let surface = currentSurface else { return }
     // The hotkey can fire while another app is frontmost (or while Workroom is hidden), so pull the
     // app forward — mirrors `AppDelegate.toggleAppVisibility`.
@@ -254,7 +274,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   private func createWindow() {
     let store = AppStore()
     let sessions = store.terminals
-    sessions.persistsSessions = false
+    sessions.sessionService = sessionService
+    sessions.readsPaneBranches = true
     sessions.allowsDetach = false
     sessions.makeView = { [weak self] _, directory, command in
       let surface =
@@ -362,6 +383,18 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// Full close: destroy the window (its `windowWillClose` runs the teardown). Idempotent.
   func close() {
     window?.close()
+  }
+
+  /// At quit: end its panes' background sessions, since its shells are not kept across a quit
+  /// (ADR 0064). Its tabs stay open; a quit must not free surfaces.
+  func endSessionsAtQuit() {
+    store?.terminals.endSessionsAtQuit(for: Self.target())
+  }
+
+  /// For the launch sweep: a session tag that still resolves. The Quick Terminal's never does, so a
+  /// crash or force quit, which skips `endSessionsAtQuit`, can't leave its shells running unseen.
+  nonisolated static func sweepResolves(_ workroomTag: String) -> Bool {
+    workroomTag != targetID
   }
 
   // MARK: Dragging along the edges

@@ -141,6 +141,20 @@ final class OrphanedSessionTests: XCTestCase {
     XCTAssertEqual(returned, ended)
   }
 
+  /// Value: protects=the launch sweep ending a Quick Terminal session a crash left running, and only
+  /// that (ADR 0064); fails_when=its tag resolves, an attached (live) one is ended, or a workroom's is
+  /// touched; why_new=the workroom sweep needs a project list; seam=none; no_claim=a real crash.
+  func testTheQuickTerminalSweepEndsOnlyItsDetachedSessions() async {
+    let orphan = session(workroom: QuickTerminalController.targetID)
+    let live = session(workroom: QuickTerminalController.targetID, attached: true)
+    let workroom = session(workroom: "wr|/p|gone")
+    var ended: [UUID] = []
+    _ = await PersistentSessionService.endOrphans(
+      in: [orphan, live, workroom], resolves: QuickTerminalController.sweepResolves,
+      end: { ended.append($0) })
+    XCTAssertEqual(ended, [orphan.identifier.uuid!])
+  }
+
   /// "Stop Detached Terminals" offers only sessions no window holds and no client is attached to.
   func testDetachedExcludesHeldAndAttached() {
     let free = session(workroom: "wr|/p|a")

@@ -700,9 +700,9 @@ final class TerminalSessions: ObservableObject {
   var hostConnections: HostConnectionManager = .shared
   /// Where panes' persistent sessions are registered and ended. Settable for tests.
   var sessionService: PersistentSessionService = .shared
-  /// False for the Quick Terminal's sessions: its shells are never kept, so no pane gets a
-  /// background session (`TerminalPersistentSessionPolicy`).
-  var persistsSessions = true
+  /// True for the Quick Terminal's sessions: its panes can each be in a different repository and no
+  /// workroom knows their branch, so each reads its own (`TerminalState.liveBranch`).
+  var readsPaneBranches = false
   /// False for the Quick Terminal's sessions: none of its panes moves to a window of its own, by
   /// menu, title-bar button or dragging out.
   var allowsDetach = true
@@ -1171,7 +1171,7 @@ final class TerminalSessions: ObservableObject {
   /// each command (a `git switch` changes it in place). Workroom panes read theirs from the
   /// workroom, so nothing runs for them.
   private func refreshLiveBranch(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
-    guard !persistsSessions, let tab = tabsByTarget[target]?[tabID],
+    guard readsPaneBranches, let tab = tabsByTarget[target]?[tabID],
       case .terminal(let state) = tab.content
     else { return }
     let path = state.cwd ?? state.view.lastKnownCwd ?? state.view.workingDirectory
@@ -3076,8 +3076,7 @@ final class TerminalSessions: ObservableObject {
     let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
       isAvailable: sessionService.isAvailable,
       inProcessCommand: inProcessCommand,
-      hasExistingSession: persisted != nil,
-      persists: persistsSessions)
+      hasExistingSession: persisted != nil)
     guard policy else { return nil }
     return persisted ?? UUID()
   }
@@ -3088,6 +3087,26 @@ final class TerminalSessions: ObservableObject {
       return false
     }
     return sessionService.isRemote(sessionID)
+  }
+
+  /// End `target`'s background sessions while its tabs stay open, and return them: the Quick
+  /// Terminal's at quit, since its shells are not kept and a quit must not free surfaces
+  /// (`AppDelegate.applicationWillTerminate`). Counted as close kills, so the quit waits for them.
+  @discardableResult
+  func endSessionsAtQuit(for target: TerminalTarget) -> [UUID] {
+    let service = sessionService
+    let ended = allTabs(for: target).compactMap { tab -> UUID? in
+      guard case .terminal(let state) = tab.content else { return nil }
+      return state.sessionID
+    }
+    for id in ended {
+      service.closeKillStarted(remote: false)
+      Task {
+        _ = await service.endSession(sessionID: id)
+        service.closeKillEnded(remote: false)
+      }
+    }
+    return ended
   }
 
   @discardableResult

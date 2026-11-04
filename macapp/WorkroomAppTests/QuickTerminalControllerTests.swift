@@ -12,14 +12,34 @@ import XCTest
 /// created — mounting and tearing one down is unsafe in the headless test host.
 @MainActor
 final class QuickTerminalControllerTests: XCTestCase {
-  private func makeController() -> QuickTerminalController {
+  private func makeController(backendPrepared: Bool = true) -> QuickTerminalController {
     let controller = QuickTerminalController()
     controller.makeSurface = {
       GhosttySurfaceView(workingDirectory: $0, command: $1, spawnsSurface: false)
     }
+    // No real background helper; its first health check answered already, unless a test waits on it.
+    let service = PersistentSessionService(
+      probe: { _ in .notBundled }, ownership: { _ in .notOwned })
+    if backendPrepared { _ = service.backend }
+    controller.sessionServiceOverride = service
     // Key focus moves under the test host's feet; only the focus test opts in.
     controller.hidesWhenUnfocused = { false }
     return controller
+  }
+
+  /// Value: protects=a summon during startup waiting for the session backend, so its first pane gets
+  /// a session (#573, O2); fails_when=the pane is created before the health check answers;
+  /// why_new=new path; seam=sessionServiceOverride (production caller: none, tests only, like
+  /// makeSurface); no_claim=a real daemon probe.
+  func testASummonBeforeTheBackendIsReadyWaitsForIt() async {
+    let controller = makeController(backendPrepared: false)
+    defer { controller.close() }
+
+    controller.toggle()
+    XCTAssertFalse(controller.hasWindow, "no pane before the backend answers")
+    for _ in 0..<200 where !controller.hasWindow { try? await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertTrue(controller.hasWindow, "it opens once the backend answered")
+    XCTAssertTrue(controller.isVisible)
   }
 
   func testFirstTabOpensInTheSettingsFolder() throws {
@@ -286,11 +306,11 @@ final class QuickTerminalControllerTests: XCTestCase {
     defer { controller.close() }
     controller.toggle()
     let store = try XCTUnwrap(controller.store)
-    XCTAssertFalse(store.terminals.persistsSessions, "its shells are never kept")
+    XCTAssertTrue(store.terminals.readsPaneBranches, "each pane reads its own branch")
     XCTAssertFalse(store.terminals.allowsDetach, "no pane moves to a window of its own")
     XCTAssertNil(
       WindowRegistry.shared.store(for: try XCTUnwrap(controller.currentWindow)),
-      "never registered, so never saved, restored or badged")
+      "never registered, so never saved or restored")
   }
 
   func testKeysActOnItsTabsAndTheLastCloseClosesTheWindow() throws {
