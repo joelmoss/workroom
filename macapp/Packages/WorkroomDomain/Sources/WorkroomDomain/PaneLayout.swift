@@ -232,6 +232,17 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
     }
   }
 
+  /// The most panes any single row (`.horizontal`) or column (`.vertical`) of this tree holds: a
+  /// same-axis split adds its children, an other-axis split takes the larger. `A / (B | C)` is two
+  /// columns wide, because its bottom row needs room for two panes side by side, where
+  /// `slots(along:)` counts it as one.
+  public func maxSlots(along orientation: SplitOrientation) -> Int {
+    guard case .split(_, let o, _, let first, let second) = self else { return 1 }
+    let firstSlots = first.maxSlots(along: orientation)
+    let secondSlots = second.maxSlots(along: orientation)
+    return o == orientation ? firstSlots + secondSlots : max(firstSlots, secondSlots)
+  }
+
   /// "Resize splits evenly" (issue #83, reshaped by #126): rebalance every split node so the panes
   /// it divides get an even share of that node's axis. Each node's ratio becomes its first child's
   /// share of the SAME-AXIS slot count, so `A | B | C` (one chain) lands on thirds, while a nested

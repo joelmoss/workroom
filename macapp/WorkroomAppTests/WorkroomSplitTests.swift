@@ -1372,4 +1372,69 @@ final class WorkroomSplitPaneWeightTests: XCTestCase {
     // main | (feature | bugfix) with feature two terminals wide: one share of four for main.
     XCTAssertEqual(rootRatio(store) ?? -1, 0.25, accuracy: 0.0001)
   }
+
+  /// Value: protects=pairing two solo workrooms weights them by terminals from the start;
+  /// fails_when=the new-pair path hard-codes 0.5; seam=none; no_claim=rendering
+  func testPairingTwoWorkroomsWeightsThemByTheirTerminals() throws {
+    let store = makeStore()
+    let main = try XCTUnwrap(store.target(for: wr("main")))
+    let feature = try XCTUnwrap(store.target(for: wr("feature")))
+    store.terminals.addTab(for: main)
+    store.terminals.splitFocusedPane(for: main, orientation: .horizontal)
+    store.terminals.addTab(for: feature)
+    XCTAssertTrue(store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right))
+    XCTAssertEqual(rootRatio(store) ?? -1, 2.0 / 3.0, accuracy: 0.0001, "main shows two of three")
+  }
+
+  /// Value: protects=a workroom's weight is its widest row, so `A / (B | C)` counts two columns
+  /// and B and C get the width of main's terminal; fails_when=the weight counts only the root
+  /// chain (one column) and squeezes the bottom row; seam=none; no_claim=rendering
+  func testAWorkroomIsWeightedByItsWidestRowOfTerminals() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    store.terminals.splitFocusedPane(for: feature, orientation: .vertical)  // A / B
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)  // A / (B | C)
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
+
+  /// Value: protects=restarting a run tab inside a split leaves the workroom divider where it was;
+  /// fails_when=the respawn's close announces a pane its restore puts straight back, re-evening a
+  /// divider nothing changed; seam=none; no_claim=the run's process lifecycle
+  func testRestartingARunTabInASplitKeepsTheWorkroomDivider() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    let shell = try XCTUnwrap(store.terminals.focusedTab(for: feature)).id
+    let run = store.terminals.addRunTab(for: feature, command: "bin/dev", cwd: "/a/feature")
+    store.terminals.moveTabIntoSplit(run.id, ontoEdge: .right, of: shell, for: feature)
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+    guard case .split(let rootID, _, _, _, _) = store.workroomSplits.first else {
+      return XCTFail("expected a workroom split")
+    }
+    store.setWorkroomSplitRatio(0.4, forSplit: rootID)  // the user's own drag
+    store.terminals.respawnRunTab(
+      replacing: run.id, for: feature, command: "bin/dev", cwd: "/a/feature")
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.4, accuracy: 0.0001, "the same panes, so no re-even")
+  }
+
+  /// Value: protects=pulling a terminal out of a split re-evens the workroom divider once focus
+  /// settles on the extracted tab; fails_when=extract stops announcing; seam=none; no_claim=detach
+  func testExtractingATerminalFromASplitEvensTheWorkroomBack() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    let added = try XCTUnwrap(store.terminals.focusedTab(for: feature)).id
+    store.terminals.extractFromSplit(added, for: feature)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
+  }
+
+  /// Value: protects=removing a workroom from the split re-evens the survivors by their terminals;
+  /// fails_when=the remove path evens without the weight; seam=none; no_claim=prune (same helper)
+  func testRemovingAWorkroomWeightsTheSurvivorsByTheirTerminals() throws {
+    let store = makeStore(names: ["main", "feature", "bugfix"])
+    let feature = try pair(store, .right)
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    XCTAssertTrue(store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right))
+    store.removeWorkroomSplitMember(wr("bugfix"))
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
 }

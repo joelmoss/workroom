@@ -188,6 +188,21 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertEqual(row, 0.5, accuracy: 0.0001)
     XCTAssertEqual(column, 0.8, accuracy: 0.0001)
   }
+  /// Value: protects=maxSlots counts the widest row / tallest column, not the root chain;
+  /// fails_when=an other-axis split counts as one or as the sum; seam=none; no_claim=none
+  func testMaxSlotsCountsTheWidestRowAndTheTallestColumn() {
+    // A / (B | C): one pane on top, two side by side below.
+    let tree = PaneLayout.split(
+      id: UUID(), orientation: .vertical, ratio: 0.5,
+      first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
+    XCTAssertEqual(tree.maxSlots(along: .horizontal), 2, "the bottom row is two panes wide")
+    XCTAssertEqual(tree.maxSlots(along: .vertical), 2, "and the tree is two panes tall")
+    XCTAssertEqual(tree.slots(along: .horizontal), 1, "where the root chain counts one column")
+    XCTAssertEqual(PaneLayout.leaf(a).maxSlots(along: .horizontal), 1)
+  }
+
   /// Value: protects=a leaf weighted 2 along an axis takes two shares there and one on the other;
   /// fails_when=leafSlots is ignored, read for the wrong orientation, or a zero weight divides by
   /// zero; seam=none; no_claim=what weight a workroom gets (AppStore's job)

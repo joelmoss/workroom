@@ -261,11 +261,15 @@ extension AppStore {
     } else {
       let dropped = PaneLayout<SidebarID>.leaf(sid)
       let anchor = PaneLayout<SidebarID>.leaf(beside)
+      // Weighted like every other add, so a workroom showing two terminals side by side takes two
+      // thirds next to one showing one — the same tree `canInsertWorkroomSplit` admitted.
       workroomSplits.append(
-        .split(
-          id: UUID(), orientation: edge.orientation, ratio: 0.5,
-          first: edge.placesDroppedFirst ? dropped : anchor,
-          second: edge.placesDroppedFirst ? anchor : dropped))
+        evenedWorkroomGroup(
+          .split(
+            id: UUID(), orientation: edge.orientation, ratio: 0.5,
+            first: edge.placesDroppedFirst ? dropped : anchor,
+            second: edge.placesDroppedFirst ? anchor : dropped),
+          along: edge.orientation))
     }
     focusWorkroomMember(sid)
     return true
@@ -440,14 +444,14 @@ extension AppStore {
     workroomSplits[index] = workroomSplits[index].settingRatio(ratio, forSplit: splitID)
   }
 
-  /// How many terminal panes `sid` shows across `axis`: two side by side are two columns, two
-  /// stacked are two rows. Every workroom even weights its leaves by this, so the terminals across
-  /// the whole window come out the same size rather than each workroom getting an equal share.
-  /// Counted the way a terminal split counts its own panes (`slots(along:)`), over the group the
-  /// workroom is showing.
+  /// How many panes `sid` shows across `axis`: its widest row of terminals side by side, or its
+  /// tallest column stacked (`maxSlots`), over the group the workroom is showing. Every workroom
+  /// even weights its leaves by this, so the terminals across the whole window come out the same
+  /// size rather than each workroom getting an equal share, and the fit check gives that widest
+  /// row room for every pane in it.
   private var workroomLeafSlots: (SidebarID, SplitOrientation) -> Int {
     { [self] sid, axis in
-      target(for: sid).flatMap { terminals.split(for: $0) }?.slots(along: axis) ?? 1
+      target(for: sid).flatMap { terminals.split(for: $0) }?.maxSlots(along: axis) ?? 1
     }
   }
 

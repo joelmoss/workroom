@@ -301,6 +301,22 @@ final class PaneGroupFitTests: XCTestCase {
       "the per-axis floor clamp overrides the evened ratios here")
   }
 
+  /// Value: protects=a leaf weighted N needs N floors plus N-1 dividers along the evened axis, and
+  /// only that axis; fails_when=the divider term is dropped or off by one, or a weight on the other
+  /// axis vetoes the even; seam=none; no_claim=the weights AppStore passes
+  func testAWeightedLeafNeedsRoomForEachOfItsPanes() {
+    let twoWide: (UUID, SplitOrientation) -> Int = { _, axis in axis == .horizontal ? 2 : 1 }
+    let exact = minW * 2 + divider
+    XCTAssertTrue(
+      PaneTreeLayout.plansEvenly(.leaf(a), in: rect(w: exact, h: 900), leafSlots: twoWide))
+    XCTAssertFalse(
+      PaneTreeLayout.plansEvenly(.leaf(a), in: rect(w: exact - 1, h: 900), leafSlots: twoWide))
+    XCTAssertTrue(
+      PaneTreeLayout.plansEvenly(
+        .leaf(a), in: rect(w: exact - 1, h: 900), evenedAxis: .vertical, leafSlots: twoWide),
+      "a width shortfall cannot veto an even of the heights")
+  }
+
   func testAPerpendicularSubSplitDoesNotCompeteForTheOtherAxis() {
     // The same 800pt that cannot hold three columns holds A beside a stacked pair comfortably: the
     // pair needs one column's width, not two.
