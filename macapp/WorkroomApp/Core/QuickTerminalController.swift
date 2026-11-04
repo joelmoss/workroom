@@ -44,15 +44,23 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
     return NSRect(origin: origin, size: size)
   }
 
-  /// The edge of `visible` nearest `point`, ties going top, bottom, left, right: where a drag
-  /// with the pointer at `point` docks the window.
-  static func nearest(to point: NSPoint, in visible: NSRect) -> QuickTerminalEdge {
-    let distances: [(QuickTerminalEdge, CGFloat)] = [
-      (.top, visible.maxY - point.y), (.bottom, point.y - visible.minY),
-      (.left, point.x - visible.minX), (.right, visible.maxX - point.x),
-    ]
-    // `min(by:)` keeps the first of equal elements, so the order above breaks ties.
-    return distances.min { $0.1 < $1.1 }!.0
+  /// Where a drag docks a window of `size` that the pointer would put centred at `center`: the
+  /// edge whose docked spot is nearest it, ties going top, bottom, left, right. `current` keeps
+  /// its edge until another is `stickiness` points nearer, so a pointer on the line doesn't flicker.
+  /// From the window's centre, not the pointer: a grab near the window's end would otherwise flip
+  /// it between opposite edges as each hop moved the window under the pointer.
+  static func nearest(
+    forCenter center: NSPoint, size: NSSize, in visible: NSRect,
+    current: QuickTerminalEdge? = nil, stickiness: CGFloat = 40
+  ) -> QuickTerminalEdge {
+    func distance(_ edge: QuickTerminalEdge) -> CGFloat {
+      let docked = edge.dockedFrame(
+        size: size, in: visible, offset: edge.offset(forCenter: center, size: size, in: visible))
+      let gap = hypot(docked.midX - center.x, docked.midY - center.y)
+      return edge == current ? gap - stickiness : gap
+    }
+    // `min(by:)` keeps the first of equal elements, so `allCases`' order breaks ties.
+    return allCases.min { distance($0) < distance($1) }!
   }
 
   /// Where along this edge a window of `size` centred at `center` sits, as `dockedFrame`'s
@@ -402,23 +410,24 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
   // MARK: Dragging along the edges
 
-  /// Where a drag puts `window`: docked to the edge nearest the pointer on the screen it is over,
-  /// centred where the pointer, less where it grabbed the window (`grab`, from the window's
-  /// centre), puts it along that edge. Docked all the way, so it slides along the edges and hops
-  /// between them but never floats free.
+  /// Where a drag docks a window of `size`: on the screen the pointer is over (else `fallback`), to
+  /// the edge nearest where the pointer, less where it grabbed the window (`grab`, from the
+  /// window's centre), would centre it (`current` is the edge it is on), at that spot along the
+  /// edge. Docked all the way, so it slides along the edges and hops between them but never
+  /// floats free; the docked spots meet at the corners, so only a hop across the screen jumps.
   static func dragDock(
-    _ window: NSWindow, pointer: NSPoint, grab: NSPoint
-  ) -> (edge: QuickTerminalEdge, offset: Double)? {
+    size: NSSize, pointer: NSPoint, grab: NSPoint, current: QuickTerminalEdge,
+    fallback: NSScreen?
+  ) -> (edge: QuickTerminalEdge, offset: Double, frame: NSRect)? {
     guard
-      let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? window.screen
+      let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? fallback
     else { return nil }
     let visible = screen.visibleFrame
-    let edge = QuickTerminalEdge.nearest(to: pointer, in: visible)
     let center = NSPoint(x: pointer.x - grab.x, y: pointer.y - grab.y)
-    let offset = edge.offset(forCenter: center, size: window.frame.size, in: visible)
-    window.setFrame(
-      edge.dockedFrame(size: window.frame.size, in: visible, offset: offset), display: true)
-    return (edge, offset)
+    let edge = QuickTerminalEdge.nearest(
+      forCenter: center, size: size, in: visible, current: current)
+    let offset = edge.offset(forCenter: center, size: size, in: visible)
+    return (edge, offset, edge.dockedFrame(size: size, in: visible, offset: offset))
   }
 
   /// A resize from a side moves the window's centre along its edge; keep that for next time.
