@@ -228,10 +228,14 @@ final class NotificationCenterStore: ObservableObject {
     return dropped
   }
 
-  /// `target`'s notifications now belong to `origin`, the window its workroom moved to.
-  func repoint(target: TerminalTarget.ID, to origin: ObjectIdentifier) {
-    for index in items.indices where items[index].targetID == target {
-      items[index].origin = origin
+  /// The notifications `source` raised for `target` now belong to `destination`, the window its
+  /// workroom moved to. Another window showing the same workroom keeps its own.
+  func repoint(
+    target: TerminalTarget.ID, from source: ObjectIdentifier, to destination: ObjectIdentifier
+  ) {
+    for index in items.indices
+    where items[index].targetID == target && items[index].origin == source {
+      items[index].origin = destination
     }
   }
 
