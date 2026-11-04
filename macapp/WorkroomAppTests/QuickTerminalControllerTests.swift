@@ -15,6 +15,8 @@ final class QuickTerminalControllerTests: XCTestCase {
     controller.makeSurface = {
       GhosttySurfaceView(workingDirectory: "/tmp", command: nil, spawnsSurface: false)
     }
+    // Key focus moves under the test host's feet; only the focus test opts in.
+    controller.hidesWhenUnfocused = { false }
     return controller
   }
 
@@ -164,6 +166,22 @@ final class QuickTerminalControllerTests: XCTestCase {
     let window = try XCTUnwrap(controller.currentWindow)
     let offScreen = NSRect(x: 0, y: 100_000, width: 400, height: 200)
     XCTAssertEqual(window.constrainFrameRect(offScreen, to: window.screen), offScreen)
+  }
+
+  func testLosingFocusSlidesAwayUnlessTurnedOff() {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()  // VISIBLE
+    let resign = Notification(name: NSWindow.didResignKeyNotification)
+
+    controller.hidesWhenUnfocused = { false }
+    controller.windowDidResignKey(resign)
+    XCTAssertTrue(controller.isVisible, "setting off: stays up")
+
+    controller.hidesWhenUnfocused = { true }
+    controller.windowDidResignKey(resign)
+    XCTAssertFalse(controller.isVisible, "setting on: slides away")
+    XCTAssertTrue(controller.hasWindow, "hidden, not closed")
   }
 
   func testCloseMidSlideOutTearsDown() {
