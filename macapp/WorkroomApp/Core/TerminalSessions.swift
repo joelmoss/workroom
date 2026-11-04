@@ -601,18 +601,21 @@ final class TerminalSessions: ObservableObject {
     /// A run tab's session is not on its daemon any more (#522): the host's snapshot did not name
     /// it, or the daemon said it ended.
     case runSessionGone(TerminalTarget.ID, TerminalTab.ID)
-    /// A pane joined or left one of this target's splits along `axis` (nil: both ways), and the
-    /// operation that did it has finished, focus included. Its workroom now shows a different
-    /// number of panes, so a workroom split it sits in re-evens to match.
+    /// A split edit changed how many panes this target shows across `axis` (nil: both ways), and
+    /// the operation that made it has finished, focus included. A workroom split it sits in
+    /// re-evens to match.
     case paneCountChanged(TerminalTarget.ID, along: SplitOrientation?)
   }
 
-  /// Axes a pane joined or left along during the operation in progress, per target, announced as
-  /// one `.paneCountChanged` when it finishes (`announcePaneCountChange`, from `reconcileOcclusion`).
-  /// Held rather than fired
-  /// from `setSplit` because the workroom's weight is read from the group it SHOWS, and a close or
-  /// an extract only moves focus after the split edit.
-  private var paneCountChanges: [TerminalTarget.ID: Set<SplitOrientation>] = [:]
+  /// The panes each target showed across each axis (`shownSlots`) before the first split edit of
+  /// the operation in progress. `announcePaneCountChange` compares it with what the target shows
+  /// once the operation ends, so focus has settled, and announces only the axes that changed: a
+  /// restart that puts the same pane back, or a rearrange that keeps every row, announces nothing.
+  private var shownSlotsBeforeEdit: [TerminalTarget.ID: [SplitOrientation: Int]] = [:]
+
+  /// Set while `respawnRunTab` closes a run tab and puts its replacement back, so the close's own
+  /// `reconcileOcclusion` doesn't announce a pane the respawn is about to restore.
+  private var holdingPaneCountChanges = false
 
   /// The project's run command for a target, for a run tab rebuilt from a saved session (#522). Set
   /// by `AppStore`, which owns the run configs.
@@ -1466,7 +1469,11 @@ final class TerminalSessions: ObservableObject {
     let priorSplit = split(containing: oldID, for: target)
     let orderIndex = orderByTarget[target.id]?.firstIndex(of: oldID)
 
+    // The close collapses the group and the restore below rebuilds it, so the workroom shows the
+    // same panes afterwards: hold the close's announcement and let the final reconcile judge.
+    holdingPaneCountChanges = true
     closeTab(oldID, for: target)  // frees the port (SIGHUP); collapses the group — restored below
+    holdingPaneCountChanges = false
 
     let tab = makeRunTab(for: target, command: command, cwd: cwd, runSession: runSession)
     tabsByTarget[target.id, default: [:]][tab.id] = tab
@@ -2366,9 +2373,8 @@ final class TerminalSessions: ObservableObject {
     evening: Bool,
     along axis: SplitOrientation? = nil
   ) {
-    if evening {
-      paneCountChanges[targetID, default: []].formUnion(
-        axis.map { [$0] } ?? SplitOrientation.allCases)
+    if shownSlotsBeforeEdit[targetID] == nil {
+      shownSlotsBeforeEdit[targetID] = shownSlots(targetID)
     }
     var groups = splitsByTarget[targetID] ?? []
     guard let tree, tree.tabIDs.count >= 2 else {
@@ -2397,12 +2403,28 @@ final class TerminalSessions: ObservableObject {
     splitsByTarget[targetID] = groups
   }
 
-  /// Tell `AppStore` that a pane joined or left `target`'s splits during the operation now ending,
-  /// once, along every axis it happened on. Called from `reconcileOcclusion`, which every such
-  /// operation runs last, after focus has settled. No-op when nothing joined or left.
+  /// Tell `AppStore` which axes the split edits of the operation now ending changed `target`'s
+  /// shown panes along. Called from `reconcileOcclusion`, which every split edit runs last, after
+  /// focus has settled. No-op without a split edit, while a respawn holds it, or when the target
+  /// shows as many panes each way as before.
   private func announcePaneCountChange(for target: TerminalTarget) {
-    guard let axes = paneCountChanges.removeValue(forKey: target.id) else { return }
-    onEvent?(.paneCountChanged(target.id, along: axes.count == 1 ? axes.first : nil))
+    guard !holdingPaneCountChanges,
+      let before = shownSlotsBeforeEdit.removeValue(forKey: target.id)
+    else { return }
+    let after = shownSlots(target.id)
+    let changed = SplitOrientation.allCases.filter { before[$0] != after[$0] }
+    guard !changed.isEmpty else { return }
+    onEvent?(.paneCountChanged(target.id, along: changed.count == 1 ? changed[0] : nil))
+  }
+
+  /// How many panes `targetID` shows across each axis: its widest row and tallest column
+  /// (`maxSlots`) of the group holding the focused tab, or one each way for a solo tab.
+  private func shownSlots(_ targetID: TerminalTarget.ID) -> [SplitOrientation: Int] {
+    let shown = focusedTabByTarget[targetID].flatMap { tabID in
+      splitIndex(containing: tabID, for: targetID).map { splitsByTarget[targetID]![$0] }
+    }
+    return Dictionary(
+      uniqueKeysWithValues: SplitOrientation.allCases.map { ($0, shown?.maxSlots(along: $0) ?? 1) })
   }
 
   /// Drop `tabID` from whatever group holds it, deleting the group when fewer than two leaves would
