@@ -218,7 +218,8 @@ struct TerminalTabStrip: View {
           DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
               drag.setWidths(measuredWidths.values)
-              drag.update(tab.id, translation: value.translation.width)
+              // Kept within the tab run, as a workroom tab is: not past the last chip.
+              drag.update(tab.id, translation: clampReorder(value.translation.width, index))
               // Dragged clear of the window → this is a tear-off (issue #172), so show the ghost of
               // the window it will become and stop previewing a drop into the panes.
               // Not where panes can't move to a window (the Quick Terminal): no ghost of one.
@@ -256,7 +257,7 @@ struct TerminalTabStrip: View {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                   if let move = drag.commit(
                     ids: tabs.map(\.id), spacing: tabSpacing,
-                    finalTranslation: value.translation.width)
+                    finalTranslation: clampReorder(value.translation.width, index))
                   {
                     sessions.moveTab(tab.id, toIndex: move.to, for: target)
                   }
@@ -418,6 +419,11 @@ struct TerminalTabStrip: View {
       TabStripSplitRun.rect(
         widths: widths, memberIndices: byGroup[group] ?? [], spacing: tabSpacing)
     }
+  }
+
+  /// A reorder translation kept within the tab run (`TabReorderDrag.clamped`), as `WorkroomTabBar`'s.
+  private func clampReorder(_ translation: CGFloat, _ index: Int) -> CGFloat {
+    drag.clamped(translation, ids: tabs.map(\.id), index: index, spacing: tabSpacing)
   }
 
   /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target (delegates to

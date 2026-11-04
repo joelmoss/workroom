@@ -69,9 +69,8 @@ enum TabReorder {
 /// tracks for rendering, because a fast/coarse drag's last `onChanged` sample can land short of
 /// `onEnded`'s true displacement. Each strip owns one `@State private var drag = TabReorderDrag<ID>()`
 /// and supplies its own commit action and drop-into-pane wiring as call-site closures — the
-/// division of labor `TabReorder` already uses successfully. Reorder-clamping (`WorkroomTabBar`'s
-/// `clampReorder`, absent in `TerminalTabStrip`) stays a call-site transform on `finalTranslation`/
-/// `translation`, not a flag on this type.
+/// division of labor `TabReorder` already uses successfully. Both strips pass every translation
+/// through `clamped` first, so a chip can't be dragged past either end of the run.
 struct TabReorderDrag<ID: Hashable> {
   /// The chip currently dragging, or nil.
   private(set) var id: ID?
@@ -93,6 +92,20 @@ struct TabReorderDrag<ID: Hashable> {
     if id == nil { id = chipID }
     guard id == chipID else { return }
     self.translation = translation
+  }
+
+  /// `translation` clamped so the chip at `index` in `ids` stays within the chip run: its leading
+  /// edge stops at the run's leading end and its trailing edge at the last chip's trailing end, so
+  /// it can't be pulled into the controls or across empty strip. Takes the chip by position, not
+  /// from `id`: the first `onChanged` clamps before `update` latches `id`. Unclamped until measured.
+  func clamped(_ translation: CGFloat, ids: [ID], index: Int, spacing: CGFloat) -> CGFloat {
+    guard ids.indices.contains(index), let chipWidth = widths[ids[index]] else {
+      return translation
+    }
+    let all = ids.map { widths[$0] ?? 0 }
+    let start = all[..<index].reduce(0) { $0 + $1 + spacing }
+    let end = TabStripOverflow.runWidth(all, spacing: spacing) - chipWidth - start
+    return min(max(translation, -start), max(-start, end))
   }
 
   /// Where the dragged chip would land right now, for the render-time gap preview. `nil` while
