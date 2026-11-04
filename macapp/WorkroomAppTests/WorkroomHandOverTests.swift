@@ -395,6 +395,24 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertTrue(notifier.withdrawn.contains(open.id.uuidString), "its banners go too")
   }
 
+  /// Value: protects=windows closing during a quit leaving the list and delivered banners alone;
+  /// fails_when=dropNotifications loses its isTerminating guard; why_new=the close test runs only
+  /// outside a quit; seam=none; no_claim=UNUserNotificationCenter.
+  func testClosingAWindowDuringAQuitLeavesItsNotifications() {
+    let a = makeOrigin()
+    let windowA = NSWindow()
+    registry.register(window: windowA, store: a)
+    let t = target(a)
+    let tab = a.terminals.addTab(for: t)
+    a.raiseFinished(targetID: t.id, tabID: tab.id, record: .init(id: "", state: .idle))
+    registry.isTerminating = true
+
+    registry.unregister(window: windowA)
+
+    XCTAssertEqual(notifications.count(tab: tab.id), 1)
+    XCTAssertFalse(notifier.withdrawn.contains(tab.id.uuidString))
+  }
+
   /// Value: protects=a moved workroom's notifications going with it, so the old window's close leaves
   /// them (#573 D3); fails_when=repoint is dropped or matches the wrong target; why_new=new behaviour;
   /// seam=none; no_claim=dragging the workroom on screen.

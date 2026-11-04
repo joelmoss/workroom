@@ -12,14 +12,17 @@ import XCTest
 /// created — mounting and tearing one down is unsafe in the headless test host.
 @MainActor
 final class QuickTerminalControllerTests: XCTestCase {
-  private func makeController(backendPrepared: Bool = true) -> QuickTerminalController {
+  private func makeController(
+    backendPrepared: Bool = true, backend: SessionBackendAvailability = .notBundled
+  ) -> QuickTerminalController {
     let controller = QuickTerminalController()
     controller.makeSurface = {
       GhosttySurfaceView(workingDirectory: $0, command: $1, spawnsSurface: false)
     }
-    // No real background helper; its first health check answered already, unless a test waits on it.
+    // No real background helper (a test surface never attaches); its first health check answered
+    // already, unless a test waits on it.
     let service = PersistentSessionService(
-      probe: { _ in .notBundled }, ownership: { _ in .notOwned })
+      probe: { _ in backend }, ownership: { _ in .notOwned })
     if backendPrepared { _ = service.backend }
     controller.sessionServiceOverride = service
     // Key focus moves under the test host's feet; only the focus test opts in.
@@ -392,6 +395,61 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertTrue(controller.isVisible)
     XCTAssertEqual(store.terminals.activeTab(for: target)?.id, first)
     XCTAssertTrue(registry.notifications.items.isEmpty, "opening dismisses it")
+  }
+
+  /// Value: protects=a Quick Terminal agent's own notification, "needs you" request and finished turn
+  /// each landing in the app's list as a workroom terminal's do, and a request opening the Quick
+  /// Terminal on its pane (#573); fails_when=its sessions, its store in notifyingStores or its route
+  /// in WindowRegistry.open go; why_new=the parts were tested apart, never as one agent's run;
+  /// seam=none; no_claim=a real Claude Code or Codex (the daemon's status and the OSC are simulated).
+  func testAQuickTerminalAgentsNotificationsWorkAsAnyTerminals() throws {
+    let controller = makeController(backend: .ready(version: "test"))
+    defer { controller.close() }
+    let registry = joinRegistry(controller)
+    controller.toggle()
+    let store = try XCTUnwrap(controller.store)
+    let monitor = ProgramStatusMonitor()
+    store.terminals.programStatus = monitor
+    let alerts = ProgramStatusAlerts()
+    alerts.monitor = monitor
+    alerts.stores = { registry.notifyingStores }
+    alerts.isEnabled = { true }
+    alerts.isFinishEnabled = { true }
+    alerts.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
+    alerts.start()
+    // A pane opened under the simulated daemon, so its status reaches it.
+    controller.perform(.newTab)
+    let target = QuickTerminalController.target()
+    let tab = try XCTUnwrap(store.terminals.activeTab(for: target))
+    let session = try XCTUnwrap(store.terminals.sessionID(forTab: tab.id, inTarget: target.id))
+
+    // The agent's own OSC notification, from a pane nobody is watching.
+    store.terminals.onEvent?(.activity(target.id, tab.id, .osc(title: "Build done", body: nil)))
+    XCTAssertTrue(registry.notifications.items.contains { $0.title == "Build done" })
+
+    // It asks for permission: a "needs you" alert, waiting.
+    monitor.seed(
+      session,
+      records: [
+        ProgramStatusRecord(
+          id: "", state: .blocked, kind: .permission, message: "Apply?", episode: 1, notify: true)
+      ])
+    let request = try XCTUnwrap(registry.notifications.items.first { $0.episode != nil })
+    XCTAssertEqual(request.source, "Quick Terminal")
+    XCTAssertEqual(alerts.waiting.map(\.session), [session])
+
+    // Going to it slides the Quick Terminal in on that pane.
+    controller.hide()
+    alerts.open(try XCTUnwrap(alerts.waiting.first))
+    XCTAssertTrue(controller.isVisible)
+    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, tab.id)
+
+    // It carries on and finishes its turn.
+    monitor.seed(session, records: [ProgramStatusRecord(id: "", state: .working)])
+    monitor.seed(
+      session,
+      records: [ProgramStatusRecord(id: "", state: .done, message: "Fixed it", notify: true)])
+    XCTAssertTrue(registry.notifications.items.contains { $0.title.hasSuffix("finished") })
   }
 
   /// Value: protects=closing it dropping its notifications, as a closing window's go (#573 D3);
