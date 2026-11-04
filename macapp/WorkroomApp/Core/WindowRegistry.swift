@@ -224,13 +224,7 @@ final class WindowRegistry: ObservableObject {
     // that is going away, so a window left behind would host a view about to be released.
     if let closing = store(for: window) {
       closing.detachedPanes.closeAll()
-      // Its notifications go with it, banners too (#573 D3), but not on quit: they die with the
-      // process anyway, and a quit should leave delivered banners where they are.
-      if !isTerminating {
-        let dropped = notifications.removeAll(from: ObjectIdentifier(closing))
-        closing.systemNotifier.withdraw(
-          identifiers: dropped.map { $0.episode ?? $0.tabID.uuidString })
-      }
+      dropNotifications(raisedBy: closing)
     }
     entries.removeAll { $0.window === window || $0.window == nil }
     recomputeBadge()
@@ -260,8 +254,11 @@ final class WindowRegistry: ObservableObject {
   /// The store of the window that should receive a global key event / surface action: the key window
   /// if it's one of ours, else the last active workroom window, else any.
   var keyStore: AppStore? {
-    store(for: NSApp.keyWindow) ?? lastActiveStore ?? allStores.first
+    store(for: keyWindow()) ?? lastActiveStore ?? allStores.first
   }
+
+  /// The key window, `NSApp.keyWindow`. A seam because a test host's windows never become key.
+  var keyWindow: () -> NSWindow? = { NSApp.keyWindow }
 
   /// The frame size a *new* window should open at: the current (last-active, else any) window's full
   /// frame size, so a new window opens at exactly the existing window's size (issue #70). Frame, not
@@ -282,6 +279,15 @@ final class WindowRegistry: ObservableObject {
   /// forward and focuses it. When no window has it any more, the front window opens the workroom,
   /// if it still exists. Every surface that opens a notification comes through here.
   func open(targetID: TerminalTarget.ID, tabID: TerminalTab.ID?, notifID: UUID?) {
+    if targetID == QuickTerminalController.targetID {
+      if let notifID {
+        notifications.dismiss(notifID: notifID)
+      } else if let tabID {
+        notifications.dismiss(tab: tabID)
+      }
+      quickTerminal?.reveal(tab: tabID)
+      return
+    }
     let store = tabID.flatMap { ownerOf(tabID: $0) } ?? keyStore
     // `window(forTab:)`, not `hostWindow`: a detached pane (issue #172) lives in its own window.
     store?.window(forTab: tabID)?.makeKeyAndOrderFront(nil)
@@ -292,9 +298,34 @@ final class WindowRegistry: ObservableObject {
     open(targetID: note.targetID, tabID: note.tabID, notifID: note.id)
   }
 
-  /// A toast shows in the front window, whichever window raised it (#573).
+  /// A toast shows in the front window, whichever window raised it, the Quick Terminal included
+  /// (#573 D2).
   func showToast(_ note: WorkroomNotification) {
-    keyStore?.enqueueToast(note)
+    frontStore?.enqueueToast(note)
+  }
+
+  /// Drop the notifications `store` raised, banners too, as its window closes (#573 D3). Not on
+  /// quit: they die with the process anyway, and a quit should leave delivered banners be.
+  func dropNotifications(raisedBy store: AppStore) {
+    guard !isTerminating else { return }
+    let dropped = notifications.removeAll(from: ObjectIdentifier(store))
+    store.systemNotifier.withdraw(identifiers: dropped.map { $0.episode ?? $0.tabID.uuidString })
+  }
+
+  /// The Quick Terminal: in no window entry here, but its terminals share the notification list.
+  weak var quickTerminal: QuickTerminalController?
+
+  /// Every store whose terminals raise notifications: each window's and the Quick Terminal's.
+  var notifyingStores: [AppStore] { allStores + [quickTerminal?.store].compactMap { $0 } }
+
+  /// The store of the window in front: the Quick Terminal's while it is the key window.
+  var frontStore: AppStore? {
+    if let quickTerminal, let window = quickTerminal.currentWindow, keyWindow() === window,
+      let store = quickTerminal.store
+    {
+      return store
+    }
+    return keyStore
   }
 
   // MARK: Window cycling (issue #87)

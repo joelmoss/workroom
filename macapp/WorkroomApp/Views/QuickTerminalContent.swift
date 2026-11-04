@@ -15,6 +15,11 @@ struct QuickTerminalContent: View {
     WorkroomTerminalsView(target: QuickTerminalController.target(), sessions: sessions)
       // Clear of the window's rounded corners: the first tab and the panes' bottoms touched them.
       .padding(8)
+      // Toasts while it is the front window (#573 D2). `.pointerStyle`: the arrow over a toast,
+      // not a terminal's cursor rect beneath it (#466).
+      .overlay(alignment: .bottomTrailing) {
+        ToastStack().pointerStyle(.default).padding(8)
+      }
       .background(ThemeService.shared.tokens.panel)
       // The tab strip takes the titlebar's place; without this the hosting view insets everything
       // below the (hidden) titlebar and leaves an empty strip above the tabs.

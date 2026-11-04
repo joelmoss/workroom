@@ -95,14 +95,10 @@ struct ToastStack: View {
       reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),
       value: store.runToastItems
     )
-    // Keep toasts honest with the spine: drop any whose notification was dismissed elsewhere. A
-    // forwarded Quick Terminal toast lives in its own store's spine, never this one.
+    // Keep toasts honest with the spine: drop any whose notification was dismissed elsewhere.
     .onChange(of: notifications.items) { _, items in
       let live = Set(items.map(\.id))
-      for toast in store.toasts
-      where !live.contains(toast.id) && toast.targetID != QuickTerminalController.targetID {
-        store.dismissToast(toast.id)
-      }
+      for toast in store.toasts where !live.contains(toast.id) { store.dismissToast(toast.id) }
     }
     .animation(
       reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),

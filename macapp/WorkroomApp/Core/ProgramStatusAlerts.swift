@@ -34,7 +34,7 @@ final class ProgramStatusAlerts: ObservableObject {
   @Published private(set) var waiting: [WaitingRequest] = []
 
   var monitor: ProgramStatusMonitor = .shared
-  var stores: () -> [AppStore] = { WindowRegistry.shared.allStores }
+  var stores: () -> [AppStore] = { WindowRegistry.shared.notifyingStores }
   var isEnabled: () -> Bool = { Defaults[.notifyWhenTerminalNeedsMe] }
   var isFinishEnabled: () -> Bool = { Defaults[.notifyWhenTurnFinishes] }
   var now: () -> Date = Date.init
@@ -346,8 +346,7 @@ final class ProgramStatusAlerts: ObservableObject {
   /// Opens the terminal `request` waits in, raising its window.
   func open(_ request: WaitingRequest) {
     guard let destination = attachments(of: request.session).first else { return }
-    destination.store.hostWindow?.makeKeyAndOrderFront(nil)
-    destination.store.openTerminal(targetID: destination.target, tabID: destination.tab)
+    WindowRegistry.shared.open(targetID: destination.target, tabID: destination.tab, notifID: nil)
   }
 
   // MARK: ⇧⌘M
@@ -363,8 +362,7 @@ final class ProgramStatusAlerts: ObservableObject {
     guard let next = Self.next(after: keyStore?.focusedTerminalSession, in: sessions),
       let destination = attachments(of: next).first
     else { return false }
-    destination.store.hostWindow?.makeKeyAndOrderFront(nil)
-    destination.store.openTerminal(targetID: destination.target, tabID: destination.tab)
+    WindowRegistry.shared.open(targetID: destination.target, tabID: destination.tab, notifID: nil)
     return true
   }
 
