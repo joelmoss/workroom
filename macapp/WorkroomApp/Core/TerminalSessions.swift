@@ -854,6 +854,11 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget.values.contains { $0[id] != nil }
   }
 
+  /// The target that owns the tab `id` here, or nil.
+  func targetID(ofTab id: TerminalTab.ID) -> TerminalTarget.ID? {
+    tabsByTarget.first { $0.value[id] != nil }?.key
+  }
+
   /// Includes hidden targets, background tabs, and panes popped into their own windows.
   var activeCodingAgentBackends: Set<CodingAgentBackend> {
     Set(

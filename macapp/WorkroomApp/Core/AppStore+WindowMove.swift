@@ -132,9 +132,17 @@ enum QuickTerminalPaneDrag {
 }
 
 extension AppStore {
-  /// The workroom a Quick Terminal pane dropped at `screenPoint` joins: the one whose tab, or whose
-  /// pane when workrooms are side by side, is there, else the selected one. Nil unless it can.
+  /// The workroom a Quick Terminal pane dropped at `screenPoint` joins: a torn-off pane's own, or
+  /// the one whose tab, or whose pane when workrooms are side by side, is there, else the selected
+  /// one. Nil unless it can.
   func quickTerminalPaneDestination(at screenPoint: CGPoint) -> SidebarID? {
+    // Over one of this window's torn-off panes: that pane's workroom, whatever the main window
+    // (perhaps behind it, under the same point) shows.
+    if let pane = WindowRegistry.shared.detachedPane(at: screenPoint),
+      let paneTarget = terminals.targetID(ofTab: pane)
+    {
+      return quickTerminalPaneTarget(Self.sidebarID(forTargetID: paneTarget, in: projects))?.sid
+    }
     let hit =
       workroomTabRowPoint(screenPoint).flatMap { point in
         workroomTabFrames.first { $0.value.contains(point) }?.key

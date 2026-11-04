@@ -353,6 +353,25 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertTrue(notifications.items.isEmpty, "opening dismisses it")
   }
 
+  /// Value: protects=a banner a Quick Terminal pane raised before it moved into a window opens the
+  /// pane there, not the Quick Terminal (whose payload it still names); fails_when=open routes on
+  /// the payload's Quick Terminal target before asking who has the tab; why_new=found in /ship's
+  /// Codex review of PR #577; seam=none; no_claim=the delivered banner itself.
+  func testABannerFromAMovedQuickTerminalPaneOpensItInItsWindow() async {
+    let (quick, pane, window) = makeQuickTerminalMove()
+    let other = makeStore()
+    registry.register(window: NSWindow(), store: other)
+    registry.register(window: NSWindow(), store: window)
+    await quick.moveQuickTerminalPane(
+      pane.id, of: QuickTerminalController.target(), to: window, into: sid)
+    window.selectedTargetID = otherSid
+
+    registry.open(targetID: QuickTerminalController.targetID, tabID: pane.id, notifID: nil)
+
+    XCTAssertEqual(window.selectedTargetID, sid, "the window with the pane opens its workroom")
+    XCTAssertEqual(window.terminals.focusedTab(for: target(window))?.id, pane.id)
+  }
+
   /// Value: protects=the front-window fallback for a pane no window has, and a gone workroom's row
   /// going (decision 1); fails_when=open does nothing or leaves the row; why_new=new path;
   /// seam=none; no_claim=window raise on screen.

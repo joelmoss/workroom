@@ -80,6 +80,21 @@ final class WindowRegistry: ObservableObject {
     return store
   }
 
+  /// The torn-off pane (issue #172) whose window is in front under `screenPoint`, past the drag's
+  /// ghost, if one is. `dropStore` answers with its owner, whose main window it isn't.
+  func detachedPane(at screenPoint: CGPoint) -> TerminalTab.ID? {
+    let ghost = DetachedPaneDragPreview.shared.windowNumber.map { Set([$0]) } ?? []
+    var pane: TerminalTab.ID?
+    _ = Self.frontmostDropWindow(
+      skipping: ghost,
+      numberBelow: { NSWindow.windowNumber(at: screenPoint, belowWindowWithWindowNumber: $0) },
+      resolve: { number in
+        pane = (NSApp.window(withWindowNumber: number) as? DetachedPaneWindow)?.tabID
+        return DropWindow.none
+      })
+    return pane
+  }
+
   /// The walk behind `dropWindow`, front to back: `numberBelow(n)` is the window under the point
   /// below window `n` (0 for the frontmost, 0 when there is none).
   static func frontmostDropWindow(
@@ -292,12 +307,19 @@ final class WindowRegistry: ObservableObject {
   /// forward and focuses it. When no window has it any more, the front window opens the workroom,
   /// if it still exists. Every surface that opens a notification comes through here.
   func open(targetID: TerminalTarget.ID, tabID: TerminalTab.ID?, notifID: UUID?) {
+    let owner = tabID.flatMap { ownerOf(tabID: $0) }
+    var targetID = targetID
     if targetID == QuickTerminalController.targetID {
-      notifications.dismiss(notifID: notifID, orTab: tabID)
-      quickTerminal?.reveal(tab: tabID)
-      return
+      // A banner from a Quick Terminal pane that has since moved into a window: its payload still
+      // names the Quick Terminal, so open the pane where it is now.
+      guard let owner, let tabID, let moved = owner.terminals.targetID(ofTab: tabID) else {
+        notifications.dismiss(notifID: notifID, orTab: tabID)
+        quickTerminal?.reveal(tab: tabID)
+        return
+      }
+      targetID = moved
     }
-    let store = tabID.flatMap { ownerOf(tabID: $0) } ?? keyStore
+    let store = owner ?? keyStore
     // `window(forTab:)`, not `hostWindow`: a detached pane (issue #172) lives in its own window.
     store?.window(forTab: tabID)?.makeKeyAndOrderFront(nil)
     store?.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)
