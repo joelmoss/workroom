@@ -280,11 +280,7 @@ final class WindowRegistry: ObservableObject {
   /// if it still exists. Every surface that opens a notification comes through here.
   func open(targetID: TerminalTarget.ID, tabID: TerminalTab.ID?, notifID: UUID?) {
     if targetID == QuickTerminalController.targetID {
-      if let notifID {
-        notifications.dismiss(notifID: notifID)
-      } else if let tabID {
-        notifications.dismiss(tab: tabID)
-      }
+      notifications.dismiss(notifID: notifID, orTab: tabID)
       quickTerminal?.reveal(tab: tabID)
       return
     }
@@ -309,7 +305,8 @@ final class WindowRegistry: ObservableObject {
   func dropNotifications(raisedBy store: AppStore) {
     guard !isTerminating else { return }
     let dropped = notifications.removeAll(from: ObjectIdentifier(store))
-    store.systemNotifier.withdraw(identifiers: dropped.map { $0.episode ?? $0.tabID.uuidString })
+    store.systemNotifier.withdraw(
+      identifiers: dropped.map { SystemNotifier.payload(for: $0).identifier })
   }
 
   /// The Quick Terminal: in no window entry here, but its terminals share the notification list.
