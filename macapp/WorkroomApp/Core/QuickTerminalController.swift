@@ -108,6 +108,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     return path
   }
 
+  /// Whether losing key focus slides the window away (Settings ▸ Terminal). Overridable in tests,
+  /// so no shared `Defaults` write races the parallel test workers.
+  var hidesWhenUnfocused: @MainActor () -> Bool = { Defaults[.quickTerminalHidesWhenUnfocused] }
+
   /// True while a window is on screen and not sliding out. False when ABSENT or HIDDEN.
   var isVisible: Bool { !hiding && (window?.isVisible ?? false) }
   /// True while a window exists (VISIBLE or HIDDEN) — inspection aid for tests.
@@ -248,6 +252,13 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// Full close: destroy the window (its `windowWillClose` runs the teardown). Idempotent.
   func close() {
     window?.close()
+  }
+
+  /// Focus moved to another window or app: slide away. Not while a sheet is up (a clipboard
+  /// confirmation takes key from this window but belongs to it).
+  func windowDidResignKey(_ notification: Notification) {
+    guard hidesWhenUnfocused(), window?.attachedSheet == nil else { return }
+    hide()
   }
 
   func windowWillClose(_ notification: Notification) {

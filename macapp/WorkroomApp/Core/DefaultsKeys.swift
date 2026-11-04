@@ -98,6 +98,10 @@ extension Defaults.Keys {
   static let quickTerminalEdge = Key<QuickTerminalEdge>(
     "quickTerminalEdge", default: .top, suite: .app)
 
+  /// Slide the Quick Terminal away when it loses focus (Settings ▸ Terminal). On by default.
+  static let quickTerminalHidesWhenUnfocused = Key<Bool>(
+    "quickTerminalHidesWhenUnfocused", default: true, suite: .app)
+
   /// The folder a new Quick Terminal shell starts in; "" = the home folder.
   static let quickTerminalDirectory = Key<String>(
     "quickTerminalDirectory", default: "", suite: .app)

@@ -554,6 +554,7 @@ private struct TerminalSettingsPane: View {
 /// Where the Quick Terminal slides in from, and the folder its new shells start in.
 private struct QuickTerminalSection: View {
   @Default(.quickTerminalEdge) private var edge
+  @Default(.quickTerminalHidesWhenUnfocused) private var hidesWhenUnfocused
   // "" = the home folder.
   @Default(.quickTerminalDirectory) private var directory
 
@@ -566,6 +567,10 @@ private struct QuickTerminalSection: View {
       }
       .help("The screen edge the Quick Terminal slides in from, centred along it.")
       .accessibilityIdentifier("settings.control.quickTerminalEdge")
+
+      Toggle("Slide away when it loses focus", isOn: $hidesWhenUnfocused)
+        .help("Hide the Quick Terminal when you click another window or switch apps.")
+        .accessibilityIdentifier("settings.control.quickTerminalHidesWhenUnfocused")
 
       LabeledContent("Opens in") {
         HStack {
