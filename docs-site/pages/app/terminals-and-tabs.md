@@ -150,15 +150,16 @@ On a remote or container workroom, the run command runs on the workroom's host, 
 
 ## Quick Terminal
 
-The Quick Terminal is a plain shell, in your home folder unless you choose another, in a window of its own that slides in from the top of the screen. It is not part of any workroom.
+The Quick Terminal is a window of shells of its own that slides in from the top of the screen, in your home folder unless you choose another. It is not part of any workroom.
 
 - Press <kbd>⌥§</kbd> (or the shortcut you set) from any app to slide it in, and press it again to slide it away. It also slides away when you click another window or switch apps. Hiding keeps the shell and its scrollback.
-- It appears on the screen your pointer is on, centred along the edge until you move it. Drag the empty part of its footer to slide it along the edge, or towards another edge to move it there. It stays against an edge the whole way. Drag its sides to resize it. It keeps its size and place the next time it opens, even after you close it.
-- Its footer is a pane's: the folder its shell is in, that folder's branch, and the usage of a coding agent running in it while **Settings ▸ AI Agents ▸ Show in the pane footer** is on. Click the folder to copy it or reveal it in Finder.
+- It appears on the screen your pointer is on, centred along the edge until you move it. Drag the empty part of its tab bar or a footer to slide it along the edge, or towards another edge to move it there. It stays against an edge the whole way. Drag its sides to resize it. It keeps its size and place the next time it opens, even after you close it.
+- Each pane's footer is a workroom pane's: the folder its shell is in, that folder's branch, and the usage of a coding agent running in it while **Settings ▸ AI Agents ▸ Show in the pane footer** is on. Click the folder to copy it or reveal it in Finder.
 - You can also open it from **File ▸ Quick Terminal** or the Quick Terminal button in the title bar.
-- <kbd>⌘W</kbd> closes it and ends its shell. The next time you open it, you get a new shell.
+- It has tabs and splits of its own. <kbd>⌘T</kbd> or the **+** in its tab bar opens a tab in the **Opens in** folder, and <kbd>⌘1</kbd>–<kbd>⌘9</kbd> pick one. <kbd>⌘D</kbd> splits the focused pane to the right and <kbd>⇧⌘D</kbd> below, with the new shell in that pane's folder. Click a pane to type in it, and drag the line between two panes to resize them.
+- <kbd>⌘W</kbd> closes the focused pane and ends its shell, and so does `exit`. Closing a tab's last pane closes the tab, and closing the last tab closes the Quick Terminal. The next time you open it, you get a new shell.
 - **Settings ▸ Terminal ▸ Quick Terminal** chooses the edge it slides in from, whether it slides away when it loses focus, the folder it opens in, and its keyboard shortcut. A new folder applies from the next new shell. See [Settings](settings.md#quick-terminal).
 
-In Workroom 2.1.0 the Quick Terminal is an ordinary window you can move, with a red button that closes it, and it always opens in your home folder.
+In Workroom 2.1.0 the Quick Terminal is one shell in an ordinary window you can move, with a red button that closes it, and it always opens in your home folder.
 
 The Quick Terminal's hotkey is on while **Settings ▸ General ▸ Global show/hide hotkey (⌘§)** is on. The same switch controls the <kbd>⌘§</kbd> show and hide hotkey. See [Settings](settings.md#general) and [Splits and windows](splits-and-windows.md#show-or-hide-workroom-from-anywhere).

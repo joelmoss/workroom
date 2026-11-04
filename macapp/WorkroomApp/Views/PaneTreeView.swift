@@ -1170,7 +1170,8 @@ private struct PaneClickFocusCatcher: NSViewRepresentable {
 /// A draggable divider that writes a new ratio for one split node. Draws **no** separator rule — each
 /// terminal pane already has its own rounded border, so a line in the gutter would only double up;
 /// it's just an invisible, hit-testable track surfaced by the resize cursor on hover.
-private struct SplitDivider: View {
+/// A split's draggable divider: a pane tree's, and the Quick Terminal's.
+struct SplitDivider: View {
   let orientation: SplitOrientation
   let ratio: CGFloat
   let total: CGFloat

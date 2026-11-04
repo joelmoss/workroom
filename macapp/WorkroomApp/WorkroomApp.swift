@@ -435,17 +435,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       MainActor.assumeIsolated { SessionCoordinator.shared.writeIfChanged() }
     }
 
-    monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+    monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [quickTerminal] event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-      // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Tab"
-      // ⌘W targets the main window's tabs and would otherwise win, so catch it here (like ⌘R / ⌘1–9
-      // above) and route to the quick-terminal window — its delegate (QuickTerminalController) tears
-      // the surface down. Gated on the key window being a QuickTerminalWindow, so ⌘W still closes a
-      // main-window terminal tab everywhere else.
-      if flags == .command, event.charactersIgnoringModifiers == "w",
-        let quickTerminalWindow = (event.window ?? NSApp.keyWindow) as? QuickTerminalWindow
+      // The quick terminal's own keys (issue #39) when its window is key: ⌘W closes a pane, ⌘T a
+      // new tab, ⌘D / ⇧⌘D splits, ⌘1–9 its tabs. The menu's items for those target the main
+      // window's tabs and would otherwise win, so catch them here (like ⌘R / ⌘1–9 above). Gated on
+      // the key window being a QuickTerminalWindow, so they still act on a workroom everywhere else.
+      if (event.window ?? NSApp.keyWindow) is QuickTerminalWindow,
+        let key = QuickTerminalKey.classify(
+          flags: flags, characters: event.charactersIgnoringModifiers)
       {
-        quickTerminalWindow.performClose(nil)
+        MainActor.assumeIsolated { quickTerminal.perform(key) }
         return nil
       }
       // ⌘W on an auxiliary window (Settings, About) — a window with no AppStore (not a workroom
