@@ -123,6 +123,8 @@ struct TerminalTabStrip: View {
       if isQuickTerminal {
         QuickTerminalDragHandle()
           .frame(minWidth: 60, maxWidth: .infinity, maxHeight: .infinity)
+          // The tabs take the width first; the handle keeps at least its minimum.
+          .layoutPriority(-1)
           .accessibilityHidden(true)
       }
     }
@@ -222,7 +224,8 @@ struct TerminalTabStrip: View {
               drag.update(tab.id, translation: value.translation.width)
               // Dragged clear of the window → this is a tear-off (issue #172), so show the ghost of
               // the window it will become and stop previewing a drop into the panes.
-              if isDragOutsideWindow(value.location) {
+              // Not where panes can't move to a window (the Quick Terminal): no ghost of one.
+              if sessions.allowsDetach, isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
                 DetachedPaneDragPreview.shared.show(
                   title: tab.title, glyph: tab.content.glyph, at: NSEvent.mouseLocation)

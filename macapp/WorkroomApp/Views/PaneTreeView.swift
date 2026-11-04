@@ -206,7 +206,9 @@ struct PaneTreeView: View {
     let outcome = PaneTreeLayout.dragOutcome(
       cursor: location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
       panes: plan.panes, dragging: tabID)
-    guard outcome == .detach, let tab = sessions.tab(tabID, for: target) else {
+    // Where panes can't move to a window (the Quick Terminal), no ghost of one.
+    guard sessions.allowsDetach, outcome == .detach, let tab = sessions.tab(tabID, for: target)
+    else {
       DetachedPaneDragPreview.shared.hide()
       return
     }
