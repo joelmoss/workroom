@@ -455,9 +455,9 @@ extension AppStore {
     }
   }
 
-  /// A terminal pane joined or left `targetID`'s shown split along `axis` (nil: both ways), so its
-  /// workroom's weight changed: re-even the workroom split it sits in along that axis, the same way
-  /// the terminal split itself was just evened. No-op when auto-even is off, the workroom isn't in
+  /// `targetID` now shows a different number of panes along `axis` (nil: both ways), from a split,
+  /// a close or a tab switch, so its workroom's weight changed: re-even the workroom split it sits
+  /// in along that axis. No-op when auto-even is off, the workroom isn't in
   /// a workroom split, or the even wouldn't leave every terminal at its minimum size.
   func reEvenWorkroomSplit(holding targetID: TerminalTarget.ID, along axis: SplitOrientation?) {
     guard let sid = Self.sidebarID(forTargetID: targetID, in: projects),

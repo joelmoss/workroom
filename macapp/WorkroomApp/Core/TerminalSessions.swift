@@ -601,17 +601,18 @@ final class TerminalSessions: ObservableObject {
     /// A run tab's session is not on its daemon any more (#522): the host's snapshot did not name
     /// it, or the daemon said it ended.
     case runSessionGone(TerminalTarget.ID, TerminalTab.ID)
-    /// A split edit changed how many panes this target shows across `axis` (nil: both ways), and
-    /// the operation that made it has finished, focus included. A workroom split it sits in
-    /// re-evens to match.
+    /// The number of panes this target shows across `axis` (nil: both ways) changed, by a split
+    /// edit or by focus moving between a split and a solo tab, and the operation that did it has
+    /// finished. A workroom split it sits in re-evens to match.
     case paneCountChanged(TerminalTarget.ID, along: SplitOrientation?)
   }
 
-  /// The panes each target showed across each axis (`shownSlots`) before the first split edit of
-  /// the operation in progress. `announcePaneCountChange` compares it with what the target shows
-  /// once the operation ends, so focus has settled, and announces only the axes that changed: a
-  /// restart that puts the same pane back, or a rearrange that keeps every row, announces nothing.
-  private var shownSlotsBeforeEdit: [TerminalTarget.ID: [SplitOrientation: Int]] = [:]
+  /// The panes each target showed across each axis (`shownSlots`) at its last `reconcileOcclusion`.
+  /// `announcePaneCountChange` compares it with what the target shows now and announces only the
+  /// axes that changed, whatever changed them: a split, a close, or a tab switch between a split and
+  /// a solo tab, so the workroom split keeps the visible terminals the same size. A restart that
+  /// puts the same pane back, or a rearrange that keeps every row, announces nothing.
+  private var announcedShownSlots: [TerminalTarget.ID: [SplitOrientation: Int]] = [:]
 
   /// Set while `respawnRunTab` closes a run tab and puts its replacement back, so the close's own
   /// `reconcileOcclusion` doesn't announce a pane the respawn is about to restore.
@@ -1994,6 +1995,7 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[id] = nil
     orderByTarget[id] = nil
     splitsByTarget[id] = nil
+    announcedShownSlots[id] = nil
     setFocused(nil, for: id, notify: false)
     recency.forgetPanes(removedIDs)
     counts[id] = nil
@@ -2373,9 +2375,6 @@ final class TerminalSessions: ObservableObject {
     evening: Bool,
     along axis: SplitOrientation? = nil
   ) {
-    if shownSlotsBeforeEdit[targetID] == nil {
-      shownSlotsBeforeEdit[targetID] = shownSlots(targetID)
-    }
     var groups = splitsByTarget[targetID] ?? []
     guard let tree, tree.tabIDs.count >= 2 else {
       if let index, groups.indices.contains(index) { groups.remove(at: index) }
@@ -2403,15 +2402,15 @@ final class TerminalSessions: ObservableObject {
     splitsByTarget[targetID] = groups
   }
 
-  /// Tell `AppStore` which axes the split edits of the operation now ending changed `target`'s
-  /// shown panes along. Called from `reconcileOcclusion`, which every split edit runs last, after
-  /// focus has settled. No-op without a split edit, while a respawn holds it, or when the target
+  /// Tell `AppStore` which axes `target`'s shown panes changed along since its last reconcile.
+  /// Called from `reconcileOcclusion`, which every split edit and focus change runs last, after
+  /// focus has settled. The first reconcile of a target only records what it shows, so a restored
+  /// layout keeps its saved workroom dividers. No-op while a respawn holds it, or when the target
   /// shows as many panes each way as before.
   private func announcePaneCountChange(for target: TerminalTarget) {
-    guard !holdingPaneCountChanges,
-      let before = shownSlotsBeforeEdit.removeValue(forKey: target.id)
-    else { return }
+    guard !holdingPaneCountChanges else { return }
     let after = shownSlots(target.id)
+    guard let before = announcedShownSlots.updateValue(after, forKey: target.id) else { return }
     let changed = SplitOrientation.allCases.filter { before[$0] != after[$0] }
     guard !changed.isEmpty else { return }
     onEvent?(.paneCountChanged(target.id, along: changed.count == 1 ? changed[0] : nil))
