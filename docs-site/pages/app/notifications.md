@@ -7,16 +7,17 @@ Workroom tells you when a terminal you are not looking at has something for you,
 
 ## The bell
 
-The bell sits at the right of the footer along the bottom of the window. A number on it counts your unread notifications. The footer stays in place when you switch workrooms or hide the sidebars.
+The bell sits at the right of the footer along the bottom of the window. A number on it counts your unread notifications, plus requests a terminal is waiting on you for. The footer stays in place when you switch workrooms or hide the sidebars.
 
-Click the bell to open the list. Each entry shows the notification's title and text, the workroom it came from and how long ago. A repeat from the same terminal is counted as `×N`. Click an entry to go straight to that terminal. Right-click an entry for **Delete Notification**, or click **Clear All** at the bottom of the list.
+Workroom keeps one list of notifications for all your windows and the Quick Terminal. Every window's bell shows the whole list and the same number as the Dock badge and the menu bar. In Workroom 2.1.0 each window's bell lists and counts only that window's notifications.
+
+Click the bell to open the list. Each entry shows the notification's title and text, the workroom it came from and how long ago. A repeat from the same terminal is counted as `×N`. Click an entry to go straight to that terminal, in whichever window has it. If that terminal has closed, its workroom opens in the window in front. Right-click an entry for **Delete Notification**, or click **Clear All** at the bottom of the list.
 
 <kbd>⌘</kbd>-click the bell, or press <kbd>⇧⌘N</kbd> (**Go ▸ Next Notification**), to jump to the oldest pending one. Opening it dismisses it, so pressing the key again walks through the backlog from oldest to newest. The bell is off when there are none.
 
-When a terminal in the background posts a notification, its tab and its project in the sidebar show an unread dot. If Workroom is not the app in front, you also get a desktop banner. Click the banner to jump to the terminal.
+When a terminal in the background posts a notification, its tab and its project in the sidebar show an unread dot, in every window. If Workroom is the app in front, a toast pops up in the window in front, whichever window the terminal is in. If it is not, you get a desktop banner. Click the toast or the banner to jump to the terminal.
 
-The history keeps the newest 500 entries. Dismissing a notification, clearing the history or moving
-its workroom to another window updates the counts on its terminal and project too.
+The history keeps the newest 500 entries. Dismissing a notification or clearing the history updates the counts on its terminal and project too. Moving a workroom to another window keeps its notifications. Closing a window removes the notifications its terminals raised, and their banners.
 
 In Nightly, rapid foreground notifications share a chime. Bursts of terminal bells are limited
 across panes too. Every notification still appears in the history.
@@ -27,7 +28,7 @@ Workroom can show its logo in the macOS menu bar. The logo turns yellow while an
 
 To see how many are pending, turn on **Settings ▸ Notifications ▸ Show unread count in the menu bar**. The count then sits beside the logo, across all your windows. In Workroom 2.1.0 the count always shows and the logo does not change colour.
 
-Click it to open the list. When there is nothing pending, a click brings Workroom to the front instead. Click an entry to open its terminal.
+Click it to open the list, the same one every window's bell shows. When there is nothing pending, a click brings Workroom to the front instead. Click an entry to open its terminal.
 
 ## When a terminal needs you {nightly}
 
