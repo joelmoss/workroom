@@ -128,6 +128,12 @@ extension NSImage {
   @MainActor static let moveTerminal = badged(
     "apple.terminal", badge: "arrow.right.circle.fill", description: "Move to workroom")
 
+  /// "Move to new window"'s icon, composed as `moveTerminal` is so the two sit alike. The symbol
+  /// `macwindow.badge.plus` has its badge above the window, which puts the window off the centre
+  /// its neighbours in a toolbar keep.
+  @MainActor static let moveToNewWindow = badged(
+    "macwindow", badge: "plus.circle.fill", description: "Move to new window")
+
   /// Symbol `base` at the pane title bar's glyph size with symbol `badge` small in its bottom-right
   /// corner, cut out of it so the pair reads at 11pt, as one template image. `base` stays at the
   /// image's centre, level with the plain symbols beside it.

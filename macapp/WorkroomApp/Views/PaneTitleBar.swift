@@ -288,7 +288,7 @@ struct PaneTitleBar: View {
       }
       if let onPopOut {
         PaneToolbarButton(
-          systemImage: "macwindow.badge.plus", help: "Move to new window",
+          systemImage: "macwindow.badge.plus", image: .moveToNewWindow, help: "Move to new window",
           accessibilityLabel: "Move pane into new window", identifier: "pane.toolbar.popOut",
           action: onPopOut)
       }
@@ -369,6 +369,8 @@ struct PaneTitleBar: View {
 /// pane sits between build their buttons the same way.
 struct PaneToolbarButton: View {
   let systemImage: String
+  /// A composed icon (`NSImage.badged`) in place of `systemImage`.
+  var image: NSImage? = nil
   let help: String
   let accessibilityLabel: String
   let identifier: String
@@ -377,7 +379,7 @@ struct PaneToolbarButton: View {
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: systemImage)
+      (image.map { Image(nsImage: $0).renderingMode(.template) } ?? Image(systemName: systemImage))
         .foregroundStyle(hovering ? .primary : .secondary)
     }
     .onHover { hovering = $0 }
