@@ -438,14 +438,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [quickTerminal] event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
       // The quick terminal's own keys (issue #39) when its window is key: ⌘W closes a pane, ⌘T a
-      // new tab, ⌘D / ⇧⌘D splits, ⌘1–9 its tabs. The menu's items for those target the main
-      // window's tabs and would otherwise win, so catch them here (like ⌘R / ⌘1–9 above). Gated on
-      // the key window being a QuickTerminalWindow, so they still act on a workroom everywhere else.
+      // new tab, ⌘D / ⇧⌘D splits, ⌘1–9 its tabs, ⌃⌘arrows its panes. The menu's items for those
+      // target the main window's tabs, and the workroom handlers below resolve only registered
+      // windows' stores, so catch them here (like ⌘R / ⌘1–9 above). Gated on the key window being a
+      // QuickTerminalWindow, so they still act on a workroom everywhere else.
       if (event.window ?? NSApp.keyWindow) is QuickTerminalWindow,
         let key = QuickTerminalKey.classify(
-          flags: flags, characters: event.charactersIgnoringModifiers)
+          flags: flags, characters: event.charactersIgnoringModifiers, keyCode: event.keyCode),
+        MainActor.assumeIsolated({ quickTerminal.perform(key) })
       {
-        MainActor.assumeIsolated { quickTerminal.perform(key) }
         return nil
       }
       // ⌘W on an auxiliary window (Settings, About) — a window with no AppStore (not a workroom
@@ -772,7 +773,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if let targetID = info["targetID"] as? String {
       let tabID = (info["tabID"] as? String).flatMap(UUID.init(uuidString:))
       let notifID = (info["notifID"] as? String).flatMap(UUID.init(uuidString:))
-      Task { @MainActor in
+      Task { @MainActor [quickTerminal] in
+        if targetID == QuickTerminalController.target().id {
+          quickTerminal.reveal(tab: tabID)
+          return
+        }
         // Route to the window that owns this tab (tab ids are unique across windows, issue #70),
         // falling back to the key window; bring it forward, then open the terminal there.
         let registry = WindowRegistry.shared

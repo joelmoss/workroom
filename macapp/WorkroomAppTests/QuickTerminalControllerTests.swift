@@ -1,5 +1,6 @@
 import Carbon.HIToolbox
 import Defaults
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -313,6 +314,41 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertFalse(controller.hasWindow, "⌘W on the last pane of the last tab closes the window")
   }
 
+  func testArrowKeysMoveFocusBetweenItsPanes() throws {
+    // Its store is in no WindowRegistry, so the workroom ⌃⌘arrow handler can't reach it (PR #571).
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let sessions = try XCTUnwrap(controller.store).terminals
+    let target = QuickTerminalController.target()
+    let left = try XCTUnwrap(sessions.activeTab(for: target)).id
+    controller.perform(.splitRight)
+    let right = try XCTUnwrap(sessions.activeTab(for: target)).id
+    XCTAssertNotEqual(left, right)
+
+    XCTAssertTrue(controller.perform(.focusPane(.left)))
+    XCTAssertEqual(sessions.activeTab(for: target)?.id, left)
+    XCTAssertFalse(controller.perform(.focusPane(.up)), "no pane above: the key is the terminal's")
+    XCTAssertEqual(sessions.activeTab(for: target)?.id, left)
+  }
+
+  func testANotificationClickSlidesInOnItsPane() throws {
+    // The app's notification routing finds stores through WindowRegistry, which this one is not in.
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let sessions = try XCTUnwrap(controller.store).terminals
+    let target = QuickTerminalController.target()
+    let first = try XCTUnwrap(sessions.activeTab(for: target)).id
+    controller.perform(.newTab)
+    controller.hide()
+    XCTAssertFalse(controller.isVisible)
+
+    controller.reveal(tab: first)
+    XCTAssertTrue(controller.isVisible)
+    XCTAssertEqual(sessions.activeTab(for: target)?.id, first)
+  }
+
   // Value: protects=the key monitor takes exactly ⌘W/T/D/⇧⌘D/⌘1-9 in the Quick Terminal; fails_when=a chord maps wrong or a stray one is swallowed; why_new=no test calls classify; seam=none; no_claim=the monitor wiring in AppDelegate
   func testKeyClassificationTakesOnlyItsOwnChords() {
     typealias Key = QuickTerminalKey
@@ -322,6 +358,13 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertEqual(Key.classify(flags: [.command, .shift], characters: "D"), .splitDown)
     XCTAssertEqual(Key.classify(flags: .command, characters: "1"), .selectTab(0))
     XCTAssertEqual(Key.classify(flags: .command, characters: "9"), .selectTab(8))
+    XCTAssertEqual(
+      Key.classify(flags: [.command, .control], characters: nil, keyCode: 123), .focusPane(.left))
+    XCTAssertEqual(
+      Key.classify(flags: [.command, .control], characters: nil, keyCode: 126), .focusPane(.up))
+    XCTAssertNil(
+      Key.classify(flags: [.command, .option], characters: nil, keyCode: 124),
+      "⌥⌘arrows cycle tabs in a workroom, not panes")
     XCTAssertEqual(
       Key.classify(flags: [.command, .capsLock, .numericPad], characters: "w"), .closePane,
       "only the four real modifiers count")

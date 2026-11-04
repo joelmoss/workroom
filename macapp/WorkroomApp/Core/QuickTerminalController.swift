@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// Marker type for the quick-terminal window so the `AppDelegate` key monitor can recognise it and
 /// route ⌘W to close it. (The app rebinds ⌘W to a "Close Tab" menu command that targets the
@@ -207,6 +208,16 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     window.makeFirstResponder(surface)
   }
 
+  /// A notification from one of its panes was clicked: slide in on that pane. Its store is in no
+  /// `WindowRegistry`, so the app's usual notification routing can't find it.
+  func reveal(tab tabID: TerminalTab.ID?) {
+    let target = Self.target()
+    if let tabID, let sessions = store?.terminals, sessions.tab(tabID, for: target) != nil {
+      sessions.focus(tabID, for: target)
+    }
+    show()
+  }
+
   /// Slide out, then hide without destroying: the surface keeps running so a re-summon restores
   /// the same session.
   func hide() {
@@ -317,8 +328,11 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
   /// A Quick Terminal key (`QuickTerminalKey`) pressed while its window is key.
   /// What a workroom window's menu does for the same keys, on this store's one target.
-  func perform(_ key: QuickTerminalKey) {
-    guard let store else { return }
+  /// False when the key did nothing and belongs to the terminal: a ⌃⌘arrow with no pane that way,
+  /// as in a workroom.
+  @discardableResult
+  func perform(_ key: QuickTerminalKey) -> Bool {
+    guard let store else { return true }
     let target = Self.target()
     let sessions = store.terminals
     let active = sessions.activeTab(for: target)
@@ -334,7 +348,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     case .selectTab(let index):
       let tabs = sessions.tabs(for: target)
       if tabs.indices.contains(index) { sessions.focus(tabs[index].id, for: target) }
+    case .focusPane(let direction):
+      return sessions.focusAdjacentPane(direction, for: target)
     }
+    return true
   }
 
   /// A double-click in the tab bar's empty space must not zoom the window off its edge.
@@ -435,9 +452,18 @@ enum QuickTerminalKey: Equatable {
   case closePane, newTab, splitRight, splitDown
   /// 0-based.
   case selectTab(Int)
+  /// ⌃⌘arrows, as in a workroom.
+  case focusPane(PaneDirection)
 
-  static func classify(flags: NSEvent.ModifierFlags, characters: String?) -> QuickTerminalKey? {
+  static func classify(
+    flags: NSEvent.ModifierFlags, characters: String?, keyCode: UInt16? = nil
+  ) -> QuickTerminalKey? {
     let flags = flags.intersection([.command, .shift, .option, .control])
+    // Virtual keycodes, as the workroom handler reads them: left 123 / right 124 / down 125 / up 126.
+    let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
+    if flags == [.command, .control], let keyCode, let direction = arrows[keyCode] {
+      return .focusPane(direction)
+    }
     guard let key = characters?.lowercased() else { return nil }
     switch (flags, key) {
     case (.command, "w"): return .closePane
