@@ -1037,6 +1037,25 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNil(first.terminals.tab(pane.id, for: target(first)))
   }
 
+  /// Value: protects=an Investigate tab moved out of the Quick Terminal stays an Investigate session
+  /// in its workroom, so deleting the workroom still asks first (#146), and its exit still ends it;
+  /// fails_when=the move drops the registration or leaves the exit wired to the Quick Terminal;
+  /// why_new=found in /ship review of PR #577; seam=none; no_claim=the delete prompt's rendering.
+  func testAMovedInvestigateTabStaysAnInvestigateSession() async {
+    let (quick, pane, window) = makeQuickTerminalMove()
+    quick.investigateTabs[pane.id] = QuickTerminalController.targetID
+
+    await quick.moveQuickTerminalPane(
+      pane.id, of: QuickTerminalController.target(), to: window, into: sid)
+
+    XCTAssertNil(quick.investigateTabs[pane.id])
+    XCTAssertEqual(
+      window.investigateTabs[pane.id], target(window).id,
+      "what WindowRegistry.hasLiveInvestigateSession reads before a delete")
+    pane.surface?.onChildExited?(0)
+    XCTAssertNil(window.investigateTabs[pane.id], "its exit ends it there")
+  }
+
   /// Value: protects=a moved pane's notifications follow it, so opening one finds the pane in its
   /// new window and closing the Quick Terminal doesn't drop them; fails_when=repoint is skipped or
   /// runs after the Quick Terminal closes; why_new=new path; seam=none; no_claim=banner text.
