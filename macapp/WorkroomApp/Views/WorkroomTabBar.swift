@@ -162,8 +162,7 @@ struct WorkroomTabBar: View {
               // unaffected (that reads `value.location`, below).
               drag.update(
                 tab.sid,
-                translation: clampReorder(
-                  value.translation.width, draggedID: tab.sid, draggedIndex: index))
+                translation: clampReorder(value.translation.width, draggedIndex: index))
               // Out of the window: into another window, or a new one (#444).
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
@@ -194,8 +193,7 @@ struct WorkroomTabBar: View {
                 // `onChanged` sample short of the true release point, before `onEnded` fires with the
                 // full, accurate displacement — committing off a stale, under-shot translation.
                 commitDrag(
-                  translation: clampReorder(
-                    value.translation.width, draggedID: tab.sid, draggedIndex: index))
+                  translation: clampReorder(value.translation.width, draggedIndex: index))
               }
               chipPaneDrag = nil
             }
@@ -330,31 +328,10 @@ struct WorkroomTabBar: View {
     }
   }
 
-  /// Clamp a reorder translation so the dragged chip stays within the tab run: its leading edge can't
-  /// pass the run's leading end (x = 0, just right of the leading-controls divider) and its trailing
-  /// edge can't pass the last chip's trailing end. `runWidth` is the chips' contiguous run (the trailing
-  /// `+` button isn't a reorder slot). Keeps a dragged chip from being pulled into the leading controls
-  /// or across the empty fill now that the bar spans the full title-bar width.
-  ///
-  /// Takes the dragged chip's id explicitly rather than reading it back from `drag.id`: the
-  /// caller (`onChanged`) must compute the clamped translation to pass INTO `drag.update`, which
-  /// is what latches `drag.id` for a fresh drag — reading `drag.id` here would race that latch on
-  /// the drag's first event.
-  private func clampReorder(
-    _ translation: CGFloat, draggedID id: SidebarID, draggedIndex index: Int
-  )
-    -> CGFloat
-  {
-    guard let chipW = drag.widths[id] else { return translation }
-    let startX = (0..<index).reduce(CGFloat(0)) {
-      $0 + (drag.widths[tabs[$1].sid] ?? 0) + tabSpacing
-    }
-    let runWidth =
-      tabs.reduce(CGFloat(0)) { $0 + (drag.widths[$1.sid] ?? 0) }
-      + tabSpacing * CGFloat(max(0, tabs.count - 1))
-    let minT = -startX
-    let maxT = max(minT, (runWidth - chipW) - startX)
-    return min(max(translation, minT), maxT)
+  /// A reorder translation kept within the tab run (`TabReorderDrag.clamped`): the bar spans the
+  /// full title-bar width, so the chip would otherwise cross the empty fill.
+  private func clampReorder(_ translation: CGFloat, draggedIndex index: Int) -> CGFloat {
+    drag.clamped(translation, ids: tabs.map(\.sid), index: index, spacing: tabSpacing)
   }
 
   /// Commit the reorder on drop: rewrite `store.workroomTabOrder` (a `@Published`, so the parent view

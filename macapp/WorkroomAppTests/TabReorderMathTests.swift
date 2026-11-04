@@ -285,6 +285,20 @@ final class TabReorderDragTests: XCTestCase {
     return drag
   }
 
+  func testClampedKeepsTheChipWithinTheRun() {
+    let drag = makeDrag()
+    XCTAssertEqual(
+      drag.clamped(500, ids: ids, index: 1, spacing: spacing), 104, "stops at the last chip's end")
+    XCTAssertEqual(
+      drag.clamped(-500, ids: ids, index: 1, spacing: spacing), -104, "and at the first's")
+    XCTAssertEqual(drag.clamped(50, ids: ids, index: 1, spacing: spacing), 50)
+    XCTAssertEqual(
+      drag.clamped(10, ids: ids, index: 2, spacing: spacing), 0, "the last chip can't go right")
+    XCTAssertEqual(
+      TabReorderDrag<String>().clamped(500, ids: ids, index: 1, spacing: spacing), 500,
+      "unmeasured, unclamped")
+  }
+
   func testFreshDragIsNotDragging() {
     let drag = makeDrag()
     XCTAssertFalse(drag.isDragging)
