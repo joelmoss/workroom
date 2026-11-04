@@ -1397,6 +1397,18 @@ final class WorkroomSplitPaneWeightTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
   }
 
+  /// Value: protects=a stack of workrooms is as wide as its widest member, so splitting a terminal
+  /// in one of them widens the whole column; fails_when=a stacked workroom column counts as one
+  /// whatever its terminals; seam=none; no_claim=rendering
+  func testAStackOfWorkroomsMakesRoomForItsWidestMember() throws {
+    let store = makeStore(names: ["main", "feature", "bugfix"])
+    let feature = try pair(store, .right)
+    XCTAssertTrue(store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom))
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    // main | (feature / bugfix) with feature two terminals wide: the column takes two thirds.
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
+
   /// Value: protects=restarting a run tab inside a split leaves the workroom divider where it was;
   /// fails_when=the respawn's close announces a pane its restore puts straight back, re-evening a
   /// divider nothing changed; seam=none; no_claim=the run's process lifecycle

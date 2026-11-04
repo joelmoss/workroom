@@ -188,6 +188,26 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertEqual(row, 0.5, accuracy: 0.0001)
     XCTAssertEqual(column, 0.8, accuracy: 0.0001)
   }
+  /// Value: protects=weighted, a stacked column counts as its widest member, while unweighted it
+  /// still counts as one (#126); fails_when=the other-axis rule ignores weights, or applies to
+  /// unweighted trees; seam=none; no_claim=AppStore's weights
+  func testAWeightedStackCountsAsItsWidestMember() {
+    // A | (B / C) with B two columns wide: the B/C column needs two shares, so A gets a third.
+    let tree = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5,
+      first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
+    let wide = b
+    let weighted = tree.equalized(leafSlots: { leaf, o in leaf == wide && o == .horizontal ? 2 : 1 }
+    )
+    guard case .split(_, _, let rw, _, _) = weighted,
+      case .split(_, _, let ru, _, _) = tree.equalized()
+    else { return XCTFail("expected splits") }
+    XCTAssertEqual(rw, 1.0 / 3.0, accuracy: 0.0001)
+    XCTAssertEqual(ru, 0.5, accuracy: 0.0001, "unweighted, the stack is still one column")
+  }
+
   /// Value: protects=maxSlots counts the widest row / tallest column, not the root chain;
   /// fails_when=an other-axis split counts as one or as the sum; seam=none; no_claim=none
   func testMaxSlotsCountsTheWidestRowAndTheTallestColumn() {
