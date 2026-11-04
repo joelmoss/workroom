@@ -121,8 +121,10 @@ struct TerminalTabStrip: View {
       // The Quick Terminal's strip is its titlebar: room to the right of the tabs drags the window
       // along the screen edges. The scroller takes every click over itself, so it can't sit behind.
       if isQuickTerminal {
-        QuickTerminalDragHandle()
-          .frame(minWidth: 60, maxWidth: .infinity, maxHeight: .infinity)
+        // Fills the strip's height, which the `fixedSize` below takes from the chips, not the window.
+        Spacer(minLength: 60)
+          .frame(maxHeight: .infinity)
+          .overlay { QuickTerminalDragHandle() }
           // The tabs take the width first; the handle keeps at least its minimum.
           .layoutPriority(-1)
           .accessibilityHidden(true)
@@ -135,6 +137,8 @@ struct TerminalTabStrip: View {
     // the strip reads as part of the terminal panel (Chrome-style). No bottom gap.
     .padding(.bottom, 0)
     .padding(.trailing, Self.stripTrailingInset)
+    // Only the Quick Terminal's strip has a height-filling drag handle that would otherwise take it.
+    .fixedSize(horizontal: false, vertical: isQuickTerminal)
   }
 
   /// The chips themselves plus the hairline that sets the inline "+" apart — everything that scrolls
