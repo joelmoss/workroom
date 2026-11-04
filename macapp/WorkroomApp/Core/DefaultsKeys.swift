@@ -102,6 +102,10 @@ extension Defaults.Keys {
   static let quickTerminalHidesWhenUnfocused = Key<Bool>(
     "quickTerminalHidesWhenUnfocused", default: true, suite: .app)
 
+  /// The global shortcut that shows and hides the Quick Terminal (Settings ▸ Terminal).
+  static let quickTerminalShortcut = Key<GlobalShortcut>(
+    "quickTerminalShortcut", default: .quickTerminalDefault, suite: .app)
+
   /// The folder a new Quick Terminal shell starts in; "" = the home folder.
   static let quickTerminalDirectory = Key<String>(
     "quickTerminalDirectory", default: "", suite: .app)

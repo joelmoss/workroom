@@ -551,12 +551,13 @@ private struct TerminalSettingsPane: View {
   }
 }
 
-/// Where the Quick Terminal slides in from, and the folder its new shells start in.
+/// Where the Quick Terminal slides in from, the folder its new shells start in, and its shortcut.
 private struct QuickTerminalSection: View {
   @Default(.quickTerminalEdge) private var edge
   @Default(.quickTerminalHidesWhenUnfocused) private var hidesWhenUnfocused
   // "" = the home folder.
   @Default(.quickTerminalDirectory) private var directory
+  @Default(.quickTerminalShortcut) private var shortcut
 
   var body: some View {
     Section {
@@ -574,26 +575,29 @@ private struct QuickTerminalSection: View {
 
       LabeledContent("Opens in") {
         HStack {
-          Text(
-            directory.isEmpty ? "Home folder" : (directory as NSString).abbreviatingWithTildeInPath
-          )
-          .lineLimit(1)
-          .truncationMode(.middle)
-          // Always laid out (disabled at home) so picking a folder doesn't shift the row.
-          Button("Use Home") { directory = "" }
-            .disabled(directory.isEmpty)
-            .accessibilityIdentifier("settings.control.quickTerminalDirectoryReset")
+          Text(directory.isEmpty ? NSHomeDirectory() : directory)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          if !directory.isEmpty {
+            Button("Use Home") { directory = "" }
+              .accessibilityIdentifier("settings.control.quickTerminalDirectoryReset")
+          }
           Button("Choose…", action: choose)
             .accessibilityIdentifier("settings.control.quickTerminalDirectory")
         }
       }
-      .help("The folder a new Quick Terminal shell starts in.")
+      .help(
+        "The folder a new Quick Terminal shell starts in. A hidden Quick Terminal keeps its own "
+          + "shell, and a folder that is gone opens your home folder.")
+
+      LabeledContent("Keyboard shortcut") {
+        ShortcutRecorder(shortcut: $shortcut)
+      }
+      .help(
+        "The global shortcut that shows and hides the Quick Terminal from any app. It works while "
+          + "Global show/hide hotkey is on in General.")
     } header: {
       Text("Quick Terminal")
-    } footer: {
-      Text(
-        "The folder applies to the next new shell: a hidden Quick Terminal keeps its own. A "
-          + "folder that is gone opens the home folder instead.")
     }
   }
 

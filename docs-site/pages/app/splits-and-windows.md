@@ -91,4 +91,4 @@ To open an empty window of your own, choose **Window ▸ New Window**.
 
 <kbd>⌘§</kbd> hides Workroom when it is in front, and brings it back from any other app. It works system-wide. The hotkey is on by default. Turn it off with **Settings ▸ General ▸ Global show/hide hotkey (⌘§)**. See [Settings](settings.md#general).
 
-The same setting controls the Quick Terminal's <kbd>⌥§</kbd> hotkey. See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
+The same setting controls the Quick Terminal's hotkey, <kbd>⌥§</kbd> unless you change it. See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
