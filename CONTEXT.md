@@ -198,7 +198,11 @@ _Avoid_: History (alone)
 The right-hand column of Changes, History, Pull Request and Files sections for the selected target.
 
 **Notification**:
-A badge or desktop banner raised when a program in a terminal asks for attention with an OSC notification sequence.
+A badge or desktop banner raised when a program in a terminal asks for attention with an OSC notification sequence. The app keeps one list of them for all windows.
+_Avoid_: Alert (for an entry in that list)
+
+**Quick Terminal**:
+A window of terminals summoned from any app by a global shortcut, belonging to no workroom. Its terminals work like any other, but don't survive a quit.
 
 **Theme**:
 A bundled colour scheme applied to the terminals and the interface.
