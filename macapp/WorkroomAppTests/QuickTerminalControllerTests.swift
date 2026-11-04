@@ -185,6 +185,27 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertFalse(controller.currentSurface === first, "reopen creates a different surface")
   }
 
+  func testTheTerminalGetsTheWindowsHeightNotItsChrome() throws {
+    // The drag areas in the tab strip and footer once grew tall and squashed the pane to nothing.
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let window = try XCTUnwrap(controller.currentWindow)
+    let surface = try XCTUnwrap(controller.currentSurface)
+    window.contentView?.layoutSubtreeIfNeeded()
+
+    let content = try XCTUnwrap(window.contentView).bounds.height
+    XCTAssertGreaterThan(surface.frame.height, content - 120, "only the bars sit beside it")
+
+    // …while the drag areas still fill their bar's height, so there's something to grab.
+    func handles(in view: NSView) -> [NSView] {
+      (view is QuickTerminalDragHandle.HandleView ? [view] : []) + view.subviews.flatMap(handles)
+    }
+    let found = handles(in: try XCTUnwrap(window.contentView))
+    XCTAssertEqual(found.count, 2, "the tab strip's and the footer's")
+    for handle in found { XCTAssertGreaterThan(handle.frame.height, 15) }
+  }
+
   func testWindowIsChromeLessButClosable() throws {
     let controller = makeController()
     defer { controller.close() }

@@ -63,8 +63,10 @@ struct TerminalStatusBar: View {
       if let diagnosis { diagnosisSegment(diagnosis) }
       if isQuickTerminal {
         // Its empty middle drags the Quick Terminal along the screen edges.
-        QuickTerminalDragHandle()
-          .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
+        // Fills the bar's fixed height (`statusBarChrome`).
+        Spacer(minLength: 8)
+          .frame(maxHeight: .infinity)
+          .overlay { QuickTerminalDragHandle() }
           .accessibilityHidden(true)
       } else {
         Spacer(minLength: 8)
