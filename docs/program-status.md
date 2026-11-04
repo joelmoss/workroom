@@ -41,7 +41,9 @@ When a program starts waiting on you and you are not looking at its terminal, Wo
 notification ("Terminal 2 in fix-auth needs you": the terminal's own name and its workroom, never the title its program gave the tab) and counts the request in the Dock badge and the menu bar. The
 count goes down when the request is answered, here or on another Mac, or the program ends; reading
 the notification does not lower it. The menu bar's list shows requests under **Waiting for you**
-and other notifications under **Unread notifications**.
+and other notifications under **Unread notifications**. Notifications are one list for the whole app
+(ADR 0064): every window's bell shows that list and the same count as the Dock badge and the menu bar,
+and the Quick Terminal's terminals, which run in daemon sessions too, raise the same alerts.
 
 One request makes one notification. A program's own notification about a request Workroom has
 alerted is folded into that alert, however late it comes: Claude Code posts its own about 6
@@ -210,7 +212,7 @@ sends only OSC 9;4.
 ## Signals, in one place
 
 - The **mark** on a terminal is what the program in it reports now.
-- The **unread dot** and the **Dock badge** count notifications, plus requests waiting on you.
+- The **unread dot**, the **bell** and the **Dock badge** count notifications, plus requests waiting on you.
 - A finished turn alerts once, in a terminal you are not looking at (see A finished turn above).
 
 ## Known limits
