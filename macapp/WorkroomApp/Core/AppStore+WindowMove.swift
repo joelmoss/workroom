@@ -236,6 +236,9 @@ extension AppStore {
       destination.errorTitle = "Couldn't move the terminal to \(destination.windowTitle)"
       destination.errorMessage =
         "Workroom's background helper couldn't hand the terminal over to \(into.title), so it stays in the Quick Terminal."
+      // Its alert shows in that window, which may be behind the Quick Terminal.
+      NSApp.activate(ignoringOtherApps: true)
+      destination.hostWindow?.makeKeyAndOrderFront(nil)
       return
     }
     // Checked again after the wait: the workroom may have gone, or the window moved on. The shell
