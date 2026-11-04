@@ -299,9 +299,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
   /// `updateGlobalHotkey()` to follow the `globalHotkey` setting.
   private var showHideHotkey: GlobalHotkey?
-  /// The global ⌥§ quick-terminal shortcut while enabled, else nil (issue #39). Registered/torn down
-  /// alongside `showHideHotkey` by `updateGlobalHotkey()` under the same `globalHotkey` setting.
+  /// The global quick-terminal shortcut (⌥§ unless Settings records another) while enabled, else
+  /// nil (issue #39). Registered/torn down alongside `showHideHotkey` by `updateGlobalHotkey()`
+  /// under the same `globalHotkey` setting.
   private var quickTerminalHotkey: GlobalHotkey?
+  /// Re-registers the quick-terminal hotkey when Settings records a new shortcut.
+  private var quickTerminalShortcutObservation: Task<Void, Never>?
   /// The quick terminal (issue #39) — a ~/ shell in its own chrome-less window. One persistent
   /// controller; its window/surface come and go as it's summoned/closed.
   private let quickTerminal = QuickTerminalController()
@@ -640,6 +643,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         self?.updateGlobalHotkey()
       }
     }
+    quickTerminalShortcutObservation = Task { @MainActor [weak self] in
+      for await _ in Defaults.updates(.quickTerminalShortcut, initial: false) {
+        // Let the old keys go before claiming the new ones.
+        self?.quickTerminalHotkey = nil
+        self?.updateGlobalHotkey()
+      }
+    }
 
     // The main-toolbar Quick-Terminal button (issue #39) posts this; the controller lives here, out
     // of the SwiftUI view's reach. The ⌥§ hotkey calls the controller directly (see updateGlobalHotkey).
@@ -729,7 +739,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if quickTerminalHotkey == nil {
           // The controller, not `self`, as for the toolbar button's observer above.
-          quickTerminalHotkey = GlobalHotkey.optionSection { [quickTerminal] in
+          quickTerminalHotkey = GlobalHotkey.quickTerminal(Defaults[.quickTerminalShortcut]) {
+            [quickTerminal] in
             MainActor.assumeIsolated { quickTerminal.toggle() }
           }
         }
@@ -1197,6 +1208,8 @@ struct WorkroomCommands: Commands {
   // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
   // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
   @Default(.theme) private var theme
+  /// The Quick Terminal item shows the recorded global shortcut as its equivalent.
+  @Default(.quickTerminalShortcut) private var quickTerminalShortcut
   // The two quick-switcher trigger chords (issue #132). Read here so the Go-menu items re-render — and
   // so their key equivalents follow the preference — when either is retuned in Settings.
   @Default(.switcherWorkroomModifier) private var switcherWorkroomModifier
@@ -1421,16 +1434,18 @@ struct WorkroomCommands: Commands {
       .disabled(!workroomCommandEnabled(workroomSelected))
 
       // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
-      // the toolbar button. Always enabled (needs no workroom). Shows ⌥§ as its equivalent: no
-      // double-fire, because the registered Carbon hotkey consumes ⌥§ system-wide before it reaches
-      // the menu (Release). In a Debug-only dev run (no Release build owning the global ⌥§), the
-      // menu equivalent is what makes the shortcut work — handy for QA.
+      // the toolbar button. Always enabled (needs no workroom). Shows the recorded global shortcut
+      // (⌥§ by default) as its equivalent: no double-fire, because the registered Carbon hotkey
+      // consumes it system-wide before it reaches the menu (Release). In a Debug-only dev run (no
+      // Release build owning the global hotkey), the menu equivalent is what makes the shortcut
+      // work — handy for QA.
       Button("Quick Terminal") {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       }
-      .keyboardShortcut("§", modifiers: .option)
-      // ⌥§ carries no ⌘, so the key monitor's `flags.contains(.command)` path never sees it and
-      // nothing else would stop it opening a whole new window from behind a dialog.
+      .keyboardShortcut(quickTerminalShortcut.keyboardShortcut)
+      // The shortcut may carry no ⌘ (⌥§ doesn't), so the key monitor's `flags.contains(.command)`
+      // path never sees it and nothing else would stop it opening a whole new window from behind a
+      // dialog.
       .disabled(modalBlocked)
 
       Divider()

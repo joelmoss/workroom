@@ -140,6 +140,7 @@ struct TrailingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
 
   @Default(.theme) private var theme
+  @Default(.quickTerminalShortcut) private var quickTerminalShortcut
 
   /// The theme dropdown (issue #36), anchored to its own toolbar button.
   ///
@@ -201,7 +202,8 @@ struct TrailingTitlebarBar: View {
       .accessibilityIdentifier("toolbar.theme")
       .popover(isPresented: $showThemePicker, arrowEdge: .bottom) { ThemePicker() }
 
-      // Quick Terminal (⌥§) — a shell in its own slide-in window, always at the trailing edge.
+      // Quick Terminal (⌥§ by default) — a shell in its own slide-in window, always at the trailing
+      // edge.
       Button {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       } label: {
@@ -210,7 +212,7 @@ struct TrailingTitlebarBar: View {
         Image(systemName: "macwindow.badge.plus")
           .offset(y: 0.5)
       }
-      .help("Quick Terminal (⌥§)")
+      .help("Quick Terminal (\(quickTerminalShortcut.label))")
       .accessibilityLabel("Quick Terminal")
       .accessibilityIdentifier("toolbar.quickTerminal")
     }

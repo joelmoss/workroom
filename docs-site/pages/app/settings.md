@@ -12,7 +12,7 @@ Settings that belong to one project, such as its run command, are in [Project Se
 | Setting | What it does |
 | --- | --- |
 | **Confirm before quitting** | Asks before Workroom quits. It is on by default. |
-| **Global show/hide hotkey (⌘§)** | Registers <kbd>⌘§</kbd> to show or hide Workroom from any app, and <kbd>⌥§</kbd> to open the Quick Terminal. It is on by default. |
+| **Global show/hide hotkey (⌘§)** | Registers <kbd>⌘§</kbd> to show or hide Workroom from any app, and the Quick Terminal's shortcut (<kbd>⌥§</kbd> unless you change it in [Terminal](#quick-terminal)). It is on by default. |
 
 **Workroom ▸ Confirm Before Quitting** in the menu is the same switch.
 
@@ -76,10 +76,11 @@ In Workroom 2.1.0 this pane has a **Persist sessions** switch instead, and termi
 | Setting | What it does |
 | --- | --- |
 | **Slides in from** | The screen edge the Quick Terminal slides in from: **Top** (the default), **Bottom**, **Left** or **Right**. It sits centred along that edge. |
-| **Slide away when it loses focus** | Hides the Quick Terminal when you click another window or switch to another app. On by default. Off leaves it up until you press <kbd>⌥§</kbd>. |
-| **Opens in** | The folder a new Quick Terminal shell starts in. **Choose…** picks one and **Use Home** goes back to your home folder, the default. If the folder is gone, it opens in your home folder. |
+| **Slide away when it loses focus** | Hides the Quick Terminal when you click another window or switch to another app. On by default. Off leaves it up until you press its shortcut. |
+| **Opens in** | The folder a new Quick Terminal shell starts in, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
+| **Keyboard shortcut** | The global shortcut that shows and hides the Quick Terminal from any app, <kbd>⌥§</kbd> by default. Click it and press the new keys, with at least one of <kbd>⌘</kbd>, <kbd>⌥</kbd> or <kbd>⌃</kbd>. <kbd>Esc</kbd> cancels, and **Reset** goes back to <kbd>⌥§</kbd>. A shortcut another app already uses is refused. |
 
-A Quick Terminal that is only hidden keeps its shell, so a new folder applies once you close it and open a new one. See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
+A Quick Terminal that is only hidden keeps its shell, so a new folder applies once you close it and open a new one. The shortcut works while **Global show/hide hotkey (⌘§)** in General is on. See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
 
 ## AI Agents
 

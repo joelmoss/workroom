@@ -81,9 +81,21 @@ final class GlobalHotkey {
     GlobalHotkey(keyCode: kVK_ISO_Section, carbonModifiers: cmdKey, id: 1, handler: handler)
   }
 
-  /// ⌥ + § — summons the quick terminal (issue #39). A distinct id from `commandSection` so both
-  /// hotkeys coexist (see `matches`).
-  static func optionSection(handler: @escaping () -> Void) -> GlobalHotkey? {
-    GlobalHotkey(keyCode: kVK_ISO_Section, carbonModifiers: optionKey, id: 2, handler: handler)
+  /// The quick terminal's shortcut (issue #39), ⌥§ unless Settings records another. A distinct id
+  /// from `commandSection` so both hotkeys coexist (see `matches`).
+  static func quickTerminal(
+    _ shortcut: GlobalShortcut, handler: @escaping () -> Void
+  ) -> GlobalHotkey? {
+    GlobalHotkey(
+      keyCode: shortcut.keyCode, carbonModifiers: shortcut.carbonModifiers, id: 2,
+      handler: handler)
+  }
+
+  /// Whether `shortcut` can be registered now: false when another app, or another of ours, holds
+  /// it. Registers it for a moment under an id nothing else uses, then lets it go.
+  static func isAvailable(_ shortcut: GlobalShortcut) -> Bool {
+    GlobalHotkey(
+      keyCode: shortcut.keyCode, carbonModifiers: shortcut.carbonModifiers, id: 3, handler: {})
+      != nil
   }
 }

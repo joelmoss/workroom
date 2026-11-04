@@ -14,6 +14,7 @@ import SwiftUI
 struct KeyboardShortcutsView: View {
   private let theme = ThemeService.shared
   @Environment(\.dismiss) private var dismiss
+  @Default(.quickTerminalShortcut) private var quickTerminalShortcut
 
   var body: some View {
     VStack(spacing: 0) {
@@ -35,7 +36,7 @@ struct KeyboardShortcutsView: View {
                 .foregroundStyle(theme.tokens.fgMuted)
                 .padding(.horizontal, 4)
               ForEach(group.items) { item in
-                ShortcutRow(item: item)
+                ShortcutRow(label: item.label, keys: keys(for: item))
               }
             }
           }
@@ -51,15 +52,16 @@ struct KeyboardShortcutsView: View {
 /// One label-left, keycap-right row.
 private struct ShortcutRow: View {
   private let theme = ThemeService.shared
-  let item: ShortcutItem
+  let label: String
+  let keys: String
 
   var body: some View {
     HStack(spacing: 12) {
-      Text(item.label)
+      Text(label)
         .font(.system(size: 12))
         .foregroundStyle(theme.tokens.fg)
       Spacer(minLength: 0)
-      Text(item.keys)
+      Text(keys)
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .foregroundStyle(theme.tokens.fg)
         .padding(.horizontal, 7)
@@ -91,6 +93,13 @@ struct ShortcutGroup: Identifiable {
 }
 
 extension KeyboardShortcutsView {
+  static let quickTerminalLabel = "Quick Terminal (global)"
+
+  /// The keys a row shows: the catalog's, but the Quick Terminal's as Settings recorded them.
+  func keys(for item: ShortcutItem) -> String {
+    item.label == Self.quickTerminalLabel ? quickTerminalShortcut.label : item.keys
+  }
+
   /// The curated catalog. Keep in sync with `WorkroomCommands` and the `AppDelegate` key monitor.
   static let groups: [ShortcutGroup] = [
     ShortcutGroup(
@@ -180,7 +189,8 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Settings", keys: "⌘,"),
         ShortcutItem(label: "Quit", keys: "⌘Q"),
         ShortcutItem(label: "Show/Hide Workroom (global)", keys: "⌘§"),
-        ShortcutItem(label: "Quick Terminal (global)", keys: "⌥§"),
+        // The default: the docs page lists it. The sheet shows the recorded one (`keys(for:)`).
+        ShortcutItem(label: quickTerminalLabel, keys: GlobalShortcut.quickTerminalDefault.label),
       ]),
   ]
 }
