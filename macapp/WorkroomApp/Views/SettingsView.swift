@@ -577,6 +577,7 @@ private struct QuickTerminalSection: View {
       LabeledContent("Opens in") {
         HStack {
           Text(directory.isEmpty ? NSHomeDirectory() : directory)
+            .monospaced()
             .lineLimit(1)
             .truncationMode(.middle)
           if !directory.isEmpty {
