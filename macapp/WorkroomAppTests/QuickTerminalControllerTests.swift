@@ -203,7 +203,21 @@ final class QuickTerminalControllerTests: XCTestCase {
     }
     let found = handles(in: try XCTUnwrap(window.contentView))
     XCTAssertEqual(found.count, 2, "the tab strip's and the footer's")
-    for handle in found { XCTAssertGreaterThan(handle.frame.height, 15) }
+    let frame = try XCTUnwrap(window.contentView?.superview)
+    // A click `x` of the way across the window, level with `handle`.
+    func clickLands(at x: CGFloat, across handle: NSView) -> NSView? {
+      let row = handle.convert(handle.bounds, to: nil).midY
+      return frame.hitTest(frame.convert(NSPoint(x: frame.bounds.width * x, y: row), from: nil))
+    }
+    for handle in found {
+      XCTAssertGreaterThan(handle.frame.height, 15)
+      // …and run across their bar: a click well past the tabs (once only the last 60pt) drags.
+      XCTAssertTrue(clickLands(at: 0.75, across: handle) === handle)
+    }
+    // The strip's first tab sits above its handle and keeps its own clicks (select, reorder).
+    let strip = try XCTUnwrap(
+      found.max { $0.convert($0.bounds, to: nil).minY < $1.convert($1.bounds, to: nil).minY })
+    XCTAssertFalse(clickLands(at: 0.03, across: strip) === strip)
   }
 
   func testWindowIsChromeLessButClosable() throws {
