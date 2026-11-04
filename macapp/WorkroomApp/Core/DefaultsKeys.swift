@@ -98,6 +98,10 @@ extension Defaults.Keys {
   static let quickTerminalEdge = Key<QuickTerminalEdge>(
     "quickTerminalEdge", default: .top, suite: .app)
 
+  /// Where along its edge the Quick Terminal sits: its centre as a fraction of the edge's length,
+  /// 0.5 centred. Set by dragging it, or resizing it from a side.
+  static let quickTerminalOffset = Key<Double>("quickTerminalOffset", default: 0.5, suite: .app)
+
   /// Slide the Quick Terminal away when it loses focus (Settings ▸ Terminal). On by default.
   static let quickTerminalHidesWhenUnfocused = Key<Bool>(
     "quickTerminalHidesWhenUnfocused", default: true, suite: .app)

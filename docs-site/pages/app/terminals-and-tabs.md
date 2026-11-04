@@ -153,7 +153,7 @@ On a remote or container workroom, the run command runs on the workroom's host, 
 The Quick Terminal is a plain shell, in your home folder unless you choose another, in a window of its own that slides in from the top of the screen. It is not part of any workroom.
 
 - Press <kbd>⌥§</kbd> (or the shortcut you set) from any app to slide it in, and press it again to slide it away. It also slides away when you click another window or switch apps. Hiding keeps the shell and its scrollback.
-- It appears on the screen your pointer is on, centred along the edge. Drag its edges to resize it, and it keeps that size.
+- It appears on the screen your pointer is on, centred along the edge until you move it. Drag the empty part of its footer to slide it along the edge, or towards another edge to move it there. It stays against an edge the whole way. Drag its sides to resize it. It keeps its size and place the next time it opens, even after you close it.
 - Its footer is a pane's: the folder its shell is in, that folder's branch, and the usage of a coding agent running in it while **Settings ▸ AI Agents ▸ Show in the pane footer** is on. Click the folder to copy it or reveal it in Finder.
 - You can also open it from **File ▸ Quick Terminal** or the Quick Terminal button in the title bar.
 - <kbd>⌘W</kbd> closes it and ends its shell. The next time you open it, you get a new shell.

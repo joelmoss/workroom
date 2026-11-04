@@ -22,20 +22,48 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
   var label: String { rawValue.capitalized }
 
   /// Where the window sits when shown: against this edge of `visible` (the screen's
-  /// `visibleFrame`), centred along it, shrunk to fit.
-  func dockedFrame(size: NSSize, in visible: NSRect) -> NSRect {
+  /// `visibleFrame`), shrunk to fit, its centre at `offset` along the edge (0 the left or bottom
+  /// end, 1 the other, 0.5 centred) as far as it fits.
+  func dockedFrame(size: NSSize, in visible: NSRect, offset: Double = 0.5) -> NSRect {
     let size = NSSize(
       width: min(size.width, visible.width), height: min(size.height, visible.height))
-    let centredX = visible.midX - size.width / 2
-    let centredY = visible.midY - size.height / 2
+    let x = min(
+      max(visible.minX + visible.width * offset - size.width / 2, visible.minX),
+      visible.maxX - size.width)
+    let y = min(
+      max(visible.minY + visible.height * offset - size.height / 2, visible.minY),
+      visible.maxY - size.height)
     let origin: NSPoint
     switch self {
-    case .top: origin = NSPoint(x: centredX, y: visible.maxY - size.height)
-    case .bottom: origin = NSPoint(x: centredX, y: visible.minY)
-    case .left: origin = NSPoint(x: visible.minX, y: centredY)
-    case .right: origin = NSPoint(x: visible.maxX - size.width, y: centredY)
+    case .top: origin = NSPoint(x: x, y: visible.maxY - size.height)
+    case .bottom: origin = NSPoint(x: x, y: visible.minY)
+    case .left: origin = NSPoint(x: visible.minX, y: y)
+    case .right: origin = NSPoint(x: visible.maxX - size.width, y: y)
     }
     return NSRect(origin: origin, size: size)
+  }
+
+  /// The edge of `visible` nearest `point`, ties going top, bottom, left, right: where a drag
+  /// with the pointer at `point` docks the window.
+  static func nearest(to point: NSPoint, in visible: NSRect) -> QuickTerminalEdge {
+    let distances: [(QuickTerminalEdge, CGFloat)] = [
+      (.top, visible.maxY - point.y), (.bottom, point.y - visible.minY),
+      (.left, point.x - visible.minX), (.right, visible.maxX - point.x),
+    ]
+    // `min(by:)` keeps the first of equal elements, so the order above breaks ties.
+    return distances.min { $0.1 < $1.1 }!.0
+  }
+
+  /// Where along this edge a window of `size` centred at `center` sits, as `dockedFrame`'s
+  /// `offset`, clamped so the window stays on the screen.
+  func offset(forCenter center: NSPoint, size: NSSize, in visible: NSRect) -> Double {
+    let (position, start, length, extent) =
+      self == .top || self == .bottom
+      ? (center.x, visible.minX, visible.width, size.width)
+      : (center.y, visible.minY, visible.height, size.height)
+    guard length > extent else { return 0.5 }
+    let half = extent / 2 / length
+    return min(max(Double((position - start) / length), half), 1 - half)
   }
 
   /// `docked` pushed just past this edge of `screen` (the screen's full frame), where the slide
@@ -150,7 +178,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
     if let screen {
       let edge = Defaults[.quickTerminalEdge]
-      let docked = edge.dockedFrame(size: window.frame.size, in: screen.visibleFrame)
+      let docked = edge.dockedFrame(
+        size: window.frame.size, in: screen.visibleFrame, offset: Defaults[.quickTerminalOffset])
       // Re-summoned mid slide-out, it is still up: slide back from where it is.
       if !window.isVisible {
         window.setFrame(edge.hiddenFrame(docked: docked, screen: screen.frame), display: false)
@@ -286,6 +315,36 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// Full close: destroy the window (its `windowWillClose` runs the teardown). Idempotent.
   func close() {
     window?.close()
+  }
+
+  // MARK: Dragging along the edges
+
+  /// Where a drag puts `window`: docked to the edge nearest the pointer on the screen it is over,
+  /// centred where the pointer, less where it grabbed the window (`grab`, from the window's
+  /// centre), puts it along that edge. Docked all the way, so it slides along the edges and hops
+  /// between them but never floats free.
+  static func dragDock(
+    _ window: NSWindow, pointer: NSPoint, grab: NSPoint
+  ) -> (edge: QuickTerminalEdge, offset: Double)? {
+    guard
+      let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? window.screen
+    else { return nil }
+    let visible = screen.visibleFrame
+    let edge = QuickTerminalEdge.nearest(to: pointer, in: visible)
+    let center = NSPoint(x: pointer.x - grab.x, y: pointer.y - grab.y)
+    let offset = edge.offset(forCenter: center, size: window.frame.size, in: visible)
+    window.setFrame(
+      edge.dockedFrame(size: window.frame.size, in: visible, offset: offset), display: true)
+    return (edge, offset)
+  }
+
+  /// A resize from a side moves the window's centre along its edge; keep that for next time.
+  func windowDidEndLiveResize(_ notification: Notification) {
+    guard let window, let screen = window.screen else { return }
+    let center = NSPoint(x: window.frame.midX, y: window.frame.midY)
+    let edge = Defaults[.quickTerminalEdge]
+    Defaults[.quickTerminalOffset] = edge.offset(
+      forCenter: center, size: window.frame.size, in: screen.visibleFrame)
   }
 
   /// Checked a turn later, once AppKit has made the new window key.

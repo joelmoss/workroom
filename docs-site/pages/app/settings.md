@@ -75,7 +75,7 @@ In Workroom 2.1.0 this pane has a **Persist sessions** switch instead, and termi
 
 | Setting | What it does |
 | --- | --- |
-| **Slides in from** | The screen edge the Quick Terminal slides in from: **Top** (the default), **Bottom**, **Left** or **Right**. It sits centred along that edge. |
+| **Slides in from** | The screen edge the Quick Terminal slides in from: **Top** (the default), **Bottom**, **Left** or **Right**. It sits centred along that edge until you drag it somewhere else. Dragging it to another edge changes this setting too. |
 | **Slide away when it loses focus** | Hides the Quick Terminal when you click another window or switch to another app. On by default. Off leaves it up until you press its shortcut. |
 | **Opens in** | The folder a new Quick Terminal shell starts in, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
 | **Keyboard shortcut** | The global shortcut that shows and hides the Quick Terminal from any app, <kbd>⌥§</kbd> by default. Click it and press the new keys, with at least one of <kbd>⌘</kbd>, <kbd>⌥</kbd> or <kbd>⌃</kbd>. <kbd>Esc</kbd> cancels, and **Reset** goes back to <kbd>⌥§</kbd>. A shortcut another app already uses is refused. |
