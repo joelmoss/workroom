@@ -12,8 +12,10 @@ import XCTest
 @MainActor
 final class WorkroomHandOverTests: XCTestCase {
   private let shared = ProjectStore()
-  /// The app's one notification list, as every window shares it (ADR 0064).
-  private let notifications = NotificationCenterStore()
+  /// The windows, and the app's one notification list they share (ADR 0064).
+  private let registry = WindowRegistry()
+  private var notifications: NotificationCenterStore { registry.notifications }
+  private let notifier = WithdrawingNotifier()
   private let sid = SidebarID.workroom(project: "/p", name: "a")
   private let otherSid = SidebarID.workroom(project: "/p", name: "b")
 
@@ -30,6 +32,7 @@ final class WorkroomHandOverTests: XCTestCase {
 
   private func makeStore() -> AppStore {
     let store = AppStore(projectStore: shared, notifications: notifications)
+    store.systemNotifier = notifier
     store.confirmOnCloseOverrideForTesting = false
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
@@ -325,6 +328,109 @@ final class WorkroomHandOverTests: XCTestCase {
     origin.moveWorkroom(sid, to: destination)
 
     XCTAssertEqual(destination.notifications.count(tab: tab.id), 1, "a move keeps them unread")
+  }
+
+  // MARK: Opening and closing across windows (#573)
+
+  /// Value: protects=opening a notification in the window that has its pane, not the one showing the
+  /// row (decision 1); fails_when=a surface opens through its own store again; why_new=only the banner
+  /// path resolved the owner; seam=none; no_claim=window raise on screen.
+  func testOpeningANotificationGoesToTheWindowThatHasItsPane() {
+    let a = makeOrigin()
+    let b = makeStore()
+    registry.register(window: NSWindow(), store: a)
+    registry.register(window: NSWindow(), store: b)
+    let t = target(b)
+    let tab = b.terminals.addTab(for: t)
+    let note = notifications.record(
+      targetID: t.id, tabID: tab.id, activity: .osc(title: "done", body: nil), focused: false)!
+
+    registry.open(note)
+
+    XCTAssertEqual(b.selectedTargetID, sid, "the window with the pane opens it")
+    XCTAssertNotEqual(a.selectedTargetID, sid, "the front window does not")
+    XCTAssertTrue(notifications.items.isEmpty, "opening dismisses it")
+  }
+
+  /// Value: protects=the front-window fallback for a pane no window has, and a gone workroom's row
+  /// going (decision 1); fails_when=open does nothing or leaves the row; why_new=new path;
+  /// seam=none; no_claim=window raise on screen.
+  func testANotificationWhosePaneIsGoneOpensItsWorkroomInTheFrontWindow() {
+    let a = makeStore()
+    registry.register(window: NSWindow(), store: a)
+    let t = target(a)
+    let note = notifications.record(
+      targetID: t.id, tabID: UUID(), activity: .osc(title: "done", body: nil), focused: false)!
+    let gone = notifications.record(
+      targetID: "/deleted", tabID: UUID(), activity: .osc(title: "x", body: nil), focused: false)!
+
+    registry.open(note)
+    XCTAssertEqual(a.selectedTargetID, sid)
+    registry.open(gone)
+
+    XCTAssertTrue(notifications.items.isEmpty, "both rows go once opened")
+  }
+
+  /// Value: protects=closing a window removes every notification it raised, from open panes, closed
+  /// panes and notices, with their banners (#573 D3); fails_when=only live tabs are matched or another
+  /// window's rows go; why_new=new behaviour; seam=none; no_claim=UNUserNotificationCenter.
+  func testClosingAWindowRemovesEverythingItRaised() {
+    let a = makeOrigin()
+    let b = makeStore()
+    let windowA = NSWindow()
+    registry.register(window: windowA, store: a)
+    registry.register(window: NSWindow(), store: b)
+    let t = target(a)
+    let open = a.terminals.addTab(for: t)
+    a.raiseFinished(targetID: t.id, tabID: open.id, record: .init(id: "", state: .idle))
+    a.raiseFinished(targetID: t.id, tabID: UUID(), record: .init(id: "", state: .idle))
+    a.noticeStaleStart(of: t.id, "fetch failed")
+    b.raiseFinished(
+      targetID: target(b, otherSid).id, tabID: UUID(), record: .init(id: "", state: .idle))
+
+    registry.unregister(window: windowA)
+
+    XCTAssertEqual(notifications.items.count, 1, "only the other window's notification stays")
+    XCTAssertEqual(notifications.items.first?.origin, ObjectIdentifier(b))
+    XCTAssertTrue(notifier.withdrawn.contains(open.id.uuidString), "its banners go too")
+  }
+
+  /// Value: protects=a moved workroom's notifications going with it, so the old window's close leaves
+  /// them (#573 D3); fails_when=repoint is dropped or matches the wrong target; why_new=new behaviour;
+  /// seam=none; no_claim=dragging the workroom on screen.
+  func testAMovedWorkroomsNotificationsCloseWithItsNewWindow() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    let windowOrigin = NSWindow()
+    let windowDestination = NSWindow()
+    registry.register(window: windowOrigin, store: origin)
+    registry.register(window: windowDestination, store: destination)
+    let t = target(origin)
+    let tab = origin.terminals.addTab(for: t)
+    origin.raiseFinished(targetID: t.id, tabID: tab.id, record: .init(id: "", state: .idle))
+
+    origin.moveWorkroom(sid, to: destination)
+    registry.unregister(window: windowOrigin)
+    XCTAssertEqual(notifications.count(tab: tab.id), 1, "the old window's close leaves it")
+    registry.unregister(window: windowDestination)
+    XCTAssertEqual(notifications.count(tab: tab.id), 0, "its new window's close takes it")
+  }
+
+  /// Value: protects=a toast showing in the front window, whichever window raised it (#573);
+  /// fails_when=a toast lands in the raising window again; why_new=new behaviour; seam=none;
+  /// no_claim=the toast's rendering.
+  func testAToastShowsInTheFrontWindow() {
+    let front = makeStore()
+    let behind = makeOrigin()
+    registry.register(window: NSWindow(), store: front)
+    registry.register(window: NSWindow(), store: behind)
+    behind.isAppActive = { true }
+
+    behind.raiseFinished(
+      targetID: target(behind, otherSid).id, tabID: UUID(), record: .init(id: "", state: .idle))
+
+    XCTAssertEqual(front.toasts.count, 1)
+    XCTAssertTrue(behind.toasts.isEmpty)
   }
 
   func testAWorkroomInASplitLeavesTheGroupItCameFrom() {
@@ -729,4 +835,13 @@ final class WorkroomHandOverTests: XCTestCase {
       skipping: [9], numberBelow: { $0 == 0 ? 9 : 0 }, resolve: { _ in .none })
     guard case .none = nothing else { return XCTFail("only the ghost is there") }
   }
+}
+
+/// Posts nothing; keeps the banner identifiers withdrawn.
+private final class WithdrawingNotifier: SystemNotifying, @unchecked Sendable {
+  var withdrawn: [String] = []
+  func ensureAuthorized() async -> Bool { false }
+  func post(_ notification: WorkroomNotification) {}
+  func withdraw(tabIDs: [TerminalTab.ID]) { withdrawn += tabIDs.map(\.uuidString) }
+  func withdraw(identifiers: [String]) { withdrawn += identifiers }
 }

@@ -136,6 +136,8 @@ extension AppStore {
       scheduleSessionRecoveryAfterDisplay()
     }
     runCommand.adopt(run, for: id)
+    // Its notifications are now this window's: they go if this one closes, not the old one.
+    notifications.repoint(target: id, to: ObjectIdentifier(self))
     // Only for a run that came with it: one this window already ran has its own poll going.
     if run.state != nil || !run.investigateTabs.isEmpty { resumeAdoptedRun(for: target) }
     if let closing { terminals.closeTab(closing, for: target) }

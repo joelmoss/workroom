@@ -48,8 +48,8 @@ final class AppStore: ObservableObject {
   weak var hostWindow: NSWindow?
   /// Called when a target's last tab closes. The Quick Terminal's own store closes its window on it.
   var onTargetEmptied: ((TerminalTarget.ID) -> Void)?
-  /// Where this store's in-app toasts go instead of its own `toasts`. The Quick Terminal's store sends
-  /// them to the front workroom window, since it shows none itself.
+  /// Where this store's in-app toasts go instead of its own `toasts`: the front window, set by
+  /// `WindowRegistry` for every window it registers and by the Quick Terminal for its own store.
   var forwardToast: ((WorkroomNotification) -> Void)?
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
@@ -3390,7 +3390,7 @@ final class AppStore: ObservableObject {
       guard let self, outcome.record,
         let note = self.notifications.record(
           targetID: targetID, tabID: tabID, source: self.notificationSource(forTargetID: targetID),
-          activity: activity, focused: false)
+          activity: activity, focused: false, origin: ObjectIdentifier(self))
       else { return nil }
       self.surface(note)
       return { [weak self] in self?.withdrawNotification(note) }
@@ -3435,7 +3435,7 @@ final class AppStore: ObservableObject {
     }
     let note = notifications.recordNeedsYou(
       targetID: targetID, tabID: tabID, source: placeSource(targetID: targetID),
-      title: "\(name) needs you", body: body, episode: episode)
+      title: "\(name) needs you", body: body, episode: episode, origin: ObjectIdentifier(self))
     surface(note, stillWanted: stillWanted)
   }
 
@@ -3458,7 +3458,7 @@ final class AppStore: ObservableObject {
         targetID: targetID, tabID: tabID, source: placeSource(targetID: targetID),
         activity: .osc(
           title: "\(terminalPlace(targetID: targetID, tabID: tabID)) finished", body: body),
-        focused: false)
+        focused: false, origin: ObjectIdentifier(self))
     else { return }
     if let earlier = notifications.replaceFinish(of: tabID, with: note.id) {
       notifications.dismiss(notifID: earlier)
@@ -3516,7 +3516,7 @@ final class AppStore: ObservableObject {
     surface(
       notifications.recordNotice(
         targetID: id, source: notificationSource(forTargetID: id),
-        title: "Check where this workroom starts", body: warning))
+        title: "Check where this workroom starts", body: warning, origin: ObjectIdentifier(self)))
   }
 
   /// Present a recorded notification: an in-app toast and the arrival sound while the app is
@@ -3596,6 +3596,8 @@ final class AppStore: ObservableObject {
       return
     }
     guard let sid = Self.sidebarID(forTargetID: targetID, in: projects) else {
+      // Its workroom is gone: the row would open nothing, so it goes too (#573).
+      if let notifID { notifications.dismiss(notifID: notifID) }
       if let tabID { systemNotifier.withdraw(tabIDs: [tabID]) }
       return
     }
@@ -3615,7 +3617,7 @@ final class AppStore: ObservableObject {
   /// the bottom of the inspector panel upward. No-op when there are none.
   func openOldestNotification() {
     guard let oldest = notifications.items.first else { return }
-    openTerminal(targetID: oldest.targetID, tabID: oldest.tabID, notifID: oldest.id)
+    WindowRegistry.shared.open(oldest)
   }
 
   /// On app refocus, dismiss the notifications for the now-visible terminal (the selected target's
