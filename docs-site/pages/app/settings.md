@@ -80,7 +80,7 @@ In Workroom 2.1.0 this pane has a **Persist sessions** switch instead, and termi
 | **Opens in** | The folder a new Quick Terminal shell starts in, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
 | **Keyboard shortcut** | The global shortcut that shows and hides the Quick Terminal from any app, <kbd>⌥§</kbd> by default. Click it and press the new keys, with at least one of <kbd>⌘</kbd>, <kbd>⌥</kbd> or <kbd>⌃</kbd>. <kbd>Esc</kbd> cancels, and **Reset** goes back to <kbd>⌥§</kbd>. A shortcut another app already uses is refused. |
 
-A Quick Terminal that is only hidden keeps its shell, so a new folder applies once you close it and open a new one. The shortcut works while **Global show/hide hotkey (⌘§)** in General is on. See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
+A Quick Terminal that is only hidden keeps its shells, so a new folder applies from the next new tab. The shortcut works while **Global show/hide hotkey (⌘§)** in General is on. See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
 
 ## AI Agents
 
