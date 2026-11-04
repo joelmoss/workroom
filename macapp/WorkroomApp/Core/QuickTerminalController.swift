@@ -103,9 +103,8 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
 @MainActor
 final class QuickTerminalController: NSObject, NSWindowDelegate {
   private var window: NSWindow?
-  private var surface: GhosttySurfaceView?
-  /// What the footer shows, while a window exists.
-  private(set) var status: QuickTerminalStatus?
+  /// The tabs and panes, while a window exists.
+  private(set) var workspace: QuickTerminalWorkspace?
   private var themeObserver: NSObjectProtocol?
   /// Guards `tearDownState` against the re-entrancy of `window.close()` → `windowWillClose`.
   private var tearingDown = false
@@ -120,11 +119,14 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 
   /// Surface factory — overridable in tests to inject a non-spawning surface (`spawnsSurface: false`)
-  /// so no real PTY / Metal renderer is created. Defaults to a login shell in the Settings folder.
-  var makeSurface: @MainActor () -> GhosttySurfaceView = {
-    GhosttySurfaceView(
-      workingDirectory: QuickTerminalController.workingDirectory(
-        for: Defaults[.quickTerminalDirectory]))
+  /// so no real PTY / Metal renderer is created. Defaults to a login shell in the folder given.
+  var makeSurface: @MainActor (String) -> GhosttySurfaceView = {
+    GhosttySurfaceView(workingDirectory: $0)
+  }
+
+  /// Where a new tab's shell starts: the Settings folder. A split starts in its neighbour's.
+  static func newTabDirectory() -> String {
+    workingDirectory(for: Defaults[.quickTerminalDirectory])
   }
 
   /// The folder a new quick-terminal shell starts in: the setting with `~` expanded, or the home
@@ -147,8 +149,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   var isVisible: Bool { !hiding && (window?.isVisible ?? false) }
   /// True while a window exists (VISIBLE or HIDDEN) — inspection aid for tests.
   var hasWindow: Bool { window != nil }
-  /// The live surface (VISIBLE or HIDDEN), else nil — for tests.
-  var currentSurface: GhosttySurfaceView? { surface }
+  /// The focused pane's surface (VISIBLE or HIDDEN), else nil.
+  var currentSurface: GhosttySurfaceView? { workspace?.focusedPane?.surface }
   /// The live window — for tests asserting the chrome-less styling.
   var currentWindow: NSWindow? { window }
 
@@ -167,7 +169,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// for the toolbar button and as the second half of `toggle()` from ABSENT/HIDDEN.
   func show() {
     if window == nil { createWindow() }
-    guard let window, let surface else { return }
+    guard let window, let surface = currentSurface else { return }
     // The hotkey can fire while another app is frontmost (or while Workroom is hidden), so pull the
     // app forward — mirrors `AppDelegate.toggleAppVisibility`.
     NSApp.activate(ignoringOtherApps: true)
@@ -226,26 +228,27 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 
   private func createWindow() {
-    let surface = makeSurface()
-    surface.wantsFocus = true
-    // Shell exit (`exit`, or the login shell dying) closes the window — "close = destroy". This fires
-    // from a libghostty action callback, so defer the teardown off that stack: freeing a surface
-    // synchronously inside a libghostty callback races its IO and crashes (see GhosttySurfaceView /
-    // AppDelegate.applicationWillTerminate). The async hop lands on the same main run loop a moment later.
-    surface.onChildExited = { [weak self] _ in
-      DispatchQueue.main.async { self?.close() }
-    }
-    self.surface = surface
+    // Each pane's shell exiting closes that pane; the last one closing closes the window.
+    let workspace = QuickTerminalWorkspace(
+      makeSurface: { [weak self] directory in
+        let surface =
+          self?.makeSurface(directory) ?? GhosttySurfaceView(workingDirectory: directory)
+        Self.applyTheme(to: surface)
+        return surface
+      },
+      onEmpty: { [weak self] in self?.close() })
+    workspace.newTab(in: Self.newTabDirectory())
+    self.workspace = workspace
 
     let window = QuickTerminalWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
-      styleMask: [.titled, .closable, .resizable],
+      styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
       backing: .buffered, defer: false)
     window.title = "Quick Terminal"
     // Chrome-less: hide the title text, the toolbar and the traffic lights, and make the titlebar
-    // transparent so the themed window background shows through (mirrors WindowBackgroundThemer).
-    // Still `.titled` + `.closable`, so it takes key focus, ⌘W's `performClose` works and the edges
-    // resize. Not movable, because every summon docks it to its edge.
+    // transparent; the tab bar sits where it was. Still `.titled` + `.closable`, so it takes key
+    // focus and the edges resize. Not movable: every summon docks it to its edge, and a drag of the
+    // tab bar's or a footer's empty space moves it along the edges (`QuickTerminalDragHandle`).
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.toolbar = nil
@@ -258,7 +261,11 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     window.delegate = self
     // The autosave restores the user's last size; `show()` sets the position.
     window.setFrameAutosaveName("QuickTerminal")
-    window.contentView = Self.contentView(surface: surface, footer: footer(following: surface))
+    // The usage segment reads these, as in a detached pane's window (`DetachedPaneView`).
+    window.contentView = NSHostingView(
+      rootView: QuickTerminalContent(workspace: workspace)
+        .environmentObject(CodingAgentUsageMonitor.shared)
+        .environmentObject(ClaudeUsageBridge.shared))
     self.window = window
     applyTheme()
 
@@ -269,48 +276,35 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     }
   }
 
-  /// The footer a pane has (folder, branch, agent usage), following this surface's shell.
-  private func footer(following surface: GhosttySurfaceView) -> NSView {
-    let status = QuickTerminalStatus(cwd: surface.workingDirectory)
-    status.follow(surface)
-    self.status = status
-    // The usage segment reads these, as in a detached pane's window (`DetachedPaneView`).
-    return NSHostingView(
-      rootView: QuickTerminalFooter(status: status)
-        .environmentObject(CodingAgentUsageMonitor.shared)
-        .environmentObject(ClaudeUsageBridge.shared))
-  }
-
-  /// The terminal above its footer, which keeps a pane footer's fixed height.
-  private static func contentView(surface: NSView, footer: NSView) -> NSView {
-    let container = NSView()
-    for view in [surface, footer] {
-      view.translatesAutoresizingMaskIntoConstraints = false
-      container.addSubview(view)
-    }
-    NSLayoutConstraint.activate([
-      surface.topAnchor.constraint(equalTo: container.topAnchor),
-      surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-      surface.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-      footer.topAnchor.constraint(equalTo: surface.bottomAnchor),
-      footer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-      footer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-      footer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-      footer.heightAnchor.constraint(equalToConstant: TerminalPanelMetrics.chromeRowHeight),
-    ])
-    return container
-  }
-
-  /// Repaint the window background and re-theme the surface for the active theme. On a `.themeDidChange`
-  /// the global ghostty config is already reloaded (ThemeService posts the notification after it
-  /// reloads), so we just push it to this standalone surface — the per-tab path in
-  /// `TerminalSessions.applyThemeToAll` doesn't see it.
+  /// Repaint the window background and re-theme every pane for the active theme. On a
+  /// `.themeDidChange` the global ghostty config is already reloaded (ThemeService posts the
+  /// notification after it reloads), so we just push it to these standalone surfaces — the per-tab
+  /// path in `TerminalSessions.applyThemeToAll` doesn't see them.
   private func applyTheme() {
-    guard let window, let surface else { return }
+    guard let window, let workspace else { return }
     window.backgroundColor = ThemeService.shared.tokens.nsPanel
+    workspace.allSurfaces.forEach(Self.applyTheme(to:))
+  }
+
+  private static func applyTheme(to surface: GhosttySurfaceView) {
     if let config = GhosttyApp.shared.config { surface.updateConfig(config) }
     surface.applyColorScheme(isDark: ThemeService.isCurrentAppearanceDark())
   }
+
+  /// A Quick Terminal key (`QuickTerminalKey`) pressed while its window is key.
+  func perform(_ key: QuickTerminalKey) {
+    guard let workspace else { return }
+    switch key {
+    case .closePane: workspace.closeFocusedPane()
+    case .newTab: workspace.newTab(in: Self.newTabDirectory())
+    case .splitRight: workspace.split(.horizontal)
+    case .splitDown: workspace.split(.vertical)
+    case .selectTab(let index): workspace.selectTab(at: index)
+    }
+  }
+
+  /// A double-click in the tab bar's empty space must not zoom the window off its edge.
+  func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool { false }
 
   /// Full close: destroy the window (its `windowWillClose` runs the teardown). Idempotent.
   func close() {
@@ -376,9 +370,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     hiding = false
     if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
     themeObserver = nil
-    surface?.tearDown()
-    surface = nil
-    status = nil
+    workspace?.tearDownAll()
+    workspace = nil
     window?.delegate = nil
     window = nil
     tearingDown = false
@@ -391,4 +384,29 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 /// directly (it's registered in the delegate), so it doesn't go through this.
 extension Notification.Name {
   static let showQuickTerminal = Notification.Name("workroom.showQuickTerminal")
+}
+
+/// The keys the Quick Terminal answers while its window is key, as a workroom window's menu does
+/// for its own tabs: ⌘W closes the focused pane (its tab with its last pane, the window with its
+/// last tab), ⌘T opens a tab, ⌘D / ⇧⌘D split right / down, ⌘1–9 pick a tab. Caught in
+/// `AppDelegate`'s key monitor, because those menu items target the workroom window.
+enum QuickTerminalKey: Equatable {
+  case closePane, newTab, splitRight, splitDown
+  /// 0-based.
+  case selectTab(Int)
+
+  static func classify(flags: NSEvent.ModifierFlags, characters: String?) -> QuickTerminalKey? {
+    let flags = flags.intersection([.command, .shift, .option, .control])
+    guard let key = characters?.lowercased() else { return nil }
+    switch (flags, key) {
+    case (.command, "w"): return .closePane
+    case (.command, "t"): return .newTab
+    case (.command, "d"): return .splitRight
+    case ([.command, .shift], "d"): return .splitDown
+    case (.command, _):
+      guard let digit = Int(key), (1...9).contains(digit) else { return nil }
+      return .selectTab(digit - 1)
+    default: return nil
+    }
+  }
 }

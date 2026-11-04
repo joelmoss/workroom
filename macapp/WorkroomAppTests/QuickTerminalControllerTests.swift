@@ -13,19 +13,20 @@ final class QuickTerminalControllerTests: XCTestCase {
   private func makeController() -> QuickTerminalController {
     let controller = QuickTerminalController()
     controller.makeSurface = {
-      GhosttySurfaceView(workingDirectory: "/tmp", command: nil, spawnsSurface: false)
+      GhosttySurfaceView(workingDirectory: $0, command: nil, spawnsSurface: false)
     }
     // Key focus moves under the test host's feet; only the focus test opts in.
     controller.hidesWhenUnfocused = { false }
     return controller
   }
 
-  func testDefaultSurfaceOpensAtHome() {
-    // The default factory (the real app path) spawns the shell in the Settings folder, ~/ while it
-    // is unset. Inspect it without mounting, so no surface is actually created.
-    let surface = QuickTerminalController().makeSurface()
+  func testFirstTabOpensInTheSettingsFolder() throws {
+    // The real app path: the first shell starts in the Settings folder, ~/ while it is unset.
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
     XCTAssertEqual(
-      surface.workingDirectory,
+      try XCTUnwrap(controller.currentSurface).workingDirectory,
       QuickTerminalController.workingDirectory(for: Defaults[.quickTerminalDirectory]))
   }
 
@@ -196,7 +197,10 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertNil(window.toolbar, "no toolbar — chrome-less")
     XCTAssertEqual(window.standardWindowButton(.closeButton)?.isHidden, true, "no traffic lights")
     XCTAssertFalse(window.isMovable, "docked to its edge")
-    XCTAssertTrue(window.styleMask.contains(.closable), "⌘W's performClose still closes it")
+    XCTAssertTrue(window.styleMask.contains(.fullSizeContentView), "the tab bar is the titlebar")
+    XCTAssertTrue(window.styleMask.contains(.resizable))
+    XCTAssertFalse(
+      controller.windowShouldZoom(window, toFrame: .zero), "a double-click never un-docks it")
   }
 
   func testWindowStartsOffScreenOutsideAppKitsConstraint() throws {
@@ -244,10 +248,30 @@ final class QuickTerminalControllerTests: XCTestCase {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let status = try XCTUnwrap(controller.status)
-    XCTAssertEqual(status.cwd, "/tmp", "seeded with the shell's folder before OSC 7 arrives")
+    let status = try XCTUnwrap(controller.workspace?.focusedPane?.status)
+    XCTAssertEqual(
+      status.cwd, QuickTerminalController.newTabDirectory(),
+      "seeded with the shell's folder before OSC 7 arrives")
     controller.currentSurface?.handlePwd("/usr")
     XCTAssertEqual(status.cwd, "/usr")
+  }
+
+  func testKeysGoToTheWorkspace() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let workspace = try XCTUnwrap(controller.workspace)
+
+    controller.perform(.splitRight)
+    controller.perform(.splitDown)
+    XCTAssertEqual(workspace.selectedTab?.layout.tabIDs.count, 3)
+    controller.perform(.newTab)
+    XCTAssertEqual(workspace.tabs.count, 2)
+    controller.perform(.selectTab(0))
+    XCTAssertEqual(workspace.selectedTabID, workspace.tabs[0].id)
+
+    for _ in 0..<4 { controller.perform(.closePane) }
+    XCTAssertFalse(controller.hasWindow, "⌘W on the last pane of the last tab closes the window")
   }
 
   func testCloseMidSlideOutTearsDown() {
