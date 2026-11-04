@@ -22,10 +22,6 @@ struct QuickTerminalDragHandle: NSViewRepresentable {
 
     override var mouseDownCanMoveWindow: Bool { false }
 
-    override func resetCursorRects() {
-      addCursorRect(bounds, cursor: .openHand)
-    }
-
     override func mouseDown(with event: NSEvent) {
       guard let window else { return }
       let pointer = NSEvent.mouseLocation
