@@ -161,6 +161,8 @@ final class GhosttySurfaceView: NSView {
   /// A closure rather than the key window's store, which the other menu commands use: a pane in its
   /// own window has no store of its own to be found by.
   var onToggleWindow: (() -> Void)?
+  /// The right-click menu's "Move to Workroom" for a Quick Terminal pane, asked as the menu opens.
+  var moveToWorkroomChoices: (() -> [PaneWorkroomGroup])?
 
   /// Scrollback find (⌘F): the observable bridge between this surface and its SwiftUI find bar.
   /// libghostty owns the search itself; this carries the needle out and the match counts back (see
@@ -445,6 +447,7 @@ final class GhosttySurfaceView: NSView {
     resolveCmdHoverFile = nil
     onFocused = nil
     onToggleWindow = nil
+    moveToWorkroomChoices = nil
     onEffectiveFocusChange = nil
     onChildExited = nil
     onCloseRequested = nil
@@ -2019,8 +2022,40 @@ final class GhosttySurfaceView: NSView {
           #selector(contextToggleWindow), "o", [.command, .control]))
       menu.addItem(.separator())
     }
+    if let groups = moveToWorkroomChoices?() {
+      let submenu = NSMenu(title: "Move to Workroom")
+      // Its own enabling: the menu's automatic validation would enable every item with a target.
+      submenu.autoenablesItems = false
+      if groups.isEmpty {
+        let none = NSMenuItem(title: "No Open Workrooms", action: nil, keyEquivalent: "")
+        none.isEnabled = false
+        submenu.addItem(none)
+      }
+      for group in groups {
+        if let header = group.header { submenu.addItem(.sectionHeader(title: header)) }
+        for choice in group.choices {
+          let item = NSMenuItem(
+            title: choice.title, action: #selector(contextMoveToWorkroom(_:)), keyEquivalent: "")
+          item.target = self
+          item.representedObject = choice
+          item.isEnabled = choice.enabled
+          item.image = NSImage(systemSymbolName: choice.glyph, accessibilityDescription: nil)
+          submenu.addItem(item)
+        }
+      }
+      let parent = NSMenuItem(title: "Move to Workroom", action: nil, keyEquivalent: "")
+      parent.image = .moveTerminal
+      parent.submenu = submenu
+      menu.addItem(parent)
+      menu.addItem(.separator())
+    }
     menu.addItem(contextItem("Close Terminal", #selector(contextCloseTerminal), "w", .command))
     return menu
+  }
+
+  @objc private func contextMoveToWorkroom(_ item: NSMenuItem) {
+    guard let choice = item.representedObject as? PaneWorkroomChoice else { return }
+    DispatchQueue.main.async { choice.move() }
   }
 
   /// Build a context-menu item targeting this view; the optional key/modifiers are shown as a hint.

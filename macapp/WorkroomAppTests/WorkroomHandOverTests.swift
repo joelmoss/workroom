@@ -1,6 +1,7 @@
 import AppKit
 import DaemonConnection
 import WorkroomDomain
+import WorkroomWire
 import XCTest
 
 @testable import Workroom
@@ -845,6 +846,196 @@ final class WorkroomHandOverTests: XCTestCase {
       window.contentRect(forFrameRect: window.frame).size, AppStore.newWindowContentSize)
     XCTAssertEqual(window.frame.minX, drop.x, accuracy: 1)
     XCTAssertEqual(window.frame.maxY, drop.y, accuracy: 1)
+  }
+
+  // MARK: A Quick Terminal pane into a window
+
+  /// The Quick Terminal's store and its one pane, and a window with workroom `a` selected and open.
+  private func makeQuickTerminalMove(
+    retag: ((UUID, String) async -> Bool)? = nil
+  ) -> (quick: AppStore, pane: TerminalTab, window: AppStore) {
+    let quick = makeStore()
+    quick.terminals.allowsDetach = false
+    quick.terminals.moveToWorkroomChoices = { _, _ in [] }
+    quick.terminals.sessionService = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned }, retag: retag)
+    let pane = quick.terminals.addTab(for: QuickTerminalController.target())
+    let window = makeStore()
+    _ = window.terminals.addTab(for: target(window))
+    window.selectedTargetID = sid
+    return (quick, pane, window)
+  }
+
+  /// Value: protects=a Quick Terminal pane joins the workroom the window shows, live, as its newest
+  /// tab, and leaves the Quick Terminal; fails_when=the hand-off reattaches, lands elsewhere or leaves
+  /// a copy behind; why_new=new path; seam=none; no_claim=window raise on screen.
+  func testAQuickTerminalPaneJoinsTheWorkroomTheWindowShows() async {
+    let (quick, pane, window) = makeQuickTerminalMove()
+    let t = target(window)
+    var emptied = false
+    quick.onTargetEmptied = { _ in emptied = true }
+
+    await quick.moveQuickTerminalPane(pane.id, of: QuickTerminalController.target(), to: window)
+
+    XCTAssertEqual(quick.terminals.tabCount(forTargetID: QuickTerminalController.targetID), 0)
+    XCTAssertTrue(emptied, "its last pane leaving closes the Quick Terminal")
+    XCTAssertTrue(
+      window.terminals.tab(pane.id, for: t)?.surface === pane.surface, "the same surface")
+    XCTAssertEqual(window.terminals.allTabs(for: t).last?.id, pane.id, "after the workroom's own")
+    XCTAssertEqual(window.terminals.focusedTab(for: t)?.id, pane.id)
+    XCTAssertEqual(
+      pane.surface?.sessionMetadata.first { $0.key == SessionMetadataKey.workroom }?.value,
+      t.sessionWorkroomKey, "a reattach names its new workroom")
+    pane.surface?.onTitleChange?("vim")
+    XCTAssertEqual(window.terminals.tab(pane.id, for: t)?.title, "vim", "it reports to the window")
+    XCTAssertNil(pane.surface?.moveToWorkroomChoices, "no Move to Workroom once it is a workroom's")
+  }
+
+  /// Value: protects=the shell is retagged as the workroom's before it moves, and a refusal moves
+  /// nothing (a moved shell still tagged as the Quick Terminal's would be ended at the next launch);
+  /// fails_when=the move skips or ignores the retag; why_new=new path; seam=the retag answer;
+  /// no_claim=the daemon's own handling (vcs/crates/workroomd tests).
+  func testAPaneMovesOnlyOnceItsShellIsTheWorkroomsAndStaysWhenThatFails() async {
+    var asked: [(UUID, String)] = []
+    var answer = false
+    let (quick, pane, window) = makeQuickTerminalMove { session, workroom in
+      asked.append((session, workroom))
+      return answer
+    }
+    let session = UUID()
+    pane.surface?.persistentSessionID = session
+    let quickTarget = QuickTerminalController.target()
+
+    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window)
+
+    XCTAssertEqual(asked.map(\.0), [session])
+    XCTAssertEqual(asked.first?.1, target(window).sessionWorkroomKey)
+    XCTAssertEqual(quick.terminals.tabCount(forTargetID: quickTarget.id), 1, "refused: it stays")
+    XCTAssertNotNil(window.errorMessage, "and the window says why")
+
+    answer = true
+    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window)
+    XCTAssertEqual(quick.terminals.tabCount(forTargetID: quickTarget.id), 0)
+    XCTAssertNotNil(window.terminals.tab(pane.id, for: target(window)))
+  }
+
+  /// Value: protects=a window whose workroom is on a host, or that shows none, takes no Quick
+  /// Terminal pane (a shell on this Mac can't be a pane there); fails_when=the gate goes;
+  /// why_new=new path; seam=none; no_claim=the menu's disabled rendering.
+  func testAWindowWithNoWorkroomSelectedTakesNoPane() async {
+    let (quick, pane, window) = makeQuickTerminalMove()
+    window.selectedTargetID = nil
+
+    await quick.moveQuickTerminalPane(pane.id, of: QuickTerminalController.target(), to: window)
+
+    XCTAssertNil(window.quickTerminalPaneDestination())
+    XCTAssertEqual(quick.terminals.tabCount(forTargetID: QuickTerminalController.targetID), 1)
+  }
+
+  /// Value: protects=a drop on a window with workrooms side by side picks the workroom drawn under
+  /// the pointer, laid out as the renderer lays them out (its pane space's offset included);
+  /// fails_when=the hit-test ignores the offset or the split; why_new=new path; seam=none;
+  /// no_claim=screen-to-window conversion (needs a real window).
+  func testADropPicksTheWorkroomDrawnUnderThePointer() {
+    let layout = PaneLayout<SidebarID>.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(sid), second: .leaf(otherSid))
+    let space = CGRect(x: 10, y: 50, width: 800, height: 600)
+
+    XCTAssertEqual(AppStore.workroom(at: CGPoint(x: 100, y: 300), in: layout, space: space), sid)
+    XCTAssertEqual(
+      AppStore.workroom(at: CGPoint(x: 700, y: 300), in: layout, space: space), otherSid)
+    XCTAssertNil(
+      AppStore.workroom(at: CGPoint(x: 700, y: 20), in: layout, space: space),
+      "above the panes (the tab bar): none, so the selected one takes it")
+  }
+
+  /// Value: protects=a pane dropped on a split's other workroom joins that one, which then has the
+  /// focus; fails_when=the move ignores the drop's workroom; why_new=owner asked 2026-11-04;
+  /// seam=the destination resolved, not the screen point (needs a real window); no_claim=geometry.
+  func testAPaneMovedIntoAnotherWorkroomOfTheWindowFocusesIt() async {
+    let (quick, pane, window) = makeQuickTerminalMove()
+    let other = target(window, otherSid)
+
+    XCTAssertEqual(window.quickTerminalPaneDestination()?.sid, sid, "a menu: the selected one")
+    await quick.moveQuickTerminalPane(
+      pane.id, of: QuickTerminalController.target(), to: window, into: otherSid)
+
+    XCTAssertNotNil(window.terminals.tab(pane.id, for: other))
+    XCTAssertEqual(window.selectedTargetID, otherSid)
+  }
+
+  /// Value: protects=the "Move to Workroom" icon draws both its symbols at every scale, with the
+  /// arrow's ring cut out of the terminal; fails_when=a symbol name stops resolving (an empty image)
+  /// or the cut-out stops clearing; why_new=a composed image; seam=none; no_claim=how it looks.
+  func testTheMoveToWorkroomIconDrawsATerminalWithAnArrow() throws {
+    try assertBadgedIcon(.moveTerminal)
+  }
+
+  private func assertBadgedIcon(_ icon: NSImage) throws {
+    XCTAssertTrue(icon.isTemplate)
+    XCTAssertEqual(icon.representations.count, 3)
+    let rep = try XCTUnwrap(icon.representations.compactMap { $0 as? NSBitmapImageRep }.last)
+    func alpha(_ x: Int, _ y: Int) -> CGFloat { rep.colorAt(x: x, y: y)?.alphaComponent ?? 0 }
+    let w = rep.pixelsWide
+    let h = rep.pixelsHigh
+    // Bitmap rows run top-down: the arrow badge is bottom-right, the terminal's top-left corner
+    // stroke top-left.
+    XCTAssertGreaterThan(alpha(w - 3 * 7 / 2, h - 3 * 7 / 2), 0.5, "the arrow badge")
+    XCTAssertGreaterThan(
+      (0..<w / 3).map { alpha($0, h / 2) }.max() ?? 0, 0.5, "the terminal's left side")
+  }
+
+  /// Value: protects="Move to Workroom" lists every workroom open in every window, each window's in
+  /// its tab order under the window's name, and moves into the one chosen in its own window;
+  /// fails_when=it lists only selected workrooms or one window, or moves to the wrong window;
+  /// why_new=owner asked 2026-11-04; seam=the window list; no_claim=menu rendering.
+  func testMoveToWorkroomListsEveryOpenWorkroomInEveryWindow() async {
+    let (quick, pane, first) = makeQuickTerminalMove()
+    _ = first.terminals.addTab(for: target(first, otherSid))
+    let second = makeStore()
+    let third = SidebarID.workroom(project: "/p", name: "c")
+    _ = second.terminals.addTab(for: target(second, third))
+    second.selectedTargetID = third
+    let quickTarget = QuickTerminalController.target()
+
+    let groups = quick.quickTerminalPaneWorkroomChoices(
+      pane.id, of: quickTarget, windows: [first, second])
+
+    XCTAssertEqual(groups.map(\.choices.count), [2, 1], "the unselected `b` too")
+    XCTAssertEqual(
+      groups.map(\.header), [first.defaultWindowTitle, second.defaultWindowTitle],
+      "two windows: each named")
+    XCTAssertEqual(
+      groups.first?.choices.map(\.title), [first.title(for: sid), first.title(for: otherSid)])
+    XCTAssertNil(
+      quick.quickTerminalPaneWorkroomChoices(pane.id, of: quickTarget, windows: [first]).first?
+        .header, "one window: no header")
+
+    groups[1].choices[0].move()
+    for _ in 0..<50 where second.terminals.tab(pane.id, for: target(second, third)) == nil {
+      await Task.yield()
+    }
+    XCTAssertNotNil(second.terminals.tab(pane.id, for: target(second, third)))
+    XCTAssertNil(first.terminals.tab(pane.id, for: target(first)))
+  }
+
+  /// Value: protects=a moved pane's notifications follow it, so opening one finds the pane in its
+  /// new window and closing the Quick Terminal doesn't drop them; fails_when=repoint is skipped or
+  /// runs after the Quick Terminal closes; why_new=new path; seam=none; no_claim=banner text.
+  func testAMovedPanesNotificationsFollowIt() async {
+    let (quick, pane, window) = makeQuickTerminalMove()
+    let quickTarget = QuickTerminalController.target()
+    quick.notifications.record(
+      targetID: quickTarget.id, tabID: pane.id, activity: .osc(title: "done", body: nil),
+      focused: false, origin: ObjectIdentifier(quick))
+
+    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window)
+    registry.dropNotifications(raisedBy: quick)
+
+    let moved = notifications.items.filter { $0.tabID == pane.id }
+    XCTAssertEqual(moved.count, 1, "closing the Quick Terminal leaves it")
+    XCTAssertEqual(moved.first?.targetID, target(window).id)
+    XCTAssertEqual(moved.first?.origin, ObjectIdentifier(window))
   }
 
   /// The drag's own ghost sits under the cursor: a drop must look past it to the window beneath,

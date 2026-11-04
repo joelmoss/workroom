@@ -286,6 +286,13 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     sessions.sessionService = sessionService
     sessions.readsPaneBranches = true
     sessions.allowsDetach = false
+    // Its panes move into a workroom open in any window instead.
+    sessions.moveToWorkroomChoices = { [weak store] tabID, target in
+      store?.quickTerminalPaneWorkroomChoices(tabID, of: target) ?? []
+    }
+    sessions.dropOutsideWindow = { [weak store] tabID, target in
+      if let store { QuickTerminalPaneDrag.end(store: store, tabID: tabID, target: target) }
+    }
     sessions.makeView = { [weak self] _, directory, command in
       let surface =
         self?.makeSurface(directory, command)

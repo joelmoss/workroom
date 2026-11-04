@@ -205,8 +205,12 @@ final class WindowRegistry: ObservableObject {
       assignWindowNumberIfNeeded(store)
       recomputeBadge()
       recomputeActiveCodingAgents()
+      windowsChanged += 1
     }
   }
+
+  /// Bumped as windows come and go, for views that list them (`QuickTerminalMoveToWorkroomMenu`).
+  @Published private(set) var windowsChanged = 0
 
   /// Give a newly registered window the smallest unused positive number, so the untitled-window
   /// fallback reads "Window 1", "Window 2", … and a closed window's number is reclaimed by the next
@@ -227,6 +231,7 @@ final class WindowRegistry: ObservableObject {
       dropNotifications(raisedBy: closing)
     }
     entries.removeAll { $0.window === window || $0.window == nil }
+    windowsChanged += 1
     recomputeBadge()
     recomputeActiveCodingAgents()
     // Without this a closed window is never noticed, and comes back on the next launch. The quit

@@ -122,6 +122,135 @@ func paneWindowMenuItem(
   }
 }
 
+extension NSImage {
+  /// "Move to Workroom"'s icon: a terminal with an arrow, since the terminal is what moves. No SF
+  /// Symbol says that.
+  @MainActor static let moveTerminal = badged(
+    "apple.terminal", badge: "arrow.right.circle.fill", description: "Move to workroom")
+
+  /// Symbol `base` at the pane title bar's glyph size with symbol `badge` small in its bottom-right
+  /// corner, cut out of it so the pair reads at 11pt, as one template image. `base` stays at the
+  /// image's centre, level with the plain symbols beside it.
+  @MainActor static func badged(_ base: String, badge: String, description: String) -> NSImage {
+    let terminal = NSImage(systemSymbolName: base, accessibilityDescription: nil)?
+      .withSymbolConfiguration(.init(pointSize: PaneTitleBarMetrics.glyph, weight: .regular))
+    let arrow = NSImage(systemSymbolName: badge, accessibilityDescription: nil)?
+      .withSymbolConfiguration(.init(pointSize: 7, weight: .bold))
+    guard let terminal, let arrow else { return NSImage() }
+    // The same room on every side, so the base sits at the image's centre; the badge takes the
+    // bottom-right corner of that room.
+    let pad: CGFloat = 3
+    let size = NSSize(width: terminal.size.width + 2 * pad, height: terminal.size.height + 2 * pad)
+    let image = NSImage(size: size)
+    // Into bitmaps of its own, so the cut-out clears only the base, never what the icon is drawn on.
+    for scale in [1, 2, 3] as [CGFloat] {
+      guard
+        let rep = NSBitmapImageRep(
+          bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale),
+          pixelsHigh: Int(size.height * scale), bitsPerSample: 8, samplesPerPixel: 4,
+          hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0,
+          bitsPerPixel: 0)
+      else { continue }
+      // Before the context: it draws in points, scaled to this rep's pixels.
+      rep.size = size
+      guard let context = NSGraphicsContext(bitmapImageRep: rep) else { continue }
+      NSGraphicsContext.saveGraphicsState()
+      NSGraphicsContext.current = context
+      terminal.draw(in: NSRect(origin: NSPoint(x: pad, y: pad), size: terminal.size))
+      let badge = NSRect(origin: NSPoint(x: size.width - arrow.size.width, y: 0), size: arrow.size)
+      context.compositingOperation = .destinationOut
+      NSColor.black.setFill()
+      NSBezierPath(ovalIn: badge.insetBy(dx: -1.5, dy: -1.5)).fill()
+      context.compositingOperation = .sourceOver
+      arrow.draw(in: badge)
+      NSGraphicsContext.restoreGraphicsState()
+      image.addRepresentation(rep)
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = description
+    return image
+  }
+}
+
+/// "Move to Workroom" for a Quick Terminal pane: every workroom open in every Workroom window, in
+/// each window's tab order and under the window's name when there is more than one
+/// (`AppStore.quickTerminalPaneWorkroomChoices`), moving the pane into the one chosen. One on a host,
+/// or still being created, is listed but disabled. A submenu in the tab chip's menu, a button in the
+/// pane's title bar.
+struct QuickTerminalMoveToWorkroomMenu: View {
+  enum Style { case menuItem, toolbar }
+
+  let store: AppStore
+  let tabID: TerminalTab.ID
+  let target: TerminalTarget
+  let style: Style
+  /// Windows come and go without the stores this reads publishing it.
+  @ObservedObject private var registry = WindowRegistry.shared
+  @State private var hovering = false
+
+  init(store: AppStore, tabID: TerminalTab.ID, target: TerminalTarget, style: Style) {
+    self.store = store
+    self.tabID = tabID
+    self.target = target
+    self.style = style
+  }
+
+  var body: some View {
+    let groups = store.quickTerminalPaneWorkroomChoices(
+      tabID, of: target, windows: registry.allStores)
+    let menu = Menu {
+      if groups.isEmpty {
+        Button("No Open Workrooms") {}.disabled(true)
+      }
+      ForEach(groups.indices, id: \.self) { index in
+        let group = groups[index]
+        if let header = group.header {
+          Section(header) { items(group) }
+        } else {
+          items(group)
+        }
+      }
+    } label: {
+      switch style {
+      case .menuItem:
+        Label {
+          Text("Move to Workroom")
+        } icon: {
+          Image(nsImage: .moveTerminal)
+        }
+      case .toolbar:
+        // Its neighbours' colours (`PaneToolbarButton`), which a menu's own label styling would
+        // otherwise lighten.
+        Image(nsImage: .moveTerminal)
+          .renderingMode(.template)
+          .foregroundStyle(hovering ? Color.primary : Color.secondary)
+      }
+    }
+    switch style {
+    case .menuItem:
+      menu
+    case .toolbar:
+      // `.button`, as the title bar's overflow menu is, so it wears the bar's hover well.
+      menu
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help("Move to workroom")
+        .accessibilityLabel("Move pane to workroom")
+        .accessibilityIdentifier("pane.toolbar.moveToWorkroom")
+    }
+  }
+
+  private func items(_ group: PaneWorkroomGroup) -> some View {
+    ForEach(group.choices.indices, id: \.self) { index in
+      let choice = group.choices[index]
+      Button(action: choice.move) { Label(choice.title, systemImage: choice.glyph) }
+        .disabled(!choice.enabled)
+    }
+  }
+}
+
 /// Whether `moveToNewWindowMenuItem` renders anything, for the dividers around it.
 @MainActor
 func showsMoveToNewWindow(store: AppStore, sid: SidebarID) -> Bool {
