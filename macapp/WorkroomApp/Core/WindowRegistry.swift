@@ -86,12 +86,16 @@ final class WindowRegistry: ObservableObject {
     return DropWindow.none
   }
 
-  /// Combined unread notification count across every window — drives the menu-bar label + Dock badge
-  /// (issue #70). `@Published` so the `MenuBarExtra` label re-renders as any window's count changes.
+  /// The app's one notification list, shared by every window (ADR 0064).
+  let notifications = NotificationCenterStore()
+  /// The unread count every surface shows: the bell, the menu bar and the Dock badge (ADR 0064).
+  /// `@Published` so they re-render as it changes.
   @Published private(set) var aggregateUnread = 0
   @Published private(set) var activeCodingAgentBackends: Set<CodingAgentBackend> = []
 
   init() {
+    // Driven from the model, not a view: a hidden window's view misses background changes (#32).
+    notifications.onTotalChange = { [weak self] _ in self?.recomputeBadge() }
     // Track the active workroom window. Only registered windows update `lastActiveStore`, so the quit
     // alert / Settings / menu-bar popover becoming key leaves the last *workroom* selection intact.
     NotificationCenter.default.addObserver(
@@ -312,17 +316,15 @@ final class WindowRegistry: ObservableObject {
     if agents != activeCodingAgentBackends { activeCodingAgentBackends = agents }
   }
 
-  /// Mirror the *combined* unread count across all windows onto the menu-bar label + Dock badge
-  /// (issue #70). Replaces the per-store `DockBadge.apply` so a second window can't clobber the
-  /// first's count. Called from each store's `notifications.onTotalChange` and on register/unregister.
+  /// Mirror the unread count onto the menu-bar label, the bell and the Dock badge. Called when the
+  /// list changes and on register/unregister.
   ///
   /// It counts requests a program waits on the user for (#358) while they wait, read or not, plus
   /// every other unread notification; a "needs you" alert is never counted twice.
   func recomputeBadge() {
     let alerts = ProgramStatusAlerts.shared
     alerts.recomputeWaiting()
-    let unread = allStores.reduce(0) { $0 + $1.notifications.unreadExcludingRequests }
-    let total = unread + alerts.countedWaiting
+    let total = notifications.unreadExcludingRequests + alerts.countedWaiting
     if total != aggregateUnread { aggregateUnread = total }
     DockBadge.apply(total)
   }

@@ -1,4 +1,5 @@
 import AppKit
+import DaemonConnection
 import WorkroomDomain
 import XCTest
 
@@ -11,6 +12,8 @@ import XCTest
 @MainActor
 final class WorkroomHandOverTests: XCTestCase {
   private let shared = ProjectStore()
+  /// The app's one notification list, as every window shares it (ADR 0064).
+  private let notifications = NotificationCenterStore()
   private let sid = SidebarID.workroom(project: "/p", name: "a")
   private let otherSid = SidebarID.workroom(project: "/p", name: "b")
 
@@ -26,7 +29,7 @@ final class WorkroomHandOverTests: XCTestCase {
   }
 
   private func makeStore() -> AppStore {
-    let store = AppStore(projectStore: shared)
+    let store = AppStore(projectStore: shared, notifications: notifications)
     store.confirmOnCloseOverrideForTesting = false
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
@@ -321,8 +324,7 @@ final class WorkroomHandOverTests: XCTestCase {
 
     origin.moveWorkroom(sid, to: destination)
 
-    XCTAssertEqual(origin.notifications.count(target: t.id), 0)
-    XCTAssertEqual(destination.notifications.count(tab: tab.id), 1)
+    XCTAssertEqual(destination.notifications.count(tab: tab.id), 1, "a move keeps them unread")
   }
 
   func testAWorkroomInASplitLeavesTheGroupItCameFrom() {
@@ -527,19 +529,19 @@ final class WorkroomHandOverTests: XCTestCase {
   }
 
   /// Value: protects=a moved terminal's next finished-turn notification replaces its last one rather
-  /// than adding a second; fails_when=the finish index stays in the old window; why_new=only the
-  /// notifications themselves were checked; seam=none; no_claim=raising a real finish.
-  func testAMovedTerminalsLatestFinishMovesWithIt() {
+  /// than adding a second; fails_when=the finish index lives with a window again; why_new=only the
+  /// notifications themselves were checked; seam=none; no_claim=a finish raised by a real program.
+  func testAMovedTerminalsNextFinishReplacesItsLastOne() {
     let origin = makeOrigin()
     let destination = makeStore()
-    let tab = origin.terminals.addTab(for: target(origin))
-    let note = UUID()
-    origin.adoptLastFinishes([tab.id: note])
+    let t = target(origin)
+    let tab = origin.terminals.addTab(for: t)
+    origin.raiseFinished(targetID: t.id, tabID: tab.id, record: .init(id: "", state: .idle))
 
     origin.moveWorkroom(sid, to: destination)
+    destination.raiseFinished(targetID: t.id, tabID: tab.id, record: .init(id: "", state: .idle))
 
-    XCTAssertEqual(origin.takeLastFinishes([tab.id]), [:])
-    XCTAssertEqual(destination.takeLastFinishes([tab.id]), [tab.id: note])
+    XCTAssertEqual(notifications.count(tab: tab.id), 1, "the second finish replaced the first")
   }
 
   /// Value: protects=the run toast state and investigate tabs travelling with the workroom, a

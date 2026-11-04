@@ -132,19 +132,22 @@ final class MultiWindowTests: XCTestCase {
     registry.unregister(window: firstWindow)
   }
 
-  func testRegistryAggregatesUnreadAcrossWindows() {
+  /// Value: protects=every window showing the app's one notification list and one count (ADR 0064);
+  /// fails_when=a window gets a list of its own again or the count stops following the list;
+  /// why_new=the old test summed per-window lists; seam=none; no_claim=SwiftUI rendering.
+  func testWindowsShareOneNotificationListAndCount() {
     let registry = WindowRegistry()
-    let a = AppStore(projectStore: ProjectStore())
-    let b = AppStore(projectStore: ProjectStore())
+    let a = AppStore(projectStore: ProjectStore(), notifications: registry.notifications)
+    let b = AppStore(projectStore: ProjectStore(), notifications: registry.notifications)
     registry.register(window: NSWindow(), store: a)
     registry.register(window: NSWindow(), store: b)
 
     a.notifications.seedForTesting([notification("t1")])
-    b.notifications.seedForTesting([notification("t2"), notification("t3")])
-    registry.recomputeBadge()
+    b.notifications.record(
+      targetID: "t2", tabID: UUID(), activity: .osc(title: "done", body: nil), focused: false)
 
-    XCTAssertEqual(
-      registry.aggregateUnread, 3, "the badge/menu-bar count sums every window's unread")
+    XCTAssertEqual(a.notifications.items.count, 2, "A lists B's notification")
+    XCTAssertEqual(registry.aggregateUnread, 2, "the count follows the list without a recompute")
   }
 
   /// **The window number is assigned AFTER the view update, and must stay that way.** `register` is

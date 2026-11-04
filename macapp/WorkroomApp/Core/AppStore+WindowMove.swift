@@ -8,9 +8,6 @@ struct WorkroomHandOff {
   let sid: SidebarID
   var sessions: TerminalSessions.TargetHandOff
   let run: RunCommandController.HandOff
-  let notifications: [WorkroomNotification]
-  /// Which of those is each tab's latest finish, the one its next finish replaces.
-  let lastFinishes: [TerminalTab.ID: UUID]
 }
 
 /// Moves waiting on a window that has been asked for but does not exist yet (issue #444). The new
@@ -87,7 +84,6 @@ extension AppStore {
   /// sessions fire would otherwise clear it as for a closed run tab.
   private func takeWorkroom(_ sid: SidebarID, target: TerminalTarget) -> WorkroomHandOff? {
     let run = runCommand.takeHandOff(for: target.id)
-    let notes = notifications.take(target: target.id)
     // Find belongs to the selected workroom's focused content pane, which is leaving. Its own
     // focus-change close does not fire: the hand-off clears focus without notifying.
     if selectedTargetID == sid, contentFind.isOpen { contentFind.close() }
@@ -100,14 +96,10 @@ extension AppStore {
     }
     guard var sessions = terminals.handOff(target) else {
       runCommand.adopt(run, for: target.id)
-      notifications.adopt(notes)
       return nil
     }
     for id in sessions.detached.keys { sessions.detached[id] = frames[id] ?? .zero }
-    WindowRegistry.shared.recomputeBadge()
-    return WorkroomHandOff(
-      sid: sid, sessions: sessions, run: run, notifications: notes,
-      lastFinishes: takeLastFinishes(sessions.tabs.map(\.id)))
+    return WorkroomHandOff(sid: sid, sessions: sessions, run: run)
   }
 
   /// Take in a workroom another window handed over, select it and bring this window forward. Into a
@@ -144,8 +136,6 @@ extension AppStore {
       scheduleSessionRecoveryAfterDisplay()
     }
     runCommand.adopt(run, for: id)
-    notifications.adopt(handOff.notifications)
-    adoptLastFinishes(handOff.lastFinishes)
     // Only for a run that came with it: one this window already ran has its own poll going.
     if run.state != nil || !run.investigateTabs.isEmpty { resumeAdoptedRun(for: target) }
     if let closing { terminals.closeTab(closing, for: target) }
@@ -153,7 +143,6 @@ extension AppStore {
     selectedTargetID = handOff.sid
     selectedProjectID = Self.projectPath(of: handOff.sid)
     refreshSelectionHasTabs()
-    WindowRegistry.shared.recomputeBadge()
     markSessionDirty()
     NSApp.activate(ignoringOtherApps: true)
     hostWindow?.makeKeyAndOrderFront(nil)

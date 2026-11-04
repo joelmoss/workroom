@@ -91,11 +91,6 @@ final class NotificationStoreTests: XCTestCase {
     XCTAssertEqual(s.count(tab: tab), 2)
     XCTAssertEqual(s.total, 2)
 
-    let moved = s.take(target: otherTarget)
-    XCTAssertEqual(s.total, 0)
-    s.adopt(moved)
-    XCTAssertEqual(s.count(target: otherTarget), 2)
-    XCTAssertEqual(s.total, 2)
     s.clear()
     XCTAssertEqual(s.count(tab: tab), 0)
     XCTAssertEqual(s.unreadExcludingRequests, 0)
@@ -221,30 +216,5 @@ final class NotificationStoreTests: XCTestCase {
     XCTAssertNotNil(NSApp.dockTile.contentView)
     DockBadge.apply(0)
     XCTAssertNil(NSApp.dockTile.contentView)
-  }
-
-  /// Value: protects=a workroom's unread notifications moving to another window and the cap still
-  /// dropping the oldest across the merge; fails_when=take leaves copies behind, adopt appends
-  /// unsorted or ignores the cap; why_new=take/adopt (#444) are only covered through a whole-window
-  /// move with one note; seam=none; no_claim=the panel's rendering.
-  func testTakeMovesATargetsNotesAndAdoptKeepsTheNewestWithinTheCap() {
-    var clock = 0.0
-    let origin = NotificationCenterStore(cap: 2, now: { Date(timeIntervalSince1970: clock) })
-    let destination = NotificationCenterStore(cap: 2, now: { Date(timeIntervalSince1970: clock) })
-    clock = 1
-    origin.record(targetID: target, tabID: UUID(), activity: osc("old"), focused: false)
-    clock = 9
-    origin.record(targetID: target, tabID: UUID(), activity: osc("new"), focused: false)
-    clock = 2
-    origin.record(targetID: otherTarget, tabID: UUID(), activity: osc("stay"), focused: false)
-    clock = 5
-    destination.record(targetID: target, tabID: UUID(), activity: osc("mid"), focused: false)
-
-    let moved = origin.take(target: target)
-    destination.adopt(moved)
-
-    XCTAssertEqual(origin.items.map(\.title), ["stay"], "only the target's notes leave")
-    XCTAssertTrue(origin.take(target: target).isEmpty)
-    XCTAssertEqual(destination.items.map(\.title), ["mid", "new"], "oldest dropped at the cap")
   }
 }

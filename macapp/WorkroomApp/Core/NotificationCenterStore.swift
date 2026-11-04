@@ -211,18 +211,12 @@ final class NotificationCenterStore: ObservableObject {
 
   func clear() { items.removeAll() }
 
-  /// A workroom moving to another window takes its notifications with it, still unread (#444).
-  func take(target: TerminalTarget.ID) -> [WorkroomNotification] {
-    let moved = items.filter { $0.targetID == target }
-    if !moved.isEmpty { items.removeAll { $0.targetID == target } }
-    return moved
-  }
+  /// Each tab's latest "finished" notification, which the tab's next finish replaces.
+  private var lastFinish: [TerminalTab.ID: UUID] = [:]
 
-  /// The other half of `take`, in the window the workroom moved to. Kept in date order, so the
-  /// cap still drops the oldest.
-  func adopt(_ moved: [WorkroomNotification]) {
-    guard !moved.isEmpty else { return }
-    items = Array((items + moved).sorted { $0.date < $1.date }.suffix(cap))
+  /// Make `notif` the latest finish of `tab`, returning the one it replaces.
+  func replaceFinish(of tab: TerminalTab.ID, with notif: UUID) -> UUID? {
+    lastFinish.updateValue(notif, forKey: tab)
   }
 
   // MARK: Test seam
