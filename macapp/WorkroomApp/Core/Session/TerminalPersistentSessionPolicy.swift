@@ -1,8 +1,7 @@
 import Foundation
 
 enum TerminalPersistentSessionPolicy {
-  /// `persists`: false for the Quick Terminal's own `TerminalSessions`, whose shells are never kept,
-  /// so none of its panes gets a session, new or old.
+  /// The Quick Terminal's panes take sessions too, ended at quit rather than kept (ADR 0064).
   ///
   /// **`isAvailable` gates only a NEW id.** It answers for the backend a new session would be
   /// created in, so it goes false whenever that backend cannot run — and a pane RESTORED from a
@@ -22,10 +21,9 @@ enum TerminalPersistentSessionPolicy {
     isAvailable: Bool,
     inProcessCommand: Bool,
     hasExistingSession: Bool,
-    persists: Bool = true,
     // A fixture pane is a plain shell, unless the launch gave it a scratch daemon of its own.
     isFixture: Bool = AppEnvironment.current.isFixture && UITestFixture.liveDaemonDirectory == nil
   ) -> Bool {
-    persists && (isAvailable || hasExistingSession) && !inProcessCommand && !isFixture
+    (isAvailable || hasExistingSession) && !inProcessCommand && !isFixture
   }
 }

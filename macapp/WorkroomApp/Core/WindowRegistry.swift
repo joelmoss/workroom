@@ -226,7 +226,7 @@ final class WindowRegistry: ObservableObject {
       closing.detachedPanes.closeAll()
       // Its notifications go with it, banners too (#573 D3), but not on quit: they die with the
       // process anyway, and a quit should leave delivered banners where they are.
-      if !SessionCoordinator.shared.isFrozen {
+      if !isTerminating {
         let dropped = notifications.removeAll(from: ObjectIdentifier(closing))
         closing.systemNotifier.withdraw(
           identifiers: dropped.map { $0.episode ?? $0.tabID.uuidString })
