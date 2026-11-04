@@ -934,6 +934,22 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(quick.terminals.tabCount(forTargetID: QuickTerminalController.targetID), 1)
   }
 
+  /// Value: protects=the Move to Workroom list offers a workroom whose create is in flight but
+  /// disabled, beside the window's ordinary workroom, enabled; fails_when=the choice's enabled flag
+  /// ignores the gate; why_new=the choice path was only covered through the target gate; seam=none;
+  /// no_claim=the menu's disabled rendering, or a host's workroom.
+  func testAWorkroomBeingCreatedIsListedDisabledForAQuickTerminalPane() {
+    let (quick, pane, window) = makeQuickTerminalMove()
+    _ = window.terminals.addTab(for: target(window, otherSid))
+    window.creationRunForTarget[target(window, otherSid).id] = UUID()
+
+    let choices = quick.quickTerminalPaneWorkroomChoices(
+      pane.id, of: QuickTerminalController.target(), windows: [window]
+    ).flatMap(\.choices)
+
+    XCTAssertEqual(choices.map(\.enabled), [true, false], "a, then b (being created)")
+  }
+
   /// Value: protects=a drop on a window with workrooms side by side picks the workroom drawn under
   /// the pointer, laid out as the renderer lays them out (its pane space's offset included);
   /// fails_when=the hit-test ignores the offset or the split; why_new=new path; seam=none;
@@ -1038,6 +1054,65 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(moved.count, 1, "closing the Quick Terminal leaves it")
     XCTAssertEqual(moved.first?.targetID, target(window).id)
     XCTAssertEqual(moved.first?.origin, ObjectIdentifier(window))
+  }
+
+  /// Value: protects=a workroom that goes while the daemon is asked to retag leaves the shell the
+  /// Quick Terminal's again (retagged back) and the pane in place; fails_when=the check after the
+  /// wait or the retag back goes (the shell would stay tagged to a workroom that no longer exists);
+  /// why_new=the only path through the post-await guard; seam=the retag answer;
+  /// no_claim=the daemon's own handling (vcs/crates/workroomd tests).
+  func testAWorkroomGoneWhileTheShellIsRetaggedGivesTheShellBack() async {
+    var asked: [String] = []
+    let (quick, pane, window) = makeQuickTerminalMove { _, workroom in
+      asked.append(workroom)
+      if asked.count == 1 { self.shared.projects = [] }
+      return true
+    }
+    pane.surface?.persistentSessionID = UUID()
+    let quickTarget = QuickTerminalController.target()
+    let key = target(window).sessionWorkroomKey
+
+    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)
+
+    XCTAssertEqual(asked, [key, quickTarget.sessionWorkroomKey], "tagged, then given back")
+    XCTAssertEqual(quick.terminals.tabCount(forTargetID: quickTarget.id), 1, "the pane stays")
+  }
+
+  /// Value: protects=moving one of several Quick Terminal panes leaves the rest in place with the
+  /// focus on a neighbour, and the Quick Terminal open; fails_when=the hand-off leaves the moved tab
+  /// in the order or focus, or empties the target; why_new=the other test moves a lone pane;
+  /// seam=none; no_claim=window raise on screen.
+  func testMovingOneOfSeveralQuickTerminalPanesLeavesTheRest() async {
+    let (quick, first, window) = makeQuickTerminalMove()
+    let quickTarget = QuickTerminalController.target()
+    let second = quick.terminals.addTab(for: quickTarget)
+    var emptied = false
+    quick.onTargetEmptied = { _ in emptied = true }
+    XCTAssertEqual(quick.terminals.focusedTab(for: quickTarget)?.id, second.id)
+
+    await quick.moveQuickTerminalPane(second.id, of: quickTarget, to: window, into: sid)
+
+    XCTAssertFalse(emptied, "a pane is left")
+    XCTAssertEqual(quick.terminals.allTabs(for: quickTarget).map(\.id), [first.id])
+    XCTAssertEqual(quick.terminals.focusedTab(for: quickTarget)?.id, first.id)
+    XCTAssertNotNil(window.terminals.tab(second.id, for: target(window)))
+  }
+
+  /// Value: protects=the "Move to Workroom" menu re-reads its windows when one opens or closes;
+  /// fails_when=register or unregister stops bumping `windowsChanged` (the menu lists a closed
+  /// window's workrooms, or misses a new one's); why_new=new publisher; seam=none;
+  /// no_claim=the menu observing it.
+  func testTheRegistryAnnouncesWindowsComingAndGoing() async {
+    let window = NSWindow()
+    let before = registry.windowsChanged
+
+    registry.register(window: window, store: makeStore())
+    await Task.yield()  // `register` bumps it a turn later
+    XCTAssertGreaterThan(registry.windowsChanged, before)
+    let opened = registry.windowsChanged
+
+    registry.unregister(window: window)
+    XCTAssertGreaterThan(registry.windowsChanged, opened)
   }
 
   /// The drag's own ghost sits under the cursor: a drop must look past it to the window beneath,

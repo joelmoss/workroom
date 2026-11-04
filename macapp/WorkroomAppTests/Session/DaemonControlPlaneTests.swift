@@ -139,6 +139,11 @@ final class DaemonControlPlaneTests: XCTestCase {
     XCTAssertEqual(listed.value(forMetadataKey: SessionMetadataKey.title), "Terminal 1")
     XCTAssertEqual(
       client.retag(session: UUID(), workroom: workroom), false, "no such session: refused")
+    XCTAssertEqual(
+      client.retag(session: identifier, workroom: ""), false, "an empty workroom: a Failure reply")
+    XCTAssertEqual(
+      client.list().first?.value(forMetadataKey: SessionMetadataKey.workroom), workroom,
+      "and the tag it had stays")
   }
 
   /// `decodeHello` throws `notADaemon` rather than returning nil specifically so that a peer which
