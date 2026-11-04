@@ -29,7 +29,7 @@ The question appears whether or not **Confirm before quitting** is on. See [Quit
 | Setting | What it does |
 | --- | --- |
 | **Base branch** | The branch new workrooms start from in every project that sets none of its own. Leave it empty to use `origin`'s default branch. |
-| **Close the checklist automatically when done** | Closes a new workroom's checklist a few seconds after the workroom is ready, instead of waiting for you to click **Done**. |
+| **Close the checklist automatically when done** | Closes a new workroom's checklist a moment after the workroom is ready, instead of waiting for you to click **Done**. |
 
 New workrooms start from `origin`'s copy of the base branch, otherwise the local branch. Write `upstream/main` to start from another remote's branch, such as a fork's upstream. A project's own base branch in Project Settings wins. The field saves when you press <kbd>Return</kbd> or leave it. See [Projects](projects.md#base-branch) and [Workrooms](workrooms.md#watch-the-steps).
 

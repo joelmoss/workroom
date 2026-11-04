@@ -39,7 +39,7 @@ The last two rows appear only when your project has a `.worktreeinclude` or a se
 
 Each row shows how long its step took. Click a row, or press <kbd>Space</kbd> on it, to open its log. <kbd>↑</kbd> and <kbd>↓</kbd> move between rows, <kbd>→</kbd> opens a log and <kbd>←</kbd> closes it. To copy from an open log, drag across its lines, or click in it and press <kbd>⌘A</kbd> for the whole log. A row says **Waiting for you** while it needs an answer from you.
 
-When every step is done, click **Done** or press <kbd>Return</kbd> to open the terminal. Turn on **Close automatically when done** at the bottom left of the pane, and the pane closes itself a few seconds after the workroom is ready. The same switch is in **Settings ▸ General** as **Close the checklist automatically when done**.
+When every step is done, click **Done** or press <kbd>Return</kbd> to open the terminal. **Close automatically when done** is at the bottom left of the pane from the start, so you can turn it on while the workroom is made. When it is on, the pane closes itself a moment after the workroom is ready. The same switch is in **Settings ▸ General** as **Close the checklist automatically when done**.
 
 If a step fails, the pane shows the reason under that step's row, with two buttons below it:
 
