@@ -119,6 +119,14 @@ _Avoid_: Generic host, BYO host, server
 **Host driver**:
 The adapter for one kind of host that reaches it, and creates and destroys it where Workroom makes it: a local container runtime, boxd, exe.dev or SSH.
 
+**Host options**:
+What a boxd or exe.dev host is created with: its host image, its size, and any extra arguments for the provider's create command. Set for all projects, for one project, or for a single create; the most specific choice wins.
+_Avoid_: Machine options, create flags
+
+**Host image**:
+What a boxd or exe.dev host is created from: a container image on exe.dev, a snapshot on boxd.
+_Avoid_: Machine image, template, base, snapshot (alone)
+
 **Provisioning**:
 Readying a host for one remote workroom: the driver creates it (on an SSH host, makes the workroom's folder instead), and the repository is cloned and checked out.
 
