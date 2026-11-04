@@ -46,6 +46,8 @@ final class AppStore: ObservableObject {
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
   weak var hostWindow: NSWindow?
+  /// Called when a target's last tab closes. The Quick Terminal's own store closes its window on it.
+  var onTargetEmptied: ((TerminalTarget.ID) -> Void)?
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -1121,6 +1123,7 @@ final class AppStore: ObservableObject {
       self.refreshSelectionHasTabs()
       // A closed pane's waiting requests stop counting.
       WindowRegistry.shared.recomputeBadge()
+      if self.terminals.tabCount(forTargetID: targetID) == 0 { self.onTargetEmptied?(targetID) }
     // A click into a co-displayed split pane's terminal focuses that workroom (issue #23 follow-up),
     // so commands target it. History-suppressed (the routing method) — glancing between panes isn't
     // navigation.

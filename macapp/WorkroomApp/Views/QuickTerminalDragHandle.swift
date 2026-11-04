@@ -2,6 +2,12 @@ import AppKit
 import Defaults
 import SwiftUI
 
+extension EnvironmentValues {
+  /// True inside the Quick Terminal's window: the tab strip and pane footers it shares with
+  /// workrooms put a `QuickTerminalDragHandle` in their empty space.
+  @Entry var isQuickTerminal = false
+}
+
 /// Empty chrome you can drag the Quick Terminal by. The window isn't movable (AppKit would let it
 /// float free); this moves it itself, docked to the nearest screen edge the whole way
 /// (`QuickTerminalController.dragDock`), and keeps where it ends up for the next summon.

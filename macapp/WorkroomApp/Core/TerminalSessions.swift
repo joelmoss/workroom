@@ -407,6 +407,10 @@ struct TerminalState {
   /// shell. Kept apart from `cwd` because this path names nothing on this Mac. The status bar shows
   /// and copies it, and nothing else reads it: not ⌘-click, not a new split, not the snapshot.
   var hostCwd: String?
+  /// The git branch of this pane's own folder, for a pane whose target is no workroom (the Quick
+  /// Terminal's): its panes can each be in a different repository, and no workroom cache knows
+  /// them. Nil elsewhere, outside a repository and on a detached HEAD.
+  var liveBranch: String?
   /// OSC 9;4 progress — the *only* signal that drives `isRunning`, matching how Ghostty and Muxy work
   /// (neither ties "busy" to the title). `true` while the running program reports it's working,
   /// `false`/`nil` when it's idle, done, or never reported any. Reset at `command_finished`; the
@@ -681,6 +685,12 @@ final class TerminalSessions: ObservableObject {
   var hostConnections: HostConnectionManager = .shared
   /// Where panes' persistent sessions are registered and ended. Settable for tests.
   var sessionService: PersistentSessionService = .shared
+  /// False for the Quick Terminal's sessions: its shells are never kept, so no pane gets a
+  /// background session (`TerminalPersistentSessionPolicy`).
+  var persistsSessions = true
+  /// False for the Quick Terminal's sessions: none of its panes moves to a window of its own, by
+  /// menu, title-bar button or dragging out.
+  var allowsDetach = true
   /// Each remote tab's latest host cwd query. An entry also marks a tab whose first prompt has
   /// already asked, so after that only `command_finished` asks again.
   private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
@@ -1137,6 +1147,33 @@ final class TerminalSessions: ObservableObject {
     reconcileOcclusion(for: target)
     return tab
   }
+
+  /// How a pane's live branch is read (`TerminalState.liveBranch`). Settable for tests.
+  var resolveBranch: @Sendable (String) async -> String? = {
+    await WorkroomStatusResolver().localBranch(path: $0, branch: nil)
+  }
+  /// Each pane's in-flight branch read: a newer folder's must win over an older one's.
+  private var branchQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
+
+  /// Re-read the branch of a Quick Terminal pane's folder: when it opens, changes folder, and after
+  /// each command (a `git switch` changes it in place). Workroom panes read theirs from the
+  /// workroom, so nothing runs for them.
+  private func refreshLiveBranch(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+    guard !persistsSessions, let tab = tabsByTarget[target]?[tabID],
+      case .terminal(let state) = tab.content
+    else { return }
+    let path = state.cwd ?? state.view.lastKnownCwd ?? state.view.workingDirectory
+    let resolveBranch = resolveBranch
+    branchQueries[tabID]?.cancel()
+    branchQueries[tabID] = Task { [weak self] in
+      let branch = await resolveBranch(path)
+      guard let self, !Task.isCancelled else { return }
+      self.mutateTerminalState(tabID, target: target) { $0.liveBranch = branch }
+    }
+  }
+
+  /// Wait for a pane's branch read in flight. For tests.
+  func liveBranchRead(forTab tabID: TerminalTab.ID) async { await branchQueries[tabID]?.value }
 
   // MARK: Content tabs (issue #66)
   //
@@ -1681,7 +1718,8 @@ final class TerminalSessions: ObservableObject {
   /// the next Changes/Files click would otherwise replace this pane's content in place and the
   /// popped-out window would silently become a different file.
   func detachPane(_ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint) {
-    guard let tab = tabsByTarget[target.id]?[tabID], !detachedTabIDs.contains(tabID) else { return }
+    guard allowsDetach, let tab = tabsByTarget[target.id]?[tabID], !detachedTabIDs.contains(tabID)
+    else { return }
     let wasFocused = focusedTabByTarget[target.id] == tabID
     let successor = closeSuccessor(of: tabID, for: target)
     if tab.isPreview { persist(tabID, for: target) }
@@ -1755,6 +1793,7 @@ final class TerminalSessions: ObservableObject {
       activityPulses[id] = nil
       hostCwdQueries.removeValue(forKey: id)?.cancel()
       claudeProfileQueries.removeValue(forKey: id)?.cancel()
+      branchQueries.removeValue(forKey: id)?.cancel()
       watchedDone.remove(id)
     }
     // Emptied, not forgotten, as a close of every tab leaves it: `ensureTab` must not read the
@@ -1948,6 +1987,7 @@ final class TerminalSessions: ObservableObject {
     activityPulses[tabID] = nil
     hostCwdQueries.removeValue(forKey: tabID)?.cancel()
     claudeProfileQueries.removeValue(forKey: tabID)?.cancel()
+    branchQueries.removeValue(forKey: tabID)?.cancel()
 
     // A lone remaining member is not a group any more; two or more get evened, since their dividers
     // still budget space for the pane that just closed (issue #126).
@@ -1984,6 +2024,7 @@ final class TerminalSessions: ObservableObject {
       activityPulses[tab.id] = nil
       hostCwdQueries.removeValue(forKey: tab.id)?.cancel()
       claudeProfileQueries.removeValue(forKey: tab.id)?.cancel()
+      branchQueries.removeValue(forKey: tab.id)?.cancel()
     }
     await sessionService.endSessions(matchingWorkroom: id)
     tabsByTarget[id] = nil
@@ -2106,10 +2147,19 @@ final class TerminalSessions: ObservableObject {
   /// runs on a host whose login cannot be matched to a local account, and a fallback pane has no
   /// session.
   private func readClaudeProfile(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
-    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
-      let session = s.sessionID ?? s.view.persistentSessionID,
-      !sessionService.isRemote(session)
-    else { return }
+    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content else {
+      return
+    }
+    guard let session = s.sessionID ?? s.view.persistentSessionID else {
+      // No background session to ask (a Quick Terminal pane, or a shell opened while the helper
+      // was down): the shell is this app's own child, so read it as workroomd would.
+      let profile = Self.localClaudeProfile(of: s.view)
+      mutateTerminalState(tabID, target: target) {
+        if $0.activeCodingAgentBackend == .claude { $0.claudeProfile = profile }
+      }
+      return
+    }
+    guard !sessionService.isRemote(session) else { return }
     let generation = s.commandFinishGeneration
     let service = sessionService
     claudeProfileQueries[tabID]?.cancel()
@@ -2128,6 +2178,18 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
+  /// A local pane's Claude profile from its foreground process, as workroomd reads it: only a
+  /// confirmed `claude`'s environment, unset meaning the default login. A title alone names no
+  /// account.
+  static func localClaudeProfile(of view: GhosttySurfaceView) -> PaneClaudeProfile {
+    guard
+      CodingAgentProcessRecognition.backend(forProcessName: view.foregroundExecutableName)
+        == .claude
+    else { return .notReported }
+    return .reported(
+      view.foregroundPID.flatMap { ProcessEnvironment.value("CLAUDE_CONFIG_DIR", pid: $0) } ?? "")
+  }
+
   /// The profile entry from a session descriptor; no entry means the daemon cannot say (too old, or
   /// the foreground is not a confirmed `claude`).
   nonisolated static func claudeProfile(from descriptor: SessionDescriptor?) -> PaneClaudeProfile {
@@ -2142,6 +2204,7 @@ final class TerminalSessions: ObservableObject {
       s.cwd != cwd
     else { return }
     mutateTerminalState(tabID, target: target) { $0.cwd = cwd }
+    refreshLiveBranch(forTab: tabID, target: target)
   }
 
   /// Mutate the `.terminal` payload of a tab in place and republish (the `@Published`-driving
@@ -2174,6 +2237,7 @@ final class TerminalSessions: ObservableObject {
       $0.progressFailed = false
     }
     refreshHostCwd(forTab: tabID, target: target)
+    refreshLiveBranch(forTab: tabID, target: target)
   }
 
   /// Ask a remote pane's host where its shell is now (#239), and show it in the status bar.
@@ -2446,6 +2510,7 @@ final class TerminalSessions: ObservableObject {
   private func insert(_ tab: TerminalTab, for target: TerminalTarget) {
     tabsByTarget[target.id, default: [:]][tab.id] = tab
     orderByTarget[target.id, default: []].append(tab.id)
+    refreshLiveBranch(forTab: tab.id, target: target.id)
   }
 
   private func insertID(
@@ -2525,9 +2590,10 @@ final class TerminalSessions: ObservableObject {
         self.closeTab(tabID, for: target)
       }
     }
-    view.onToggleWindow = { [weak self] in
-      self?.onEvent?(.paneWindowToggleRequested(targetID, tabID))
-    }
+    // Nil hides the right-click menu's "Move to New Window" where panes can't move.
+    view.onToggleWindow =
+      allowsDetach
+      ? { [weak self] in self?.onEvent?(.paneWindowToggleRequested(targetID, tabID)) } : nil
     view.onActivity = { [weak self] activity in
       self?.onEvent?(.activity(targetID, tabID, activity))
     }
@@ -2977,7 +3043,8 @@ final class TerminalSessions: ObservableObject {
     let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
       isAvailable: sessionService.isAvailable,
       inProcessCommand: inProcessCommand,
-      hasExistingSession: persisted != nil)
+      hasExistingSession: persisted != nil,
+      persists: persistsSessions)
     guard policy else { return nil }
     return persisted ?? UUID()
   }

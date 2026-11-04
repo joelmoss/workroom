@@ -13,7 +13,7 @@ final class QuickTerminalControllerTests: XCTestCase {
   private func makeController() -> QuickTerminalController {
     let controller = QuickTerminalController()
     controller.makeSurface = {
-      GhosttySurfaceView(workingDirectory: $0, command: nil, spawnsSurface: false)
+      GhosttySurfaceView(workingDirectory: $0, command: $1, spawnsSurface: false)
     }
     // Key focus moves under the test host's feet; only the focus test opts in.
     controller.hidesWhenUnfocused = { false }
@@ -244,31 +244,35 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertTrue(controller.isVisible, "the usage popover is part of the Quick Terminal")
   }
 
-  func testFooterFollowsTheShellsFolder() throws {
+  func testItsStoreIsAWorkroomsKeptNowhere() throws {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let status = try XCTUnwrap(controller.workspace?.focusedPane?.status)
-    XCTAssertEqual(
-      status.cwd, QuickTerminalController.newTabDirectory(),
-      "seeded with the shell's folder before OSC 7 arrives")
-    controller.currentSurface?.handlePwd("/usr")
-    XCTAssertEqual(status.cwd, "/usr")
+    let store = try XCTUnwrap(controller.store)
+    XCTAssertFalse(store.terminals.persistsSessions, "its shells are never kept")
+    XCTAssertFalse(store.terminals.allowsDetach, "no pane moves to a window of its own")
+    XCTAssertNil(
+      WindowRegistry.shared.store(for: try XCTUnwrap(controller.currentWindow)),
+      "never registered, so never saved, restored or badged")
   }
 
-  func testKeysGoToTheWorkspace() throws {
+  func testKeysActOnItsTabsAndTheLastCloseClosesTheWindow() throws {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let workspace = try XCTUnwrap(controller.workspace)
+    let store = try XCTUnwrap(controller.store)
+    // A test pane never starts, so it counts as running and a close would ask first.
+    store.confirmOnCloseOverrideForTesting = false
+    let sessions = store.terminals
+    let target = QuickTerminalController.target()
 
     controller.perform(.splitRight)
     controller.perform(.splitDown)
-    XCTAssertEqual(workspace.selectedTab?.layout.tabIDs.count, 3)
+    XCTAssertEqual(sessions.split(for: target)?.tabIDs.count, 3)
     controller.perform(.newTab)
-    XCTAssertEqual(workspace.tabs.count, 2)
+    XCTAssertEqual(sessions.tabs(for: target).count, 4)
     controller.perform(.selectTab(0))
-    XCTAssertEqual(workspace.selectedTabID, workspace.tabs[0].id)
+    XCTAssertEqual(sessions.activeTab(for: target)?.id, sessions.tabs(for: target).first?.id)
 
     for _ in 0..<4 { controller.perform(.closePane) }
     XCTAssertFalse(controller.hasWindow, "⌘W on the last pane of the last tab closes the window")

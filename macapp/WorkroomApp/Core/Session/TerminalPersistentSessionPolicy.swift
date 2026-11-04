@@ -1,9 +1,8 @@
 import Foundation
 
 enum TerminalPersistentSessionPolicy {
-  /// Quick terminals aren't excluded here because they never reach this policy:
-  /// `QuickTerminalController` builds its own `GhosttySurfaceView` in a bare `NSWindow`, bypassing
-  /// `TerminalSessions` entirely, so they get no session ID by construction.
+  /// `persists`: false for the Quick Terminal's own `TerminalSessions`, whose shells are never kept,
+  /// so none of its panes gets a session, new or old.
   ///
   /// **`isAvailable` gates only a NEW id.** It answers for the backend a new session would be
   /// created in, so it goes false whenever that backend cannot run — and a pane RESTORED from a
@@ -23,9 +22,10 @@ enum TerminalPersistentSessionPolicy {
     isAvailable: Bool,
     inProcessCommand: Bool,
     hasExistingSession: Bool,
+    persists: Bool = true,
     // A fixture pane is a plain shell, unless the launch gave it a scratch daemon of its own.
     isFixture: Bool = AppEnvironment.current.isFixture && UITestFixture.liveDaemonDirectory == nil
   ) -> Bool {
-    (isAvailable || hasExistingSession) && !inProcessCommand && !isFixture
+    persists && (isAvailable || hasExistingSession) && !inProcessCommand && !isFixture
   }
 }

@@ -27,6 +27,7 @@ struct TerminalTabStrip: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.isQuickTerminal) private var isQuickTerminal
   /// The tab whose ✦ agent popover is open.
   @State private var codingAgentPopoverTab: TerminalTab.ID?
   /// The live drop-into-pane preview, shared with `PaneTreeView` via the coordinator.
@@ -116,6 +117,13 @@ struct TerminalTabStrip: View {
         if let tab = hiddenWaitingTab(trailing: false) {
           waitingEdgeButton(tab, edge: "leading")
         }
+      }
+      // The Quick Terminal's strip is its titlebar: room to the right of the tabs drags the window
+      // along the screen edges. The scroller takes every click over itself, so it can't sit behind.
+      if isQuickTerminal {
+        QuickTerminalDragHandle()
+          .frame(minWidth: 60, maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityHidden(true)
       }
     }
     // No top padding: the strip sits flush at the top of the detail pane so the terminal tabs align
@@ -1238,8 +1246,10 @@ extension View {
       }
       Divider()
       // This pane into a window of its own (#444), as dragging the chip out of the window does.
-      paneWindowMenuItem(store: store, tabID: tab.id, targetID: target.id)
-      Divider()
+      if sessions.allowsDetach {
+        paneWindowMenuItem(store: store, tabID: tab.id, targetID: target.id)
+        Divider()
+      }
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)
       } label: {
