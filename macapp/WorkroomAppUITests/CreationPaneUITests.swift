@@ -135,6 +135,12 @@ final class CreationPaneUITests: XCTestCase {
       "the setup script's row never showed")
     XCTAssertEqual(
       element(app, "CreationPane.step.fetch").label, "Fetch base branch, skipped")
+    // Value: protects=the footer's "Close automatically when done" can be changed while the create
+    // runs, and Done is offered only once it succeeds; fails_when=the footer waits for success
+    // again, or Done shows (and answers) mid-run; no_claim=focus, the checkbox not moving
+    XCTAssertTrue(
+      element(app, "CreationPane.closeWhenDone").exists, "the checkbox isn't offered mid-run")
+    XCTAssertFalse(element(app, "CreationPane.Done").exists, "Done is offered mid-run")
     let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
     shot.name = "creation-pane-running"
     shot.lifetime = .keepAlways
