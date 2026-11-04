@@ -84,6 +84,15 @@ struct DaemonControlClient: SessionControlPlane {
     }
   }
 
+  /// Tags `session` with `workroom` from now on. Nil when the daemon could not be asked, predates
+  /// retagging, or did not answer; false when it refused (no such session).
+  func retag(session: UUID, workroom: String) -> Bool? {
+    transact(
+      bytes: SessionRetag.frame(session: session, workroom: workroom),
+      minimumVersion: DaemonHandshake.minRetagVersion
+    ) { SessionRetag.decode($0.encoded()) }
+  }
+
   // MARK: - Wire
 
   static func encodeEnvelope(service: Service, stream: UInt32, payload: [UInt8]) -> [UInt8] {

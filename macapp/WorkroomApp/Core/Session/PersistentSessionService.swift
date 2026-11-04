@@ -149,6 +149,8 @@ final class PersistentSessionService {
   /// A host's service connection as it changes (`HostConnectionManager.updates(for:)`), which a
   /// closed pane's unended session waits on to be ended again (#293).
   private let hostUpdates: (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
+  /// A test's answer to `retag`, in place of this Mac's daemon. Nil for `shared`.
+  private var retagOverride: ((UUID, String) async -> Bool)?
 
   private init() {
     let probeLogger = Logger(
@@ -189,8 +191,10 @@ final class PersistentSessionService {
     endRemote: @escaping (UUID, HostID) async throws -> Bool = { _, _ in false },
     hostUpdates: @escaping (HostID) async -> AsyncStream<HostConnectionManager.Snapshot> = {
       _ in AsyncStream { $0.finish() }
-    }
+    },
+    retag: ((UUID, String) async -> Bool)? = nil
   ) {
+    self.retagOverride = retag
     self.probe = probe
     self.ownershipOverride = ownership
     self.now = now
@@ -816,6 +820,20 @@ final class PersistentSessionService {
     case .refused(let reason): return .unknown(reason)
     case nil: return .unknown("Workroom's background helper didn't answer.")
     }
+  }
+
+  /// Tags this Mac's session `sessionID` with `workroom`, so it is that workroom's from now on: kept
+  /// at quit, reattached at launch and swept with it. False when it could not be (a remote session,
+  /// the old helper, a daemon that predates retagging or that refused).
+  func retag(sessionID: UUID, workroom: String) async -> Bool {
+    if let retagOverride { return await retagOverride(sessionID, workroom) }
+    guard remoteSessions[sessionID] == nil, backend(forSession: sessionID) == .daemon,
+      let socketPath = existingSocketPath(for: .daemon)
+    else { return false }
+    let client = DaemonControlClient(socketPath: socketPath)
+    return await Task.detached(priority: .userInitiated) {
+      client.retag(session: sessionID, workroom: workroom)
+    }.value ?? false
   }
 
   @discardableResult

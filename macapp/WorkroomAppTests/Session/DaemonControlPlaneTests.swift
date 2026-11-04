@@ -114,6 +114,33 @@ final class DaemonControlPlaneTests: XCTestCase {
       "a detached session whose workroom is gone is not swept")
   }
 
+  /// Value: protects=a Quick Terminal shell moved into a workroom is that workroom's to the daemon,
+  /// so it is listed, swept and ended with it, and a retag keeps its title; fails_when=the frame,
+  /// the version gate or the daemon's handling drift; why_new=new request; seam=none;
+  /// no_claim=a daemon older than protocol 10 (never asked, by `minRetagVersion`).
+  func testARetagMakesALiveSessionAnotherWorkroomsAndKeepsTheRest() throws {
+    let harness = try DaemonHarness.start()
+    defer { harness.stop() }
+
+    let client = DaemonControlClient(socketPath: harness.socketPath)
+    let identifier = UUID()
+    try harness.startSession(
+      identifier: identifier,
+      metadata: [
+        (SessionMetadataKey.workroom, QuickTerminalController.targetID),
+        (SessionMetadataKey.title, "Terminal 1"),
+      ])
+    XCTAssertTrue(harness.wait { client.list().count == 1 })
+    let workroom = TerminalTarget.workroomID(project: "/Users/me/dev/app", name: "cyan-brush")
+
+    XCTAssertEqual(client.retag(session: identifier, workroom: workroom), true)
+    let listed = try XCTUnwrap(client.list().first)
+    XCTAssertEqual(listed.value(forMetadataKey: SessionMetadataKey.workroom), workroom)
+    XCTAssertEqual(listed.value(forMetadataKey: SessionMetadataKey.title), "Terminal 1")
+    XCTAssertEqual(
+      client.retag(session: UUID(), workroom: workroom), false, "no such session: refused")
+  }
+
   /// `decodeHello` throws `notADaemon` rather than returning nil specifically so that a peer which
   /// is not a daemon fails at its second byte instead of waiting out the two-second timeout. A
   /// login banner or an MOTD on a remote stream is the case that motivates it, and it is reachable
