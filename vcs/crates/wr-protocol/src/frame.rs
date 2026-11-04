@@ -47,6 +47,12 @@ pub enum FrameKind {
     /// run being gone, and another `Failure` for a session that is not a run or a byte that is not
     /// a `RunSignal`.
     Signal = 0x26,
+    /// Change which workroom a live session is tagged with. Payload: the 16-byte session id, then
+    /// the new workroom value as UTF-8 (the rest of the payload, non-empty). Replaces the session's
+    /// `workroom` metadata and nothing else. `Acknowledged` once it is stored; `Failure`
+    /// "no session …" when the daemon holds no such session, which a client reads as the session
+    /// being gone, and another `Failure` for a payload that is malformed.
+    Retag = 0x27,
 
     Sessions = 0x31,
     Acknowledged = 0x32,
@@ -91,6 +97,7 @@ impl FrameKind {
             0x24 => Self::KillAll,
             0x25 => Self::HandOff,
             0x26 => Self::Signal,
+            0x27 => Self::Retag,
             0x31 => Self::Sessions,
             0x32 => Self::Acknowledged,
             _ => return None,
@@ -347,7 +354,7 @@ mod tests {
             }
             rows += 1;
         }
-        assert_eq!(rows, 17, "every row was read");
+        assert_eq!(rows, 18, "every row was read");
         // Every kind this codec defines has exactly one row, so a new kind cannot go uncovered.
         let defined: Vec<u8> = (0..=u8::MAX)
             .filter(|&b| FrameKind::from_u8(b).is_some())

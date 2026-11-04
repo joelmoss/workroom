@@ -248,8 +248,9 @@ pub struct Session {
     /// This session's number, from `NEXT_SESSION`.
     number: u64,
     /// Which workroom the session belongs to, its first title, and when it was created, as the
-    /// client that created it said (`serve::session_metadata`), plus `created` from here. Fixed for
-    /// the session's life: the app's own layout is what follows a renamed tab (#255).
+    /// client that created it said (`serve::session_metadata`), plus `created` from here. Only the
+    /// `workroom` key ever changes after creation, by a `Retag` frame (`SessionStore::set_workroom`):
+    /// the app's own layout is what follows a renamed tab (#255).
     metadata: Vec<(String, String)>,
     /// `SessionSpec::interactive`.
     interactive: bool,
@@ -710,6 +711,27 @@ impl SessionStore {
         // The supervisor is about to write a new status; the watcher may be asleep on a finished one.
         self.runs_wake.raise();
         Ok(())
+    }
+
+    /// Re-tags a live session with another workroom: replaces its `workroom` metadata (or adds it)
+    /// and leaves every other key alone. The list and a hand-off both read `Session::metadata`, so
+    /// the new tag shows in the next of either. `false` when there is no such session.
+    pub fn set_workroom(&self, id: SessionId, workroom: &str) -> bool {
+        let mut sessions = self.sessions.lock().expect("session store poisoned");
+        let Some(session) = sessions.get_mut(&id) else {
+            return false;
+        };
+        match session
+            .metadata
+            .iter_mut()
+            .find(|(key, _)| key == "workroom")
+        {
+            Some((_, value)) => *value = workroom.to_string(),
+            None => session
+                .metadata
+                .push(("workroom".to_string(), workroom.to_string())),
+        }
+        true
     }
 
     pub fn new() -> Self {
@@ -2538,6 +2560,62 @@ mod tests {
             metadata: &[],
             interactive: false,
         }
+    }
+
+    /// A retag changes only `workroom`, adds it when absent, and what the list and a hand-off then
+    /// report is the new tag, not the one the session was created with.
+    /// Value: protects=a live session's workroom tag follows a Retag in the list and in a hand-off while title and created stay; fails_when=set_workroom changes a copy, drops another key, or ignores an absent workroom; why_new=metadata was fixed at creation, so nothing exercised a change; seam=none
+    #[test]
+    fn a_retag_changes_the_workroom_the_list_and_a_hand_off_report() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 2")];
+        let e = env();
+        let tagged = [
+            ("workroom".to_string(), "old".to_string()),
+            ("title".to_string(), "t".to_string()),
+        ];
+        let untagged = [("title".to_string(), "u".to_string())];
+        for (n, metadata) in [(1, &tagged[..]), (2, &untagged[..])] {
+            let mut s = spec(id(n), &args, &e);
+            s.metadata = metadata;
+            store.create(s).expect("create");
+        }
+
+        assert!(store.set_workroom(id(1), "new"));
+        assert!(store.set_workroom(id(2), "added"));
+        assert!(!store.set_workroom(id(3), "x"), "an unknown id");
+
+        let value = |metadata: &[(String, String)], key: &str| {
+            metadata
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        let listed = store.list();
+        for (n, workroom, title) in [(1, "new", "t"), (2, "added", "u")] {
+            let info = listed.iter().find(|i| i.id == id(n)).expect("listed");
+            assert_eq!(value(&info.metadata, "workroom").as_deref(), Some(workroom));
+            assert_eq!(value(&info.metadata, "title").as_deref(), Some(title));
+            assert!(value(&info.metadata, CREATED_KEY).is_some(), "created kept");
+            assert_eq!(
+                info.metadata
+                    .iter()
+                    .filter(|(k, _)| k == "workroom")
+                    .count(),
+                1
+            );
+        }
+
+        let frozen = store
+            .frozen(Duration::from_secs(2), |all| {
+                all.iter()
+                    .find(|s| s.id == id(1))
+                    .map(|s| value(&s.metadata, "workroom"))
+            })
+            .expect("frozen")
+            .expect("session frozen");
+        assert_eq!(frozen.as_deref(), Some("new"));
+        store.kill_all();
     }
 
     /// A hand-off's session with only what `adopt` reads from it: an 80x24 `screen`.

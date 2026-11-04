@@ -772,6 +772,16 @@ fn dispatch(
                 )),
             }
         }
+        FrameKind::Retag => match decode_retag(&frame.payload) {
+            Err(why) => reply(Frame::new(FrameKind::Failure, why.as_bytes().to_vec())),
+            Ok((id, workroom)) if sessions.set_workroom(id, workroom) => {
+                reply(Frame::control(FrameKind::Acknowledged))
+            }
+            Ok((id, _)) => reply(Frame::new(
+                FrameKind::Failure,
+                format!("no session {}", id.to_hyphenated()).into_bytes(),
+            )),
+        },
         FrameKind::KillAll => {
             crate::note!("kill of every session requested by {}", services.peer);
             sessions.kill_all();
@@ -1132,6 +1142,24 @@ pub fn session_metadata(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
         ));
     }
     metadata
+}
+
+/// A Retag frame's payload: the 16-byte session id, then the new workroom as UTF-8. Held to the
+/// rule `session_metadata` applies to a workroom: non-empty, and no longer than
+/// `MAX_WORKROOM_BYTES` (refused, never cut, since a cut id could match the wrong workroom).
+pub fn decode_retag(payload: &[u8]) -> Result<(SessionId, &str), &'static str> {
+    let id = payload.get(..16).and_then(SessionId::from_slice);
+    let workroom = payload.get(16..).map(std::str::from_utf8);
+    match (id, workroom) {
+        (Some(id), Some(Ok(workroom))) if !workroom.is_empty() => {
+            if workroom.len() > MAX_WORKROOM_BYTES {
+                Err("a retag's workroom is too long")
+            } else {
+                Ok((id, workroom))
+            }
+        }
+        _ => Err("a retag names one 16-byte session id and a non-empty UTF-8 workroom"),
+    }
 }
 
 /// A Resize frame's payload: columns and rows, then the pixels. An older daemon reads the first
@@ -1731,6 +1759,22 @@ mod tests {
             MAX_PAYLOAD_SIZE > fits
         );
         assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE + 1]), FrameKind::Failure);
+    }
+
+    #[test]
+    fn a_retag_payload_is_an_id_and_a_bounded_non_empty_utf8_workroom() {
+        let with = |tail: &[u8]| [&[7u8; 16][..], tail].concat();
+        assert_eq!(
+            decode_retag(&with(b"/w/x")),
+            Ok((SessionId([7; 16]), "/w/x"))
+        );
+        assert!(decode_retag(&with(b"")).is_err(), "empty workroom");
+        assert!(decode_retag(&[7; 15]).is_err(), "short id");
+        assert!(decode_retag(&with(&[0xff, 0xfe])).is_err(), "not UTF-8");
+        let longest = "a".repeat(MAX_WORKROOM_BYTES);
+        assert!(decode_retag(&with(longest.as_bytes())).is_ok());
+        let too_long = "a".repeat(MAX_WORKROOM_BYTES + 1);
+        assert!(decode_retag(&with(too_long.as_bytes())).is_err());
     }
 
     fn env(entries: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
