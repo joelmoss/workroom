@@ -28,7 +28,8 @@ struct MenuBarNotificationsView: View {
           }
           WaitingSectionHeader(title: "Unread notifications")
         }
-        if let store = registry.lastActiveStore {
+        // With every workroom window closed, the Quick Terminal's store still lists the shared list.
+        if let store = registry.lastActiveStore ?? registry.quickTerminal?.store {
           NotificationsList(hidesRequests: true, onActivate: onClose)
             .environmentObject(store)
             .environmentObject(store.notifications)

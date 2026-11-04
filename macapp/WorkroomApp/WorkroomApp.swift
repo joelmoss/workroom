@@ -690,7 +690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private func installSigtermHandler() {
     signal(SIGTERM, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-    source.setEventHandler {
+    source.setEventHandler { [quickTerminal] in
       // The source fires on the main queue, so we're main-actor-isolated in practice (same pattern
       // as the NSEvent monitor above) — assert it so we can touch the store synchronously.
       MainActor.assumeIsolated {
@@ -717,6 +717,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           }
           group.leave()
         }
+        // The Quick Terminal's shells are not kept across a quit (ADR 0064), a signalled one too.
+        quickTerminal.endSessionsAtQuit()
         // A tab closed moments before this signal fires an unstructured kill Task; without
         // waiting for it here too, quitting fast enough after a close leaves that one session
         // running despite the explicit close.

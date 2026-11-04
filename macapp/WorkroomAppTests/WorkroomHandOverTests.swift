@@ -414,7 +414,8 @@ final class WorkroomHandOverTests: XCTestCase {
   }
 
   /// Value: protects=a moved workroom's notifications going with it, so the old window's close leaves
-  /// them (#573 D3); fails_when=repoint is dropped or matches the wrong target; why_new=new behaviour;
+  /// them (#573 D3), and only the ones its old window raised; fails_when=repoint is dropped or
+  /// matches the wrong target or window; why_new=new behaviour;
   /// seam=none; no_claim=dragging the workroom on screen.
   func testAMovedWorkroomsNotificationsCloseWithItsNewWindow() {
     let origin = makeOrigin()
@@ -426,12 +427,18 @@ final class WorkroomHandOverTests: XCTestCase {
     let t = target(origin)
     let tab = origin.terminals.addTab(for: t)
     origin.raiseFinished(targetID: t.id, tabID: tab.id, record: .init(id: "", state: .idle))
+    // A third window showing the same workroom, whose notification is not part of the move.
+    let other = makeOrigin()
+    registry.register(window: NSWindow(), store: other)
+    let otherTab = UUID()
+    other.raiseFinished(targetID: t.id, tabID: otherTab, record: .init(id: "", state: .idle))
 
     origin.moveWorkroom(sid, to: destination)
     registry.unregister(window: windowOrigin)
     XCTAssertEqual(notifications.count(tab: tab.id), 1, "the old window's close leaves it")
     registry.unregister(window: windowDestination)
     XCTAssertEqual(notifications.count(tab: tab.id), 0, "its new window's close takes it")
+    XCTAssertEqual(notifications.count(tab: otherTab), 1, "another window's own stays with it")
   }
 
   /// Value: protects=a toast showing in the front window, whichever window raised it (#573);
