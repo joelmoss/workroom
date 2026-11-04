@@ -272,7 +272,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 
   private func createWindow() {
-    let store = AppStore()
+    // Its terminals' notifications join the app's one list (ADR 0064).
+    let store = AppStore(notifications: WindowRegistry.shared.notifications)
     let sessions = store.terminals
     sessions.sessionService = sessionService
     sessions.readsPaneBranches = true
@@ -286,8 +287,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     }
     // Closing the last tab, by ⌘W, its ✕ or its shell's exit, closes the window.
     store.onTargetEmptied = { [weak self] _ in self?.close() }
-    // Nothing of its own shows toasts, and it is often hidden behind a workroom window anyway.
-    store.forwardToast = { WindowRegistry.shared.keyStore?.enqueueToast($0) }
+    // Toasts show in the front window, this one while it is key (#573 D2).
+    store.forwardToast = { WindowRegistry.shared.showToast($0) }
+    // Its one target is always on screen here, so a watched pane's notification counts as seen.
+    store.pinnedTarget = Self.target()
     // `ensureInitialTerminal` opens a project's first tab; this target is no project.
     _ = sessions.addTab(for: Self.target())
     self.store = store
@@ -463,6 +466,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       for tab in store.terminals.allTabs(for: target) {
         store.terminals.closeTab(tab.id, for: target)
       }
+      // Its notifications go with it, as a closing window's do (#573 D3).
+      WindowRegistry.shared.dropNotifications(raisedBy: store)
     }
     store = nil
     window?.delegate = nil

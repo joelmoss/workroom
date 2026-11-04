@@ -667,13 +667,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // of the SwiftUI view's reach. The ⌥§ hotkey calls the controller directly (see updateGlobalHotkey).
     quickTerminalObserver = NotificationCenter.default.addObserver(
       forName: .showQuickTerminal, object: nil, queue: .main
-    ) { [quickTerminal] note in
+    ) { [quickTerminal] _ in
       // The controller, not `self`: it is main-actor-isolated, so the `Sendable` handler can hold it,
-      // and it lives exactly as long as the app delegate that owns it. A tapped Quick Terminal toast
-      // names its pane (`AppStore.openTerminal`).
-      let tabID = note.userInfo?["tabID"] as? TerminalTab.ID
-      MainActor.assumeIsolated { quickTerminal.reveal(tab: tabID) }
+      // and it lives exactly as long as the app delegate that owns it.
+      MainActor.assumeIsolated { quickTerminal.show() }
     }
+    // Its terminals share the app's notification list, and opening one of theirs slides it in.
+    WindowRegistry.shared.quickTerminal = quickTerminal
 
     installSigtermHandler()
   }
@@ -786,11 +786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if let targetID = info["targetID"] as? String {
       let tabID = (info["tabID"] as? String).flatMap(UUID.init(uuidString:))
       let notifID = (info["notifID"] as? String).flatMap(UUID.init(uuidString:))
-      Task { @MainActor [quickTerminal] in
-        if targetID == QuickTerminalController.targetID {
-          quickTerminal.reveal(tab: tabID)
-          return
-        }
+      Task { @MainActor in
         NSApp.activate(ignoringOtherApps: true)
         WindowRegistry.shared.open(targetID: targetID, tabID: tabID, notifID: notifID)
       }
@@ -1829,7 +1825,7 @@ struct WorkroomCommands: Commands {
       // ⇧⌘M: the terminal that has waited longest for the user, across every window (#358);
       // repeating it steps through the rest. Next Notification goes through unread notifications.
       Button("Go to Terminal That Needs You") {
-        if !ProgramStatusAlerts.shared.goToNextWaiting(from: WindowRegistry.shared.keyStore) {
+        if !ProgramStatusAlerts.shared.goToNextWaiting(from: WindowRegistry.shared.frontStore) {
           NSSound.beep()
         }
       }

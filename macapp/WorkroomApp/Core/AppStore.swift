@@ -51,6 +51,9 @@ final class AppStore: ObservableObject {
   /// Where this store's in-app toasts go instead of its own `toasts`: the front window, set by
   /// `WindowRegistry` for every window it registers and by the Quick Terminal for its own store.
   var forwardToast: ((WorkroomNotification) -> Void)?
+  /// A target always on screen in this store's window, with no selection to say so: the Quick
+  /// Terminal's. Its panes count as seen and focused as a selected workroom's do (#573).
+  var pinnedTarget: TerminalTarget?
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -3379,7 +3382,7 @@ final class AppStore: ObservableObject {
     // instead of being suppressed because some other window holds key.
     let appFrontmost = hostWindow?.isKeyWindow == true
     let onScreen = onScreenTarget(forID: targetID)
-    let isSelectedMember = onScreen?.id == selectedTarget?.id
+    let isSelectedMember = onScreen?.id == (pinnedTarget ?? selectedTarget)?.id
     let isCursorTab = onScreen.map { terminals.focusedTab(for: $0)?.id == tabID } ?? false
     let outcome = Self.activityOutcome(
       appFrontmost: appFrontmost, isOnScreen: onScreen != nil,
@@ -3472,6 +3475,7 @@ final class AppStore: ObservableObject {
   /// The origin line under a title that already names the workroom, or a root's project: only a
   /// workroom's project, since "london" under "Terminal 7 in london needs you" said it twice.
   private func placeSource(targetID: TerminalTarget.ID) -> String {
+    if targetID == QuickTerminalController.targetID { return "Quick Terminal" }
     let origin = Self.sidebarID(forTargetID: targetID, in: projects).map { label(for: $0) }
     return origin?.workroom == nil ? "" : origin?.project ?? ""
   }
@@ -3502,7 +3506,7 @@ final class AppStore: ObservableObject {
   /// The program-status session of the terminal focused in this window, for ⇧⌘M. Only with keyboard
   /// focus in it: from an inspector field, ⇧⌘M goes to the selected terminal if it is the one waiting.
   var focusedTerminalSession: UUID? {
-    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target),
+    guard let target = pinnedTarget ?? selectedTarget, let tab = terminals.focusedTab(for: target),
       tab.surface?.isEffectivelyFocused == true
     else {
       return nil
@@ -3564,6 +3568,7 @@ final class AppStore: ObservableObject {
   /// (`isWorkroomSplitVisible` + `resolvedSplitLeaves()` would each re-walk every group's leaves) — this
   /// runs per activity event per pane.
   func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
+    if let pinnedTarget, pinnedTarget.id == targetID { return pinnedTarget }
     if let selected = selectedTarget, selected.id == targetID { return selected }
     guard let group = visibleWorkroomSplit, let leaves = resolvedSplitLeaves(of: group) else {
       return nil
@@ -3575,12 +3580,6 @@ final class AppStore: ObservableObject {
   /// Reused by both the native-banner click (AppDelegate) and the in-app panel tap. No-ops (and
   /// withdraws any stale banner) when the target/tab no longer exists.
   func openTerminal(targetID: TerminalTarget.ID, tabID: TerminalTab.ID?, notifID: UUID? = nil) {
-    // A Quick Terminal toast forwarded here (`forwardToast`): its pane is in no window's store.
-    if targetID == QuickTerminalController.targetID {
-      NotificationCenter.default.post(
-        name: .showQuickTerminal, object: nil, userInfo: tabID.map { ["tabID": $0] })
-      return
-    }
     NSApp.activate(ignoringOtherApps: true)
     // A DETACHED pane (issue #172) is already open in its own window, so raise that and stop. This
     // has to come BEFORE `applyLocation` below: that call selects the workroom in THIS window and
@@ -3719,6 +3718,7 @@ final class AppStore: ObservableObject {
   )
     -> String
   {
+    if id == QuickTerminalController.targetID { return "Quick Terminal" }
     for p in projects {
       if TerminalTarget.rootID(project: p.path) == id { return p.displayName }
       for w in p.workrooms where TerminalTarget.workroomID(project: p.path, name: w.name) == id {

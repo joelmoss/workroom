@@ -353,31 +353,99 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertEqual(sessions.activeTab(for: target)?.id, left)
   }
 
-  func testItsInAppAlertsGoToTheFrontWindowAndTapBackToItsPane() throws {
-    // Its store shows no toasts, so one would never be seen (PR #571).
+  /// The app's registry with this controller as its Quick Terminal and an empty list, put back after.
+  private func joinRegistry(_ controller: QuickTerminalController) -> WindowRegistry {
+    let registry = WindowRegistry.shared
+    registry.notifications.clear()
+    registry.quickTerminal = controller
+    addTeardownBlock { @MainActor in
+      registry.quickTerminal = nil
+      registry.keyWindow = { NSApp.keyWindow }
+      registry.notifications.clear()
+    }
+    return registry
+  }
+
+  /// Value: protects=its notifications joining the app's one list, named "Quick Terminal", opening
+  /// it on their pane (ADR 0064); fails_when=its store keeps a list of its own, the source is blank
+  /// or open goes to a workroom window; why_new=#571 bridged only the toast; seam=none;
+  /// no_claim=the slide-in animation.
+  func testItsNotificationsJoinTheListAndOpenItsPane() throws {
     let controller = makeController()
     defer { controller.close() }
+    let registry = joinRegistry(controller)
+    controller.toggle()
+    let store = try XCTUnwrap(controller.store)
+    let target = QuickTerminalController.target()
+    let first = try XCTUnwrap(store.terminals.activeTab(for: target)).id
+    controller.perform(.newTab)
+
+    store.raiseFinished(
+      targetID: target.id, tabID: first, record: ProgramStatusRecord(id: "", state: .idle))
+    let note = try XCTUnwrap(registry.notifications.items.first)
+    XCTAssertEqual(note.source, "Quick Terminal")
+    XCTAssertEqual(registry.aggregateUnread, 1, "it counts in the one count")
+    XCTAssertTrue(registry.notifyingStores.contains { $0 === store }, "its needs-you alerts too")
+
+    controller.hide()
+    registry.open(note)
+    XCTAssertTrue(controller.isVisible)
+    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, first)
+    XCTAssertTrue(registry.notifications.items.isEmpty, "opening dismisses it")
+  }
+
+  /// Value: protects=closing it dropping its notifications, as a closing window's go (#573 D3);
+  /// fails_when=its rows outlive it and open nothing; why_new=new path; seam=none;
+  /// no_claim=banner withdrawal on the real notification center.
+  func testClosingItDropsItsNotifications() throws {
+    let controller = makeController()
+    let registry = joinRegistry(controller)
     controller.toggle()
     let store = try XCTUnwrap(controller.store)
     let tab = try XCTUnwrap(store.terminals.activeTab(for: QuickTerminalController.target())).id
-    var forwarded: [WorkroomNotification] = []
-    store.forwardToast = { forwarded.append($0) }
+    store.raiseFinished(
+      targetID: QuickTerminalController.targetID, tabID: tab,
+      record: ProgramStatusRecord(id: "", state: .idle))
+    XCTAssertEqual(registry.notifications.items.count, 1)
+
+    controller.close()
+    XCTAssertTrue(registry.notifications.items.isEmpty)
+  }
+
+  /// Value: protects=a toast showing in the Quick Terminal while it is the front window (#573 D2);
+  /// fails_when=it goes to the workroom window behind it; why_new=new; seam=WindowRegistry.keyWindow
+  /// (production caller: keyStore and frontStore, defaulting to NSApp.keyWindow); no_claim=rendering.
+  func testAToastShowsInTheQuickTerminalWhileItIsInFront() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    let registry = joinRegistry(controller)
+    controller.toggle()
+    let store = try XCTUnwrap(controller.store)
+    registry.keyWindow = { controller.currentWindow }
     store.isAppActive = { true }
 
     store.raiseFinished(
-      targetID: QuickTerminalController.targetID, tabID: tab,
-      record: ProgramStatusRecord(id: "", state: .working))
-    XCTAssertEqual(forwarded.map(\.tabID), [tab], "handed to the front window")
-    XCTAssertTrue(store.toasts.isEmpty, "never queued where nothing shows it")
+      targetID: QuickTerminalController.targetID, tabID: UUID(),
+      record: ProgramStatusRecord(id: "", state: .idle))
+    XCTAssertEqual(store.toasts.count, 1)
+  }
 
-    // Tapped in a workroom window's toast stack, it asks for the Quick Terminal on that pane.
-    let workroomStore = AppStore()
-    let posted = expectation(forNotification: .showQuickTerminal, object: nil) {
-      $0.userInfo?["tabID"] as? TerminalTab.ID == tab
-    }
-    workroomStore.openTerminal(
-      targetID: QuickTerminalController.targetID, tabID: tab, notifID: forwarded.first?.id)
-    wait(for: [posted], timeout: 1)
+  /// Value: protects=a notification from the Quick Terminal pane you are watching counting as seen,
+  /// as a workroom's does (#573, O4); fails_when=its target is never on screen for want of a
+  /// selection; why_new=handleActivity read the selected workroom only; seam=none; no_claim=focus as
+  /// AppKit reports it on screen (a key window stands in).
+  func testAWatchedPaneIsSeen() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    let registry = joinRegistry(controller)
+    controller.toggle()
+    let store = try XCTUnwrap(controller.store)
+    let tab = try XCTUnwrap(store.terminals.activeTab(for: QuickTerminalController.target())).id
+    store.hostWindow = AlwaysKeyWindow()
+
+    store.terminals.onEvent?(
+      .activity(QuickTerminalController.targetID, tab, .osc(title: "done", body: nil)))
+    XCTAssertTrue(registry.notifications.items.isEmpty, "you were looking at it")
   }
 
   func testANotificationClickSlidesInOnItsPane() throws {
@@ -450,4 +518,9 @@ final class GlobalHotkeyDispatchTests: XCTestCase {
     XCTAssertFalse(
       GlobalHotkey.matches(foreign, id: 1), "another app's hotkey id must never be handled")
   }
+}
+
+/// A window that is key whatever the test host's activation state.
+private final class AlwaysKeyWindow: NSWindow {
+  override var isKeyWindow: Bool { true }
 }
