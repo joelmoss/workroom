@@ -14,7 +14,7 @@ struct QuickTerminalContent: View {
     let _ = directory
     WorkroomTerminalsView(target: QuickTerminalController.target(), sessions: sessions)
       // Clear of the window's rounded corners: the first tab and the panes' bottoms touched them.
-      .padding(EdgeInsets(top: 4, leading: 8, bottom: 8, trailing: 8))
+      .padding(8)
       .background(ThemeService.shared.tokens.panel)
       // The tab strip takes the titlebar's place; without this the hosting view insets everything
       // below the (hidden) titlebar and leaves an empty strip above the tabs.
