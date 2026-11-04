@@ -313,6 +313,27 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertFalse(controller.hasWindow, "⌘W on the last pane of the last tab closes the window")
   }
 
+  // Value: protects=the key monitor takes exactly ⌘W/T/D/⇧⌘D/⌘1-9 in the Quick Terminal; fails_when=a chord maps wrong or a stray one is swallowed; why_new=no test calls classify; seam=none; no_claim=the monitor wiring in AppDelegate
+  func testKeyClassificationTakesOnlyItsOwnChords() {
+    typealias Key = QuickTerminalKey
+    XCTAssertEqual(Key.classify(flags: .command, characters: "w"), .closePane)
+    XCTAssertEqual(Key.classify(flags: .command, characters: "t"), .newTab)
+    XCTAssertEqual(Key.classify(flags: .command, characters: "d"), .splitRight)
+    XCTAssertEqual(Key.classify(flags: [.command, .shift], characters: "D"), .splitDown)
+    XCTAssertEqual(Key.classify(flags: .command, characters: "1"), .selectTab(0))
+    XCTAssertEqual(Key.classify(flags: .command, characters: "9"), .selectTab(8))
+    XCTAssertEqual(
+      Key.classify(flags: [.command, .capsLock, .numericPad], characters: "w"), .closePane,
+      "only the four real modifiers count")
+
+    XCTAssertNil(Key.classify(flags: .command, characters: "0"), "⌘0 is no tab")
+    XCTAssertNil(Key.classify(flags: .command, characters: "c"), "copy stays the terminal's")
+    XCTAssertNil(Key.classify(flags: [], characters: "w"), "a bare key is typing")
+    XCTAssertNil(Key.classify(flags: [.command, .option], characters: "d"))
+    XCTAssertNil(Key.classify(flags: .control, characters: "d"), "^D is EOF")
+    XCTAssertNil(Key.classify(flags: .command, characters: nil))
+  }
+
   func testCloseMidSlideOutTearsDown() {
     let controller = makeController()
     controller.toggle()  // VISIBLE
