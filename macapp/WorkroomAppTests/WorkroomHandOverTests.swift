@@ -969,6 +969,7 @@ final class WorkroomHandOverTests: XCTestCase {
   /// or the cut-out stops clearing; why_new=a composed image; seam=none; no_claim=how it looks.
   func testTheMoveToWorkroomIconDrawsATerminalWithAnArrow() throws {
     try assertBadgedIcon(.moveTerminal)
+    try assertBadgedIcon(.moveToNewWindow)
   }
 
   private func assertBadgedIcon(_ icon: NSImage) throws {
