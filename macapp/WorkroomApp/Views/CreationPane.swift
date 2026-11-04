@@ -4,8 +4,9 @@ import SwiftUI
 
 /// A create's pane (#483): a GitHub Actions-style checklist of the steps its kind runs, each with its
 /// time and its log one click away, what to do next on failure under the step that failed, and
-/// Done in a footer on success. Shown bare, with no title bar, tab bar or footer, from the click
-/// until the run ends (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
+/// a footer with "Close automatically when done" while it runs, joined by Done on success. Shown
+/// bare, with no title bar, tab bar or pane footer, from the click until the run ends
+/// (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
 ///
 /// Layout (design D4): one continuous `panel` surface, a leading column at most 640pt wide holding the
 /// header and the rows. A row's open log is as tall as its lines, up to what the pane has left, with
@@ -44,7 +45,7 @@ struct CreationPane: View {
         checklist(inset: narrow ? 16 : 32)
         // From the first frame, so "Close automatically when done" can be changed while the create
         // runs; gone once it fails or stops to ask, where the notice says what to do instead.
-        if run.outcome == .running || run.outcome == .succeeded {
+        if run.isRunning || isDone {
           CreationDoneFooter(inset: narrow ? 16 : 32, isDone: isDone) { store.finishCreation(run) }
             .transition(.move(edge: .bottom))
         }
@@ -497,8 +498,8 @@ struct StartChoicePresenter: ViewModifier {
   }
 }
 
-/// A finished create's footer: Done on the right, and on the left whether a finished checklist closes
-/// by itself from now on, as Settings › General also says.
+/// A running or finished create's footer: Done on the right once it succeeds, and on the left
+/// whether a finished checklist closes by itself from now on, as Settings › General also says.
 private struct CreationDoneFooter: View {
   let inset: CGFloat
   /// Whether the create succeeded: Done shows only then, in a slot kept from the start so the
