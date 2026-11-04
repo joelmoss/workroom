@@ -98,7 +98,7 @@ final class MenuBarController {
     let waiting = ProgramStatusAlerts.shared.waiting
     let breakdown = Self.breakdown(
       waiting: waiting,
-      unread: registry.allStores.reduce(0) { $0 + $1.notifications.unreadExcludingRequests })
+      unread: registry.notifications.unreadExcludingRequests)
     let pending = total > 0 || !waiting.isEmpty
     button.image = pending ? icon.map(Self.highlighted) : icon
     button.title = Self.title(total: total, showsCount: Defaults[.showMenuBarCount])

@@ -149,6 +149,8 @@ private struct ActivityBarButton: View {
 struct NotificationsBarButton: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  /// The one count the Dock badge and the menu bar show too (ADR 0064).
+  @ObservedObject private var registry = WindowRegistry.shared
   @State private var hovering = false
   @State private var showPopover = false
   private let theme = ThemeService.shared
@@ -166,7 +168,7 @@ struct NotificationsBarButton: View {
         .foregroundStyle(theme.tokens.fgMuted)
         .frame(width: ActivityBar.width, height: WindowFooter.height)
         .overlay(alignment: .topTrailing) {
-          UnreadBadge(count: notifications.total)
+          UnreadBadge(count: registry.aggregateUnread)
             .padding(.top, 3)
             .padding(.trailing, 5)
         }
@@ -180,16 +182,18 @@ struct NotificationsBarButton: View {
         .padding(.vertical, 2)
     }
     .onHover { hovering = $0 }
-    .disabled(notifications.total == 0)
+    // Enabled by what the popover lists, not the count: a request can be listed but not counted.
+    .disabled(notifications.items.isEmpty)
     // The popover itself has no key equivalent (⌥⌘N was retired with issue #118), so the tooltip
     // advertises ⇧⌘N — the View-menu "Next Notification" the ⌘-click mirrors.
     .help(
-      notifications.total > 0
-        ? "Show notifications (⌘-click or ⇧⌘N for next)"
-        : "No notifications"
+      notifications.items.isEmpty
+        ? "No notifications"
+        : "Show notifications (⌘-click or ⇧⌘N for next)"
     )
     .accessibilityLabel(
-      notifications.total > 0 ? "Notifications, \(notifications.total) unread" : "Notifications"
+      registry.aggregateUnread > 0
+        ? "Notifications, \(registry.aggregateUnread) unread" : "Notifications"
     )
     .accessibilityIdentifier("activityBar.notifications")
     .popover(isPresented: $showPopover, arrowEdge: .bottom) {

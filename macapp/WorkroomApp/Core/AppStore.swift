@@ -748,18 +748,6 @@ final class AppStore: ObservableObject {
   /// each toast carries the `WorkroomNotification` it mirrors so a tap can route via `openTerminal`.
   /// Rendered by `ToastStack`, overlaid bottom-right in `RootView`.
   var toasts: [WorkroomNotification] = []
-  /// Each tab's latest "finished" notification, which the tab's next finish replaces.
-  private var lastFinish: [TerminalTab.ID: UUID] = [:]
-
-  /// The finish index for tabs moving to another window, with their notifications (#444): left
-  /// here, a moved terminal's next finish would add a second notification rather than replace one.
-  func takeLastFinishes(_ tabs: [TerminalTab.ID]) -> [TerminalTab.ID: UUID] {
-    tabs.reduce(into: [:]) { taken, tab in taken[tab] = lastFinish.removeValue(forKey: tab) }
-  }
-
-  func adoptLastFinishes(_ finishes: [TerminalTab.ID: UUID]) {
-    lastFinish.merge(finishes) { _, moved in moved }
-  }
   /// Max simultaneously-visible toasts; beyond this the oldest is dropped so a chatty emitter can't
   /// overflow the window (matches the "stack a few, drop oldest" decision).
   private static let maxToasts = 4
@@ -1040,15 +1028,6 @@ final class AppStore: ObservableObject {
     }
     runCommand.onSignalUnconfirmed = { [weak self] targetID, reason in
       self?.runSignalUnconfirmed(targetID: targetID, reason: reason)
-    }
-    // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
-    // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
-    // background notifications. `DockBadge` draws into the tile's `contentView` (not `badgeLabel`,
-    // which a linked framework suppresses here). Captures no `self`, so there's no retain cycle.
-    self.notifications.onTotalChange = { _ in
-      // Combined count across all windows (issue #70) — the registry sums every window's total and
-      // updates the menu-bar label + Dock badge, so a second window can't clobber the first's count.
-      WindowRegistry.shared.recomputeBadge()
     }
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
@@ -3481,7 +3460,7 @@ final class AppStore: ObservableObject {
           title: "\(terminalPlace(targetID: targetID, tabID: tabID)) finished", body: body),
         focused: false)
     else { return }
-    if let earlier = lastFinish.updateValue(note.id, forKey: tabID) {
+    if let earlier = notifications.replaceFinish(of: tabID, with: note.id) {
       notifications.dismiss(notifID: earlier)
       toasts.removeAll { $0.id == earlier }
       // Its banner too: this finish may surface as a toast, which never replaces a banner.
