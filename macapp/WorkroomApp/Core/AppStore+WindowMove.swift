@@ -146,6 +146,9 @@ extension AppStore {
     selectedTargetID = handOff.sid
     selectedProjectID = Self.projectPath(of: handOff.sid)
     refreshSelectionHasTabs()
+    // Its sessions are attached again: a blocked agent the hand-off dropped from the waiting list
+    // comes back, with the counts.
+    WindowRegistry.shared.recomputeBadge()
     markSessionDirty()
     NSApp.activate(ignoringOtherApps: true)
     hostWindow?.makeKeyAndOrderFront(nil)
