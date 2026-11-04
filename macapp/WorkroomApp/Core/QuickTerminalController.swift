@@ -95,16 +95,26 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
 /// A toggle (`toggle()`, the hotkey) can hide; the button (`show()`) only ever brings the window
 /// forward. After a full close the next summon is a brand-new terminal — no session resurrection.
 ///
-/// AppKit `NSWindow` (not a SwiftUI scene) so we host the existing `GhosttySurfaceView` `NSView`
-/// directly with exact chrome control — no project sidebar, terminal tabs, or inspector. The window
-/// is themed to match the app (transparent titlebar over the panel background) and follows live
-/// theme switches, which the store-driven `applyThemeToAll` never reaches (this surface isn't in
-/// `store.terminals`).
+/// Its tabs and panes are a workroom's — the same `WorkroomTerminalsView`, tab strip and pane tree,
+/// so they look and behave the same — over a private `AppStore` that is never registered with
+/// `WindowRegistry` (never saved, restored or counted in the badge), whose `TerminalSessions` keeps
+/// no background session (`persistsSessions`) and moves no pane to a window of its own
+/// (`allowsDetach`). The target is no project, so the store's project lookups never see it. The
+/// window is an AppKit `NSWindow`, not a SwiftUI scene, for exact chrome control, and follows live
+/// theme switches, which `ThemeService` only takes to registered stores.
 @MainActor
 final class QuickTerminalController: NSObject, NSWindowDelegate {
   private var window: NSWindow?
-  /// The tabs and panes, while a window exists.
-  private(set) var workspace: QuickTerminalWorkspace?
+  /// The Quick Terminal's own store, while a window exists.
+  private(set) var store: AppStore?
+
+  /// The Quick Terminal's one target: no workroom, its id unlike any project path. `path` is where
+  /// a new tab's shell starts.
+  static func target() -> TerminalTarget {
+    TerminalTarget(
+      id: "workroom.quickTerminal", title: "Quick Terminal", path: newTabDirectory(),
+      unavailability: nil)
+  }
   private var themeObserver: NSObjectProtocol?
   /// Guards `tearDownState` against the re-entrancy of `window.close()` → `windowWillClose`.
   private var tearingDown = false
@@ -119,9 +129,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 
   /// Surface factory — overridable in tests to inject a non-spawning surface (`spawnsSurface: false`)
-  /// so no real PTY / Metal renderer is created. Defaults to a login shell in the folder given.
-  var makeSurface: @MainActor (String) -> GhosttySurfaceView = {
-    GhosttySurfaceView(workingDirectory: $0)
+  /// so no real PTY / Metal renderer is created. Defaults to a login shell in the folder given, or
+  /// the command given (an Investigate tab's agent).
+  var makeSurface: @MainActor (String, String?) -> GhosttySurfaceView = {
+    GhosttySurfaceView(workingDirectory: $0, command: $1)
   }
 
   /// Where a new tab's shell starts: the Settings folder. A split starts in its neighbour's.
@@ -150,7 +161,9 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// True while a window exists (VISIBLE or HIDDEN) — inspection aid for tests.
   var hasWindow: Bool { window != nil }
   /// The focused pane's surface (VISIBLE or HIDDEN), else nil.
-  var currentSurface: GhosttySurfaceView? { workspace?.focusedPane?.surface }
+  var currentSurface: GhosttySurfaceView? {
+    store?.terminals.activeTab(for: Self.target())?.surface
+  }
   /// The live window — for tests asserting the chrome-less styling.
   var currentWindow: NSWindow? { window }
 
@@ -228,17 +241,22 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 
   private func createWindow() {
-    // Each pane's shell exiting closes that pane; the last one closing closes the window.
-    let workspace = QuickTerminalWorkspace(
-      makeSurface: { [weak self] directory in
-        let surface =
-          self?.makeSurface(directory) ?? GhosttySurfaceView(workingDirectory: directory)
-        Self.applyTheme(to: surface)
-        return surface
-      },
-      onEmpty: { [weak self] in self?.close() })
-    workspace.newTab(in: Self.newTabDirectory())
-    self.workspace = workspace
+    let store = AppStore()
+    let sessions = store.terminals
+    sessions.persistsSessions = false
+    sessions.allowsDetach = false
+    sessions.makeView = { [weak self] _, directory, command in
+      let surface =
+        self?.makeSurface(directory, command)
+        ?? GhosttySurfaceView(workingDirectory: directory, command: command)
+      Self.applyTheme(to: surface)
+      return surface
+    }
+    // Closing the last tab, by ⌘W, its ✕ or its shell's exit, closes the window.
+    store.onTargetEmptied = { [weak self] _ in self?.close() }
+    // `ensureInitialTerminal` opens a project's first tab; this target is no project.
+    _ = sessions.addTab(for: Self.target())
+    self.store = store
 
     let window = QuickTerminalWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
@@ -248,7 +266,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     // Chrome-less: hide the title text, the toolbar and the traffic lights, and make the titlebar
     // transparent; the tab bar sits where it was. Still `.titled` + `.closable`, so it takes key
     // focus and the edges resize. Not movable: every summon docks it to its edge, and a drag of the
-    // tab bar's or a footer's empty space moves it along the edges (`QuickTerminalDragHandle`).
+    // tab strip's or a footer's empty space moves it along the edges (`QuickTerminalDragHandle`).
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.toolbar = nil
@@ -261,11 +279,17 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     window.delegate = self
     // The autosave restores the user's last size; `show()` sets the position.
     window.setFrameAutosaveName("QuickTerminal")
-    // The usage segment reads these, as in a detached pane's window (`DetachedPaneView`).
+    // The same environment a detached pane's window gives its pane (`DetachedPaneView`).
     window.contentView = NSHostingView(
-      rootView: QuickTerminalContent(workspace: workspace)
+      rootView: QuickTerminalContent(sessions: sessions)
+        .environment(\.isQuickTerminal, true)
+        .environmentObject(store)
+        .environmentObject(store.notifications)
+        .environmentObject(sessions)
+        .environmentObject(sessions.codingAgentManager)
         .environmentObject(CodingAgentUsageMonitor.shared)
         .environmentObject(ClaudeUsageBridge.shared))
+    store.hostWindow = window
     self.window = window
     applyTheme()
 
@@ -278,12 +302,12 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
   /// Repaint the window background and re-theme every pane for the active theme. On a
   /// `.themeDidChange` the global ghostty config is already reloaded (ThemeService posts the
-  /// notification after it reloads), so we just push it to these standalone surfaces — the per-tab
-  /// path in `TerminalSessions.applyThemeToAll` doesn't see them.
+  /// notification after it reloads); `ThemeService` re-themes only registered stores' panes, so
+  /// this store's are pushed here.
   private func applyTheme() {
-    guard let window, let workspace else { return }
+    guard let window, let store else { return }
     window.backgroundColor = ThemeService.shared.tokens.nsPanel
-    workspace.allSurfaces.forEach(Self.applyTheme(to:))
+    store.terminals.applyThemeToAll(isDark: ThemeService.isCurrentAppearanceDark())
   }
 
   private static func applyTheme(to surface: GhosttySurfaceView) {
@@ -292,14 +316,24 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 
   /// A Quick Terminal key (`QuickTerminalKey`) pressed while its window is key.
+  /// What a workroom window's menu does for the same keys, on this store's one target.
   func perform(_ key: QuickTerminalKey) {
-    guard let workspace else { return }
+    guard let store else { return }
+    let target = Self.target()
+    let sessions = store.terminals
+    let active = sessions.activeTab(for: target)
     switch key {
-    case .closePane: workspace.closeFocusedPane()
-    case .newTab: workspace.newTab(in: Self.newTabDirectory())
-    case .splitRight: workspace.split(.horizontal)
-    case .splitDown: workspace.split(.vertical)
-    case .selectTab(let index): workspace.selectTab(at: index)
+    case .closePane:
+      if let active { store.requestCloseTerminalTab(active.id, for: target) }
+    case .newTab:
+      store.newTerminal(in: target)
+    case .splitRight:
+      if let active { sessions.splitTab(active.id, on: .right, for: target) }
+    case .splitDown:
+      if let active { sessions.splitTab(active.id, on: .bottom, for: target) }
+    case .selectTab(let index):
+      let tabs = sessions.tabs(for: target)
+      if tabs.indices.contains(index) { sessions.focus(tabs[index].id, for: target) }
     }
   }
 
@@ -370,8 +404,15 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     hiding = false
     if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
     themeObserver = nil
-    workspace?.tearDownAll()
-    workspace = nil
+    if let store {
+      // The window is already going: closing its tabs mustn't ask to close it again.
+      store.onTargetEmptied = nil
+      let target = Self.target()
+      for tab in store.terminals.allTabs(for: target) {
+        store.terminals.closeTab(tab.id, for: target)
+      }
+    }
+    store = nil
     window?.delegate = nil
     window = nil
     tearingDown = false

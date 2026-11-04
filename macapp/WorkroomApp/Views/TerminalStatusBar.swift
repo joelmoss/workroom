@@ -25,6 +25,7 @@ struct TerminalStatusBar: View {
   /// button can know whether it's actually showing anything.
   @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
   @State private var showingDiagnosis = false
+  @Environment(\.isQuickTerminal) private var isQuickTerminal
 
   private let theme = ThemeService.shared
 
@@ -45,7 +46,8 @@ struct TerminalStatusBar: View {
     // Computed once per render so a divider between two segments only appears when BOTH sides are
     // actually showing something — each segment is independently optional.
     let hasLeading = cwd != nil
-    let hasBranch = store.branchLabel(for: target) != nil
+    let branch = store.branchLabel(for: target) ?? state?.liveBranch
+    let hasBranch = branch != nil
     let hasDiagnosis = diagnosis != nil
     let hasDetached = !sessionsStore.detached(for: target.id).isEmpty
     let hasRun = isRunTab && runStatePresentation != nil
@@ -55,11 +57,18 @@ struct TerminalStatusBar: View {
       // pane's own title bar (issue #150), which names the pane; this bar is its live working state.
       if let cwd { StatusBarCwdSegment(cwd: cwd, onHost: cwdIsOnHost) }
       if hasLeading, hasBranch { statusBarDivider }
-      if let branch = store.branchLabel(for: target) { StatusBarBranchSegment(branch: branch) }
+      if let branch { StatusBarBranchSegment(branch: branch) }
       // Diagnosis sits left-aligned right after the branch, not pushed to the far edge.
       if hasLeading || hasBranch, hasDiagnosis { statusBarDivider }
       if let diagnosis { diagnosisSegment(diagnosis) }
-      Spacer(minLength: 8)
+      if isQuickTerminal {
+        // Its empty middle drags the Quick Terminal along the screen edges.
+        QuickTerminalDragHandle()
+          .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityHidden(true)
+      } else {
+        Spacer(minLength: 8)
+      }
       // The running agent's usage (#480). Before the detached-sessions button, so nothing trailing
       // moves when it comes and goes, and lowest priority, so it gives way before cwd or branch. Not
       // in a remote pane: its agent bills the host's login, which this Mac's readings may not be.

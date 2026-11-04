@@ -159,8 +159,8 @@ struct PaneTitleBar: View {
   /// Pop this pane out into its own window (issue #172). Only that direction: a detached pane renders
   /// `chromeless`, so this bar never appears in a detached window — docking back is that window's own
   /// toolbar button. A button as well as a drag because a drag is neither keyboard-reachable nor
-  /// reliably drivable from XCUITest.
-  let onPopOut: () -> Void
+  /// reliably drivable from XCUITest. Nil where panes can't move to a window (the Quick Terminal).
+  let onPopOut: (() -> Void)?
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
   private let theme = ThemeService.shared
@@ -281,10 +281,12 @@ struct PaneTitleBar: View {
         }
         if controls.hasOptional { TitlebarDivider() }
       }
-      PaneToolbarButton(
-        systemImage: "macwindow.badge.plus", help: "Move to new window",
-        accessibilityLabel: "Move pane into new window", identifier: "pane.toolbar.popOut",
-        action: onPopOut)
+      if let onPopOut {
+        PaneToolbarButton(
+          systemImage: "macwindow.badge.plus", help: "Move to new window",
+          accessibilityLabel: "Move pane into new window", identifier: "pane.toolbar.popOut",
+          action: onPopOut)
+      }
       PaneToolbarButton(
         systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
         accessibilityLabel: "Split right", identifier: "pane.toolbar.splitRight",

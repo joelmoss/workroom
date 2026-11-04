@@ -1039,11 +1039,10 @@ struct PaneLeafView: View {
       onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
       onClose: { store.requestCloseTerminalTab(tabID, for: target) },
       onActivate: onActivate,
-      onPopOut: {
-        // Same screen placement a drag-out would produce, minus the drag: put the window under
-        // the pointer rather than somewhere arbitrary.
-        sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
-      },
+      // Same screen placement a drag-out would produce, minus the drag: put the window under the
+      // pointer rather than somewhere arbitrary.
+      onPopOut: sessions.allowsDetach
+        ? { sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
       onDragChanged: onDragChanged,
       onDragEnded: onDragEnded
     )
@@ -1186,8 +1185,7 @@ private struct PaneClickFocusCatcher: NSViewRepresentable {
 /// A draggable divider that writes a new ratio for one split node. Draws **no** separator rule — each
 /// terminal pane already has its own rounded border, so a line in the gutter would only double up;
 /// it's just an invisible, hit-testable track surfaced by the resize cursor on hover.
-/// A split's draggable divider: a pane tree's, and the Quick Terminal's.
-struct SplitDivider: View {
+private struct SplitDivider: View {
   let orientation: SplitOrientation
   let ratio: CGFloat
   let total: CGFloat
