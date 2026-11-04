@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import DaemonConnection
 import Defaults
 import WorkroomDomain
 import XCTest
@@ -330,6 +331,33 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertEqual(sessions.activeTab(for: target)?.id, left)
     XCTAssertFalse(controller.perform(.focusPane(.up)), "no pane above: the key is the terminal's")
     XCTAssertEqual(sessions.activeTab(for: target)?.id, left)
+  }
+
+  func testItsInAppAlertsGoToTheFrontWindowAndTapBackToItsPane() throws {
+    // Its store shows no toasts, so one would never be seen (PR #571).
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let store = try XCTUnwrap(controller.store)
+    let tab = try XCTUnwrap(store.terminals.activeTab(for: QuickTerminalController.target())).id
+    var forwarded: [WorkroomNotification] = []
+    store.forwardToast = { forwarded.append($0) }
+    store.isAppActive = { true }
+
+    store.raiseFinished(
+      targetID: QuickTerminalController.targetID, tabID: tab,
+      record: ProgramStatusRecord(id: "", state: .working))
+    XCTAssertEqual(forwarded.map(\.tabID), [tab], "handed to the front window")
+    XCTAssertTrue(store.toasts.isEmpty, "never queued where nothing shows it")
+
+    // Tapped in a workroom window's toast stack, it asks for the Quick Terminal on that pane.
+    let workroomStore = AppStore()
+    let posted = expectation(forNotification: .showQuickTerminal, object: nil) {
+      $0.userInfo?["tabID"] as? TerminalTab.ID == tab
+    }
+    workroomStore.openTerminal(
+      targetID: QuickTerminalController.targetID, tabID: tab, notifID: forwarded.first?.id)
+    wait(for: [posted], timeout: 1)
   }
 
   func testANotificationClickSlidesInOnItsPane() throws {

@@ -113,9 +113,9 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// a new tab's shell starts.
   static func target() -> TerminalTarget {
     TerminalTarget(
-      id: "workroom.quickTerminal", title: "Quick Terminal", path: newTabDirectory(),
-      unavailability: nil)
+      id: targetID, title: "Quick Terminal", path: newTabDirectory(), unavailability: nil)
   }
+  static let targetID: TerminalTarget.ID = "workroom.quickTerminal"
   private var themeObserver: NSObjectProtocol?
   /// Guards `tearDownState` against the re-entrancy of `window.close()` → `windowWillClose`.
   private var tearingDown = false
@@ -265,6 +265,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     }
     // Closing the last tab, by ⌘W, its ✕ or its shell's exit, closes the window.
     store.onTargetEmptied = { [weak self] _ in self?.close() }
+    // Nothing of its own shows toasts, and it is often hidden behind a workroom window anyway.
+    store.forwardToast = { WindowRegistry.shared.keyStore?.enqueueToast($0) }
     // `ensureInitialTerminal` opens a project's first tab; this target is no project.
     _ = sessions.addTab(for: Self.target())
     self.store = store

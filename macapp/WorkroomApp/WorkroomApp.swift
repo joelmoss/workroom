@@ -656,10 +656,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // of the SwiftUI view's reach. The ⌥§ hotkey calls the controller directly (see updateGlobalHotkey).
     quickTerminalObserver = NotificationCenter.default.addObserver(
       forName: .showQuickTerminal, object: nil, queue: .main
-    ) { [quickTerminal] _ in
+    ) { [quickTerminal] note in
       // The controller, not `self`: it is main-actor-isolated, so the `Sendable` handler can hold it,
-      // and it lives exactly as long as the app delegate that owns it.
-      MainActor.assumeIsolated { quickTerminal.show() }
+      // and it lives exactly as long as the app delegate that owns it. A tapped Quick Terminal toast
+      // names its pane (`AppStore.openTerminal`).
+      let tabID = note.userInfo?["tabID"] as? TerminalTab.ID
+      MainActor.assumeIsolated { quickTerminal.reveal(tab: tabID) }
     }
 
     installSigtermHandler()
@@ -774,7 +776,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       let tabID = (info["tabID"] as? String).flatMap(UUID.init(uuidString:))
       let notifID = (info["notifID"] as? String).flatMap(UUID.init(uuidString:))
       Task { @MainActor [quickTerminal] in
-        if targetID == QuickTerminalController.target().id {
+        if targetID == QuickTerminalController.targetID {
           quickTerminal.reveal(tab: tabID)
           return
         }

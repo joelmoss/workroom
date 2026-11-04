@@ -48,6 +48,9 @@ final class AppStore: ObservableObject {
   weak var hostWindow: NSWindow?
   /// Called when a target's last tab closes. The Quick Terminal's own store closes its window on it.
   var onTargetEmptied: ((TerminalTarget.ID) -> Void)?
+  /// Where this store's in-app toasts go instead of its own `toasts`. The Quick Terminal's store sends
+  /// them to the front workroom window, since it shows none itself.
+  var forwardToast: ((WorkroomNotification) -> Void)?
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -3545,7 +3548,7 @@ final class AppStore: ObservableObject {
       // — that gating referenced a surface that no longer shows notifications, so a focused arrival
       // with the inspector open would have silently dropped.
       NotificationSound.play()
-      enqueueToast(note)
+      if let forwardToast { forwardToast(note) } else { enqueueToast(note) }
     } else if NotificationGate.shouldPostBanner(recorded: true, appActive: isAppActive()) {
       Task { @MainActor in
         if await systemNotifier.ensureAuthorized(), stillWanted(),
@@ -3590,6 +3593,12 @@ final class AppStore: ObservableObject {
   /// Reused by both the native-banner click (AppDelegate) and the in-app panel tap. No-ops (and
   /// withdraws any stale banner) when the target/tab no longer exists.
   func openTerminal(targetID: TerminalTarget.ID, tabID: TerminalTab.ID?, notifID: UUID? = nil) {
+    // A Quick Terminal toast forwarded here (`forwardToast`): its pane is in no window's store.
+    if targetID == QuickTerminalController.targetID {
+      NotificationCenter.default.post(
+        name: .showQuickTerminal, object: nil, userInfo: tabID.map { ["tabID": $0] })
+      return
+    }
     NSApp.activate(ignoringOtherApps: true)
     // A DETACHED pane (issue #172) is already open in its own window, so raise that and stop. This
     // has to come BEFORE `applyLocation` below: that call selects the workroom in THIS window and
