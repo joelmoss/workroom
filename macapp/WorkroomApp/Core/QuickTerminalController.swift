@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import SwiftUI
 
 /// Marker type for the quick-terminal window so the `AppDelegate` key monitor can recognise it and
 /// route ⌘W to close it. (The app rebinds ⌘W to a "Close Tab" menu command that targets the
@@ -75,6 +76,8 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
 final class QuickTerminalController: NSObject, NSWindowDelegate {
   private var window: NSWindow?
   private var surface: GhosttySurfaceView?
+  /// What the footer shows, while a window exists.
+  private(set) var status: QuickTerminalStatus?
   private var themeObserver: NSObjectProtocol?
   /// Guards `tearDownState` against the re-entrancy of `window.close()` → `windowWillClose`.
   private var tearingDown = false
@@ -226,8 +229,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     window.delegate = self
     // The autosave restores the user's last size; `show()` sets the position.
     window.setFrameAutosaveName("QuickTerminal")
-    window.contentView = surface
-    surface.autoresizingMask = [.width, .height]
+    window.contentView = Self.contentView(surface: surface, footer: footer(following: surface))
     self.window = window
     applyTheme()
 
@@ -236,6 +238,38 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.applyTheme() }
     }
+  }
+
+  /// The footer a pane has (folder, branch, agent usage), following this surface's shell.
+  private func footer(following surface: GhosttySurfaceView) -> NSView {
+    let status = QuickTerminalStatus(cwd: surface.workingDirectory)
+    status.follow(surface)
+    self.status = status
+    // The usage segment reads these, as in a detached pane's window (`DetachedPaneView`).
+    return NSHostingView(
+      rootView: QuickTerminalFooter(status: status)
+        .environmentObject(CodingAgentUsageMonitor.shared)
+        .environmentObject(ClaudeUsageBridge.shared))
+  }
+
+  /// The terminal above its footer, which keeps a pane footer's fixed height.
+  private static func contentView(surface: NSView, footer: NSView) -> NSView {
+    let container = NSView()
+    for view in [surface, footer] {
+      view.translatesAutoresizingMaskIntoConstraints = false
+      container.addSubview(view)
+    }
+    NSLayoutConstraint.activate([
+      surface.topAnchor.constraint(equalTo: container.topAnchor),
+      surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      surface.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      footer.topAnchor.constraint(equalTo: surface.bottomAnchor),
+      footer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      footer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      footer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+      footer.heightAnchor.constraint(equalToConstant: TerminalPanelMetrics.chromeRowHeight),
+    ])
+    return container
   }
 
   /// Repaint the window background and re-theme the surface for the active theme. On a `.themeDidChange`
@@ -254,10 +288,19 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     window?.close()
   }
 
-  /// Focus moved to another window or app: slide away. Not while a sheet is up (a clipboard
-  /// confirmation takes key from this window but belongs to it).
+  /// Checked a turn later, once AppKit has made the new window key.
   func windowDidResignKey(_ notification: Notification) {
-    guard hidesWhenUnfocused(), window?.attachedSheet == nil else { return }
+    DispatchQueue.main.async { [weak self] in
+      MainActor.assumeIsolated { self?.focusMoved(to: NSApp.keyWindow) }
+    }
+  }
+
+  /// Focus moved to `newKey` (nil: another app): slide away, unless it went to this window's own
+  /// sheet (a clipboard confirmation) or popover (the usage detail), which are not leaving it.
+  func focusMoved(to newKey: NSWindow?) {
+    guard hidesWhenUnfocused(), let window, window.attachedSheet == nil,
+      newKey?.parent !== window
+    else { return }
     hide()
   }
 
@@ -276,6 +319,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     themeObserver = nil
     surface?.tearDown()
     surface = nil
+    status = nil
     window?.delegate = nil
     window = nil
     tearingDown = false

@@ -172,16 +172,42 @@ final class QuickTerminalControllerTests: XCTestCase {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()  // VISIBLE
-    let resign = Notification(name: NSWindow.didResignKeyNotification)
 
     controller.hidesWhenUnfocused = { false }
-    controller.windowDidResignKey(resign)
+    controller.focusMoved(to: nil)
     XCTAssertTrue(controller.isVisible, "setting off: stays up")
 
     controller.hidesWhenUnfocused = { true }
-    controller.windowDidResignKey(resign)
+    controller.focusMoved(to: nil)
     XCTAssertFalse(controller.isVisible, "setting on: slides away")
     XCTAssertTrue(controller.hasWindow, "hidden, not closed")
+  }
+
+  func testFocusOnItsOwnPopoverKeepsItUp() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    controller.hidesWhenUnfocused = { true }
+    let window = try XCTUnwrap(controller.currentWindow)
+    // An `NSPopover`'s window is a child of the window it opens from (probed: `_NSPopoverWindow`).
+    let popover = NSWindow(
+      contentRect: .init(x: 0, y: 0, width: 10, height: 10), styleMask: [], backing: .buffered,
+      defer: true)
+    window.addChildWindow(popover, ordered: .above)
+    defer { window.removeChildWindow(popover) }
+
+    controller.focusMoved(to: popover)
+    XCTAssertTrue(controller.isVisible, "the usage popover is part of the Quick Terminal")
+  }
+
+  func testFooterFollowsTheShellsFolder() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let status = try XCTUnwrap(controller.status)
+    XCTAssertEqual(status.cwd, "/tmp", "seeded with the shell's folder before OSC 7 arrives")
+    controller.currentSurface?.handlePwd("/usr")
+    XCTAssertEqual(status.cwd, "/usr")
   }
 
   func testCloseMidSlideOutTearsDown() {
