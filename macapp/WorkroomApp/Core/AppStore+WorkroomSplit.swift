@@ -59,7 +59,7 @@ extension AppStore {
   }
 
   /// Whether a split is currently *shown*: the selected workroom belongs to a group with ≥2 live
-  /// members. Mirrors `TerminalSessions.isSplitVisible` — groups are persistent state; selecting a
+  /// members. Mirrors `TerminalSessions.split(for:)` — groups are persistent state; selecting a
   /// workroom outside every group shows it solo without dissolving anything (the group reappears on
   /// reselect).
   var isWorkroomSplitVisible: Bool {
@@ -185,8 +185,7 @@ extension AppStore {
       let prospective = base.inserting(
         sid, beside: beside, orientation: edge.orientation,
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
-      let stored = PaneTreeLayout.evenedIfHonourable(
-        prospective, in: space, enabled: autoEvenSplits(), along: edge.orientation)
+      let stored = evenedWorkroomGroup(prospective, along: edge.orientation)
       return PaneTreeLayout.fitsEveryPane(
         stored, in: space, notWorseThan: base, splitting: beside)
     }
@@ -235,11 +234,11 @@ extension AppStore {
     // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
     // only, no selection re-point: `sid` is about to be focused anyway.
     detachFromSplitGroup(sid)
-    if autoEvenSplits(), let sourceSurvivor, sourceSurvivor != beside,
+    if let sourceSurvivor, sourceSurvivor != beside,
       let sourceIndex = splitIndex(containing: sourceSurvivor)
     {
-      workroomSplits[sourceIndex] = PaneTreeLayout.evenedIfHonourable(
-        workroomSplits[sourceIndex], in: workroomPaneSpace, enabled: true, along: sourceAxis)
+      workroomSplits[sourceIndex] = evenedWorkroomGroup(
+        workroomSplits[sourceIndex], along: sourceAxis)
     }
     if let index = splitIndex(containing: beside) {
       let grown = workroomSplits[index].inserting(
@@ -251,7 +250,8 @@ extension AppStore {
       // tree it is handed), so this one site asks the honourability question directly.
       if adds, autoEvenSplits(), let evened = prunedAndEvened(grown, along: edge.orientation),
         workroomPaneSpace.map({
-          PaneTreeLayout.plansEvenly(evened, in: $0, evenedAxis: edge.orientation)
+          PaneTreeLayout.plansEvenly(
+            evened, in: $0, evenedAxis: edge.orientation, leafSlots: workroomLeafSlots)
         }) ?? true
       {
         workroomSplits[index] = evened
@@ -261,11 +261,15 @@ extension AppStore {
     } else {
       let dropped = PaneLayout<SidebarID>.leaf(sid)
       let anchor = PaneLayout<SidebarID>.leaf(beside)
+      // Weighted like every other add, so a workroom showing two terminals side by side takes two
+      // thirds next to one showing one — the same tree `canInsertWorkroomSplit` admitted.
       workroomSplits.append(
-        .split(
-          id: UUID(), orientation: edge.orientation, ratio: 0.5,
-          first: edge.placesDroppedFirst ? dropped : anchor,
-          second: edge.placesDroppedFirst ? anchor : dropped))
+        evenedWorkroomGroup(
+          .split(
+            id: UUID(), orientation: edge.orientation, ratio: 0.5,
+            first: edge.placesDroppedFirst ? dropped : anchor,
+            second: edge.placesDroppedFirst ? anchor : dropped),
+          along: edge.orientation))
     }
     focusWorkroomMember(sid)
     return true
@@ -362,9 +366,8 @@ extension AppStore {
     // left only: dividers running the other way stay put. Plain `equalized`, not the pruning
     // variant: `survivor` was chosen above and a prune-driven dissolve here would strand the
     // selection on it. Indices shift when a group dissolves, so re-derive.
-    if autoEvenSplits(), let survivor, let index = splitIndex(containing: survivor) {
-      workroomSplits[index] = PaneTreeLayout.evenedIfHonourable(
-        workroomSplits[index], in: workroomPaneSpace, enabled: true, along: axis)
+    if let survivor, let index = splitIndex(containing: survivor) {
+      workroomSplits[index] = evenedWorkroomGroup(workroomSplits[index], along: axis)
     }
     if wasFocused, let survivor { focusWorkroomMember(survivor) }
   }
@@ -441,19 +444,39 @@ extension AppStore {
     workroomSplits[index] = workroomSplits[index].settingRatio(ratio, forSplit: splitID)
   }
 
-  /// Resize the **visible** split group so every one of its panes is the same size (issue #83 "Resize
-  /// Workroom Splits Evenly") — the menu item is enabled only while a split is on screen, so that's the
-  /// group the user means. Prunes dead-workroom leaves FIRST — the renderer drops them on read
-  /// (`visibleWorkroomLayout`) while the stored tree still holds them, so equalizing the raw tree
-  /// would budget space for a ghost pane and leave the visible panes uneven. Dissolves the group when
-  /// fewer than two leaves remain live (a lone leaf is "no split"). No-op when no group is visible.
-  func equalizeWorkroomSplit() {
-    guard let sid = selectedTargetID, let index = splitIndex(containing: sid) else { return }
-    if let evened = prunedAndEvened(workroomSplits[index]) {
-      workroomSplits[index] = evened
-    } else {
-      workroomSplits.remove(at: index)
+  /// How many panes `sid` shows across `axis`: its widest row of terminals side by side, or its
+  /// tallest column stacked (`maxSlots`), over the group the workroom is showing. Every workroom
+  /// even weights its leaves by this, so the terminals across the whole window come out the same
+  /// size rather than each workroom getting an equal share, and the fit check gives that widest
+  /// row room for every pane in it.
+  private var workroomLeafSlots: (SidebarID, SplitOrientation) -> Int {
+    { [self] sid, axis in
+      target(for: sid).flatMap { terminals.split(for: $0) }?.maxSlots(along: axis) ?? 1
     }
+  }
+
+  /// `targetID` now shows a different number of panes along `axis` (nil: both ways), from a split,
+  /// a close or a tab switch, so its workroom's weight changed: re-even the workroom split it sits
+  /// in along that axis. No-op when auto-even is off, the workroom isn't in
+  /// a workroom split, or the even wouldn't leave every terminal at its minimum size.
+  func reEvenWorkroomSplit(holding targetID: TerminalTarget.ID, along axis: SplitOrientation?) {
+    guard let sid = Self.sidebarID(forTargetID: targetID, in: projects),
+      let index = splitIndex(containing: sid)
+    else { return }
+    let evened = evenedWorkroomGroup(workroomSplits[index], along: axis)
+    // `workroomSplits` is published: write only a real change, so a no-op even redraws nothing.
+    if evened != workroomSplits[index] { workroomSplits[index] = evened }
+  }
+
+  /// `group` evened along `axis` when auto-even is on and the window can honour it, each workroom
+  /// weighted by its terminals (`workroomLeafSlots`); otherwise `group` unchanged. Every automatic
+  /// workroom even goes through here, so none can forget the weight.
+  private func evenedWorkroomGroup(
+    _ group: PaneLayout<SidebarID>, along axis: SplitOrientation?
+  ) -> PaneLayout<SidebarID> {
+    PaneTreeLayout.evenedIfHonourable(
+      group, in: workroomPaneSpace, enabled: autoEvenSplits(), along: axis,
+      leafSlots: workroomLeafSlots)
   }
 
   /// Strip leaves whose workroom no longer resolves, then even what's left. nil ⇒ fewer than two
@@ -461,11 +484,9 @@ extension AppStore {
   ///
   /// The prune has to come FIRST: the renderer drops dead leaves on read (`visibleWorkroomLayout`)
   /// while the stored tree still counts them, so evening the raw tree budgets space for a pane
-  /// nobody can see and leaves the visible ones uneven. Shared by the View menu action above and by
-  /// `insertWorkroomSplit` (issue #126) so the manual and automatic paths can't drift.
+  /// nobody can see and leaves the visible ones uneven. Used by `insertWorkroomSplit` (issue #126).
   ///
-  /// Deliberately unconditional — the menu item must work with the auto-even pref off — and
-  /// deliberately NOT called by `removeWorkroomSplitMember`, which picks the survivor to focus
+  /// Deliberately NOT called by `removeWorkroomSplitMember`, which picks the survivor to focus
   /// before its structural edit: a prune that dissolved the group afterwards would leave the
   /// selection on a workroom that no longer resolves, so that path evens without pruning.
   private func prunedAndEvened(
@@ -473,7 +494,7 @@ extension AppStore {
   ) -> PaneLayout<SidebarID>? {
     let live = liveLeavesOnly(group)
     guard live.tabIDs.count >= 2 else { return nil }
-    return live.equalized(along: axis)
+    return live.equalized(along: axis, leafSlots: workroomLeafSlots)
   }
 
   /// `group` with every leaf whose workroom no longer resolves dropped — what the renderer shows and
@@ -520,10 +541,7 @@ extension AppStore {
         // (issue #126): even the survivors rather than leave them budgeted for the workroom that
         // went away, along the axes the dead leaves left (both, when they left different ways).
         // Plain `equalized` — the tree in hand is the pruned one.
-        kept.append(
-          PaneTreeLayout.evenedIfHonourable(
-            pruned, in: workroomPaneSpace, enabled: autoEvenSplits(),
-            along: axes.count == 1 ? axes.first : nil))
+        kept.append(evenedWorkroomGroup(pruned, along: axes.count == 1 ? axes.first : nil))
       } else if let survivor = live.first {
         survivors.append(survivor)
       }

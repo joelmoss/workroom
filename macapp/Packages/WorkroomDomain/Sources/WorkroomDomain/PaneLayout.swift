@@ -25,7 +25,7 @@ import Foundation
 /// `settingRatio` / `equalized`); callers never walk the tree inline (DRY). Anything that needs a
 /// MEASURED answer (does this still fit? would evening actually render evenly?) belongs on
 /// `PaneTreeLayout` instead — this type has no geometry.
-public enum SplitOrientation: Equatable, Sendable {
+public enum SplitOrientation: Hashable, CaseIterable, Sendable {
   case horizontal  // panes side by side — a vertical divider   (⌘D "split right")
   case vertical  // panes stacked    — a horizontal divider (⇧⌘D "split down")
 }
@@ -216,9 +216,34 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   /// bottom half of `A / B` sideways made the tree `A / (B | C)`, and three leaves against one gave
   /// the untouched pane A a third of the HEIGHT it had before. Splitting one pane must never resize
   /// a pane in a different row (issue #126).
-  public func slots(along orientation: SplitOrientation) -> Int {
-    guard case .split(_, let o, _, let first, let second) = self, o == orientation else { return 1 }
-    return first.slots(along: orientation) + second.slots(along: orientation)
+  ///
+  /// `leafSlots` weights each leaf (at least one): a workroom showing two terminals side by side
+  /// counts as two columns, so evening the workroom split gives every terminal the same width. A
+  /// weighted split of the other orientation counts as its widest child rather than one, so a
+  /// column of stacked workrooms makes room for the most terminals any of them shows across.
+  public func slots(
+    along orientation: SplitOrientation, leafSlots: ((Leaf, SplitOrientation) -> Int)? = nil
+  ) -> Int {
+    switch self {
+    case .leaf(let leaf):
+      return max(1, leafSlots?(leaf, orientation) ?? 1)
+    case .split(_, let o, _, let first, let second):
+      guard o == orientation || leafSlots != nil else { return 1 }
+      let firstSlots = first.slots(along: orientation, leafSlots: leafSlots)
+      let secondSlots = second.slots(along: orientation, leafSlots: leafSlots)
+      return o == orientation ? firstSlots + secondSlots : max(firstSlots, secondSlots)
+    }
+  }
+
+  /// The most panes any single row (`.horizontal`) or column (`.vertical`) of this tree holds: a
+  /// same-axis split adds its children, an other-axis split takes the larger. `A / (B | C)` is two
+  /// columns wide, because its bottom row needs room for two panes side by side, where
+  /// `slots(along:)` counts it as one.
+  public func maxSlots(along orientation: SplitOrientation) -> Int {
+    guard case .split(_, let o, _, let first, let second) = self else { return 1 }
+    let firstSlots = first.maxSlots(along: orientation)
+    let secondSlots = second.maxSlots(along: orientation)
+    return o == orientation ? firstSlots + secondSlots : max(firstSlots, secondSlots)
   }
 
   /// "Resize splits evenly" (issue #83, reshaped by #126): rebalance every split node so the panes
@@ -235,19 +260,24 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   ///
   /// `axis` limits the rebalance to dividers of that orientation, keeping every other divider where
   /// it is: adding or removing a pane in a left/right split must never change any pane's height,
-  /// nor in a top/bottom split any pane's width. nil evens every divider (the menu's "Resize
-  /// Splits Evenly").
-  public func equalized(along axis: SplitOrientation? = nil) -> PaneLayout<Leaf> {
+  /// nor in a top/bottom split any pane's width. nil evens every divider.
+  ///
+  /// `leafSlots` weights each leaf as `slots(along:leafSlots:)` does.
+  public func equalized(
+    along axis: SplitOrientation? = nil,
+    leafSlots: ((Leaf, SplitOrientation) -> Int)? = nil
+  ) -> PaneLayout<Leaf> {
     switch self {
     case .leaf:
       return self
     case .split(let sid, let o, let r, let first, let second):
-      let ours = first.slots(along: o)
-      let theirs = second.slots(along: o)
+      let ours = first.slots(along: o, leafSlots: leafSlots)
+      let theirs = second.slots(along: o, leafSlots: leafSlots)
       let ratio = axis == nil || axis == o ? CGFloat(ours) / CGFloat(ours + theirs) : r
       return .split(
         id: sid, orientation: o, ratio: PaneRatio.sanitize(ratio),
-        first: first.equalized(along: axis), second: second.equalized(along: axis))
+        first: first.equalized(along: axis, leafSlots: leafSlots),
+        second: second.equalized(along: axis, leafSlots: leafSlots))
     }
   }
 }

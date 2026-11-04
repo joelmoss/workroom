@@ -17,8 +17,10 @@ pane draws `Views/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
 `scripts/workroom_setup`, and `CreationRun.begin` puts it back if a script runs anyway), fed by
 the CLI's NDJSON `step` and `log` events for a local create and by
 `ProvisioningProgress.$reportStep` and `$log` for the others; what it says lives in
-`CreationPanePresentation`, which is unit-tested. On success the checklist stays with Done until
-it is clicked, or with `closeCreationPaneWhenDone` on, for `creationSuccessHold` (3 s); then the
+`CreationPanePresentation`, which is unit-tested. The pane takes keyboard focus as it appears. Its
+footer, with the "Close automatically when done" checkbox, shows from the start of the run; Done
+joins it on success. On success the checklist stays with Done until
+it is clicked, or with `closeCreationPaneWhenDone` on, for `creationSuccessHold` (1.5 s); then the
 run is dropped and the terminal mounts. An armed auto-run starts at success, not then: backgrounded
 beside the shell the terminal opens on. On failure the run stays for its footer (Try Again, Close, Open Anyway or Delete Workroom). `creatingWorkrooms`, the
 delete guard, is released when the create's process ends, not when the run goes. Creates in one

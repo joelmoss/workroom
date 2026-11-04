@@ -29,7 +29,7 @@ The question appears whether or not **Confirm before quitting** is on. See [Quit
 | Setting | What it does |
 | --- | --- |
 | **Base branch** | The branch new workrooms start from in every project that sets none of its own. Leave it empty to use `origin`'s default branch. |
-| **Close the checklist automatically when done** | Closes a new workroom's checklist a few seconds after the workroom is ready, instead of waiting for you to click **Done**. |
+| **Close the checklist automatically when done** | Closes a new workroom's checklist a moment after the workroom is ready, instead of waiting for you to click **Done**. |
 
 New workrooms start from `origin`'s copy of the base branch, otherwise the local branch. Write `upstream/main` to start from another remote's branch, such as a fork's upstream. A project's own base branch in Project Settings wins. The field saves when you press <kbd>Return</kbd> or leave it. See [Projects](projects.md#base-branch) and [Workrooms](workrooms.md#watch-the-steps).
 
@@ -52,7 +52,7 @@ In Workroom 2.1.0 there is no Notifications pane. **Show notifications in the me
 | **Theme** | Opens the theme picker. A theme family has a light and a dark variant, and the one in use follows **Appearance**. Terminals change with it. The picker is also on <kbd>⇧⌘K</kbd> (**View ▸ Theme…**). |
 | **Diff view** | **Unified** or **Side by Side** for diffs you open from now on. A narrow pane always falls back to unified. |
 | **Dim unfocused panes** | Shades every pane except the focused one so the active terminal stands out in a split. On by default. |
-| **Resize splits evenly automatically** | Evens out the dividers whenever a pane joins or leaves a split, only those running the same way as that pane (in Workroom 2.1.0, every divider). Off leaves them where they are. **View ▸ Resize Splits Evenly** still works either way. |
+| **Automatically resize splits evenly** | When you add or close a pane, the panes in its row or column resize to match. With workrooms side by side, every terminal in the window ends up the same size (Nightly). Off leaves the dividers where you put them. Workroom 2.1.0 calls this **Resize splits evenly automatically** and evens every divider. See [Even out a split](splits-and-windows.md#even-out-a-split). |
 | **Load author avatars** | Fetches author and reviewer avatars from Gravatar and GitHub. Off shows coloured initials only and makes no network request. |
 
 <kbd>⇧⌘L</kbd> (**View ▸ Light Mode** or **Dark Mode**) flips between light and dark without opening Settings.

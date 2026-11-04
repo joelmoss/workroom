@@ -4,8 +4,9 @@ import SwiftUI
 
 /// A create's pane (#483): a GitHub Actions-style checklist of the steps its kind runs, each with its
 /// time and its log one click away, what to do next on failure under the step that failed, and
-/// Done in a footer on success. Shown bare, with no title bar, tab bar or footer, from the click
-/// until the run ends (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
+/// a footer with "Close automatically when done" while it runs, joined by Done on success. Shown
+/// bare, with no title bar, tab bar or pane footer, from the click until the run ends
+/// (`TargetTerminalDetail`). What it says is `CreationPanePresentation`'s.
 ///
 /// Layout (design D4): one continuous `panel` surface, a leading column at most 640pt wide holding the
 /// header and the rows. A row's open log is as tall as its lines, up to what the pane has left, with
@@ -42,8 +43,10 @@ struct CreationPane: View {
       let narrow = geo.size.width < Self.narrowWidth
       VStack(spacing: 0) {
         checklist(inset: narrow ? 16 : 32)
-        if run.outcome == .succeeded {
-          CreationDoneFooter(inset: narrow ? 16 : 32) { store.finishCreation(run) }
+        // From the first frame, so "Close automatically when done" can be changed while the create
+        // runs; gone once it fails or stops to ask, where the notice says what to do instead.
+        if run.isRunning || isDone {
+          CreationDoneFooter(inset: narrow ? 16 : 32, isDone: isDone) { store.finishCreation(run) }
             .transition(.move(edge: .bottom))
         }
       }
@@ -56,11 +59,13 @@ struct CreationPane: View {
     // approval sheet's, where Return doesn't answer it.
     .onKeyPress(.return) { answer { $0.primary } }
     .onKeyPress(.escape) { answer { $0.escapeAction } }
-    // Once the run ends, focus moves into the pane (to its last row, which draws no ring), so Return
-    // answers Done or the footer without a click first; only in the window's active pane, so a
-    // terminal being typed in beside it keeps its keys.
-    .onChange(of: !run.isRunning && isActive, initial: true) { _, ended in
-      if ended, focusedRow == nil { focusedRow = run.steps.last?.id }
+    // Focus moves into the pane as it appears (to its last row, which draws no ring), so Return
+    // answers Done or the footer without a click first, and the terminal that replaces the pane
+    // takes the focus it held. Only in the window's active pane, so a terminal being typed in beside
+    // it keeps its keys, and once the New Workroom dialog is gone (it disables the window under it).
+    // Never at the run's end: focus moved away meanwhile stays where the user put it.
+    .onChange(of: isActive && store.activePicker == nil, initial: true) { _, takes in
+      if takes, focusedRow == nil { focusedRow = run.steps.last?.id }
     }
   }
 
@@ -493,10 +498,13 @@ struct StartChoicePresenter: ViewModifier {
   }
 }
 
-/// A finished create's footer: Done on the right, and on the left whether a finished checklist closes
-/// by itself from now on, as Settings › General also says.
+/// A running or finished create's footer: Done on the right once it succeeds, and on the left
+/// whether a finished checklist closes by itself from now on, as Settings › General also says.
 private struct CreationDoneFooter: View {
   let inset: CGFloat
+  /// Whether the create succeeded: Done shows only then, in a slot kept from the start so the
+  /// checkbox never moves.
+  let isDone: Bool
   let done: () -> Void
   @Default(.closeCreationPaneWhenDone) private var closeWhenDone
   private let theme = ThemeService.shared
@@ -514,6 +522,9 @@ private struct CreationDoneFooter: View {
         Button("Done", action: done)
           .buttonStyle(.borderedProminent)
           .fixedSize()
+          .opacity(isDone ? 1 : 0)
+          .disabled(!isDone)
+          .accessibilityHidden(!isDone)
           .accessibilityIdentifier("CreationPane.Done")
       }
       .padding(.horizontal, inset)

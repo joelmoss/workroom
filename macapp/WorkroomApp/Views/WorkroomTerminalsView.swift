@@ -148,19 +148,11 @@ struct WorkroomTerminalsView: View {
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)
     // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
     .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1 && !store.hasModalPresentation)
-    // Drive View ▸ "Resize Splits Evenly" (issue #83) — only when a terminal split is on screen. Note
-    // that in a workroom split EVERY member mounts this view, so all three of these are written by
-    // several instances at once and the last writer wins; the menu items they drive are all
-    // "is such a thing on screen at all", for which any visible member is an acceptable answer. A
-    // blocking setup script withholds this view, so no item can act on a hidden split.
-    .focusedSceneValue(
-      \.terminalSplitVisible,
-      sessions.isSplitVisible(for: target) && !store.hasModalPresentation)
   }
 
   /// The layout the content area renders: the focused tab's group when it has one, else that tab
-  /// solo. No `isSplitVisible` branch — it is now defined as exactly `split(for:) != nil`, so the
-  /// nil-coalesce below already is the whole decision.
+  /// solo. `split(for:)` is nil exactly when the focused tab is solo, so the nil-coalesce below is
+  /// the whole decision.
   private func contentLayout(active: TerminalTab) -> TerminalPaneLayout {
     sessions.split(for: target) ?? .leaf(active.id)
   }

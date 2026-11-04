@@ -1087,6 +1087,10 @@ final class AppStore: ObservableObject {
     case .remoteCloseFailed(let target, let title):
       guard !WindowRegistry.shared.isTerminating else { return }
       self.reportRemoteCloseFailure(target: target, title: title)
+    // A workroom now shows more or fewer terminals across one axis, so the workroom split it sits
+    // in re-evens by pane count: every terminal in the window ends up the same size.
+    case .paneCountChanged(let targetID, let axis):
+      self.reEvenWorkroomSplit(holding: targetID, along: axis)
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
     // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
     // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs
@@ -2425,7 +2429,7 @@ final class AppStore: ObservableObject {
 
   /// How long a finished create's checklist stays on screen before the workroom's own UI replaces
   /// it, when it closes automatically (design D13). Tests shorten it.
-  var creationSuccessHold: Duration = .seconds(3)
+  var creationSuccessHold: Duration = .milliseconds(1500)
 
   /// Whether a finished create's checklist closes by itself, else it waits for Done. Tests replace it.
   var closesFinishedCreations: () -> Bool = { Defaults[.closeCreationPaneWhenDone] }
@@ -3259,13 +3263,6 @@ final class AppStore: ObservableObject {
   func splitFocusedUp() {
     guard let target = selectedTarget, target.opensTerminals else { return }
     terminals.splitFocusedPane(for: target, edge: .top)
-  }
-
-  /// Resize the focused target's terminal split so every pane is the same size (issue #83). Driven by
-  /// View ▸ "Resize Splits Evenly"; the menu item is disabled unless a terminal split is visible.
-  func equalizeFocusedSplit() {
-    guard let target = selectedTarget else { return }
-    terminals.equalizeSplit(for: target)
   }
 
   /// Move keyboard focus to the adjacent pane in a split (⌃⌘arrows). Returns whether focus moved, so

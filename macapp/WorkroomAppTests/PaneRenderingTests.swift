@@ -336,8 +336,7 @@ private struct TestPaneHost: View {
   var body: some View {
     if let active = sessions.activeTab(for: target) {
       PaneTreeView(
-        layout: sessions.isSplitVisible(for: target)
-          ? (sessions.split(for: target) ?? .leaf(active.id)) : .leaf(active.id),
+        layout: sessions.split(for: target) ?? .leaf(active.id),
         target: target, sessions: sessions
       )
     }
