@@ -14,7 +14,10 @@ struct QuickTerminalFooter: View {
         StatusBarDivider()
         StatusBarBranchSegment(branch: branch)
       }
-      Spacer(minLength: 8)
+      // The footer's empty middle is a handle to drag the window along the screen edges.
+      QuickTerminalDragHandle()
+        .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityHidden(true)
       // Lowest priority, so it gives way before the folder or branch, as in a pane.
       if let backend = status.backend {
         PaneUsageSlot(backend: backend, claudeProfile: status.claudeProfile)

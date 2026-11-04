@@ -74,6 +74,46 @@ final class QuickTerminalControllerTests: XCTestCase {
       visible)
   }
 
+  func testDockedFrameSitsAtItsOffsetAlongTheEdge() {
+    XCTAssertEqual(
+      QuickTerminalEdge.top.dockedFrame(size: size, in: visible, offset: 0.25),
+      NSRect(x: 50, y: 700, width: 400, height: 200))
+    XCTAssertEqual(
+      QuickTerminalEdge.right.dockedFrame(size: size, in: visible, offset: 0.75),
+      NSRect(x: 600, y: 600, width: 400, height: 200), "along the side, 0 is the bottom")
+    XCTAssertEqual(
+      QuickTerminalEdge.top.dockedFrame(size: size, in: visible, offset: 0).minX, 0,
+      "an offset past the end still keeps it on the screen")
+    XCTAssertEqual(
+      QuickTerminalEdge.bottom.dockedFrame(size: size, in: visible, offset: 1).maxX, 1000)
+  }
+
+  func testDragDocksToTheEdgeNearestThePointer() {
+    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 500, y: 880), in: visible), .top)
+    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 500, y: 120), in: visible), .bottom)
+    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 10, y: 500), in: visible), .left)
+    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 990, y: 500), in: visible), .right)
+    XCTAssertEqual(
+      QuickTerminalEdge.nearest(to: NSPoint(x: 0, y: 900), in: visible), .top,
+      "a corner breaks the tie the same way every time")
+  }
+
+  func testOffsetRoundTripsThroughDockedFrame() {
+    for edge in QuickTerminalEdge.allCases {
+      let docked = edge.dockedFrame(size: size, in: visible, offset: 0.3)
+      let offset = edge.offset(
+        forCenter: NSPoint(x: docked.midX, y: docked.midY), size: size, in: visible)
+      XCTAssertEqual(offset, 0.3, accuracy: 0.0001, "\(edge)")
+    }
+    XCTAssertEqual(
+      QuickTerminalEdge.top.offset(forCenter: NSPoint(x: -500, y: 0), size: size, in: visible),
+      0.2, accuracy: 0.0001, "clamped where the window's end meets the screen's")
+    XCTAssertEqual(
+      QuickTerminalEdge.top.offset(
+        forCenter: .zero, size: NSSize(width: 1000, height: 200), in: visible), 0.5,
+      "a window as wide as the screen has nowhere to slide")
+  }
+
   func testHiddenFrameSitsJustPastTheEdge() {
     for edge in QuickTerminalEdge.allCases {
       let docked = edge.dockedFrame(size: size, in: visible)
