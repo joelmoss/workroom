@@ -1397,6 +1397,21 @@ final class WorkroomSplitPaneWeightTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
   }
 
+  /// Value: protects=switching a workroom between a split tab and a solo tab re-evens the workroom
+  /// divider, so the visible terminals stay the same width; fails_when=only split edits announce;
+  /// seam=none; no_claim=rendering
+  func testSwitchingTabsKeepsTheVisibleTerminalsTheSameWidth() throws {
+    let store = makeStore()
+    let feature = try pair(store, .right)
+    store.terminals.splitFocusedPane(for: feature, orientation: .horizontal)
+    let inSplit = try XCTUnwrap(store.terminals.focusedTab(for: feature)).id
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+    store.terminals.addTab(for: feature)  // ⌘T: a solo tab, so feature shows one terminal
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "one terminal each")
+    store.terminals.select(inSplit, for: feature)  // back to the split tab
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "three equal again")
+  }
+
   /// Value: protects=a stack of workrooms is as wide as its widest member, so splitting a terminal
   /// in one of them widens the whole column; fails_when=a stacked workroom column counts as one
   /// whatever its terminals; seam=none; no_claim=rendering

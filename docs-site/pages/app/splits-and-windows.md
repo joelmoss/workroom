@@ -50,7 +50,7 @@ With **Automatically resize splits evenly** on, Workroom evens out the dividers 
 
 ### Workrooms side by side {nightly}
 
-When workrooms are side by side, each one gets a share of the width for every terminal it shows across. With one terminal in the left workroom and two side by side in the right, the right workroom takes two thirds, so all three terminals are the same width. Workrooms above and below each other share the height the same way, by terminal rows. The divider between the workrooms moves when you add or close a terminal, unless that would make a terminal narrower or shorter than the smallest pane size, in which case it stays where it is.
+When workrooms are side by side, each one gets a share of the width for every terminal it shows across. With one terminal in the left workroom and two side by side in the right, the right workroom takes two thirds, so all three terminals are the same width. Workrooms above and below each other share the height the same way, by terminal rows. The divider between the workrooms moves when you add or close a terminal, and when you switch a workroom between a tab that is split and one that isn't, so the terminals you can see stay the same width, unless that would make a terminal narrower or shorter than the smallest pane size, in which case it stays where it is.
 
 Workroom 2.1.0 also has **View ▸ Resize Splits Evenly** and **View ▸ Resize Workroom Splits Evenly**, which even a split out by hand. Nightly no longer has them.
 
