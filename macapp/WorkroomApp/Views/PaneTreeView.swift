@@ -374,13 +374,13 @@ enum PaneTreeLayout {
   /// that way, so it needs room for N panes at the floor there.
   static func plansEvenly<Leaf: Hashable>(
     _ tree: PaneLayout<Leaf>, in container: CGRect, evenedAxis: SplitOrientation? = nil,
-    leafSlots: (Leaf, SplitOrientation) -> Int = { _, _ in 1 }
+    leafSlots: ((Leaf, SplitOrientation) -> Int)? = nil
   ) -> Bool {
     guard container.width > 0, container.height > 0 else { return true }
     if case .leaf(let leaf) = tree {
       return SplitOrientation.allCases.allSatisfy { axis in
         guard evenedAxis == nil || evenedAxis == axis else { return true }
-        let count = leafSlots(leaf, axis)
+        let count = leafSlots?(leaf, axis) ?? 1
         let length = axis == .horizontal ? container.width : container.height
         return count <= 1
           || length >= CGFloat(count) * minPane(along: axis) + CGFloat(count - 1)
@@ -499,7 +499,7 @@ enum PaneTreeLayout {
   static func evenedIfHonourable<Leaf: Hashable>(
     _ tree: PaneLayout<Leaf>, in container: CGRect?, enabled: Bool,
     along axis: SplitOrientation? = nil,
-    leafSlots: (Leaf, SplitOrientation) -> Int = { _, _ in 1 }
+    leafSlots: ((Leaf, SplitOrientation) -> Int)? = nil
   ) -> PaneLayout<Leaf> {
     guard enabled else { return tree }
     let evened = tree.equalized(along: axis, leafSlots: leafSlots)

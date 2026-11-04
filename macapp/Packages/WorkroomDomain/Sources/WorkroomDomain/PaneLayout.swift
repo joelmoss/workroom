@@ -218,17 +218,20 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   /// a pane in a different row (issue #126).
   ///
   /// `leafSlots` weights each leaf (at least one): a workroom showing two terminals side by side
-  /// counts as two columns, so evening the workroom split gives every terminal the same width.
+  /// counts as two columns, so evening the workroom split gives every terminal the same width. A
+  /// weighted split of the other orientation counts as its widest child rather than one, so a
+  /// column of stacked workrooms makes room for the most terminals any of them shows across.
   public func slots(
-    along orientation: SplitOrientation, leafSlots: (Leaf, SplitOrientation) -> Int = { _, _ in 1 }
+    along orientation: SplitOrientation, leafSlots: ((Leaf, SplitOrientation) -> Int)? = nil
   ) -> Int {
     switch self {
     case .leaf(let leaf):
-      return max(1, leafSlots(leaf, orientation))
+      return max(1, leafSlots?(leaf, orientation) ?? 1)
     case .split(_, let o, _, let first, let second):
-      guard o == orientation else { return 1 }
-      return first.slots(along: orientation, leafSlots: leafSlots)
-        + second.slots(along: orientation, leafSlots: leafSlots)
+      guard o == orientation || leafSlots != nil else { return 1 }
+      let firstSlots = first.slots(along: orientation, leafSlots: leafSlots)
+      let secondSlots = second.slots(along: orientation, leafSlots: leafSlots)
+      return o == orientation ? firstSlots + secondSlots : max(firstSlots, secondSlots)
     }
   }
 
@@ -262,7 +265,7 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   /// `leafSlots` weights each leaf as `slots(along:leafSlots:)` does.
   public func equalized(
     along axis: SplitOrientation? = nil,
-    leafSlots: (Leaf, SplitOrientation) -> Int = { _, _ in 1 }
+    leafSlots: ((Leaf, SplitOrientation) -> Int)? = nil
   ) -> PaneLayout<Leaf> {
     switch self {
     case .leaf:
