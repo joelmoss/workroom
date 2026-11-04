@@ -98,6 +98,8 @@ In Workroom 2.1.0 this group is called **Run** and has only Run, Restart and Sto
 | Show/Hide Workroom (global) | <kbd>⌘§</kbd> |
 | Quick Terminal (global) | <kbd>⌥§</kbd> |
 
+<kbd>⌥§</kbd> is the default. In the Nightly app you can change it in **Settings ▸ Terminal ▸ Quick Terminal**, and the app's Keyboard Shortcuts sheet shows the one you set. While the Quick Terminal is in front, <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, <kbd>⌘D</kbd>, <kbd>⇧⌘D</kbd> and <kbd>⌘1–9</kbd> act on its own tabs and panes. See [Terminals and tabs](../app/terminals-and-tabs.md#quick-terminal).
+
 ## More
 
 The sheet doesn't list these, but the menus have them.
