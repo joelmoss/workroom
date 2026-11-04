@@ -3162,7 +3162,8 @@ disagreement passes every test on either side alone while presenting as an empty
    local or remote, it now survives quit. The old "run tabs are never persistent" rule
    (`TerminalPersistentSessionPolicy`) was an accident of build order, not a decision.
 5. **The Quick Terminal bypasses `TerminalSessions`** and builds a bare `GhosttySurfaceView`.
-   Presumably local forever — but decide it rather than inherit it.
+   Presumably local forever — but decide it rather than inherit it. (Since the tabbed Quick
+   Terminal, it has a `TerminalSessions` of its own, local and never persisted.)
 6. **Non-GitHub remotes.** Now the *primary* credential problem (premise 6), since GitHub needs no
    new stored secret. A plain git-over-ssh remote has no deploy-key API and no answer here.
 7. **Provider-side destruction and cost runaway.** No idle-timeout policy, no spending ceiling, and
