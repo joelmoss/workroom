@@ -45,11 +45,16 @@ final class GhosttySurfaceView: NSView {
   /// same read — a second live PID read would reopen the TOCTOU gap a review caught and closed.
   var foregroundExecutableName: String? {
     if let foregroundProcessNameForTesting { return foregroundProcessNameForTesting }
-    guard let surface else { return nil }
     var name = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-    let pid = pid_t(ghostty_surface_foreground_pid(surface))
-    guard pid > 1, proc_name(pid, &name, UInt32(name.count)) > 0 else { return nil }
+    guard let pid = foregroundPID, proc_name(pid, &name, UInt32(name.count)) > 0 else { return nil }
     return String(cString: name)
+  }
+
+  /// The PTY's foreground process id, or nil (no surface, or no real process).
+  var foregroundPID: pid_t? {
+    guard let surface else { return nil }
+    let pid = pid_t(ghostty_surface_foreground_pid(surface))
+    return pid > 1 ? pid : nil
   }
 
   /// The cwd the surface spawned its shell in. `internal` (not `private`) so tests can assert it

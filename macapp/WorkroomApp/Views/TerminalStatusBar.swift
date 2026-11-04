@@ -25,8 +25,6 @@ struct TerminalStatusBar: View {
   /// button can know whether it's actually showing anything.
   @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
   @State private var showingDiagnosis = false
-  /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
-  @State private var cwdMenuAnchor: NSView?
 
   private let theme = ThemeService.shared
 
@@ -55,9 +53,9 @@ struct TerminalStatusBar: View {
     HStack(spacing: 12) {
       // A terminal's cwd leads the bar. The file path a content pane used to show here moved to the
       // pane's own title bar (issue #150), which names the pane; this bar is its live working state.
-      cwdSegment
+      if let cwd { StatusBarCwdSegment(cwd: cwd, onHost: cwdIsOnHost) }
       if hasLeading, hasBranch { statusBarDivider }
-      branchSegment
+      if let branch = store.branchLabel(for: target) { StatusBarBranchSegment(branch: branch) }
       // Diagnosis sits left-aligned right after the branch, not pushed to the far edge.
       if hasLeading || hasBranch, hasDiagnosis { statusBarDivider }
       if let diagnosis { diagnosisSegment(diagnosis) }
@@ -73,116 +71,12 @@ struct TerminalStatusBar: View {
       if hasDetached, hasRun { statusBarDivider }
       if isRunTab, let run = runStatePresentation { runSegment(run) }
     }
-    // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
-    // too small to read at a glance for what the bar carries (a pane's live state: branch, run
-    // state); `.callout` (12pt) read as content rather than chrome.
-    .font(.subheadline)
-    .foregroundStyle(theme.tokens.fgMuted)
-    .lineLimit(1)
-    .padding(.horizontal, 10)
-    // Fixed, not vertical padding: the bar's height must not vary with its content (an icon, a
-    // `ProgressView`) or a pane would resize as a diagnosis arrives. Held at 28pt across the font
-    // change so panes don't reflow — the 11pt text just sits in a little more air.
-    .frame(height: TerminalPanelMetrics.chromeRowHeight)
-    .frame(maxWidth: .infinity)
-    .background { SidebarBackground() }
-    .overlay(alignment: .top) { theme.tokens.border.frame(height: 1) }
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("terminal.statusBar")
+    .statusBarChrome()
   }
 
   /// A thin vertical rule between two segments, shorter than the 28pt bar so it reads as a
   /// separator rather than a full-height rail.
-  private var statusBarDivider: some View {
-    theme.tokens.border.frame(width: 1, height: 14)
-  }
-
-  // MARK: Branch / cwd
-
-  /// The workroom's current branch. Middle-truncates: a long branch name's ends are the
-  /// informative part. The file path that used to lead this row moved to the pane's own title bar in
-  /// issue #150 (`PaneTitlePresentation` kept its `.head` truncation for the same reason it had one
-  /// here — a repo-relative path's discriminating part is its tail).
-  @ViewBuilder private var branchSegment: some View {
-    if let branch = store.branchLabel(for: target) {
-      Label {
-        Text(branch).truncationMode(.middle)
-      } icon: {
-        Image(systemName: "arrow.triangle.branch")
-      }
-      .labelStyle(.titleAndIcon)
-      .help("Current branch")
-      .accessibilityLabel("Branch \(branch)")
-    }
-  }
-
-  /// The pane's cwd, and the two things you want from a path you can see: copy it, or reveal it
-  /// (issue #143). Clicking drops the menu; the segment carries a hover well so it reads as clickable
-  /// (the path and branch segments, which do nothing, deliberately don't).
-  ///
-  /// A plain `Button` popping an `NSMenu` by hand, NOT a SwiftUI `Menu`. A `Menu`'s dropped list
-  /// inherits its TRIGGER's width, and this trigger is a whole filesystem path — so two short items
-  /// rendered in a menu as wide as the pane. An `NSMenu` we pop ourselves sizes to its own items.
-  /// (`.menuStyle(.borderlessButton)` wouldn't have helped either: it's AppKit-backed, never reports
-  /// hover, so the well would be impossible.) The label stays squeezable — no `.fixedSize()` — so
-  /// `.middle` truncation still fires in a narrow split pane.
-  ///
-  /// The items are a menu rather than a selectable label because `.textSelection(.enabled)` swallows
-  /// real mouseDown, which would kill the click this segment now exists to answer.
-  @ViewBuilder private var cwdSegment: some View {
-    if let cwd {
-      Button {
-        popCwdMenu(cwd, onHost: cwdIsOnHost)
-      } label: {
-        Label {
-          // Not `~`-abbreviated on a host: this Mac's home says nothing about the host's.
-          Text(cwdIsOnHost ? cwd : Self.abbreviate(cwd)).truncationMode(.middle)
-        } icon: {
-          Image(systemName: "folder")
-        }
-        .labelStyle(.titleAndIcon)
-        // Explicit, not inherited: a `Button`'s label doesn't pick up the bar's ambient
-        // `foregroundStyle`, so without this the segment reads brighter than its neighbours.
-        .foregroundStyle(theme.tokens.fgMuted)
-      }
-      .buttonStyle(StatusBarSegmentButtonStyle())
-      .background(MenuAnchor(view: $cwdMenuAnchor))
-      .help(cwd)
-      .accessibilityLabel("Working directory \(cwd)")
-      .accessibilityIdentifier("terminal.statusBar.cwd")
-    }
-  }
-
-  /// `onHost`: `cwd` is on a remote pane's host, so there is nothing for Finder to reveal. Revealing
-  /// it would select whatever this Mac happens to have at that path.
-  private func popCwdMenu(_ cwd: String, onHost: Bool) {
-    let menu = NSMenu()
-    menu.addItem(
-      ClosureMenuItem(title: "Copy to Clipboard") {
-        CopyConfirmation.copy(cwd, relativeTo: cwdMenuAnchor)
-      })
-    // `activateFileViewerSelecting`, matching the wording and the Room menu's own "Reveal in Finder"
-    // (which reveals the selected target's directory the same way): the directory comes up selected in
-    // its parent. `NSWorkspace.open` would open the folder's own window instead — a different verb
-    // than the one this item promises.
-    if !onHost {
-      menu.addItem(
-        ClosureMenuItem(title: "Reveal in Finder") {
-          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
-        })
-    }
-    // At the cursor, like a context menu — but popped out of a real view rather than the tempting
-    // `at: NSEvent.mouseLocation, in: nil` (screen coordinates, no anchor needed). That form does
-    // nothing at all when the click is synthesized: `StatusBarCwdUITests` clicked the segment and no
-    // menu ever appeared. Anchored to a view it opens either way, so the cursor's screen point is
-    // converted into the anchor's own coordinates instead.
-    if let anchor = cwdMenuAnchor, let window = anchor.window {
-      let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
-      menu.popUp(positioning: nil, at: anchor.convert(inWindow, from: nil), in: anchor)
-    } else {
-      menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-    }
-  }
+  private var statusBarDivider: some View { StatusBarDivider() }
 
   /// `~`-abbreviate a home-relative path; leave others untouched. Truncation is left to the label.
   static func abbreviate(_ path: String) -> String {
@@ -308,6 +202,130 @@ struct TerminalStatusBar: View {
       Image(systemName: "questionmark.circle")
     case .remote:
       Image(systemName: "network")
+    }
+  }
+}
+
+// MARK: - Shared segments (a pane's bar and the Quick Terminal's footer)
+
+extension View {
+  /// The status bar's own chrome, so every footer reads alike.
+  func statusBarChrome() -> some View {
+    let theme = ThemeService.shared
+    // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
+    // too small to read at a glance for what the bar carries (a pane's live state: branch, run
+    // state); `.callout` (12pt) read as content rather than chrome.
+    return self.font(.subheadline)
+      .foregroundStyle(theme.tokens.fgMuted)
+      .lineLimit(1)
+      .padding(.horizontal, 10)
+      // Fixed, not vertical padding: the bar's height must not vary with its content (an icon, a
+      // `ProgressView`) or a pane would resize as a diagnosis arrives. Held at 28pt across the font
+      // change so panes don't reflow — the 11pt text just sits in a little more air.
+      .frame(height: TerminalPanelMetrics.chromeRowHeight)
+      .frame(maxWidth: .infinity)
+      .background { SidebarBackground() }
+      .overlay(alignment: .top) { theme.tokens.border.frame(height: 1) }
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("terminal.statusBar")
+  }
+}
+
+/// A thin vertical rule between two segments, shorter than the 28pt bar so it reads as a
+/// separator rather than a full-height rail.
+struct StatusBarDivider: View {
+  var body: some View { ThemeService.shared.tokens.border.frame(width: 1, height: 14) }
+}
+
+/// The current branch. Middle-truncates: a long branch name's ends are the informative part. The
+/// file path that used to lead this row moved to the pane's own title bar in issue #150
+/// (`PaneTitlePresentation` kept its `.head` truncation for the same reason it had one here — a
+/// repo-relative path's discriminating part is its tail).
+struct StatusBarBranchSegment: View {
+  let branch: String
+
+  var body: some View {
+    Label {
+      Text(branch).truncationMode(.middle)
+    } icon: {
+      Image(systemName: "arrow.triangle.branch")
+    }
+    .labelStyle(.titleAndIcon)
+    .help("Current branch")
+    .accessibilityLabel("Branch \(branch)")
+  }
+}
+
+/// A pane's cwd, and the two things you want from a path you can see: copy it, or reveal it
+/// (issue #143). Clicking drops the menu; the segment carries a hover well so it reads as clickable
+/// (the path and branch segments, which do nothing, deliberately don't).
+///
+/// A plain `Button` popping an `NSMenu` by hand, NOT a SwiftUI `Menu`. A `Menu`'s dropped list
+/// inherits its TRIGGER's width, and this trigger is a whole filesystem path — so two short items
+/// rendered in a menu as wide as the pane. An `NSMenu` we pop ourselves sizes to its own items.
+/// (`.menuStyle(.borderlessButton)` wouldn't have helped either: it's AppKit-backed, never reports
+/// hover, so the well would be impossible.) The label stays squeezable — no `.fixedSize()` — so
+/// `.middle` truncation still fires in a narrow split pane.
+///
+/// The items are a menu rather than a selectable label because `.textSelection(.enabled)` swallows
+/// real mouseDown, which would kill the click this segment now exists to answer.
+struct StatusBarCwdSegment: View {
+  let cwd: String
+  /// `cwd` is on a remote pane's host (#239), which names nothing on this Mac.
+  let onHost: Bool
+  /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
+  @State private var menuAnchor: NSView?
+
+  var body: some View {
+    Button {
+      popMenu()
+    } label: {
+      Label {
+        // Not `~`-abbreviated on a host: this Mac's home says nothing about the host's.
+        Text(onHost ? cwd : TerminalStatusBar.abbreviate(cwd)).truncationMode(.middle)
+      } icon: {
+        Image(systemName: "folder")
+      }
+      .labelStyle(.titleAndIcon)
+      // Explicit, not inherited: a `Button`'s label doesn't pick up the bar's ambient
+      // `foregroundStyle`, so without this the segment reads brighter than its neighbours.
+      .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+    }
+    .buttonStyle(StatusBarSegmentButtonStyle())
+    .background(MenuAnchor(view: $menuAnchor))
+    .help(cwd)
+    .accessibilityLabel("Working directory \(cwd)")
+    .accessibilityIdentifier("terminal.statusBar.cwd")
+  }
+
+  /// On a host there is nothing for Finder to reveal. Revealing it would select whatever this Mac
+  /// happens to have at that path.
+  private func popMenu() {
+    let menu = NSMenu()
+    menu.addItem(
+      ClosureMenuItem(title: "Copy to Clipboard") { [cwd, menuAnchor] in
+        CopyConfirmation.copy(cwd, relativeTo: menuAnchor)
+      })
+    // `activateFileViewerSelecting`, matching the wording and the Room menu's own "Reveal in Finder"
+    // (which reveals the selected target's directory the same way): the directory comes up selected in
+    // its parent. `NSWorkspace.open` would open the folder's own window instead — a different verb
+    // than the one this item promises.
+    if !onHost {
+      menu.addItem(
+        ClosureMenuItem(title: "Reveal in Finder") { [cwd] in
+          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
+        })
+    }
+    // At the cursor, like a context menu — but popped out of a real view rather than the tempting
+    // `at: NSEvent.mouseLocation, in: nil` (screen coordinates, no anchor needed). That form does
+    // nothing at all when the click is synthesized: `StatusBarCwdUITests` clicked the segment and no
+    // menu ever appeared. Anchored to a view it opens either way, so the cursor's screen point is
+    // converted into the anchor's own coordinates instead.
+    if let anchor = menuAnchor, let window = anchor.window {
+      let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+      menu.popUp(positioning: nil, at: anchor.convert(inWindow, from: nil), in: anchor)
+    } else {
+      menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
   }
 }
