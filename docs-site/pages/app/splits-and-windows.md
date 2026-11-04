@@ -82,7 +82,7 @@ A whole workroom, with all of its terminals, can move to a new window or into an
 - Right-click a workroom and choose **Move to New Window**.
 - Use **Room ▸ Move Workroom into New Window**.
 
-A terminal can also move by itself with **Move to New Window** from its tab menu, right-click menu or sidebar row, then **Move Back to Main Window**. A window's only workroom cannot move. More in [Workrooms](workrooms.md#move-a-workroom-to-another-window).
+A terminal can also move by itself with **Move to New Window** from its tab menu, right-click menu or sidebar row, then **Move Back to Main Window**. A Quick Terminal pane can move into any open workroom with **Move to Workroom**, or by dragging it onto a window (see [Quick Terminal](terminals-and-tabs.md#quick-terminal)). A window's only workroom cannot move. More in [Workrooms](workrooms.md#move-a-workroom-to-another-window).
 
 To open an empty window of your own, choose **Window ▸ New Window**.
 

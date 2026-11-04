@@ -206,14 +206,25 @@ struct PaneTreeView: View {
     let outcome = PaneTreeLayout.dragOutcome(
       cursor: location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
       panes: plan.panes, dragging: tabID)
-    // Where panes can't move to a window (the Quick Terminal), no ghost of one.
-    guard sessions.allowsDetach, outcome == .detach, let tab = sessions.tab(tabID, for: target)
-    else {
-      DetachedPaneDragPreview.shared.hide()
-      return
+    guard outcome == .detach, let tab = sessions.tab(tabID, for: target) else {
+      return hideOutsideDrag()
+    }
+    // The Quick Terminal's panes go into a Workroom window instead: a ghost only over one.
+    guard sessions.allowsDetach else {
+      return QuickTerminalPaneDrag.update(title: tab.title, glyph: tab.content.glyph)
     }
     DetachedPaneDragPreview.shared.show(
       title: tab.title, glyph: tab.content.glyph, at: NSEvent.mouseLocation)
+  }
+
+  /// Take down what a drag outside the window shows: the tear-off ghost, or for a Quick Terminal
+  /// pane, also the highlight in the window it was over and the "can't drop" cursor.
+  private func hideOutsideDrag() {
+    if sessions.allowsDetach {
+      DetachedPaneDragPreview.shared.hide()
+    } else {
+      QuickTerminalPaneDrag.cancel()
+    }
   }
 
   private func commitDrag(
@@ -222,7 +233,7 @@ struct PaneTreeView: View {
     defer {
       drag = nil
       // Unconditional: the ghost may never have been shown, and hiding is idempotent.
-      DetachedPaneDragPreview.shared.hide()
+      hideOutsideDrag()
     }
     guard let drag else { return }
     switch PaneTreeLayout.dragOutcome(
@@ -236,8 +247,13 @@ struct PaneTreeView: View {
       // out of the split to solo.
       sessions.extractFromSplit(drag.tabID, for: target)
     case .detach:
-      // Dragged clear of the window → its own window, at the cursor (issue #172).
-      sessions.detachPane(drag.tabID, for: target, at: NSEvent.mouseLocation)
+      // Dragged clear of the window → its own window, at the cursor (issue #172), or for a Quick
+      // Terminal pane, the Workroom window it was let go over.
+      if sessions.allowsDetach {
+        sessions.detachPane(drag.tabID, for: target, at: NSEvent.mouseLocation)
+      } else {
+        sessions.dropOutsideWindow?(drag.tabID, target)
+      }
     case .none:
       break
     }
@@ -1045,6 +1061,9 @@ struct PaneLeafView: View {
       // pointer rather than somewhere arbitrary.
       onPopOut: sessions.allowsDetach
         ? { sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
+      moveToWorkroom: target.id == QuickTerminalController.targetID
+        ? QuickTerminalMoveToWorkroomMenu(
+          store: store, tabID: tabID, target: target, style: .toolbar) : nil,
       onDragChanged: onDragChanged,
       onDragEnded: onDragEnded
     )

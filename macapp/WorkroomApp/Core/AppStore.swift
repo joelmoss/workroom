@@ -87,6 +87,9 @@ final class AppStore: ObservableObject {
   /// A workroom from another window hovering over this one (#444): where its tab would land among
   /// this window's (nil: at the end) and how wide a gap to open for it.
   var incomingWorkroomDrop: IncomingWorkroomDrop?
+  /// The workroom a Quick Terminal pane dragged over this window would join, highlighted while it
+  /// hovers (`QuickTerminalPaneDrag`).
+  var incomingQuickTerminalPane: SidebarID?
   /// Each workroom tab's frame within its row (`workroomTabRun`), top-left origin, for working out
   /// where a workroom dragged in from another window lands. A measurement, not state: nothing
   /// renders from it.
@@ -1409,8 +1412,12 @@ final class AppStore: ObservableObject {
   /// Mission Control, letting you tell windows apart and switch between them. A workroom reads
   /// "<project> — <workroom>"; a project root just the project name; nothing selected falls back to
   /// "Window <n>" (the window's display number).
-  var windowTitle: String {
-    switch selectedTargetID {
+  var windowTitle: String { title(for: selectedTargetID) }
+
+  /// `sid` named as `windowTitle` names the selected one: "<project> — <workroom>", or the project
+  /// for a root. Also how "Move to Workroom" lists the workrooms open in every window.
+  func title(for sid: SidebarID?) -> String {
+    switch sid {
     case .root(let path):
       return projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
     case .workroom(let path, let name):
@@ -1427,7 +1434,7 @@ final class AppStore: ObservableObject {
 
   /// Fallback title for a window with nothing selected — "Window <n>", or just "Window" until the
   /// registry has assigned this window its number.
-  private var defaultWindowTitle: String {
+  var defaultWindowTitle: String {
     windowNumber > 0 ? "Window \(windowNumber)" : "Window"
   }
 

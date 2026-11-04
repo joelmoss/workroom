@@ -15,7 +15,8 @@ enum TerminalActivity: Equatable {
 /// per-launch UUIDs), so history is intentionally session-only — see `NotificationCenterStore`.
 struct WorkroomNotification: Identifiable, Equatable {
   let id: UUID
-  let targetID: TerminalTarget.ID
+  /// Changes only when its pane moves to another workroom (`repoint(tab:)`).
+  var targetID: TerminalTarget.ID
   let tabID: TerminalTab.ID
   /// Human-readable origin captured at record time — the project name (and workroom, for a
   /// workroom terminal), e.g. "platform" or "platform / fix-auth". Shown in the panel + banner.
@@ -235,6 +236,16 @@ final class NotificationCenterStore: ObservableObject {
   ) {
     for index in items.indices
     where items[index].targetID == target && items[index].origin == source {
+      items[index].origin = destination
+    }
+  }
+
+  /// `tab`'s notifications now belong to `target` in the window `destination`: its pane moved
+  /// there from the Quick Terminal, so a click finds it in its new place.
+  func repoint(tab: TerminalTab.ID, to target: TerminalTarget.ID, in destination: ObjectIdentifier)
+  {
+    for index in items.indices where items[index].tabID == tab {
+      items[index].targetID = target
       items[index].origin = destination
     }
   }

@@ -122,6 +122,7 @@ struct WorkroomSplitView: View {
           .position(x: d.rect.midX, y: d.rect.midY)
         }
         dropHighlight(plan: plan)
+        incomingPaneHighlight(plan: plan)
         // The dragged workroom's title follows the cursor over the panes, as a dragged pane's does.
         if let drag = externalDrag, let dragged = resolve(drag.sid) {
           DragTitleGhost(title: dragged.title, at: drag.location)
@@ -141,6 +142,21 @@ struct WorkroomSplitView: View {
     // The store moved this node underneath the drag: show the store's tree so the divider re-anchors.
     guard layout.ratio(forSplit: liveRatio.split) == liveRatio.stored else { return layout }
     return layout.settingRatio(liveRatio.ratio, forSplit: liveRatio.split)
+  }
+
+  /// The whole workroom a Quick Terminal pane dragged over this window would join, in the drop
+  /// highlight's colours.
+  @ViewBuilder
+  private func incomingPaneHighlight(plan: PaneTreeLayout.Plan<SidebarID>) -> some View {
+    if let sid = store.incomingQuickTerminalPane, let rect = plan.panes[sid] {
+      RoundedRectangle(cornerRadius: 8)
+        .fill(theme.tokens.accent.opacity(0.25))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.accent, lineWidth: 2))
+        .frame(width: rect.width, height: rect.height)
+        .position(x: rect.midX, y: rect.midY)
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
   }
 
   /// The accent band previewing where a dragged workroom tab will land (mirrors `PaneTreeView`).

@@ -161,6 +161,8 @@ struct PaneTitleBar: View {
   /// toolbar button. A button as well as a drag because a drag is neither keyboard-reachable nor
   /// reliably drivable from XCUITest. Nil where panes can't move to a window (the Quick Terminal).
   let onPopOut: (() -> Void)?
+  /// In the Quick Terminal, in `onPopOut`'s place: move the pane into an open workroom.
+  var moveToWorkroom: QuickTerminalMoveToWorkroomMenu? = nil
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
   private let theme = ThemeService.shared
@@ -218,9 +220,12 @@ struct PaneTitleBar: View {
       bar.accessibilityLabel(Text(PaneTitlePresentation.title(for: content, tabTitle: title).plain))
     }
     .accessibilityHint(
-      multiPane
-        ? "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or out of the window to open in a new window"
-        : "Drag out of the window to open this pane in a new window")
+      (multiPane
+        ? "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or "
+        : "Drag ")
+        + (moveToWorkroom == nil
+          ? "out of the window to open this pane in a new window"
+          : "onto a Workroom window to move this pane into it"))
   }
 
   /// One complete row. `titleMinWidth` is what makes the full-toolbar candidate fail to fit in a
@@ -287,6 +292,7 @@ struct PaneTitleBar: View {
           accessibilityLabel: "Move pane into new window", identifier: "pane.toolbar.popOut",
           action: onPopOut)
       }
+      if let moveToWorkroom { moveToWorkroom }
       PaneToolbarButton(
         systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
         accessibilityLabel: "Split right", identifier: "pane.toolbar.splitRight",

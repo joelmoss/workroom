@@ -706,6 +706,12 @@ final class TerminalSessions: ObservableObject {
   /// False for the Quick Terminal's sessions: none of its panes moves to a window of its own, by
   /// menu, title-bar button or dragging out.
   var allowsDetach = true
+  /// The Quick Terminal's: the open workrooms its pane can move into, for the terminal's
+  /// right-click menu. Nil elsewhere, so a pane that moved on loses the item when it is rewired.
+  var moveToWorkroomChoices: ((TerminalTab.ID, TerminalTarget) -> [PaneWorkroomGroup])?
+  /// The Quick Terminal's: a pane dragged out of its window and let go, by its tab or its title bar,
+  /// in place of `detachPane` (`QuickTerminalPaneDrag.end`).
+  var dropOutsideWindow: ((TerminalTab.ID, TerminalTarget) -> Void)?
   /// Each remote tab's latest host cwd query. An entry also marks a tab whose first prompt has
   /// already asked, so after that only `command_finished` asks again.
   private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
@@ -1824,6 +1830,46 @@ final class TerminalSessions: ObservableObject {
     return handOff
   }
 
+  /// Lift one live tab out of `target`, for `destination` in another window to `adopt`: a Quick
+  /// Terminal pane moving into a workroom. As `handOff`, nothing ends and nothing is freed; the
+  /// tab leaves as a close would (its split, focus, `.tabsRemoved`), so its last tab leaving empties
+  /// the target. Its session's metadata names `destination` from now on, for a reattach.
+  func handOffTab(
+    _ tabID: TerminalTab.ID, from target: TerminalTarget, to destination: TerminalTarget
+  ) -> TargetHandOff? {
+    guard let tab = tabsByTarget[target.id]?[tabID], !detachedTabIDs.contains(tabID) else {
+      return nil
+    }
+    let wasFocused = focusedTabByTarget[target.id] == tabID
+    let successor = closeSuccessor(of: tabID, for: target)
+    if tab.isPreview { persist(tabID, for: target) }
+    let handOff = TargetHandOff(
+      target: destination, tabs: [tab], splits: [], focused: tabID, counter: 0, detached: [:],
+      agent: [tabID: codingAgentManager.handOff(tabID)])
+    if let view = tab.surface {
+      let project = projectPath(from: destination.id) ?? destination.path
+      view.sessionMetadata = view.sessionMetadata.map { entry in
+        switch entry.key {
+        case SessionMetadataKey.workroom: (entry.key, destination.sessionWorkroomKey)
+        case SessionMetadataKey.project: (entry.key, project)
+        default: entry
+        }
+      }
+    }
+    tabsByTarget[target.id]?[tabID] = nil
+    orderByTarget[target.id]?.removeAll { $0 == tabID }
+    activityPulses[tabID] = nil
+    hostCwdQueries.removeValue(forKey: tabID)?.cancel()
+    claudeProfileQueries.removeValue(forKey: tabID)?.cancel()
+    branchQueries.removeValue(forKey: tabID)?.cancel()
+    watchedDone.remove(tabID)
+    removeFromGroup(tabID, for: target.id, evening: true)
+    if wasFocused { setFocused(successor, for: target.id) }
+    reconcileOcclusion(for: target)
+    onEvent?(.tabsRemoved(target.id, [tabID]))
+    return handOff
+  }
+
   /// Take in the tabs another window handed off. Into a target this window shows no tabs for,
   /// everything comes as it was: order, splits, focus, numbering, detached panes. Into one it
   /// already shows, they join after its own tabs, its own layout stays, and the moved splits go.
@@ -2627,6 +2673,7 @@ final class TerminalSessions: ObservableObject {
     view.onToggleWindow =
       allowsDetach
       ? { [weak self] in self?.onEvent?(.paneWindowToggleRequested(targetID, tabID)) } : nil
+    view.moveToWorkroomChoices = moveToWorkroomChoices.map { choices in { choices(tabID, target) } }
     view.onActivity = { [weak self] activity in
       self?.onEvent?(.activity(targetID, tabID, activity))
     }
