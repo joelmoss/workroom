@@ -179,7 +179,8 @@ Codex (gpt-6.1-sol, cold read of the repo):
 - **Lifecycle:** a remote workroom's layout lives on that workroom's own host, so deleting the
   workroom destroys the host and its layout with it. No delete request is needed in #255.
 - **Session metadata:** the workroom ID, initial title and creation order travel in the attach
-  request that creates a session, and are immutable after that. The agent keeps them on the
+  request that creates a session, and are immutable after that, except the workroom ID, which a
+  protocol-10 `Retag` request replaces when a Quick Terminal pane moves into a workroom. The agent keeps them on the
   session, writes them into the list reply and the hand-off record, and keeps them with a screen
   record, so a recorded pane still knows its workroom. The layout blob is the authority for a
   tab's title and order; metadata is used only to place sessions the layout does not mention.
