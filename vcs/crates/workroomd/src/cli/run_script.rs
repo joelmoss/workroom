@@ -517,14 +517,16 @@ mod tests {
     fn the_wall_clock_kills_the_tree_including_a_setsid_escaper() {
         let dir = scratch("timeout");
         let pidfile = dir.join("escaper.pid");
+        // The script waits for the escaper's pid before sleeping, and the clock leaves room for
+        // perl to start on a loaded CI runner: at 1 s it was sometimes killed before writing it.
         let body = format!(
-            "#!/bin/sh\nperl -MPOSIX -e 'POSIX::setsid(); open(my $f, \">\", \"{}\"); print $f $$; close($f); sleep 60' &\nsleep 60\n",
+            "#!/bin/sh\nperl -MPOSIX -e 'POSIX::setsid(); open(my $f, \">\", \"{0}.tmp\"); print $f $$; close($f); rename(\"{0}.tmp\", \"{0}\"); sleep 60' &\nwhile [ ! -s {0} ]; do sleep 0.05; done\nsleep 60\n",
             pidfile.display()
         );
         let path = script(&dir, "workroom_setup", &body, 0o755);
         let started = Instant::now();
         assert_eq!(
-            run(&path, &dir, plain_env(), &[], Duration::from_secs(1)),
+            run(&path, &dir, plain_env(), &[], Duration::from_secs(4)),
             TIMED_OUT
         );
         assert!(started.elapsed() < Duration::from_secs(10));
