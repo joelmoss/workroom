@@ -114,14 +114,22 @@ final class QuickTerminalControllerTests: XCTestCase {
       QuickTerminalEdge.bottom.dockedFrame(size: size, in: visible, offset: 1).maxX, 1000)
   }
 
-  func testDragDocksToTheEdgeNearestThePointer() {
-    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 500, y: 880), in: visible), .top)
-    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 500, y: 120), in: visible), .bottom)
-    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 10, y: 500), in: visible), .left)
-    XCTAssertEqual(QuickTerminalEdge.nearest(to: NSPoint(x: 990, y: 500), in: visible), .right)
+  func testDragDocksToTheEdgeNearestTheWindowsCentre() {
+    func nearest(_ x: CGFloat, _ y: CGFloat, current: QuickTerminalEdge? = nil) -> QuickTerminalEdge
+    {
+      QuickTerminalEdge.nearest(
+        forCenter: NSPoint(x: x, y: y), size: size, in: visible, current: current)
+    }
+    XCTAssertEqual(nearest(500, 780), .top)
+    XCTAssertEqual(nearest(500, 120), .bottom)
+    XCTAssertEqual(nearest(210, 450), .left)
+    XCTAssertEqual(nearest(790, 450), .right)
+    XCTAssertEqual(nearest(500, 500), .top, "a four-way tie breaks the same way every time")
+    XCTAssertEqual(nearest(505, 500), .right)
     XCTAssertEqual(
-      QuickTerminalEdge.nearest(to: NSPoint(x: 0, y: 900), in: visible), .top,
-      "a corner breaks the tie the same way every time")
+      nearest(505, 500, current: .left), .left,
+      "just past the line, it stays on its edge rather than flicker")
+    XCTAssertEqual(nearest(600, 500, current: .left), .right, "well past it, it hops")
   }
 
   func testOffsetRoundTripsThroughDockedFrame() {
