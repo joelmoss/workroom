@@ -241,8 +241,17 @@ extension AppStore {
     // Before the hand-off, whose `.tabsRemoved` may close the Quick Terminal and drop what it raised.
     notifications.repoint(
       tab: tabID, to: into.id, in: ObjectIdentifier(destination))
+    // Read before the hand-off, whose `.tabsRemoved` forgets it here.
+    let investigating = investigateTabs[tabID] != nil
     guard let handOff = terminals.handOffTab(tabID, from: target, to: into) else { return }
     destination.terminals.adopt(handOff)
+    if investigating {
+      // Still an Investigate session there, so deleting its workroom asks first (#146).
+      destination.investigateTabs[tabID] = into.id
+      tab.surface?.onChildExited = { [weak destination] _ in
+        destination?.investigateTabs.removeValue(forKey: tabID)
+      }
+    }
     // A split member's pane: that member becomes the focused workroom, so the pane has the keys.
     destination.selectedTargetID = sid
     destination.selectedProjectID = Self.projectPath(of: sid)
