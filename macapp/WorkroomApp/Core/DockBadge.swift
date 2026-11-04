@@ -6,7 +6,7 @@ import AppKit
 /// `NSApp.dockTile.badgeLabel`, because in this app a linked framework suppresses the system's
 /// automatic `badgeLabel` rendering — the value is set and held but is never drawn on the tile
 /// (issue #32). A `contentView` renders as ordinary tile content (the same path the app icon
-/// itself takes), so it's unaffected. Driven from `AppStore` off `NotificationCenterStore`'s
+/// itself takes), so it's unaffected. Driven from `WindowRegistry` off `NotificationCenterStore`'s
 /// `onTotalChange` seam, so the badge tracks the count regardless of window/app state.
 enum DockBadge {
   /// Show `count` on the Dock icon, or restore the plain icon at zero.

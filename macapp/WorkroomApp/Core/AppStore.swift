@@ -54,6 +54,8 @@ final class AppStore: ObservableObject {
   /// A target always on screen in this store's window, with no selection to say so: the Quick
   /// Terminal's. Its panes count as seen and focused as a selected workroom's do (#573).
   var pinnedTarget: TerminalTarget?
+  /// The target this window shows first: its pinned one, else its selection.
+  var primaryTarget: TerminalTarget? { pinnedTarget ?? selectedTarget }
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -3382,7 +3384,7 @@ final class AppStore: ObservableObject {
     // instead of being suppressed because some other window holds key.
     let appFrontmost = hostWindow?.isKeyWindow == true
     let onScreen = onScreenTarget(forID: targetID)
-    let isSelectedMember = onScreen?.id == (pinnedTarget ?? selectedTarget)?.id
+    let isSelectedMember = onScreen?.id == primaryTarget?.id
     let isCursorTab = onScreen.map { terminals.focusedTab(for: $0)?.id == tabID } ?? false
     let outcome = Self.activityOutcome(
       appFrontmost: appFrontmost, isOnScreen: onScreen != nil,
@@ -3506,7 +3508,7 @@ final class AppStore: ObservableObject {
   /// The program-status session of the terminal focused in this window, for ⇧⌘M. Only with keyboard
   /// focus in it: from an inspector field, ⇧⌘M goes to the selected terminal if it is the one waiting.
   var focusedTerminalSession: UUID? {
-    guard let target = pinnedTarget ?? selectedTarget, let tab = terminals.focusedTab(for: target),
+    guard let target = primaryTarget, let tab = terminals.focusedTab(for: target),
       tab.surface?.isEffectivelyFocused == true
     else {
       return nil
@@ -3568,8 +3570,7 @@ final class AppStore: ObservableObject {
   /// (`isWorkroomSplitVisible` + `resolvedSplitLeaves()` would each re-walk every group's leaves) — this
   /// runs per activity event per pane.
   func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
-    if let pinnedTarget, pinnedTarget.id == targetID { return pinnedTarget }
-    if let selected = selectedTarget, selected.id == targetID { return selected }
+    if let primary = primaryTarget, primary.id == targetID { return primary }
     guard let group = visibleWorkroomSplit, let leaves = resolvedSplitLeaves(of: group) else {
       return nil
     }
@@ -3587,11 +3588,7 @@ final class AppStore: ObservableObject {
     // guard runs too late to undo either — the user would see this window's sidebar move for a pane
     // that is sitting somewhere else entirely.
     if raiseDetachedPane(tabID) {
-      if let notifID {
-        notifications.dismiss(notifID: notifID)
-      } else if let tabID {
-        notifications.dismiss(tab: tabID)
-      }
+      notifications.dismiss(notifID: notifID, orTab: tabID)
       return
     }
     guard let sid = Self.sidebarID(forTargetID: targetID, in: projects) else {
@@ -3604,11 +3601,7 @@ final class AppStore: ObservableObject {
     // tab only if it still exists (it may have been closed/reaped since the banner was posted), and
     // records exactly one history entry — no phantom intermediate (issue #26).
     applyLocation(target: sid, tab: tabID, recordHistory: true)
-    if let notifID {
-      notifications.dismiss(notifID: notifID)
-    } else if let tabID {
-      notifications.dismiss(tab: tabID)
-    }
+    notifications.dismiss(notifID: notifID, orTab: tabID)
   }
 
   /// Jump to the oldest pending notification's terminal and dismiss it (reusing the banner/panel

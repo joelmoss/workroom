@@ -215,6 +215,11 @@ final class NotificationCenterStore: ObservableObject {
 
   func clear() { items.removeAll() }
 
+  /// Dismiss what opening a terminal settles: the one notification opened, else all of its tab's.
+  func dismiss(notifID: UUID?, orTab tabID: TerminalTab.ID?) {
+    if let notifID { dismiss(notifID: notifID) } else if let tabID { dismiss(tab: tabID) }
+  }
+
   /// Drop everything `origin` raised, as its window closes (#573 D3). Returns what went, for its
   /// banners.
   func removeAll(from origin: ObjectIdentifier) -> [WorkroomNotification] {
