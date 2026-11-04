@@ -132,6 +132,38 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertEqual(nearest(600, 500, current: .left), .right, "well past it, it hops")
   }
 
+  /// Value: protects=a drag docks on the screen under the pointer, picking the edge from where the
+  /// pointer less its grab puts the window's centre; fails_when=the grab is not subtracted, the
+  /// frame is not the edge's docked frame, or a pointer off every screen has no fallback;
+  /// why_new=`dragDock` is new and `nearest` alone does not cover its wiring; seam=none;
+  /// no_claim=the glide between edges.
+  func testADragDocksFromWhereTheGrabPutsTheWindowsCentre() throws {
+    let screen = try XCTUnwrap(NSScreen.screens.first)
+    let area = screen.visibleFrame
+    let size = NSSize(width: 400, height: 200)
+    let pointer = NSPoint(x: area.midX, y: area.minY + 100)
+
+    let low = try XCTUnwrap(
+      QuickTerminalController.dragDock(
+        size: size, pointer: pointer, grab: .zero, current: .top, fallback: nil))
+    XCTAssertEqual(low.edge, .bottom)
+    XCTAssertEqual(low.frame, low.edge.dockedFrame(size: size, in: area, offset: low.offset))
+
+    let grabbedLow = NSPoint(x: 0, y: 100 - (area.height - 100))
+    let high = try XCTUnwrap(
+      QuickTerminalController.dragDock(
+        size: size, pointer: pointer, grab: grabbedLow, current: .bottom, fallback: nil))
+    XCTAssertEqual(high.edge, .top, "the pointer is low, but the window's centre is high")
+
+    let nowhere = NSPoint(x: -1e6, y: -1e6)
+    XCTAssertNil(
+      QuickTerminalController.dragDock(
+        size: size, pointer: nowhere, grab: .zero, current: .top, fallback: nil))
+    XCTAssertNotNil(
+      QuickTerminalController.dragDock(
+        size: size, pointer: nowhere, grab: .zero, current: .top, fallback: screen))
+  }
+
   func testOffsetRoundTripsThroughDockedFrame() {
     for edge in QuickTerminalEdge.allCases {
       let docked = edge.dockedFrame(size: size, in: visible, offset: 0.3)
@@ -431,8 +463,12 @@ final class QuickTerminalControllerTests: XCTestCase {
     let tab = try XCTUnwrap(store.terminals.activeTab(for: target))
     let session = try XCTUnwrap(store.terminals.sessionID(forTab: tab.id, inTarget: target.id))
 
-    // The agent's own OSC notification, from a pane nobody is watching.
-    store.terminals.onEvent?(.activity(target.id, tab.id, .osc(title: "Build done", body: nil)))
+    // An agent's own OSC notification, from a pane nobody is watching: the first tab, behind the one
+    // just opened. Not the open tab: whether that counts as watched turns on whether the Quick
+    // Terminal's window got key, which parallel test processes racing for the front decide.
+    let behind = try XCTUnwrap(store.terminals.allTabs(for: target).first { $0.id != tab.id })
+    store.terminals.onEvent?(
+      .activity(target.id, behind.id, .osc(title: "Build done", body: nil)))
     XCTAssertTrue(registry.notifications.items.contains { $0.title == "Build done" })
 
     // It asks for permission: a "needs you" alert, waiting.
