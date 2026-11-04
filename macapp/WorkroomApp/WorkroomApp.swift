@@ -781,15 +781,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           quickTerminal.reveal(tab: tabID)
           return
         }
-        // Route to the window that owns this tab (tab ids are unique across windows, issue #70),
-        // falling back to the key window; bring it forward, then open the terminal there.
-        let registry = WindowRegistry.shared
-        let store = tabID.flatMap { registry.ownerOf(tabID: $0) } ?? registry.keyStore
-        // `window(forTab:)`, not `hostWindow`: a detached pane (issue #172) lives in its own window,
-        // and raising the main one would both show the wrong window and retarget its selection.
-        store?.window(forTab: tabID)?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        store?.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)
+        WindowRegistry.shared.open(targetID: targetID, tabID: tabID, notifID: notifID)
       }
     }
     completionHandler()

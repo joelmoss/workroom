@@ -30,6 +30,9 @@ struct WorkroomNotification: Identifiable, Equatable {
   /// request it names is counted in the badge while it waits, read or not, so the entry itself is
   /// left out of `unreadExcludingRequests`.
   var episode: String? = nil
+  /// The window that raised it (its store), so closing that window drops it (ADR 0064, #573 D3).
+  /// A workroom moving to another window takes its notifications along (`repoint`).
+  var origin: ObjectIdentifier? = nil
 }
 
 /// The notification spine: an in-memory, session-only history that drives every surface
@@ -108,7 +111,7 @@ final class NotificationCenterStore: ObservableObject {
   @discardableResult
   func record(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, source: String = "",
-    activity: TerminalActivity, focused: Bool
+    activity: TerminalActivity, focused: Bool, origin: ObjectIdentifier? = nil
   ) -> WorkroomNotification? {
     guard !focused else { return nil }
     guard case .osc(let title, let body) = activity else { return nil }
@@ -118,7 +121,7 @@ final class NotificationCenterStore: ObservableObject {
     return append(
       WorkroomNotification(
         id: UUID(), targetID: targetID, tabID: tabID, source: source,
-        title: title, body: body, date: now(), count: 1))
+        title: title, body: body, date: now(), count: 1, origin: origin))
   }
 
   /// Record a notice from the app itself, about `targetID` rather than one of its terminals. Its tab
@@ -126,12 +129,13 @@ final class NotificationCenterStore: ObservableObject {
   /// does. Never dropped, because the app raises one only when the user must hear it.
   @discardableResult
   func recordNotice(
-    targetID: TerminalTarget.ID, source: String, title: String, body: String?
+    targetID: TerminalTarget.ID, source: String, title: String, body: String?,
+    origin: ObjectIdentifier? = nil
   ) -> WorkroomNotification {
     append(
       WorkroomNotification(
         id: UUID(), targetID: targetID, tabID: UUID(), source: source,
-        title: title, body: body, date: now(), count: 1))
+        title: title, body: body, date: now(), count: 1, origin: origin))
   }
 
   /// Record a "needs you" alert for a request a program in `tabID` waits on (#358). Never dropped
@@ -139,12 +143,12 @@ final class NotificationCenterStore: ObservableObject {
   @discardableResult
   func recordNeedsYou(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, source: String, title: String,
-    body: String?, episode: String
+    body: String?, episode: String, origin: ObjectIdentifier? = nil
   ) -> WorkroomNotification {
     append(
       WorkroomNotification(
         id: UUID(), targetID: targetID, tabID: tabID, source: source,
-        title: title, body: body, date: now(), count: 1, episode: episode))
+        title: title, body: body, date: now(), count: 1, episode: episode, origin: origin))
   }
 
   /// The program's own notification about a request already raised: folded into its entry, with
@@ -210,6 +214,21 @@ final class NotificationCenterStore: ObservableObject {
   }
 
   func clear() { items.removeAll() }
+
+  /// Drop everything `origin` raised, as its window closes (#573 D3). Returns what went, for its
+  /// banners.
+  func removeAll(from origin: ObjectIdentifier) -> [WorkroomNotification] {
+    let dropped = items.filter { $0.origin == origin }
+    if !dropped.isEmpty { items.removeAll { $0.origin == origin } }
+    return dropped
+  }
+
+  /// `target`'s notifications now belong to `origin`, the window its workroom moved to.
+  func repoint(target: TerminalTarget.ID, to origin: ObjectIdentifier) {
+    for index in items.indices where items[index].targetID == target {
+      items[index].origin = origin
+    }
+  }
 
   /// Each tab's latest "finished" notification, which the tab's next finish replaces.
   private var lastFinish: [TerminalTab.ID: UUID] = [:]

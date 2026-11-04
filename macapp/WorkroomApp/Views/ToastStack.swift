@@ -73,8 +73,8 @@ struct ToastStack: View {
           item: toast,
           source: resolvedNotificationSource(store, toast),
           onTap: {
-            store.openTerminal(targetID: toast.targetID, tabID: toast.tabID, notifID: toast.id)
             store.dismissToast(toast.id)
+            WindowRegistry.shared.open(toast)
           },
           onDismiss: {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {

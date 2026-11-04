@@ -13,13 +13,13 @@ import SwiftUI
   return live.isEmpty ? item.source : live
 }
 
-/// Open a notification's terminal (`AppStore.openTerminal`, which also dismisses it) then run
-/// `onActivate` so a host that needs to close itself (a popover) can. Shared row activation so the
-/// sidebar strip and the popover/inspector rows can't drift in behaviour.
+/// Open a notification's terminal wherever it lives (`WindowRegistry.open`, which also dismisses
+/// it) then run `onActivate` so a host that needs to close itself (a popover) can. Shared row
+/// activation so the sidebar strip and the popover/inspector rows can't drift in behaviour.
 @MainActor func openNotification(
-  _ store: AppStore, _ item: WorkroomNotification, then onActivate: (() -> Void)?
+  _ item: WorkroomNotification, then onActivate: (() -> Void)?
 ) {
-  store.openTerminal(targetID: item.targetID, tabID: item.tabID, notifID: item.id)
+  WindowRegistry.shared.open(item)
   onActivate?()
 }
 
@@ -71,7 +71,7 @@ struct NotificationsList: View {
         ForEach(Array(rows.enumerated()), id: \.element.id) { index, item in
           NotificationRow(
             item: item, source: resolvedNotificationSource(store, item),
-            onOpen: { openNotification(store, item, then: onActivate) },
+            onOpen: { openNotification(item, then: onActivate) },
             onDelete: { notifications.dismiss(notifID: item.id) },
             onHoverChange: { hovering in
               hoveredID = hovering ? item.id : (hoveredID == item.id ? nil : hoveredID)
@@ -176,7 +176,7 @@ struct SidebarNotificationStrip: View {
         VStack(spacing: 0) {
           NotificationRow(
             item: oldest, source: resolvedNotificationSource(store, oldest),
-            onOpen: { openNotification(store, oldest, then: nil) },
+            onOpen: { openNotification(oldest, then: nil) },
             onDelete: { notifications.dismiss(notifID: oldest.id) },
             trailingAccessory: notifications.items.count > 1
               ? AnyView(plusBadge(extra: notifications.items.count - 1)) : nil

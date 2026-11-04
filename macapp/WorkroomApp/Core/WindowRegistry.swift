@@ -180,6 +180,7 @@ final class WindowRegistry: ObservableObject {
       entries.append(entry)
     }
     if lastActiveStore == nil { lastActiveStore = store }
+    store.forwardToast = { [weak self] in self?.showToast($0) }
     // The saved session is rebuilt from the live windows (issue #46), and the window layer publishes
     // through none of the store's own publishers — so opening a window has to say so itself.
     SessionCoordinator.shared.markDirty()
@@ -221,7 +222,16 @@ final class WindowRegistry: ObservableObject {
   func unregister(window: NSWindow) {
     // Close this window's popped-out panes first (issue #172). Their surfaces belong to the store
     // that is going away, so a window left behind would host a view about to be released.
-    store(for: window)?.detachedPanes.closeAll()
+    if let closing = store(for: window) {
+      closing.detachedPanes.closeAll()
+      // Its notifications go with it, banners too (#573 D3), but not on quit: they die with the
+      // process anyway, and a quit should leave delivered banners where they are.
+      if !SessionCoordinator.shared.isFrozen {
+        let dropped = notifications.removeAll(from: ObjectIdentifier(closing))
+        closing.systemNotifier.withdraw(
+          identifiers: dropped.map { $0.episode ?? $0.tabID.uuidString })
+      }
+    }
     entries.removeAll { $0.window === window || $0.window == nil }
     recomputeBadge()
     recomputeActiveCodingAgents()
@@ -266,6 +276,25 @@ final class WindowRegistry: ObservableObject {
   /// routing an OS-notification click to the right window (issue #70, OV #4).
   func ownerOf(tabID: TerminalTab.ID) -> AppStore? {
     allStores.first { $0.terminals.containsTab(tabID) }
+  }
+
+  /// Open a notification's terminal wherever it lives (#573): the window that has the pane comes
+  /// forward and focuses it. When no window has it any more, the front window opens the workroom,
+  /// if it still exists. Every surface that opens a notification comes through here.
+  func open(targetID: TerminalTarget.ID, tabID: TerminalTab.ID?, notifID: UUID?) {
+    let store = tabID.flatMap { ownerOf(tabID: $0) } ?? keyStore
+    // `window(forTab:)`, not `hostWindow`: a detached pane (issue #172) lives in its own window.
+    store?.window(forTab: tabID)?.makeKeyAndOrderFront(nil)
+    store?.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)
+  }
+
+  func open(_ note: WorkroomNotification) {
+    open(targetID: note.targetID, tabID: note.tabID, notifID: note.id)
+  }
+
+  /// A toast shows in the front window, whichever window raised it (#573).
+  func showToast(_ note: WorkroomNotification) {
+    keyStore?.enqueueToast(note)
   }
 
   // MARK: Window cycling (issue #87)
