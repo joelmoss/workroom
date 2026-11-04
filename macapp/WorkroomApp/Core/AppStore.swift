@@ -735,9 +735,9 @@ final class AppStore: ObservableObject {
   var hasModalPresentation: Bool { modals.hasModalPresentation }
 
   let terminals: TerminalSessions
-  /// In-memory notification spine driving the badges + inspector (issue #10). Owned here,
-  /// mirroring `terminals`; views observe it directly via `@EnvironmentObject`.
-  let notifications = NotificationCenterStore()
+  /// In-memory notification spine driving the badges + inspector (issue #10); views observe it
+  /// directly via `@EnvironmentObject`. Injected, so windows can share one list (ADR 0064).
+  let notifications: NotificationCenterStore
   /// The windows holding this window's popped-out panes (issue #172). Owned here so their lifetime
   /// is a subset of this store's: the tabs they host stay in `terminals`, and their surfaces are
   /// released when this store is, so a detached window must never outlive it.
@@ -956,11 +956,14 @@ final class AppStore: ObservableObject {
   /// recording/navigation paths. `init` does no CLI work (only `bootstrap()`/`load()` do).
   init(
     projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil,
-    commitHistory: HistoryModel? = nil, remoteState: RemoteStateModel? = nil
+    commitHistory: HistoryModel? = nil, remoteState: RemoteStateModel? = nil,
+    notifications: NotificationCenterStore? = nil
   ) {
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
     // production passes `.shared`. Constructed here in the main-actor init body, not as a default
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
+    // The notification list follows the same rule.
+    self.notifications = notifications ?? NotificationCenterStore()
     let store = projectStore ?? ProjectStore()
     self.projectStore = store
     self.statusResolver = WorkroomStatusResolver(ciCache: store.ciResultCache)
@@ -1042,7 +1045,7 @@ final class AppStore: ObservableObject {
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
     // background notifications. `DockBadge` draws into the tile's `contentView` (not `badgeLabel`,
     // which a linked framework suppresses here). Captures no `self`, so there's no retain cycle.
-    notifications.onTotalChange = { _ in
+    self.notifications.onTotalChange = { _ in
       // Combined count across all windows (issue #70) — the registry sums every window's total and
       // updates the menu-bar label + Dock badge, so a second window can't clobber the first's count.
       WindowRegistry.shared.recomputeBadge()
