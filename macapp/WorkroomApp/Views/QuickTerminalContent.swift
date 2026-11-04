@@ -19,6 +19,9 @@ struct QuickTerminalContent: View {
       }
     }
     .background(ThemeService.shared.tokens.panel)
+    // The tab bar takes the titlebar's place; without this the hosting view insets everything
+    // below the (hidden) titlebar and leaves an empty strip above the tabs.
+    .ignoresSafeArea()
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
   }
 }
