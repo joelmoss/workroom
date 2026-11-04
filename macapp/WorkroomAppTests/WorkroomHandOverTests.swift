@@ -875,7 +875,8 @@ final class WorkroomHandOverTests: XCTestCase {
     var emptied = false
     quick.onTargetEmptied = { _ in emptied = true }
 
-    await quick.moveQuickTerminalPane(pane.id, of: QuickTerminalController.target(), to: window)
+    await quick.moveQuickTerminalPane(
+      pane.id, of: QuickTerminalController.target(), to: window, into: sid)
 
     XCTAssertEqual(quick.terminals.tabCount(forTargetID: QuickTerminalController.targetID), 0)
     XCTAssertTrue(emptied, "its last pane leaving closes the Quick Terminal")
@@ -906,7 +907,7 @@ final class WorkroomHandOverTests: XCTestCase {
     pane.surface?.persistentSessionID = session
     let quickTarget = QuickTerminalController.target()
 
-    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window)
+    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)
 
     XCTAssertEqual(asked.map(\.0), [session])
     XCTAssertEqual(asked.first?.1, target(window).sessionWorkroomKey)
@@ -914,21 +915,22 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNotNil(window.errorMessage, "and the window says why")
 
     answer = true
-    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window)
+    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)
     XCTAssertEqual(quick.terminals.tabCount(forTargetID: quickTarget.id), 0)
     XCTAssertNotNil(window.terminals.tab(pane.id, for: target(window)))
   }
 
-  /// Value: protects=a window whose workroom is on a host, or that shows none, takes no Quick
-  /// Terminal pane (a shell on this Mac can't be a pane there); fails_when=the gate goes;
-  /// why_new=new path; seam=none; no_claim=the menu's disabled rendering.
-  func testAWindowWithNoWorkroomSelectedTakesNoPane() async {
+  /// Value: protects=a workroom that can't take a Quick Terminal pane (gone, on a host, being
+  /// created) takes none, and the pane stays; fails_when=the gate goes; why_new=new path;
+  /// seam=none; no_claim=the menu's disabled rendering.
+  func testAWorkroomThatCannotTakeAPaneTakesNone() async {
     let (quick, pane, window) = makeQuickTerminalMove()
-    window.selectedTargetID = nil
+    let gone = SidebarID.workroom(project: "/p", name: "gone")
 
-    await quick.moveQuickTerminalPane(pane.id, of: QuickTerminalController.target(), to: window)
+    await quick.moveQuickTerminalPane(
+      pane.id, of: QuickTerminalController.target(), to: window, into: gone)
 
-    XCTAssertNil(window.quickTerminalPaneDestination())
+    XCTAssertNil(window.quickTerminalPaneTarget(gone))
     XCTAssertEqual(quick.terminals.tabCount(forTargetID: QuickTerminalController.targetID), 1)
   }
 
@@ -956,7 +958,6 @@ final class WorkroomHandOverTests: XCTestCase {
     let (quick, pane, window) = makeQuickTerminalMove()
     let other = target(window, otherSid)
 
-    XCTAssertEqual(window.quickTerminalPaneDestination()?.sid, sid, "a menu: the selected one")
     await quick.moveQuickTerminalPane(
       pane.id, of: QuickTerminalController.target(), to: window, into: otherSid)
 
@@ -1030,7 +1031,7 @@ final class WorkroomHandOverTests: XCTestCase {
       targetID: quickTarget.id, tabID: pane.id, activity: .osc(title: "done", body: nil),
       focused: false, origin: ObjectIdentifier(quick))
 
-    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window)
+    await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)
     registry.dropNotifications(raisedBy: quick)
 
     let moved = notifications.items.filter { $0.tabID == pane.id }

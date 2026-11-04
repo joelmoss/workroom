@@ -68,7 +68,6 @@ struct WorkroomSplitView: View {
   /// plans against the *unpadded* detail rect and must subtract this, or every drop lands 3pt off the
   /// pane the renderer actually drew (a drop inside the gutter would split with no preview shown).
   static let outerGutter: CGFloat = 3
-  private let theme = ThemeService.shared
 
   /// The divider ratio being dragged right now — held here rather than written to the store on every
   /// mouse-moved tick. `store.setWorkroomSplitRatio` publishes `workroomSplits`, which invalidates
@@ -149,13 +148,7 @@ struct WorkroomSplitView: View {
   @ViewBuilder
   private func incomingPaneHighlight(plan: PaneTreeLayout.Plan<SidebarID>) -> some View {
     if let sid = store.incomingQuickTerminalPane, let rect = plan.panes[sid] {
-      RoundedRectangle(cornerRadius: 8)
-        .fill(theme.tokens.accent.opacity(0.25))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.accent, lineWidth: 2))
-        .frame(width: rect.width, height: rect.height)
-        .position(x: rect.midX, y: rect.midY)
-        .allowsHitTesting(false)
-        .transition(.opacity)
+      DropAccent(cornerRadius: 8).placed(in: rect)
     }
   }
 
@@ -170,15 +163,29 @@ struct WorkroomSplitView: View {
       store.canInsertWorkroomSplit(
         drag.sid, beside: hit.tab, edge: hit.edge, destinationRect: rect)
     {
-      let band = PaneTreeLayout.edgeBand(hit.edge, in: rect)
-      RoundedRectangle(cornerRadius: 8)
-        .fill(theme.tokens.accent.opacity(0.25))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.accent, lineWidth: 2))
-        .frame(width: band.width, height: band.height)
-        .position(x: band.midX, y: band.midY)
-        .allowsHitTesting(false)
-        .transition(.opacity)
+      DropAccent(cornerRadius: 8).placed(in: PaneTreeLayout.edgeBand(hit.edge, in: rect))
     }
+  }
+}
+
+/// Where a drop will land: an accent wash with an accent border. One look for every drop target,
+/// a workroom tab's or pane's, so they can't drift apart.
+struct DropAccent: View {
+  let cornerRadius: CGFloat
+
+  var body: some View {
+    let accent = ThemeService.shared.tokens.accent
+    RoundedRectangle(cornerRadius: cornerRadius)
+      .fill(accent.opacity(0.25))
+      .strokeBorder(accent, lineWidth: 2)
+      .allowsHitTesting(false)
+  }
+
+  /// Laid over `rect` of the enclosing space, fading in and out.
+  func placed(in rect: CGRect) -> some View {
+    frame(width: rect.width, height: rect.height)
+      .position(x: rect.midX, y: rect.midY)
+      .transition(.opacity)
   }
 }
 

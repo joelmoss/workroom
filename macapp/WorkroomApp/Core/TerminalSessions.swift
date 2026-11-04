@@ -1752,6 +1752,46 @@ final class TerminalSessions: ObservableObject {
     onEvent?(.paneDetached(target.id, tabID, at: screenPoint))
   }
 
+  /// Drop a tab's activity pulse and cancel its in-flight host cwd, Claude profile and branch
+  /// reads: every way a tab leaves this window (close, reap, hand-off) does.
+  private func forgetPerTabWork(_ tabID: TerminalTab.ID) {
+    activityPulses[tabID] = nil
+    hostCwdQueries.removeValue(forKey: tabID)?.cancel()
+    claudeProfileQueries.removeValue(forKey: tabID)?.cancel()
+    branchQueries.removeValue(forKey: tabID)?.cancel()
+  }
+
+  // MARK: A pane dragged out of its window, by its tab or its title bar
+
+  /// Show what letting go here would do: the ghost of the window it would become, or for the
+  /// Quick Terminal's (no window of their own), the workroom it would join.
+  func showDragOutside(_ tab: TerminalTab) {
+    if allowsDetach {
+      DetachedPaneDragPreview.shared.show(
+        title: tab.title, glyph: tab.content.glyph, at: NSEvent.mouseLocation)
+    } else {
+      QuickTerminalPaneDrag.update(title: tab.title, glyph: tab.content.glyph)
+    }
+  }
+
+  /// The drag came back inside, or ended.
+  func hideDragOutside() {
+    if allowsDetach {
+      DetachedPaneDragPreview.shared.hide()
+    } else {
+      QuickTerminalPaneDrag.cancel()
+    }
+  }
+
+  /// Let go outside the window: its own window, or the workroom under the pointer.
+  func dropOutside(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    if allowsDetach {
+      detachPane(tabID, for: target, at: NSEvent.mouseLocation)
+    } else {
+      dropOutsideWindow?(tabID, target)
+    }
+  }
+
   /// Bring a detached pane back into the pane tree (issue #172) — the mirror of `detachPane`, and the
   /// only way a tab leaves `detachedTabIDs` while staying alive.
   ///
@@ -1812,10 +1852,7 @@ final class TerminalSessions: ObservableObject {
       agent: Dictionary(uniqueKeysWithValues: ids.map { ($0, codingAgentManager.handOff($0)) }))
     for id in ids {
       detachedTabIDs.remove(id)
-      activityPulses[id] = nil
-      hostCwdQueries.removeValue(forKey: id)?.cancel()
-      claudeProfileQueries.removeValue(forKey: id)?.cancel()
-      branchQueries.removeValue(forKey: id)?.cancel()
+      forgetPerTabWork(id)
       watchedDone.remove(id)
     }
     // Emptied, not forgotten, as a close of every tab leaves it: `ensureTab` must not read the
@@ -1858,10 +1895,7 @@ final class TerminalSessions: ObservableObject {
     }
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }
-    activityPulses[tabID] = nil
-    hostCwdQueries.removeValue(forKey: tabID)?.cancel()
-    claudeProfileQueries.removeValue(forKey: tabID)?.cancel()
-    branchQueries.removeValue(forKey: tabID)?.cancel()
+    forgetPerTabWork(tabID)
     watchedDone.remove(tabID)
     removeFromGroup(tabID, for: target.id, evening: true)
     if wasFocused { setFocused(successor, for: target.id) }
@@ -2036,10 +2070,7 @@ final class TerminalSessions: ObservableObject {
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }
-    activityPulses[tabID] = nil
-    hostCwdQueries.removeValue(forKey: tabID)?.cancel()
-    claudeProfileQueries.removeValue(forKey: tabID)?.cancel()
-    branchQueries.removeValue(forKey: tabID)?.cancel()
+    forgetPerTabWork(tabID)
 
     // A lone remaining member is not a group any more; two or more get evened, since their dividers
     // still budget space for the pane that just closed (issue #126).
@@ -2073,10 +2104,7 @@ final class TerminalSessions: ObservableObject {
         await endPersistentSession(for: tab)
       }
       teardown(tab)
-      activityPulses[tab.id] = nil
-      hostCwdQueries.removeValue(forKey: tab.id)?.cancel()
-      claudeProfileQueries.removeValue(forKey: tab.id)?.cancel()
-      branchQueries.removeValue(forKey: tab.id)?.cancel()
+      forgetPerTabWork(tab.id)
     }
     await sessionService.endSessions(matchingWorkroom: id)
     tabsByTarget[id] = nil

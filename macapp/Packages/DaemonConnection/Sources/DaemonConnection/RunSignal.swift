@@ -17,12 +17,19 @@ public enum RunSignal: UInt8, Sendable {
 
   /// The frame: kind, big-endian payload length, the session's 16 bytes, then this signal.
   public func frame(session: UUID) -> [UInt8] {
-    var payload = withUnsafeBytes(of: session.uuid) { Array($0) }
-    payload.append(rawValue)
-    let length = UInt32(payload.count)
-    return [Self.frameKind]
-      + [24, 16, 8, 0].map { UInt8((length >> UInt32($0)) & 0xFF) } + payload
+    controlFrame(kind: Self.frameKind, payload: sessionBytes(session) + [rawValue])
   }
+}
+
+/// A Control frame `WorkroomWire` predates: kind, big-endian payload length, payload.
+func controlFrame(kind: UInt8, payload: [UInt8]) -> [UInt8] {
+  let length = UInt32(payload.count)
+  return [kind] + [24, 16, 8, 0].map { UInt8((length >> UInt32($0)) & 0xFF) } + payload
+}
+
+/// A session id as a frame carries it: its 16 bytes.
+func sessionBytes(_ session: UUID) -> [UInt8] {
+  withUnsafeBytes(of: session.uuid) { Array($0) }
 }
 
 /// How a daemon answered a `Signal` frame.

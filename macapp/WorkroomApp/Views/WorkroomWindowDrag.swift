@@ -57,12 +57,7 @@ enum WorkroomWindowDrag {
   /// The other Workroom window under `screen`, if any. The window the drag started in is not one:
   /// a drop over one of its own torn-off panes opens a new window like any other empty spot.
   private static func joinable(at screen: CGPoint, from store: AppStore) -> AppStore? {
-    let ghost = DetachedPaneDragPreview.shared.windowNumber.map { Set([$0]) } ?? []
-    guard
-      case .store(let destination) = WindowRegistry.shared.dropWindow(
-        at: screen, skipping: ghost), destination !== store
-    else { return nil }
-    return destination
+    WindowRegistry.shared.dropStore(at: screen).flatMap { $0 === store ? nil : $0 }
   }
 
   /// One window at a time shows the gap.

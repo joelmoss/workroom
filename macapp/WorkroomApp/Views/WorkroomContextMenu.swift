@@ -190,8 +190,9 @@ struct QuickTerminalMoveToWorkroomMenu: View {
   let tabID: TerminalTab.ID
   let target: TerminalTarget
   let style: Style
-  /// Windows come and go without the stores this reads publishing it.
-  @ObservedObject private var registry = WindowRegistry.shared
+  /// Re-read as windows open and close, which no store this reads publishes; not on every other
+  /// change the registry publishes (its badge counts).
+  @State private var windows = WindowRegistry.shared.allStores
   @State private var hovering = false
 
   init(store: AppStore, tabID: TerminalTab.ID, target: TerminalTarget, style: Style) {
@@ -202,9 +203,40 @@ struct QuickTerminalMoveToWorkroomMenu: View {
   }
 
   var body: some View {
-    let groups = store.quickTerminalPaneWorkroomChoices(
-      tabID, of: target, windows: registry.allStores)
-    let menu = Menu {
+    Group {
+      switch style {
+      case .menuItem:
+        menu {
+          Label {
+            Text("Move to Workroom")
+          } icon: {
+            Image(nsImage: .moveTerminal)
+          }
+        }
+      case .toolbar:
+        // `.button`, as the title bar's overflow menu is, so it wears the bar's hover well; the
+        // glyph in its neighbours' colours, which the menu's own label styling would lighten.
+        menu {
+          Image(nsImage: .moveTerminal).renderingMode(.template)
+            .foregroundStyle(PaneToolbarButton.tint(hovering: hovering))
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help("Move to workroom")
+        .accessibilityLabel("Move pane to workroom")
+        .accessibilityIdentifier("pane.toolbar.moveToWorkroom")
+      }
+    }
+    .onReceive(WindowRegistry.shared.$windowsChanged) { _ in
+      windows = WindowRegistry.shared.allStores
+    }
+  }
+
+  private func menu(@ViewBuilder label: () -> some View) -> some View {
+    let groups = store.quickTerminalPaneWorkroomChoices(tabID, of: target, windows: windows)
+    return Menu {
       if groups.isEmpty {
         Button("No Open Workrooms") {}.disabled(true)
       }
@@ -217,34 +249,7 @@ struct QuickTerminalMoveToWorkroomMenu: View {
         }
       }
     } label: {
-      switch style {
-      case .menuItem:
-        Label {
-          Text("Move to Workroom")
-        } icon: {
-          Image(nsImage: .moveTerminal)
-        }
-      case .toolbar:
-        // Its neighbours' colours (`PaneToolbarButton`), which a menu's own label styling would
-        // otherwise lighten.
-        Image(nsImage: .moveTerminal)
-          .renderingMode(.template)
-          .foregroundStyle(hovering ? Color.primary : Color.secondary)
-      }
-    }
-    switch style {
-    case .menuItem:
-      menu
-    case .toolbar:
-      // `.button`, as the title bar's overflow menu is, so it wears the bar's hover well.
-      menu
-        .menuStyle(.button)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .onHover { hovering = $0 }
-        .help("Move to workroom")
-        .accessibilityLabel("Move pane to workroom")
-        .accessibilityIdentifier("pane.toolbar.moveToWorkroom")
+      label()
     }
   }
 

@@ -70,11 +70,8 @@ struct PaneWorkroomGroup {
   let choices: [PaneWorkroomChoice]
 }
 
-/// Dragging a Quick Terminal pane out of its window, by its tab or its title bar. Over a Workroom
-/// window that can take it, the pane's ghost follows the pointer and the workroom it would join is
-/// highlighted; let go there, it moves in (`AppStore.moveQuickTerminalPane`). Anywhere else the
-/// pointer says it can't be dropped, and letting go does nothing: it has no window of its own to go
-/// to.
+/// Dragging a Quick Terminal pane out of its window: over a workroom that can take it, its ghost
+/// shows and that workroom is highlighted; anywhere else the pointer says it can't drop there.
 @MainActor
 enum QuickTerminalPaneDrag {
   /// While the pointer shows "not allowed", so `cancel` only puts back a cursor this changed.
@@ -83,12 +80,11 @@ enum QuickTerminalPaneDrag {
   static func update(title: String, glyph: String?) {
     let hit = destination()
     show(hit)
+    refuse(hit == nil)
     if hit != nil {
       DetachedPaneDragPreview.shared.show(title: title, glyph: glyph, at: NSEvent.mouseLocation)
-      refuse(false)
     } else {
       DetachedPaneDragPreview.shared.hide()
-      refuse(true)
     }
   }
 
@@ -127,39 +123,34 @@ enum QuickTerminalPaneDrag {
 
   /// The Workroom window under the pointer and its workroom there, when that can take the pane.
   private static func destination() -> (window: AppStore, workroom: SidebarID)? {
-    let ghost = DetachedPaneDragPreview.shared.windowNumber.map { Set([$0]) } ?? []
     let point = NSEvent.mouseLocation
-    guard
-      case .store(let window) = WindowRegistry.shared.dropWindow(at: point, skipping: ghost),
-      let (workroom, _) = window.quickTerminalPaneDestination(at: point)
+    guard let window = WindowRegistry.shared.dropStore(at: point),
+      let workroom = window.quickTerminalPaneDestination(at: point)
     else { return nil }
     return (window, workroom)
   }
 }
 
 extension AppStore {
-  /// The workroom a Quick Terminal pane dropped on this window joins: the one whose tab, or whose
-  /// pane when workrooms are side by side, is under `screenPoint`, else the one it has selected (a
-  /// drop beside them). Nil unless that one is on this Mac and open: a shell on this Mac
-  /// can't become a pane on a host.
-  func quickTerminalPaneDestination(
-    at screenPoint: CGPoint? = nil
-  ) -> (sid: SidebarID, target: TerminalTarget)? {
-    let hit = screenPoint.flatMap { workroomTab(atScreenPoint: $0) ?? workroom(atScreenPoint: $0) }
-    return quickTerminalPaneTarget(hit ?? selectedTargetID)
+  /// The workroom a Quick Terminal pane dropped at `screenPoint` joins: the one whose tab, or whose
+  /// pane when workrooms are side by side, is there, else the selected one. Nil unless it can.
+  func quickTerminalPaneDestination(at screenPoint: CGPoint) -> SidebarID? {
+    let hit =
+      workroomTabRowPoint(screenPoint).flatMap { point in
+        workroomTabFrames.first { $0.value.contains(point) }?.key
+      } ?? workroom(atScreenPoint: screenPoint)
+    return quickTerminalPaneTarget(hit ?? selectedTargetID)?.sid
   }
 
-  /// The workroom whose tab is under `screenPoint`, from the measured tab frames.
-  private func workroomTab(atScreenPoint screenPoint: CGPoint) -> SidebarID? {
+  /// `screenPoint` in the workroom tab row's space (top-left origin), which the tab frames are in.
+  func workroomTabRowPoint(_ screenPoint: CGPoint) -> CGPoint? {
     guard let run = workroomTabRun, let window = run.window else { return nil }
     let row = window.convertToScreen(run.convert(run.bounds, to: nil))
-    // The tab frames' space: the row's, top-left origin.
-    let point = CGPoint(x: screenPoint.x - row.minX, y: row.maxY - screenPoint.y)
-    return workroomTabFrames.first { $0.value.contains(point) }?.key
+    return CGPoint(x: screenPoint.x - row.minX, y: row.maxY - screenPoint.y)
   }
 
   /// `sid`'s workroom, when a Quick Terminal pane can join it.
-  private func quickTerminalPaneTarget(
+  func quickTerminalPaneTarget(
     _ sid: SidebarID?
   ) -> (sid: SidebarID, target: TerminalTarget)? {
     guard let sid, let target = target(for: sid), target.remoteHost == nil,
@@ -197,17 +188,14 @@ extension AppStore {
   ) -> [PaneWorkroomGroup] {
     let groups = windows.map { window in
       window.displayedWorkroomTargets().map { workroom in
-        PaneWorkroomChoice(
-          title: window.title(for: workroom.sid),
-          glyph: {
-            if case .root = workroom.sid { "house" } else { workroom.target.workroomGlyph }
-          }(),
-          enabled: window.quickTerminalPaneTarget(workroom.sid) != nil
+        let sid = workroom.sid
+        let glyph = if case .root = sid { "house" } else { workroom.target.workroomGlyph }
+        return PaneWorkroomChoice(
+          title: window.title(for: sid), glyph: glyph,
+          enabled: window.quickTerminalPaneTarget(sid) != nil
         ) { [weak self, weak window] in
           guard let self, let window else { return }
-          Task {
-            await self.moveQuickTerminalPane(tabID, of: target, to: window, into: workroom.sid)
-          }
+          Task { await self.moveQuickTerminalPane(tabID, of: target, to: window, into: sid) }
         }
       }
     }
@@ -220,18 +208,15 @@ extension AppStore {
     }
   }
 
-  /// Move this store's pane `tabID`, in `target` (the Quick Terminal's), into `destination`'s
-  /// workroom `workroom` (a drop's, from `quickTerminalPaneDestination(at:)`), or the one it has
-  /// selected, running, with its scrollback, and focus that workroom. Its shell is that workroom's
-  /// from now on: its session is retagged first, and if that fails nothing moves and the window says
-  /// why. Its last tab leaving closes the Quick Terminal.
+  /// Move this store's pane `tabID`, in `target` (the Quick Terminal's), live into `destination`'s
+  /// workroom `workroom` and focus it. Its session is retagged as that workroom's first; if that
+  /// fails nothing moves and the window says why.
   func moveQuickTerminalPane(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, to destination: AppStore,
-    into workroom: SidebarID? = nil
+    into workroom: SidebarID
   ) async {
     guard destination !== self,
-      let (sid, into) = destination.quickTerminalPaneTarget(
-        workroom ?? destination.selectedTargetID),
+      let (sid, into) = destination.quickTerminalPaneTarget(workroom),
       let tab = terminals.tab(tabID, for: target)
     else { return }
     // Nil for a pane with no background session (an Investigate tab's agent): nothing to retag.
@@ -384,14 +369,11 @@ extension AppStore {
   /// Where a workroom dropped at `screenPoint` lands among this window's workroom tabs: the slot under
   /// the cursor over the tab bar, or nil (the end) anywhere else over the window (#444 Q21).
   func incomingWorkroomSlot(at screenPoint: CGPoint) -> Int? {
-    guard let run = workroomTabRun, let window = run.window else { return nil }
-    let row = window.convertToScreen(run.convert(run.bounds, to: nil))
+    guard let point = workroomTabRowPoint(screenPoint) else { return nil }
     let shown = displayedWorkroomTargets()
     let groupOf = workroomSplitGroupIndices()
-    return Self.workroomTabSlot(
-      at: CGPoint(x: screenPoint.x - row.minX, y: row.maxY - screenPoint.y),
-      frames: shown.compactMap { workroomTabFrames[$0.sid] }
-    ).map { Self.workroomTabSlot($0, outside: shown.map { groupOf[$0.sid] }) }
+    return Self.workroomTabSlot(at: point, frames: shown.compactMap { workroomTabFrames[$0.sid] })
+      .map { Self.workroomTabSlot($0, outside: shown.map { groupOf[$0.sid] }) }
   }
 
   /// A slot inside a split group's run of tabs is not one a tab can land in, since the group keeps

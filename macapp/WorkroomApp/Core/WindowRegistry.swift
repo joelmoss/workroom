@@ -72,6 +72,14 @@ final class WindowRegistry: ObservableObject {
       })
   }
 
+  /// The Workroom window a drag is over at `screenPoint`, looking past the drag's own ghost
+  /// (`DetachedPaneDragPreview`), which sits under the cursor.
+  func dropStore(at screenPoint: CGPoint) -> AppStore? {
+    let ghost = DetachedPaneDragPreview.shared.windowNumber.map { Set([$0]) } ?? []
+    guard case .store(let store) = dropWindow(at: screenPoint, skipping: ghost) else { return nil }
+    return store
+  }
+
   /// The walk behind `dropWindow`, front to back: `numberBelow(n)` is the window under the point
   /// below window `n` (0 for the frontmost, 0 when there is none).
   static func frontmostDropWindow(
