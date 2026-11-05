@@ -134,6 +134,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   private var sessionService: PersistentSessionService { sessionServiceOverride ?? .shared }
   /// Set while a slide-out runs; a summon during it clears it, cancelling the pending `orderOut`.
   private var hiding = false
+  /// Set while a summon from another app waits for the activation to land (`frontOnceActive`).
+  private var activationObserver: NSObjectProtocol?
 
   /// Nonisolated so `AppDelegate` can construct it as a stored-property default (a nonisolated
   /// context); it only assigns nil/closure defaults — no main-actor work runs here. Every method
@@ -214,6 +216,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     guard let window, let surface = currentSurface else { return }
     // The hotkey can fire while another app is frontmost (or while Workroom is hidden), so pull the
     // app forward — mirrors `AppDelegate.toggleAppVisibility`.
+    if !NSApp.isActive { frontOnceActive(window) }
     NSApp.activate(ignoringOtherApps: true)
     hiding = false
     // Dock on every summon: to the edge the setting names now, on the screen under the pointer
@@ -244,6 +247,32 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       sessions.focus(tabID, for: target)
     }
     show()
+  }
+
+  /// The activation lands later and fronts the app's last key window, a workroom's, over this one,
+  /// which an inactive app can't make key: once it has, make this key and front again.
+  private func frontOnceActive(_ window: NSWindow) {
+    if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+    activationObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        if let observer = self.activationObserver {
+          NotificationCenter.default.removeObserver(observer)
+        }
+        self.activationObserver = nil
+        // A turn later, after AppKit's own activation ordering.
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated {
+            guard self.window === window, self.isVisible, let surface = self.currentSurface
+            else { return }
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(surface)
+          }
+        }
+      }
+    }
   }
 
   /// Slide out, then hide without destroying: the surface keeps running so a re-summon restores
