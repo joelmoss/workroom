@@ -15,6 +15,8 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::util::lock_or_recover;
+
 /// Shells whose `-lic` means login and interactive; anything else gets a login `/bin/sh -lc`, as
 /// `ShellEnvironment.posixShells` does on the Mac.
 const POSIX_SHELLS: [&str; 5] = ["zsh", "bash", "sh", "dash", "ksh"];
@@ -196,7 +198,7 @@ pub fn probe(
                 if read == 0 {
                     break;
                 }
-                let mut kept = output.lock().unwrap_or_else(|e| e.into_inner());
+                let mut kept = lock_or_recover(&output);
                 let room = MAX_PROBE_BYTES.saturating_sub(kept.len());
                 kept.extend_from_slice(&chunk[..read.min(room)]);
             }
@@ -223,7 +225,7 @@ pub fn probe(
     if !status.success() {
         return Err("nonZeroExit");
     }
-    let output = std::mem::take(&mut *output.lock().unwrap_or_else(|e| e.into_inner()));
+    let output = std::mem::take(&mut *lock_or_recover(&output));
     let parsed = parse_probe_output(&output, &marker).ok_or("noMarkers")?;
     if !parsed.contains_key("PATH") {
         return Err("noPath");

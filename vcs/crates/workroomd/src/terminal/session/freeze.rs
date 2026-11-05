@@ -12,6 +12,7 @@ use super::{
 use crate::terminal::images::ImageRef;
 use crate::terminal::pty::{Pty, Size};
 use crate::terminal::shadow::Shadow;
+use crate::util::{lock_or_recover, try_recover};
 
 impl SessionStore {
     /// Runs `f` with every session's output stopped and its screen captured, for a hand-off.
@@ -50,20 +51,11 @@ impl SessionStore {
         format_within: Duration,
         f: impl FnOnce(&[FrozenSession]) -> T,
     ) -> Option<T> {
-        use std::sync::TryLockError;
         let deadline = Instant::now() + within;
-        let _no_terminations = until(deadline, || match TERMINATING.try_write() {
-            Ok(guard) => Some(guard),
-            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-            Err(TryLockError::WouldBlock) => None,
-        })?;
+        let _no_terminations = until(deadline, || try_recover(TERMINATING.try_write()))?;
         // Within the deadline too: `list` and the end of `attach` hold the store lock while they
         // wait on a session's attachment lock, so a repaint holds the store lock as well.
-        let store = until(deadline, || match self.sessions.try_lock() {
-            Ok(guard) => Some(guard),
-            Err(TryLockError::Poisoned(_)) => panic!("session store poisoned"),
-            Err(TryLockError::WouldBlock) => None,
-        })?;
+        let store = until(deadline, || try_recover(self.sessions.try_lock()))?;
         let parts: Vec<(SessionId, SessionParts, Metadata)> = store
             .values()
             .map(|session| {
@@ -80,11 +72,7 @@ impl SessionStore {
             .collect();
         let mut held = Vec::with_capacity(parts.len());
         for (_, (_, _, attached), _) in &parts {
-            held.push(until(deadline, || match attached.try_lock() {
-                Ok(guard) => Some(guard),
-                Err(TryLockError::Poisoned(_)) => panic!("attachment lock poisoned"),
-                Err(TryLockError::WouldBlock) => None,
-            })?);
+            held.push(until(deadline, || try_recover(attached.try_lock()))?);
         }
         let share =
             crate::terminal::shadow::record_budget(HANDOFF_TOTAL_BYTES / parts.len().max(1));
@@ -102,6 +90,17 @@ impl SessionStore {
                 if Instant::now() >= format_until {
                     late += 1;
                 }
+                // One statement per lock: a guard taken inside the struct below would live to the
+                // end of it, and the second field would wait on the first's.
+                let screen = lock_or_recover(shadow).replay_for_within(
+                    pty.foreground_pgid(),
+                    share,
+                    Some(format_until),
+                );
+                let program_status = lock_or_recover(shadow)
+                    .status()
+                    .cloned()
+                    .unwrap_or_default();
                 FrozenSession {
                     id: *id,
                     pid: pty.child_pid(),
@@ -112,18 +111,9 @@ impl SessionStore {
                     // gives any report in it to whoever owns the pty then; a dead sender's report
                     // frozen whole would become the shell's, busy at its prompt (#359). A stopped
                     // sender (^Z) loses its report here and shows idle until its next one.
-                    screen: shadow
-                        .lock()
-                        .map(|s| {
-                            s.replay_for_within(pty.foreground_pgid(), share, Some(format_until))
-                        })
-                        .unwrap_or_default(),
+                    screen,
                     metadata: metadata.clone(),
-                    program_status: shadow
-                        .lock()
-                        .ok()
-                        .and_then(|mut shadow| shadow.status().cloned())
-                        .unwrap_or_default(),
+                    program_status,
                 }
             })
             .collect();
@@ -202,7 +192,7 @@ impl SessionStore {
         let attached = Arc::clone(&session.attached);
         let store = self.clone();
         {
-            let mut sessions = self.sessions.lock().expect("session store poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if sessions.contains_key(&id) {
                 return Err(SessionError::AlreadyExists(id.to_hyphenated()));
             }
@@ -248,9 +238,8 @@ pub(super) fn carry_images(
 ) {
     let mut images: Vec<(usize, ImageRef)> = Vec::new();
     for (index, shadow) in shadows.iter().enumerate() {
-        if let Ok(shadow) = shadow.lock() {
-            images.extend(shadow.visible_images().into_iter().map(|i| (index, i)));
-        }
+        let visible = lock_or_recover(shadow).visible_images();
+        images.extend(visible.into_iter().map(|i| (index, i)));
     }
     images.sort_by_key(|(_, image)| std::cmp::Reverse(image.generation));
     carry_listed(shadows, sessions, images, until, budget);
@@ -268,9 +257,7 @@ pub(super) fn carry_listed(
         if Instant::now() >= until {
             return;
         }
-        let Ok(shadow) = shadows[index].lock() else {
-            continue;
-        };
+        let shadow = lock_or_recover(shadows[index]);
         let Some(bytes) = shadow.hand_off_image(image) else {
             continue;
         };

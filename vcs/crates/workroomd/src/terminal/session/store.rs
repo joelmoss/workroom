@@ -15,6 +15,7 @@ use crate::terminal::program_status::{Hub, Store};
 use crate::terminal::pty::Pty;
 use crate::terminal::screens::Screens;
 use crate::terminal::shadow::Shadow;
+use crate::util::{lock_or_recover, try_recover};
 
 impl SessionStore {
     /// Keeps run sessions' status files in `dir` (`crate::terminal::run`), made private to this
@@ -69,9 +70,7 @@ impl SessionStore {
 
     /// The live run sessions.
     pub fn run_session_ids(&self) -> Vec<SessionId> {
-        self.sessions
-            .lock()
-            .expect("session store poisoned")
+        lock_or_recover(&self.sessions)
             .values()
             .filter(|session| crate::terminal::run::is_run(&session.metadata))
             .map(|session| session.id)
@@ -86,7 +85,7 @@ impl SessionStore {
         signal: wr_protocol::frame::RunSignal,
     ) -> Result<(), RunSignalError> {
         use wr_protocol::frame::RunSignal;
-        let sessions = self.sessions.lock().expect("session store poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let session = sessions.get(&id).ok_or(RunSignalError::NotFound)?;
         if !crate::terminal::run::is_run(&session.metadata) {
             return Err(RunSignalError::NotARun);
@@ -112,7 +111,7 @@ impl SessionStore {
     /// and leaves every other key alone. The list and a hand-off both read `Session::metadata`, so
     /// the new tag shows in the next of either. `false` when there is no such session.
     pub fn set_workroom(&self, id: SessionId, workroom: &str) -> bool {
-        let mut sessions = self.sessions.lock().expect("session store poisoned");
+        let mut sessions = lock_or_recover(&self.sessions);
         let Some(session) = sessions.get_mut(&id) else {
             return false;
         };
@@ -153,7 +152,7 @@ impl SessionStore {
         spec: SessionSpec<'_>,
         register: impl FnOnce(SessionInfo) -> Result<T, SessionError>,
     ) -> Result<T, SessionError> {
-        let mut sessions = self.sessions.lock().expect("session store poisoned");
+        let mut sessions = lock_or_recover(&self.sessions);
         if sessions.contains_key(&spec.id) {
             return Err(SessionError::AlreadyExists(spec.id.to_hyphenated()));
         }
@@ -262,7 +261,7 @@ impl SessionStore {
     /// The three pieces an operation on a live session needs, taken out of the store so nothing
     /// below holds the store lock while touching a pty, a shadow or a client.
     pub(super) fn parts(&self, id: SessionId) -> Option<SessionParts> {
-        let sessions = self.sessions.lock().expect("session store poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let session = sessions.get(&id)?;
         Some((
             Arc::clone(&session.pty),
@@ -272,16 +271,13 @@ impl SessionStore {
     }
 
     pub fn contains(&self, id: SessionId) -> bool {
-        self.sessions
-            .lock()
-            .map(|s| s.contains_key(&id))
-            .unwrap_or(false)
+        lock_or_recover(&self.sessions).contains_key(&id)
     }
 
     /// Sorted by id so the list is stable between calls — an unordered list makes a UI reorder
     /// itself for no reason.
     pub fn list(&self) -> Vec<SessionInfo> {
-        let sessions = self.sessions.lock().expect("session store poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let mut out: Vec<SessionInfo> = sessions.values().map(Session::info).collect();
         out.sort_by_key(|info| info.id);
         out
@@ -289,7 +285,7 @@ impl SessionStore {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_pty<T>(&self, id: SessionId, f: impl FnOnce(&Pty) -> T) -> Option<T> {
-        let sessions = self.sessions.lock().expect("session store poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.get(&id).map(|session| f(&session.pty))
     }
 
@@ -297,12 +293,12 @@ impl SessionStore {
     /// read without keeping the store locked.
     #[cfg(any(test, feature = "test-support"))]
     pub fn shadow(&self, id: SessionId) -> Option<Arc<Mutex<Shadow>>> {
-        let sessions = self.sessions.lock().expect("session store poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.get(&id).map(|session| Arc::clone(&session.shadow))
     }
 
     pub fn is_empty(&self) -> bool {
-        self.sessions.lock().map(|s| s.is_empty()).unwrap_or(true)
+        lock_or_recover(&self.sessions).is_empty()
     }
 
     /// Keeps each session's screen in `screens` from now on (`crate::terminal::screens::spawn`
@@ -324,9 +320,8 @@ impl SessionStore {
     /// takes its repaint, and such sessions must not hold up every other session's record, however
     /// many there are.
     pub fn changed_screens(&self) -> Vec<TakenScreen> {
-        use std::sync::TryLockError;
         let parts: Vec<(SessionId, u64, SessionParts)> = {
-            let sessions = self.sessions.lock().expect("session store poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
                 .map(|session| {
@@ -352,11 +347,7 @@ impl SessionStore {
                 // order, used to spend the whole budget and leave each session after it a single
                 // attempt, which lost its record whenever it met that session's reader mid-read.
                 let deadline = shared.max(Instant::now() + RECORD_GRACE);
-                let Some(mut held) = until(deadline, || match attached.try_lock() {
-                    Ok(guard) => Some(guard),
-                    Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-                    Err(TryLockError::WouldBlock) => None,
-                }) else {
+                let Some(mut held) = until(deadline, || try_recover(attached.try_lock())) else {
                     // Left changed for the next pass, which the screens thread must come back for:
                     // a session that has gone quiet raises nothing more.
                     self.screens_work.raise();
@@ -371,14 +362,12 @@ impl SessionStore {
                 ));
                 // Compressed in the same hold, so the pages the record re-inflated are not kept
                 // through the disk writes and syncs of every record this pass takes.
-                let record = shadow
-                    .lock()
-                    .map(|mut shadow| {
-                        let record = shadow.record();
-                        shadow.compress();
-                        record
-                    })
-                    .unwrap_or_default();
+                let record = {
+                    let mut shadow = lock_or_recover(&shadow);
+                    let record = shadow.record();
+                    shadow.compress();
+                    record
+                };
                 Some(TakenScreen {
                     id,
                     session: number,
@@ -393,9 +382,7 @@ impl SessionStore {
     /// Whether `id` is still the session `changed_screens` took a screen of (`TakenScreen::session`)
     /// rather than a later one under the same id, or none.
     pub fn still_holds(&self, id: SessionId, session: u64) -> bool {
-        self.sessions
-            .lock()
-            .expect("session store poisoned")
+        lock_or_recover(&self.sessions)
             .get(&id)
             .is_some_and(|s| s.number == session)
     }
@@ -403,18 +390,13 @@ impl SessionStore {
     /// Takes this session's screen again on the next `changed_screens`.
     pub fn mark_changed(&self, id: SessionId) {
         if let Some((_, _, attached)) = self.parts(id) {
-            attached.lock().unwrap_or_else(|e| e.into_inner()).changed = true;
+            lock_or_recover(&attached).changed = true;
             self.screens_work.raise();
         }
     }
 
     pub fn ids(&self) -> Vec<SessionId> {
-        self.sessions
-            .lock()
-            .expect("session store poisoned")
-            .keys()
-            .copied()
-            .collect()
+        lock_or_recover(&self.sessions).keys().copied().collect()
     }
 
     /// Compresses every shadow's history (#463): what output wrote, and what an attach or a
@@ -427,14 +409,14 @@ impl SessionStore {
     /// poisoned shadow is still compressed, as `program_status_events` still reads one.
     pub fn compress_shadows(&self) {
         let shadows: Vec<Arc<Mutex<Shadow>>> = {
-            let sessions = self.sessions.lock().expect("session store poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
                 .map(|session| Arc::clone(&session.shadow))
                 .collect()
         };
         for shadow in shadows {
-            shadow.lock().unwrap_or_else(|e| e.into_inner()).compress();
+            lock_or_recover(&shadow).compress();
         }
     }
 
@@ -445,7 +427,7 @@ impl SessionStore {
     pub fn promote_unprobed(&self, now: Instant) -> bool {
         let mut pending = false;
         let sessions: Vec<_> = {
-            let sessions = self.sessions.lock().expect("session store poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
                 .map(|s| {
@@ -485,7 +467,7 @@ impl SessionStore {
     /// read under its own shadow lock, never the store's.
     pub fn program_status_events(&self) -> Vec<(SessionId, Vec<u8>)> {
         let shadows: Vec<(SessionId, Arc<Mutex<Shadow>>)> = {
-            let sessions = self.sessions.lock().expect("session store poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
                 .map(|session| (session.id, Arc::clone(&session.shadow)))
@@ -495,7 +477,7 @@ impl SessionStore {
         let mut events: Vec<(SessionId, Vec<u8>)> = shadows
             .into_iter()
             .map(|(id, shadow)| {
-                let mut shadow = shadow.lock().unwrap_or_else(|e| e.into_inner());
+                let mut shadow = lock_or_recover(&shadow);
                 let event = shadow.status().map_or_else(
                     || Store::default().event(boot, id),
                     |status| status.event(boot, id),

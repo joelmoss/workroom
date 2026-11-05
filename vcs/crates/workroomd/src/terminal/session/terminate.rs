@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::{Ending, Session, SessionId, SessionStore, TERMINATING};
 use crate::terminal::pty::Pty;
+use crate::util::{lock_or_recover, recover};
 
 /// How long a session's processes get to exit on SIGHUP before `terminate` sends SIGKILL.
 pub const SIGHUP_GRACE: Duration = Duration::from_millis(500);
@@ -20,7 +21,7 @@ pub const KILL_EXIT_WAIT: Duration = SIGHUP_GRACE.saturating_mul(4);
 impl Drop for Ending<'_> {
     fn drop(&mut self) {
         let (ending, ended) = &*self.store.ending;
-        let mut ending = ending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ending = lock_or_recover(ending);
         for id in &self.ids {
             if let Some(count) = ending.get_mut(id) {
                 *count -= 1;
@@ -65,7 +66,7 @@ impl SessionStore {
     /// a session is always in one or the other while its shell lives.
     pub(super) fn mark_ending(&self, ids: Vec<SessionId>) -> Ending<'_> {
         let (ending, _) = &*self.ending;
-        let mut ending = ending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ending = lock_or_recover(ending);
         for id in &ids {
             *ending.entry(*id).or_default() += 1;
         }
@@ -76,10 +77,7 @@ impl SessionStore {
     /// Whether `id` has left the map and its shell is still being ended.
     pub fn is_ending(&self, id: SessionId) -> bool {
         let (ending, _) = &*self.ending;
-        ending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&id)
+        lock_or_recover(ending).contains_key(&id)
     }
 
     /// Waits until no kill is in flight, or `deadline` passes: true if none is.
@@ -98,9 +96,9 @@ impl SessionStore {
     /// wait for. Decided in one look under the map's lock, where a session leaving it is marked as
     /// being ended, so a caller that must not wait on a shell (`serve`'s reader) never does.
     pub fn end_if_absent(&self, id: SessionId) -> bool {
-        let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
+        let _terminating = recover(TERMINATING.read());
         {
-            let sessions = self.sessions.lock().expect("session store poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             if sessions.contains_key(&id) || self.is_ending(id) {
                 return false;
             }
@@ -118,9 +116,9 @@ impl SessionStore {
     /// termination now scans the process table and waits out a shell's exit traps, and holding the
     /// store lock across that would stall every `list` and `attach` for the duration.
     pub fn kill(&self, id: SessionId) -> bool {
-        let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
+        let _terminating = recover(TERMINATING.read());
         let (session, _ending) = {
-            let mut sessions = self.sessions.lock().expect("session store poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions.remove(&id);
             let ending = session.as_ref().map(|_| self.mark_ending(vec![id]));
             (session, ending)
@@ -150,12 +148,10 @@ impl SessionStore {
                 // Another kill took it out of the map first and may still be ending its shell.
                 // Returning now would have this kill acknowledged while the shell lives (#283).
                 let (ending, ended) = &*self.ending;
-                let ending = ending.lock().unwrap_or_else(|e| e.into_inner());
-                drop(
-                    ended
-                        .wait_while(ending, |ending| ending.contains_key(&id))
-                        .unwrap_or_else(|e| e.into_inner()),
-                );
+                let ending = lock_or_recover(ending);
+                drop(recover(
+                    ended.wait_while(ending, |ending| ending.contains_key(&id)),
+                ));
                 false
             }
         }
@@ -165,9 +161,9 @@ impl SessionStore {
     /// happens once and every shell gets its hangup at the same moment instead of each waiting out
     /// the one before it. That matters on quit, where this runs with the user watching.
     pub fn kill_all(&self) -> usize {
-        let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
+        let _terminating = recover(TERMINATING.read());
         let (ending, _ending) = {
-            let mut sessions = self.sessions.lock().expect("session store poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let ending: Vec<Session> = sessions.drain().map(|(_, session)| session).collect();
             let marked = self.mark_ending(ending.iter().map(|s| s.id).collect());
             (ending, marked)

@@ -40,6 +40,7 @@
 
 use crate::daemon::rpc::SharedWriter;
 use crate::daemon::transport::Closer;
+use crate::util::lock_or_recover;
 use crate::vcs::file::FileError;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde_json::{Value, json};
@@ -255,6 +256,7 @@ impl Sink {
         let mut payload = vec![1u8];
         payload.extend(serde_json::to_vec(&value).expect("JSON value serializes"));
         debug_assert!(payload.len() < MAX_ENVELOPE_PAYLOAD);
+        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
         let written = match self.writer.lock() {
             Ok(mut writer) => writer
                 .write_all(&Envelope::new(Service::File, 0, payload).encode())
@@ -321,7 +323,7 @@ impl Subscriptions {
     }
 
     pub fn subscribe(&self, id: u64, root: &Path) -> Result<(), FileError> {
-        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        let mut active = lock_or_recover(&self.active);
         if active.contains_key(&id) {
             return Err(FileError::Unsupported(
                 "subscription id already in use".into(),
@@ -382,10 +384,7 @@ impl Subscriptions {
     /// Stop one subscription. Idempotent: an id that is not (or no longer) watched is not an error,
     /// so an unwatch racing the end of a subscription cannot fail.
     pub fn unsubscribe(&self, id: u64) {
-        self.active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id);
+        lock_or_recover(&self.active).remove(&id);
     }
 }
 

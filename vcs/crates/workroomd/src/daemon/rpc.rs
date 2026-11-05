@@ -186,6 +186,7 @@ pub(crate) fn send_with(
     for (index, chunk) in chunks.enumerate() {
         let mut payload = vec![u8::from(index + 1 == count)];
         payload.extend_from_slice(chunk);
+        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
         let Ok(mut writer) = writer.lock() else {
             return;
         };

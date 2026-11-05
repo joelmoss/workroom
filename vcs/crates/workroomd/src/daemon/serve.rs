@@ -418,6 +418,7 @@ pub fn handle_connection<T: Transport>(
     // replies, and the reader holds the lock for one write at a time.
     let writer: SharedWriter = Arc::new(Mutex::new(Box::new(writer)));
 
+    // A poisoned writer is the connection gone (the lock order on `SessionStore`).
     let send = |bytes: &[u8]| -> bool {
         match writer.lock() {
             Ok(mut writer) => writer
@@ -959,6 +960,7 @@ fn kill_off_the_reader(
         let _in_flight = in_flight;
         store.kill(id);
         let bytes = acknowledged().encode();
+        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
         if let Ok(mut writer) = shared.lock() {
             let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
         }

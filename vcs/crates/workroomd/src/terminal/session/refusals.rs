@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{SessionId, SessionStore};
+use crate::util::lock_or_recover;
 
 /// How long an id a client asked to kill is refused a new session (`SessionStore::refuse`): long
 /// enough for an attach that set out before the kill to arrive behind it. Over ssh that is a
@@ -99,7 +100,7 @@ impl SessionStore {
     /// out of order and lose one; a file this small costs a kill nothing it would notice.
     pub fn refuse(&self, id: SessionId) {
         let now = Instant::now();
-        let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
+        let mut refused = lock_or_recover(&self.refused);
         // ponytail: a scan per kill, which kills at the rate panes close never notice; a flood of
         // kills would want pruning on a timer or past a size.
         refused.retain(|_, until| *until > now);
@@ -112,9 +113,7 @@ impl SessionStore {
     }
 
     pub(super) fn is_refused(&self, id: SessionId) -> bool {
-        self.refused
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock_or_recover(&self.refused)
             .get(&id)
             .is_some_and(|until| *until > Instant::now())
     }
@@ -125,8 +124,7 @@ impl SessionStore {
     pub fn keep_refusals(&self, path: PathBuf) {
         match read_refusals(&path) {
             Ok(kept) => {
-                let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
-                refused.extend(kept);
+                lock_or_recover(&self.refused).extend(kept);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => crate::note!("not taking refusals from {}: {e}", path.display()),

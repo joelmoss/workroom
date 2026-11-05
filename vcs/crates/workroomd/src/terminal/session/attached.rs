@@ -15,6 +15,7 @@ use crate::terminal::images;
 use crate::terminal::input::InputClassifier;
 use crate::terminal::pty::{Pty, Size};
 use crate::terminal::shadow::Shadow;
+use crate::util::lock_or_recover;
 use wr_protocol::envelope::{Envelope, Service};
 use wr_protocol::frame::{Frame, FrameKind};
 
@@ -47,7 +48,7 @@ impl SessionStore {
         // registered below — see `SessionError::RepaintFailed`.
         let mut painted = true;
         let size = {
-            let mut attached = attached.lock().expect("attachment lock poisoned");
+            let mut attached = lock_or_recover(&attached);
             let mut replay = live_replay(&pty, &shadow);
             if !replay.is_empty() {
                 // First, in case this surface was left in a transfer cut off midway.
@@ -68,7 +69,9 @@ impl SessionStore {
                     // path already delivers it in arbitrary `READ_CHUNK`-sized pieces, and the
                     // envelope codec is explicitly built to survive a stream that chunks
                     // arbitrarily. A truncated repaint would instead leave the client's parser
-                    // mid-sequence with the continuation record never arriving.
+                    // mid-sequence with the continuation record never arriving. (Every lock is now
+                    // recovered from poisoning, so a panic here no longer ends the reader: see the
+                    // lock order on `SessionStore`.)
                     // ONE budget for the whole repaint, not one timeout per chunk.
                     //
                     // These writes happen under the attachment lock, which the reader takes around
@@ -139,13 +142,14 @@ impl SessionStore {
                         let _ = writer.write_all(&reset).and_then(|()| writer.flush());
                     }
                 } else {
-                    // The writer's lock is poisoned: nothing was painted, so do not register.
+                    // The writer's lock is poisoned, which is the connection gone (the lock order on
+                    // `SessionStore`): nothing was painted, so do not register.
                     painted = false;
                 }
             }
             if painted {
-                let visible = shadow.lock().map(|s| s.visible_images());
-                let transfer = images::start_transfer(visible.unwrap_or_default(), &shadow, &pty);
+                let visible = lock_or_recover(&shadow).visible_images();
+                let transfer = images::start_transfer(visible, &shadow, &pty);
                 attached.clients.push(Client {
                     writer,
                     stream,
@@ -179,7 +183,7 @@ impl SessionStore {
         }
         apply_size(&pty, &shadow, &attached, size, &self.screens_work);
 
-        let sessions = self.sessions.lock().expect("session store poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let session = sessions
             .get(&id)
             .ok_or_else(|| SessionError::NotFound(id.to_hyphenated()))?;
@@ -200,7 +204,7 @@ impl SessionStore {
             return;
         };
         let size = {
-            let mut attached = attached.lock().expect("attachment lock poisoned");
+            let mut attached = lock_or_recover(&attached);
             attached.clients.retain(|client| client.token != token);
             if attached.owner == Some(token) {
                 attached.owner = None;
@@ -225,7 +229,7 @@ impl SessionStore {
             return;
         };
         let size = {
-            let mut attached = attached.lock().expect("attachment lock poisoned");
+            let mut attached = lock_or_recover(&attached);
             let Some(client) = attached.client(token) else {
                 return;
             };
@@ -250,7 +254,7 @@ impl SessionStore {
             return;
         };
         let size = {
-            let mut attached = attached.lock().expect("attachment lock poisoned");
+            let mut attached = lock_or_recover(&attached);
             let acted = attached
                 .client(token)
                 .is_some_and(|client| client.classifier.is_user_input(bytes));
@@ -269,7 +273,7 @@ impl SessionStore {
     pub fn size_owner(&self, id: SessionId) -> Option<u64> {
         let (_, _, attached) = self.parts(id)?;
 
-        attached.lock().ok()?.owner
+        lock_or_recover(&attached).owner
     }
 
     /// What a client attaching to this session should be sent before anything else, so it sees
@@ -296,10 +300,11 @@ impl Client {
 
 /// Every attached client, as detached copies.
 pub(super) fn targets(attached: &Arc<Mutex<Attached>>) -> Vec<Target> {
-    match attached.lock() {
-        Ok(attached) => attached.clients.iter().map(Client::target).collect(),
-        Err(_) => Vec::new(),
-    }
+    lock_or_recover(attached)
+        .clients
+        .iter()
+        .map(Client::target)
+        .collect()
 }
 
 /// Writes to one client, and EVICTS it if the write fails.
@@ -317,6 +322,7 @@ pub(super) fn deliver(
     target: &Target,
     bytes: &[u8],
 ) -> Option<Size> {
+    // A poisoned writer is the connection gone (the lock order on `SessionStore`).
     let delivered = match target.writer.lock() {
         Ok(mut writer) => writer
             .write_all(bytes)
@@ -327,7 +333,7 @@ pub(super) fn deliver(
     if delivered {
         return None;
     }
-    let mut attached = attached.lock().ok()?;
+    let mut attached = lock_or_recover(attached);
     attached
         .clients
         .retain(|client| client.token != target.token);
@@ -358,11 +364,9 @@ pub(super) fn apply_size(
     let Some(size) = size else {
         return;
     };
-    let mut held = attached.lock().unwrap_or_else(|e| e.into_inner());
+    let mut held = lock_or_recover(attached);
     let _ = pty.resize(size);
-    if let Ok(mut shadow) = shadow.lock() {
-        shadow.resize(size);
-    }
+    lock_or_recover(shadow).resize(size);
     // A resize reflows the screen even when the program prints nothing after it.
     held.changed = true;
     work.raise();
@@ -372,10 +376,7 @@ pub(super) fn apply_size(
 /// that reported busy still owns the pty (`Shadow::replay_for`). `attach` and `replay_bytes` share
 /// it, so the tests that read the one cover the other.
 fn live_replay(pty: &Pty, shadow: &Mutex<Shadow>) -> Vec<u8> {
-    shadow
-        .lock()
-        .map(|s| s.replay_for(pty.foreground_pgid()))
-        .unwrap_or_default()
+    lock_or_recover(shadow).replay_for(pty.foreground_pgid())
 }
 
 /// One step of the image transfers on this session, for the reader between reads: at ground, a
@@ -390,15 +391,11 @@ pub(super) fn send_images(
 ) {
     let mut more = false;
     let sends = {
-        let Ok(mut held) = attached.lock() else {
-            return;
-        };
+        let mut held = lock_or_recover(attached);
         if held.clients.iter().all(|client| client.transfer.is_none()) {
             return;
         }
-        let Ok(mut shadow) = shadow.lock() else {
-            return;
-        };
+        let mut shadow = lock_or_recover(shadow);
         // Output finishes the sequence, and brings the reader back here.
         if !shadow.at_ground() {
             return;

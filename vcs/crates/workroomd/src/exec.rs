@@ -192,9 +192,7 @@ pub(crate) fn run_exec_with(
     while !(out.is_finished() && err.is_finished()) && Instant::now() < drained_by {
         std::thread::sleep(Duration::from_millis(10));
     }
-    let take = |sink: &Mutex<Vec<u8>>| {
-        std::mem::take(&mut *sink.lock().unwrap_or_else(|e| e.into_inner()))
-    };
+    let take = |sink: &Mutex<Vec<u8>>| std::mem::take(&mut *crate::util::lock_or_recover(sink));
     // Unreapable after SIGKILL: report what a killed process reports rather than blocking on it.
     // `timed_out` is already true on this path (nothing else reaches it), so the client classifies
     // this as `VCSRemoteFailure.timedOut` exactly as it would a child we did manage to reap — the

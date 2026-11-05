@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::terminal::pty::Pty;
 use crate::terminal::shadow::Shadow;
+use crate::util::lock_or_recover;
 
 /// Ends a chunked load. It clears what a transfer cut off midway left behind, which would
 /// otherwise swallow the next image a program sends, so every repaint starts with it.
@@ -108,30 +109,26 @@ pub struct Transfer {
 impl Transfer {
     /// An encoder has finished with an image, with its chunks if it has any.
     fn encoded(&self, encoded: Option<(u32, VecDeque<Vec<u8>>)>) {
-        if let Ok(mut queues) = self.queues.lock() {
-            queues.encoding = queues.encoding.saturating_sub(1);
-            if let (false, Some(image)) = (queues.stopped, encoded) {
-                queues.ready.push_back(image);
-            }
+        let mut queues = lock_or_recover(&self.queues);
+        queues.encoding = queues.encoding.saturating_sub(1);
+        if let (false, Some(image)) = (queues.stopped, encoded) {
+            queues.ready.push_back(image);
         }
     }
 
     /// Whether there is nothing left to send or place, so output need not be watched for it.
     pub fn is_finished(&self) -> bool {
-        self.queues.lock().map_or(true, |queues| {
-            queues.encoding == 0
-                && queues.ready.is_empty()
-                && queues.sending.is_none()
-                && queues.placing.is_empty()
-        })
+        let queues = lock_or_recover(&self.queues);
+        queues.encoding == 0
+            && queues.ready.is_empty()
+            && queues.sending.is_none()
+            && queues.placing.is_empty()
     }
 
     /// Ends the transfer. Returns whether the client is part way through a load, and so needs
     /// `ABORT`.
     pub fn stop(&self) -> bool {
-        let Ok(mut queues) = self.queues.lock() else {
-            return false;
-        };
+        let mut queues = lock_or_recover(&self.queues);
         let loading = queues.sending.is_some();
         *queues = Queues {
             stopped: true,
@@ -142,19 +139,17 @@ impl Transfer {
 
     /// Whether the client is part way through a load.
     pub fn is_loading(&self) -> bool {
-        self.queues
-            .lock()
-            .is_ok_and(|queues| queues.sending.is_some())
+        lock_or_recover(&self.queues).sending.is_some()
     }
 
     fn is_stopped(&self) -> bool {
-        self.queues.lock().map_or(true, |queues| queues.stopped)
+        lock_or_recover(&self.queues).stopped
     }
 
     /// The next bytes for the client, for the reader to deliver at ground: a finished image's
     /// placement first, then one chunk, so a transfer never holds the writer for longer.
     pub fn next_bytes(&self, shadow: &Shadow) -> Option<Vec<u8>> {
-        let mut queues = self.queues.lock().ok()?;
+        let mut queues = lock_or_recover(&self.queues);
         if let Some(id) = queues.placing.front().copied() {
             match shadow.placement(id, false) {
                 #[cfg(feature = "terminal-state")]
@@ -183,11 +178,10 @@ impl Transfer {
 
     /// Whether the reader should come straight back: there is more it can send now.
     pub fn has_more(&self) -> bool {
-        self.queues.lock().is_ok_and(|queues| {
-            queues.sending.is_some()
-                || !queues.ready.is_empty()
-                || (!queues.placing.is_empty() && !queues.held)
-        })
+        let queues = lock_or_recover(&self.queues);
+        queues.sending.is_some()
+            || !queues.ready.is_empty()
+            || (!queues.placing.is_empty() && !queues.held)
     }
 }
 
@@ -216,7 +210,8 @@ impl Job {
 
     fn encode(&self) -> Option<Vec<u8>> {
         // The lock is held for the copy alone. The reader is what waits on it.
-        let pixels = self.shadow.upgrade()?.lock().ok()?.pixels(self.image)?;
+        let shadow = self.shadow.upgrade()?;
+        let pixels = lock_or_recover(&shadow).pixels(self.image)?;
         pixels.to_png()
     }
 }
@@ -239,10 +234,7 @@ fn encoders() -> &'static Mutex<Sender<Job>> {
 fn encode_forever(receiver: &Mutex<Receiver<Job>>) {
     loop {
         // Released before the work, so the other encoder can take the next job.
-        let job = match receiver.lock() {
-            Ok(receiver) => receiver.recv(),
-            Err(_) => return,
-        };
+        let job = lock_or_recover(receiver).recv();
         let Ok(job) = job else {
             return;
         };
@@ -266,7 +258,7 @@ pub fn start_transfer(
             ..Queues::default()
         }),
     });
-    let sender = encoders().lock().ok()?;
+    let sender = lock_or_recover(encoders());
     for image in images {
         let job = Job {
             image,

@@ -37,6 +37,7 @@ use serde_json::{Value, json};
 use crate::daemon::rpc::SharedWriter;
 use crate::daemon::transport::Closer;
 use crate::terminal::session::{SessionId, SessionStore};
+use crate::util::{lock_or_recover, recover};
 use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use wr_protocol::reply::Reply;
 
@@ -748,12 +749,12 @@ impl Default for Hub {
 
 impl Hub {
     pub fn boot(&self) -> SessionId {
-        *self.boot.lock().unwrap_or_else(|e| e.into_inner())
+        *lock_or_recover(&self.boot)
     }
 
     /// The boot a hand-off carried, set before anything is served.
     pub fn set_boot(&self, boot: SessionId) {
-        *self.boot.lock().unwrap_or_else(|e| e.into_inner()) = boot;
+        *lock_or_recover(&self.boot) = boot;
     }
 
     pub fn reply_dropped(&self) {
@@ -791,17 +792,11 @@ impl Hub {
     /// A copy of the list, so no subscriber's lock is taken under the list's: `subscribe` holds a
     /// subscriber's lock while it registers.
     fn subscribers(&self) -> Vec<Arc<Subscriber>> {
-        self.subscribers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        lock_or_recover(&self.subscribers).clone()
     }
 
     fn unregister(&self, subscriber: &Arc<Subscriber>) {
-        self.subscribers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|s| !Arc::ptr_eq(s, subscriber));
+        lock_or_recover(&self.subscribers).retain(|s| !Arc::ptr_eq(s, subscriber));
     }
 }
 
@@ -813,8 +808,9 @@ struct Subscriber {
 }
 
 impl Subscriber {
+    #[track_caller]
     fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner())
+        lock_or_recover(&self.queue)
     }
 
     fn close(&self) {
@@ -872,6 +868,7 @@ impl Sink {
         payload.push(1);
         payload.extend_from_slice(event);
         debug_assert!(payload.len() <= MAX_ENVELOPE_PAYLOAD);
+        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
         let written = self.writer.lock().is_ok_and(|mut writer| {
             writer
                 .write_all(&Envelope::new(Service::ProgramStatus, 0, payload).encode())
@@ -926,19 +923,13 @@ fn run(subscriber: &Subscriber, mut sink: Sink) {
             continue;
         }
         if queue.dirty.is_empty() {
-            queue = subscriber
-                .wake
-                .wait(queue)
-                .unwrap_or_else(|e| e.into_inner());
+            queue = recover(subscriber.wake.wait(queue));
             continue;
         }
         let blocked = queue.dirty.values().any(|(_, blocked)| *blocked);
         let now = Instant::now();
         if let Some(wait) = throttle.wait(now, blocked) {
-            queue = subscriber
-                .wake
-                .wait_timeout(queue, wait)
-                .map_or_else(|e| e.into_inner().0, |(queue, _)| queue);
+            queue = recover(subscriber.wake.wait_timeout(queue, wait)).0;
             continue;
         }
         let batch = std::mem::take(&mut queue.dirty);
@@ -981,11 +972,7 @@ impl Connection {
         self.unsubscribe();
         let subscriber = Arc::new(Subscriber::default());
         let mut queue = subscriber.lock();
-        self.hub
-            .subscribers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(Arc::clone(&subscriber));
+        lock_or_recover(&self.hub.subscribers).push(Arc::clone(&subscriber));
         let boot = self.hub.boot();
         let snapshot = sessions.program_status_events();
         let ids: Vec<SessionId> = snapshot.iter().map(|(id, _)| *id).collect();

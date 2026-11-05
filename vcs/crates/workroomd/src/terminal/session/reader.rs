@@ -13,6 +13,7 @@ use crate::terminal::images;
 use crate::terminal::program_status::{Hub, Store};
 use crate::terminal::pty::Pty;
 use crate::terminal::shadow::Shadow;
+use crate::util::{lock_or_recover, recover};
 use wr_protocol::frame::{Frame, FrameKind};
 
 /// How often a run session's reader looks in on its supervisor while its pty is quiet.
@@ -101,7 +102,7 @@ pub(super) fn change_program_status(
     change: impl FnOnce(&mut Store),
 ) {
     let published = {
-        let mut shadow = shadow.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shadow = lock_or_recover(shadow);
         shadow.status().and_then(|status| {
             change(status);
             let blocked = status.commit()?;
@@ -159,10 +160,8 @@ pub(super) fn read_session(
     // Linux waits on a pidfd alongside the pty. If one cannot be opened, the timed fallback still
     // checks under chatty output so a leftover cannot hide its supervisor's end.
     #[cfg(target_os = "linux")]
-    let run = store.lock().is_ok_and(|store| {
-        store.get(&id).is_some_and(|session| {
-            session.number == number && crate::terminal::run::is_run(&session.metadata)
-        })
+    let run = lock_or_recover(&store).get(&id).is_some_and(|session| {
+        session.number == number && crate::terminal::run::is_run(&session.metadata)
     });
     #[cfg(target_os = "linux")]
     let exit_fd = run.then(|| pty.child_exit_fd().ok()).flatten();
@@ -215,14 +214,14 @@ pub(super) fn read_session(
         // The program status answer and event are taken under the same locks, as one step with
         // the bytes that produced them, and sent once they are released.
         let (read, clients, answer, published) = {
-            let mut held = attached.lock().expect("attachment lock poisoned");
+            let mut held = lock_or_recover(&attached);
             let read = pty.read(&mut buffer);
             let mut answer = Vec::new();
             let mut published = None;
-            let mut disturbed = None;
             let clients = match read {
                 Ok(n) if n > 0 => {
-                    if let Ok(mut shadow) = shadow.lock() {
+                    let disturbed = {
+                        let mut shadow = lock_or_recover(&shadow);
                         shadow
                             .watch_for_transfers(held.clients.iter().any(|c| c.transfer.is_some()));
                         let (replies, changed) =
@@ -232,8 +231,8 @@ pub(super) fn read_session(
                             let status = shadow.status()?;
                             Some((status.event(hub.boot(), id), blocked))
                         });
-                        disturbed = shadow.take_disturbed();
-                    }
+                        shadow.take_disturbed()
+                    };
                     held.changed = true;
                     work.raise();
                     held.clients
@@ -293,7 +292,7 @@ pub(super) fn read_session(
         // with the lock released, so a slow client does not hold a hand-off off.
         let mut status = 0;
         if ended {
-            let terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
+            let terminating = recover(TERMINATING.read());
             if !child_gone(pty.child_pid(), &mut status) {
                 drop(terminating);
                 std::thread::sleep(Duration::from_millis(5));
@@ -304,7 +303,8 @@ pub(super) fn read_session(
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
             // `replaced`: a later session already holds the id, and its subscribers' records.
-            let (held, replaced, run) = store.lock().map_or((false, false, false), |mut store| {
+            let (held, replaced, run) = {
+                let mut store = lock_or_recover(&store);
                 let run = store.get(&id).is_some_and(|session| {
                     session.number == number && crate::terminal::run::is_run(&session.metadata)
                 });
@@ -313,7 +313,7 @@ pub(super) fn read_session(
                     store.contains_key(&id),
                     run,
                 )
-            });
+            };
             if held {
                 work.raise(); // the record of a session that ended goes on the next pass
             }
@@ -404,12 +404,13 @@ pub(super) fn read_session(
                     );
                     deliver(&attached, &target, &framed);
                 }
-                let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
+                let _terminating = recover(TERMINATING.read());
                 terminate(&[&pty]);
-                let replaced = store.lock().is_ok_and(|mut store| {
+                let replaced = {
+                    let mut store = lock_or_recover(&store);
                     remove_if_held(&mut store, id, number);
                     store.contains_key(&id)
-                });
+                };
                 work.raise();
                 if !replaced {
                     end_program_status(id, &shadow, &hub);

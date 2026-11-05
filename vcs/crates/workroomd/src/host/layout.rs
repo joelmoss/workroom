@@ -129,7 +129,7 @@ impl Layouts {
                 blob.len()
             )));
         }
-        let _writing = self.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let _writing = crate::util::lock_or_recover(&self.writing);
         let path = self.path(key);
         let (current, _) = self.get(key);
         if current != expected {

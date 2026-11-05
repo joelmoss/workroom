@@ -166,6 +166,7 @@
 //! gone, and one whose client half-closed holds it until its reader is gone too.
 
 use crate::daemon::rpc::SharedWriter;
+use crate::util::lock_or_recover;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -384,6 +385,7 @@ fn send(writer: &SharedWriter, stream: u32, opcode: u8, body: &[u8]) -> bool {
     let mut payload = Vec::with_capacity(1 + body.len());
     payload.push(opcode);
     payload.extend_from_slice(body);
+    // A poisoned writer is the connection gone (the lock order on `SessionStore`).
     let Ok(mut writer) = writer.lock() else {
         return false;
     };
@@ -446,7 +448,7 @@ impl Conn {
     }
 
     fn shutdown(&self) {
-        let socket = self.socket.lock().unwrap_or_else(|e| e.into_inner());
+        let socket = lock_or_recover(&self.socket);
         if let Some(socket) = socket.as_ref() {
             let _ = socket.shutdown(Shutdown::Both);
         }
@@ -528,16 +530,8 @@ impl Forwards {
         // can take the id between here and the insert below. The reply goes out with the map
         // unlocked — a client that has stopped reading would otherwise hold every forward's
         // `deliver`, `close` and `finish` behind one refusal.
-        let taken = self
-            .open
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&stream)
-            || self
-                .listeners
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(&stream);
+        let taken = lock_or_recover(&self.open).contains_key(&stream)
+            || lock_or_recover(&self.listeners).contains_key(&stream);
         if taken {
             send_reply(
                 writer,
@@ -566,7 +560,7 @@ impl Forwards {
         let killed = Arc::new(AtomicBool::new(false));
         let token = self.next_token.fetch_add(1, Ordering::Relaxed) as u64;
         let slot = {
-            let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            let mut open = lock_or_recover(&self.open);
             if self.live.load(Ordering::Acquire) >= MAX_FORWARDS {
                 drop(open);
                 send_reply(
@@ -637,13 +631,7 @@ impl Forwards {
         };
         // Checked once and inserted below without a gap: every OPEN arrives on this one dispatch
         // thread, and nothing else adds a listener.
-        if self
-            .listeners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
-            >= MAX_LISTENERS
-        {
+        if lock_or_recover(&self.listeners).len() >= MAX_LISTENERS {
             return refuse(Refusal::refused("too many listeners"));
         }
         // Loopback only, so nothing off this box can reach it. Everything ON the box can: a
@@ -662,17 +650,14 @@ impl Forwards {
         let killed = Arc::new(AtomicBool::new(false));
         let waiting = Arc::new(Mutex::new(VecDeque::new()));
         let token = self.next_token.fetch_add(1, Ordering::Relaxed) as u64;
-        self.listeners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                stream,
-                Listening {
-                    killed: Arc::clone(&killed),
-                    waiting: Arc::clone(&waiting),
-                    token,
-                },
-            );
+        lock_or_recover(&self.listeners).insert(
+            stream,
+            Listening {
+                killed: Arc::clone(&killed),
+                waiting: Arc::clone(&waiting),
+                token,
+            },
+        );
         // Answered BEFORE the thread starts, so no ACCEPTED can reach the client ahead of it.
         let reply = json!(Reply::result(
             FORWARD_SERVICE_VERSION,
@@ -707,12 +692,12 @@ impl Forwards {
     /// `accept`: take the oldest connection still waiting on the listener on `listener`. One that
     /// waited past `PENDING_TIMEOUT` is closed on the way, as the accept thread would have.
     fn claim(&self, listener: u32) -> Result<TcpStream, Refusal> {
-        let listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        let listeners = lock_or_recover(&self.listeners);
         let listening = listeners
             .get(&listener)
             .filter(|listening| !listening.killed.load(Ordering::Acquire))
             .ok_or_else(|| Refusal::refused(format!("stream {listener} is not listening")))?;
-        let mut waiting = listening.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        let mut waiting = lock_or_recover(&listening.waiting);
         while let Some(next) = waiting.pop_front() {
             if next.since.elapsed() < PENDING_TIMEOUT {
                 return Ok(next.socket);
@@ -725,7 +710,7 @@ impl Forwards {
     /// Client bytes for a forwarded socket. Dropped if the stream is not forwarding (or the client
     /// already said EOF on it), and the whole forward is killed if it has fallen too far behind.
     fn deliver(&self, stream: u32, bytes: &[u8]) {
-        let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let open = lock_or_recover(&self.open);
         let Some(conn) = open.get(&stream) else {
             return;
         };
@@ -749,7 +734,7 @@ impl Forwards {
 
     /// The client will send no more: the socket's write half goes down so the peer sees EOF. Once.
     fn half_close(&self, stream: u32) {
-        let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let open = lock_or_recover(&self.open);
         if let Some(conn) = open.get(&stream)
             && !conn.half_closed.swap(true, Ordering::AcqRel)
         {
@@ -760,7 +745,7 @@ impl Forwards {
     /// The client is done with the stream: the socket goes, and the threads answer with the CLOSE
     /// that frees the id. The entry stays until they have, so nothing can re-open the id first.
     fn close(&self, stream: u32) {
-        let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let open = lock_or_recover(&self.open);
         if let Some(conn) = open.get(&stream) {
             conn.kill();
             return;
@@ -768,7 +753,7 @@ impl Forwards {
         drop(open);
         // A listener: its thread notices, releases the port and answers CLOSE. The entry stays
         // until it has, so the id cannot be re-opened first.
-        let listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        let listeners = lock_or_recover(&self.listeners);
         if let Some(listening) = listeners.get(&stream) {
             listening.killed.store(true, Ordering::Release);
         }
@@ -777,7 +762,7 @@ impl Forwards {
 
 impl Drop for Forwards {
     fn drop(&mut self) {
-        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let mut open = lock_or_recover(&self.open);
         // Killed, not merely shut down: a bare shutdown makes a reader report the peer's EOF on a
         // stream that will get no CLOSE, and the transport may still be writable (a decoder error
         // ends the connection with the client still reading).
@@ -787,7 +772,7 @@ impl Drop for Forwards {
         drop(open);
         // Taken out of the map, so each accept thread finds its entry gone and ends without a word:
         // nobody is left to hear a CLOSE. It still releases its port and closes what was waiting.
-        let mut listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        let mut listeners = lock_or_recover(&self.listeners);
         for (_, listening) in listeners.drain() {
             listening.killed.store(true, Ordering::Release);
         }
@@ -812,7 +797,7 @@ struct ForwardTask {
 /// Forget this forward, if it is still the one registered: the entry, if it was ours. `None` means
 /// the connection is gone (`Forwards::drop` took it) and nobody is listening for a CLOSE.
 fn forget(open: &Mutex<HashMap<u32, Conn>>, stream: u32, token: u64) -> Option<Conn> {
-    let mut open = open.lock().unwrap_or_else(|e| e.into_inner());
+    let mut open = lock_or_recover(open);
     match open.get(&stream) {
         Some(conn) if conn.token == token => open.remove(&stream),
         _ => None,
@@ -843,7 +828,7 @@ fn retire_after_spawn_failure(
 /// registered: the same kill a client CLOSE performs, so the other thread wakes and the pair
 /// finishes with the one CLOSE.
 fn kill_own(open: &Mutex<HashMap<u32, Conn>>, stream: u32, token: u64) {
-    let open = open.lock().unwrap_or_else(|e| e.into_inner());
+    let open = lock_or_recover(open);
     if let Some(conn) = open.get(&stream)
         && conn.token == token
     {
@@ -916,7 +901,7 @@ fn connect_and_run(task: ForwardTask, source: Source) {
     // nowhere, the reader would pump DATA onto a stream id the client has since freed, and no
     // shutdown could ever reach it.
     {
-        let open = task.open.lock().unwrap_or_else(|e| e.into_inner());
+        let open = lock_or_recover(&task.open);
         match open.get(&task.stream) {
             Some(conn) if conn.token == task.token => {
                 if conn.killed.load(Ordering::Acquire) {
@@ -925,7 +910,7 @@ fn connect_and_run(task: ForwardTask, source: Source) {
                     retire(&task, None);
                     return;
                 }
-                *task.socket.lock().unwrap_or_else(|e| e.into_inner()) = Some(held);
+                *lock_or_recover(&task.socket) = Some(held);
             }
             _ => {
                 drop(open);
@@ -1051,7 +1036,7 @@ fn forget_listener(
     stream: u32,
     token: u64,
 ) -> Option<Listening> {
-    let mut listeners = listeners.lock().unwrap_or_else(|e| e.into_inner());
+    let mut listeners = lock_or_recover(listeners);
     match listeners.get(&stream) {
         Some(listening) if listening.token == token => listeners.remove(&stream),
         _ => None,
@@ -1093,7 +1078,7 @@ fn accept_connections(task: ListenTask) {
                     continue;
                 }
                 let admitted = {
-                    let mut waiting = waiting.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut waiting = lock_or_recover(&waiting);
                     if waiting.len() < MAX_PENDING {
                         waiting.push_back(Waiting {
                             socket,
@@ -1134,7 +1119,7 @@ fn accept_connections(task: ListenTask) {
     let ours = forget_listener(&listeners, stream, token).is_some();
     // The port first, so nothing new can connect while the rest are being closed.
     drop(listener);
-    for left in waiting.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+    for left in lock_or_recover(&waiting).drain(..) {
         let _ = left.socket.shutdown(Shutdown::Both);
     }
     if ours {
@@ -1145,7 +1130,7 @@ fn accept_connections(task: ListenTask) {
 /// Close what has waited past `PENDING_TIMEOUT`. Oldest first, so the scan stops at the first one
 /// still in time.
 fn expire(waiting: &Mutex<VecDeque<Waiting>>) {
-    let mut waiting = waiting.lock().unwrap_or_else(|e| e.into_inner());
+    let mut waiting = lock_or_recover(waiting);
     while waiting
         .front()
         .is_some_and(|next| next.since.elapsed() >= PENDING_TIMEOUT)

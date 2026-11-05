@@ -26,6 +26,7 @@ use crate::terminal::program_status::{Hub, Store};
 use crate::terminal::pty::{Pty, PtyError, Size};
 use crate::terminal::screens::Screens;
 use crate::terminal::shadow::Shadow;
+use crate::util::{lock_or_recover, recover};
 
 mod attached;
 mod freeze;
@@ -280,11 +281,7 @@ impl Session {
         SessionInfo {
             id: self.id,
             pid: self.pty.child_pid(),
-            attached: self
-                .attached
-                .lock()
-                .map(|attached| !attached.clients.is_empty())
-                .unwrap_or(false),
+            attached: !lock_or_recover(&self.attached).clients.is_empty(),
             cwd: foreground.and_then(crate::terminal::process::working_directory),
             // Only `claude`'s environment is read: no other program's is anyone's business. Anything
             // not confirmed as `claude` reports no profile, so the app never guesses an account.
@@ -343,6 +340,52 @@ pub struct TakenScreen {
 }
 
 /// Owns every live session. Cheap to clone; all clones share one map.
+///
+/// # Lock order
+///
+/// Every lock the terminal code takes, and the one order they nest in: a lock is taken only while
+/// holding locks above it on its own branch, never one below it or on another branch. Check an
+/// edit that takes a lock against this before anything else.
+///
+/// ```text
+/// Subscriber.queue          a program-status subscription being set up (`Connection::subscribe`)
+/// ├─ Hub.subscribers        registering it
+/// ├─ Hub.boot
+/// └─ (the store map, then each shadow on its own: the snapshot, `program_status_events`)
+///
+/// TERMINATING               read: `kill`, `kill_all`, `end_if_absent` and a reader's end, through
+/// │                         their SIGHUP grace; write: a hand-off's freeze (`frozen_formatting`)
+/// ├─ ending                 a second kill waiting for the first, and `Ending` as it drops
+/// ├─ runs_wake              a reader's end raising it
+/// └─ sessions               the store map
+///    ├─ refused             `create_then` checks it; `refuse` takes it alone
+///    ├─ ending              `mark_ending` as sessions leave the map, `is_ending`
+///    ├─ runs_wake           `signal_run`
+///    └─ attached            per session: `list` (`Session::info`), the end of `attach`, the freeze
+///       ├─ shadow           per session: `attach`'s repaint, `apply_size`, `send_images`, a read
+///       │  ├─ Hub.boot      a status event built under it (a read, `change_program_status`)
+///       │  └─ Transfer      a client's image queues: `send_images` taking the next chunk
+///       ├─ Transfer         a read stopping a client's transfer
+///       ├─ encoders         the image encoders' sender: `attach` starting a transfer
+///       ├─ writer           a connection's writer: `attach`'s repaint
+///       └─ screens_work     raised on output and on a resize
+/// ```
+///
+/// Taken alone, under nothing and with nothing under them: `Hub.subscribers` and each
+/// `Subscriber.queue` as a publish takes them (`Hub::publish` copies the list first, and publishes
+/// only with every session lock released); a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, and as `compress_shadows` and
+/// `promote_unprobed` visit each one after releasing the map. The store map is released before a
+/// reader starts (`create_then`), and before `changed_screens` takes any session's attachment lock.
+/// The forward, layout, watch and rpc locks never nest with these.
+///
+/// # Poisoned locks
+///
+/// Every one of these is recovered when a panic poisoned it, through `util::lock_or_recover` (owner
+/// decision D5): nothing under them is left half-changed in a way a later holder could misread, and
+/// a panic under one must not stop a session draining. None is an exception. The one exception in
+/// the daemon is a connection's writer, which every service treats as a closed connection once
+/// poisoned: a panic while it was held can leave part of an envelope on the stream, and a frame
+/// written after it would be misread by the peer's decoder.
 #[derive(Clone, Default)]
 pub struct SessionStore {
     sessions: Arc<Mutex<HashMap<SessionId, Session>>>,
@@ -388,18 +431,18 @@ struct Wake {
 
 impl Wake {
     fn seen(&self) -> u64 {
-        *self.count.lock().unwrap_or_else(|e| e.into_inner())
+        *lock_or_recover(&self.count)
     }
 
     fn raise(&self) {
-        *self.count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        *lock_or_recover(&self.count) += 1;
         self.raised.notify_all();
     }
 
     fn wait_past(&self, seen: u64) {
-        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        let mut count = lock_or_recover(&self.count);
         while *count == seen {
-            count = self.raised.wait(count).unwrap_or_else(|e| e.into_inner());
+            count = recover(self.raised.wait(count));
         }
     }
 }

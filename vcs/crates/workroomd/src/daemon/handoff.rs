@@ -424,12 +424,8 @@ pub fn hand_off(
     }
     // A panic in an earlier hand-off poisons this and proves nothing about the next one, so a
     // poisoned lock is taken like a free one. Only a hand-off still running is a refusal.
-    let _only = match IN_PROGRESS.try_lock() {
-        Ok(guard) => guard,
-        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => {
-            return Err(HandOffError::InProgress);
-        }
+    let Some(_only) = crate::util::try_recover(IN_PROGRESS.try_lock()) else {
+        return Err(HandOffError::InProgress);
     };
     PAUSED.store(true, std::sync::atomic::Ordering::Release);
     let _paused = Paused;
