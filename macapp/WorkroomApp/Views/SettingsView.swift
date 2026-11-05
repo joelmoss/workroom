@@ -27,34 +27,88 @@ struct SettingsView: View {
   // `Defaults[.settingsSelectedPane]` for persistence and restore from it in `.onAppear`.
   @State private var selection: SettingsPane = Defaults[.settingsSelectedPane]
   @State private var hovered: SettingsPane?
+  @State private var history = SettingsHistory()
   // Bumped on `.themeDidChange` so the themed background/highlights repaint live when the user
   // switches theme in the Appearance pane (the tokens are read from the `ThemeService` singleton,
   // which SwiftUI doesn't observe on its own here).
   @State private var themeTick = 0
 
+  /// The header strip's height, level with the window's traffic lights, as System Settings' is.
+  private static let headerHeight: CGFloat = 52
+
   var body: some View {
+    // Under the transparent title bar, as System Settings is: the sidebar runs the full height with
+    // the traffic lights over its top, and the pane's header sits level with them.
     HStack(spacing: 0) {
       sidebar
       Divider()
-      pane.frame(width: 440)
+      VStack(spacing: 0) {
+        header
+        pane
+      }
+      .frame(minWidth: 440, maxWidth: .infinity)
     }
-    .frame(width: 621, height: 380)
+    // Opens at its smallest, and the panes grow with the window.
+    .frame(minWidth: 621, maxWidth: .infinity, minHeight: 432, maxHeight: .infinity)
+    .ignoresSafeArea(.container, edges: .top)
     .background(ThemeService.shared.tokens.panel.ignoresSafeArea())
     .background(SettingsWindowThemer())
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
     .onAppear { selection = Defaults[.settingsSelectedPane] }
   }
 
+  /// Back and forward through the panes visited, then the open pane's name.
+  private var header: some View {
+    HStack(spacing: 4) {
+      Button {
+        if let previous = history.goBack(from: selection) { show(previous) }
+      } label: {
+        Image(systemName: "chevron.left").frame(width: 22, height: 22)
+      }
+      .disabled(!history.canGoBack)
+      .keyboardShortcut("[", modifiers: .command)
+      .help("Back")
+      .accessibilityLabel("Back")
+      Button {
+        if let next = history.goForward(from: selection) { show(next) }
+      } label: {
+        Image(systemName: "chevron.right").frame(width: 22, height: 22)
+      }
+      .disabled(!history.canGoForward)
+      .keyboardShortcut("]", modifiers: .command)
+      .help("Forward")
+      .accessibilityLabel("Forward")
+      Text(selection.label)
+        .font(.title3.weight(.semibold))
+        .padding(.leading, 6)
+        .accessibilityAddTraits(.isHeader)
+      Spacer()
+    }
+    .buttonStyle(.borderless)
+    .padding(.horizontal, 14)
+    .frame(height: Self.headerHeight)
+  }
+
+  /// Shows `pane` and keeps it for the next time the window opens.
+  private func show(_ pane: SettingsPane) {
+    selection = pane
+    Defaults[.settingsSelectedPane] = pane
+  }
+
   private var sidebar: some View {
     List {
       ForEach(SettingsPane.allCases) { pane in
         Button {
-          selection = pane
-          Defaults[.settingsSelectedPane] = pane
+          history.leave(selection, for: pane)
+          show(pane)
         } label: {
-          Label(pane.label, systemImage: pane.systemImage)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+          Label {
+            Text(pane.label)
+          } icon: {
+            SettingsPaneIcon(pane: pane)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settingsPane.\(pane.rawValue)")
@@ -71,6 +125,8 @@ struct SettingsView: View {
     }
     .listStyle(.sidebar)
     .scrollContentBackground(.hidden)
+    // Clear of the traffic lights, which sit over the sidebar's top.
+    .safeAreaPadding(.top, Self.headerHeight - 8)
     .frame(width: 180)
   }
 
@@ -91,6 +147,35 @@ struct SettingsView: View {
   // selection. Settings rows inset by 6 (vs the project sidebar's 8).
   @ViewBuilder private func rowHighlight(_ pane: SettingsPane) -> some View {
     RowHighlight(selected: selection == pane, hovered: hovered == pane, horizontalPadding: 6)
+  }
+}
+
+/// A pane's sidebar icon: its symbol, white, on a rounded tile of its own colour, as System
+/// Settings draws them.
+private struct SettingsPaneIcon: View {
+  let pane: SettingsPane
+
+  var body: some View {
+    Image(systemName: pane.systemImage)
+      .font(.system(size: 11, weight: .semibold))
+      .foregroundStyle(.white)
+      .frame(width: 20, height: 20)
+      .background(pane.tint.gradient, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+  }
+}
+
+extension SettingsPane {
+  /// The colour of the pane's icon tile, after System Settings' own where it has the same pane.
+  var tint: Color {
+    switch self {
+    case .general: .gray
+    case .notifications: .red
+    case .appearance: .indigo
+    case .terminal: Color(white: 0.25)
+    case .agent: .purple
+    case .remoteHosts: .blue
+    case .about: .teal
+    }
   }
 }
 
@@ -168,11 +253,14 @@ private struct SettingsWindowThemer: NSViewRepresentable {
     if !window.styleMask.contains(.fullSizeContentView) {
       window.styleMask.insert(.fullSizeContentView)
     }
+    // A `Settings` scene's window is fixed-size by its type; this one resizes, as System Settings'.
+    if !window.styleMask.contains(.resizable) { window.styleMask.insert(.resizable) }
     if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
-    // Show a "Settings" title in the bar. The `Settings` scene otherwise titles the window
-    // "<App> Settings" ("Workroom Dev Settings" in Debug); re-set it on each notification so
-    // SwiftUI's default doesn't win.
-    if window.titleVisibility != .visible { window.titleVisibility = .visible }
+    // No title in the bar: the pane's own header names it, as System Settings does. The title is
+    // still "Settings", for the Window menu and VoiceOver; the `Settings` scene otherwise titles the
+    // window "<App> Settings" ("Workroom Dev Settings" in Debug), so it is re-set on each
+    // notification so SwiftUI's default doesn't win.
+    if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
     if window.title != "Settings" { window.title = "Settings" }
     if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
     let panel = ThemeService.shared.tokens.nsPanel

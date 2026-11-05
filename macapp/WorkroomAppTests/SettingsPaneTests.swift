@@ -46,6 +46,25 @@ final class SettingsPaneTests: XCTestCase {
     XCTAssertEqual(Defaults[.settingsSelectedPane], .general)
   }
 
+  /// Value: protects=the Settings header's back and forward buttons walk the panes visited, as
+  /// System Settings' do; fails_when=back forgets a pane, forward survives a new choice, or choosing
+  /// the open pane adds a step; why_new=new history; seam=none; no_claim=the buttons' rendering
+  func testBackAndForwardWalkThePanesVisited() {
+    var history = SettingsHistory()
+    XCTAssertFalse(history.canGoBack)
+    history.leave(.general, for: .general)
+    XCTAssertFalse(history.canGoBack, "choosing the open pane added a step")
+    history.leave(.general, for: .terminal)
+    history.leave(.terminal, for: .about)
+    XCTAssertEqual(history.goBack(from: .about), .terminal)
+    XCTAssertEqual(history.goBack(from: .terminal), .general)
+    XCTAssertNil(history.goBack(from: .general))
+    XCTAssertEqual(history.goForward(from: .general), .terminal)
+    history.leave(.terminal, for: .agent)
+    XCTAssertFalse(history.canGoForward, "a new choice kept the old forward steps")
+    XCTAssertEqual(history.goBack(from: .agent), .terminal)
+  }
+
   /// A `PreferRawRepresentable` enum persists as its bare raw string, so a corrupt/renamed value is
   /// simulated by writing a plain string straight to the suite — it can't be injected through the
   /// typed `Key`. Deserialising it yields `nil`, and `Defaults` falls back to the key's default.
