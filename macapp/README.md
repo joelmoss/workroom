@@ -164,7 +164,9 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 - `Core/<Context>/` and `Views/<Context>/` — one folder per `CONTEXT.md` context (`AppShell`,
   `WorkroomManagement`, `VersionControl`, `Terminal`, `RemoteHosts`, `DaemonConnection`,
   `CodingAgents`); a new file goes in the folder of the context that owns it.
-- `WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git.
+- `App/WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git.
+  `App/AppDelegate.swift` holds the launch sequence and the key monitor,
+  `App/FocusedValues.swift` the menu's focused values, and `App/Menus/` the menu bar commands.
 - `Core/WorkroomManagement/WorkroomCLI.swift` — `Process` wrapper over the bundled binary: locates it in the
   bundle, overlays `PATH` onto the inherited env, drains stdout/stderr concurrently,
   enforces per-command timeouts, and decodes the JSON envelope (`ok` / `error.kind`).

@@ -9,7 +9,7 @@ Release channels and Sparkle feeds are documented in
   and the orange-badged `AppIcon-Dev` icon set — so a local build doesn't fight the installed release
   `Workroom` for activation, the key window, preferences (separate UserDefaults domain via the
   bundle id), or the system-wide ⌘§ hotkey. The Debug build deliberately **doesn't register ⌘§**
-  and **doesn't run Sparkle scheduled checks** (`#if DEBUG` in `WorkroomApp.swift` / `Updater.swift`)
+  and **doesn't run Sparkle scheduled checks** (`#if !DEBUG` in `App/AppDelegate.swift`, `#if DEBUG` in `Updater.swift`)
   so it can't grab the global hotkey or try to "update" itself to the release DMG. Release and
   Nightly share the CLI config at `~/.config/workroom/config.json`. A Dev build
   keeps its own config, at `Application Support/Workroom/<bundle id>/config.json`, so what it makes

@@ -4,7 +4,7 @@ Paths beginning `Core/`, `Views/` and `Scripts/` are relative to `macapp/`.
 For user-facing wording, follow [app copy](../app-copy.md).
 
 - **Menu enable/disable must flow through `focusedSceneValue` + `@FocusedValue`**
-  (see `WorkroomApp.swift`); a `Commands` body does not re-evaluate when the shared
+  (see `App/FocusedValues.swift` and `App/Menus/WorkroomCommands.swift`); a `Commands` body does not re-evaluate when the shared
   `AppStore` mutates. ⌘1–9 are handled by an `NSEvent` local monitor in `AppDelegate`,
   not menu items, so they fire before the terminal swallows the keys.
 

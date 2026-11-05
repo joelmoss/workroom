@@ -57,7 +57,7 @@ final class SessionStore: @unchecked Sendable {
     // Unit tests inject their own store, but `AppStore.markSessionDirty` reaches the SHARED
     // coordinator — so without this a `make app-test` run writes the developer's own `Workroom Dev`
     // session file and scrollback sidecars as a side effect of exercising tab mutations. Same
-    // isolation the app already applies at `WorkroomApp.swift:42` and `AppStore.swift:750`.
+    // isolation the app already applies in `WorkroomApp.init` and `AppStore`'s init.
     if underXCTest, sessionFilePath == nil {
       return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
     }

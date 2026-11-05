@@ -30,7 +30,7 @@ final class MenuCommandGateTests: XCTestCase {
         URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // WorkroomAppTests
         .deletingLastPathComponent()  // macapp
-        .appendingPathComponent("WorkroomApp/WorkroomApp.swift")
+        .appendingPathComponent("WorkroomApp/App/Menus/WorkroomCommands.swift")
       return try String(contentsOf: url, encoding: .utf8)
     }
   }
