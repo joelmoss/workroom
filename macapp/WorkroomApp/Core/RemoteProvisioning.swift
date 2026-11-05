@@ -38,6 +38,10 @@ enum RemoteProvisioning {
     /// Makes the workroom's host, where it isn't the driver's plain `create`: a container from its
     /// devcontainer.json's spec (#308).
     var makeHost: (@Sendable () async throws -> HostID)? = nil
+    /// Removes what is already at the clone's path on a new host, for a boxd host made from a
+    /// snapshot of a used workroom (#575): `git clone` refuses a folder that isn't empty, and the
+    /// old checkout holds another workroom's branch, changes and `.env`. Nil on a fresh host.
+    var clearCheckout: (@Sendable (HostID, String) async throws -> Void)? = nil
 
     init(
       driver: any HostDriver, daemonSocket: String,
@@ -55,6 +59,28 @@ enum RemoteProvisioning {
         connect ?? { host in
           try await DaemonBootstrap.connect(host: host, driver: driver, socket: daemonSocket)
         }
+    }
+
+    /// Makes the workroom's host with `options` when `driver` is boxd's or exe.dev's (#575). A
+    /// boxd host made from a snapshot also has whatever is at the clone's path removed first: a
+    /// snapshot of a used workroom of the same project still holds its checkout.
+    mutating func made(with options: ResolvedHostOptions, by driver: any HostDriver) {
+      if let boxd = driver as? BoxdHostDriver {
+        makeHost = { try await boxd.create(options: options) }
+        if options.image != nil {
+          clearCheckout = { host, path in
+            let (status, output) = try await boxd.exec(
+              "rm -rf -- \(PosixShell.quoted(path))", on: host
+            ).communicate(nil, timeout: 120)
+            guard status == 0 else {
+              throw HostDriverError.provisioning(
+                "removing the snapshot's old checkout at \(path) failed: \(output)")
+            }
+          }
+        }
+      } else if let exeDev = driver as? ExeDevHostDriver {
+        makeHost = { try await exeDev.create(options: options) }
+      }
     }
 
     /// Where the daemon runs from on `host`: where its driver placed it (a container's, #308),
@@ -163,6 +189,7 @@ enum RemoteProvisioning {
       let connected = try await environment.connect(host)
       connection = connected
       ProvisioningProgress.reportStep?(.clone)
+      try await environment.clearCheckout?(host, path)
       do {
         _ = try await git(
           ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",

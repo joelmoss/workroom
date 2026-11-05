@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import HostDrivers
 import WorkroomDomain
 import WorkroomVCS
@@ -96,12 +97,13 @@ extension AppStore {
   /// Places a new run's pane before the create does any work (AC 1): beside `splitAnchor`, or as
   /// the selection.
   private func startCreationRun(
-    project: Project, kind: CreationKind, splitAnchor: SidebarID?
+    project: Project, kind: CreationKind, splitAnchor: SidebarID?,
+    hostOptions: HostOptions? = nil
   ) -> CreationRun {
     let run = CreationRun(
       project: project, kind: kind, splitAnchor: splitAnchor, previousSelection: selectedTargetID,
       hasSetupScript: Self.hasSetupScript(project),
-      hasIncludeFile: Self.hasIncludeFile(project))
+      hasIncludeFile: Self.hasIncludeFile(project), hostOptions: hostOptions)
     register(run)
     selectedProjectID = project.id
     let pane = SidebarID.creation(project: project.path, id: run.id)
@@ -318,9 +320,12 @@ extension AppStore {
   /// did, unless `skipsSetup` or `start` says otherwise. An answer to `run`'s create question passes
   /// `startCommit`, the start point it was asked at: the new run continues from there, fetching
   /// nothing, and keeps `run`'s fetch row (ADR 0059).
+  ///
+  /// `hostOptions` replaces this create's own host options: Try With Provider Defaults passes
+  /// Provider default for each (#575), which a later Try Again keeps.
   func retryCreation(
     _ run: CreationRun, skipsSetup: Bool? = nil, skipsDevContainer: Bool? = nil,
-    start: CreationStart? = nil, startCommit: String? = nil
+    start: CreationStart? = nil, startCommit: String? = nil, hostOptions: HostOptions? = nil
   ) async {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
@@ -332,7 +337,8 @@ extension AppStore {
       hasSetupScript: Self.hasSetupScript(project),
       hasIncludeFile: Self.hasIncludeFile(project), skipsSetup: skipsSetup ?? run.skipsSetup,
       skipsDevContainer: skipsDevContainer ?? run.skipsDevContainer, start: start,
-      startCommit: startCommit, carriedFetch: startCommit == nil ? nil : run.fetchStep)
+      startCommit: startCommit, carriedFetch: startCommit == nil ? nil : run.fetchStep,
+      hostOptions: hostOptions ?? run.hostOptions)
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)
@@ -534,16 +540,31 @@ extension AppStore {
   /// Creates a remote workroom for `project` at `place` (#253, #309, #356): a container on this Mac,
   /// or a boxd machine or exe.dev VM, each with its own clone. Its pane opens on the click (#483),
   /// beside `splitAnchor` when there is one, and becomes the workroom's once it has a name.
+  /// `hostOptions` are this create's own (the Options panel's, #575), over the project's and
+  /// Settings'.
   func createRemoteWorkroom(
     in project: Project, place: RemoteWorkrooms.Place = .container(.docker),
-    splitAnchor: SidebarID? = nil
+    splitAnchor: SidebarID? = nil, hostOptions: HostOptions? = nil
   ) async {
     // As it is now, not as a menu or the picker caught it: its base branch may have changed.
     let project = projects.first { $0.path == project.path } ?? project
     guard canCreateRemoteWorkroom(in: project) else { return }
     await runRemoteCreate(
-      startCreationRun(project: project, kind: CreationKind(place), splitAnchor: splitAnchor),
+      startCreationRun(
+        project: project, kind: CreationKind(place), splitAnchor: splitAnchor,
+        hostOptions: hostOptions),
       place: place)
+  }
+
+  /// How a create of `place` in `project` resolves its host options (#575), with each value's
+  /// source: nil for a place that takes none. `create` is this create's own.
+  func hostOptionResolution(
+    for place: RemoteWorkrooms.Place, in project: Project, create: HostOptions?
+  ) -> HostOptions.Resolution? {
+    guard let provider = place.hostProvider else { return nil }
+    let levels = remoteCreateServices.hostOptionLevels(project, provider)
+    return HostOptions.resolve(
+      for: provider, create: create, project: levels.project, settings: levels.settings)
   }
 
   private func runRemoteCreate(_ run: CreationRun, place: RemoteWorkrooms.Place) async {
@@ -622,10 +643,15 @@ extension AppStore {
           environment: .init(driver: driver, daemonSocket: driver.daemonSocket),
           sshParent: sshSetup.parent)
       } else {
-        host = try await services.host(place)
+        // Resolved at each try, so a Try Again reads the project and Settings afresh.
+        run.madeWith =
+          hostOptionResolution(
+            for: place, in: run.project, create: run.hostOptions)?.options
+        host = try await services.host(place, run.madeWith)
       }
       let (created, prepared) = try await provisionRemote(
-        run, plan: plan, host: host, start: status.start, devcontainer: devcontainer)
+        run, plan: plan, host: host, start: status.start, devcontainer: devcontainer,
+        madeWith: run.madeWith)
       await Self.drainMainQueue()  // the last step's lines, before it is marked done
       if run.steps.contains(where: { $0.id == ProvisioningProgress.Step.include.rawValue }) {
         await copyIncluded(run, into: created.instance, driver: host.driver)
@@ -698,7 +724,7 @@ extension AppStore {
   /// `start` is the judged commit the checkout starts at.
   private func provisionRemote(
     _ run: CreationRun, plan: RemoteCreatePlan, host: RemoteCreateHost, start: String?,
-    devcontainer: ContainerCreate.File?
+    devcontainer: ContainerCreate.File?, madeWith: ResolvedHostOptions?
   ) async throws -> (RemoteWorkrooms.Created, ContainerCreate.Prepared?) {
     let path = run.project.path
     // One queue for steps, lines and the pull, so a line is never filed after the next step began.
@@ -791,7 +817,7 @@ extension AppStore {
             repository: plan.repository, cloneURL: plan.cloneURL, startBranch: plan.startBranch,
             startCommit: start, path: prepared?.workspaceFolder,
             config: prepared.map { ($0.configDigest, $0.configFile) }, key: host.key,
-            driver: host.driver, environment: environment, recorder: recorder)
+            driver: host.driver, environment: environment, recorder: recorder, madeWith: madeWith)
           return (created, prepared)
         }
       }
@@ -998,7 +1024,15 @@ struct RemoteCreateHost {
 struct RemoteCreateServices {
   var plan: @MainActor (AppStore, Project) async throws -> RemoteCreatePlan
   var setupNeeded: @MainActor (RemoteWorkrooms.Place) async -> (any RemoteSetup)?
-  var host: @MainActor (RemoteWorkrooms.Place) async throws -> RemoteCreateHost
+  /// The provider's host and how it is reached, made with the resolved host options a boxd or
+  /// exe.dev create takes (#575); nil for any other place.
+  var host:
+    @MainActor (RemoteWorkrooms.Place, ResolvedHostOptions?) async throws -> RemoteCreateHost
+  /// The project's and Settings' host options for `provider` (#575), read afresh at each try.
+  var hostOptionLevels:
+    @MainActor (Project, HostProvider) -> (project: HostOptions?, settings: HostOptions?) = {
+      _, _ in (nil, nil)
+    }
   /// Runs the setup script on the new workroom's host (`RemoteWorkrooms.runScript`). A test's fakes
   /// have no script unless they say so.
   var script: @MainActor (RemoteWorkrooms.ScriptRequest) async -> RemoteProvisioning.ScriptRun = {
@@ -1031,10 +1065,17 @@ struct RemoteCreateServices {
           return SSHHostSetup()
         }
       },
-      host: { place in
+      host: { place, options in
         let key = try await RemoteHosts.shared.key(for: place)
-        let (driver, environment) = try RemoteHosts.shared.environment(key)
+        var (driver, environment) = try RemoteHosts.shared.environment(key)
+        if let options { environment.made(with: options, by: driver) }
         return RemoteCreateHost(key: key, driver: driver, environment: environment)
+      },
+      hostOptionLevels: { project, provider in
+        (
+          project: Defaults[.projectHostOptions][project.path]?[provider.rawValue],
+          settings: Defaults[.hostOptions][provider.rawValue]
+        )
       },
       script: { request in await RemoteWorkrooms.runScript(request) },
       trustStatus: { store, project, plan, devcontainer in

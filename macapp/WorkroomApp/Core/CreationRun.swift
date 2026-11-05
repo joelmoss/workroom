@@ -66,7 +66,8 @@ enum CreationKind: Equatable {
     case .boxd:
       remote = [
         (.repository, "Check repository"), (.account, "Check boxd account"),
-        (.machine, "Create machine"), (.setup, "Set up machine"), (.connect, "Connect"),
+        (.machine, "Create machine"), (.setup, "Set up machine"),
+        (.restart, "Restarting host from snapshot"), (.connect, "Connect"),
         (.clone, "Clone repository"), (.checkout, "Check out branch"),
       ]
     case .exeDev:
@@ -83,11 +84,12 @@ enum CreationKind: Equatable {
     } + [CreationStep(id: "script", title: "Run setup script")]
   }
 
-  /// A container create's rows that show only when its devcontainer.json makes them run: a step's
-  /// `begin` puts its row back (#308).
+  /// The rows that show only when their step runs: a container create's devcontainer.json rows
+  /// (#308), and a boxd create's restart, which only a snapshot needs (#575). A step's `begin`
+  /// puts its row back.
   static let onDemand: Set<String> = Set(
-    ([.config, .initialize, .build] + DevContainerConfig.Hook.inContainer.map(\.step)).map(
-      \.rawValue))
+    ([.config, .initialize, .build, .restart] + DevContainerConfig.Hook.inContainer.map(\.step))
+      .map(\.rawValue))
 }
 
 extension DevContainerConfig.Hook {
@@ -208,6 +210,13 @@ final class CreationRun: ObservableObject, Identifiable {
   /// The start point the create question this run answers was asked at (ADR 0059): it creates from
   /// there with `--start-commit`, fetching nothing. Nil for a first try and a Try Again.
   let startCommit: String?
+  /// The host options chosen for this create (#575): the Options panel's, or Try With Provider
+  /// Defaults' Provider default for each. A Try Again keeps them, and reads the project's and
+  /// Settings' afresh for the rest.
+  let hostOptions: HostOptions?
+  /// What a boxd or exe.dev create resolved its host options to, once it has: what Try With
+  /// Provider Defaults asks about. Nil for any other create.
+  var madeWith: ResolvedHostOptions?
   /// The start point this run's own create question was asked at, once it stops on one: what an
   /// answer passes on as its `startCommit`.
   private(set) var askedAt: String?
@@ -229,8 +238,9 @@ final class CreationRun: ObservableObject, Identifiable {
     previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
     skipsSetup: Bool = false, skipsDevContainer: Bool = false, start: CreationStart = .ask,
     startCommit: String? = nil, carriedFetch: CreationStep? = nil,
-    now: @escaping () -> Date = Date.init
+    hostOptions: HostOptions? = nil, now: @escaping () -> Date = Date.init
   ) {
+    self.hostOptions = hostOptions
     self.id = id
     self.project = project
     self.kind = kind
@@ -252,6 +262,18 @@ final class CreationRun: ObservableObject, Identifiable {
     if let carriedFetch, let index = steps.firstIndex(where: { $0.id == carriedFetch.id }) {
       steps[index] = carriedFetch
     }
+  }
+
+  /// Whether Try With Provider Defaults can help (#575): this create used host options, failed
+  /// making, booting, restarting or setting up its host, and left no machine running (a left-behind
+  /// one is deleted before another paid host is made).
+  var offersProviderDefaults: Bool {
+    guard case .remoteFailed(_, leftBehind: false) = outcome,
+      let madeWith, !madeWith.isProviderDefault,
+      let failed = steps.first(where: { $0.state == .failed })?.id
+    else { return false }
+    typealias Step = ProvisioningProgress.Step
+    return [Step.machine, .boot, .restart, .setup].map(\.rawValue).contains(failed)
   }
 
   /// The fetch row, for a run answering this one's create question to carry.

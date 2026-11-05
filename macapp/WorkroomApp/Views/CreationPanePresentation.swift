@@ -128,6 +128,8 @@ enum CreationPanePresentation {
     /// Close, worded for a create that made nothing and is waiting on the user: the whole create
     /// goes, not only the script.
     case cancel
+    /// Runs a failed boxd or exe.dev create again on the provider's default image and size (#575).
+    case providerDefaults
 
     var title: String {
       switch self {
@@ -141,6 +143,7 @@ enum CreationPanePresentation {
       case .chooseStart: "Choose…"
       case .defaultImage: "Continue With Default Image"
       case .cancel: "Cancel Creation"
+      case .providerDefaults: "Try With Provider Defaults"
       }
     }
   }
@@ -184,6 +187,8 @@ enum CreationPanePresentation {
     let reason: String
     let primary: Action
     let secondary: Action
+    /// A third button, beside the default: Try With Provider Defaults (#575).
+    var alternative: Action? = nil
     /// What Escape answers: Close or Cancel, where it is shown (D16).
     var escapeAction: Action? { [.close, .cancel].contains(secondary) ? secondary : nil }
   }
@@ -192,6 +197,13 @@ enum CreationPanePresentation {
   /// script to approve). Nil when no step is either, and the notice follows the last row.
   static func noticeStep(in steps: [CreationStep]) -> String? {
     (steps.first { $0.state == .failed } ?? steps.first { $0.state == .waitingForUser })?.id
+  }
+
+  /// The footer `run` shows: its outcome's, with Try With Provider Defaults where it can help.
+  @MainActor static func footer(for run: CreationRun) -> Footer? {
+    guard var footer = footer(for: run.outcome) else { return nil }
+    if run.offersProviderDefaults { footer.alternative = .providerDefaults }
+    return footer
   }
 
   /// The footer a run's outcome shows, or nil while it runs or once it has ended well.
