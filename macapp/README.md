@@ -177,7 +177,7 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 - `Views/` — `NavigationSplitView`: projects sidebar · workroom list · terminal detail,
   with empty/error states, a destructive delete confirmation, and a detail toolbar.
 - `Core/WorkroomManagement/Models.swift` — `Codable` mirrors of the `--json` contract (lenient decoding).
-- `Core/Terminal/SessionSnapshot.swift` / `SessionStore.swift` / `SessionCoordinator.swift` — the saved
+- `Core/Terminal/SavedLayout.swift` / `SavedLayoutStore.swift` / `SavedLayoutCoordinator.swift` — the saved
   session (issue #46): open panels, split layouts, selection and window frames, restored on the next
   launch. Stored as
   `~/Library/Application Support/Workroom/<bundle id>/session.json` — scoped by bundle id so

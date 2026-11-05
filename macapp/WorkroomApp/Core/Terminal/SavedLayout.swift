@@ -2,7 +2,7 @@ import Foundation
 import WorkroomDomain
 
 /// The on-disk shape of a saved session — the open panels, split layouts, and windows restored on
-/// the next launch (issue #46). Written by `SessionStore` to
+/// the next launch (issue #46). Written by `SavedLayoutStore` to
 /// `Application Support/Workroom/<bundle id>/session.json`.
 ///
 /// **Every type here is a hand-written mirror.** No runtime type (`PaneLayout`, `TerminalTab`,

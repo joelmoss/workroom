@@ -922,7 +922,7 @@ final class AppStore: ObservableObject {
   ///
   /// Seeded from `Defaults[.sidebarSelection]`, and overwritten by a claimed session's own selection
   /// (issue #46) — the session owns selection per window; the Defaults key is the single-slot
-  /// cold-start fallback. Internal rather than private so `AppStore+Session` can do that.
+  /// cold-start fallback. Internal rather than private so `AppStore+SavedLayout` can do that.
   var pendingRestoreSelection: TerminalTarget.ID?
   /// This window's claimed saved session (issue #46), consumed at the end of `apply`.
   var pendingSessionRestore: WindowSession?
@@ -1321,7 +1321,7 @@ final class AppStore: ObservableObject {
           MainActor.assumeIsolated {
             // Per-window frames live in the saved session (issue #46); a drag fires this
             // continuously, which the coordinator's coalescing absorbs.
-            SessionCoordinator.shared.markDirty()
+            SavedLayoutCoordinator.shared.markDirty()
             // The `Defaults` key holds ONE frame, so only the active window writes it — three windows
             // were previously racing to be the last mover. It is now the cold-start fallback for a
             // first launch with no session file, not the authority.

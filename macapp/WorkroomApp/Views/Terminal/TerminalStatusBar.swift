@@ -23,7 +23,7 @@ struct TerminalStatusBar: View {
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
   /// button can know whether it's actually showing anything.
-  @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
+  @ObservedObject private var sessionsStore = DetachedSessionList.shared
   @State private var showingDiagnosis = false
   @Environment(\.isQuickTerminal) private var isQuickTerminal
 

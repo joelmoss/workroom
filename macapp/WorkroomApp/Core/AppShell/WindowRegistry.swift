@@ -133,7 +133,7 @@ final class WindowRegistry: ObservableObject {
         self.lastActiveStore = store
         // Which window was key is part of the saved session — it decides where the user lands after
         // a restore (issue #46).
-        SessionCoordinator.shared.markDirty()
+        SavedLayoutCoordinator.shared.markDirty()
         // Bringing a window forward makes its selection the most recent one (issue #132). Without
         // this, ⌘` to another window leaves the switcher's MRU head pointing at the window you left,
         // so the next ⌥Tab tap flips somewhere you didn't come from.
@@ -206,7 +206,7 @@ final class WindowRegistry: ObservableObject {
     store.forwardToast = { [weak self] in self?.showToast($0) }
     // The saved session is rebuilt from the live windows (issue #46), and the window layer publishes
     // through none of the store's own publishers — so opening a window has to say so itself.
-    SessionCoordinator.shared.markDirty()
+    SavedLayoutCoordinator.shared.markDirty()
     // The two publishing writes wait a turn. `register` is reached from `WindowAccessor`'s
     // `viewDidMoveToWindow`, which SwiftUI runs WHILE it is installing the representable's backing
     // view — i.e. inside a view update — and `assignWindowNumberIfNeeded` (`AppStore.windowNumber`,
@@ -259,7 +259,7 @@ final class WindowRegistry: ObservableObject {
     recomputeActiveCodingAgents()
     // Without this a closed window is never noticed, and comes back on the next launch. The quit
     // freeze is what stops the same signal erasing the session as windows close during termination.
-    SessionCoordinator.shared.markDirty()
+    SavedLayoutCoordinator.shared.markDirty()
   }
 
   private func prune() {

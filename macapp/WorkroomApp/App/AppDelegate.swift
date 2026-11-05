@@ -162,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     resignActiveObserver = NotificationCenter.default.addObserver(
       forName: NSApplication.willResignActiveNotification, object: nil, queue: .main
     ) { _ in
-      MainActor.assumeIsolated { SessionCoordinator.shared.writeIfChanged() }
+      MainActor.assumeIsolated { SavedLayoutCoordinator.shared.writeIfChanged() }
     }
 
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [quickTerminal] event in
@@ -428,7 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         group.enter()
         Task {
           await AppStore.flushHostLayouts(budget: 1)
-          SessionCoordinator.shared.flushAndFreeze()
+          SavedLayoutCoordinator.shared.flushAndFreeze()
           // Only once frozen: the document is built from the live windows, which stopping changes.
           if action == .stop {
             group.enter()
@@ -526,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // session still flushes here: this branch IS terminating, and a UI test that relaunches to check
     // what was restored must not race the coalescing timer (issue #46).
     if AppEnvironment.current.isFixture {
-      SessionCoordinator.shared.flushAndFreeze()
+      SavedLayoutCoordinator.shared.flushAndFreeze()
       return .terminateNow
     }
     // Run commands are daemon sessions, which outlive the app unless quitting stops them (#522).
@@ -611,7 +611,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     group.enter()
     Task {
       await AppStore.flushHostLayouts(budget: 1)
-      SessionCoordinator.shared.flushAndFreeze()
+      SavedLayoutCoordinator.shared.flushAndFreeze()
       // Only once frozen: the document is built from the live windows, which stopping changes.
       if stoppingRuns {
         group.enter()

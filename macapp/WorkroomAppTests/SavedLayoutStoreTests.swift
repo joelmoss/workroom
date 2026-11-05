@@ -7,7 +7,7 @@ import XCTest
 /// Every test injects a temp URL, so none of this touches the real session file, the developer's own
 /// Dev-bundle state, or any shared `Defaults` key — which is also what keeps it clear of the
 /// single-writer rule parallel test workers impose on the UserDefaults domain.
-final class SessionStoreTests: XCTestCase {
+final class SavedLayoutStoreTests: XCTestCase {
   private var directory: URL!
   private var url: URL!
 
@@ -46,10 +46,10 @@ final class SessionStoreTests: XCTestCase {
   // MARK: Round trip
 
   func testWriteThenReadRoundTrips() throws {
-    let store = SessionStore(url: url)
+    let store = SavedLayoutStore(url: url)
     store.writeSynchronously(makeFile())
 
-    guard case .restored(let file, let report) = SessionStore(url: url).read() else {
+    guard case .restored(let file, let report) = SavedLayoutStore(url: url).read() else {
       return XCTFail("expected a restored session")
     }
     XCTAssertTrue(report.isEmpty)
@@ -64,12 +64,12 @@ final class SessionStoreTests: XCTestCase {
   /// never exists on a first run — without an explicit create, every write fails silently.
   func testWriteCreatesTheParentDirectory() throws {
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path))
-    SessionStore(url: url).writeSynchronously(makeFile())
+    SavedLayoutStore(url: url).writeSynchronously(makeFile())
     XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
   }
 
   func testWriteSynchronouslyCompletesBeforeReturning() throws {
-    SessionStore(url: url).writeSynchronously(makeFile())
+    SavedLayoutStore(url: url).writeSynchronously(makeFile())
     // No waiting, no polling: the file must already be on disk. This is what the quit path needs,
     // where the process may not survive long enough for an async write to land.
     XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
@@ -78,35 +78,35 @@ final class SessionStoreTests: XCTestCase {
 
   /// An atomic replace is all-or-nothing: a second write never leaves a half-written document.
   func testOverwriteLeavesNoPartialFile() throws {
-    let store = SessionStore(url: url)
+    let store = SavedLayoutStore(url: url)
     store.writeSynchronously(makeFile(windowKey: "W1"))
     store.writeSynchronously(makeFile(windowKey: "W2"))
 
-    guard case .restored(let file, _) = SessionStore(url: url).read() else {
+    guard case .restored(let file, _) = SavedLayoutStore(url: url).read() else {
       return XCTFail("expected a restored session")
     }
     XCTAssertEqual(file.windows.map(\.windowKey), ["W2"])
   }
 
   func testClearRemovesTheFile() {
-    let store = SessionStore(url: url)
+    let store = SavedLayoutStore(url: url)
     store.writeSynchronously(makeFile())
     store.clear()
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-    XCTAssertEqual(SessionStore(url: url).read(), .none)
+    XCTAssertEqual(SavedLayoutStore(url: url).read(), .none)
   }
 
   // MARK: Degradation
 
   func testMissingFileReadsAsNone() {
-    XCTAssertEqual(SessionStore(url: url).read(), .none)
+    XCTAssertEqual(SavedLayoutStore(url: url).read(), .none)
   }
 
   func testEmptyFileReadsAsNone() throws {
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data().write(to: url)
-    XCTAssertEqual(SessionStore(url: url).read(), .none)
+    XCTAssertEqual(SavedLayoutStore(url: url).read(), .none)
   }
 
   /// Corrupt input must not crash the launch, and the evidence is moved aside rather than deleted so
@@ -116,7 +116,7 @@ final class SessionStoreTests: XCTestCase {
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data("this is not json".utf8).write(to: url)
 
-    let store = SessionStore(url: url)
+    let store = SavedLayoutStore(url: url)
     XCTAssertEqual(store.read(), .none)
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: store.quarantineURL.path))
@@ -135,7 +135,7 @@ final class SessionStoreTests: XCTestCase {
     let padding = String(repeating: "x", count: SessionLimits.maxFileBytes + 1024)
     try Data("{\"pad\":\"\(padding)\"}".utf8).write(to: url)
 
-    let store = SessionStore(url: url)
+    let store = SavedLayoutStore(url: url)
     XCTAssertEqual(store.read(), .none)
     XCTAssertTrue(FileManager.default.fileExists(atPath: store.quarantineURL.path))
   }
@@ -151,12 +151,12 @@ final class SessionStoreTests: XCTestCase {
           targets: [TargetSession(targetID: "root|/p", tabs: [TabSession(key: "t", kind: "??")])])
       ])
     // The window survives sanitisation (an empty window is legal); an all-empty FILE does not.
-    SessionStore(url: url).writeSynchronously(
+    SavedLayoutStore(url: url).writeSynchronously(
       SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: []))
-    XCTAssertEqual(SessionStore(url: url).read(), .none)
+    XCTAssertEqual(SavedLayoutStore(url: url).read(), .none)
 
-    SessionStore(url: url).writeSynchronously(file)
-    guard case .restored(let restored, let report) = SessionStore(url: url).read() else {
+    SavedLayoutStore(url: url).writeSynchronously(file)
+    guard case .restored(let restored, let report) = SavedLayoutStore(url: url).read() else {
       return XCTFail("a window with no targets is still a window")
     }
     XCTAssertTrue(restored.windows[0].targets.isEmpty)
@@ -168,11 +168,11 @@ final class SessionStoreTests: XCTestCase {
   /// Three build identities ship side by side, so a rollback is a real path: an older build must not
   /// overwrite a session written by a newer one.
   func testNewerSchemaDisablesWrites() throws {
-    SessionStore(url: url).writeSynchronously(
+    SavedLayoutStore(url: url).writeSynchronously(
       makeFile(windowKey: "FUTURE", schemaVersion: SessionFile.currentSchemaVersion + 1))
     let before = try Data(contentsOf: url)
 
-    let store = SessionStore(url: url)
+    let store = SavedLayoutStore(url: url)
     XCTAssertEqual(store.read(), .newerSchema)
     XCTAssertTrue(store.writesDisabled)
 
@@ -186,8 +186,8 @@ final class SessionStoreTests: XCTestCase {
   /// Without bundle-id scoping, a Dev run's fixture temp-dir workrooms would be restored into the
   /// release build — both already share `Application Support/Workroom/`.
   func testDefaultURLIsScopedByBundleID() {
-    let dev = SessionStore.defaultURL(bundleID: "com.developwithstyle.workroom.dev")
-    let release = SessionStore.defaultURL(bundleID: "com.developwithstyle.workroom")
+    let dev = SavedLayoutStore.defaultURL(bundleID: "com.developwithstyle.workroom.dev")
+    let release = SavedLayoutStore.defaultURL(bundleID: "com.developwithstyle.workroom")
     XCTAssertNotEqual(dev, release)
     XCTAssertEqual(dev.lastPathComponent, "session.json")
     XCTAssertEqual(
@@ -202,9 +202,10 @@ final class SessionStoreTests: XCTestCase {
   /// point it at the shipped app's own session file — the exact cross-identity restore the scoping
   /// above exists to prevent, and worse, since this path is written as well as read.
   func testMissingBundleIDDoesNotFallBackToTheReleaseIdentifier() {
-    let fallback = SessionStore.defaultURL(bundleID: nil)
+    let fallback = SavedLayoutStore.defaultURL(bundleID: nil)
     XCTAssertFalse(fallback.path.contains("com.developwithstyle.workroom"))
-    XCTAssertNotEqual(fallback, SessionStore.defaultURL(bundleID: "com.developwithstyle.workroom"))
+    XCTAssertNotEqual(
+      fallback, SavedLayoutStore.defaultURL(bundleID: "com.developwithstyle.workroom"))
   }
 
   // MARK: Isolation (the guard every UI test relies on)
@@ -213,13 +214,13 @@ final class SessionStoreTests: XCTestCase {
   /// at the bundle-scoped default path, so if it were enabled, every fixture launch would read and
   /// overwrite the developer's own `Workroom Dev` session.
   func testFixtureLaunchWithoutASessionPathIsDisabled() {
-    let store = SessionStore.forEnvironment(
+    let store = SavedLayoutStore.forEnvironment(
       underXCTest: false, fixtureActive: true, sessionFilePath: nil)
     XCTAssertTrue(store.isDisabled)
   }
 
   func testFixtureLaunchWithASessionPathUsesThatFile() {
-    let store = SessionStore.forEnvironment(
+    let store = SavedLayoutStore.forEnvironment(
       underXCTest: false, fixtureActive: true, sessionFilePath: url.path)
     XCTAssertFalse(store.isDisabled)
     XCTAssertEqual(store.url.path, url.path)
@@ -227,14 +228,14 @@ final class SessionStoreTests: XCTestCase {
 
   /// The unit-test host gets the same guard: tab mutations reach the shared coordinator.
   func testUnitTestHostWithoutASessionPathIsDisabled() {
-    let store = SessionStore.forEnvironment(
+    let store = SavedLayoutStore.forEnvironment(
       underXCTest: true, fixtureActive: false, sessionFilePath: nil)
     XCTAssertTrue(store.isDisabled)
   }
 
   /// The control: a normal launch persists, so the cases above are not disabled by default.
   func testANormalLaunchIsEnabled() {
-    let store = SessionStore.forEnvironment(
+    let store = SavedLayoutStore.forEnvironment(
       underXCTest: false, fixtureActive: false, sessionFilePath: nil)
     XCTAssertFalse(store.isDisabled)
   }
@@ -248,17 +249,17 @@ final class SessionStoreTests: XCTestCase {
     XCTAssertNotNil(
       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"],
       "this test is only meaningful inside the XCTest host")
-    XCTAssertTrue(SessionStore.forCurrentEnvironment().isDisabled)
+    XCTAssertTrue(SavedLayoutStore.forCurrentEnvironment().isDisabled)
   }
 
   /// What "disabled" has to mean: it writes nothing, reads nothing, and clears nothing.
   func testADisabledStoreNeitherWritesReadsNorClears() throws {
-    let disabled = SessionStore(url: url, isDisabled: true)
+    let disabled = SavedLayoutStore(url: url, isDisabled: true)
     XCTAssertFalse(disabled.writeSynchronously(makeFile()))
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "a disabled store wrote")
 
     // A real file is on disk; a disabled store must neither restore it nor delete it.
-    XCTAssertTrue(SessionStore(url: url).writeSynchronously(makeFile()))
+    XCTAssertTrue(SavedLayoutStore(url: url).writeSynchronously(makeFile()))
     XCTAssertEqual(disabled.read(), .none)
     disabled.clear()
     XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "a disabled store cleared")

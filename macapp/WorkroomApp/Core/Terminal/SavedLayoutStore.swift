@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-/// Reads and writes the saved session (issue #46) — the file behind `SessionSnapshot`.
+/// Reads and writes the saved session (issue #46) — the file behind `SavedLayout`.
 ///
 /// **Every operation is best-effort.** The app must behave identically with the file absent, empty,
 /// unreadable, or corrupt: a session that fails to load is a launch with no restore, never an error
@@ -12,7 +12,7 @@ import OSLog
 /// impose on a shared UserDefaults domain (`SharedPrefDefaultsTests`).
 // `@unchecked Sendable`: the write queue reads only `let`s (`url`, `fileManager`, `logger`);
 // `writesDisabled`, the one var, is set and read on the caller's side.
-final class SessionStore: @unchecked Sendable {
+final class SavedLayoutStore: @unchecked Sendable {
   /// Where the file lives, **scoped by bundle id**.
   ///
   /// The scoping is mandatory, not tidiness: all three identities (Workroom, Workroom Dev, Workroom
@@ -42,7 +42,7 @@ final class SessionStore: @unchecked Sendable {
   /// In fixture mode this is a **no-op unless a test names a file**. The path is bundle-id scoped, so
   /// a fixture launch would otherwise write over the developer's own `Workroom Dev` session — and the
   /// fixture's temp-directory workrooms would then be restored into a real launch.
-  static func forCurrentEnvironment() -> SessionStore {
+  static func forCurrentEnvironment() -> SavedLayoutStore {
     forEnvironment(
       underXCTest: ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
       fixtureActive: AppEnvironment.current.isFixture,
@@ -52,20 +52,20 @@ final class SessionStore: @unchecked Sendable {
   /// `forCurrentEnvironment`'s decision, with its inputs passed in so a unit test can pin every
   /// branch without the store ever pointing at a real session file.
   static func forEnvironment(underXCTest: Bool, fixtureActive: Bool, sessionFilePath: String?)
-    -> SessionStore
+    -> SavedLayoutStore
   {
     // Unit tests inject their own store, but `AppStore.markSessionDirty` reaches the SHARED
     // coordinator — so without this a `make app-test` run writes the developer's own `Workroom Dev`
     // session file and scrollback sidecars as a side effect of exercising tab mutations. Same
     // isolation the app already applies in `WorkroomApp.init` and `AppStore`'s init.
     if underXCTest, sessionFilePath == nil {
-      return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
+      return SavedLayoutStore(url: SavedLayoutStore.defaultURL(), isDisabled: true)
     }
-    guard fixtureActive else { return SessionStore() }
+    guard fixtureActive else { return SavedLayoutStore() }
     guard let sessionFilePath else {
-      return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
+      return SavedLayoutStore(url: SavedLayoutStore.defaultURL(), isDisabled: true)
     }
-    return SessionStore(url: URL(fileURLWithPath: sessionFilePath))
+    return SavedLayoutStore(url: URL(fileURLWithPath: sessionFilePath))
   }
 
   let url: URL
@@ -91,7 +91,7 @@ final class SessionStore: @unchecked Sendable {
     label: "com.developwithstyle.workroom.session", qos: .utility)
 
   init(
-    url: URL = SessionStore.defaultURL(), fileManager: FileManager = .default,
+    url: URL = SavedLayoutStore.defaultURL(), fileManager: FileManager = .default,
     isDisabled: Bool = false
   ) {
     self.url = url
@@ -175,7 +175,7 @@ final class SessionStore: @unchecked Sendable {
 
   // MARK: Write
 
-  /// Persist off the main actor. Coalescing is the caller's job (see `AppStore+Session`).
+  /// Persist off the main actor. Coalescing is the caller's job (see `AppStore+SavedLayout`).
   ///
   /// `completion` reports on the main actor whether the bytes actually reached disk. The caller needs
   /// it: it gates a write on "did this change since last time?", and treating a failed write as

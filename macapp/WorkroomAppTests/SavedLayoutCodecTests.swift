@@ -5,10 +5,10 @@ import XCTest
 
 /// Pure codec + structural-validation tests for the saved-session schema (issue #46).
 ///
-/// The golden-JSON tests are deliberate: the field names in `SessionSnapshot.swift` are a stored-data
+/// The golden-JSON tests are deliberate: the field names in `SavedLayout.swift` are a stored-data
 /// contract, so a rename has to fail loudly here rather than silently invalidate every user's saved
 /// session. No `Defaults`, no files, no `AppStore` — this whole class is pure values.
-final class SessionSnapshotCodecTests: XCTestCase {
+final class SavedLayoutCodecTests: XCTestCase {
   private func decode(_ json: String) throws -> SessionFile {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601

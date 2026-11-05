@@ -252,7 +252,7 @@ final class GhosttyApp {
   let themeConfigURL = GhosttyApp.themeConfigURLForCurrentEnvironment()
 
   /// Where the generated config lives, **scoped by bundle id** — the convention
-  /// `SessionStore.defaultURL` and `UnrecognizedToolUsage.defaultURL` already use.
+  /// `SavedLayoutStore.defaultURL` and `UnrecognizedToolUsage.defaultURL` already use.
   ///
   /// The scoping is not tidiness. `writeThemeConfig` and `loadConfig` are two steps, and each build
   /// identity (Workroom, Workroom Nightly, Workroom Dev) keeps its own theme preference; while they
@@ -401,7 +401,7 @@ final class GhosttyApp {
       abnormal-command-exit-runtime = 0
       """
     // `write(atomically:)` does not create intermediate directories, and the bundle-id directory
-    // doesn't exist on a first run — `SessionStore.persist` takes the same step for the same
+    // doesn't exist on a first run — `SavedLayoutStore.persist` takes the same step for the same
     // reason. Either step can fail for real (a full disk, an unwritable Application Support, a
     // stray plain file where the `<bundle id>/` directory belongs), and this diff's extra directory
     // level adds one more way, so the outcome is reported rather than dropped.

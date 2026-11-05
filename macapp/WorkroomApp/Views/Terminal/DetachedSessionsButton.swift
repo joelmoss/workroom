@@ -5,7 +5,7 @@ import WorkroomWire
 struct DetachedSessionsButton: View {
   let target: TerminalTarget
   @EnvironmentObject var store: AppStore
-  @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
+  @ObservedObject private var sessionsStore = DetachedSessionList.shared
   // Observed so "Detach" enables once the focused tab has a surface; `AppStore` doesn't track it.
   @EnvironmentObject private var terminals: TerminalSessions
   @State private var showing = false

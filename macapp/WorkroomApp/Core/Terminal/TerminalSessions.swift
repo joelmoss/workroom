@@ -257,11 +257,11 @@ extension FocusedTabSelection {
 //
 // Deliberately in the SAME block as the navigation-history bridge above, for the reason that block's
 // comment already gives: a fifth `TabContent` kind must be a compile error in ONE place. A second
-// projection living in `SessionSnapshot.swift` would compile fine while silently never persisting
+// projection living in `SavedLayout.swift` would compile fine while silently never persisting
 // the new kind. The switch below is exhaustive on purpose — no `default` arm.
 //
 // The on-disk types stay separate from the runtime ones (no descriptor gains `Codable`) so the file
-// format is never hostage to an internal field rename — see `SessionSnapshot.swift`.
+// format is never hostage to an internal field rename — see `SavedLayout.swift`.
 
 extension TabSession {
   /// A tab as it will be written to disk, or `nil` when it must not be persisted.

@@ -203,7 +203,7 @@ final class ProjectStore {
   private var unclaimedSessionWindows: [WindowSession] = []
   private var didLoadSession = false
   /// Injectable so tests drive a temp session file instead of the developer's real one.
-  var sessionCoordinator: SessionCoordinator = .shared
+  var sessionCoordinator: SavedLayoutCoordinator = .shared
   /// True between loading the session and finishing the restore, so the suspend/resume is balanced
   /// exactly once however many windows take part.
   private var isRestoringSession = false

@@ -2,8 +2,8 @@ import AppKit
 import Foundation
 import OSLog
 
-/// Decides *when* the saved session is written (issue #46). `SessionStore` owns the file;
-/// `AppStore+Session` owns what one window contributes; this owns coalescing, the restore gate, and
+/// Decides *when* the saved session is written (issue #46). `SavedLayoutStore` owns the file;
+/// `AppStore+SavedLayout` owns what one window contributes; this owns coalescing, the restore gate, and
 /// the quit freeze.
 ///
 /// There is exactly one writer, and it rebuilds the whole document from every live window. That
@@ -11,8 +11,8 @@ import OSLog
 /// because a single `Defaults` key cannot hold N windows — this file can. `persistsSidebarPrefs`
 /// still governs the Defaults keys it always did.
 @MainActor
-final class SessionCoordinator {
-  static let shared = SessionCoordinator(store: .forCurrentEnvironment())
+final class SavedLayoutCoordinator {
+  static let shared = SavedLayoutCoordinator(store: .forCurrentEnvironment())
 
   /// Coalescing window. Long enough that a burst of layout edits costs one write.
   static let defaultDebounce: TimeInterval = 1
@@ -28,7 +28,7 @@ final class SessionCoordinator {
   /// bounds the loss regardless of how chatty the terminals are.
   static let defaultCeiling: TimeInterval = 5
 
-  private let store: SessionStore
+  private let store: SavedLayoutStore
   private let debounce: TimeInterval
   private let ceiling: TimeInterval
   private let capture: () -> [WindowSession]
@@ -55,9 +55,9 @@ final class SessionCoordinator {
   private(set) var isFrozen = false
 
   init(
-    store: SessionStore = SessionStore(),
-    debounce: TimeInterval = SessionCoordinator.defaultDebounce,
-    ceiling: TimeInterval = SessionCoordinator.defaultCeiling,
+    store: SavedLayoutStore = SavedLayoutStore(),
+    debounce: TimeInterval = SavedLayoutCoordinator.defaultDebounce,
+    ceiling: TimeInterval = SavedLayoutCoordinator.defaultCeiling,
     capture: (() -> [WindowSession])? = nil,
     afterSave: (() -> Void)? = nil
   ) {
@@ -197,7 +197,7 @@ final class SessionCoordinator {
 
   // MARK: Read
 
-  func read() -> SessionStore.ReadOutcome { store.read() }
+  func read() -> SavedLayoutStore.ReadOutcome { store.read() }
 
   private func makeFile(_ windows: [WindowSession]) -> SessionFile {
     SessionFile(

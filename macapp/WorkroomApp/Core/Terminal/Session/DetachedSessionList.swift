@@ -6,8 +6,8 @@ import WorkroomWire
 /// must stay per-workroom rather than a single flat array — otherwise whichever workroom's button
 /// refreshed last overwrites what every OTHER workroom's button renders.
 @MainActor
-final class TerminalSessionsStore: ObservableObject {
-  static let shared = TerminalSessionsStore()
+final class DetachedSessionList: ObservableObject {
+  static let shared = DetachedSessionList()
 
   @Published private(set) var detachedByWorkroom: [String: [SessionDescriptor]] = [:]
 

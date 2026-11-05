@@ -3,8 +3,8 @@ import Foundation
 import OSLog
 import WorkroomDomain
 
-/// What one window contributes to the saved session (issue #46). `SessionCoordinator` decides when
-/// this runs; `SessionStore` owns the file.
+/// What one window contributes to the saved session (issue #46). `SavedLayoutCoordinator` decides when
+/// this runs; `SavedLayoutStore` owns the file.
 ///
 /// Capture reads only through existing public queries plus the one new
 /// `TerminalSessions.sessionCapture(forTargetID:)`, so the four pane dictionaries stay
@@ -14,7 +14,7 @@ extension AppStore {
   ///
   /// Runs on the main actor and must stay cheap: it is called on every coalesced save, and (via the
   /// ceiling) at a steady cadence while terminals are busy. It walks a few dozen small values and
-  /// allocates no views — the expensive part, encoding, happens off the main actor in `SessionStore`.
+  /// allocates no views — the expensive part, encoding, happens off the main actor in `SavedLayoutStore`.
   func captureWindowSession() -> WindowSession {
     WindowSession(
       windowKey: sessionKey.uuidString,
@@ -104,7 +104,7 @@ extension AppStore {
   /// Tell the coordinator this window changed. Every dirty source funnels through here so there is
   /// one place to look when asking "what causes a save?".
   func markSessionDirty() {
-    SessionCoordinator.shared.markDirty()
+    SavedLayoutCoordinator.shared.markDirty()
   }
 
   // MARK: Restore

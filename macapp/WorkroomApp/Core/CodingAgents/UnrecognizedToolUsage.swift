@@ -10,7 +10,7 @@ enum UnrecognizedToolUsage {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "UnrecognizedToolUsage")
 
-  /// Where the file lives, scoped by bundle id — same convention as `SessionStore.defaultURL`, so
+  /// Where the file lives, scoped by bundle id — same convention as `SavedLayoutStore.defaultURL`, so
   /// Workroom/Workroom Dev/Workroom Nightly never mix each other's usage data (a Dev-build test run
   /// shouldn't pollute what the real, daily-driver build actually sees used).
   static func defaultURL(
@@ -45,7 +45,7 @@ enum UnrecognizedToolUsage {
       // Distinct from "file doesn't exist yet" (the common, expected first-run case above) — this
       // is real data loss: a corrupt or foreign-schema file about to be silently overwritten by the
       // next write (review finding). Nothing to recover here (there's no schema version to branch
-      // on, unlike SessionStore's newer-build case), but at least the loss is visible in Console.app.
+      // on, unlike SavedLayoutStore's newer-build case), but at least the loss is visible in Console.app.
       logger.error("unrecognized-tool-usage.json exists but failed to decode — resetting counts")
       return [:]
     }

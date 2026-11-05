@@ -55,10 +55,10 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     projects: [Project], session: WindowSession?, isLaunchWindow: Bool = true
   ) -> AppStore {
     let projectStore = ProjectStore()
-    projectStore.sessionCoordinator = SessionCoordinator(
-      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
+    projectStore.sessionCoordinator = SavedLayoutCoordinator(
+      store: SavedLayoutStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
     if let session {
-      SessionStore(url: url).writeSynchronously(
+      SavedLayoutStore(url: url).writeSynchronously(
         SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: [session]))
     }
     projectStore.projects = projects

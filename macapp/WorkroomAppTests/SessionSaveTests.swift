@@ -43,14 +43,14 @@ final class SessionSaveTests: XCTestCase {
 
   private func makeCoordinator(
     debounce: TimeInterval = 0.05, ceiling: TimeInterval = 0.2
-  ) -> SessionCoordinator {
-    SessionCoordinator(
-      store: SessionStore(url: url), debounce: debounce, ceiling: ceiling,
+  ) -> SavedLayoutCoordinator {
+    SavedLayoutCoordinator(
+      store: SavedLayoutStore(url: url), debounce: debounce, ceiling: ceiling,
       capture: { [weak self] in self?.captured ?? [] })
   }
 
   private func readWindows() -> [WindowSession]? {
-    guard case .restored(let file, _) = SessionStore(url: url).read() else { return nil }
+    guard case .restored(let file, _) = SavedLayoutStore(url: url).read() else { return nil }
     return file.windows
   }
 
@@ -149,8 +149,8 @@ final class SessionSaveTests: XCTestCase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let blocked = directory.appendingPathComponent("blocked")
     try Data("not a directory".utf8).write(to: blocked)
-    let coordinator = SessionCoordinator(
-      store: SessionStore(url: blocked.appendingPathComponent("session.json")),
+    let coordinator = SavedLayoutCoordinator(
+      store: SavedLayoutStore(url: blocked.appendingPathComponent("session.json")),
       debounce: 0.05, ceiling: 0.2, capture: { [weak self] in self?.captured ?? [] })
 
     coordinator.writeIfChanged()
@@ -172,7 +172,7 @@ final class SessionSaveTests: XCTestCase {
   /// overwrite the file — silently deleting windows 2 and 3 on the very launch meant to restore them.
   func testSavesAreSuspendedWhileRestoring() {
     // A full session is on disk, as if written at the last quit.
-    SessionStore(url: url).writeSynchronously(
+    SavedLayoutStore(url: url).writeSynchronously(
       SessionFile(
         savedAt: Date(timeIntervalSince1970: 0),
         windows: [window(tabCount: 2, key: "W1"), window(tabCount: 2, key: "W2")]))
@@ -212,7 +212,7 @@ final class SessionSaveTests: XCTestCase {
 
   /// A flush while a restore is still in flight would replace a good file with a partial one.
   func testFlushWhileSuspendedWritesNothing() {
-    SessionStore(url: url).writeSynchronously(
+    SavedLayoutStore(url: url).writeSynchronously(
       SessionFile(
         savedAt: Date(timeIntervalSince1970: 0),
         windows: [window(tabCount: 2, key: "W1"), window(tabCount: 2, key: "W2")]))
@@ -265,7 +265,7 @@ final class SessionSaveTests: XCTestCase {
   /// A session written by a newer build is read-only: this build restores nothing and, critically,
   /// never overwrites it.
   func testNewerSchemaOnDiskStopsAllWrites() throws {
-    SessionStore(url: url).writeSynchronously(
+    SavedLayoutStore(url: url).writeSynchronously(
       SessionFile(
         schemaVersion: SessionFile.currentSchemaVersion + 1,
         savedAt: Date(timeIntervalSince1970: 0), windows: [window(tabCount: 9, key: "FUTURE")]))

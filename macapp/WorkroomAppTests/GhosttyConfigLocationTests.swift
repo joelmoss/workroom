@@ -198,7 +198,7 @@ final class GhosttyConfigLocationTests: XCTestCase {
 }
 
 /// A `FileManager` whose Application Support is a directory the test owns. `defaultThemeConfigURL`
-/// takes a `fileManager` for exactly this, as `SessionStore.defaultURL` does.
+/// takes a `fileManager` for exactly this, as `SavedLayoutStore.defaultURL` does.
 private final class ApplicationSupportRedirect: FileManager, @unchecked Sendable {
   private let root: URL
 

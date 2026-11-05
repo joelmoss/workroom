@@ -13,7 +13,7 @@ import Foundation
 /// one read back goes through `SessionFile.sanitized()`, the caps and checks `session.json` gets.
 enum HostLayout {
   /// Bumped only for a change an older build cannot read. Adding a tab kind or an optional field
-  /// is not one (`SessionSnapshot.swift`'s rule): an older build drops a kind it does not know and
+  /// is not one (`SavedLayout.swift`'s rule): an older build drops a kind it does not know and
   /// writes the rest back, the accepted trade (D5). A newer version is read-only to this build.
   static let schemaVersion = 1
 
