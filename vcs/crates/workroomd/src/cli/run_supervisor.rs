@@ -18,7 +18,7 @@ const SUPERVISOR: &str = include_str!("../run_supervisor.sh");
 
 /// What `run-supervisor` execs: `/bin/sh -c <supervisor> <name> <status> <child argv…>`.
 pub fn invocation(status: &str, command: &str, shell: &str) -> Vec<OsString> {
-    let (program, shell_flag) = super::run_script::probe_invocation(shell);
+    let (program, shell_flag) = crate::host::environment::probe_invocation(shell);
     let inner = format!("exec {} -c {}", quoted(program), quoted(command));
     [
         "/bin/sh",

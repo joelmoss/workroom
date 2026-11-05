@@ -69,7 +69,7 @@ impl InstanceLock {
     /// `fd` must be the open lock file the hand-off table names, owned by nothing else.
     pub unsafe fn adopt(fd: std::os::unix::io::RawFd) -> InstanceLock {
         use std::os::unix::io::FromRawFd;
-        crate::terminal::pty::set_cloexec(fd, true);
+        wr_exec::set_cloexec(fd, true);
         InstanceLock {
             // SAFETY: the caller guarantees `fd` is the open lock file and owned by nothing else,
             // so the `File` can take ownership of it.
@@ -138,18 +138,16 @@ static IDLE_WAKE: OnceLock<IdleWake> = OnceLock::new();
 fn idle_wake() -> &'static IdleWake {
     IDLE_WAKE.get_or_init(|| {
         let mut fds = [-1 as libc::c_int; 2];
-        // SAFETY: `pipe` writes two descriptors into the array; each `fcntl` takes one by number.
-        unsafe {
-            if libc::pipe(fds.as_mut_ptr()) != 0 {
-                return IdleWake {
-                    read: -1,
-                    write: -1,
-                };
-            }
-            for fd in fds {
-                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
-                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
-            }
+        // SAFETY: `pipe` writes two descriptors into the array.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return IdleWake {
+                read: -1,
+                write: -1,
+            };
+        }
+        for fd in fds {
+            let _ = wr_exec::set_nonblocking(fd);
+            wr_exec::set_cloexec(fd, true);
         }
         IdleWake {
             read: fds[0],

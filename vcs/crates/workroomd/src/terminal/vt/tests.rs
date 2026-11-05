@@ -1352,7 +1352,7 @@ fn png_bytes(width: u32, height: u32) -> Vec<u8> {
 
 fn sent_as_png(id: u32, width: u32, height: u32) -> Vec<u8> {
     let mut out = format!("\x1b_Ga=T,f=100,i={id},q=2;").into_bytes();
-    out.extend_from_slice(crate::vcs::file::base64(&png_bytes(width, height)).as_bytes());
+    out.extend_from_slice(crate::util::base64(&png_bytes(width, height)).as_bytes());
     out.extend_from_slice(b"\x1b\\");
     out
 }

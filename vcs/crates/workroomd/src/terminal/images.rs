@@ -56,7 +56,7 @@ pub enum Placement {
 /// `id`'s PNG as Kitty transmit chunks. No placement: that comes when the pixels have arrived, at
 /// wherever the image is by then.
 fn transmit_chunks(id: u32, png: &[u8]) -> VecDeque<Vec<u8>> {
-    let encoded = crate::vcs::file::base64(png);
+    let encoded = crate::util::base64(png);
     let parts: Vec<&[u8]> = encoded.as_bytes().chunks(CHUNK_BYTES).collect();
     let last = parts.len().saturating_sub(1);
     parts

@@ -310,16 +310,7 @@ fn pipe() -> io::Result<(RawFd, RawFd)> {
 /// any deadline the caller thinks it has — a test that reads with a timeout will hang instead of
 /// failing. The daemon's own pty reads are non-blocking for the same reason.
 pub fn set_nonblocking(stream: &FdStream) -> io::Result<()> {
-    // SAFETY: F_GETFL takes and returns plain integers; a stale descriptor only fails.
-    let flags = unsafe { libc::fcntl(stream.fd, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: as above, for F_SETFL.
-    if unsafe { libc::fcntl(stream.fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    wr_exec::set_nonblocking(stream.fd)
 }
 
 /// Closes a descriptor, to end a test's side of a transport.

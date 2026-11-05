@@ -208,7 +208,7 @@ pub(super) fn sweep_run_session(id: SessionId, sid: i32) {
     let spawned = std::thread::Builder::new()
         .name("run-sweep".into())
         .spawn(move || {
-            let members = crate::terminal::process::session_members(sid);
+            let members = wr_exec::session_members(sid);
             if members.is_empty() {
                 return;
             }
@@ -245,7 +245,11 @@ pub(super) fn sweep_run_session(id: SessionId, sid: i32) {
 /// snapshot. Killing the shell hangs up the pty, and the kernel delivers SIGHUP to the pty's
 /// foreground process group — but a child that called `setsid()` is in neither that group nor the
 /// shell's session, so nothing reaches it and it survives the app quitting. See
-/// `process::descendants`.
+/// `wr_exec::descendants`.
+///
+/// Its own sequence, not `wr_exec::end_tree`'s: that signals the group a spawned child leads, and
+/// here there are many roots, each a session leader whose hangup goes to every recorded pid in turn,
+/// the grace ends as soon as everything is gone, and the roots are reaped with `waitpid`.
 ///
 /// **The snapshot must be taken before anything is signalled.** Once the shell is hung up its
 /// children start exiting, and a descendant that has already left the process table is one no
@@ -262,8 +266,8 @@ pub(super) fn terminate(ptys: &[&Arc<Pty>]) {
     }
     // Each descendant is recorded with its start time, not just its pid, because the SIGKILL
     // sweep below happens up to `SIGHUP_GRACE` later — long enough for one to exit and its number
-    // to be reused. See `process::Descendant`.
-    let descendants = crate::terminal::process::descendants(&roots);
+    // to be reused. See `wr_exec::Descendant`.
+    let descendants = wr_exec::descendants(&roots);
 
     for pid in roots.iter().chain(descendants.iter().map(|d| &d.pid)) {
         // SAFETY: `kill` takes no pointers. The descendants were read just above, so a reused pid

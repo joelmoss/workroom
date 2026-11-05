@@ -14,11 +14,18 @@
 //! - Forward: `host::forward`
 //! - Layout: `host::layout`
 //! - ProgramStatus: `terminal::program_status`
+//!
+//! What services share sits below them, and no service reaches into another: `daemon::rpc` (the
+//! request/reply plumbing and reply budget), `exec` (running a git child for the VCS and File
+//! services; ending process trees is the `wr-exec` crate), `host::environment` (the host's login
+//! environment, for scripts and remote git) and `util`.
 
 pub mod cli;
 pub(crate) mod daemon;
+pub(crate) mod exec;
 pub(crate) mod host;
 pub(crate) mod terminal;
+pub(crate) mod util;
 pub(crate) mod vcs;
 
 /// What the integration tests in `tests/` use, and nothing else: every other module is

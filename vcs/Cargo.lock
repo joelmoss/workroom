@@ -1906,9 +1906,17 @@ dependencies = [
  "serde_json",
  "thiserror",
  "workroomd",
+ "wr-exec",
  "wr-protocol",
  "wr-vcs-git",
  "wr-vcs-model",
+]
+
+[[package]]
+name = "wr-exec"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -1928,6 +1936,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "wr-exec",
  "wr-vcs-model",
 ]
 

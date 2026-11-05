@@ -58,7 +58,7 @@ pub fn run_serve(
     // This is Workroom's existing local/remote lifetime distinction: every remote driver starts
     // `serve --idle-timeout never`, while the Mac's app and attach client use the idle default.
     // Choose before any request threads start, and reselect from the carried argv after hand-off.
-    crate::vcs::service::configure_read_environment(timeout == Ok(Duration::MAX));
+    crate::host::environment::configure_read_environment(timeout == Ok(Duration::MAX));
     // Before anything is made, so all of it is the user's: a container's entrypoint starts as root.
     if let Some(user) = as_user.user {
         let account = match crate::host::account::lookup(&user) {
@@ -214,7 +214,7 @@ fn adopt(
     let lock = unsafe { serve::InstanceLock::adopt(table.lock) };
     // SAFETY: as above; the listening socket is one of those descriptors.
     let listener = unsafe { UnixListener::from_raw_fd(table.listener) };
-    crate::terminal::pty::set_cloexec(table.listener, true);
+    wr_exec::set_cloexec(table.listener, true);
     // The same store of program status, so the app keeps what it knows (#358). A table from
     // before version 3 has none, and the fresh boot tells the app it starts over.
     if let Some(boot) = table.boot {

@@ -764,7 +764,7 @@ fn exec(
         return Err(HandOffError::RequesterGone);
     }
     for fd in &carried.0 {
-        crate::terminal::pty::set_cloexec(*fd, false);
+        wr_exec::set_cloexec(*fd, false);
     }
     // `execv`, not `Command::exec`: std's exec resets SIGPIPE to its default before the call, and
     // when the call fails that leaves this program to be killed by the next write to a closed
@@ -774,7 +774,7 @@ fn exec(
     unsafe { libc::execv(program.as_ptr(), argv.as_ptr()) };
     let error = std::io::Error::last_os_error();
     for fd in &carried.0 {
-        crate::terminal::pty::set_cloexec(*fd, true);
+        wr_exec::set_cloexec(*fd, true);
     }
     Err(HandOffError::Exec {
         binary: binary.to_path_buf(),

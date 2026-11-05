@@ -18,6 +18,32 @@ use wr_vcs_model::VcsError;
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 pub(crate) const MAX_RESPONSE: usize = 16 * 1024 * 1024;
+
+/// Headroom left for everything in an exec reply that is not the two captured streams: the keys,
+/// the exit code, the two booleans, the envelope framing, and JSON's own punctuation. Generous on
+/// purpose — the cost of over-reserving is a few KiB of output, the cost of under-reserving is the
+/// whole reply being replaced by an error.
+pub(crate) const EXEC_REPLY_RESERVE: usize = 64 * 1024;
+
+/// An UPPER BOUND on what this text costs once JSON-escaped, which is what `MAX_RESPONSE` bounds.
+///
+/// A bound, not an exact count: serde emits `\b` (0x08) and `\f` (0x0C) as two bytes where this
+/// charges six. Over-estimating is the safe direction — it truncates fractionally early and can
+/// never overflow the ceiling — and getting it exact would mean tracking serde's escape table here,
+/// which is a coupling worth more than the handful of bytes it buys.
+///
+/// The expansion is why the two caps could not both be satisfied: a control byte serializes as
+/// `\u0001`, six bytes for one, so two streams at `exec::MAX_EXEC_STREAM` (4 MiB each) reach 48 MiB
+/// of wire form against a 16 MiB ceiling. Codex reproduced it with 3 MiB of `0x01`.
+pub(crate) fn escaped_len(text: &str) -> usize {
+    text.chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        })
+        .sum()
+}
 /// The reassembled ceiling for a CHUNKED request, mirroring `MAX_RESPONSE` on the reply side. A
 /// single-envelope request is still bounded by `MAX_ENVELOPE_PAYLOAD` (1 MiB) as before.
 const MAX_REQUEST: usize = 16 * 1024 * 1024;

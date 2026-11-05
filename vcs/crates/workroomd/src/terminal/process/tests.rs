@@ -87,23 +87,6 @@ fn prefers_the_real_binary_over_a_rewritten_argv0() {
     );
 }
 
-/// The listing comes back newest first, so a short read drops the oldest processes, launchd
-/// (pid 1) among them, while this test's own recent pid survives.
-#[cfg(target_os = "macos")]
-#[test]
-fn lists_every_process() {
-    let pids = platform::all_pids();
-    assert!(
-        pids.contains(&(std::process::id() as i32)),
-        "own pid missing"
-    );
-    assert!(
-        pids.contains(&1),
-        "launchd missing from {} pids",
-        pids.len()
-    );
-}
-
 /// Set on the child `reads_a_childs_claude_profile` spawns, which makes this test sleep so the
 /// parent can read its environment. Without it (an ordinary test run) it returns at once.
 const PROFILE_PROBE: &str = "WORKROOMD_CLAUDE_PROFILE_PROBE";

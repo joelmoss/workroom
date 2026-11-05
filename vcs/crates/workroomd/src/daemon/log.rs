@@ -232,7 +232,7 @@ pub fn note_fatal_signals() {
         return;
     }
     for fd in fds {
-        crate::terminal::pty::set_cloexec(fd, true);
+        wr_exec::set_cloexec(fd, true);
     }
     let [read, write] = fds;
     let reader = std::thread::Builder::new()

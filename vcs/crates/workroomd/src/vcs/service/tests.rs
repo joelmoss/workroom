@@ -1,7 +1,10 @@
 use super::*;
 use crate::daemon::rpc::is_busy;
-use std::io::Read;
+use crate::exec::run_exec;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use wr_protocol::envelope::{EnvelopeDecoder, Hello};
 use wr_protocol::frame::{Frame, FrameKind};
 
@@ -32,19 +35,6 @@ fn version_and_path_errors_are_explicit() {
             .get("error")
             .is_some()
     );
-}
-
-#[test]
-fn a_stream_that_ends_exactly_at_the_cap_is_not_flagged_but_one_byte_over_is() {
-    let exact = Mutex::new(Vec::new());
-    let flag = AtomicBool::new(false);
-    drain_capped_flagged([7u8; 10].as_slice(), 10, &exact, &flag);
-    assert_eq!(exact.lock().unwrap().len(), 10);
-    assert!(!flag.load(Ordering::Acquire));
-    let over = Mutex::new(Vec::new());
-    drain_capped_flagged([7u8; 11].as_slice(), 10, &over, &flag);
-    assert_eq!(over.lock().unwrap().len(), 10);
-    assert!(flag.load(Ordering::Acquire));
 }
 
 /// A VCS request that is slow in flight must block neither control frames nor disconnect, and
@@ -315,26 +305,6 @@ fn exec_stdin_preserves_bytes_that_are_not_valid_utf8() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-#[test]
-fn exec_times_out_and_kills_a_wedged_process_within_the_sigterm_grace() {
-    let root = git_repo("timeout");
-    let start = Instant::now();
-    let captured = run_exec(
-        &root,
-        "sleep",
-        &["30".into()],
-        Duration::from_millis(100),
-        None,
-        &[],
-    )
-    .unwrap();
-    assert!(captured.timed_out);
-    assert!(captured.signaled);
-    // SIGTERM at 100ms, grace to 2.1s, SIGKILL — must not run anywhere near the full 30s sleep.
-    assert!(start.elapsed() < Duration::from_secs(5));
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
 /// An older app still names a `barrier_root` on every remote command. It is accepted and
 /// ignored: the command runs normally on a git repository.
 #[test]
@@ -411,262 +381,6 @@ fn capabilities_reports_the_read_count_and_the_exec_service_version() {
     );
 }
 
-/// The child's environment is EXACTLY the request's map — nothing of the daemon's own leaks
-/// through. This is the property that keeps a daemon-routed commit from being authored under
-/// the stale identity of whichever app launch first spawned this daemon; a key allowlist could
-/// not provide it, because what git reads for identity, config, signing and hooks is
-/// open-ended. `env` (not in the git allowlist) goes through `run_exec` directly, bypassing
-/// `exec`'s executable restriction, specifically to observe what reaches the child.
-#[test]
-fn run_exec_replaces_the_daemons_environment_with_the_requests() {
-    // A variable this process already has and the request does not set. Inherited rather than
-    // set here: changing the environment of a test process whose other tests run on other
-    // threads is unsound, which is why `set_var` is `unsafe` as of edition 2024.
-    let request = [
-        "PATH",
-        "SSH_AUTH_SOCK",
-        "GIT_AUTHOR_EMAIL",
-        "GIT_CEILING_DIRECTORIES",
-    ];
-    let (inherited, _) = std::env::vars()
-        .find(|(key, _)| !request.contains(&key.as_str()))
-        .expect("the test process has a variable the request does not set");
-    let root = git_repo("run-exec-env");
-    let captured = run_exec(
-        &root,
-        "env",
-        &[],
-        Duration::from_secs(5),
-        None,
-        &[
-            ("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            ("SSH_AUTH_SOCK", "/tmp/allowed.sock"),
-            ("GIT_AUTHOR_EMAIL", "fresh@example.com"),
-        ],
-    )
-    .unwrap();
-    let stdout = String::from_utf8_lossy(&captured.stdout);
-    assert!(stdout.contains("SSH_AUTH_SOCK=/tmp/allowed.sock"));
-    assert!(stdout.contains("GIT_AUTHOR_EMAIL=fresh@example.com"));
-    // The daemon's own environment must not reach the child at all.
-    let leaked = format!("{inherited}=");
-    assert!(
-        !stdout.lines().any(|line| line.starts_with(&leaked)),
-        "{inherited} reached the child"
-    );
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-/// A remote host's child environment (#229): the host's own, less what could point git at
-/// another repository or let ssh prompt, with the app's pins on top.
-#[test]
-fn a_host_environment_is_the_hosts_own_with_the_pins_on_top_and_ssh_unable_to_prompt() {
-    let pairs = |pairs: &[(&str, &str)]| {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect::<Vec<_>>()
-    };
-    let os = |pairs: Vec<(String, String)>| {
-        pairs
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect::<Vec<(std::ffi::OsString, std::ffi::OsString)>>()
-    };
-    let own = pairs(&[
-        ("HOME", "/home/workroom"),
-        ("PATH", "/usr/bin:/bin"),
-        ("GIT_DIR", "/elsewhere/.git"),
-        ("SSH_ASKPASS", "/usr/bin/ask"),
-        ("LC_ALL", "fr_FR.UTF-8"),
-        ("GIT_SSH_COMMAND", "ssh -i /home/workroom/.ssh/deploy"),
-    ]);
-    let pins = pairs(&[("LC_ALL", "C"), ("GIT_TERMINAL_PROMPT", "0")])
-        .into_iter()
-        .collect();
-    let env = host_environment(os(own).into_iter(), pins);
-    assert_eq!(env["HOME"], "/home/workroom");
-    assert_eq!(env["PATH"], "/usr/bin:/bin");
-    assert!(!env.contains_key("GIT_DIR"));
-    assert!(!env.contains_key("SSH_ASKPASS"));
-    assert_eq!(env["LC_ALL"], "C", "a pin outranks the host's value");
-    assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
-    assert_eq!(
-        env["GIT_SSH_COMMAND"],
-        "ssh -i /home/workroom/.ssh/deploy -o BatchMode=yes"
-    );
-    assert_eq!(env["SSH_ASKPASS_REQUIRE"], "never");
-
-    // With none of its own, it gets none: set, it would outrank a repository's
-    // `core.sshCommand`, where a deploy key usually lives.
-    let bare = host_environment(std::iter::empty(), Default::default());
-    assert!(!bare.contains_key("GIT_SSH_COMMAND"));
-    assert_eq!(bare["SSH_ASKPASS_REQUIRE"], "never");
-
-    // A variable that is not UTF-8 is dropped, not a panic.
-    use std::os::unix::ffi::OsStringExt;
-    let latin1 = vec![(
-        std::ffi::OsString::from("LEGACY"),
-        std::ffi::OsString::from_vec(vec![0xe9]),
-    )];
-    let env = host_environment(latin1.into_iter(), Default::default());
-    assert!(!env.contains_key("LEGACY"));
-}
-
-#[test]
-fn remote_git_reads_the_login_environment_from_home_not_a_clone() {
-    let root = git_repo("host-login-home");
-    let shell = profile_shell(
-        &root,
-        "export READ_FROM=\"$(pwd -P)\"\nexec /bin/sh -c \"$2\"\n",
-    );
-    let cache = OnceLock::new();
-    let login = cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
-    let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
-    assert_eq!(login["READ_FROM"], home.to_str().unwrap());
-}
-
-/// The daemon reads a host profile once, and every remote exec then applies the existing scrub
-/// and request pins to that cached result. A profile may provide git/gh and credentials, but it
-/// cannot redirect a repository or enable a graphical prompt.
-#[test]
-fn remote_git_uses_the_cached_login_environment_with_the_policy_on_top() {
-    let root = git_repo("host-login-env");
-    let shell = profile_shell(
-        &root,
-        "export FROM_PROFILE=host\nexport PATH=/home/u/.local/bin:$PATH\nexport GIT_DIR=/wrong/repo\nexport GIT_WORK_TREE=/wrong/worktree\nexport GIT_TERMINAL_PROMPT=1\nexport LC_ALL=fr_FR.UTF-8\nexport DISPLAY=:0\nexport SSH_ASKPASS=/host/ask\nexec /bin/sh -c \"$2\"\n",
-    );
-    let cache = OnceLock::new();
-    let login = cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
-    assert_eq!(login["FROM_PROFILE"], "host");
-    assert!(login["PATH"].starts_with("/home/u/.local/bin:"));
-    assert!(!login.contains_key("WORKROOM_SHELL_PROBE"));
-    let env = host_environment(
-        login.iter().map(|(key, value)| (key.into(), value.into())),
-        BTreeMap::from([("LC_ALL".to_string(), "C".to_string())]),
-    );
-    assert_eq!(env["FROM_PROFILE"], "host");
-    assert_eq!(env["LC_ALL"], "C");
-    assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
-    assert!(!env.contains_key("GIT_DIR"));
-    assert!(!env.contains_key("GIT_WORK_TREE"));
-    assert!(!env.contains_key("DISPLAY"));
-    assert!(!env.contains_key("SSH_ASKPASS"));
-    assert_eq!(env["SSH_ASKPASS_REQUIRE"], "never");
-
-    // Removing the shell proves the next exec never probes again: an uncached read would
-    // fall back and lose FROM_PROFILE.
-    std::fs::remove_file(&shell).unwrap();
-    let again = cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
-    assert!(std::ptr::eq(login, again));
-    assert_eq!(again["FROM_PROFILE"], "host");
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-#[test]
-fn a_hanging_host_profile_falls_back_once_without_holding_remote_git() {
-    let root = git_repo("host-login-timeout");
-    let shell = profile_shell(&root, "sleep 30\n");
-    let cache = OnceLock::new();
-    let started = Instant::now();
-    let env = cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_millis(100));
-    assert!(started.elapsed() < Duration::from_secs(3));
-    assert!(!env["PATH"].is_empty());
-    assert!(!env.contains_key("WORKROOM_SHELL_PROBE"));
-    assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
-    let again = cached_login_environment(&cache, shell.to_str().unwrap(), Duration::from_secs(2));
-    assert!(std::ptr::eq(env, again), "the fallback is cached too");
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-fn profile_shell(root: &Path, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let shell = root.join("bash");
-    let draft = root.join("profile.draft");
-    std::fs::write(&draft, format!("#!/bin/sh\n{body}")).unwrap();
-    // A simultaneous test fork must not inherit a writable descriptor to this executable
-    // (ETXTBSY on Linux), as in run_script's script helper.
-    assert!(
-        Command::new("cp")
-            .arg(&draft)
-            .arg(&shell)
-            .status()
-            .unwrap()
-            .success()
-    );
-    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
-    shell
-}
-
-/// The regression that motivated bounding the drain: a child that exits promptly while leaving
-/// a BACKGROUND descendant holding its stdout must not hold the exec thread (and with it one of
-/// the 32 `ACTIVE` permits) for the descendant's lifetime. Before the bound, this returned in
-/// ~4s instead of ~0s, and each occurrence leaked a permit permanently.
-#[test]
-fn exec_does_not_wait_on_a_descendant_that_outlives_the_child() {
-    let root = git_repo("run-exec-straggler");
-    let started = Instant::now();
-    let captured = run_exec(
-        &root,
-        "sh",
-        &["-c".to_string(), "sleep 5 & echo done; exit 0".to_string()],
-        Duration::from_secs(30),
-        None,
-        &[("PATH", "/usr/bin:/bin")],
-    )
-    .unwrap();
-    let elapsed = started.elapsed();
-    assert_eq!(captured.exit_code, 0);
-    assert!(!captured.timed_out);
-    assert!(String::from_utf8_lossy(&captured.stdout).contains("done"));
-    assert!(
-        elapsed < Duration::from_secs(4),
-        "run_exec waited {elapsed:?} on a background descendant"
-    );
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-/// Native spawns `/usr/bin/env git`, so a missing tool exits 127 and `CLIVCSWriter.classify`
-/// answers `.toolMissing`. Spawning the program directly used to raise an Io error instead,
-/// which the client reported as `launchFailed` — the value whose own doc reserves it for
-/// "nothing ran" and warns it would "misdiagnose a deleted workroom as a missing git/gh".
-#[test]
-fn exec_reports_a_missing_tool_as_127_not_a_service_error() {
-    let root = git_repo("run-exec-missing");
-    let empty = root.join("empty-bin");
-    std::fs::create_dir_all(&empty).unwrap();
-    let captured = run_exec(
-        &root,
-        "git",
-        &["status".to_string()],
-        Duration::from_secs(5),
-        None,
-        &[("PATH", empty.to_str().unwrap())],
-    )
-    .unwrap();
-    assert_eq!(captured.exit_code, 127);
-    assert!(!captured.signaled);
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-/// A vanished working directory stays a service error — that IS "nothing ran", and conflating
-/// it with 127 is the mirror of the bug above.
-#[test]
-fn exec_reports_a_vanished_directory_as_an_error_not_127() {
-    let root = git_repo("run-exec-gone");
-    let missing = root.join("not-there");
-    let failed = run_exec(
-        &missing,
-        "git",
-        &["status".to_string()],
-        Duration::from_secs(5),
-        None,
-        &[("PATH", "/usr/bin:/bin")],
-    );
-    assert!(failed.is_err());
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
 /// The clamp is the only thing between a client's `timeout_ms` and a thread that waits on it,
 /// and both ends of it matter: 0 would make every command time out before it started, and an
 /// unbounded value would park an `ACTIVE` permit for as long as the caller asked. Calls
@@ -716,38 +430,6 @@ fn an_exec_request_with_an_unsupported_version_is_refused_before_spawning() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// Two separate properties, and the second is the one that matters. The cap bounds what is
-/// KEPT; the loop must go on reading past it, because the child writes into a pipe whose buffer
-/// is ~64 KiB — stop reading and the child blocks on write forever, which is a hang, not a
-/// truncation. `StatusCommandRunner.readCapped` has the same shape for the same reason.
-#[test]
-fn drain_capped_bounds_what_it_keeps_and_still_reads_to_eof() {
-    // A source larger than the cap AND larger than any pipe buffer.
-    let cap = 1024;
-    let source = vec![b'x'; 256 * 1024];
-    let sink = Mutex::new(Vec::new());
-    drain_capped(source.as_slice(), cap, &sink);
-    assert_eq!(sink.lock().unwrap().len(), cap, "the cap did not hold");
-
-    // Drained to EOF through a REAL pipe, which is where refusing to read past the cap would
-    // deadlock rather than merely truncate. The writer completes only if the reader kept going.
-    let (reader, mut writer) = std::io::pipe().unwrap();
-    let payload = vec![b'y'; 512 * 1024];
-    let expected = payload.len();
-    let pump = std::thread::spawn(move || {
-        std::io::Write::write_all(&mut writer, &payload).unwrap();
-        expected
-    });
-    let piped = Mutex::new(Vec::new());
-    drain_capped(reader, cap, &piped);
-    assert_eq!(
-        pump.join().unwrap(),
-        expected,
-        "the writer never finished, so the reader stopped short of EOF"
-    );
-    assert_eq!(piped.lock().unwrap().len(), cap);
-}
-
 /// The rejection branch, which the round-trip test above cannot reach: every byte 0x00-0xFF is
 /// representable, so only a client that sent something OTHER than a Latin-1-decoded string gets
 /// here. Refusing is the point — truncating a pathspec payload would stage the wrong files.
@@ -762,99 +444,6 @@ fn latin1_bytes_rejects_a_character_outside_the_byte_range() {
     // The boundary either side, to pin where the rejection starts.
     assert!(latin1_bytes("\u{00FF}").is_ok());
     assert!(latin1_bytes("\u{0100}").is_err());
-}
-
-/// The gap against native, which `ProcessTree.killTree` has covered since it was written ("helpers
-/// spawned by git/gh can outlive the parent") and the daemon did not: a DESCENDANT that calls
-/// `setsid` leaves the process group, so `kill(-pid, …)` never reaches it. It then goes on
-/// running — and, if it inherited the pipes, holding this request's readers open — after the
-/// result has released the caller's gate.
-///
-/// The leader itself cannot escape: `run_exec` sets `process_group(0)`, which makes it a group
-/// leader, and `setsid` is EPERM for a group leader. So the descendant is the whole of the gap,
-/// and asserting the leader's timing would prove nothing.
-///
-/// ENVIRONMENT: needs a real process table. Under a sandbox that hides other processes, `pgrep`
-/// returns nothing, the snapshot comes back empty and this fails in a way indistinguishable from
-/// the bug — measured, not guessed. If it fails, check `descendants()` sees anything at all
-/// before believing the kill path is broken.
-#[test]
-fn exec_kills_a_descendant_that_escaped_the_process_group() {
-    let root = git_repo("setsid-escape");
-    let marker = root.join("still-alive");
-    // The grandchild leaves the group, waits out the whole escalation, and only THEN writes.
-    // If it is still alive at that point the marker appears, which is the failure this catches.
-    let program = format!(
-        "import os,sys,time\n\
-             if os.fork() == 0:\n\
-             \x20   os.setsid()\n\
-             \x20   time.sleep(6)\n\
-             \x20   open({:?}, 'w').close()\n\
-             \x20   sys.exit(0)\n\
-             time.sleep(30)\n",
-        marker.to_str().unwrap()
-    );
-    let captured = run_exec(
-        &root,
-        "python3",
-        &["-c".into(), program],
-        // Not 100ms: python's own start-up is ~50ms and the fork follows it, so a tighter
-        // deadline races the grandchild into existence and the snapshot finds an empty tree —
-        // which looks exactly like the bug this asserts against.
-        Duration::from_millis(1500),
-        None,
-        &[("PATH", "/usr/bin:/bin")],
-    )
-    .unwrap();
-    assert!(captured.timed_out, "the timeout was not reported");
-
-    // Past the grandchild's own sleep, so its write would have happened by now if it survived.
-    std::thread::sleep(Duration::from_secs(6));
-    assert!(
-        !marker.exists(),
-        "a setsid descendant outlived the kill and kept running"
-    );
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-/// `descendants` must never walk init's own tree — a SIGKILL aimed at pid 1's descendants is
-/// the worst outcome a bug here could have — and must terminate on a pid nothing can have.
-#[test]
-fn the_descendant_walk_refuses_init_and_terminates() {
-    assert!(descendants(0).is_empty());
-    assert!(descendants(1).is_empty());
-    assert!(descendants(-1).is_empty());
-    assert!(descendants(i32::MAX).is_empty());
-    // Killing an empty set is a no-op, not a signal to the current process group.
-    kill_recorded(&[]);
-}
-
-/// LOW 1: the bug this whole identity check exists for. `kill_recorded` used to SIGKILL by bare
-/// pid, so a descendant that exited during the SIGTERM-to-SIGKILL grace period and whose pid was
-/// handed to something else would be killed in its place. A `Descendant` whose recorded start
-/// time cannot match anything real (`u64::MAX`) reproduces exactly that shape — the number is
-/// right, the process behind it is not — without needing to actually win a real pid-reuse race.
-#[test]
-fn kill_recorded_never_signals_a_pid_whose_start_time_has_changed() {
-    let mut child = Command::new("/bin/sleep")
-        .arg("30")
-        .spawn()
-        .expect("spawn sleep");
-    let pid = child.id() as i32;
-    let impostor = crate::terminal::process::Descendant {
-        pid,
-        started: u64::MAX,
-    };
-    kill_recorded(&[impostor]);
-    // Give a real SIGKILL time to land before checking: without the identity check this reaps
-    // almost immediately.
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(
-        child.try_wait().expect("try_wait").is_none(),
-        "kill_recorded signalled a pid it no longer identifies"
-    );
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// The two caps could not both be satisfied: `MAX_EXEC_STREAM` allows 4 MiB per stream, and a
@@ -959,25 +548,4 @@ fn escaped_length_bounds_the_expansion_it_is_used_to_budget() {
     // A multi-byte character is kept whole or dropped whole — a split would panic on the slice.
     assert_eq!(truncate_to_escaped_budget("é", 1), "");
     assert_eq!(truncate_to_escaped_budget("aé", 2), "a");
-}
-
-#[test]
-fn a_listing_environment_scrubs_repository_overrides_and_pins_the_locale() {
-    let vars = [
-        ("GIT_DIR", "/elsewhere"),
-        ("GIT_EXTERNAL_DIFF", "/bin/evil"),
-        ("LC_ALL", "fr_FR.UTF-8"),
-        ("HOME", "/home/someone"),
-    ]
-    .map(|(key, value)| (key.into(), value.into()));
-    let env: BTreeMap<_, _> = scrubbed_environment(vars.into_iter()).into_iter().collect();
-    assert!(!env.contains_key("GIT_DIR"));
-    assert!(!env.contains_key("GIT_EXTERNAL_DIFF"));
-    assert_eq!(env["LC_ALL"], "C");
-    assert_eq!(env["GIT_OPTIONAL_LOCKS"], "0");
-    assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
-    assert_eq!(
-        env["HOME"], "/home/someone",
-        "everything else passes through"
-    );
 }

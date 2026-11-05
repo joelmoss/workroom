@@ -1,4 +1,5 @@
 use super::*;
+use crate::host::environment::FLOOR_PATH;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -32,95 +33,6 @@ fn script(dir: &Path, name: &str, body: &str, mode: u32) -> PathBuf {
 
 fn plain_env() -> BTreeMap<String, String> {
     BTreeMap::from([("PATH".to_string(), FLOOR_PATH.to_string())])
-}
-
-#[test]
-fn the_payload_is_read_between_the_first_pair_of_markers() {
-    let data = b"noiseMARKA=1\0B=x=y\0MARKtrailingMARKjunk";
-    let parsed = parse_probe_output(data, "MARK").unwrap();
-    assert_eq!(parsed.get("A").map(String::as_str), Some("1"));
-    assert_eq!(parsed.get("B").map(String::as_str), Some("x=y"));
-    assert!(parse_probe_output(b"no markers here", "MARK").is_none());
-    assert!(parse_probe_output(b"MARK only one", "MARK").is_none());
-}
-
-#[test]
-fn merging_drops_the_probes_state_and_puts_the_overrides_on_top() {
-    let probed = BTreeMap::from([
-        ("PATH".to_string(), "/home/u/bin:/usr/bin".to_string()),
-        ("WORKROOM_SHELL_PROBE".to_string(), "1".to_string()),
-        ("SHLVL".to_string(), "2".to_string()),
-        ("GIT_TERMINAL_PROMPT".to_string(), "1".to_string()),
-        ("EDITOR".to_string(), "vim".to_string()),
-    ]);
-    let merged = merge(probed, "/usr/bin:/bin");
-    assert_eq!(merged["PATH"], "/home/u/bin:/usr/bin:/bin");
-    assert!(!merged.contains_key("WORKROOM_SHELL_PROBE"));
-    assert!(!merged.contains_key("SHLVL"));
-    assert_eq!(merged["GIT_TERMINAL_PROMPT"], "0");
-    assert_eq!(merged["GIT_OPTIONAL_LOCKS"], "0");
-    assert_eq!(merged["EDITOR"], "vim");
-}
-
-#[test]
-fn a_posix_shell_is_probed_login_and_interactive_and_anything_else_through_sh() {
-    assert_eq!(probe_invocation("/usr/bin/zsh"), ("/usr/bin/zsh", "-lic"));
-    assert_eq!(probe_invocation("/bin/bash"), ("/bin/bash", "-lic"));
-    assert_eq!(probe_invocation("/usr/bin/fish"), ("/bin/sh", "-lc"));
-    assert_eq!(probe_invocation(""), ("/bin/sh", "-lc"));
-}
-
-/// A fake POSIX shell (named `bash`) that exports a variable and runs the probe's line, as a
-/// login shell reading its profile would.
-#[test]
-fn the_probe_reads_what_the_login_shell_exports() {
-    let dir = scratch("probe");
-    let shell = script(
-        &dir,
-        "bash",
-        "#!/bin/sh\nexport FROM_PROFILE=yes\necho \"probe=$WORKROOM_SHELL_PROBE\" >&2\nexec /bin/sh -c \"$2\"\n",
-        0o755,
-    );
-    let env = probe(shell.to_str().unwrap(), &dir, PROBE_TIMEOUT).unwrap();
-    assert_eq!(env.get("FROM_PROFILE").map(String::as_str), Some("yes"));
-    assert_eq!(
-        env.get("WORKROOM_SHELL_PROBE").map(String::as_str),
-        Some("1")
-    );
-}
-
-#[test]
-fn a_probe_that_hangs_gives_up() {
-    let dir = scratch("probe-hang");
-    let shell = script(&dir, "zsh", "#!/bin/sh\nsleep 30\n", 0o755);
-    let started = Instant::now();
-    assert_eq!(
-        probe(shell.to_str().unwrap(), &dir, Duration::from_millis(300)),
-        Err("timedOut")
-    );
-    assert!(started.elapsed() < Duration::from_secs(5));
-}
-
-#[test]
-fn a_failed_login_read_reports_the_reason_and_uses_the_own_environment() {
-    let dir = scratch("probe-fallback");
-    let shell = script(&dir, "bash", "#!/bin/sh\nexit 4\n", 0o755);
-    let mut reported = None;
-    let env = login_environment(shell.to_str().unwrap(), &dir, PROBE_TIMEOUT, |reason| {
-        reported = Some(reason.to_string());
-    });
-    assert_eq!(reported.as_deref(), Some("nonZeroExit"));
-    assert_eq!(env, fallback());
-}
-
-#[test]
-fn a_shell_that_execs_something_else_gives_no_environment() {
-    let dir = scratch("probe-exec");
-    let shell = script(&dir, "zsh", "#!/bin/sh\nexec true\n", 0o755);
-    assert_eq!(
-        probe(shell.to_str().unwrap(), &dir, PROBE_TIMEOUT),
-        Err("noMarkers")
-    );
 }
 
 #[test]

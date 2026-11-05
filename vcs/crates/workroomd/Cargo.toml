@@ -33,6 +33,8 @@ notify = "8"
 # which cargo-zigbuild handles for the musl targets.
 ring = "0.17"
 wr-protocol = { path = "../wr-protocol" }
+# Ending child processes and their trees, draining their output, descriptor flags.
+wr-exec = { path = "../wr-exec" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
 # Kitty images: the decoder libghostty-vt needs to store a PNG, and what a reattach re-sends them

@@ -1,0 +1,19 @@
+# Child processes, supervised one way for the whole workspace: the process-tree snapshot, the tree
+# kill that reaches a `setsid` escaper, the bounded output drains and the descriptor flags.
+#
+# A crate rather than a workroomd module because wr-vcs-git's bounded git reads need it too, and
+# workroomd depends on wr-vcs-git, not the reverse. Nothing here knows about git: what a git child's
+# environment must hold is wr-vcs-git's (`diff::SCRUBBED`, `diff::PINS`, `diff::ceiling_directories`).
+[package]
+name = "wr-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# kill, waitpid, fcntl, and the process table: proc_pidinfo on macOS, /proc on Linux.
+libc = "0.2"

@@ -24,7 +24,7 @@
 
 use crate::daemon::rpc::SharedWriter;
 use crate::daemon::rpc::{self, Permit};
-use crate::vcs::service as vcs;
+use crate::exec;
 use crate::vcs::watch::Subscriptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -181,7 +181,7 @@ fn root_of(request: &Request) -> Result<PathBuf, FileError> {
         .root
         .as_deref()
         .ok_or_else(|| unsupported("missing root"))?;
-    vcs::absolute(root).map_err(|_| unsupported("invalid absolute root"))
+    exec::absolute(root).map_err(|_| unsupported("invalid absolute root"))
 }
 
 fn reply(result: Result<Value, FileError>) -> Value {
@@ -189,7 +189,7 @@ fn reply(result: Result<Value, FileError>) -> Value {
 }
 
 /// Handle one envelope. Requests that do real work run on their own thread holding a `Permit`, like
-/// `vcs::dispatch`; `watch`/`unwatch` are answered inline because they only register with the
+/// `vcs::service::dispatch`; `watch`/`unwatch` are answered inline because they only register with the
 /// connection's `Subscriptions` (and deliberately take no permit — see `watch.rs`).
 pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subscriptions) {
     // Stream 0 belongs to the daemon: it is where watch events go, never where a request arrives.
@@ -341,7 +341,9 @@ fn listing_command() -> (&'static str, Vec<String>) {
 /// `LC_ALL=C` so a translated git cannot change a message a caller matches on, and no `GIT_DIR` family
 /// so an inherited override cannot list a different repository than the one asked about.
 fn listing_environment() -> Vec<(String, String)> {
-    vcs::host_read_environment().into_iter().collect()
+    crate::host::environment::host_read_environment()
+        .into_iter()
+        .collect()
 }
 
 fn list(request: &Request) -> Result<Value, FileError> {
@@ -356,7 +358,7 @@ fn list(request: &Request) -> Result<Value, FileError> {
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
-    let captured = vcs::run_exec_with(&root, executable, &args, LIST_TIMEOUT, None, &env)?;
+    let captured = exec::run_exec_with(&root, executable, &args, LIST_TIMEOUT, None, &env)?;
     if captured.stdout_truncated {
         return Err(FileError::ListingTruncated(
             "listing exceeds the 4 MiB capture cap".into(),
@@ -367,8 +369,8 @@ fn list(request: &Request) -> Result<Value, FileError> {
     // JSON escaping can multiply a control-heavy listing (NUL separators are six bytes each), so the
     // raw cap above does not bound the reply. Refuse rather than let `send` replace the whole reply
     // with an error the caller cannot tell from a real failure.
-    if vcs::escaped_len(&stdout) + vcs::escaped_len(&stderr)
-        > rpc::MAX_RESPONSE - vcs::EXEC_REPLY_RESERVE
+    if rpc::escaped_len(&stdout) + rpc::escaped_len(&stderr)
+        > rpc::MAX_RESPONSE - rpc::EXEC_REPLY_RESERVE
     {
         return Err(FileError::ListingTruncated(
             "listing exceeds the reply ceiling once escaped".into(),
@@ -419,7 +421,7 @@ fn read(request: &Request, abandoned: &'static AtomicUsize) -> Result<Value, Fil
         .as_deref()
         .ok_or_else(|| unsupported("missing path"))?;
     let relative =
-        vcs::relative(relative).map_err(|_| unsupported("invalid relative file path"))?;
+        exec::relative(relative).map_err(|_| unsupported("invalid relative file path"))?;
     let mode = request
         .symlinks
         .ok_or_else(|| unsupported("missing symlinks mode"))?;
@@ -438,7 +440,7 @@ fn read(request: &Request, abandoned: &'static AtomicUsize) -> Result<Value, Fil
         abandoned,
         open_read_file,
     )?;
-    Ok(json!({"size": bytes.len(), "content": base64(&bytes)}))
+    Ok(json!({"size": bytes.len(), "content": crate::util::base64(&bytes)}))
 }
 
 // MARK: Resolving
@@ -447,7 +449,7 @@ fn read(request: &Request, abandoned: &'static AtomicUsize) -> Result<Value, Fil
 /// (#327): resolved on the Mac, the `..` lands beside the link instead of beside its target. So the
 /// app sends the path with its `..` and reads whatever this answers.
 ///
-/// `read`'s path rule (`vcs::relative`) refuses `.` and `..` before any I/O, and this one keeps
+/// `read`'s path rule (`exec::relative`) refuses `.` and `..` before any I/O, and this one keeps
 /// that guarantee for every path that climbs out of the root as WRITTEN: one that does is refused
 /// here, before anything is looked up. What is left leaves the root only through a symlink inside
 /// it. Only the part through the last `..` is looked up, so a `..` after a link out of the root
@@ -757,31 +759,6 @@ fn open_read_file(
         file,
         size: metadata.len(),
     })
-}
-
-/// Standard base64 with padding. Hand-rolled because it is fifteen lines and the crate has no other
-/// use for a base64 dependency; `Data(base64Encoded:)` is its decoder on the Swift side.
-pub(crate) fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = (chunk[0] as u32) << 16
-            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
-            | *chunk.get(2).unwrap_or(&0) as u32;
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
 }
 
 #[cfg(test)]

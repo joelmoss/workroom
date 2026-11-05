@@ -14,6 +14,7 @@ use std::ffi::{CString, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 #[cfg(any(test, target_os = "linux"))]
 use std::time::Duration;
+use wr_exec::set_cloexec;
 
 /// Signals reset to their default in the child. A pty child inheriting the daemon's dispositions
 /// would ignore the signals a terminal is expected to act on — a shell that cannot be interrupted
@@ -268,7 +269,7 @@ impl Pty {
             });
         }
 
-        set_nonblocking(master);
+        let _ = wr_exec::set_nonblocking(master);
         set_cloexec(master, true);
         Ok(Pty {
             master,
@@ -285,7 +286,7 @@ impl Pty {
     /// this session's master.
     pub fn adopt(master: libc::c_int, pid: libc::pid_t) -> Pty {
         set_cloexec(master, true);
-        set_nonblocking(master);
+        let _ = wr_exec::set_nonblocking(master);
         Pty {
             master,
             pid,
@@ -565,7 +566,7 @@ fn wake_pipe() -> Option<(libc::c_int, libc::c_int)> {
     }
     for end in ends {
         set_cloexec(end, true);
-        set_nonblocking(end);
+        let _ = wr_exec::set_nonblocking(end);
     }
     Some((ends[0], ends[1]))
 }
@@ -600,31 +601,6 @@ fn errno_value() -> i32 {
     #[cfg(not(target_vendor = "apple"))]
     unsafe {
         *libc::__errno_location()
-    }
-}
-
-pub fn set_cloexec(fd: libc::c_int, on: bool) {
-    // SAFETY: F_GETFD and F_SETFD take and return plain integers; a stale `fd` only fails.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags >= 0 {
-            let flags = if on {
-                flags | libc::FD_CLOEXEC
-            } else {
-                flags & !libc::FD_CLOEXEC
-            };
-            libc::fcntl(fd, libc::F_SETFD, flags);
-        }
-    }
-}
-
-fn set_nonblocking(fd: libc::c_int) {
-    // SAFETY: F_GETFL and F_SETFL take and return plain integers; a stale `fd` only fails.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        if flags >= 0 {
-            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
     }
 }
 

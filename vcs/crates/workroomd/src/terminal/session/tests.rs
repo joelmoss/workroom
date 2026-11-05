@@ -2283,7 +2283,7 @@ fn kill_reaches_a_setsid_grandchild() {
 }
 
 /// Whether a pid names a running process. Test-only: the kill path itself compares start
-/// times through `process::Descendant`, which this deliberately does not — a test that watched
+/// times through `wr_exec::Descendant`, which this deliberately does not — a test that watched
 /// for pid reuse would be testing the OS, not the daemon.
 fn alive(pid: i32) -> bool {
     // SAFETY: `kill` takes no pointers, and signal 0 delivers nothing.

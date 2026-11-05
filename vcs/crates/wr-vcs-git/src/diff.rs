@@ -1,8 +1,6 @@
 //! Git supplies both patch text and exact counts using the same comparison and repository config.
 //! NUL-delimited metadata preserves tabs/newlines in paths. No shell interprets request values.
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
-use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -16,7 +14,7 @@ use wr_vcs_model::{self as model, ChangeKind, ChangedFile, Commit, LineStats, Vc
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 
 /// Bounded subprocess read.
-/// Keep draining both pipes, kill the process group on timeout/overflow, then reap before returning.
+/// Keep draining both pipes, kill the process tree on timeout/overflow, then reap before returning.
 pub fn run(root: &Path, program: &str, args: &[&str]) -> model::Result<Vec<u8>> {
     run_with_status(root, program, args, false, None)
 }
@@ -74,6 +72,28 @@ pub fn ceiling_directories(dir: &Path) -> Option<std::path::PathBuf> {
     (!parent.as_os_str().as_encoded_bytes().contains(&b':')).then_some(parent)
 }
 
+/// What every git child's environment must not inherit: an override that would redirect a request
+/// to another checkout (the `GIT_DIR` family), or run an external diff program in place of git's
+/// own (`GIT_EXTERNAL_DIFF`; the diff reads here also pass `--no-ext-diff`). One list for this
+/// crate's reads and workroomd's, so the two cannot drift apart again.
+pub const SCRUBBED: [&str; 7] = [
+    "GIT_EXTERNAL_DIFF",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+/// What every git child's environment is pinned to, over whatever it inherited: no optional locks
+/// taken behind the user's own git, no credential prompt, and untranslated output a caller can match.
+pub const PINS: [(&str, &str); 3] = [
+    ("GIT_OPTIONAL_LOCKS", "0"),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("LC_ALL", "C"),
+];
+
 fn run_bounded(
     root: &Path,
     program: &str,
@@ -95,82 +115,45 @@ fn run_bounded(
         command.env_clear().envs(environment);
     }
     // An inherited repository override must never redirect a request to another checkout.
-    for key in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ] {
+    for key in SCRUBBED {
         command.env_remove(key);
     }
-    command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .envs(extra_env.iter().copied());
+    command.envs(PINS).envs(extra_env.iter().copied());
     if let Some(ceiling) = ceiling_directories(root) {
         command.env("GIT_CEILING_DIRECTORIES", ceiling);
     }
     let mut child = command.spawn().map_err(super::io)?;
     let exceeded = Arc::new(AtomicBool::new(false));
     let start = Instant::now();
-    fn drain(
-        mut source: impl Read + AsRawFd,
-        exceeded: Arc<AtomicBool>,
-        deadline: Instant,
-    ) -> std::io::Result<Vec<u8>> {
-        let fd = source.as_raw_fd();
-        // SAFETY: `fd` belongs to `source`, which stays open for this whole function; F_GETFL and
-        // F_SETFL take and return plain integers.
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFL);
-            if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-        }
-        let mut result = Vec::new();
-        let mut bytes = [0; 8192];
-        loop {
-            if Instant::now() >= deadline || exceeded.load(Ordering::Relaxed) {
-                return Ok(result);
-            }
-            let count = match source.read(&mut bytes) {
-                Ok(count) => count,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            };
-            if count == 0 {
-                return Ok(result);
-            }
-            if result.len() + count <= MAX_OUTPUT {
-                result.extend_from_slice(&bytes[..count]);
-            } else {
-                exceeded.store(true, Ordering::Relaxed);
-            }
-        }
-    }
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let over = exceeded.clone();
-    let out = std::thread::spawn(move || drain(stdout, over, start + timeout));
+    let out = std::thread::spawn(move || {
+        wr_exec::drain_until(stdout, MAX_OUTPUT, &over, start + timeout)
+    });
     let over = exceeded.clone();
-    let err = std::thread::spawn(move || drain(stderr, over, start + timeout));
+    let err = std::thread::spawn(move || {
+        wr_exec::drain_until(stderr, MAX_OUTPUT, &over, start + timeout)
+    });
     let mut status = None;
     loop {
         if exceeded.load(Ordering::Relaxed) || start.elapsed() >= timeout {
-            // SAFETY: `kill` takes no pointers. The child leads its own process group
-            // (`process_group(0)`), so the negated pid signals that group and nothing else.
-            unsafe {
-                libc::kill(-(child.id() as i32), libc::SIGKILL);
-            }
             if status.is_none() {
-                status = Some(child.wait());
+                // Not reaped yet, so its tree can still be recorded: SIGKILL to the group and to
+                // every descendant found, which reaches one that `setsid`ed out of the group. No
+                // grace, as before: nothing a read starts has cleanup worth waiting for.
+                status = Some(
+                    match wr_exec::end_tree(&mut child, libc::SIGKILL, Duration::ZERO) {
+                        Some(exit) => Ok(exit),
+                        None => child.wait(),
+                    },
+                );
+            } else {
+                // SAFETY: `kill` takes no pointers. The child leads its own process group
+                // (`process_group(0)`), so the negated pid signals that group and nothing else.
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
             }
             break;
         }
@@ -749,5 +732,77 @@ mod tests {
             None,
         );
         assert!(matches!(result, Err(VcsError::PartialData(_))));
+    }
+
+    /// The read's child loses what would redirect it or run another diff program, and gets the
+    /// pins, whatever the environment it was handed holds.
+    #[test]
+    fn a_read_child_never_sees_an_external_diff_or_a_repository_override() {
+        let environment = BTreeMap::from([
+            ("GIT_EXTERNAL_DIFF".to_string(), "/bin/evil".to_string()),
+            ("GIT_DIR".to_string(), "/elsewhere/.git".to_string()),
+            ("LC_ALL".to_string(), "fr_FR.UTF-8".to_string()),
+        ]);
+        let output = run_bounded(
+            Path::new("/tmp"),
+            "/bin/sh",
+            &[
+                "-c",
+                "echo \"${GIT_EXTERNAL_DIFF-unset} ${GIT_DIR-unset} $LC_ALL $GIT_OPTIONAL_LOCKS\"",
+            ],
+            false,
+            Duration::from_secs(5),
+            &[],
+            Some(&environment),
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output), "unset unset C 0\n");
+    }
+
+    /// A descendant that calls `setsid` leaves the process group, so the group SIGKILL never
+    /// reaches it, and it went on running after the read had failed. The read's tree is recorded
+    /// while its leader lives, so it dies with the read. Modelled on workroomd's
+    /// `exec_kills_a_descendant_that_escaped_the_process_group`, and its ENVIRONMENT note holds
+    /// here too: under a sandbox that hides other processes the snapshot comes back empty and this
+    /// fails exactly as the bug would.
+    #[test]
+    fn a_timeout_kills_a_descendant_that_escaped_the_process_group() {
+        let dir =
+            std::env::temp_dir().join(format!("wr-vcs-git-setsid-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("still-alive");
+        // The grandchild leaves the group, waits out the read's deadline, and only THEN writes.
+        // If it is still alive at that point the marker appears, which is the failure this catches.
+        let program = format!(
+            "import os,sys,time\n\
+             if os.fork() == 0:\n\
+             \x20   os.setsid()\n\
+             \x20   time.sleep(6)\n\
+             \x20   open({:?}, 'w').close()\n\
+             \x20   sys.exit(0)\n\
+             time.sleep(30)\n",
+            marker.to_str().unwrap()
+        );
+        let result = run_bounded(
+            &dir,
+            "python3",
+            &["-c", &program],
+            false,
+            // Not 100ms: python's own start-up is ~50ms and the fork follows it, so a tighter
+            // deadline races the grandchild into existence and the snapshot finds an empty tree.
+            Duration::from_millis(1500),
+            &[],
+            None,
+        );
+        assert!(result.is_err(), "the timeout was not reported");
+
+        // Past the grandchild's own sleep, so its write would have happened by now if it survived.
+        std::thread::sleep(Duration::from_secs(6));
+        assert!(
+            !marker.exists(),
+            "a setsid descendant outlived the kill and kept running"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

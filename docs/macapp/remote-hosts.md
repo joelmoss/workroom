@@ -46,7 +46,8 @@ exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has nev
 An SSH host uses the credentials its user set up on the server, with the origin's GitHub URL
 scheme retained (ADR 0056); it gets no Mac credential relay. For every remote kind, the daemon
 builds the app's git environment from a cached, bounded login-shell probe, then applies the
-existing scrub and pins (`vcs/crates/workroomd/src/vcs/service.rs`).
+existing scrub and pins (`vcs/crates/workroomd/src/host/environment.rs`, over
+`wr_vcs_git::diff::SCRUBBED` and `PINS`).
 
 ## SSH driver (#378)
 

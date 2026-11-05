@@ -1,11 +1,13 @@
 # Workroom's Rust workspace: the workroomd daemon (terminals and its Control, VCS, File, Forward,
-# Layout and ProgramStatus services) and the crates it links for structured git reads. The model crate stays free of any VCS library.
+# Layout and ProgramStatus services) and the crates it links for structured git reads and for
+# supervising child processes. The model crate stays free of any VCS library.
 [workspace]
 members = [
   "crates/wr-vcs-model",
   "crates/workroomd",
   "crates/wr-vcs-git",
   "crates/wr-protocol",
+  "crates/wr-exec",
 ]
 resolver = "2"
 
