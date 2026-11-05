@@ -150,8 +150,8 @@ extension AppStore {
   /// *move*, not a duplicate. Focuses the inserted member. No-op for a self-drop or non-resolving leaf.
   /// Mirrors `TerminalSessions.moveTabIntoSplit`.
   /// Whether inserting `sid` beside `beside` GROWS the destination group, rather than rearranging
-  /// within it. Two members of the same group swapping places leaves the pane count (and so the pane
-  /// sizes) unchanged, which is why the floor below only applies to a genuine addition — the same
+  /// within it. Two members of the same group swapping places leaves the pane count unchanged, which
+  /// is why the floor below only applies to a genuine addition — the same
   /// policy `TerminalSessions.moveTabIntoSplit` applies with its own `addsAMember` gate.
   func workroomSplitWouldAddMember(_ sid: SidebarID, beside: SidebarID) -> Bool {
     let from = splitIndex(containing: sid)
@@ -219,10 +219,13 @@ extension AppStore {
     else { return false }
     // Whether this GROWS the destination group, read BEFORE the detach below — afterwards `sid` has
     // already left its old group and every move would look like an addition. A same-group move
-    // rearranges the panes it already has, so it must keep the dividers the user dragged
-    // (issue #126); `detachFromSplitGroup` is therefore never an auto-even site itself, or this one
-    // rearrange would be evened twice over.
+    // rebuilds the tree around `sid` (`A | B | C` with C dropped left of A comes out ¼, ¼, ½), so it
+    // is evened once, after the insert, along both the axis `sid` left and the one it joined;
+    // `detachFromSplitGroup` is therefore never an auto-even site itself.
     let adds = workroomSplitWouldAddMember(sid, beside: beside)
+    let leftAxis =
+      adds ? nil : splitIndex(containing: sid).flatMap { workroomSplits[$0].axis(around: sid) }
+    let evenAxis = adds || leftAxis == edge.orientation ? edge.orientation : nil
     // A survivor of the group `sid` is LEAVING, captured before the detach so the source group can be
     // found again afterwards (indices shift when a group dissolves). A cross-group move removes a
     // member from that group exactly as the ✕ does, so its survivors are owed the same even-out —
@@ -248,10 +251,10 @@ extension AppStore {
       // dropped from the tree by `pruneWorkroomSplitToLiveLeaves` on the next reload, not before.
       // The pruned-and-evened candidate cannot go through `evenedIfHonourable` (which evens the
       // tree it is handed), so this one site asks the honourability question directly.
-      if adds, autoEvenSplits(), let evened = prunedAndEvened(grown, along: edge.orientation),
+      if autoEvenSplits(), let evened = prunedAndEvened(grown, along: evenAxis),
         workroomPaneSpace.map({
           PaneTreeLayout.plansEvenly(
-            evened, in: $0, evenedAxis: edge.orientation, leafSlots: workroomLeafSlots)
+            evened, in: $0, evenedAxis: evenAxis, leafSlots: workroomLeafSlots)
         }) ?? true
       {
         workroomSplits[index] = evened
