@@ -16,7 +16,25 @@
 //! - ProgramStatus: `terminal::program_status`
 
 pub mod cli;
-pub mod daemon;
-pub mod host;
-pub mod terminal;
-mod vcs;
+pub(crate) mod daemon;
+pub(crate) mod host;
+pub(crate) mod terminal;
+pub(crate) mod vcs;
+
+/// What the integration tests in `tests/` use, and nothing else: every other module is
+/// crate-private, so rustc reports what nothing calls. Only with `test-support`, which
+/// workroomd's dev-dependency on itself turns on for `cargo test`.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing {
+    pub use crate::daemon::serve::{AttachRequest, BUILD, handle_connection, parse_session_id};
+    pub use crate::daemon::transport::{FdStream, PipeTransport, close, set_nonblocking};
+    pub use crate::host::credential::{
+        CredentialError, configure_git, credential, helper_command, install_relay,
+    };
+    pub use crate::host::forward::{MAX_LISTENERS, MAX_PENDING, PENDING_TIMEOUT};
+    pub use crate::terminal::program_status::{Connection, dispatch};
+    pub use crate::terminal::pty::{Pty, Size};
+    pub use crate::terminal::screens::Screens;
+    pub use crate::terminal::session::{READ_CHUNK, SessionId, SessionSpec, SessionStore};
+}

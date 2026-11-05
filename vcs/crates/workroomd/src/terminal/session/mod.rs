@@ -36,8 +36,8 @@ mod terminate;
 
 pub(crate) use freeze::{HANDOFF_FORMAT_DEADLINE, HANDOFF_IMAGE_DEADLINE};
 pub use reader::READ_CHUNK;
-pub use refusals::{REFUSED_ID_WINDOW, refusals_path};
-pub use terminate::{KILL_EXIT_WAIT, KillInFlight, SIGHUP_GRACE};
+pub use refusals::refusals_path;
+pub use terminate::KILL_EXIT_WAIT;
 
 /// A `waitpid` status as the exit code a shell would report, which is what the `Exited` frame
 /// carries.
@@ -274,10 +274,6 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn pty(&self) -> &Pty {
-        &self.pty
-    }
-
     pub fn info(&self) -> SessionInfo {
         let foreground = self.pty.foreground_pgid();
         let name = foreground.and_then(crate::terminal::process::executable_name);

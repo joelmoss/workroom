@@ -5,11 +5,11 @@
 pub(crate) mod images;
 pub(crate) mod input;
 pub(crate) mod process;
-pub mod program_status;
-pub mod pty;
-pub mod run;
-pub mod screens;
-pub mod session;
+pub(crate) mod program_status;
+pub(crate) mod pty;
+pub(crate) mod run;
+pub(crate) mod screens;
+pub(crate) mod session;
 pub(crate) mod shadow;
 pub(crate) mod shell;
 

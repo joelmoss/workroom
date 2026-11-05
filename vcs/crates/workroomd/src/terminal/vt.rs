@@ -1784,6 +1784,7 @@ impl ShadowTerminal {
 
     /// Plain-text screen contents. Used by tests and by the session list's preview; never sent to
     /// a client, which gets `replay()`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn visible_text(&self) -> String {
         let mut formatter: GhosttyFormatter = ptr::null_mut();
         // SAFETY: the options are a C struct of integers, bools and sized sub-structs, for which

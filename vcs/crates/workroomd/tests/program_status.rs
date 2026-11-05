@@ -13,7 +13,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
-use workroomd::terminal::session::{SessionId, SessionSpec, SessionStore};
+use workroomd::testing::{SessionId, SessionSpec, SessionStore};
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 
 struct Client {
@@ -327,12 +327,7 @@ mod live {
     fn attach(store: &SessionStore, session: SessionId, writer: impl Write + Send + 'static) {
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(writer)));
         store
-            .attach(
-                session,
-                writer,
-                1,
-                workroomd::terminal::pty::Size::cells(80, 24),
-            )
+            .attach(session, writer, 1, workroomd::testing::Size::cells(80, 24))
             .expect("attach");
     }
 
@@ -548,16 +543,9 @@ sleep 5"#,
             .program_status()
             .set_boot(before.program_status().boot());
         let args = [OsString::from("-c"), OsString::from("sleep 5")];
-        let pty = workroomd::terminal::pty::Pty::spawn(
-            OsStr::new("/bin/sh"),
-            None,
-            &args,
-            &[],
-            None,
-            80,
-            24,
-        )
-        .expect("pty");
+        let pty =
+            workroomd::testing::Pty::spawn(OsStr::new("/bin/sh"), None, &args, &[], None, 80, 24)
+                .expect("pty");
         after.adopt(pty, frozen).expect("adopt");
 
         let carried = status_of(&after, id(1));
@@ -642,7 +630,7 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             stalled: Arc::clone(&stalled),
             released: Arc::clone(&released),
         })));
-        let mut connection = workroomd::terminal::program_status::Connection::new(
+        let mut connection = workroomd::testing::Connection::new(
             Arc::clone(store.program_status()),
             writer,
             Arc::new(|| {}),
@@ -652,7 +640,7 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             1,
             serde_json::to_vec(&json!({"version": 1, "method": "subscribe"})).unwrap(),
         );
-        workroomd::terminal::program_status::dispatch(&subscribe, &store, &mut connection);
+        workroomd::testing::dispatch(&subscribe, &store, &mut connection);
         stalled.store(true, Ordering::SeqCst);
 
         let seen = wait_until(

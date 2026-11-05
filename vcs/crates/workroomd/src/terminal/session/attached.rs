@@ -265,6 +265,7 @@ impl SessionStore {
     }
 
     /// Who owns the size, for tests and diagnostics.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn size_owner(&self, id: SessionId) -> Option<u64> {
         let (_, _, attached) = self.parts(id)?;
 
@@ -273,6 +274,7 @@ impl SessionStore {
 
     /// What a client attaching to this session should be sent before anything else, so it sees
     /// the screen rather than waiting for the next keystroke to produce output.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn replay_bytes(&self, id: SessionId) -> Vec<u8> {
         match self.parts(id) {
             Some((pty, shadow, _)) => live_replay(&pty, &shadow),

@@ -261,6 +261,7 @@ impl Shadow {
         self.terminal.as_ref().and_then(|t| t.memory())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn visible_text(&self) -> String {
         self.terminal
             .as_ref()
@@ -334,6 +335,7 @@ impl Shadow {
     pub fn compression_supported(&self) -> bool {
         true
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn visible_text(&self) -> String {
         String::new()
     }

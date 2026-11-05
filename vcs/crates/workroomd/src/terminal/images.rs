@@ -47,6 +47,7 @@ pub struct ImageRef {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Placement {
     /// The cursor cannot go there and back unnoticed yet: try after the next read.
+    #[cfg(feature = "terminal-state")]
     Hold,
     /// The bytes to place it. Empty when it has scrolled away.
     Ready(Vec<u8>),
@@ -156,6 +157,7 @@ impl Transfer {
         let mut queues = self.queues.lock().ok()?;
         if let Some(id) = queues.placing.front().copied() {
             match shadow.placement(id, false) {
+                #[cfg(feature = "terminal-state")]
                 Placement::Hold => queues.held = true,
                 Placement::Ready(bytes) => {
                     queues.held = false;

@@ -2,7 +2,7 @@ use super::attached::{apply_size, repaint_budget, terminal_envelope};
 #[cfg(feature = "terminal-state")]
 use super::freeze::{HANDOFF_IMAGE_BYTES, HANDOFF_TOTAL_BYTES, carry_images, carry_listed};
 use super::reader::{child_exited, child_gone};
-use super::refusals::{REFUSALS_MAGIC, wall_now, write_refusals};
+use super::refusals::{REFUSALS_MAGIC, REFUSED_ID_WINDOW, wall_now, write_refusals};
 use super::store::{RECORD_GRACE, RECORD_WAIT};
 use super::*;
 use crate::daemon::transport::WRITE_TIMEOUT;

@@ -1905,6 +1905,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "workroomd",
  "wr-protocol",
  "wr-vcs-git",
  "wr-vcs-model",

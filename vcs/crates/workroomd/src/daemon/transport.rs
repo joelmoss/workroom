@@ -124,6 +124,7 @@ pub struct FdStream {
 }
 
 impl FdStream {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(fd: RawFd) -> FdStream {
         FdStream {
             fd,
@@ -226,18 +227,21 @@ impl Write for FdStream {
 /// A pipe is the honest stand-in for a remote stream: it has no message boundaries, no `SO_*`
 /// options, and it can be chunked anywhere — the same properties an ssh hop or an exec channel
 /// has, and the ones a unix socket quietly hides.
+#[cfg(any(test, feature = "test-support"))]
 pub struct PipeTransport {
     reader: FdStream,
     writer: FdStream,
 }
 
 /// Both ends of a pipe pair: what the daemon serves over, and what a test drives it with.
+#[cfg(any(test, feature = "test-support"))]
 pub struct PipePair {
     pub daemon: PipeTransport,
     pub client_reader: FdStream,
     pub client_writer: FdStream,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl PipeTransport {
     /// Two pipes wired as a duplex: the client writes what the daemon reads, and vice versa.
     pub fn pair() -> io::Result<PipePair> {
@@ -254,6 +258,7 @@ impl PipeTransport {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Transport for PipeTransport {
     type Reader = FdStream;
     type Writer = FdStream;
@@ -274,6 +279,7 @@ impl Transport for PipeTransport {
 /// `pipe2(O_CLOEXEC)` would be atomic but does not exist on macOS, so this sets the flag after the
 /// fact. The window between the two is harmless here: the daemon forks pty children only in
 /// response to a client request, which cannot arrive before this function has returned.
+#[cfg(any(test, feature = "test-support"))]
 fn pipe() -> io::Result<(RawFd, RawFd)> {
     let mut fds = [0 as libc::c_int; 2];
     // SAFETY: `fds` has room for the two descriptors pipe writes.
@@ -317,6 +323,7 @@ pub fn set_nonblocking(stream: &FdStream) -> io::Result<()> {
 }
 
 /// Closes a descriptor, to end a test's side of a transport.
+#[cfg(any(test, feature = "test-support"))]
 pub fn close(stream: &FdStream) {
     // SAFETY: `close` takes no pointers. Its one caller, remote_transport.rs, closes a stream it
     // made and does not use it afterwards.

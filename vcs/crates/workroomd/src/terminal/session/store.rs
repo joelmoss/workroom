@@ -137,6 +137,7 @@ impl SessionStore {
     ///
     /// Taking the lock across the spawn is deliberate: two clients racing to create the same id
     /// must not both fork a shell, and the window is a single `forkpty`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create(&self, spec: SessionSpec<'_>) -> Result<SessionInfo, SessionError> {
         self.create_then(spec, Ok)
     }
@@ -286,6 +287,7 @@ impl SessionStore {
         out
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_pty<T>(&self, id: SessionId, f: impl FnOnce(&Pty) -> T) -> Option<T> {
         let sessions = self.sessions.lock().expect("session store poisoned");
         sessions.get(&id).map(|session| f(&session.pty))
@@ -293,6 +295,7 @@ impl SessionStore {
 
     /// The session's shadow terminal, taken out of the store so the caller can hold it across a
     /// read without keeping the store locked.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn shadow(&self, id: SessionId) -> Option<Arc<Mutex<Shadow>>> {
         let sessions = self.sessions.lock().expect("session store poisoned");
         sessions.get(&id).map(|session| Arc::clone(&session.shadow))

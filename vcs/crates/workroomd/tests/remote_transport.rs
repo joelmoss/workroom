@@ -28,10 +28,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use workroomd::daemon::serve::{AttachRequest, handle_connection};
-use workroomd::daemon::transport::{FdStream, PipeTransport, close, set_nonblocking};
-use workroomd::terminal::screens::Screens;
-use workroomd::terminal::session::{SessionId, SessionStore};
+use workroomd::testing::{
+    AttachRequest, FdStream, PipeTransport, Screens, SessionId, SessionStore, close,
+    handle_connection, set_nonblocking,
+};
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 
@@ -637,7 +637,7 @@ fn a_restored_pane_with_a_screen_over_one_frame_still_gets_it_whole() {
     );
     let seen = client.read_until("Close it to start again", Duration::from_secs(10));
     assert!(
-        seen.len() > workroomd::terminal::session::READ_CHUNK,
+        seen.len() > workroomd::testing::READ_CHUNK,
         "the record fit in one frame; this test proves nothing about chunking. got {} bytes",
         seen.len()
     );

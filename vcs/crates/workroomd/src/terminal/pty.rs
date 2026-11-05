@@ -12,6 +12,7 @@
 
 use std::ffi::{CString, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
+#[cfg(any(test, target_os = "linux"))]
 use std::time::Duration;
 
 /// Signals reset to their default in the child. A pty child inheriting the daemon's dispositions
@@ -375,6 +376,7 @@ impl Pty {
     }
 
     /// As `wait_readable`, giving up after `timeout`: whether `read` has something to say.
+    #[cfg(any(test, target_os = "linux"))]
     pub fn wait_readable_within(&self, timeout: Duration) -> std::io::Result<bool> {
         self.poll_readable(i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX))
     }
@@ -544,6 +546,7 @@ impl Pty {
     }
 
     /// Blocks until the child exits, returning its status. Returns `None` if it was already reaped.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn wait(&self) -> Option<i32> {
         let mut status = 0;
         // SAFETY: `status` is a live local for waitpid to fill.

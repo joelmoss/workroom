@@ -48,12 +48,15 @@ pub mod limits {
     /// an agent streaming `working:msg=…` per token must not cost the app a decode per token.
     pub const PUBLISH_THROTTLE: Duration = Duration::from_millis(50);
     /// Records kept per session: the minimum terminal.h asks every embedder to allow.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub const MAX_RECORDS: usize = 64;
     /// The most bytes of a `title` or `message` kept: a tooltip line and a notification body, with
     /// room to spare, and 64 of them stay far under one envelope.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub const MAX_TEXT: usize = 512;
     /// How long a shell command runs before its end is a command result (#473): long enough to
     /// switch away over, and longer than the quick commands and typos that would only be noise.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub const LONG_COMMAND: Duration = Duration::from_secs(10);
     /// How long a program that never probed (#481) must stay running and in the foreground after
     /// it blocks before it may alert: a `cat` of a recording has exited by then, or the shell's
@@ -63,6 +66,7 @@ pub mod limits {
 
 /// The exit status of a command stopped with ^C (128 + SIGINT): the user ended it, so it is
 /// neither a pass nor a failure worth a mark.
+#[cfg(any(test, feature = "terminal-state"))]
 const INTERRUPTED: i32 = 130;
 
 /// The wire id of a command result. It has a space, which `printable` refuses in a report's id,
@@ -106,6 +110,7 @@ pub enum Kind {
 }
 
 /// One report, as libghostty decoded it.
+#[cfg(any(test, feature = "terminal-state"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     pub id: String,
@@ -119,6 +124,7 @@ pub struct Report {
 
 /// What the shadow terminal saw during one write, in order. Applied after the write, with the
 /// pty's foreground group read once for all of them (`Shadow::write_from_pty`).
+#[cfg(any(test, feature = "terminal-state"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Report(Report),
@@ -187,9 +193,13 @@ impl CommandResult {
 }
 
 /// What `Store` logs once per session.
+#[cfg(any(test, feature = "terminal-state"))]
 const LOGGED_INVALID: u8 = 1;
+#[cfg(any(test, feature = "terminal-state"))]
 const LOGGED_EVICTED: u8 = 2;
+#[cfg(any(test, feature = "terminal-state"))]
 const LOGGED_TITLE: u8 = 4;
+#[cfg(any(test, feature = "terminal-state"))]
 const LOGGED_MESSAGE: u8 = 8;
 
 /// One session's records and the rules terminal.h gives for them. Pure: no FFI and no clock.
@@ -224,6 +234,7 @@ pub struct Store {
 
 impl Store {
     /// One event from the terminal, sent while `owner` was in the foreground.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn apply(&mut self, event: Event, owner: Group) {
         match event {
             Event::Report(report) => self.report(report, owner),
@@ -240,6 +251,7 @@ impl Store {
     }
 
     /// A long command's end replaces the command result; a quick one or a ^C leaves it alone.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn command_ended(&mut self, exit_code: i32, ran: Duration, line: &str, owner: Group) {
         if exit_code == INTERRUPTED || ran < limits::LONG_COMMAND {
             return;
@@ -263,6 +275,7 @@ impl Store {
     /// a recorded Claude session: a macOS pty read is at most 1 KiB, and a screen paint separates
     /// them); the probe rule keeps no clock, and telling those apart needs one or the pty's input
     /// queue, if replays ever matter.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn apply_read(&mut self, events: Vec<Event>, owner: Group, now: Instant) {
         let mut probed = false;
         for event in events {
@@ -317,6 +330,7 @@ impl Store {
     }
 
     /// Replaces the report's record completely (terminal.h: a value it leaves out is gone).
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn report(&mut self, report: Report, owner: Group) {
         if !printable(&report.id) || !printable(&report.app) {
             self.log_once(
@@ -380,6 +394,7 @@ impl Store {
 
     /// Removes `id` and every record beneath it (`a` takes `a/b`, not `ab`); an empty id removes
     /// every record.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn clear(&mut self, id: &str) {
         self.retain(|r| {
             !(id.is_empty()
@@ -390,12 +405,14 @@ impl Store {
     }
 
     /// RIS: the records are gone already (libghostty CLEARs first); so is the run that sent them.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn reset(&mut self) {
         self.end_run();
     }
 
     /// A new shell prompt: the program that reported has finished. `done` and `error` stay until
     /// the user has seen them.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn drop_on_prompt(&mut self) {
         self.retain(|r| !(r.state.is_live() || r.state == State::Idle));
         self.end_run();
@@ -409,6 +426,7 @@ impl Store {
     /// Drops working and blocked records whose sender's group no longer exists, and forgets the
     /// reporting and probing groups once theirs is gone. A group that only left the foreground
     /// (^Z, `sudo`, an editor) still exists, so nothing goes.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn drop_dead_owners(&mut self, alive: impl Fn(Group) -> bool) {
         self.retain(|r| !r.state.is_live() || alive(r.owner));
         if self.reporting.is_some_and(|group| !alive(group)) {
@@ -423,6 +441,7 @@ impl Store {
     /// Whether `drop_dead_owners` has anything to look at. A run that cleared its records on exit
     /// (Claude Code does) still holds `reporting` until a prompt, which a shell without OSC 133
     /// never sends.
+    #[cfg(any(test, feature = "terminal-state"))]
     pub fn has_live(&self) -> bool {
         self.reporting.is_some()
             || self.probed.is_some()
@@ -546,6 +565,7 @@ impl Store {
         app
     }
 
+    #[cfg(any(test, feature = "terminal-state"))]
     fn end_run(&mut self) {
         if self.reporting.take().is_some() {
             self.dirty = true;
@@ -563,6 +583,7 @@ impl Store {
 
     /// `text` safe to show outside the terminal: invisible formatting characters dropped, controls
     /// and line breaks folded to spaces, at most `MAX_TEXT` bytes on a character boundary.
+    #[cfg(any(test, feature = "terminal-state"))]
     fn sanitized(&mut self, text: &str, kind: u8, owner: Group) -> String {
         let mut out = String::with_capacity(text.len().min(limits::MAX_TEXT));
         for c in text.chars().filter(|c| !invisible(*c)) {
@@ -580,6 +601,7 @@ impl Store {
         out
     }
 
+    #[cfg(any(test, feature = "terminal-state"))]
     fn log_once(&mut self, kind: u8, what: &str, owner: Group) {
         if self.logged & kind == 0 {
             self.logged |= kind;
@@ -589,6 +611,7 @@ impl Store {
 }
 
 impl Record {
+    #[cfg(any(test, feature = "terminal-state"))]
     fn same_apart_from_progress(&self, other: &Record) -> bool {
         self.state == other.state
             && self.kind == other.kind
@@ -601,12 +624,14 @@ impl Record {
 }
 
 /// An id or app is a key, not text: printable ASCII only (`/` included, for ids).
+#[cfg(any(test, feature = "terminal-state"))]
 fn printable(text: &str) -> bool {
     text.bytes().all(|b| (0x21..=0x7E).contains(&b))
 }
 
 /// Unicode's `Cf` (format) characters as of 15.1, which include every direction override, plus the
 /// whole tag block: text the user cannot see that can reorder or hide what they can.
+#[cfg(any(test, feature = "terminal-state"))]
 fn invisible(c: char) -> bool {
     matches!(c as u32,
         0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2

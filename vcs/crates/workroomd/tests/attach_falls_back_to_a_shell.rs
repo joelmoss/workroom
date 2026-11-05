@@ -1247,7 +1247,7 @@ fn a_remote_attach_whose_daemon_goes_away_exits_255() {
 #[test]
 fn list_fails_when_the_daemon_hangs_up_without_answering() {
     use std::io::Write;
-    use workroomd::daemon::serve::BUILD;
+    use workroomd::testing::BUILD;
     use wr_protocol::envelope::{Envelope, Hello, Service};
     use wr_protocol::frame::{Frame, FrameKind};
 

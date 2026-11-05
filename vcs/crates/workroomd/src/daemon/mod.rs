@@ -4,5 +4,5 @@
 pub(crate) mod handoff;
 pub(crate) mod log;
 pub(crate) mod rpc;
-pub mod serve;
-pub mod transport;
+pub(crate) mod serve;
+pub(crate) mod transport;
