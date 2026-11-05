@@ -52,7 +52,7 @@ In Workroom 2.1.0 there is no Notifications pane. **Show notifications in the me
 | **Theme** | Opens the theme picker. A theme family has a light and a dark variant, and the one in use follows **Appearance**. Terminals change with it. The picker is also on <kbd>⇧⌘K</kbd> (**View ▸ Theme…**). |
 | **Diff view** | **Unified** or **Side by Side** for diffs you open from now on. A narrow pane always falls back to unified. |
 | **Dim unfocused panes** | Shades every pane except the focused one so the active terminal stands out in a split. On by default. |
-| **Automatically resize splits evenly** | When you add or close a pane, the panes in its row or column resize to match. With workrooms side by side, every terminal in the window ends up the same size (Nightly). Off leaves the dividers where you put them. Workroom 2.1.0 calls this **Resize splits evenly automatically** and evens every divider. See [Even out a split](splits-and-windows.md#even-out-a-split). |
+| **Automatically resize splits evenly** | When you add or close a pane, or drag one to a new place in its split, the panes in its row or column resize to match. With workrooms side by side, every terminal in the window ends up the same size (Nightly). Off leaves the dividers where you put them. Workroom 2.1.0 calls this **Resize splits evenly automatically** and evens every divider. See [Even out a split](splits-and-windows.md#even-out-a-split). |
 | **Load author avatars** | Fetches author and reviewer avatars from Gravatar and GitHub. Off shows coloured initials only and makes no network request. |
 
 <kbd>⇧⌘L</kbd> (**View ▸ Light Mode** or **Dark Mode**) flips between light and dark without opening Settings.
