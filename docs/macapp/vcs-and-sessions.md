@@ -13,7 +13,8 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
   `LocalVCSProviding`. No Rust bridge or xcframework. (An all-Rust core with gix was tried and
   dropped: gix bought no real unification and libgit2 is the more complete git engine.)
 - **Daemon-routed reads and writes → `workroomd`.** The `vcs/` Rust workspace holds the `workroomd`
-  daemon (terminal sessions, VCS and File services) and its git read crates (`wr-vcs-git`,
+  daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus
+  services) and its git read crates (`wr-vcs-git`,
   `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `DaemonVCSReader` /
   `DaemonVCSConnection`.
 

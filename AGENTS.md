@@ -8,7 +8,7 @@ Workroom is a native macOS app. The Go CLI at the repository root is the app's e
 - `macapp/Packages/` holds local Swift packages the app imports: `WorkroomDomain` (models such as `HostDescriptor`), `WorkroomVCS` (the local git engine behind `LocalVCSProviding`), `WorkroomWire`, `WorkroomSystem`, `DaemonConnection`, `HostDrivers` (container, boxd, exe.dev and SSH drivers), `DesignSystem` (`ThemeTokens` and shared UI) and `SyntaxHighlighting`. Search there too when a type is missing from `Core/`; `make app-package-test` runs their tests.
 - `macapp/WorkroomAppTests/` and `WorkroomAppUITests/` contain app tests.
 - `cmd/` contains the CLI's Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`. The Go module root is the repository root (`go.mod`, `main.go`).
-- `vcs/` is the Rust workspace for the `workroomd` daemon (terminal sessions, VCS and File services) and its git read crates.
+- `vcs/` is the Rust workspace for the `workroomd` daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus services) and its git read crates.
 - `docs/` contains supporting documentation.
 - `docs-site/` is the user documentation, served by Codaset at `codaset.dev/workroom/docs`. Its format contract is `docs-site/README.md`; `make docs-check` checks it.
 

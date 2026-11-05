@@ -35,11 +35,9 @@ import WorkroomDomain
 ///   shell in the remembered directory, with no prior text — the daemon's own live output is the
 ///   only source of restored content now (issue #144's old disk-sidecar capture/replay was removed
 ///   once background sessions made it redundant).
-///   Run-command tabs are never persisted.
-/// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
-///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
-///   and issue #7 exist to prevent. `Defaults[.runCommands]` already survives, and `RunConfig.autoRun`
-///   is the deliberate opt-in.
+/// - **Investigate tabs.** Their command runs in its own process, which dies with the app. Run tabs
+///   are kept (#522, ADR 0058): a run session outlives the app, so a restored run tab reattaches to
+///   the running server instead of starting it again (`TabSession.init?`, which marks it `run`).
 /// - **`liveTitle` / `progressActive` / activity pulses.** Display state about a process that no
 ///   longer exists. Excluding them is also what keeps the save digest stable: a terminal animating
 ///   its title produces a byte-identical snapshot, so it costs a comparison and no disk write.
