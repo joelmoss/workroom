@@ -31,17 +31,13 @@ final class AppStore: ObservableObject {
   /// fields make that chatter produce an identical document, so it costs a comparison, not a write.
   @ObservationIgnored private var sessionObservation: AnyCancellable?
 
-  /// Seam over the bundled `workroom` CLI (issue #103). Production uses
-  /// `WorkroomCLI.shared`; tests inject a fake to drive mutations without a real
-  /// subprocess. Injected like `projectStore` (in the init body, not as a default
-  /// arg, which is evaluated nonisolated).
-  let cli: WorkroomCLIProtocol
+  /// What this window reaches outside the app (ADR 0022): the process's `AppServices.current`
+  /// unless the init was handed others. Tests stand fakes in its members.
+  @ObservationIgnored var services: AppServices
 
-  /// Seam over the macOS Trash (issue #108): a from-disk project delete moves dirs to the Bin via
-  /// `FileManager.trashItem` (Finder "Put Back", no TCC prompt). Injectable so tests assert the
-  /// orchestration with a fake recorder instead of polluting the real Trash. Mirrors the
-  /// `CommandExecutor` mock seam.
-  var trasher: Trashing = SystemTrasher()
+  /// The bundled `workroom` CLI (issue #103): `services.cli`, which tests replace by passing
+  /// `cli:` to the init, to drive mutations without a real subprocess.
+  var cli: WorkroomCLIProtocol { services.cli }
 
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
@@ -132,8 +128,10 @@ final class AppStore: ObservableObject {
   /// reads the real Default straight through. Same hazard, opposite direction, as the read-side one
   /// `sidebarVisible`'s own initializer already guards against.
   private var persistsSidebarPrefs: Bool {
-    !AppEnvironment.current.isFixture
-      && (WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true)
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return false }
+    #endif
+    return WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true
   }
 
   /// The list of configured projects — proxied to the shared `ProjectStore` so every window sees the
@@ -229,7 +227,7 @@ final class AppStore: ObservableObject {
   /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection`, so a background window can't clobber the
   /// active window's choice.
   ///
-  /// Forced open under `AppEnvironment.current.isFixture` — same idiom as `commitHistory`/`remoteState` above.
+  /// Forced open under `AppEnvironment.current.isFixture` (Debug only).
   /// The real persisted value is whatever a PRIOR launch (human or automated) last left it as, and
   /// that's true WITHIN one `xcodebuild test` invocation too: this key is real `Defaults`, not
   /// fixture-isolated, so one sidebar-toggle test's launch persists into the very next test class's
@@ -238,9 +236,15 @@ final class AppStore: ObservableObject {
   /// fails BOTH the tests that need the sidebar open (`WorkroomWorkflowUITests`,
   /// `ViewMenuShortcutsUITests`) and the ones that broke when it's open (see below), never a clean
   /// pass either way.
-  var sidebarVisible: Bool = (AppEnvironment.current.isFixture ? true : Defaults[.sidebarVisible])
-  {
+  var sidebarVisible: Bool = AppStore.initialSidebarVisible {
     didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
+  }
+
+  nonisolated private static var initialSidebarVisible: Bool {
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return true }
+    #endif
+    return Defaults[.sidebarVisible]
   }
 
   /// Shows or hides the Projects sidebar (the title-bar button, ⌃⌘S, ⌥⌘S, ⌥⌘B): nothing with no
@@ -763,10 +767,6 @@ final class AppStore: ObservableObject {
   /// Max simultaneously-visible toasts; beyond this the oldest is dropped so a chatty emitter can't
   /// overflow the window (matches the "stack a few, drop oldest" decision).
   private static let maxToasts = 4
-  /// Posts native banners. Behind a protocol for testability; the real one wraps
-  /// `UNUserNotificationCenter`.
-  /// `var` so a test can stand in a fake and never raise the real permission prompt.
-  var systemNotifier: SystemNotifying = SystemNotifier()
   /// Whether the app is frontmost, which picks an in-app toast over a banner. A seam so a test can
   /// take the banner path (`ProgramStatusAlertsTests`).
   var isAppActive: () -> Bool = { NSApp.isActive }
@@ -859,9 +859,10 @@ final class AppStore: ObservableObject {
   /// which also skips a `fixture: false` UI launch; this one does not. `VCSToolVersionsTests` drives
   /// the probe directly with a stub runner.
   func refreshVCSToolReport() {
-    guard !AppEnvironment.current.isFixture,
-      ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
-    else { return }
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return }
+    #endif
+    guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
     let cache = vcsToolVersionCache
     Task { [weak self] in
       let report = await cache.report()
@@ -949,7 +950,9 @@ final class AppStore: ObservableObject {
   /// UI-test fixture mode only: whether this window auto-selects the fixture workroom. True for the
   /// launch window, false for a ⌘N window so it stays blank — the fixture analogue of clearing
   /// `pendingRestoreSelection` on the real path (issue #70).
-  private var fixtureAutoSelect = true
+  #if DEBUG
+    private var fixtureAutoSelect = true
+  #endif
 
   /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`; tests
   /// build an isolated `AppStore()` (own fresh `ProjectStore`), inject `projects`, and drive the real
@@ -957,8 +960,11 @@ final class AppStore: ObservableObject {
   init(
     projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil,
     commitHistory: HistoryModel? = nil, remoteState: RemoteStateModel? = nil,
-    notifications: NotificationCenterStore? = nil
+    notifications: NotificationCenterStore? = nil, services: AppServices? = nil
   ) {
+    var services = services ?? .current
+    if let cli { services.cli = cli }
+    self.services = services
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
     // production passes `.shared`. Constructed here in the main-actor init body, not as a default
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
@@ -967,27 +973,12 @@ final class AppStore: ObservableObject {
     let store = projectStore ?? ProjectStore()
     self.projectStore = store
     self.statusResolver = WorkroomStatusResolver(ciCache: store.ciResultCache)
-    self.cli =
-      cli
-      ?? (AppEnvironment.current.isFixture && UITestFixture.scriptedCreate
-        ? ScriptedCreateCLI.shared : WorkroomCLI.shared)
     // `commitHistory` is assigned here (not inline) for the same @MainActor reason: a test injects a
-    // stub to observe the live-refresh triggers; production/fixture keep the default.
-    self.commitHistory =
-      commitHistory
-      ?? (AppEnvironment.current.isFixture
-        ? HistoryModel(resolve: { _ in UITestFixture.vcsProvider })
-        : HistoryModel())
-    // Same seam as `commitHistory` above: fixture mode serves seeded state and records actions instead
-    // of running git, since the fixture's paths aren't real repos. Auto-fetch is disabled outright —
-    // an automatic action would race whatever the test is asserting.
-    self.remoteState =
-      remoteState
-      ?? (AppEnvironment.current.isFixture
-        ? RemoteStateModel(
-          makeWriter: { _ in FixtureVCSWriter() }, debounce: 0, ttl: 0,
-          autoFetchInterval: .greatestFiniteMagnitude)
-        : RemoteStateModel())
+    // stub to observe the live-refresh triggers; otherwise it reads through the services' reader.
+    self.commitHistory = commitHistory ?? HistoryModel(resolve: services.vcsReader)
+    // Same seam as `commitHistory` above, built by the services (the fixture's serves seeded state
+    // and records actions instead of running git).
+    self.remoteState = remoteState ?? services.makeRemoteState()
     let terminals = TerminalSessions()
     self.terminals = terminals
     self.runCommand = RunCommandController(terminals: terminals)
@@ -1204,6 +1195,23 @@ final class AppStore: ObservableObject {
       width: size.width, height: size.height)
   }
 
+  /// Under the fixture, gives `window` the test's frame or the fixture's deterministic size and
+  /// says so (see `attachWindow` for why). False everywhere else.
+  private func fixtureSizes(_ window: NSWindow) -> Bool {
+    #if DEBUG
+      guard AppEnvironment.current.isFixture else { return false }
+      if let frame = UITestFixture.windowFrame {
+        window.setFrame(frame, display: false)
+      } else {
+        window.setContentSize(NSSize(width: 1450, height: 780))
+        window.center()
+      }
+      return true
+    #else
+      return false
+    #endif
+  }
+
   /// Bind this store to its host `NSWindow` once the view tree resolves it (issue #70). Idempotent —
   /// `WindowAccessor` may resolve the same window more than once.
   func attachWindow(_ window: NSWindow) {
@@ -1283,31 +1291,26 @@ final class AppStore: ObservableObject {
       // 1450 the detail column is ~880pt: comfortably past the 604pt split floor, and still short of
       // the ~1000pt of chip content `TabStripOverflowUITests`/`TabStripScrollIntoViewUITests` need to
       // NOT fit, so overflow still triggers.
-      if AppEnvironment.current.isFixture {
-        if let frame = UITestFixture.windowFrame {
+      if !fixtureSizes(window) {
+        if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
+          // The saved session owns per-window frames (issue #46) and wins over both the
+          // "match the current window" size and the single-slot `Defaults` key, which can only ever
+          // describe one window and is now just the cold-start fallback.
+          let frame = Self.frameOnAVisibleScreen(restored)
+        {
           window.setFrame(frame, display: false)
+          restoredFrame = frame
+        } else if opensForHandOff {
+          placeHandOffWindow(window)
+        } else if let size = pendingInitialWindowSize {
+          window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
+        } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
+          window.setFrame(frame, display: false)
+          restoredFrame = frame
         } else {
-          window.setContentSize(NSSize(width: 1450, height: 780))
+          window.setContentSize(Self.newWindowContentSize)
           window.center()
         }
-      } else if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
-        // The saved session owns per-window frames (issue #46) and wins over both the
-        // "match the current window" size and the single-slot `Defaults` key, which can only ever
-        // describe one window and is now just the cold-start fallback.
-        let frame = Self.frameOnAVisibleScreen(restored)
-      {
-        window.setFrame(frame, display: false)
-        restoredFrame = frame
-      } else if opensForHandOff {
-        placeHandOffWindow(window)
-      } else if let size = pendingInitialWindowSize {
-        window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
-      } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
-        window.setFrame(frame, display: false)
-        restoredFrame = frame
-      } else {
-        window.setContentSize(Self.newWindowContentSize)
-        window.center()
       }
     }
     // Persist this window's frame (debounced by AppKit's notifications) so a future launch restores
@@ -1799,11 +1802,13 @@ final class AppStore: ObservableObject {
     // sibling arrives here with `shouldRestore == false` — without this, the clear below would wipe
     // what the claim just set and every restored sibling would come back with nothing selected.
     let restoresOwnSession = pendingSessionRestore != nil
-    if AppEnvironment.current.isFixture {
-      fixtureAutoSelect = shouldRestore || restoresOwnSession
-      loadFixture()
-      return
-    }
+    #if DEBUG
+      if AppEnvironment.current.isFixture {
+        fixtureAutoSelect = shouldRestore || restoresOwnSession
+        loadFixture()
+        return
+      }
+    #endif
     // Drop the saved selection unless this window is entitled to one, so a ⌘N window opens with
     // nothing selected (no workroom, no terminal).
     if !shouldRestore && !restoresOwnSession {
@@ -1868,10 +1873,12 @@ final class AppStore: ObservableObject {
   private func load(warnings: String, surfaceErrors: Bool = true) async {
     // In UI-test fixture mode every load resolves to the same fake projects — never shell out to
     // the CLI (so an on-focus `reloadIfStale` can't replace the fixture with the real config).
-    if AppEnvironment.current.isFixture {
-      loadFixture()
-      return
-    }
+    #if DEBUG
+      if AppEnvironment.current.isFixture {
+        loadFixture()
+        return
+      }
+    #endif
     var load = projectStore.beginLoad(cli: cli, warnings: warnings)
     let issuedGeneration = load.generation
     pendingLoads += 1
@@ -1927,168 +1934,173 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Load the deterministic UI-test fixture (see `UITestFixture`): inject the fake projects and, on
-  /// the first load, auto-select the fixture workroom so a terminal renders immediately — the tests
-  /// then drive splits/closes without any fragile sidebar navigation. Branch resolution is skipped
-  /// (the temp-dir paths aren't real repos), so no git process is ever spawned. Idempotent: a
-  /// later reload re-injects the same projects but preserves whatever the test has since selected.
-  ///
-  /// Tombstone-filtered like `apply`'s real-CLI path: `deleteWorkroom`'s teardown script touches the
-  /// fixture's temp directory, which the file watcher picks up and reloads mid-teardown — without
-  /// filtering, that reload re-injected the just-deleted workroom (and its notifications) straight
-  /// back from the unconditionally-canned fixture list a beat after the delete, since fixture mode
-  /// never reaches `apply` at all (caught writing the delete-clears-notifications UI test).
-  private func loadFixture() {
-    let fixtures = applyingDeletionTombstones(UITestFixture.projects())
-    projects = fixtures
-    // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
-    if let pulled = UITestFixture.imagePull, let project = fixtures.first,
-      !creationRuns.values.contains(where: { $0.project.path == project.path })
-    {
-      let run = CreationRun(
-        project: project, kind: .container(.docker), splitAnchor: nil, previousSelection: nil)
-      run.begin("repository")
-      run.begin("image")
-      run.pullFraction = pulled
-      register(run)
-    }
-    // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
-    // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
-    // saved session can't address anyway.
-    restorePersistedSessionIfPending(in: fixtures)
-    // Seed a deterministic run command (issue #7) so the run-command UI is exercisable in fixture
-    // mode (the lifecycle XCUITest + the manual verify-first probe). The path is a temp dir, so real
-    // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then
-    // sleeps (stays "running" long enough to assert the Stop/Restart state deterministically).
-    if let project = fixtures.first {
-      // A test can override the seeded command (`-WorkroomUITestRunCommand`) to drive a deterministic
-      // failure / success / long-running run for the run-status XCUITests (issue #79). A test can
-      // instead opt OUT of any command being seeded (`-WorkroomUITestNoRunCommand`) for the "no run
-      // command configured" state (issue #127) — this must EXPLICITLY clear the config (not just skip
-      // seeding), since the fixture project's path is deterministic and `Defaults[.runCommands]`
-      // persists across launches in the real app's UserDefaults domain: a prior launch that DID seed a
-      // command (e.g. a `RunStatusUITests` run) would otherwise leak a stale command into this state
-      // (found by review, issue #127).
-      if UITestFixture.noRunCommand {
-        setRunConfig(.empty, forProject: project.path)
-      } else {
-        setRunConfig(
-          RunConfig(command: UITestFixture.runCommand ?? "echo PROBE_OK; sleep 30", autoRun: false),
-          forProject: project.path)
-      }
-    }
-    // The real persisted selection won't resolve against the fixture paths; don't try to restore it.
-    pendingRestoreSelection = nil
-    // Start every fixture project expanded so the sidebar tree is deterministic regardless of any
-    // collapse state a prior UI-test run persisted to the shared defaults (real projects untouched).
-    collapsedProjects.subtract(fixtures.map(\.id))
-    // Auto-select the fixture workroom only for the restoring (launch) window — a ⌘N window starts
-    // blank in fixture mode too, mirroring production (issue #70). `fixtureAutoSelect` is the
-    // per-window equivalent of clearing `pendingRestoreSelection` on the real path.
-    if fixtureAutoSelect {
-      if selectedProjectID == nil { selectedProjectID = fixtures.first?.id }
-      if selectedTargetID == nil, let project = fixtures.first,
-        let workroom = project.workrooms.first
+  #if DEBUG
+    /// Load the deterministic UI-test fixture (see `UITestFixture`): inject the fake projects and, on
+    /// the first load, auto-select the fixture workroom so a terminal renders immediately — the tests
+    /// then drive splits/closes without any fragile sidebar navigation. Branch resolution is skipped
+    /// (the temp-dir paths aren't real repos), so no git process is ever spawned. Idempotent: a
+    /// later reload re-injects the same projects but preserves whatever the test has since selected.
+    ///
+    /// Tombstone-filtered like `apply`'s real-CLI path: `deleteWorkroom`'s teardown script touches the
+    /// fixture's temp directory, which the file watcher picks up and reloads mid-teardown — without
+    /// filtering, that reload re-injected the just-deleted workroom (and its notifications) straight
+    /// back from the unconditionally-canned fixture list a beat after the delete, since fixture mode
+    /// never reaches `apply` at all (caught writing the delete-clears-notifications UI test).
+    private func loadFixture() {
+      let fixtures = applyingDeletionTombstones(UITestFixture.projects())
+      projects = fixtures
+      // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
+      if let pulled = UITestFixture.imagePull, let project = fixtures.first,
+        !creationRuns.values.contains(where: { $0.project.path == project.path })
       {
-        selectedTargetID = .workroom(project: project.path, name: workroom.name)
-        // Open a terminal for the auto-selected fixture workroom up front (the view's
-        // `ensureInitialTerminal` would too on mount) so the UI tests, which assume the fixture
-        // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
-        let target = workroom.target(inProject: project.path)
-        terminals.ensureTab(for: target)
-        if let title = UITestFixture.usageCodingAgentTitle {
-          terminals.tabs(for: target).first?.surface?.onTitleChange?(title)
+        let run = CreationRun(
+          project: project, kind: .container(.docker), splitAnchor: nil, previousSelection: nil)
+        run.begin("repository")
+        run.begin("image")
+        run.pullFraction = pulled
+        register(run)
+      }
+      // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
+      // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
+      // saved session can't address anyway.
+      restorePersistedSessionIfPending(in: fixtures)
+      // Seed a deterministic run command (issue #7) so the run-command UI is exercisable in fixture
+      // mode (the lifecycle XCUITest + the manual verify-first probe). The path is a temp dir, so real
+      // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then
+      // sleeps (stays "running" long enough to assert the Stop/Restart state deterministically).
+      if let project = fixtures.first {
+        // A test can override the seeded command (`-WorkroomUITestRunCommand`) to drive a deterministic
+        // failure / success / long-running run for the run-status XCUITests (issue #79). A test can
+        // instead opt OUT of any command being seeded (`-WorkroomUITestNoRunCommand`) for the "no run
+        // command configured" state (issue #127) — this must EXPLICITLY clear the config (not just skip
+        // seeding), since the fixture project's path is deterministic and `Defaults[.runCommands]`
+        // persists across launches in the real app's UserDefaults domain: a prior launch that DID seed a
+        // command (e.g. a `RunStatusUITests` run) would otherwise leak a stale command into this state
+        // (found by review, issue #127).
+        if UITestFixture.noRunCommand {
+          setRunConfig(.empty, forProject: project.path)
+        } else {
+          setRunConfig(
+            RunConfig(
+              command: UITestFixture.runCommand ?? "echo PROBE_OK; sleep 30", autoRun: false),
+            forProject: project.path)
         }
-        // Oversized tab title for the pane title bar's truncation tests (issue #150). Same route as
-        // the agent title above — a shell-set title latches as `liveTitle`, which is what
-        // `TerminalTab.title` (and so the chip and the pane bar) reads first.
-        if UITestFixture.longTabTitle {
-          terminals.tabs(for: target).first?.surface?
-            .onTitleChange?(UITestFixture.longTabTitleValue)
-        }
-        // Two-tab scenario (drag/reorder XCUITest, issue #23): also open a terminal for the second
-        // workroom so the workroom tab bar shows two chips to reorder.
-        if UITestFixture.twoTabs, project.workrooms.count > 1 {
-          terminals.ensureTab(for: project.workrooms[1].target(inProject: project.path))
-        }
-        // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
-        // first tab, so add the rest.
-        for _ in 1..<UITestFixture.terminalTabs { _ = terminals.addTab(for: target) }
-        // Program status scenario (#358): waiting, stale and failed panes, seeded without a daemon.
-        if UITestFixture.programStatus {
-          UITestFixture.seedProgramStatus(in: terminals, target: target)
-        }
-        // Workroom-bar overflow scenario (issue #129): make every seeded workroom an *active target*
-        // so the title-bar tab bar shows a chip for each. `ensureTab` only registers a tab; the shell
-        // is created by the pane's view when it mounts, and only the selected workroom's does — so
-        // this costs N tab models and one terminal, not N terminals.
-        if UITestFixture.workroomCount > 1 {
-          for workroom in project.workrooms.dropFirst() {
-            terminals.ensureTab(for: workroom.target(inProject: project.path))
+      }
+      // The real persisted selection won't resolve against the fixture paths; don't try to restore it.
+      pendingRestoreSelection = nil
+      // Start every fixture project expanded so the sidebar tree is deterministic regardless of any
+      // collapse state a prior UI-test run persisted to the shared defaults (real projects untouched).
+      collapsedProjects.subtract(fixtures.map(\.id))
+      // Auto-select the fixture workroom only for the restoring (launch) window — a ⌘N window starts
+      // blank in fixture mode too, mirroring production (issue #70). `fixtureAutoSelect` is the
+      // per-window equivalent of clearing `pendingRestoreSelection` on the real path.
+      if fixtureAutoSelect {
+        if selectedProjectID == nil { selectedProjectID = fixtures.first?.id }
+        if selectedTargetID == nil, let project = fixtures.first,
+          let workroom = project.workrooms.first
+        {
+          selectedTargetID = .workroom(project: project.path, name: workroom.name)
+          // Open a terminal for the auto-selected fixture workroom up front (the view's
+          // `ensureInitialTerminal` would too on mount) so the UI tests, which assume the fixture
+          // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
+          let target = workroom.target(inProject: project.path)
+          terminals.ensureTab(for: target)
+          if let title = UITestFixture.usageCodingAgentTitle {
+            terminals.tabs(for: target).first?.surface?.onTitleChange?(title)
           }
-        }
-        // Workroom-split scenario (context-menu XCUITest, issue #112): start already in a
-        // root + workroom split so the group title bar renders on launch without a flaky drag.
-        // The selected workroom is a member, so `visibleWorkroomLayout` shows the split; open the
-        // root's terminal too so its pane mounts.
-        if UITestFixture.workroomSplit {
-          terminals.ensureTab(for: project.rootTarget)
-          workroomSplits = [
-            .split(
-              id: UUID(), orientation: .horizontal, ratio: 0.5,
-              first: .leaf(.root(project: project.path)),
-              second: .leaf(.workroom(project: project.path, name: workroom.name)))
-          ]
-          // Create-as-split scenario (issue #171): the SELECTED member is mid-setup-script, so its
-          // pane draws that create's own dialog while the root pane stays on screen beside it — the
-          // whole point of routing a focused create through the split rather than full-frame. The log
-          // is left UNFINISHED, which is what a running script looks like (a UI test can't drive a
-          // real create; nothing here shells out to the CLI). `creatingWorkrooms` is what the pane's
-          // Run gate and `startRunCommand` both read, so seeding it is what makes the absent Run
-          // assertable.
-          //
-          // Two variants: a create on its setup script, and one still on its worktree (#483).
-          let hasSetup = !UITestFixture.creatingSplitMemberNoSetup
-          if UITestFixture.creatingSplitMember || UITestFixture.creatingSplitMemberNoSetup {
-            let run = CreationRun(
-              project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
-            run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
-            run.begin("worktree")
-            if hasSetup {
-              run.begin("script")
-              run.append("Running setup script…", to: "script")
+          // Oversized tab title for the pane title bar's truncation tests (issue #150). Same route as
+          // the agent title above — a shell-set title latches as `liveTitle`, which is what
+          // `TerminalTab.title` (and so the chip and the pane bar) reads first.
+          if UITestFixture.longTabTitle {
+            terminals.tabs(for: target).first?.surface?
+              .onTitleChange?(UITestFixture.longTabTitleValue)
+          }
+          // Two-tab scenario (drag/reorder XCUITest, issue #23): also open a terminal for the second
+          // workroom so the workroom tab bar shows two chips to reorder.
+          if UITestFixture.twoTabs, project.workrooms.count > 1 {
+            terminals.ensureTab(for: project.workrooms[1].target(inProject: project.path))
+          }
+          // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
+          // first tab, so add the rest.
+          for _ in 1..<UITestFixture.terminalTabs { _ = terminals.addTab(for: target) }
+          // Program status scenario (#358): waiting, stale and failed panes, seeded without a daemon.
+          if UITestFixture.programStatus {
+            UITestFixture.seedProgramStatus(in: terminals, target: target)
+          }
+          // Workroom-bar overflow scenario (issue #129): make every seeded workroom an *active target*
+          // so the title-bar tab bar shows a chip for each. `ensureTab` only registers a tab; the shell
+          // is created by the pane's view when it mounts, and only the selected workroom's does — so
+          // this costs N tab models and one terminal, not N terminals.
+          if UITestFixture.workroomCount > 1 {
+            for workroom in project.workrooms.dropFirst() {
+              terminals.ensureTab(for: workroom.target(inProject: project.path))
             }
-            run.setName(workroom.name)
-            creationRuns[run.id] = run
-            creationRunForTarget[target.id] = run.id
-            creatingWorkrooms.insert(target.id)
           }
-          // Second-group scenario: a window holds SEVERAL split groups, so seed a second one from two
-          // more workrooms (needs `-WorkroomUITestWorkroomCount 3`). Both groups persist; the visible
-          // one follows the selection, which is why the test can hop between them.
-          if UITestFixture.secondWorkroomSplit, project.workrooms.count >= 3 {
-            let pair = Array(project.workrooms[1...2])
-            for member in pair { terminals.ensureTab(for: member.target(inProject: project.path)) }
-            workroomSplits.append(
+          // Workroom-split scenario (context-menu XCUITest, issue #112): start already in a
+          // root + workroom split so the group title bar renders on launch without a flaky drag.
+          // The selected workroom is a member, so `visibleWorkroomLayout` shows the split; open the
+          // root's terminal too so its pane mounts.
+          if UITestFixture.workroomSplit {
+            terminals.ensureTab(for: project.rootTarget)
+            workroomSplits = [
               .split(
                 id: UUID(), orientation: .horizontal, ratio: 0.5,
-                first: .leaf(.workroom(project: project.path, name: pair[0].name)),
-                second: .leaf(.workroom(project: project.path, name: pair[1].name))))
+                first: .leaf(.root(project: project.path)),
+                second: .leaf(.workroom(project: project.path, name: workroom.name)))
+            ]
+            // Create-as-split scenario (issue #171): the SELECTED member is mid-setup-script, so its
+            // pane draws that create's own dialog while the root pane stays on screen beside it — the
+            // whole point of routing a focused create through the split rather than full-frame. The log
+            // is left UNFINISHED, which is what a running script looks like (a UI test can't drive a
+            // real create; nothing here shells out to the CLI). `creatingWorkrooms` is what the pane's
+            // Run gate and `startRunCommand` both read, so seeding it is what makes the absent Run
+            // assertable.
+            //
+            // Two variants: a create on its setup script, and one still on its worktree (#483).
+            let hasSetup = !UITestFixture.creatingSplitMemberNoSetup
+            if UITestFixture.creatingSplitMember || UITestFixture.creatingSplitMemberNoSetup {
+              let run = CreationRun(
+                project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+              run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
+              run.begin("worktree")
+              if hasSetup {
+                run.begin("script")
+                run.append("Running setup script…", to: "script")
+              }
+              run.setName(workroom.name)
+              creationRuns[run.id] = run
+              creationRunForTarget[target.id] = run.id
+              creatingWorkrooms.insert(target.id)
+            }
+            // Second-group scenario: a window holds SEVERAL split groups, so seed a second one from two
+            // more workrooms (needs `-WorkroomUITestWorkroomCount 3`). Both groups persist; the visible
+            // one follows the selection, which is why the test can hop between them.
+            if UITestFixture.secondWorkroomSplit, project.workrooms.count >= 3 {
+              let pair = Array(project.workrooms[1...2])
+              for member in pair {
+                terminals.ensureTab(for: member.target(inProject: project.path))
+              }
+              workroomSplits.append(
+                .split(
+                  id: UUID(), orientation: .horizontal, ratio: 0.5,
+                  first: .leaf(.workroom(project: project.path, name: pair[0].name)),
+                  second: .leaf(.workroom(project: project.path, name: pair[1].name))))
+            }
           }
+          // Seed a representative notification history (the inspector's Notifications panel is otherwise
+          // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target
+          // but synthetic tabs (see `UITestFixture.notifications`) so the window's focus auto-dismiss
+          // can't wipe them. First-load only (guarded by the nil selection), so a focus-driven reload
+          // never clobbers notifications a test has since dismissed.
+          notifications.seedForTesting(UITestFixture.notifications(targetID: target.id))
         }
-        // Seed a representative notification history (the inspector's Notifications panel is otherwise
-        // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target
-        // but synthetic tabs (see `UITestFixture.notifications`) so the window's focus auto-dismiss
-        // can't wipe them. First-load only (guarded by the nil selection), so a focus-driven reload
-        // never clobbers notifications a test has since dismissed.
-        notifications.seedForTesting(UITestFixture.notifications(targetID: target.id))
       }
+      // Seed deterministic Changes-inspector status (the fixture paths aren't real repos, so the live
+      // probe would only report "unknown"); the resolver sweep is skipped in fixture mode.
+      seedStatuses()
+      lastLoadAt = Date()
     }
-    // Seed deterministic Changes-inspector status (the fixture paths aren't real repos, so the live
-    // probe would only report "unknown"); the resolver sweep is skipped in fixture mode.
-    seedFixtureStatuses()
-    lastLoadAt = Date()
-  }
+  #endif
 
   private func apply(_ incoming: [Project], registrations: [RepositoryRouter.Registration]) {
     let interval = LaunchSignposts.begin("Publish projects and reconcile window")
@@ -2287,10 +2299,11 @@ final class AppStore: ObservableObject {
 
   /// Reconcile the per-project root-branch watchers with the current project list: ensure a watcher
   /// for each project (pointed at its `.git` metadata dir) and tear down watchers for projects
-  /// that went away. Called from `apply` so the watch set tracks the live projects. No-op in fixture
-  /// mode (the temp-dir paths aren't real repos — match `resolveBranches`, which skips them too).
+  /// that went away. Called from `apply` so the watch set tracks the live projects. No-op when the
+  /// services seed statuses (the fixture's temp-dir paths aren't real repos — match
+  /// `resolveBranches`, which skips them too).
   func updateRootBranchWatches() {
-    guard !AppEnvironment.current.isFixture else {
+    guard probesRepositories else {
       for w in rootBranchWatchers.values { w.stop() }
       rootBranchWatchers.removeAll()
       for t in rootBranchRefreshTasks.values { t.cancel() }
@@ -2327,7 +2340,7 @@ final class AppStore: ObservableObject {
   /// doesn't invalidate the sidebar). Cancel-and-replace per project so a write burst resolves once;
   /// `.none` never clobbers a prior label (matches `resolveBranches`).
   func handleRootBranchChange(projectID: Project.ID) {
-    guard !AppEnvironment.current.isFixture, let p = projects.first(where: { $0.id == projectID })
+    guard probesRepositories, let p = projects.first(where: { $0.id == projectID })
     else { return }
     // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / ref
     // update in the project or one of its workrooms (git worktree refs land in the shared `.git`, so
@@ -2378,15 +2391,17 @@ final class AppStore: ObservableObject {
     // which meant a UI test driving the wizard's real Add Project step (issue #151) genuinely
     // registered a project in the developer's own `~/.config/workroom/config.json` (the CLI has no
     // config-path override to isolate against instead). Simulate the same success shape locally.
-    if AppEnvironment.current.isFixture {
-      let canonical = AddProjectSheetModel.normalize(path)
-      if !projects.contains(where: { $0.path == canonical }) {
-        projects.append(Project(path: canonical, vcs: "git", workrooms: []))
+    #if DEBUG
+      if AppEnvironment.current.isFixture {
+        let canonical = AddProjectSheetModel.normalize(path)
+        if !projects.contains(where: { $0.path == canonical }) {
+          projects.append(Project(path: canonical, vcs: "git", workrooms: []))
+        }
+        selectedProjectID = canonical
+        selectedTargetID = .root(project: canonical)
+        return .success(())
       }
-      selectedProjectID = canonical
-      selectedTargetID = .root(project: canonical)
-      return .success(())
-    }
+    #endif
     do {
       let canonical = try await cli.addProject(path, create: create)
       await reload()
@@ -2420,10 +2435,6 @@ final class AppStore: ObservableObject {
 
   /// Whether a finished create's checklist closes by itself, else it waits for Done. Tests replace it.
   var closesFinishedCreations: () -> Bool = { Defaults[.closeCreationPaneWhenDone] }
-
-  /// What a remote create reaches beyond the app: GitHub and the project's git, the provider's
-  /// account, and its hosts. Tests stand in fakes.
-  var remoteCreateServices = RemoteCreateServices.live
 
   /// Removes the workroom from the sidebar immediately, then runs its teardown (script +
   /// workspace removal) in the background. On success the optimistic removal already
@@ -2530,7 +2541,7 @@ final class AppStore: ObservableObject {
     runOutcomes[targetID] = nil
     resetRunToast(for: targetID)  // deleted target → drop any run toast state (issue #67)
     // Drop the gone target's notifications and pull any banners it already delivered.
-    systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
+    services.notifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
   }
 
   /// Run the VCS teardown (worktree/workspace removal) in the background, surfacing any failure with
@@ -2825,14 +2836,14 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Moves each path to the Bin via the injected `trasher`, returning the URLs that could NOT be
+  /// Moves each path to the Bin via the injected `services.trasher`, returning the URLs that could NOT be
   /// moved so the caller can tell the user exactly what was left behind. The project is already
   /// out of config by this point (the CLI dropped it), so a partial failure does not restore it.
   /// Internal (not private) so the from-disk trash orchestration is unit-testable with a fake.
   func trashToBin(_ urls: [URL]) -> [URL] {
     var failed: [URL] = []
     for url in urls {
-      do { try trasher.trash(url) } catch { failed.append(url) }
+      do { try services.trasher.trash(url) } catch { failed.append(url) }
     }
     return failed
   }
@@ -3065,8 +3076,10 @@ final class AppStore: ObservableObject {
   /// to lose. A content/diff tab has no surface and an exited run tab has nothing running, so a
   /// `?? true` ("has exited") batch of only those never prompts (issue #7).
   private func closeNeedsConfirm(_ tabs: [TerminalTab]) -> Bool {
-    Self.resolveConfirmOnClose(override: confirmOnCloseOverrideForTesting)
-      && !AppEnvironment.current.isFixture
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return false }
+    #endif
+    return Self.resolveConfirmOnClose(override: confirmOnCloseOverrideForTesting)
       && tabs.contains { !($0.surface?.processHasExited ?? true) }
   }
 
@@ -3093,12 +3106,14 @@ final class AppStore: ObservableObject {
   /// surface and closes any detached window, so this never orphans a window or leaks a PTY.
   private func performClose(_ tabIDs: [TerminalTab.ID], for target: TerminalTarget) {
     for id in tabIDs {
-      if AppEnvironment.current.isFixture {
-        terminals.closeTab(id, for: target)
-      } else {
-        closingRunTab(id, for: target.id) { [weak self] in
-          self?.terminals.closeTab(id, for: target)
+      #if DEBUG
+        if AppEnvironment.current.isFixture {
+          terminals.closeTab(id, for: target)
+          continue
         }
+      #endif
+      closingRunTab(id, for: target.id) { [weak self] in
+        self?.terminals.closeTab(id, for: target)
       }
     }
   }
@@ -3410,7 +3425,7 @@ final class AppStore: ObservableObject {
   private func withdrawNotification(_ note: WorkroomNotification) {
     toasts.removeAll { $0.id == note.id }
     notifications.dismiss(notifID: note.id)
-    systemNotifier.withdraw(identifiers: [note.tabID.uuidString])
+    services.notifier.withdraw(identifiers: [note.tabID.uuidString])
   }
 
   // MARK: Program status alerts (#358)
@@ -3462,7 +3477,7 @@ final class AppStore: ObservableObject {
       notifications.dismiss(notifID: earlier)
       toasts.removeAll { $0.id == earlier }
       // Its banner too: this finish may surface as a toast, which never replaces a banner.
-      systemNotifier.withdraw(tabIDs: [tabID])
+      services.notifier.withdraw(tabIDs: [tabID])
     }
     surface(note)
   }
@@ -3495,7 +3510,7 @@ final class AppStore: ObservableObject {
     toasts.removeAll { $0.episode == episode }
     notifications.dismiss(episode: episode)
     // Even with the entry already read: its banner may still be in Notification Center.
-    systemNotifier.withdraw(identifiers: [episode])
+    services.notifier.withdraw(identifiers: [episode])
   }
 
   /// The program-status session of the terminal focused in this window, for ⇧⌘M. Only with keyboard
@@ -3532,10 +3547,10 @@ final class AppStore: ObservableObject {
       if let forwardToast { forwardToast(note) } else { enqueueToast(note) }
     } else if NotificationGate.shouldPostBanner(recorded: true, appActive: isAppActive()) {
       Task { @MainActor in
-        if await systemNotifier.ensureAuthorized(), stillWanted(),
+        if await services.notifier.ensureAuthorized(), stillWanted(),
           notifications.items.contains(where: { $0.id == note.id })
         {
-          systemNotifier.post(note)
+          services.notifier.post(note)
         }
       }
     }
@@ -3587,7 +3602,7 @@ final class AppStore: ObservableObject {
     guard let sid = Self.sidebarID(forTargetID: targetID, in: projects) else {
       // Its workroom is gone: the row would open nothing, so it goes too (#573).
       if let notifID { notifications.dismiss(notifID: notifID) }
-      if let tabID { systemNotifier.withdraw(tabIDs: [tabID]) }
+      if let tabID { services.notifier.withdraw(tabIDs: [tabID]) }
       return
     }
     // Jump to (target, tab) through the shared primitive: it selects the target, re-activates the

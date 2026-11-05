@@ -58,18 +58,21 @@ final class ClaudeUsageBridge: ObservableObject {
   ) {
     let interval = LaunchSignposts.begin("Claude usage bridge initialization")
     defer { LaunchSignposts.end("Claude usage bridge initialization", interval) }
-    if AppEnvironment.current.isFixture {
-      let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
-        "workroom-agent-usage-ui-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
-      self.settingsURL = settingsURL ?? fixtureRoot.appendingPathComponent(".claude/settings.json")
-      self.directoryURL = directoryURL ?? fixtureRoot.appendingPathComponent("Agent Usage")
-    } else {
-      self.settingsURL =
-        settingsURL
-        ?? FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/settings.json")
-      self.directoryURL = directoryURL ?? ClaudeUsageBridge.defaultDirectory
-    }
+    var settingsURL = settingsURL
+    var directoryURL = directoryURL
+    #if DEBUG
+      if AppEnvironment.current.isFixture {
+        let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+          "workroom-agent-usage-ui-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        settingsURL = settingsURL ?? fixtureRoot.appendingPathComponent(".claude/settings.json")
+        directoryURL = directoryURL ?? fixtureRoot.appendingPathComponent("Agent Usage")
+      }
+    #endif
+    self.settingsURL =
+      settingsURL
+      ?? FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".claude/settings.json")
+    self.directoryURL = directoryURL ?? ClaudeUsageBridge.defaultDirectory
     self.fileManager = fileManager
     self.writer =
       writer ?? { data, url, permissions in

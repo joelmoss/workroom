@@ -193,7 +193,7 @@ final class AppStoreDeleteProjectTests: XCTestCase {
   func testTrashToBinMovesEveryPathWhenAllSucceed() {
     let store = makeStore([])
     let fake = FakeTrasher()
-    store.trasher = fake
+    store.services.trasher = fake
     let urls = [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b/c")]
 
     let failed = store.trashToBin(urls)
@@ -207,7 +207,7 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     let fake = FakeTrasher()
     let bad = URL(fileURLWithPath: "/locked")
     fake.failURLs = [bad]
-    store.trasher = fake
+    store.services.trasher = fake
     let urls = [URL(fileURLWithPath: "/ok"), bad, URL(fileURLWithPath: "/ok2")]
 
     let failed = store.trashToBin(urls)

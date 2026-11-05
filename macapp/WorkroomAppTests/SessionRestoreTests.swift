@@ -790,9 +790,7 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.hostLayouts.stale.contains(id))
 
     let host = MovedHost()
-    let saved2 = AppStore.hostLayoutStore
-    AppStore.hostLayoutStore = { _ in host }
-    defer { AppStore.hostLayoutStore = saved2 }
+    store.services.hostLayoutStore = { _ in host }
     for write in store.writeHostLayouts() { await write.value }
     XCTAssertEqual(host.puts, 1, "retried past the refusal")
     XCTAssertTrue(store.hostLayouts.stale.contains(id), "no longer wins at the next open")
@@ -812,11 +810,9 @@ final class SessionRestoreTests: XCTestCase {
       }
     }
     let host = MovedHost()
-    let saved = AppStore.hostLayoutStore
-    AppStore.hostLayoutStore = { _ in host }
-    defer { AppStore.hostLayoutStore = saved }
     let workroomID = UUID()
     let store = AppStore()
+    store.services.hostLayoutStore = { _ in host }
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
@@ -880,14 +876,12 @@ final class SessionRestoreTests: XCTestCase {
       first: try OneLayout("from the first host", delay: 300_000_000),
       second: try OneLayout("from the second host"),
     ]
-    let saved = AppStore.hostLayoutStore
-    AppStore.hostLayoutStore = { host in
+    let layouts: @Sendable (HostID) async throws -> HostLayoutStore = { host in
       guard case .remote(let id) = host, let store = stores[id] else {
         throw RepositoryRoutingError.unavailable(host)
       }
       return store
     }
-    defer { AppStore.hostLayoutStore = saved }
     let workroomID = UUID()
     func project(host: UUID) -> Project {
       Project(
@@ -900,6 +894,7 @@ final class SessionRestoreTests: XCTestCase {
         ])
     }
     let store = AppStore()
+    store.services.hostLayoutStore = layouts
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
@@ -946,9 +941,6 @@ final class SessionRestoreTests: XCTestCase {
       }
     }
     let host = FullHost()
-    let saved = AppStore.hostLayoutStore
-    AppStore.hostLayoutStore = { _ in host }
-    defer { AppStore.hostLayoutStore = saved }
     let workroomID = UUID()
     let first = UUID()
     func project(host: UUID) -> Project {
@@ -962,6 +954,7 @@ final class SessionRestoreTests: XCTestCase {
         ])
     }
     let store = AppStore()
+    store.services.hostLayoutStore = { _ in host }
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
@@ -998,9 +991,6 @@ final class SessionRestoreTests: XCTestCase {
       }
     }
     let host = SlowHost()
-    let saved = AppStore.hostLayoutStore
-    AppStore.hostLayoutStore = { _ in host }
-    defer { AppStore.hostLayoutStore = saved }
     let workroomID = UUID()
     let first = UUID()
     func project(host: UUID) -> Project {
@@ -1014,6 +1004,7 @@ final class SessionRestoreTests: XCTestCase {
         ])
     }
     let store = AppStore()
+    store.services.hostLayoutStore = { _ in host }
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
@@ -1048,22 +1039,16 @@ final class SessionRestoreTests: XCTestCase {
         expected + 1
       }
     }
-    let savedStore = AppStore.hostLayoutStore
-    let savedSessions = AppStore.hostSessions
-    AppStore.hostLayoutStore = { _ in EmptyHost() }
-    AppStore.hostSessions = { _ in
-      try await Task.sleep(nanoseconds: 30_000_000_000)
-      return []
-    }
-    defer {
-      AppStore.hostLayoutStore = savedStore
-      AppStore.hostSessions = savedSessions
-    }
     let workroom = Workroom(
       name: "l", path: "/home/workroom/l", vcsName: "workroom/l", warnings: [],
       host: HostDescriptor(
         provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: UUID()))
     let store = AppStore()
+    store.services.hostLayoutStore = { _ in EmptyHost() }
+    store.services.hostSessions = { _ in
+      try await Task.sleep(nanoseconds: 30_000_000_000)
+      return []
+    }
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
@@ -1088,16 +1073,14 @@ final class SessionRestoreTests: XCTestCase {
   /// saved session, whether the restore or the workroom's pane asks the host first.
   func testAHostKeepingNoLayoutsRestoresThisMacsCopy() async throws {
     for paneFirst in [false, true] {
-      let saved = AppStore.hostLayoutStore
-      AppStore.hostLayoutStore = { _ in
-        throw DaemonLayoutError.unsupported("this daemon keeps no layouts")
-      }
-      defer { AppStore.hostLayoutStore = saved }
       let workroom = Workroom(
         name: "n", path: "/home/workroom/n", vcsName: "workroom/n", warnings: [],
         host: HostDescriptor(
           provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: UUID()))
       let store = AppStore()
+      store.services.hostLayoutStore = { _ in
+        throw DaemonLayoutError.unsupported("this daemon keeps no layouts")
+      }
       store.terminals.makeView = { _, cwd, _ in
         GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
       }
@@ -1142,10 +1125,8 @@ final class SessionRestoreTests: XCTestCase {
     }
     let workroomID = UUID()
     let host = SeededHost(seed: "the seed this Mac wrote")
-    let saved = AppStore.hostLayoutStore
-    AppStore.hostLayoutStore = { _ in host }
-    defer { AppStore.hostLayoutStore = saved }
     let store = AppStore()
+    store.services.hostLayoutStore = { _ in host }
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
@@ -1188,11 +1169,9 @@ final class SessionRestoreTests: XCTestCase {
       }
     }
     let host = SlowMovedHost()
-    let saved = AppStore.hostLayoutStore
-    AppStore.hostLayoutStore = { _ in host }
-    defer { AppStore.hostLayoutStore = saved }
     let workroomID = UUID()
     let store = AppStore()
+    store.services.hostLayoutStore = { _ in host }
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }

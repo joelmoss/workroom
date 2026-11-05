@@ -33,8 +33,17 @@ enum OnboardingStep: Int, CaseIterable {
 /// `UITestFixture.onboardingOverride`; defaults to that real flag in production, injected explicitly
 /// in tests.
 enum OnboardingGate {
+  /// The UI test's forced outcome, if any. Never in Release.
+  static var testOverride: Bool? {
+    #if DEBUG
+      UITestFixture.onboardingOverride
+    #else
+      nil
+    #endif
+  }
+
   static func shouldShow(
-    hasCompleted: Bool, projectsEmpty: Bool, override: Bool? = UITestFixture.onboardingOverride
+    hasCompleted: Bool, projectsEmpty: Bool, override: Bool? = OnboardingGate.testOverride
   ) -> Bool {
     if let override { return override }
     return !hasCompleted && projectsEmpty
@@ -45,7 +54,7 @@ enum OnboardingGate {
   /// load), so this is what drives that earlier decision instead. Consults the same override
   /// `shouldShow` does, so a UI test forcing "show"/"hide" gets consistent hide-the-launch-window
   /// behavior instead of disagreeing with the real gate once bootstrap completes.
-  static func mightShow(hasCompleted: Bool, override: Bool? = UITestFixture.onboardingOverride)
+  static func mightShow(hasCompleted: Bool, override: Bool? = OnboardingGate.testOverride)
     -> Bool
   {
     if let override { return override }

@@ -575,7 +575,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     trasher.observe = { [unowned store] in
       (store.deletingProjects.contains(self.projectPath), fake.listCalls)
     }
-    store.trasher = trasher
+    store.services.trasher = trasher
     await store.reload()
 
     store.deleteProject(project([a]), scope: .fromDisk)

@@ -77,6 +77,9 @@ struct DiffViewer: View {
   var resolveDiff: (DiffDescriptor, String) async -> DiffResult = {
     await DiffResolver().resolve($0, in: $1)
   }
+  /// The services' canned diffs (`AppServices.cannedDiffs`), served instead of reading the
+  /// repository: the UI-test fixture's, whose paths are not repositories. Nil reads it.
+  var cannedDiffs: AppServices.CannedDiffs? = nil
   #if DEBUG
     /// Test-only observation seam for the stale-load regression test — fires with the `LoadState`
     /// this SPECIFIC instance just committed. Per-instance (a `@MainActor` closure the test owns),
@@ -386,12 +389,14 @@ struct DiffViewer: View {
     state = .loading
     highlightedLines = [:]  // drop any previous file's colours immediately (no stale flash)
     highlightedOldLines = [:]
-    // In UI-test fixture mode the workroom path is a fake temp dir with no repo, so serve a canned
-    // diff instead of shelling out to git (issue #66 UI tests).
-    let result =
-      AppEnvironment.current.isFixture
-      ? UITestFixture.diff(for: descriptor)
-      : await resolveRepositoryDiff()
+    // Canned diffs (the UI-test fixture's workroom path is a fake temp dir with no repo) are served
+    // instead of shelling out to git (issue #66 UI tests).
+    let result: DiffResult
+    if let cannedDiffs {
+      result = cannedDiffs.diff(descriptor)
+    } else {
+      result = await resolveRepositoryDiff()
+    }
     // Stale-write guard. This path had NO staleness check at all, so a slow diff for the file this
     // pane USED to show could land after a retarget and paint file A's diff, stats and find index
     // into file B's slot — reproduced red/green by `DiffViewerStaleLoadTests`. The token half is the
@@ -450,11 +455,14 @@ struct DiffViewer: View {
       highlightedLines = [:]
       return
     }
-    // New-side content: canned in fixture mode, else the guarded VCS fetch folded into DiffResolver.
-    let content =
-      AppEnvironment.current.isFixture
-      ? UITestFixture.fileContent(for: descriptor)
-      : await repositoryFileContent(old: false)
+    // New-side content: canned with canned diffs, else the guarded VCS fetch folded into
+    // DiffResolver.
+    let content: String?
+    if let cannedDiffs {
+      content = cannedDiffs.fileContent(descriptor)
+    } else {
+      content = await repositoryFileContent(old: false)
+    }
     guard !Task.isCancelled, activeHighlightKey == key else { return }
     guard let content else {
       highlightedLines = [:]
@@ -480,12 +488,10 @@ struct DiffViewer: View {
     highlightedLines = lines
 
     // Old side: highlight the DELETED lines from the pre-image file (the new-side pass can't — they
-    // aren't in the new file). Only when the diff actually has deletions, and not in fixture mode
+    // aren't in the new file). Only when the diff actually has deletions, and not with canned diffs
     // (no pre-image source there → deletions render plain). Reuses the same grammar (same file).
     guard diff.hunks.contains(where: { $0.lines.contains { $0.kind == .deletion } }) else { return }
-    let oldContent =
-      AppEnvironment.current.isFixture
-      ? nil : await repositoryFileContent(old: true)
+    let oldContent = cannedDiffs == nil ? await repositoryFileContent(old: true) : nil
     guard !Task.isCancelled, activeHighlightKey == key, let oldContent else { return }
     let deletionEmphasis = emphasis.deletions
     let oldLines = await Task.detached(priority: .utility) {

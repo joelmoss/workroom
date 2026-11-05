@@ -192,8 +192,12 @@ final class ProgramStatusMonitor: ObservableObject {
   /// False in a test process or a fixture launch, which must never reach the developer's daemon:
   /// tests drive their own monitor, and the fixture seeds records straight in (`seed`). A fixture
   /// launch with a scratch daemon of its own (`UITestFixture.liveDaemonDirectory`) does watch it.
-  var watchesHosts =
-    !AppEnvironment.current.isTestProcess || UITestFixture.liveDaemonDirectory != nil
+  var watchesHosts: Bool = {
+    #if DEBUG
+      if UITestFixture.liveDaemonDirectory != nil { return true }
+    #endif
+    return !AppEnvironment.current.isTestProcess
+  }()
 
   /// Starts following `host`, once.
   func watch(_ host: HostID) {

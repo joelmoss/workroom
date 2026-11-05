@@ -21,9 +21,18 @@ enum TerminalPersistentSessionPolicy {
     isAvailable: Bool,
     inProcessCommand: Bool,
     hasExistingSession: Bool,
-    // A fixture pane is a plain shell, unless the launch gave it a scratch daemon of its own.
-    isFixture: Bool = AppEnvironment.current.isFixture && UITestFixture.liveDaemonDirectory == nil
+    isFixture: Bool = isPlainFixturePane
   ) -> Bool {
     (isAvailable || hasExistingSession) && !inProcessCommand && !isFixture
+  }
+
+  /// A fixture pane is a plain shell, unless the launch gave it a scratch daemon of its own. Never
+  /// in Release.
+  static var isPlainFixturePane: Bool {
+    #if DEBUG
+      AppEnvironment.current.isFixture && UITestFixture.liveDaemonDirectory == nil
+    #else
+      false
+    #endif
   }
 }

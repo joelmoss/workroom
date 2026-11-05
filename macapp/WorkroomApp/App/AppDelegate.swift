@@ -15,6 +15,16 @@ import os
 /// it is also the only place a shortcut can be claimed *conditionally* — see the ⌥Tab / ⌃Tab branch,
 /// which passes the key back to the terminal when there is nothing to switch to.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+  /// A UI-test fixture launch: it skips the Quick Terminal's orphan sweep and quits without asking.
+  /// Never in Release.
+  nonisolated private static var isFixtureLaunch: Bool {
+    #if DEBUG
+      AppEnvironment.current.isFixture
+    #else
+      false
+    #endif
+  }
+
   private var monitor: Any?
   /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
   /// `updateGlobalHotkey()` to follow the `globalHotkey` setting.
@@ -140,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // A crash or force quit leaves the Quick Terminal's shells running, unseen: end them. Its own
       // sweep, since the workroom one waits for a project list, which may be empty (ADR 0064). A
       // live Quick Terminal opened meanwhile is attached, and attached sessions are spared.
-      if !AppEnvironment.current.isFixture {
+      if !Self.isFixtureLaunch {
         Task { @MainActor in
           let service = PersistentSessionService.shared
           await service.prepareBackend()
@@ -525,7 +535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // UI-test fixture quits cleanly (no modal, no waiting) so XCUITest teardown never blocks. The
     // session still flushes here: this branch IS terminating, and a UI test that relaunches to check
     // what was restored must not race the coalescing timer (issue #46).
-    if AppEnvironment.current.isFixture {
+    if Self.isFixtureLaunch {
       SavedLayoutCoordinator.shared.flushAndFreeze()
       return .terminateNow
     }

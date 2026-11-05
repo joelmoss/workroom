@@ -899,8 +899,16 @@ struct PaneLeafView: View {
     // recurring bug class (the ⌘F find-bar hatch in TerminalContainerView, DiffPaneFocusUITests, and
     // the dialog-vs-terminal race this trait now covers). Fixture-gated rather than unconditional:
     // a lone pane announcing itself "selected" to VoiceOver would be wrong for real users.
-    .accessibilityAddTraits(
-      focused && (multiPane || AppEnvironment.current.isFixture) ? .isSelected : [])
+    .accessibilityAddTraits(focused && (multiPane || Self.marksLonePane) ? .isSelected : [])
+  }
+
+  /// Whether a lone focused pane is marked selected too: only for a UI-test fixture launch.
+  private static var marksLonePane: Bool {
+    #if DEBUG
+      AppEnvironment.current.isFixture
+    #else
+      false
+    #endif
   }
 
   /// The pane's centre: a hosted terminal surface, or a diff viewer for a content tab. Clipped to the
@@ -944,7 +952,7 @@ struct PaneLeafView: View {
       let diff = DiffViewer(
         descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
         viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride,
-        isFocused: focused, find: store.contentFind
+        isFocused: focused, find: store.contentFind, cannedDiffs: store.services.cannedDiffs
       )
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(

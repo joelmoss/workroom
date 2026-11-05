@@ -9,7 +9,7 @@ import WorkroomWire
 /// The run command (issue #7): starting, restarting and respawning a workroom's run command under
 /// its supervisor, applying the supervisor's status, the run toast list and native banner (issue
 /// #67), and the selection-scoped Run, Stop and Restart actions. These read the store (projects,
-/// run config, selection, host layout, `pendingProjectSettings`, `systemNotifier`), so they stay
+/// run config, selection, host layout, `pendingProjectSettings`, `services.notifier`), so they stay
 /// here. The run state itself, the toast dismissal, the supervisor's pid and session handling and
 /// the graceful teardown live in `RunCommandController`, which the store owns as `runCommand`.
 extension AppStore {
@@ -86,7 +86,7 @@ extension AppStore {
       source: notificationSource(forTargetID: targetID), title: title, body: body, date: Date(),
       count: 1)
     Task { @MainActor in
-      if await systemNotifier.ensureAuthorized() { systemNotifier.post(note) }
+      if await services.notifier.ensureAuthorized() { services.notifier.post(note) }
     }
   }
 

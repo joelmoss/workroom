@@ -43,10 +43,14 @@ final class SavedLayoutStore: @unchecked Sendable {
   /// a fixture launch would otherwise write over the developer's own `Workroom Dev` session — and the
   /// fixture's temp-directory workrooms would then be restored into a real launch.
   static func forCurrentEnvironment() -> SavedLayoutStore {
-    forEnvironment(
-      underXCTest: ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
-      fixtureActive: AppEnvironment.current.isFixture,
-      sessionFilePath: UITestFixture.sessionFilePath)
+    let underXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    #if DEBUG
+      return forEnvironment(
+        underXCTest: underXCTest, fixtureActive: AppEnvironment.current.isFixture,
+        sessionFilePath: UITestFixture.sessionFilePath)
+    #else
+      return forEnvironment(underXCTest: underXCTest, fixtureActive: false, sessionFilePath: nil)
+    #endif
   }
 
   /// `forCurrentEnvironment`'s decision, with its inputs passed in so a unit test can pin every

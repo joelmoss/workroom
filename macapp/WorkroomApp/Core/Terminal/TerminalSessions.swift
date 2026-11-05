@@ -654,7 +654,9 @@ final class TerminalSessions: ObservableObject {
   ///   app-run` Dev session) writes real entries into the same file the developer inspects for
   ///   curation signal, defeating the feature's own purpose.
   var recordUnrecognizedTool: (String) -> Void = { name in
-    guard !AppEnvironment.current.isFixture else { return }
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return }
+    #endif
     DispatchQueue.global(qos: .utility).async {
       UnrecognizedToolUsage.recordUnrecognized(name)
     }
@@ -721,13 +723,15 @@ final class TerminalSessions: ObservableObject {
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
     // so the XCUITest sees the banner; otherwise the normal opt-in, default-off real runner.
-    if UITestFixture.codingAgentStub {
-      codingAgentManager = TerminalCodingAgentManager(
-        runner: StubCodingAgentRunner(envelope: UITestFixture.codingAgentStubEnvelope),
-        featureEnabled: { true }, autoDiagnoseEnabled: { true })
-    } else {
-      codingAgentManager = TerminalCodingAgentManager()
-    }
+    #if DEBUG
+      if UITestFixture.codingAgentStub {
+        codingAgentManager = TerminalCodingAgentManager(
+          runner: StubCodingAgentRunner(envelope: UITestFixture.codingAgentStubEnvelope),
+          featureEnabled: { true }, autoDiagnoseEnabled: { true })
+        return
+      }
+    #endif
+    codingAgentManager = TerminalCodingAgentManager()
     // The OS-appearance observer that used to live here now belongs to `ThemeService` — one owner
     // for the whole app rather than one per window (WORKROOM-3R).
   }

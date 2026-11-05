@@ -56,10 +56,12 @@ enum PersistentSessionPaths {
     fileManager: FileManager = .default,
     backend: SessionBackend
   ) throws -> String {
-    if let directory = UITestFixture.liveDaemonDirectory {
-      try prepareDirectory(URL(fileURLWithPath: directory), fileManager: fileManager)
-      return directory + "/" + backend.socketFileName
-    }
+    #if DEBUG
+      if let directory = UITestFixture.liveDaemonDirectory {
+        try prepareDirectory(URL(fileURLWithPath: directory), fileManager: fileManager)
+        return directory + "/" + backend.socketFileName
+      }
+    #endif
     if backend == .daemon {
       return try daemonSocket(fileManager: fileManager).path
     }
@@ -80,10 +82,12 @@ enum PersistentSessionPaths {
 
   /// The daemon socket on this Mac, from its two directories (`daemonSocket(preferredDirectory:…)`).
   static func daemonSocket(fileManager: FileManager = .default) throws -> DaemonSocket {
-    if let directory = UITestFixture.liveDaemonDirectory {
-      let path = directory + "/" + SessionBackend.daemon.socketFileName
-      return DaemonSocket(live: isLive(path) ? path : nil, path: path)
-    }
+    #if DEBUG
+      if let directory = UITestFixture.liveDaemonDirectory {
+        let path = directory + "/" + SessionBackend.daemon.socketFileName
+        return DaemonSocket(live: isLive(path) ? path : nil, path: path)
+      }
+    #endif
     // Either directory may be unusable, as `resolveSocketPath` has always allowed: Application
     // Support that can't be made falls back to /tmp, where a daemon may already be, and a /tmp
     // folder another user owns matters only when Application Support's path is too long.

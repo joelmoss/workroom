@@ -412,7 +412,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let fake = CreatingFakeCLI(
       projectPath: projectPath, workroomName: "calm-otter", hasSetup: false, warning: warning)
     let store = makeStore(fake)
-    store.systemNotifier = SilentNotifier()
+    store.services.notifier = SilentNotifier()
 
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
@@ -429,7 +429,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       projectPath: projectPath, workroomName: "calm-otter", hasSetup: true, failAfterReady: true,
       warning: warning)
     let store = makeStore(fake)
-    store.systemNotifier = SilentNotifier()
+    store.services.notifier = SilentNotifier()
 
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
@@ -441,7 +441,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let fake = CreatingFakeCLI(
       projectPath: projectPath, workroomName: "calm-otter", hasSetup: false)
     let store = makeStore(fake)
-    store.systemNotifier = SilentNotifier()
+    store.services.notifier = SilentNotifier()
 
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 

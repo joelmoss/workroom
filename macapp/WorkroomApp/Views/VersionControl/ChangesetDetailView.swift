@@ -151,8 +151,9 @@ struct ChangesetDetailView: View {
     let root = URL(fileURLWithPath: directory, isDirectory: true)
     do {
       let changeset: VCSChangeset
-      if AppEnvironment.current.isFixture {
-        changeset = try await UITestFixture.vcsProvider.changeset(root: root, commitID: commitID)
+      if let vcsReader = store.services.vcsReader {
+        // A direct reader (the UI-test fixture's seeded one).
+        changeset = try await vcsReader(root).changeset(root: root, commitID: commitID)
       } else {
         // The provider self-offloads its blocking read to GCD (`runBlocking`), so a plain await here
         // stays off the cooperative pool — no `Task.detached` wrapper needed.
@@ -427,7 +428,7 @@ struct ChangesetDetailView: View {
         directory: directory, repositoryLocation: repositoryLocation,
         showsFileHeader: true,
         headerModeBinding: $diffMode,
-        isFocused: isFocused, find: find)
+        isFocused: isFocused, find: find, cannedDiffs: store.services.cannedDiffs)
     } else {
       message("Select a file", systemImage: "sidebar.left", detail: nil)
     }

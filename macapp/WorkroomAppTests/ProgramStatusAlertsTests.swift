@@ -21,7 +21,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     monitor.now = { [unowned self] in clock }
     store = AppStore()
     notifier = QuietNotifier()
-    store.systemNotifier = notifier
+    store.services.notifier = notifier
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     store.terminals.programStatus = monitor
     alerts = ProgramStatusAlerts()
@@ -556,7 +556,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     try? await setUp()
     enabled = true
     let notifier = GatedNotifier()
-    store.systemNotifier = notifier
+    store.services.notifier = notifier
     store.isAppActive = { false }
     alerts.start()
     let tab = store.terminals.addTab(for: target)
@@ -574,7 +574,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   /// banner, and only it.
   func testAnsweringARequestWithdrawsItsOwnBanner() async {
     let notifier = RecordingNotifier()
-    store.systemNotifier = notifier
+    store.services.notifier = notifier
     store.isAppActive = { false }
     alerts.start()
     let id = session(store.terminals.addTab(for: target))
@@ -594,7 +594,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   func testASessionInTwoWindowsCountsOnceAndGoesWithItsLastWindow() {
     alerts.start()
     let other = AppStore()
-    other.systemNotifier = QuietNotifier()
+    other.services.notifier = QuietNotifier()
     other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     other.terminals.programStatus = monitor
     var open = [store!, other]

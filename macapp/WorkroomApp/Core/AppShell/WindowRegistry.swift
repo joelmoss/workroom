@@ -340,7 +340,7 @@ final class WindowRegistry: ObservableObject {
   func dropNotifications(raisedBy store: AppStore) {
     guard !isTerminating else { return }
     let dropped = notifications.removeAll(from: ObjectIdentifier(store))
-    store.systemNotifier.withdraw(
+    store.services.notifier.withdraw(
       identifiers: dropped.map { SystemNotifier.payload(for: $0).identifier })
   }
 

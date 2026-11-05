@@ -253,7 +253,10 @@ struct PlainFileViewer: View {
           onFirstRender: {
             // The UI-test seam pins the loading state on screen; the real loader is far too
             // short-lived for XCUITest to catch reliably (see UITestFixture.holdPreviewLoader).
-            if !UITestFixture.holdPreviewLoader { previewRendered = true }
+            #if DEBUG
+              if UITestFixture.holdPreviewLoader { return }
+            #endif
+            previewRendered = true
           }
         )
         // Cover the web view's boot window with a themed panel from the first frame, so opening a

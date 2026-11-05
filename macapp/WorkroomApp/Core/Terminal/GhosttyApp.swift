@@ -290,7 +290,7 @@ final class GhosttyApp {
   /// bundle-scoped file. The parameters default to the real signals so tests can pin each branch
   /// without writing a fixture key into the defaults domain that parallel workers share.
   nonisolated static func themeConfigURLForCurrentEnvironment(
-    fixturePath: String? = UITestFixture.ghosttyConfigFilePath,
+    fixturePath: String? = GhosttyApp.fixtureConfigFilePath,
     underTest: Bool = AppEnvironment.current.isTestProcess
   ) -> URL {
     #if DEBUG
@@ -303,6 +303,15 @@ final class GhosttyApp {
       }
     #endif
     return defaultThemeConfigURL()
+  }
+
+  /// A theme UI test's config file (`UITestFixture.ghosttyConfigFilePath`). Never in Release.
+  nonisolated static var fixtureConfigFilePath: String? {
+    #if DEBUG
+      UITestFixture.ghosttyConfigFilePath
+    #else
+      nil
+    #endif
   }
 
   #if DEBUG

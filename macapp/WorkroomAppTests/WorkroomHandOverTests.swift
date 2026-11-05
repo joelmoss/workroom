@@ -33,7 +33,7 @@ final class WorkroomHandOverTests: XCTestCase {
 
   private func makeStore() -> AppStore {
     let store = AppStore(projectStore: shared, notifications: notifications)
-    store.systemNotifier = notifier
+    store.services.notifier = notifier
     store.confirmOnCloseOverrideForTesting = false
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)

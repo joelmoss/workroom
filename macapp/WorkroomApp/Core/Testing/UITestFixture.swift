@@ -7,1564 +7,1589 @@ import SyntaxHighlighting
 import WorkroomDomain
 import WorkroomVCS
 
-/// UI-testing fixture seam (issue #3 UI tests). When the app is launched with
-/// `-WorkroomUITestFixture 1`, `AppStore` loads this deterministic set of fake projects and
-/// workrooms instead of reading the developer's real `~/.config/workroom`. The XCUITests
-/// (`WorkroomAppUITests`) pass that flag so they're hermetic — they never touch real projects,
-/// never depend on what happens to be configured on the machine, and run the same everywhere.
-///
-/// The fixture targets point at freshly-created temp directories so their terminals still spawn a
-/// login shell (libghostty needs a valid working directory) — a hermetic one, with Ghostty's
-/// integration and none of the developer's rc files (see `applyHermeticShell`). The surface mounts
-/// and appears in the accessibility tree exactly as it would for a real workroom, which is what the
-/// split-pane tests assert on. The app remains a normal app: a regular user never passes the flag,
-/// so this code is inert in production.
-enum UITestFixture {
-  /// The launch-argument / `UserDefaults` key the tests set (highest-priority argument domain).
-  static let defaultsKey = "WorkroomUITestFixture"
+// **Debug only, by construction (ADR 0022).** A Release build compiles none of this file, so it
+// reads no fixture flag and ships no fixture collaborator: the code outside that reaches in here is
+// behind `#if DEBUG` too, or asks `AppServices`, whose `.fixture` is below.
+//
+// The flags are read from `UserDefaults.standard`, which is the app's *persisted* domain and not just
+// the launch-argument domain the tests use. So if a shipped build could read them, a single
+// `defaults write <bundle id> WorkroomUITestFixture -bool YES` would latch it into fixture mode
+// permanently: fake projects instead of the user's real `~/.config/workroom`, `applyFixtureDefaults`
+// overwriting their inspector and diff-mode preferences on every launch, and `.terminateNow` on quit
+// skipping the graceful run-command teardown, with no in-app way back out. Several flags
+// (`codingAgentStub`, `forceWhatsNew`, `updateAvailableVersion`) are read WITHOUT consulting
+// `fixtureFlag`, so gating `fixtureFlag` alone would not be enough; the gate is on every read.
+//
+// Nothing in the test suite loses anything: both `WorkroomAppTests` and `WorkroomAppUITests` build
+// against the Debug configuration (`project.yml`), which is the only one that defines `DEBUG`.
+#if DEBUG
 
-  /// **DEBUG-only, by construction.** Fixture flags read through `flag`/`number`/`text` (or require
-  /// `fixtureFlag` first), and outside Debug they return the inert default without reading defaults.
+  /// UI-testing fixture seam (issue #3 UI tests). When the app is launched with
+  /// `-WorkroomUITestFixture 1`, `AppStore` loads this deterministic set of fake projects and
+  /// workrooms instead of reading the developer's real `~/.config/workroom`. The XCUITests
+  /// (`WorkroomAppUITests`) pass that flag so they're hermetic — they never touch real projects,
+  /// never depend on what happens to be configured on the machine, and run the same everywhere.
   ///
-  /// The flags are read from `UserDefaults.standard`, which is the app's *persisted* domain and not
-  /// just the launch-argument domain the tests use. So without this gate a single
-  /// `defaults write <bundle id> WorkroomUITestFixture -bool YES` latched a shipping build into
-  /// fixture mode permanently: fake projects instead of the user's real `~/.config/workroom`,
-  /// `applyFixtureDefaults` overwriting their inspector and diff-mode preferences on every launch,
-  /// and `.terminateNow` on quit skipping the graceful run-command teardown — with no in-app way
-  /// back out. Several flags (`codingAgentStub`, `forceWhatsNew`, `updateAvailableVersion`) are read
-  /// WITHOUT consulting `fixtureFlag`, so gating `fixtureFlag` alone would not have been enough; the gate
-  /// belongs on the reads.
-  ///
-  /// Nothing in the test suite loses anything: both `WorkroomAppTests` and `WorkroomAppUITests` build
-  /// against the Debug configuration (`project.yml`), which is the only one that defines `DEBUG`.
-  private static var enabled: Bool {
-    #if DEBUG
-      return true
-    #else
-      return false
-    #endif
-  }
+  /// The fixture targets point at freshly-created temp directories so their terminals still spawn a
+  /// login shell (libghostty needs a valid working directory) — a hermetic one, with Ghostty's
+  /// integration and none of the developer's rc files (see `applyHermeticShell`). The surface mounts
+  /// and appears in the accessibility tree exactly as it would for a real workroom, which is what the
+  /// split-pane tests assert on. The app remains a normal app: a regular user never passes the flag,
+  /// so this code is inert in production.
+  enum UITestFixture {
+    /// The launch-argument / `UserDefaults` key the tests set (highest-priority argument domain).
+    static let defaultsKey = "WorkroomUITestFixture"
 
-  /// A fixture-namespaced boolean. `bool(forKey:)` rather than `Defaults` on purpose — it coerces the
-  /// STRING an argument-domain value arrives as (`-WorkroomUITestFixture 1` stores `"1"`), which a
-  /// typed `Defaults` read would reject. See `applyFixtureDefaults` for the trap that implies.
-  private static func flag(_ key: String) -> Bool {
-    enabled && UserDefaults.standard.bool(forKey: key)
-  }
-
-  private static func number(_ key: String) -> Int {
-    enabled ? UserDefaults.standard.integer(forKey: key) : 0
-  }
-
-  private static func text(_ key: String) -> String? {
-    enabled ? UserDefaults.standard.string(forKey: key) : nil
-  }
-
-  /// `-WorkroomUITestLiveDaemon <dir>`: fixture panes attach through a REAL `workroomd` whose socket
-  /// is in `<dir>`, and program status (#358) follows it, so a UI test drives the whole path —
-  /// daemon, service, monitor, indicators, alerts — with no daemon, session or config of the
-  /// developer's touched. Nil, as normal, keeps fixture panes plain shells and the monitor off.
-  static var liveDaemonDirectory: String? {
-    guard let directory = text("WorkroomUITestLiveDaemon"), !directory.isEmpty else { return nil }
-    return directory
-  }
-
-  /// Once the app is gone, end its scratch daemon (`liveDaemonDirectory`), every process still
-  /// naming that directory (a run session's supervisor), and the directory. Nothing else can:
-  /// `XCUIApplication.terminate()` skips the app's quit path, the runner cannot spawn a process,
-  /// and a parked run session keeps the daemon from idling out (#533). Only a `/tmp/wr-` path, the
-  /// shape `useScratchDaemon()` passes, so a flag naming some other directory is left alone.
-  static func endLiveDaemonWhenTheAppExits() {
-    guard let directory = liveDaemonDirectory, directory.hasPrefix("/tmp/wr-") else { return }
-    let watcher = Process()
-    watcher.executableURL = URL(fileURLWithPath: "/bin/sh")
-    // The directory comes in by environment, so `pkill -f` never matches this script's own argv.
-    watcher.arguments = [
-      "-c",
-      "while kill -0 $PPID 2>/dev/null; do sleep 0.5; done; pkill -f \"$DIR\"; sleep 1; "
-        + "pkill -9 -f \"$DIR\"; rm -rf \"$DIR\"",
-    ]
-    watcher.environment = ["DIR": directory]
-    watcher.standardInput = FileHandle.nullDevice
-    watcher.standardOutput = FileHandle.nullDevice
-    watcher.standardError = FileHandle.nullDevice
-    try? watcher.run()
-  }
-
-  /// The raw fixture launch flag (`-WorkroomUITestFixture 1`), one of the three signals
-  /// `AppEnvironment.current` reads; everything else asks `AppEnvironment.current.isFixture`. Always
-  /// `false` in a release build.
-  static var fixtureFlag: Bool {
-    flag(defaultsKey)
-  }
-
-  /// Where a session-restore UI test wants its `session.json` (`-WorkroomUITestSessionFile <path>`).
-  ///
-  /// **In fixture mode the session store is a no-op unless this is set** (see
-  /// `SavedLayoutStore.forCurrentEnvironment`). That default-off posture is not optional: the app's
-  /// session file is scoped by bundle id, so without it the 30-odd existing UI tests would each write
-  /// over the DEVELOPER's own `Workroom Dev` session — and the fixture's temp-directory workrooms
-  /// would then be restored into a real launch.
-  static var sessionFilePath: String? {
-    guard fixtureFlag else { return nil }
-    return text("WorkroomUITestSessionFile")
-  }
-
-  /// Where a theme UI test wants the generated libghostty config written
-  /// (`-WorkroomUITestGhosttyConfigFile <path>`), so the runner reads the file this launch wrote.
-  ///
-  /// The runner cannot work the path out for itself: it is sandboxed, so its own Application
-  /// Support is a container the app never writes to, and a fixture launch without this argument
-  /// keeps its config in a per-process temp file (see
-  /// `GhosttyApp.themeConfigURLForCurrentEnvironment`).
-  static var ghosttyConfigFilePath: String? {
-    guard fixtureFlag else { return nil }
-    return text("WorkroomUITestGhosttyConfigFile")
-  }
-
-  /// An explicit fixture window frame, in `NSStringFromRect` format, for geometry-sensitive tests:
-  /// `-WorkroomUITestWindowFrame "{{80, 80}, {1650, 780}}"`.
-  /// Fixture sizing bypasses saved sessions and `window.mainFrame`; absent or invalid input keeps
-  /// the usual deterministic size. Only active Debug fixtures may override it.
-  static var windowFrame: NSRect? {
-    guard fixtureFlag else { return nil }
-    // UserDefaults tries to parse a leading `{` as a property-list dictionary and drops
-    // NSStringFromRect strings. Read this argument verbatim before the defaults fallback.
-    let arguments = ProcessInfo.processInfo.arguments
-    let index = arguments.firstIndex(of: "-WorkroomUITestWindowFrame")
-    let argument = index.flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
-    guard let value = argument ?? text("WorkroomUITestWindowFrame") else { return nil }
-    let frame = NSRectFromString(value)
-    guard frame.origin.x.isFinite, frame.origin.y.isFinite,
-      frame.width.isFinite, frame.height.isFinite,
-      frame.width > 200, frame.height > 200
-    else { return nil }
-    return frame
-  }
-
-  /// Relative heights of the inspector's stacked sections, in `InspectorSectionKind` order (changes,
-  /// files, pull request, history): `-WorkroomUITestInspectorWeights "6,1,1,1"`. Unset (or not four
-  /// positive numbers) keeps the equal-height default.
-  ///
-  /// Equal thirds is the right default for most tests and the wrong one for any test that needs to
-  /// click a row past the fifth: the Changes list is an `NSScrollView` inside its section, its rows'
-  /// accessibility frames are NOT clipped to it, and XCUITest clicks the frame's centre — so a row
-  /// scrolled out of view is "found", "hittable-looking", and clicked on whatever section is drawn
-  /// over that point instead. That is why `DiffViewerUITests` clicked `config/routes.rb` (the sixth
-  /// row) and silently hit the History pane.
-  static var inspectorWeights: [Double]? {
-    guard let value = text("WorkroomUITestInspectorWeights") else { return nil }
-    let weights = value.split(separator: ",").compactMap {
-      Double($0.trimmingCharacters(in: .whitespaces))
+    /// A fixture-namespaced boolean. `bool(forKey:)` rather than `Defaults` on purpose — it coerces the
+    /// STRING an argument-domain value arrives as (`-WorkroomUITestFixture 1` stores `"1"`), which a
+    /// typed `Defaults` read would reject. See `applyFixtureDefaults` for the trap that implies. Only
+    /// in Debug (see the top of the file).
+    private static func flag(_ key: String) -> Bool {
+      UserDefaults.standard.bool(forKey: key)
     }
-    guard weights.count == InspectorSectionKind.allCases.count, weights.allSatisfy({ $0 > 0 })
-    else { return nil }
-    return weights
-  }
 
-  /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
-  /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
-  /// New Workroom is disabled when there's nothing to pick (issue #81 D3).
-  static var noProjects: Bool {
-    flag("WorkroomUITestNoProjects")
-  }
-
-  /// The VCS toolbar's remote state (`-WorkroomUITestSyncState <name>`), one of:
-  /// `clean`, `ahead`, `behind`, `diverged`, `noCounterpart`, `noRemote`, `neverFetched`.
-  ///
-  /// Absent ⇒ the toolbar shows "No repository", because the fixture's paths aren't real repos and a
-  /// live read would resolve to `.absent`. Seeding it is what lets the states be asserted at all.
-  static var syncState: String? {
-    text("WorkroomUITestSyncState")
-  }
-
-  /// When set (`-WorkroomUITestSyncFailure 1`), the seeded remote state reports a failed push, so the
-  /// error tier can be asserted.
-  static var syncFailure: Bool {
-    flag("WorkroomUITestSyncFailure")
-  }
-
-  /// When set (`-WorkroomUITestSlowVCS 1`), `FixtureVCSWriter` holds every git action for 2.5s so a
-  /// test can observe its in-flight state ("Pushing…"). Off by default, so every other test's git
-  /// actions answer at once instead of each paying the hold.
-  static var slowVCSActions: Bool {
-    flag("WorkroomUITestSlowVCS")
-  }
-
-  /// The `gh` availability state to seed (`-WorkroomUITestGHStatus notInstalled|notAuthenticated|tooOld`).
-  ///
-  /// Needed because `refreshGitHubCLI` returns immediately in fixture mode — it must, since the
-  /// fixture's paths aren't real repos and a live `gh auth status` would answer about the developer's
-  /// own machine. So nothing could drive the Pull Request panel's warning states, and none of that
-  /// copy had any UI coverage at all. Absent ⇒ leave the optimistic `.available` default, i.e. no
-  /// warning, which is what every existing fixture test expects.
-  static var ghStatus: GitHubCLIStatus? {
-    switch text("WorkroomUITestGHStatus") {
-    case "notInstalled": return .notInstalled
-    case "notAuthenticated": return .notAuthenticated
-    case "tooOld": return .tooOld
-    case "available": return .available
-    default: return nil
+    private static func number(_ key: String) -> Int {
+      UserDefaults.standard.integer(forKey: key)
     }
-  }
 
-  /// When set (`-WorkroomUITestSyncReadFailure 1`), the remote READ fails rather than an action — the
-  /// distinct case that used to render "No repository" for a perfectly good repo. Separate from
-  /// `syncFailure` because the two tiers are different: that one retries the action, this one re-reads.
-  static var syncReadFailure: Bool {
-    flag("WorkroomUITestSyncReadFailure")
-  }
-
-  /// A seeded `VCSRemoteState` for `syncState`, or nil.
-  ///
-  /// `lastFetch` is pinned to exactly nine minutes before now so the subtitle reads "Fetched 9
-  /// minutes ago" deterministically — the string from the reference design, and one a UI test can match
-  /// without a clock seam.
-  static var remoteState: VCSRemoteState? {
-    guard let name = syncState else { return nil }
-    let nineMinutesAgo = Date().addingTimeInterval(-540)
-    let branch = VCSRef(name: "feature/login", kind: .branch)
-    func tracking(_ ahead: Int?, _ behind: Int?, gone: Bool = false) -> VCSTracking {
-      VCSTracking(comparedTo: "origin/feature/login", ahead: ahead, behind: behind, gone: gone)
+    private static func text(_ key: String) -> String? {
+      UserDefaults.standard.string(forKey: key)
     }
-    switch name {
-    case "noRemote":
-      return VCSRemoteState(
-        current: branch, tracking: nil, remotes: [], primaryRemote: nil,
-        lastFetch: .never, resolvedAt: Date())
-    case "neverFetched":
-      return VCSRemoteState(
-        current: branch, tracking: tracking(0, 0), remotes: ["origin"], primaryRemote: "origin",
-        lastFetch: .never, resolvedAt: Date())
-    case "noCounterpart":
-      return VCSRemoteState(
-        current: branch, tracking: tracking(nil, nil, gone: true), remotes: ["origin"],
-        primaryRemote: "origin", lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
-    case "ahead":
-      return VCSRemoteState(
-        current: branch, tracking: tracking(5, 0), remotes: ["origin"], primaryRemote: "origin",
-        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
-    case "behind":
-      return VCSRemoteState(
-        current: branch, tracking: tracking(0, 3), remotes: ["origin"], primaryRemote: "origin",
-        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
-    case "diverged":
-      return VCSRemoteState(
-        current: branch, tracking: tracking(2, 4), remotes: ["origin"], primaryRemote: "origin",
-        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
-    default:  // "clean"
-      return VCSRemoteState(
-        current: branch, tracking: tracking(0, 0), remotes: ["origin"], primaryRemote: "origin",
-        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+
+    /// `-WorkroomUITestLiveDaemon <dir>`: fixture panes attach through a REAL `workroomd` whose socket
+    /// is in `<dir>`, and program status (#358) follows it, so a UI test drives the whole path —
+    /// daemon, service, monitor, indicators, alerts — with no daemon, session or config of the
+    /// developer's touched. Nil, as normal, keeps fixture panes plain shells and the monitor off.
+    static var liveDaemonDirectory: String? {
+      guard let directory = text("WorkroomUITestLiveDaemon"), !directory.isEmpty else { return nil }
+      return directory
     }
-  }
 
-  /// When set (`-WorkroomUITestManyChanges 1`), the fixture workroom reports a long changed-file
-  /// list so the Changes section overflows and fills the inspector — the scenario in which the
-  /// inspector's section-disclosure animation misbehaves (the header title swims relative to its
-  /// bar). Used by `InspectorAnimationUITests`.
-  static var manyChanges: Bool {
-    flag("WorkroomUITestManyChanges")
-  }
-
-  /// When set (`-WorkroomUITestHugeChangeSet 1`), the fixture reports MORE changed files than the
-  /// commit dialog draws (`CommitSheet.renderCap`), so a test can prove the cap limits what is drawn
-  /// and never what is committed — the failure mode a render cap invites is a list that quietly
-  /// disagrees with the commit it is about to make. Deliberately separate from `manyChanges`, whose
-  /// 27 rows several other tests depend on exactly.
-  static var hugeChangeSet: Bool {
-    flag("WorkroomUITestHugeChangeSet")
-  }
-
-  /// When set (`-WorkroomUITestManyCommits <n>`), the fixture's History page reports `n` synthetic
-  /// commits instead of the default five, so a test can prove the pane realizes only the rows on screen
-  /// and stays responsive at scale — the shape of the WORKROOM-2B App Hang. Clamped: 0 disables it
-  /// (the default five-commit page every other History test depends on), and the ceiling keeps a typo'd
-  /// launch argument from generating a million rows.
-  static var manyCommits: Int {
-    min(max(number("WorkroomUITestManyCommits"), 0), 2000)
-  }
-
-  /// The commit the dialog names as what "Amend last commit" would rewrite.
-  ///
-  /// Seeded rather than read, because the fixture's paths are not real repos — a live `git log` there
-  /// fails, and the dialog would then show nothing at all, which is exactly the state the test exists
-  /// to rule out. Shaped like the real read (`%h %s`).
-  static let amendTargetLabel = "a1b2c3d Add the session controller"
-
-  /// When set (`-WorkroomUITestRunCommand "<cmd>"`), the fixture seeds this as the workroom's run
-  /// command instead of the default probe — so the run-status XCUITests (issue #79) can drive a
-  /// deterministic failure (`exit 7`), success (`exit 0`), or long-running (`sleep 30`) command and
-  /// assert the run icon / Ctrl-C behaviour end-to-end against a real libghostty surface.
-  static var runCommand: String? {
-    let cmd = text("WorkroomUITestRunCommand")
-    return (cmd?.isEmpty == false) ? cmd : nil
-  }
-
-  /// When set (`-WorkroomUITestNoRunCommand 1`), the fixture skips seeding ANY run command — the
-  /// default probe command is otherwise always seeded (`AppStore.loadFixture`), so tests exercising
-  /// the "no run command configured" state (issue #127) need this to opt out (found by review: the
-  /// no-command XCUITest would otherwise always see a command configured and never see the state it
-  /// means to test).
-  static var noRunCommand: Bool {
-    flag("WorkroomUITestNoRunCommand")
-  }
-
-  /// When set (`-WorkroomUITestTwoTabs 1`), the fixture seeds a SECOND workroom and the app opens a
-  /// terminal for both on launch, so the workroom tab bar (issue #23) shows two chips — the scenario
-  /// the drag-to-reorder / window-drag XCUITest (`WindowDragUITests`) needs. Default (unset) keeps the
-  /// single-workroom fixture the other tests rely on.
-  static var twoTabs: Bool {
-    flag("WorkroomUITestTwoTabs")
-  }
-
-  /// When set (`-WorkroomUITestTerminalTabs <n>`), the fixture opens `n` terminal tabs in the
-  /// auto-selected workroom instead of one, so the **terminal** tab strip overflows on launch — the
-  /// scenario the pinned-"+" XCUITests need (issue #129) without a dozen flaky ⌘T round-trips. Clamped
-  /// to 1...16 so a typo can't spawn an unbounded number of shells. Unset keeps the single-tab fixture.
-  ///
-  /// `integer(forKey:)` coerces the argument domain's string, the same coercion the `bool(forKey:)`
-  /// flags above rely on (see `applyFixtureDefaults` for why arguments arrive as strings).
-  static var terminalTabs: Int {
-    let n = number("WorkroomUITestTerminalTabs")
-    return n <= 0 ? 1 : min(n, 16)
-  }
-
-  /// When set (`-WorkroomUITestProgramStatus 1`), the fixture workroom opens four terminals with
-  /// program status seeded (#358) and the first one focused: Terminal 1 working, Terminal 2 waiting
-  /// for permission ("Apply?"), Terminal 3 waiting for an answer on a host whose link is down, and
-  /// Terminal 4 stopped on an error. No daemon is involved: the records go straight into the monitor.
-  static var programStatus: Bool {
-    flag("WorkroomUITestProgramStatus")
-  }
-
-  /// The stale pane's host: a remote id no real host has.
-  static let staleProgramStatusHost = HostID.remote(
-    UUID(uuidString: "00000000-0000-0000-0000-000000000358")!)
-
-  @MainActor
-  static func seedProgramStatus(in terminals: TerminalSessions, target: TerminalTarget) {
-    while terminals.tabs(for: target).count < 4 { _ = terminals.addTab(for: target) }
-    let tabs = terminals.tabs(for: target)
-    func seed(
-      _ index: Int, host: HostID = .local, stale: Bool = false, _ record: ProgramStatusRecord
-    ) {
-      terminals.seedProgramStatusForFixture(
-        tab: tabs[index].id, target: target.id, host: host, records: [record], stale: stale)
+    /// Once the app is gone, end its scratch daemon (`liveDaemonDirectory`), every process still
+    /// naming that directory (a run session's supervisor), and the directory. Nothing else can:
+    /// `XCUIApplication.terminate()` skips the app's quit path, the runner cannot spawn a process,
+    /// and a parked run session keeps the daemon from idling out (#533). Only a `/tmp/wr-` path, the
+    /// shape `useScratchDaemon()` passes, so a flag naming some other directory is left alone.
+    static func endLiveDaemonWhenTheAppExits() {
+      guard let directory = liveDaemonDirectory, directory.hasPrefix("/tmp/wr-") else { return }
+      let watcher = Process()
+      watcher.executableURL = URL(fileURLWithPath: "/bin/sh")
+      // The directory comes in by environment, so `pkill -f` never matches this script's own argv.
+      watcher.arguments = [
+        "-c",
+        "while kill -0 $PPID 2>/dev/null; do sleep 0.5; done; pkill -f \"$DIR\"; sleep 1; "
+          + "pkill -9 -f \"$DIR\"; rm -rf \"$DIR\"",
+      ]
+      watcher.environment = ["DIR": directory]
+      watcher.standardInput = FileHandle.nullDevice
+      watcher.standardOutput = FileHandle.nullDevice
+      watcher.standardError = FileHandle.nullDevice
+      try? watcher.run()
     }
-    seed(0, ProgramStatusRecord(id: "", state: .working))
-    seed(
-      1,
-      ProgramStatusRecord(
-        id: "", state: .blocked, kind: .permission, message: "Apply?", episode: 1))
-    seed(
-      2, host: staleProgramStatusHost, stale: true,
-      ProgramStatusRecord(
-        id: "", state: .blocked, kind: .question, message: "Red or blue?", episode: 1))
-    seed(3, ProgramStatusRecord(id: "", state: .error, message: "Build failed"))
-    terminals.select(tabs[0].id, for: target)
-  }
 
-  /// When set (`-WorkroomUITestWorkroomCount <n>`), the fixture seeds `n` workrooms and makes each an
-  /// *active target*, so the title-bar **workroom** tab bar shows `n` chips and overflows on launch —
-  /// the `WorkroomTabBar` half of issue #129. Clamped to 1...16. Unset keeps the single workroom.
-  ///
-  /// This is cheap despite the chip count: a workroom chip only needs its target to be active
-  /// (`AppStore.orderedWorkroomTargets` reads `terminals.activeTargetIDs`), and `TerminalSessions.addTab`
-  /// merely registers a tab — the real shell is created by the *view*
-  /// (`GhosttySurfaceView.createSurface`, off `viewDidMoveToWindow`), and only the selected workroom
-  /// mounts a pane. So `n` chips cost `n` tab models and ONE terminal, not `n` terminals.
-  static var workroomCount: Int {
-    let n = number("WorkroomUITestWorkroomCount")
-    return n <= 0 ? 1 : min(n, 16)
-  }
-
-  /// Names of the extra workrooms seeded by `workroomCount` (beyond `workroomName`), stable so a test
-  /// can address a chip by id. Empty unless the flag is set.
-  static var extraWorkroomNames: [String] {
-    guard workroomCount > 1 else { return [] }
-    return (2...workroomCount).map { "uitest-room-\($0)" }
-  }
-
-  /// When set (`-WorkroomUITestLongWorkroomName 1`), the fixture's FIRST seeded workroom is named
-  /// `longWorkroomNameValue` instead of `workroomName` — a real oversized name for `WorkroomTabChip`'s
-  /// title-cap XCUITest (mirrors `TerminalTabChip`'s, issue #129 follow-up) to clip. Any extra
-  /// workrooms `workroomCount` seeds keep their normal short names. Unset keeps the short
-  /// `workroomName`.
-  static var longWorkroomName: Bool {
-    flag("WorkroomUITestLongWorkroomName")
-  }
-
-  /// The oversized name seeded under `longWorkroomName` — comfortably past the chips' shared title
-  /// cap (`TabStripMetrics.maxChipTitle`, 180pt) at `.subheadline`, so tail-truncation is exercised
-  /// deterministically instead of depending on a real long name existing somewhere on disk.
-  static let longWorkroomNameValue = String(repeating: "abcdefghij", count: 13)  // 130 chars
-
-  /// When set (`-WorkroomUITestLongTabTitle 1`), the fixture's first terminal tab is given a title
-  /// far past the chips' 180pt cap, so the pane title bar's untruncated rendering (issue #150) can be
-  /// asserted deterministically instead of depending on whatever a real shell happens to set.
-  ///
-  /// Separate from `longWorkroomName`, which seeds the WORKROOM's name for the chip/header title-cap
-  /// test — this one is the TAB's title, which is what `PaneTitleBar` renders.
-  static var longTabTitle: Bool {
-    flag("WorkroomUITestLongTabTitle")
-  }
-
-  /// The oversized tab title seeded under `longTabTitle`. Deliberately a run of distinct words rather
-  /// than a repeated string: the title bar tail-truncates a terminal title, so a test asserting the
-  /// rendered width needs a value whose head is recognizable and whose length is unambiguous.
-  static let longTabTitleValue =
-    "workroom detail panel title bar rendering fixture for the very long terminal title case"
-
-  /// When set (`-WorkroomUITestWorkroomSplit 1`), the fixture starts already in a workroom-into-
-  /// workroom split of the project ROOT + the first workroom, so the split group title bar (issue
-  /// #112) renders on launch WITHOUT an XCUITest drag (which is flaky). One split covers both menu
-  /// branches: the workroom member gets the full menu, the root member gets none. Default (unset)
-  /// keeps the single-pane fixture the other tests rely on.
-  static var workroomSplit: Bool {
-    flag("WorkroomUITestWorkroomSplit")
-  }
-
-  /// When set (`-WorkroomUITestSecondWorkroomSplit 1`, alongside `-WorkroomUITestWorkroomSplit 1` and
-  /// `-WorkroomUITestWorkroomCount 3`), the fixture seeds a SECOND split group from the 2nd + 3rd
-  /// workrooms — a window holds several groups at once, and only the one containing the selection is
-  /// shown. Lets the XCUITest hop between groups and prove neither dissolves, without a flaky drag.
-  static var secondWorkroomSplit: Bool {
-    flag("WorkroomUITestSecondWorkroomSplit")
-  }
-
-  /// When set (`-WorkroomUITestCreatingSplitMember 1`, alongside `-WorkroomUITestWorkroomSplit 1`),
-  /// the split's selected workroom member is seeded **mid-setup-script**: a running `CreationRun` on
-  /// its `script` step (#483) plus the `creatingWorkrooms` guard, which is the real state during a
-  /// script and the one issue #171's second half is about.
-  ///
-  /// Covers #171's visible half: the FOCUSED create renders inside its own pane, so the pane it was
-  /// created beside stays on screen, and that pane's title bar drops its Run control for the
-  /// duration. A real create can't be driven from a UI test — the fixture never shells out to the
-  /// CLI (see `NewWorkroomDialogUITests`) — so the state is seeded rather than produced.
-  static var creatingSplitMember: Bool {
-    flag("WorkroomUITestCreatingSplitMember")
-  }
-
-  /// `-WorkroomUITestCreatingSplitMemberNoSetup 1` — the same seed, but with the run still on its
-  /// `worktree` step rather than a setup script.
-  static var creatingSplitMemberNoSetup: Bool {
-    flag("WorkroomUITestCreatingSplitMemberNoSetup")
-  }
-
-  /// `-WorkroomUITestScriptedCreate 1`: a local create runs against `ScriptedCreateCLI` (#483), a
-  /// stand-in for the CLI that plays a create's steps, log and "created" event over a few seconds,
-  /// so a UI test sees the creation pane run and give way to the terminal. The fixture's paths are
-  /// not repositories, so the real CLI would fail at its worktree.
-  static var scriptedCreate: Bool {
-    flag("WorkroomUITestScriptedCreate")
-  }
-
-  /// The workroom a scripted create makes.
-  static let scriptedWorkroomName = "uitest-created"
-
-  /// Where a scripted create's workroom lives; `projects()` lists it once it exists.
-  static var scriptedWorkroomDirectory: URL {
-    URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-      .appendingPathComponent(
-        "workroom-uitest/workrooms/\(scriptedWorkroomName)", isDirectory: true)
-  }
-
-  /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
-  /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
-  /// `conflicted` flag. Covers the per-file conflict status end-to-end in the UI — the Changes row
-  /// for a conflicted file must read as conflicted (its own badge, not deletion's or modification's)
-  /// and the project status badge must report the conflict.
-  static var conflicted: Bool {
-    flag("WorkroomUITestConflict")
-  }
-
-  /// The path seeded as conflicted under `-WorkroomUITestConflict 1`. Distinct from every other
-  /// fixture path so a test can address its row by id without matching a neighbour.
-  static let conflictedFilePath = "app/models/merge_me.rb"
-
-  /// When set (`-WorkroomUITestCodingAgentStub 1`), the inline terminal agent (issue #49) is enabled with
-  /// a STUB backend that returns a canned diagnosis — so the XCUITest exercises the REAL capture +
-  /// banner end-to-end (failure → `readCommandRegion`/`readFullSurface` → classify → manager →
-  /// parse → banner render) with no network and no cost. Pairs with auto-diagnose so no click is
-  /// needed to surface the banner.
-  static var codingAgentStub: Bool {
-    flag("WorkroomUITestCodingAgentStub")
-  }
-
-  /// A provider title to seed into the fixture's first terminal, for quota-footer XCUITests. This is
-  /// a model-only fixture: no real agent is launched and no developer usage files are read.
-  static var usageCodingAgentTitle: String? {
-    switch text("WorkroomUITestUsageCodingAgent") {
-    case "claude": return "Claude Code"
-    case "codex": return "Codex"
-    default: return nil
+    /// The raw fixture launch flag (`-WorkroomUITestFixture 1`), one of the three signals
+    /// `AppEnvironment.current` reads; everything else asks `AppEnvironment.current.isFixture`. Always
+    /// `false` in a release build.
+    static var fixtureFlag: Bool {
+      flag(defaultsKey)
     }
-  }
 
-  static var usageSnapshot: CodingAgentQuotaSnapshot? {
-    guard !flag("WorkroomUITestUsageUnavailable") else { return nil }
-    guard let title = usageCodingAgentTitle,
-      let backend = CodingAgentTitleRecognition.backend(for: title)
-    else {
-      return nil
+    /// Where a session-restore UI test wants its `session.json` (`-WorkroomUITestSessionFile <path>`).
+    ///
+    /// **In fixture mode the session store is a no-op unless this is set** (see
+    /// `SavedLayoutStore.forCurrentEnvironment`). That default-off posture is not optional: the app's
+    /// session file is scoped by bundle id, so without it the 30-odd existing UI tests would each write
+    /// over the DEVELOPER's own `Workroom Dev` session — and the fixture's temp-directory workrooms
+    /// would then be restored into a real launch.
+    static var sessionFilePath: String? {
+      guard fixtureFlag else { return nil }
+      return text("WorkroomUITestSessionFile")
     }
-    let now = Date()
-    // `-WorkroomUITestUsageZero 1` seeds zero usage, the only way to see the green `.onPace`
-    // bar (a manual visual check). The spoken label for it is pinned by
-    // `CodingAgentUsageSegmentLabelTests`; the bar's colour has no automated check.
-    let used = flag("WorkroomUITestUsageZero") ? 0.0 : 42.0
-    let weeklyUsed = flag("WorkroomUITestUsageZero") ? 0.0 : 61.0
-    return CodingAgentQuotaSnapshot(
-      backend: backend,
-      windows: [
-        // 3.5h left of 5h ⇒ 30% elapsed against 42% used ⇒ pace +12, i.e. `.warning` and a
-        // 12-point gap between the fill's edge and the pace pin. At the old 3h the window was 40%
-        // elapsed against the same 42% used: pace +2, a gap of about a point on a 44pt bar, so the
-        // pin was indistinguishable from the fill and `.warning` was reachable by no fixture at all
-        // (weekly lands at +18 ⇒ `.critical`, and `WorkroomUITestUsageZero` gives `.onPace`). No
-        // test asserts `resetsAt` — they assert only that the label contains "resets in".
-        CodingAgentQuotaWindow(
-          kind: .fiveHour, usedPercentage: used, duration: 5 * 60 * 60,
-          resetsAt: now.addingTimeInterval(3.5 * 60 * 60)),
-        CodingAgentQuotaWindow(
-          kind: .weekly, usedPercentage: weeklyUsed, duration: 7 * 24 * 60 * 60,
-          resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)),
-      ], capturedAt: now)
-  }
 
-  /// The canned claude `--output-format json` envelope the stub agent returns. Its inner JSON is the
-  /// compact diagnosis the XCUITest asserts on (a recognisable `UITEST` summary + a safe fix). The fix
-  /// prints `WRFIX42` only if it runs, so a test can tell inserted text from an executed command.
-  /// `-WorkroomUITestCodingAgentMultilineFix 1` gives it a line break (#550).
-  static let codingAgentStubEnvelope: String = {
-    let fix =
-      flag("WorkroomUITestCodingAgentMultilineFix")
-      ? #"echo WRFIX$((40+2))\\necho two"# : #"echo WRFIX$((40+2))"#
-    let inner = #"{\"summary\":\"UITEST diagnosis: port already in use\",\"fix\":\"\#(fix)\"}"#
-    return #"{"type":"result","is_error":false,"result":"\#(inner)"}"#
-  }()
-
-  /// The summary text the stub produces — queried by the XCUITest as the banner's headline.
-  static let codingAgentStubSummary = "UITEST diagnosis: port already in use"
-
-  /// When set (`-WorkroomUITestUpdateAvailable 1`), `Updater` seeds a fake available-update version so
-  /// the toolbar "Update" pill renders for visual QA without a live Sparkle update.
-  static var updateAvailableVersion: String? {
-    flag("WorkroomUITestUpdateAvailable") ? "9.9.9" : nil
-  }
-
-  /// When set (`-WorkroomUITestUpdateDownloading 1`), `Updater` seeds the downloading state so the
-  /// pill renders its disabled "Downloading…" look for visual QA without a live Sparkle download.
-  static var updateDownloading: Bool {
-    flag("WorkroomUITestUpdateDownloading")
-  }
-
-  /// When set (`-WorkroomUITestUpdateChecking 1`), `Updater` holds a check in flight so the pill
-  /// renders its dimmed look for visual QA without a live Sparkle check.
-  static var updateChecking: Bool {
-    flag("WorkroomUITestUpdateChecking")
-  }
-
-  /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService.checkOnLaunch` returns `whatsNewNotes`
-  /// so the What's-New dialog renders for visual QA without hitting GitHub.
-  static var forceWhatsNew: Bool {
-    flag("WorkroomUITestWhatsNew")
-  }
-
-  /// Override for whether the onboarding wizard (issue #151) should open
-  /// (`-WorkroomUITestOnboarding show|hide`), for deterministic UI tests. Read independent of
-  /// `fixtureFlag` — like `forceWhatsNew` — because `WorkroomWorkflowUITests.testAppLaunchesWithChrome`
-  /// runs with `fixture: false` against the real `~/.config/workroom` and the real Dev `Defaults`
-  /// domain: on a machine with no config and `hasCompletedOnboarding` never set, the real gate would
-  /// otherwise fire during that unrelated chrome smoke test. A plain string read via `text(_:)`, not a
-  /// `Defaults`-typed bool from a bare launch arg, so it doesn't hit the argument-domain-shadowing
-  /// gotcha that would apply to a bool `Defaults` key instead. `nil` = no override, defer to the real
-  /// gate (`OnboardingGate.shouldShow`).
-  static var onboardingOverride: Bool? {
-    switch text("WorkroomUITestOnboarding") {
-    case "show": return true
-    case "hide": return false
-    default: return nil
+    /// Where a theme UI test wants the generated libghostty config written
+    /// (`-WorkroomUITestGhosttyConfigFile <path>`), so the runner reads the file this launch wrote.
+    ///
+    /// The runner cannot work the path out for itself: it is sandboxed, so its own Application
+    /// Support is a container the app never writes to, and a fixture launch without this argument
+    /// keeps its config in a per-process temp file (see
+    /// `GhosttyApp.themeConfigURLForCurrentEnvironment`).
+    static var ghosttyConfigFilePath: String? {
+      guard fixtureFlag else { return nil }
+      return text("WorkroomUITestGhosttyConfigFile")
     }
-  }
 
-  /// When set (`-WorkroomUITestOnboardingRealGate 1`), `applyFixtureDefaults` does NOT pin
-  /// `hasCompletedOnboarding` to `true` — for tests that need fixture mode's deterministic
-  /// zero-project state (`-WorkroomUITestNoProjects 1`) alongside the REAL, unpinned onboarding flag,
-  /// to test the actual persistence gate rather than the `onboardingOverride` short-circuit. A
-  /// genuinely isolated `HOME` (non-fixture mode) was tried first and empirically doesn't work for
-  /// this: a GUI-launched app's bundled CLI subprocess doesn't reliably see
-  /// `XCUIApplication.launchEnvironment`'s `HOME` override the way a plain CLI process would, so it
-  /// kept reading the real `~/.config/workroom/config.json` instead of an isolated one. Fixture
-  /// mode's synthetic project data sidesteps that entirely.
-  static var onboardingRealGate: Bool {
-    flag("WorkroomUITestOnboardingRealGate")
-  }
-
-  /// Explicit starting value for `hasCompletedOnboarding`, written FROM INSIDE the app itself
-  /// (`-WorkroomUITestOnboardingSeed true|false`) — the same pattern every other fixture pin already
-  /// uses (`themeFamily`, `sidebarWidth`, etc: the app writes what it's about to read, no external
-  /// process in between). An external `defaults write` from the TEST process, confirmed via its own
-  /// readback, was tried first for seeding the persistence tests' starting state and empirically
-  /// does NOT reliably reach a freshly xcodebuild-test-launched app's own `UserDefaults` read moments
-  /// later — some cross-process cfprefsd domain quirk specific to that launch path, not a production
-  /// bug. Only the FIRST launch of a relaunch pair passes this; the second launch omits it (alongside
-  /// `onboardingRealGate` alone) so it reads whatever the running app itself persisted in between —
-  /// ordinary same-app cross-launch persistence, which needs no special seam.
-  static var onboardingSeed: Bool? {
-    switch text("WorkroomUITestOnboardingSeed") {
-    case "true": return true
-    case "false": return false
-    default: return nil
+    /// An explicit fixture window frame, in `NSStringFromRect` format, for geometry-sensitive tests:
+    /// `-WorkroomUITestWindowFrame "{{80, 80}, {1650, 780}}"`.
+    /// Fixture sizing bypasses saved sessions and `window.mainFrame`; absent or invalid input keeps
+    /// the usual deterministic size. Only active Debug fixtures may override it.
+    static var windowFrame: NSRect? {
+      guard fixtureFlag else { return nil }
+      // UserDefaults tries to parse a leading `{` as a property-list dictionary and drops
+      // NSStringFromRect strings. Read this argument verbatim before the defaults fallback.
+      let arguments = ProcessInfo.processInfo.arguments
+      let index = arguments.firstIndex(of: "-WorkroomUITestWindowFrame")
+      let argument = index.flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+      guard let value = argument ?? text("WorkroomUITestWindowFrame") else { return nil }
+      let frame = NSRectFromString(value)
+      guard frame.origin.x.isFinite, frame.origin.y.isFinite,
+        frame.width.isFinite, frame.height.isFinite,
+        frame.width > 200, frame.height > 200
+      else { return nil }
+      return frame
     }
-  }
 
-  /// Reveal the quick-switcher rail with no delay (issue #132). The real gesture holds a modifier for
-  /// 250 ms, which neither XCUITest nor AppleScript can drive reliably — synthetic modifier holds do
-  /// not consistently reach `NSEvent.modifierFlags`, the *global hardware* snapshot the session polls.
-  /// With this set, one ⌥Tab reveals the rail immediately so its rendering, hover and click can be
-  /// asserted; the 250 ms delay itself stays manual, as does real-mouse hover.
-  static var switcherRevealsImmediately: Bool {
-    flag("WorkroomUITestSwitcherReveal")
-  }
+    /// Relative heights of the inspector's stacked sections, in `InspectorSectionKind` order (changes,
+    /// files, pull request, history): `-WorkroomUITestInspectorWeights "6,1,1,1"`. Unset (or not four
+    /// positive numbers) keeps the equal-height default.
+    ///
+    /// Equal thirds is the right default for most tests and the wrong one for any test that needs to
+    /// click a row past the fifth: the Changes list is an `NSScrollView` inside its section, its rows'
+    /// accessibility frames are NOT clipped to it, and XCUITest clicks the frame's centre — so a row
+    /// scrolled out of view is "found", "hittable-looking", and clicked on whatever section is drawn
+    /// over that point instead. That is why `DiffViewerUITests` clicked `config/routes.rb` (the sixth
+    /// row) and silently hit the History pane.
+    static var inspectorWeights: [Double]? {
+      guard let value = text("WorkroomUITestInspectorWeights") else { return nil }
+      let weights = value.split(separator: ",").compactMap {
+        Double($0.trimmingCharacters(in: .whitespaces))
+      }
+      guard weights.count == InspectorSectionKind.allCases.count, weights.allSatisfy({ $0 > 0 })
+      else { return nil }
+      return weights
+    }
 
-  /// Canned release notes for the What's-New dialog under `forceWhatsNew` — a couple of versions with
-  /// headings + bullets so the markdown renderer and the multi-release layout both get coverage.
-  static var whatsNewNotes: [ReleaseNote] {
-    [
-      ReleaseNote(
-        version: "9.9.9", title: "Workroom 9.9.9",
-        bodyMarkdown: """
-          ## Highlights
-          - Bell opens the **oldest** notification first
-          - Quick Terminal gained a `⌥§` shortcut
+    /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
+    /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
+    /// New Workroom is disabled when there's nothing to pick (issue #81 D3).
+    static var noProjects: Bool {
+      flag("WorkroomUITestNoProjects")
+    }
 
-          A short framing paragraph about this release.
-          """,
-        date: Date(timeIntervalSince1970: 1_700_000_000),
-        url: URL(string: "https://github.com/joelmoss/workroom/releases/tag/v9.9.9")),
-      ReleaseNote(
-        version: "9.9.8", title: "Workroom 9.9.8",
-        bodyMarkdown: "### Fixes\n- Stop the *exited with code 15* dialog on wake from sleep",
-        date: Date(timeIntervalSince1970: 1_699_000_000),
-        url: URL(string: "https://github.com/joelmoss/workroom/releases/tag/v9.9.8")),
-    ]
-  }
+    /// The VCS toolbar's remote state (`-WorkroomUITestSyncState <name>`), one of:
+    /// `clean`, `ahead`, `behind`, `diverged`, `noCounterpart`, `noRemote`, `neverFetched`.
+    ///
+    /// Absent ⇒ the toolbar shows "No repository", because the fixture's paths aren't real repos and a
+    /// live read would resolve to `.absent`. Seeding it is what lets the states be asserted at all.
+    static var syncState: String? {
+      text("WorkroomUITestSyncState")
+    }
 
-  /// Stable display name of the fixture project (also its sidebar accessibility id suffix:
-  /// `sidebar.project.<name>`). Deliberately obvious so it never reads as a real project in logs.
-  static let projectName = "UITestProject"
-  /// Stable name of the fixture workroom (`sidebar.workroom.<name>`).
-  static let workroomName = "uitest-room"
-  /// Stable name of the SECOND fixture workroom, seeded only under `twoTabs` (drag/reorder test).
-  static let workroomName2 = "uitest-room-2"
+    /// When set (`-WorkroomUITestSyncFailure 1`), the seeded remote state reports a failed push, so the
+    /// error tier can be asserted.
+    static var syncFailure: Bool {
+      flag("WorkroomUITestSyncFailure")
+    }
 
-  /// A real working-tree file seeded into the fixture workroom (matches the `Gemfile` entry in
-  /// `changedFiles`), so the in-app file viewer has genuine content to render (issue #117 XCUITest).
-  static let seededFileName = "Gemfile"
-  /// The seeded file's contents. The marker is a single contiguous token so a UITest can assert it
-  /// appears in the viewer's text regardless of syntax-token splitting.
-  static let seededFileContent = """
-    # UITEST_FILE_MARKER
-    source "https://rubygems.org"
-    gem "rails"
-    """
-  /// The distinctive token the XCUITest looks for in the rendered file viewer.
-  static let seededFileMarker = "UITEST_FILE_MARKER"
+    /// When set (`-WorkroomUITestSlowVCS 1`), `FixtureVCSWriter` holds every git action for 2.5s so a
+    /// test can observe its in-flight state ("Pushing…"). Off by default, so every other test's git
+    /// actions answer at once instead of each paying the hold.
+    static var slowVCSActions: Bool {
+      flag("WorkroomUITestSlowVCS")
+    }
 
-  /// A seeded **Markdown** file, so `MarkdownPreviewUITests` can drive the rendered preview
-  /// (`MarkdownWebView`) rather than the `NSTextView` source path the `Gemfile` covers.
-  static let seededMarkdownFileName = "NOTES.md"
-  /// Deliberately mentions a raw `<title>` in prose *before* the tail marker. That is the exact shape
-  /// that used to make the preview render only the head of the file: the HTML parser adopted the rest
-  /// of the document as the tag's text and DOMPurify deleted it. So asserting the tail marker in the
-  /// rendered web view proves both that the preview rendered at all and that it rendered *completely*.
-  static let seededMarkdownContent = """
-    # UITEST_MARKDOWN_HEAD
-
-    A pane label ("Terminal <title>, pane N of M") mentioned in prose.
-
-    ## Later section
-
-    UITEST_MARKDOWN_TAIL
-    """
-  /// Tokens the XCUITest looks for: the first heading, and the tail that only survives the raw-HTML
-  /// escaping. Single contiguous tokens so no syntax/word splitting can break the match.
-  static let seededMarkdownHeadMarker = "UITEST_MARKDOWN_HEAD"
-  static let seededMarkdownTailMarker = "UITEST_MARKDOWN_TAIL"
-
-  /// When set (`-WorkroomUITestHoldPreviewLoader 1`), `PlainFileViewer` ignores the Markdown preview's
-  /// first-render signal, so the loading state stays on screen. The real cover lives for well under a
-  /// second and its spinner only appears after 250 ms, which is far too racy for an XCUITest to
-  /// catch — this pins it so the loading state can be asserted deterministically instead of being
-  /// left to manual QA.
-  static var holdPreviewLoader: Bool {
-    flag("WorkroomUITestHoldPreviewLoader")
-  }
-
-  /// Which inspector section the fixture parks on
-  /// (`-WorkroomUITestInspectorSection changes|files`). Unset (or unrecognised) = `.changes`.
-  static var inspectorSection: ActivitySection {
-    let raw = text("WorkroomUITestInspectorSection") ?? ""
-    return ActivitySection(rawValue: raw) ?? .changes
-  }
-
-  /// The diff layout every fixture launch starts in
-  /// (`-WorkroomUITestDiffViewMode unified|sideBySide`). Unset (or unrecognised) = `.unified`, the
-  /// shipped default — so a test that doesn't care gets the shipped behaviour rather than the
-  /// developer's last Settings choice (see `applyFixtureDefaults`).
-  static var diffViewMode: DiffViewMode {
-    let raw = text("WorkroomUITestDiffViewMode") ?? ""
-    return DiffViewMode(rawValue: raw) ?? .unified
-  }
-
-  /// Whether unfocused panes dim on a fixture launch (`-WorkroomUITestDimUnfocusedPanes 0` to turn it
-  /// off). Defaults to the shipped `true`, so a fixture run renders a deterministic dim state instead
-  /// of inheriting whatever the developer last chose in Settings — the pane scrim and the strip /
-  /// header fades all key off this, so a drifted value silently rebaselines every visual QA pass
-  /// (issue #162 review). Fixture-namespaced because a bare `-dimUnfocusedPanes 0` cannot work: see
-  /// `applyFixtureDefaults`'s note on argument-domain strings.
-  static var dimUnfocusedPanes: Bool {
-    // The arg arrives as a STRING, so parse it as one; unset ⇒ the shipped default.
-    text("WorkroomUITestDimUnfocusedPanes").map { ($0 as NSString).boolValue } ?? true
-  }
-
-  /// A container workroom create downloading its image, this far along (`-WorkroomUITestImagePull
-  /// 0.42`, #309), seeded on the fixture project so the row's progress can be seen without a real
-  /// pull. nil unless given.
-  static var imagePull: Double? { text("WorkroomUITestImagePull").flatMap(Double.init) }
-
-  /// Whether splits auto-even on add/remove in a fixture launch
-  /// (`-WorkroomUITestAutoResizeSplitsEvenly 0` to turn it off). Defaults to the shipped `true`, and
-  /// pinned for the same reason as `dimUnfocusedPanes`: it persists in the real Dev domain and it
-  /// decides every divider position a split test or screenshot sees (issue #126).
-  static var autoResizeSplitsEvenly: Bool {
-    text("WorkroomUITestAutoResizeSplitsEvenly").map { ($0 as NSString).boolValue } ?? true
-  }
-
-  /// Whether this launch must keep its preferences out of the real domain
-  /// (`-WorkroomUITestIsolatePreferences 1`), INDEPENDENT of whether fake projects are seeded.
-  ///
-  /// `fixtureFlag` is the wrong signal on its own: a UI test may deliberately launch with
-  /// `fixture: false` to exercise the real bootstrap path (`WorkroomWorkflowUITests`
-  /// `testAppLaunchesWithChrome` does exactly that), and such a launch still has no
-  /// `XCTestConfigurationFilePath` — so `UserDefaults.app` fell through to `.standard` and the test
-  /// wrote the developer's own window state, selection and release-channel migration. Isolation and
-  /// fake data are separate decisions; this flag is the one that governs preferences.
-  ///
-  /// Routed through `flag` like every other fixture read, so it is inert in Release. Reading
-  /// `UserDefaults.standard` directly would reintroduce the latching trap this file documents: a
-  /// stray `defaults write com.developwithstyle.workroom WorkroomUITestIsolatePreferences -bool YES`
-  /// would silently move a REAL user's preferences into a throwaway suite, i.e. factory-reset the
-  /// app and lose every setting they changed afterwards.
-  static var isolatesPreferences: Bool { flag("WorkroomUITestIsolatePreferences") }
-
-  // MARK: Hermetic shell
-
-  /// The shell a UI-test launch gives its terminals. zsh, not `/bin/sh`: Ghostty ships shell
-  /// integration for bash, elvish, fish, nushell and zsh only, and several UI tests need it (OSC
-  /// 0/2, foreground-process resolution, cwd — `ToolFaviconUITests`, `StatusBarCwdUITests`).
-  static let hermeticShell = "/bin/zsh"
-
-  /// The whole content of the hermetic `ZDOTDIR`. `/etc/zshrc` sets `HISTFILE` under `ZDOTDIR`, so
-  /// without this zsh writes `.zsh_history` into the folder — and the folder is shared by every
-  /// launch of one bundle id and never pruned, so it must stay write-free.
-  static let hermeticShellRC = "unset HISTFILE\n"
-
-  /// `<root>/workroom-tests-zdotdir-<bundle id>`: one folder per build identity, so parallel
-  /// workrooms (each has its own bundle id) never share one. Not per process on purpose — a shell
-  /// held by a persistent session can outlive the app that started it, and a per-pid folder would
-  /// be pruned from under it.
-  ///
-  /// The id becomes one path component: anything outside `[A-Za-z0-9._-]` (a `/`, a space) is
-  /// replaced, so it can neither nest nor leave `root`.
-  static func hermeticZDOTDIR(bundleID: String, in root: URL) -> URL {
-    let component = String(
-      bundleID.map { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) ? $0 : "_" })
-    return root.appendingPathComponent("workroom-tests-zdotdir-\(component)", isDirectory: true)
-  }
-
-  enum HermeticShellError: Error {
-    /// The folder's path is a symlink. `prepareHermeticZDOTDIR` deletes what it lists, so following
-    /// one would empty whatever directory it points at.
-    case folderIsSymlink(URL)
-    /// The path exists but is not a directory owned by this user, so it is not ours to empty.
-    case folderNotOurs(URL)
-    /// No bundle id, so there is no per-identity folder to use.
-    case missingBundleID
-  }
-
-  /// The mode of the hermetic folder: only this user, so nothing else can plant a startup file.
-  private static let hermeticFolderMode = 0o700
-
-  /// Make `directory` hold the generated `.zshrc` and nothing else zsh would source. Everything
-  /// except `.zshrc*` is removed first: Ghostty sources the redirected `.zshenv` (and zsh
-  /// `.zprofile`/`.zlogin`), so a stray one left by an earlier run would execute on every later
-  /// launch while every assertion still passed. `.zshrc.zwc` is removed too, though it starts with
-  /// `.zshrc`: zsh sources a newer compiled file INSTEAD of `.zshrc`.
-  ///
-  /// The folder is shared by every launch of one bundle id, and a second launch can start while the
-  /// first is still setting up. So the sweep keeps any other `.zshrc*` name (the write goes through a
-  /// `.zshrc.tmp-<uuid>` sibling, which the other launch's sweep would otherwise delete and fail its
-  /// rename), tolerates an entry that vanishes mid-sweep, and leaves a `.zshrc` that is already
-  /// correct alone.
-  static func prepareHermeticZDOTDIR(at directory: URL) throws {
-    let files = FileManager.default
-    var info = stat()
-    if lstat(directory.path, &info) == 0 {
-      switch info.st_mode & S_IFMT {
-      case S_IFLNK: throw HermeticShellError.folderIsSymlink(directory)
-      case S_IFDIR: break
-      default: throw HermeticShellError.folderNotOurs(directory)  // a file, a FIFO...
+    /// The `gh` availability state to seed (`-WorkroomUITestGHStatus notInstalled|notAuthenticated|tooOld`).
+    ///
+    /// Needed because `refreshGitHubCLI` returns immediately in fixture mode — it must, since the
+    /// fixture's paths aren't real repos and a live `gh auth status` would answer about the developer's
+    /// own machine. So nothing could drive the Pull Request panel's warning states, and none of that
+    /// copy had any UI coverage at all. Absent ⇒ leave the optimistic `.available` default, i.e. no
+    /// warning, which is what every existing fixture test expects.
+    static var ghStatus: GitHubCLIStatus? {
+      switch text("WorkroomUITestGHStatus") {
+      case "notInstalled": return .notInstalled
+      case "notAuthenticated": return .notAuthenticated
+      case "tooOld": return .tooOld
+      case "available": return .available
+      default: return nil
       }
     }
-    try files.createDirectory(
-      at: directory, withIntermediateDirectories: true,
-      attributes: [.posixPermissions: hermeticFolderMode])
-    // Look again at what is there NOW rather than trusting the check above: the path is predictable
-    // and the sweep below deletes what it lists. A directory of ours with another mode (an earlier
-    // version created it 0755; 0500 would fail the sweep on every launch) is reset; anything else
-    // is not ours to empty.
-    guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
-      info.st_uid == geteuid()
-    else { throw HermeticShellError.folderNotOurs(directory) }
-    if Int(info.st_mode & 0o777) != hermeticFolderMode {
-      try files.setAttributes(
-        [.posixPermissions: hermeticFolderMode], ofItemAtPath: directory.path)
+
+    /// When set (`-WorkroomUITestSyncReadFailure 1`), the remote READ fails rather than an action — the
+    /// distinct case that used to render "No repository" for a perfectly good repo. Separate from
+    /// `syncFailure` because the two tiers are different: that one retries the action, this one re-reads.
+    static var syncReadFailure: Bool {
+      flag("WorkroomUITestSyncReadFailure")
     }
-    for entry in try files.contentsOfDirectory(atPath: directory.path)
-    where !entry.hasPrefix(".zshrc") || entry == ".zshrc.zwc" {
-      try removeTolerantOfVanishing(directory.appendingPathComponent(entry))
-    }
-    // `.zshrc` is exempt from the sweep, so one that is not a regular file (a directory, a symlink
-    // to somewhere else) would stay: a directory fails the write on every launch, and a symlink is
-    // sourced as whatever it points at.
-    let rc = directory.appendingPathComponent(".zshrc")
-    var rcInfo = stat()
-    if lstat(rc.path, &rcInfo) == 0, (rcInfo.st_mode & S_IFMT) != S_IFREG {
-      try removeTolerantOfVanishing(rc)
-    }
-    let content = Data(hermeticShellRC.utf8)
-    if (try? Data(contentsOf: rc)) != content {
-      // Our own temporary name, then `rename`: the sweep above keeps every `.zshrc*` name, and
-      // `Data.write(options: .atomic)` does not promise what its temporary sibling is called.
-      let temporary = directory.appendingPathComponent(".zshrc.tmp-\(UUID().uuidString)")
-      try content.write(to: temporary)
-      if rename(temporary.path, rc.path) != 0 {
-        let code = POSIXErrorCode(rawValue: errno) ?? .EIO
-        try? FileManager.default.removeItem(at: temporary)
-        throw POSIXError(code)
+
+    /// A seeded `VCSRemoteState` for `syncState`, or nil.
+    ///
+    /// `lastFetch` is pinned to exactly nine minutes before now so the subtitle reads "Fetched 9
+    /// minutes ago" deterministically — the string from the reference design, and one a UI test can match
+    /// without a clock seam.
+    static var remoteState: VCSRemoteState? {
+      guard let name = syncState else { return nil }
+      let nineMinutesAgo = Date().addingTimeInterval(-540)
+      let branch = VCSRef(name: "feature/login", kind: .branch)
+      func tracking(_ ahead: Int?, _ behind: Int?, gone: Bool = false) -> VCSTracking {
+        VCSTracking(comparedTo: "origin/feature/login", ahead: ahead, behind: behind, gone: gone)
+      }
+      switch name {
+      case "noRemote":
+        return VCSRemoteState(
+          current: branch, tracking: nil, remotes: [], primaryRemote: nil,
+          lastFetch: .never, resolvedAt: Date())
+      case "neverFetched":
+        return VCSRemoteState(
+          current: branch, tracking: tracking(0, 0), remotes: ["origin"], primaryRemote: "origin",
+          lastFetch: .never, resolvedAt: Date())
+      case "noCounterpart":
+        return VCSRemoteState(
+          current: branch, tracking: tracking(nil, nil, gone: true), remotes: ["origin"],
+          primaryRemote: "origin", lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+      case "ahead":
+        return VCSRemoteState(
+          current: branch, tracking: tracking(5, 0), remotes: ["origin"], primaryRemote: "origin",
+          lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+      case "behind":
+        return VCSRemoteState(
+          current: branch, tracking: tracking(0, 3), remotes: ["origin"], primaryRemote: "origin",
+          lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+      case "diverged":
+        return VCSRemoteState(
+          current: branch, tracking: tracking(2, 4), remotes: ["origin"], primaryRemote: "origin",
+          lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+      default:  // "clean"
+        return VCSRemoteState(
+          current: branch, tracking: tracking(0, 0), remotes: ["origin"], primaryRemote: "origin",
+          lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
       }
     }
-  }
 
-  /// `removeItem`, except that an entry another launch removed first is not an error.
-  private static func removeTolerantOfVanishing(_ url: URL) throws {
-    do {
-      try FileManager.default.removeItem(at: url)
-    } catch let error as CocoaError where error.code == .fileNoSuchFile {
-      return
+    /// When set (`-WorkroomUITestManyChanges 1`), the fixture workroom reports a long changed-file
+    /// list so the Changes section overflows and fills the inspector — the scenario in which the
+    /// inspector's section-disclosure animation misbehaves (the header title swims relative to its
+    /// bar). Used by `InspectorAnimationUITests`.
+    static var manyChanges: Bool {
+      flag("WorkroomUITestManyChanges")
     }
-  }
 
-  /// Point the process at a shell that has Ghostty's integration and none of the developer's rc
-  /// files, for a UI-test launch only. Returns whether it applied anything.
-  ///
-  /// Ghostty's bundled zsh `.zshenv` restores a user `ZDOTDIR` from `GHOSTTY_ZSH_ZDOTDIR`, sources
-  /// `$ZDOTDIR/.zshenv`, then loads the integration — so this keeps the integration and drops
-  /// `~/.zshenv`, `~/.zprofile`, `~/.zshrc` and `~/.zlogin`. The terminals inherit the process
-  /// environment, the same way they inherit `GHOSTTY_RESOURCES_DIR`.
-  ///
-  /// **New shells only.** This sets the environment the app spawns shells with. A pane that
-  /// reattaches to a persistent session started by an earlier, non-hermetic launch keeps that
-  /// shell's environment, so a `fixture: false` launch can still show one (fixture launches skip
-  /// persistent sessions).
-  ///
-  /// **Startup files only.** `PATH` stays developer-influenced (`ShellEnvironment.floorPath`
-  /// includes Homebrew, `~/.local/bin` and the inherited `PATH`).
-  ///
-  /// Throws rather than logging: a failure that left the environment alone would let the terminals
-  /// run the developer's real rc files, which is exactly what this exists to stop, and nothing
-  /// would say so. `WorkroomApp.init` turns the throw into a crash — DEBUG UI-test launches only.
-  ///
-  /// `setenv` is safe only from `WorkroomApp.init`, before the probe and the status sweep start
-  /// reading the environment from other threads (see the comment there).
-  @discardableResult
-  static func applyHermeticShell(
-    active: Bool = AppEnvironment.isUILaunch,
-    bundleID: String? = Bundle.main.bundleIdentifier,
-    root: URL = FileManager.default.temporaryDirectory,
-    set: (String, String) -> Void = { setenv($0, $1, 1) }
-  ) throws -> Bool {
-    guard enabled, active else { return false }
-    guard let bundleID else { throw HermeticShellError.missingBundleID }
-    let directory = hermeticZDOTDIR(bundleID: bundleID, in: root)
-    try prepareHermeticZDOTDIR(at: directory)
-    set("SHELL", hermeticShell)
-    set("ZDOTDIR", directory.path)
-    return true
-  }
-
-  /// The theme family every fixture launch starts on
-  /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
-  ///
-  /// This exists so `ThemePickerUITests` never has to touch the theme preference from the *runner*
-  /// process. `Defaults` is not isolated by a throwaway `$HOME` — cfprefsd resolves the real one — so
-  /// a runner-side save/restore would be writing the developer's actual pref and racing the app for
-  /// it. And a bare `-themeFamily` launch argument is worse than useless: argument-domain values
-  /// outrank the app domain, so it would pin the theme and shadow every later write, exactly as
-  /// documented for `showInspector` above. A fixture-namespaced argument mirrored into `Defaults` by
-  /// `applyFixtureDefaults` avoids both traps.
-  static var themeFamily: String {
-    let raw = text("WorkroomUITestThemeFamily") ?? ""
-    return ThemeCatalog.family(named: raw) != nil ? raw : ThemeCatalog.defaultFamilyName
-  }
-
-  /// Force a deterministic **UI** state in fixture mode: the inspector open, parked on
-  /// `inspectorSection` with every section expanded, and the diff viewer in `diffViewMode`. Must be
-  /// called before any `AppStore` is built (`WorkroomApp.init`), because `activeInspectorSection` and
-  /// the layout both seed themselves from `Defaults` at construction.
-  ///
-  /// These are all `Defaults` keys in the app's real (Dev) UserDefaults domain, so without this a
-  /// test inherits whatever the developer last left behind. That is not hypothetical: a collapsed
-  /// section renders only its header, a closed inspector has nothing at all, and a `Dev`
-  /// domain holding `diffViewMode = sideBySide` turned three `DiffViewerUITests` + two
-  /// `DiffHighlightUITests` red for weeks — they assert on `diff.line`, which only the *unified*
-  /// renderer emits, and read "the global default" from a pref the developer can change in Settings.
-  ///
-  /// The cost of pinning is that a fixture launch **overwrites** these keys in the Dev domain (it
-  /// can't be a plain read: the views take them from `Defaults`). Dev is its own domain, so this
-  /// never touches the release app's preferences — but a UI-test run does reset the Dev app's
-  /// inspector and diff-mode choices, which is the deliberate trade for hermetic tests.
-  ///
-  /// A launch argument can't do this job. Argument-domain values arrive as **strings**
-  /// (`-showNotificationsInspector 1` stores `"1"`, not `true`), and `Defaults` reads a natively
-  /// supported type with `as? Bool`, which fails on a string and hands back the key's default
-  /// (`false`) — so the argument doesn't just fail to force the pane open, it *pins it shut*: the
-  /// argument domain outranks the app domain, so it also shadows the persisted value AND every
-  /// later write (`AppStore.apply(.iconClick)`), leaving the pane unopenable for the whole run.
-  /// `UITestFixture`'s own flags survive that only because `UserDefaults.bool(forKey:)` coerces
-  /// strings. Hence a fixture-namespaced argument mirrored into `Defaults` here instead.
-  ///
-  /// `active` is a parameter, defaulting to the real flag, purely so its unit tests never have to
-  /// WRITE `WorkroomUITestFixture`. Around 47 production sites branch on that key, including
-  /// `AppStore.handleRootBranchChange`'s `guard !AppEnvironment.current.isFixture`, and `-parallel-testing`
-  /// workers are separate processes sharing one on-disk defaults domain — so a class holding the key
-  /// true for the length of a test body silently early-returns another class's history refresh, in a
-  /// worker whose diff has nothing to do with any of this. That is the same cross-worker hazard
-  /// `AppStore.confirmOnCloseOverrideForTesting` exists for; passing the state in avoids it at the
-  /// source instead of racing and cleaning up.
-  static func applyFixtureDefaults(active: Bool = fixtureFlag) {
-    guard active else { return }
-    Defaults[.showInspector] = true
-    Defaults[.activeInspectorSection] = inspectorSection
-    Defaults[.diffViewMode] = diffViewMode
-    // Pinned to their `DefaultsKeys` defaults, for the same reason as the booleans above: a dragged
-    // resize PERSISTS (real Dev domain, not fixture-isolated), and a fixture launch otherwise inherits
-    // whatever an earlier drag-resize test left. Found chasing `DiffViewerUITests.
-    // testSideBySideRendersTwoColumns`: the real domain had drifted to inspector.width=406/
-    // sidebar.width=281 (vs. the 300/270 defaults), narrowing the detail column below
-    // `DiffViewer.sideBySideMinWidth` (700) even at the fixture's otherwise-deterministic window width.
-    Defaults[.sidebarWidth] = 270
-    Defaults[.inspectorWidth] = 300
-    // Every section expanded, equal heights. Not optional book-keeping: collapse state decides whether
-    // a section's BODY renders at all (a collapsed section keeps only its header), and it's global +
-    // persisted, so without this a test inherits whichever sections the developer — or the last UI test
-    // to press ⌥⌘C/⌥⌘Y — left shut, and reads as "the panel is broken".
-    Defaults[.inspectorLayout] = InspectorPaneState(
-      collapsed: InspectorPaneState.default.collapsed,
-      weights: inspectorWeights ?? InspectorPaneState.default.weights)
-    // Workroom's own last-fetch stamps, for the same reason as the collapse state: they PERSIST, and a
-    // fetch performed by an earlier test writes one. `RemoteStateModel` takes the later of the backend's
-    // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the
-    // never-fetched state reported "just now" instead.
-    Defaults[.vcsLastFetch] = [:]
-    // The theme family, for the same reason as the collapse state and the fetch stamps: it PERSISTS.
-    // Without this a theme test inherits whatever the developer last picked, and a test that applies
-    // a theme leaves it applied for the next run.
-    Defaults[.themeFamily] = themeFamily
-    // Unfocused-pane dimming, for the same reason as `themeFamily`: it PERSISTS in the real Dev
-    // domain, and it decides whether the pane scrim, the terminal tab strip and the pane header render
-    // at full contrast or 0.45 — so a developer who turns it off once silently rebaselines every later
-    // fixture launch and every screenshot taken from one (issue #162 review).
-    Defaults[.dimUnfocusedPanes] = dimUnfocusedPanes
-    // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
-    // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
-    Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
-    // Pinned "already onboarded" for the same reason as `themeFamily`/`diffViewMode` above: the flag
-    // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
-    // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'
-    // `-WorkroomUITestNoProjects 1` scenario. A test that wants onboarding itself passes
-    // `-WorkroomUITestOnboarding show`, which `OnboardingGate` checks first. `onboardingSeed` (an
-    // explicit true/false) wins when given — the persistence tests use it to seed a known starting
-    // value; otherwise `onboardingRealGate` alone just skips this generic pin, leaving whatever's
-    // already persisted (used on the SECOND launch of a relaunch pair, to read what the first one left).
-    if let seed = onboardingSeed {
-      Defaults[.hasCompletedOnboarding] = seed
-    } else if !onboardingRealGate {
-      Defaults[.hasCompletedOnboarding] = true
+    /// When set (`-WorkroomUITestHugeChangeSet 1`), the fixture reports MORE changed files than the
+    /// commit dialog draws (`CommitSheet.renderCap`), so a test can prove the cap limits what is drawn
+    /// and never what is committed — the failure mode a render cap invites is a list that quietly
+    /// disagrees with the commit it is about to make. Deliberately separate from `manyChanges`, whose
+    /// 27 rows several other tests depend on exactly.
+    static var hugeChangeSet: Bool {
+      flag("WorkroomUITestHugeChangeSet")
     }
-  }
 
-  /// The fake project list. Idempotent within a launch: the backing temp directories are created if
-  /// missing so each target's terminal can start a shell. The project is reported as `git` so the
-  /// sidebar's root row renders normally; no real VCS call is ever made (loading is short-circuited in `AppStore`, which
-  /// also skips branch resolution for these paths).
-  static func projects() -> [Project] {
-    // Empty list for the no-projects scenario (issue #81 D3) — nothing to create or select.
-    if noProjects { return [] }
-    let vcs = "git"
-    let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-      .appendingPathComponent("workroom-uitest", isDirectory: true)
-    let projectDir = base.appendingPathComponent(projectName, isDirectory: true)
-    let workroomsBase = base.appendingPathComponent("workrooms", isDirectory: true)
-    let workroomDir = workroomsBase.appendingPathComponent(workroomName, isDirectory: true)
-    // A second workroom only for the drag/reorder scenario, so the tab bar has two chips to swap.
-    let workroomDir2 = workroomsBase.appendingPathComponent(workroomName2, isDirectory: true)
-    var dirs = [projectDir, workroomDir]
-    // The on-disk dir keeps the short `workroomName` regardless (it's just a temp path); only the
-    // MODEL's name — what the chip actually renders — swaps to the oversized value.
-    var workrooms = [
-      Workroom(
-        name: longWorkroomName ? longWorkroomNameValue : workroomName, path: workroomDir.path,
-        vcsName: vcs, warnings: [])
-    ]
-    if twoTabs {
-      dirs.append(workroomDir2)
-      workrooms.append(
-        Workroom(name: workroomName2, path: workroomDir2.path, vcsName: vcs, warnings: []))
+    /// When set (`-WorkroomUITestManyCommits <n>`), the fixture's History page reports `n` synthetic
+    /// commits instead of the default five, so a test can prove the pane realizes only the rows on screen
+    /// and stays responsive at scale — the shape of the WORKROOM-2B App Hang. Clamped: 0 disables it
+    /// (the default five-commit page every other History test depends on), and the ceiling keeps a typo'd
+    /// launch argument from generating a million rows.
+    static var manyCommits: Int {
+      min(max(number("WorkroomUITestManyCommits"), 0), 2000)
     }
-    // Extra workrooms for the tab-bar overflow scenario (issue #129). `twoTabs` already contributes
-    // `workroomName2`, so skip any name it seeded rather than listing a duplicate.
-    for name in extraWorkroomNames where !workrooms.contains(where: { $0.name == name }) {
-      let dir = workroomsBase.appendingPathComponent(name, isDirectory: true)
-      dirs.append(dir)
-      workrooms.append(Workroom(name: name, path: dir.path, vcsName: vcs, warnings: []))
-    }
-    // A scripted create's workroom, once it has made it (#483).
-    if scriptedCreate, FileManager.default.fileExists(atPath: scriptedWorkroomDirectory.path) {
-      workrooms.append(
-        Workroom(
-          name: scriptedWorkroomName, path: scriptedWorkroomDirectory.path, vcsName: vcs,
-          warnings: []))
-    }
-    for dir in dirs {
-      try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    }
-    // Seed one real working-tree file matching a `changedFiles` entry (`Gemfile`), so the in-app
-    // "Open File" (issue #117) renders actual content instead of `PlainFileViewer`'s "File
-    // unavailable" placeholder — `ChangesPanelUITests` asserts the marker below is on screen. Written
-    // only if absent, so it stays idempotent within a launch.
-    let seededGemfile = workroomDir.appendingPathComponent(seededFileName)
-    if !FileManager.default.fileExists(atPath: seededGemfile.path) {
-      try? seededFileContent.write(to: seededGemfile, atomically: true, encoding: .utf8)
-    }
-    // Rewritten every launch, not written-if-absent: this content is an assertion fixture, so a stale
-    // copy left in the temp dir by an older build must not silently outlive a change to it.
-    let seededMarkdown = workroomDir.appendingPathComponent(seededMarkdownFileName)
-    try? seededMarkdownContent.write(to: seededMarkdown, atomically: true, encoding: .utf8)
-    return [Project(path: projectDir.path, vcs: vcs, workrooms: workrooms)]
-  }
 
-  // MARK: - Changes-inspector status
+    /// The commit the dialog names as what "Amend last commit" would rewrite.
+    ///
+    /// Seeded rather than read, because the fixture's paths are not real repos — a live `git log` there
+    /// fails, and the dialog would then show nothing at all, which is exactly the state the test exists
+    /// to rule out. Shaped like the real read (`%h %s`).
+    static let amendTargetLabel = "a1b2c3d Add the session controller"
 
-  /// Deterministic VCS status for the fixture **workroom** (`uitest-room`): a dirty git working tree
-  /// on `feature/login` with a mix of root-level and nested changed files, so the Changes panel
-  /// renders its flat file list (rows open `.gitWorktree` diffs) with no real repo — visual QA never
-  /// has to touch (or expose) the developer's actual projects.
-  static var workroomStatus: WorkroomStatus {
-    WorkroomStatus(
-      dirty: true,
-      conflicted: conflicted,
-      changedFiles: changedFiles,
-      insertions: 411, deletions: 222,
-      ci: .passing,
-      branchForCI: "feature/login",
-      // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request.
-      pr: manyChanges
-        ? nil
-        : PullRequestInfo(
-          number: 42, title: "Add session login", state: .open, isDraft: false,
-          url: "https://github.com/acme/app/pull/42", reviewDecision: .changesRequested,
-          // A spread of reviewer states so the panel renders the aggregate header + every row kind:
-          // a bot still generating (pending → no link), and two submitted reviews (approval +
-          // changes-requested) that carry permalinks so the rows render as open-on-GitHub links.
-          reviewers: [
-            Reviewer(identity: .user(login: "copilot-pull-request-reviewer"), state: .requested),
-            Reviewer(
-              identity: .user(login: "iainad"), state: .approved,
-              url: "https://github.com/acme/app/pull/42#pullrequestreview-1001"),
-            Reviewer(
-              identity: .user(login: "octocat"), state: .changesRequested,
-              url: "https://github.com/acme/app/pull/42#pullrequestreview-1002"),
-          ],
-          // Mergeable + clean (issue #88) so the split "Merge" button renders in the fixture for
-          // visual QA of its default/dropdown states.
-          mergeable: true, mergeState: .clean),
-      // All three "checked" stamps set so the inspector shows the seeded data, not "Checking…".
-      lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
-  }
-
-  /// Deterministic status for the fixture **project root**: a clean git branch with passing CI — so
-  /// the inspector renders the git header and the clean empty state.
-  static var rootStatus: WorkroomStatus {
-    WorkroomStatus(
-      dirty: false, changedFiles: [], ci: .passing,
-      branchForCI: "main",
-      // No PR seeded here, so a `prCheckedAt` stamp makes the inspector show the "No pull request"
-      // empty state (not "Checking…").
-      lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
-  }
-
-  // MARK: - Notifications
-
-  /// A deterministic notification history for the notification surfaces (the left-sidebar strip + the
-  /// bell/`+N` popovers, issue #118). The fixture otherwise leaves it empty (real entries only arrive
-  /// when a terminal emits an OSC notification), so this seeds a representative spread — a coalesced
-  /// ×N entry, a wrapping two-line body, a title-only entry, and a body-only (titleless) one — across
-  /// a range of ages so every row variant and the "time ago" line all get visual + UI-test coverage.
-  ///
-  /// Each entry carries a *synthetic* tab id, NOT the workroom's live tab: real notifications are
-  /// raised for terminals you're NOT looking at, and the app dismisses the visible tab's history on
-  /// focus (`dismissFocusedTerminalNotifications`) — keying these to the live tab would wipe them the
-  /// instant the window activates. They keep the real `targetID`, so a row click still routes to the
-  /// workroom (and dismisses by `notifID`); it just can't re-focus a tab that was never opened —
-  /// exactly the graceful path a since-closed terminal already takes.
-  static func notifications(targetID: TerminalTarget.ID) -> [WorkroomNotification] {
-    let source = "\(projectName) / \(workroomName)"
-    func note(_ ago: TimeInterval, _ title: String, _ body: String? = nil, count: Int = 1)
-      -> WorkroomNotification
-    {
-      WorkroomNotification(
-        id: UUID(), targetID: targetID, tabID: UUID(), source: source,
-        title: title, body: body, date: Date().addingTimeInterval(-ago), count: count)
+    /// When set (`-WorkroomUITestRunCommand "<cmd>"`), the fixture seeds this as the workroom's run
+    /// command instead of the default probe — so the run-status XCUITests (issue #79) can drive a
+    /// deterministic failure (`exit 7`), success (`exit 0`), or long-running (`sleep 30`) command and
+    /// assert the run icon / Ctrl-C behaviour end-to-end against a real libghostty surface.
+    static var runCommand: String? {
+      let cmd = text("WorkroomUITestRunCommand")
+      return (cmd?.isEmpty == false) ? cmd : nil
     }
-    // Oldest first: the store appends chronologically and the panel reverses to newest-first, so the
-    // most recent ("Build finished", just now) lands at the top.
-    return [
-      note(3600, "Tests passed", "All 248 specs green", count: 3),
-      note(
-        900, "Deploy blocked",
-        "Branch protection: 1 required review still missing before this can merge to main."),
-      note(120, "", "Background indexing finished"),
-      note(45, "Lint clean"),
-      note(2, "Build finished", "Workroom Dev compiled in 12.4s"),
-    ]
-  }
 
-  /// The fixture's changed-file list: a small representative set, or a long one (`manyChanges`) so
-  /// the Changes section overflows the inspector for the disclosure-animation repro. Under
-  /// `conflicted` it also carries one `.conflicted` entry so the conflict badge has something to
-  /// render (the other kinds stay, so a test can contrast conflicted against modified/added).
-  private static var changedFiles: [ChangedFile] {
-    var base = [
-      ChangedFile(path: "Gemfile", change: .modified),
-      ChangedFile(path: seededMarkdownFileName, change: .modified),  // drives the preview UI test
-      ChangedFile(path: ".env.example", change: .added),
-      ChangedFile(path: "app/models/user.rb", change: .modified),
-      ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),
-      ChangedFile(path: "config/routes.rb", change: .modified),
-      ChangedFile(path: "test/models/user_test.rb", change: .added),
-      // A DELETED source, so the pane title bar's "Open File" disabled state (there is no working
-      // copy left to open — review D4) is assertable. Nothing else in this list is deleted.
-      ChangedFile(path: "app/models/legacy_user.rb", change: .deleted),
-    ]
-    if conflicted {
-      base.append(ChangedFile(path: conflictedFilePath, change: .conflicted))
+    /// When set (`-WorkroomUITestNoRunCommand 1`), the fixture skips seeding ANY run command — the
+    /// default probe command is otherwise always seeded (`AppStore.loadFixture`), so tests exercising
+    /// the "no run command configured" state (issue #127) need this to opt out (found by review: the
+    /// no-command XCUITest would otherwise always see a command configured and never see the state it
+    /// means to test).
+    static var noRunCommand: Bool {
+      flag("WorkroomUITestNoRunCommand")
     }
-    if hugeChangeSet {
-      // Comfortably past `CommitSheet.renderCap` (200).
-      return base
-        + (0..<250).map {
-          ChangedFile(path: "vendor/bundle/gems/pkg-\($0)/lib/pkg.rb", change: .untracked)
-        }
-    }
-    guard manyChanges else { return base }
-    let extra = (0..<20).map {
-      ChangedFile(path: "app/views/layouts/v\($0).html.erb", change: .modified)
-    }
-    return base + extra
-  }
 
-  /// A fixed timestamp for the seeded statuses' "last checked" stamps (deterministic; the value
-  /// isn't displayed, only its non-nil-ness gates the loading state).
-  private static let checkedAt = Date(timeIntervalSince1970: 1_700_000_000)
-
-  // MARK: - Diff content (issue #66)
-
-  /// A deterministic canned diff for the diff viewer in fixture mode — so the UI tests render a real
-  /// `DiffViewer` without shelling out to git against the fake temp directory. The content encodes
-  /// the file path and the `DiffSource` (git worktree / commit) so a test can assert it
-  /// opened the *right* file's diff from the *right* revision. Two paths get special states for
-  /// coverage: `binary.bin` → binary, `clean.txt` → empty.
-  ///
-  /// Ruby files get a diff whose new-side lines are exactly `rubyFileContent(for:)` (a small Ruby
-  /// snippet), so the real highlight pipeline (detect → parse → map) runs against canned content and
-  /// the syntax-highlight UI test can assert colour was applied. The tag line is a Ruby comment, so
-  /// the existing revision-tag assertions still hold. Non-Ruby paths keep a generic diff with no
-  /// matching content, so they exercise the plain (highlight-skipped) fallback.
-  static func diff(for descriptor: DiffDescriptor) -> DiffResult {
-    let name = (descriptor.path as NSString).lastPathComponent
-    if name == "binary.bin" { return .binary }
-    if name == "clean.txt" { return .empty }
-    if name == "huge.css" { return hugeDiff() }
-    let tag = sourceTag(descriptor.source)
-    if SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby {
-      return .diff(UnifiedDiff.parse(rubyDiffText(tag: tag, path: descriptor.path)))
+    /// When set (`-WorkroomUITestTwoTabs 1`), the fixture seeds a SECOND workroom and the app opens a
+    /// terminal for both on launch, so the workroom tab bar (issue #23) shows two chips — the scenario
+    /// the drag-to-reorder / window-drag XCUITest (`WindowDragUITests`) needs. Default (unset) keeps the
+    /// single-workroom fixture the other tests rely on.
+    static var twoTabs: Bool {
+      flag("WorkroomUITestTwoTabs")
     }
-    let raw = """
-      diff --git a/\(descriptor.path) b/\(descriptor.path)
-      @@ -1,4 +1,5 @@
-       context line one
-      -removed old line
-      +added line for \(tag)
-      +marker \(descriptor.path)
-       context line two
-       context line three
+
+    /// When set (`-WorkroomUITestTerminalTabs <n>`), the fixture opens `n` terminal tabs in the
+    /// auto-selected workroom instead of one, so the **terminal** tab strip overflows on launch — the
+    /// scenario the pinned-"+" XCUITests need (issue #129) without a dozen flaky ⌘T round-trips. Clamped
+    /// to 1...16 so a typo can't spawn an unbounded number of shells. Unset keeps the single-tab fixture.
+    ///
+    /// `integer(forKey:)` coerces the argument domain's string, the same coercion the `bool(forKey:)`
+    /// flags above rely on (see `applyFixtureDefaults` for why arguments arrive as strings).
+    static var terminalTabs: Int {
+      let n = number("WorkroomUITestTerminalTabs")
+      return n <= 0 ? 1 : min(n, 16)
+    }
+
+    /// When set (`-WorkroomUITestProgramStatus 1`), the fixture workroom opens four terminals with
+    /// program status seeded (#358) and the first one focused: Terminal 1 working, Terminal 2 waiting
+    /// for permission ("Apply?"), Terminal 3 waiting for an answer on a host whose link is down, and
+    /// Terminal 4 stopped on an error. No daemon is involved: the records go straight into the monitor.
+    static var programStatus: Bool {
+      flag("WorkroomUITestProgramStatus")
+    }
+
+    /// The stale pane's host: a remote id no real host has.
+    static let staleProgramStatusHost = HostID.remote(
+      UUID(uuidString: "00000000-0000-0000-0000-000000000358")!)
+
+    @MainActor
+    static func seedProgramStatus(in terminals: TerminalSessions, target: TerminalTarget) {
+      while terminals.tabs(for: target).count < 4 { _ = terminals.addTab(for: target) }
+      let tabs = terminals.tabs(for: target)
+      func seed(
+        _ index: Int, host: HostID = .local, stale: Bool = false, _ record: ProgramStatusRecord
+      ) {
+        terminals.seedProgramStatusForFixture(
+          tab: tabs[index].id, target: target.id, host: host, records: [record], stale: stale)
+      }
+      seed(0, ProgramStatusRecord(id: "", state: .working))
+      seed(
+        1,
+        ProgramStatusRecord(
+          id: "", state: .blocked, kind: .permission, message: "Apply?", episode: 1))
+      seed(
+        2, host: staleProgramStatusHost, stale: true,
+        ProgramStatusRecord(
+          id: "", state: .blocked, kind: .question, message: "Red or blue?", episode: 1))
+      seed(3, ProgramStatusRecord(id: "", state: .error, message: "Build failed"))
+      terminals.select(tabs[0].id, for: target)
+    }
+
+    /// When set (`-WorkroomUITestWorkroomCount <n>`), the fixture seeds `n` workrooms and makes each an
+    /// *active target*, so the title-bar **workroom** tab bar shows `n` chips and overflows on launch —
+    /// the `WorkroomTabBar` half of issue #129. Clamped to 1...16. Unset keeps the single workroom.
+    ///
+    /// This is cheap despite the chip count: a workroom chip only needs its target to be active
+    /// (`AppStore.orderedWorkroomTargets` reads `terminals.activeTargetIDs`), and `TerminalSessions.addTab`
+    /// merely registers a tab — the real shell is created by the *view*
+    /// (`GhosttySurfaceView.createSurface`, off `viewDidMoveToWindow`), and only the selected workroom
+    /// mounts a pane. So `n` chips cost `n` tab models and ONE terminal, not `n` terminals.
+    static var workroomCount: Int {
+      let n = number("WorkroomUITestWorkroomCount")
+      return n <= 0 ? 1 : min(n, 16)
+    }
+
+    /// Names of the extra workrooms seeded by `workroomCount` (beyond `workroomName`), stable so a test
+    /// can address a chip by id. Empty unless the flag is set.
+    static var extraWorkroomNames: [String] {
+      guard workroomCount > 1 else { return [] }
+      return (2...workroomCount).map { "uitest-room-\($0)" }
+    }
+
+    /// When set (`-WorkroomUITestLongWorkroomName 1`), the fixture's FIRST seeded workroom is named
+    /// `longWorkroomNameValue` instead of `workroomName` — a real oversized name for `WorkroomTabChip`'s
+    /// title-cap XCUITest (mirrors `TerminalTabChip`'s, issue #129 follow-up) to clip. Any extra
+    /// workrooms `workroomCount` seeds keep their normal short names. Unset keeps the short
+    /// `workroomName`.
+    static var longWorkroomName: Bool {
+      flag("WorkroomUITestLongWorkroomName")
+    }
+
+    /// The oversized name seeded under `longWorkroomName` — comfortably past the chips' shared title
+    /// cap (`TabStripMetrics.maxChipTitle`, 180pt) at `.subheadline`, so tail-truncation is exercised
+    /// deterministically instead of depending on a real long name existing somewhere on disk.
+    static let longWorkroomNameValue = String(repeating: "abcdefghij", count: 13)  // 130 chars
+
+    /// When set (`-WorkroomUITestLongTabTitle 1`), the fixture's first terminal tab is given a title
+    /// far past the chips' 180pt cap, so the pane title bar's untruncated rendering (issue #150) can be
+    /// asserted deterministically instead of depending on whatever a real shell happens to set.
+    ///
+    /// Separate from `longWorkroomName`, which seeds the WORKROOM's name for the chip/header title-cap
+    /// test — this one is the TAB's title, which is what `PaneTitleBar` renders.
+    static var longTabTitle: Bool {
+      flag("WorkroomUITestLongTabTitle")
+    }
+
+    /// The oversized tab title seeded under `longTabTitle`. Deliberately a run of distinct words rather
+    /// than a repeated string: the title bar tail-truncates a terminal title, so a test asserting the
+    /// rendered width needs a value whose head is recognizable and whose length is unambiguous.
+    static let longTabTitleValue =
+      "workroom detail panel title bar rendering fixture for the very long terminal title case"
+
+    /// When set (`-WorkroomUITestWorkroomSplit 1`), the fixture starts already in a workroom-into-
+    /// workroom split of the project ROOT + the first workroom, so the split group title bar (issue
+    /// #112) renders on launch WITHOUT an XCUITest drag (which is flaky). One split covers both menu
+    /// branches: the workroom member gets the full menu, the root member gets none. Default (unset)
+    /// keeps the single-pane fixture the other tests rely on.
+    static var workroomSplit: Bool {
+      flag("WorkroomUITestWorkroomSplit")
+    }
+
+    /// When set (`-WorkroomUITestSecondWorkroomSplit 1`, alongside `-WorkroomUITestWorkroomSplit 1` and
+    /// `-WorkroomUITestWorkroomCount 3`), the fixture seeds a SECOND split group from the 2nd + 3rd
+    /// workrooms — a window holds several groups at once, and only the one containing the selection is
+    /// shown. Lets the XCUITest hop between groups and prove neither dissolves, without a flaky drag.
+    static var secondWorkroomSplit: Bool {
+      flag("WorkroomUITestSecondWorkroomSplit")
+    }
+
+    /// When set (`-WorkroomUITestCreatingSplitMember 1`, alongside `-WorkroomUITestWorkroomSplit 1`),
+    /// the split's selected workroom member is seeded **mid-setup-script**: a running `CreationRun` on
+    /// its `script` step (#483) plus the `creatingWorkrooms` guard, which is the real state during a
+    /// script and the one issue #171's second half is about.
+    ///
+    /// Covers #171's visible half: the FOCUSED create renders inside its own pane, so the pane it was
+    /// created beside stays on screen, and that pane's title bar drops its Run control for the
+    /// duration. A real create can't be driven from a UI test — the fixture never shells out to the
+    /// CLI (see `NewWorkroomDialogUITests`) — so the state is seeded rather than produced.
+    static var creatingSplitMember: Bool {
+      flag("WorkroomUITestCreatingSplitMember")
+    }
+
+    /// `-WorkroomUITestCreatingSplitMemberNoSetup 1` — the same seed, but with the run still on its
+    /// `worktree` step rather than a setup script.
+    static var creatingSplitMemberNoSetup: Bool {
+      flag("WorkroomUITestCreatingSplitMemberNoSetup")
+    }
+
+    /// `-WorkroomUITestScriptedCreate 1`: a local create runs against `ScriptedCreateCLI` (#483), a
+    /// stand-in for the CLI that plays a create's steps, log and "created" event over a few seconds,
+    /// so a UI test sees the creation pane run and give way to the terminal. The fixture's paths are
+    /// not repositories, so the real CLI would fail at its worktree.
+    static var scriptedCreate: Bool {
+      flag("WorkroomUITestScriptedCreate")
+    }
+
+    /// The workroom a scripted create makes.
+    static let scriptedWorkroomName = "uitest-created"
+
+    /// Where a scripted create's workroom lives; `projects()` lists it once it exists.
+    static var scriptedWorkroomDirectory: URL {
+      URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(
+          "workroom-uitest/workrooms/\(scriptedWorkroomName)", isDirectory: true)
+    }
+
+    /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
+    /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
+    /// `conflicted` flag. Covers the per-file conflict status end-to-end in the UI — the Changes row
+    /// for a conflicted file must read as conflicted (its own badge, not deletion's or modification's)
+    /// and the project status badge must report the conflict.
+    static var conflicted: Bool {
+      flag("WorkroomUITestConflict")
+    }
+
+    /// The path seeded as conflicted under `-WorkroomUITestConflict 1`. Distinct from every other
+    /// fixture path so a test can address its row by id without matching a neighbour.
+    static let conflictedFilePath = "app/models/merge_me.rb"
+
+    /// When set (`-WorkroomUITestCodingAgentStub 1`), the inline terminal agent (issue #49) is enabled with
+    /// a STUB backend that returns a canned diagnosis — so the XCUITest exercises the REAL capture +
+    /// banner end-to-end (failure → `readCommandRegion`/`readFullSurface` → classify → manager →
+    /// parse → banner render) with no network and no cost. Pairs with auto-diagnose so no click is
+    /// needed to surface the banner.
+    static var codingAgentStub: Bool {
+      flag("WorkroomUITestCodingAgentStub")
+    }
+
+    /// A provider title to seed into the fixture's first terminal, for quota-footer XCUITests. This is
+    /// a model-only fixture: no real agent is launched and no developer usage files are read.
+    static var usageCodingAgentTitle: String? {
+      switch text("WorkroomUITestUsageCodingAgent") {
+      case "claude": return "Claude Code"
+      case "codex": return "Codex"
+      default: return nil
+      }
+    }
+
+    static var usageSnapshot: CodingAgentQuotaSnapshot? {
+      guard !flag("WorkroomUITestUsageUnavailable") else { return nil }
+      guard let title = usageCodingAgentTitle,
+        let backend = CodingAgentTitleRecognition.backend(for: title)
+      else {
+        return nil
+      }
+      let now = Date()
+      // `-WorkroomUITestUsageZero 1` seeds zero usage, the only way to see the green `.onPace`
+      // bar (a manual visual check). The spoken label for it is pinned by
+      // `CodingAgentUsageSegmentLabelTests`; the bar's colour has no automated check.
+      let used = flag("WorkroomUITestUsageZero") ? 0.0 : 42.0
+      let weeklyUsed = flag("WorkroomUITestUsageZero") ? 0.0 : 61.0
+      return CodingAgentQuotaSnapshot(
+        backend: backend,
+        windows: [
+          // 3.5h left of 5h ⇒ 30% elapsed against 42% used ⇒ pace +12, i.e. `.warning` and a
+          // 12-point gap between the fill's edge and the pace pin. At the old 3h the window was 40%
+          // elapsed against the same 42% used: pace +2, a gap of about a point on a 44pt bar, so the
+          // pin was indistinguishable from the fill and `.warning` was reachable by no fixture at all
+          // (weekly lands at +18 ⇒ `.critical`, and `WorkroomUITestUsageZero` gives `.onPace`). No
+          // test asserts `resetsAt` — they assert only that the label contains "resets in".
+          CodingAgentQuotaWindow(
+            kind: .fiveHour, usedPercentage: used, duration: 5 * 60 * 60,
+            resetsAt: now.addingTimeInterval(3.5 * 60 * 60)),
+          CodingAgentQuotaWindow(
+            kind: .weekly, usedPercentage: weeklyUsed, duration: 7 * 24 * 60 * 60,
+            resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)),
+        ], capturedAt: now)
+    }
+
+    /// The canned claude `--output-format json` envelope the stub agent returns. Its inner JSON is the
+    /// compact diagnosis the XCUITest asserts on (a recognisable `UITEST` summary + a safe fix). The fix
+    /// prints `WRFIX42` only if it runs, so a test can tell inserted text from an executed command.
+    /// `-WorkroomUITestCodingAgentMultilineFix 1` gives it a line break (#550).
+    static let codingAgentStubEnvelope: String = {
+      let fix =
+        flag("WorkroomUITestCodingAgentMultilineFix")
+        ? #"echo WRFIX$((40+2))\\necho two"# : #"echo WRFIX$((40+2))"#
+      let inner = #"{\"summary\":\"UITEST diagnosis: port already in use\",\"fix\":\"\#(fix)\"}"#
+      return #"{"type":"result","is_error":false,"result":"\#(inner)"}"#
+    }()
+
+    /// The summary text the stub produces — queried by the XCUITest as the banner's headline.
+    static let codingAgentStubSummary = "UITEST diagnosis: port already in use"
+
+    /// When set (`-WorkroomUITestUpdateAvailable 1`), `Updater` seeds a fake available-update version so
+    /// the toolbar "Update" pill renders for visual QA without a live Sparkle update.
+    static var updateAvailableVersion: String? {
+      flag("WorkroomUITestUpdateAvailable") ? "9.9.9" : nil
+    }
+
+    /// When set (`-WorkroomUITestUpdateDownloading 1`), `Updater` seeds the downloading state so the
+    /// pill renders its disabled "Downloading…" look for visual QA without a live Sparkle download.
+    static var updateDownloading: Bool {
+      flag("WorkroomUITestUpdateDownloading")
+    }
+
+    /// When set (`-WorkroomUITestUpdateChecking 1`), `Updater` holds a check in flight so the pill
+    /// renders its dimmed look for visual QA without a live Sparkle check.
+    static var updateChecking: Bool {
+      flag("WorkroomUITestUpdateChecking")
+    }
+
+    /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService.checkOnLaunch` returns `whatsNewNotes`
+    /// so the What's-New dialog renders for visual QA without hitting GitHub.
+    static var forceWhatsNew: Bool {
+      flag("WorkroomUITestWhatsNew")
+    }
+
+    /// Override for whether the onboarding wizard (issue #151) should open
+    /// (`-WorkroomUITestOnboarding show|hide`), for deterministic UI tests. Read independent of
+    /// `fixtureFlag` — like `forceWhatsNew` — because `WorkroomWorkflowUITests.testAppLaunchesWithChrome`
+    /// runs with `fixture: false` against the real `~/.config/workroom` and the real Dev `Defaults`
+    /// domain: on a machine with no config and `hasCompletedOnboarding` never set, the real gate would
+    /// otherwise fire during that unrelated chrome smoke test. A plain string read via `text(_:)`, not a
+    /// `Defaults`-typed bool from a bare launch arg, so it doesn't hit the argument-domain-shadowing
+    /// gotcha that would apply to a bool `Defaults` key instead. `nil` = no override, defer to the real
+    /// gate (`OnboardingGate.shouldShow`).
+    static var onboardingOverride: Bool? {
+      switch text("WorkroomUITestOnboarding") {
+      case "show": return true
+      case "hide": return false
+      default: return nil
+      }
+    }
+
+    /// When set (`-WorkroomUITestOnboardingRealGate 1`), `applyFixtureDefaults` does NOT pin
+    /// `hasCompletedOnboarding` to `true` — for tests that need fixture mode's deterministic
+    /// zero-project state (`-WorkroomUITestNoProjects 1`) alongside the REAL, unpinned onboarding flag,
+    /// to test the actual persistence gate rather than the `onboardingOverride` short-circuit. A
+    /// genuinely isolated `HOME` (non-fixture mode) was tried first and empirically doesn't work for
+    /// this: a GUI-launched app's bundled CLI subprocess doesn't reliably see
+    /// `XCUIApplication.launchEnvironment`'s `HOME` override the way a plain CLI process would, so it
+    /// kept reading the real `~/.config/workroom/config.json` instead of an isolated one. Fixture
+    /// mode's synthetic project data sidesteps that entirely.
+    static var onboardingRealGate: Bool {
+      flag("WorkroomUITestOnboardingRealGate")
+    }
+
+    /// Explicit starting value for `hasCompletedOnboarding`, written FROM INSIDE the app itself
+    /// (`-WorkroomUITestOnboardingSeed true|false`) — the same pattern every other fixture pin already
+    /// uses (`themeFamily`, `sidebarWidth`, etc: the app writes what it's about to read, no external
+    /// process in between). An external `defaults write` from the TEST process, confirmed via its own
+    /// readback, was tried first for seeding the persistence tests' starting state and empirically
+    /// does NOT reliably reach a freshly xcodebuild-test-launched app's own `UserDefaults` read moments
+    /// later — some cross-process cfprefsd domain quirk specific to that launch path, not a production
+    /// bug. Only the FIRST launch of a relaunch pair passes this; the second launch omits it (alongside
+    /// `onboardingRealGate` alone) so it reads whatever the running app itself persisted in between —
+    /// ordinary same-app cross-launch persistence, which needs no special seam.
+    static var onboardingSeed: Bool? {
+      switch text("WorkroomUITestOnboardingSeed") {
+      case "true": return true
+      case "false": return false
+      default: return nil
+      }
+    }
+
+    /// Reveal the quick-switcher rail with no delay (issue #132). The real gesture holds a modifier for
+    /// 250 ms, which neither XCUITest nor AppleScript can drive reliably — synthetic modifier holds do
+    /// not consistently reach `NSEvent.modifierFlags`, the *global hardware* snapshot the session polls.
+    /// With this set, one ⌥Tab reveals the rail immediately so its rendering, hover and click can be
+    /// asserted; the 250 ms delay itself stays manual, as does real-mouse hover.
+    static var switcherRevealsImmediately: Bool {
+      flag("WorkroomUITestSwitcherReveal")
+    }
+
+    /// Canned release notes for the What's-New dialog under `forceWhatsNew` — a couple of versions with
+    /// headings + bullets so the markdown renderer and the multi-release layout both get coverage.
+    static var whatsNewNotes: [ReleaseNote] {
+      [
+        ReleaseNote(
+          version: "9.9.9", title: "Workroom 9.9.9",
+          bodyMarkdown: """
+            ## Highlights
+            - Bell opens the **oldest** notification first
+            - Quick Terminal gained a `⌥§` shortcut
+
+            A short framing paragraph about this release.
+            """,
+          date: Date(timeIntervalSince1970: 1_700_000_000),
+          url: URL(string: "https://github.com/joelmoss/workroom/releases/tag/v9.9.9")),
+        ReleaseNote(
+          version: "9.9.8", title: "Workroom 9.9.8",
+          bodyMarkdown: "### Fixes\n- Stop the *exited with code 15* dialog on wake from sleep",
+          date: Date(timeIntervalSince1970: 1_699_000_000),
+          url: URL(string: "https://github.com/joelmoss/workroom/releases/tag/v9.9.8")),
+      ]
+    }
+
+    /// Stable display name of the fixture project (also its sidebar accessibility id suffix:
+    /// `sidebar.project.<name>`). Deliberately obvious so it never reads as a real project in logs.
+    static let projectName = "UITestProject"
+    /// Stable name of the fixture workroom (`sidebar.workroom.<name>`).
+    static let workroomName = "uitest-room"
+    /// Stable name of the SECOND fixture workroom, seeded only under `twoTabs` (drag/reorder test).
+    static let workroomName2 = "uitest-room-2"
+
+    /// A real working-tree file seeded into the fixture workroom (matches the `Gemfile` entry in
+    /// `changedFiles`), so the in-app file viewer has genuine content to render (issue #117 XCUITest).
+    static let seededFileName = "Gemfile"
+    /// The seeded file's contents. The marker is a single contiguous token so a UITest can assert it
+    /// appears in the viewer's text regardless of syntax-token splitting.
+    static let seededFileContent = """
+      # UITEST_FILE_MARKER
+      source "https://rubygems.org"
+      gem "rails"
       """
-    return .diff(UnifiedDiff.parse(raw))
-  }
+    /// The distinctive token the XCUITest looks for in the rendered file viewer.
+    static let seededFileMarker = "UITEST_FILE_MARKER"
 
-  /// A large synthetic diff for the WORKROOM-2T hang-regression test (`DiffViewerLazyRenderingTests`):
-  /// many separate hunks (not one giant hunk, to exercise the `ForEach`-in-`ForEach`-in-`List` nesting
-  /// the real diff has) of long, no-whitespace-to-wrap-on lines — the minified-CSS shape that actually
-  /// reproduced the App Hang. Defaults to exactly `UnifiedDiff.parse`'s 2000-line cap. Reached only via
-  /// the `huge.css` magic path, so no other fixture path is affected.
-  static func hugeDiff(hunkCount: Int = 20, linesPerHunk: Int = 100) -> DiffResult {
-    var text = ""
-    var newStart = 1
-    for h in 0..<hunkCount {
-      text += "@@ -0,0 +\(newStart),\(linesPerHunk) @@\n"
-      for l in 0..<linesPerHunk {
-        let n = h * linesPerHunk + l
-        let hex = String(format: "%06x", n % 0xFF_FFFF)
-        text +=
-          "+.class-\(n){color:#\(hex);font-family:\"Barlow Condensed\",sans-serif;"
-          + "src:url(/fonts/barlow-condensed-700.woff2) format(\"woff2\");"
-          + "padding:0;margin:0;display:block;position:relative;z-index:1}\n"
+    /// A seeded **Markdown** file, so `MarkdownPreviewUITests` can drive the rendered preview
+    /// (`MarkdownWebView`) rather than the `NSTextView` source path the `Gemfile` covers.
+    static let seededMarkdownFileName = "NOTES.md"
+    /// Deliberately mentions a raw `<title>` in prose *before* the tail marker. That is the exact shape
+    /// that used to make the preview render only the head of the file: the HTML parser adopted the rest
+    /// of the document as the tag's text and DOMPurify deleted it. So asserting the tail marker in the
+    /// rendered web view proves both that the preview rendered at all and that it rendered *completely*.
+    static let seededMarkdownContent = """
+      # UITEST_MARKDOWN_HEAD
+
+      A pane label ("Terminal <title>, pane N of M") mentioned in prose.
+
+      ## Later section
+
+      UITEST_MARKDOWN_TAIL
+      """
+    /// Tokens the XCUITest looks for: the first heading, and the tail that only survives the raw-HTML
+    /// escaping. Single contiguous tokens so no syntax/word splitting can break the match.
+    static let seededMarkdownHeadMarker = "UITEST_MARKDOWN_HEAD"
+    static let seededMarkdownTailMarker = "UITEST_MARKDOWN_TAIL"
+
+    /// When set (`-WorkroomUITestHoldPreviewLoader 1`), `PlainFileViewer` ignores the Markdown preview's
+    /// first-render signal, so the loading state stays on screen. The real cover lives for well under a
+    /// second and its spinner only appears after 250 ms, which is far too racy for an XCUITest to
+    /// catch — this pins it so the loading state can be asserted deterministically instead of being
+    /// left to manual QA.
+    static var holdPreviewLoader: Bool {
+      flag("WorkroomUITestHoldPreviewLoader")
+    }
+
+    /// Which inspector section the fixture parks on
+    /// (`-WorkroomUITestInspectorSection changes|files`). Unset (or unrecognised) = `.changes`.
+    static var inspectorSection: ActivitySection {
+      let raw = text("WorkroomUITestInspectorSection") ?? ""
+      return ActivitySection(rawValue: raw) ?? .changes
+    }
+
+    /// The diff layout every fixture launch starts in
+    /// (`-WorkroomUITestDiffViewMode unified|sideBySide`). Unset (or unrecognised) = `.unified`, the
+    /// shipped default — so a test that doesn't care gets the shipped behaviour rather than the
+    /// developer's last Settings choice (see `applyFixtureDefaults`).
+    static var diffViewMode: DiffViewMode {
+      let raw = text("WorkroomUITestDiffViewMode") ?? ""
+      return DiffViewMode(rawValue: raw) ?? .unified
+    }
+
+    /// Whether unfocused panes dim on a fixture launch (`-WorkroomUITestDimUnfocusedPanes 0` to turn it
+    /// off). Defaults to the shipped `true`, so a fixture run renders a deterministic dim state instead
+    /// of inheriting whatever the developer last chose in Settings — the pane scrim and the strip /
+    /// header fades all key off this, so a drifted value silently rebaselines every visual QA pass
+    /// (issue #162 review). Fixture-namespaced because a bare `-dimUnfocusedPanes 0` cannot work: see
+    /// `applyFixtureDefaults`'s note on argument-domain strings.
+    static var dimUnfocusedPanes: Bool {
+      // The arg arrives as a STRING, so parse it as one; unset ⇒ the shipped default.
+      text("WorkroomUITestDimUnfocusedPanes").map { ($0 as NSString).boolValue } ?? true
+    }
+
+    /// A container workroom create downloading its image, this far along (`-WorkroomUITestImagePull
+    /// 0.42`, #309), seeded on the fixture project so the row's progress can be seen without a real
+    /// pull. nil unless given.
+    static var imagePull: Double? { text("WorkroomUITestImagePull").flatMap(Double.init) }
+
+    /// Whether splits auto-even on add/remove in a fixture launch
+    /// (`-WorkroomUITestAutoResizeSplitsEvenly 0` to turn it off). Defaults to the shipped `true`, and
+    /// pinned for the same reason as `dimUnfocusedPanes`: it persists in the real Dev domain and it
+    /// decides every divider position a split test or screenshot sees (issue #126).
+    static var autoResizeSplitsEvenly: Bool {
+      text("WorkroomUITestAutoResizeSplitsEvenly").map { ($0 as NSString).boolValue } ?? true
+    }
+
+    /// Whether this launch must keep its preferences out of the real domain
+    /// (`-WorkroomUITestIsolatePreferences 1`), INDEPENDENT of whether fake projects are seeded.
+    ///
+    /// `fixtureFlag` is the wrong signal on its own: a UI test may deliberately launch with
+    /// `fixture: false` to exercise the real bootstrap path (`WorkroomWorkflowUITests`
+    /// `testAppLaunchesWithChrome` does exactly that), and such a launch still has no
+    /// `XCTestConfigurationFilePath` — so `UserDefaults.app` fell through to `.standard` and the test
+    /// wrote the developer's own window state, selection and release-channel migration. Isolation and
+    /// fake data are separate decisions; this flag is the one that governs preferences.
+    ///
+    /// Routed through `flag` like every other fixture read, so it is inert in Release. Reading
+    /// `UserDefaults.standard` directly would reintroduce the latching trap this file documents: a
+    /// stray `defaults write com.developwithstyle.workroom WorkroomUITestIsolatePreferences -bool YES`
+    /// would silently move a REAL user's preferences into a throwaway suite, i.e. factory-reset the
+    /// app and lose every setting they changed afterwards.
+    static var isolatesPreferences: Bool { flag("WorkroomUITestIsolatePreferences") }
+
+    // MARK: Hermetic shell
+
+    /// The shell a UI-test launch gives its terminals. zsh, not `/bin/sh`: Ghostty ships shell
+    /// integration for bash, elvish, fish, nushell and zsh only, and several UI tests need it (OSC
+    /// 0/2, foreground-process resolution, cwd — `ToolFaviconUITests`, `StatusBarCwdUITests`).
+    static let hermeticShell = "/bin/zsh"
+
+    /// The whole content of the hermetic `ZDOTDIR`. `/etc/zshrc` sets `HISTFILE` under `ZDOTDIR`, so
+    /// without this zsh writes `.zsh_history` into the folder — and the folder is shared by every
+    /// launch of one bundle id and never pruned, so it must stay write-free.
+    static let hermeticShellRC = "unset HISTFILE\n"
+
+    /// `<root>/workroom-tests-zdotdir-<bundle id>`: one folder per build identity, so parallel
+    /// workrooms (each has its own bundle id) never share one. Not per process on purpose — a shell
+    /// held by a persistent session can outlive the app that started it, and a per-pid folder would
+    /// be pruned from under it.
+    ///
+    /// The id becomes one path component: anything outside `[A-Za-z0-9._-]` (a `/`, a space) is
+    /// replaced, so it can neither nest nor leave `root`.
+    static func hermeticZDOTDIR(bundleID: String, in root: URL) -> URL {
+      let component = String(
+        bundleID.map { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) ? $0 : "_" }
+      )
+      return root.appendingPathComponent("workroom-tests-zdotdir-\(component)", isDirectory: true)
+    }
+
+    enum HermeticShellError: Error {
+      /// The folder's path is a symlink. `prepareHermeticZDOTDIR` deletes what it lists, so following
+      /// one would empty whatever directory it points at.
+      case folderIsSymlink(URL)
+      /// The path exists but is not a directory owned by this user, so it is not ours to empty.
+      case folderNotOurs(URL)
+      /// No bundle id, so there is no per-identity folder to use.
+      case missingBundleID
+    }
+
+    /// The mode of the hermetic folder: only this user, so nothing else can plant a startup file.
+    private static let hermeticFolderMode = 0o700
+
+    /// Make `directory` hold the generated `.zshrc` and nothing else zsh would source. Everything
+    /// except `.zshrc*` is removed first: Ghostty sources the redirected `.zshenv` (and zsh
+    /// `.zprofile`/`.zlogin`), so a stray one left by an earlier run would execute on every later
+    /// launch while every assertion still passed. `.zshrc.zwc` is removed too, though it starts with
+    /// `.zshrc`: zsh sources a newer compiled file INSTEAD of `.zshrc`.
+    ///
+    /// The folder is shared by every launch of one bundle id, and a second launch can start while the
+    /// first is still setting up. So the sweep keeps any other `.zshrc*` name (the write goes through a
+    /// `.zshrc.tmp-<uuid>` sibling, which the other launch's sweep would otherwise delete and fail its
+    /// rename), tolerates an entry that vanishes mid-sweep, and leaves a `.zshrc` that is already
+    /// correct alone.
+    static func prepareHermeticZDOTDIR(at directory: URL) throws {
+      let files = FileManager.default
+      var info = stat()
+      if lstat(directory.path, &info) == 0 {
+        switch info.st_mode & S_IFMT {
+        case S_IFLNK: throw HermeticShellError.folderIsSymlink(directory)
+        case S_IFDIR: break
+        default: throw HermeticShellError.folderNotOurs(directory)  // a file, a FIFO...
+        }
       }
-      newStart += linesPerHunk
+      try files.createDirectory(
+        at: directory, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: hermeticFolderMode])
+      // Look again at what is there NOW rather than trusting the check above: the path is predictable
+      // and the sweep below deletes what it lists. A directory of ours with another mode (an earlier
+      // version created it 0755; 0500 would fail the sweep on every launch) is reset; anything else
+      // is not ours to empty.
+      guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
+        info.st_uid == geteuid()
+      else { throw HermeticShellError.folderNotOurs(directory) }
+      if Int(info.st_mode & 0o777) != hermeticFolderMode {
+        try files.setAttributes(
+          [.posixPermissions: hermeticFolderMode], ofItemAtPath: directory.path)
+      }
+      for entry in try files.contentsOfDirectory(atPath: directory.path)
+      where !entry.hasPrefix(".zshrc") || entry == ".zshrc.zwc" {
+        try removeTolerantOfVanishing(directory.appendingPathComponent(entry))
+      }
+      // `.zshrc` is exempt from the sweep, so one that is not a regular file (a directory, a symlink
+      // to somewhere else) would stay: a directory fails the write on every launch, and a symlink is
+      // sourced as whatever it points at.
+      let rc = directory.appendingPathComponent(".zshrc")
+      var rcInfo = stat()
+      if lstat(rc.path, &rcInfo) == 0, (rcInfo.st_mode & S_IFMT) != S_IFREG {
+        try removeTolerantOfVanishing(rc)
+      }
+      let content = Data(hermeticShellRC.utf8)
+      if (try? Data(contentsOf: rc)) != content {
+        // Our own temporary name, then `rename`: the sweep above keeps every `.zshrc*` name, and
+        // `Data.write(options: .atomic)` does not promise what its temporary sibling is called.
+        let temporary = directory.appendingPathComponent(".zshrc.tmp-\(UUID().uuidString)")
+        try content.write(to: temporary)
+        if rename(temporary.path, rc.path) != 0 {
+          let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+          try? FileManager.default.removeItem(at: temporary)
+          throw POSIXError(code)
+        }
+      }
     }
-    return .diff(UnifiedDiff.parse(text))
-  }
 
-  /// Canned new-side file content for highlighting in fixture mode (mirrors `DiffResolver
-  /// .fileContent`). Ruby files return a snippet whose lines match the Ruby diff above; everything
-  /// else returns `nil` so it renders plain.
-  static func fileContent(for descriptor: DiffDescriptor) -> String? {
-    guard SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby else { return nil }
-    return rubyFileContent(tag: sourceTag(descriptor.source), path: descriptor.path)
-  }
-
-  private static func sourceTag(_ source: DiffSource) -> String {
-    switch source {
-    case .gitWorktree: return "git-worktree"
-    case .commit(let id): return "commit-\(id)"
+    /// `removeItem`, except that an entry another launch removed first is not an error.
+    private static func removeTolerantOfVanishing(_ url: URL) throws {
+      do {
+        try FileManager.default.removeItem(at: url)
+      } catch let error as CocoaError where error.code == .fileNoSuchFile {
+        return
+      }
     }
-  }
 
-  /// The Ruby snippet that is the new-side file (no trailing newline; matches the diff's new lines).
-  private static func rubyFileContent(tag: String, path: String) -> String {
-    """
-    class SessionsManager
-      # added line for \(tag)
-      # marker \(path)
-      def call
-        authenticate
+    /// Point the process at a shell that has Ghostty's integration and none of the developer's rc
+    /// files, for a UI-test launch only. Returns whether it applied anything.
+    ///
+    /// Ghostty's bundled zsh `.zshenv` restores a user `ZDOTDIR` from `GHOSTTY_ZSH_ZDOTDIR`, sources
+    /// `$ZDOTDIR/.zshenv`, then loads the integration — so this keeps the integration and drops
+    /// `~/.zshenv`, `~/.zprofile`, `~/.zshrc` and `~/.zlogin`. The terminals inherit the process
+    /// environment, the same way they inherit `GHOSTTY_RESOURCES_DIR`.
+    ///
+    /// **New shells only.** This sets the environment the app spawns shells with. A pane that
+    /// reattaches to a persistent session started by an earlier, non-hermetic launch keeps that
+    /// shell's environment, so a `fixture: false` launch can still show one (fixture launches skip
+    /// persistent sessions).
+    ///
+    /// **Startup files only.** `PATH` stays developer-influenced (`ShellEnvironment.floorPath`
+    /// includes Homebrew, `~/.local/bin` and the inherited `PATH`).
+    ///
+    /// Throws rather than logging: a failure that left the environment alone would let the terminals
+    /// run the developer's real rc files, which is exactly what this exists to stop, and nothing
+    /// would say so. `WorkroomApp.init` turns the throw into a crash — DEBUG UI-test launches only.
+    ///
+    /// `setenv` is safe only from `WorkroomApp.init`, before the probe and the status sweep start
+    /// reading the environment from other threads (see the comment there).
+    @discardableResult
+    static func applyHermeticShell(
+      active: Bool = AppEnvironment.isUILaunch,
+      bundleID: String? = Bundle.main.bundleIdentifier,
+      root: URL = FileManager.default.temporaryDirectory,
+      set: (String, String) -> Void = { setenv($0, $1, 1) }
+    ) throws -> Bool {
+      guard active else { return false }
+      guard let bundleID else { throw HermeticShellError.missingBundleID }
+      let directory = hermeticZDOTDIR(bundleID: bundleID, in: root)
+      try prepareHermeticZDOTDIR(at: directory)
+      set("SHELL", hermeticShell)
+      set("ZDOTDIR", directory.path)
+      return true
+    }
+
+    /// The theme family every fixture launch starts on
+    /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
+    ///
+    /// This exists so `ThemePickerUITests` never has to touch the theme preference from the *runner*
+    /// process. `Defaults` is not isolated by a throwaway `$HOME` — cfprefsd resolves the real one — so
+    /// a runner-side save/restore would be writing the developer's actual pref and racing the app for
+    /// it. And a bare `-themeFamily` launch argument is worse than useless: argument-domain values
+    /// outrank the app domain, so it would pin the theme and shadow every later write, exactly as
+    /// documented for `showInspector` above. A fixture-namespaced argument mirrored into `Defaults` by
+    /// `applyFixtureDefaults` avoids both traps.
+    static var themeFamily: String {
+      let raw = text("WorkroomUITestThemeFamily") ?? ""
+      return ThemeCatalog.family(named: raw) != nil ? raw : ThemeCatalog.defaultFamilyName
+    }
+
+    /// Force a deterministic **UI** state in fixture mode: the inspector open, parked on
+    /// `inspectorSection` with every section expanded, and the diff viewer in `diffViewMode`. Must be
+    /// called before any `AppStore` is built (`WorkroomApp.init`), because `activeInspectorSection` and
+    /// the layout both seed themselves from `Defaults` at construction.
+    ///
+    /// These are all `Defaults` keys in the app's real (Dev) UserDefaults domain, so without this a
+    /// test inherits whatever the developer last left behind. That is not hypothetical: a collapsed
+    /// section renders only its header, a closed inspector has nothing at all, and a `Dev`
+    /// domain holding `diffViewMode = sideBySide` turned three `DiffViewerUITests` + two
+    /// `DiffHighlightUITests` red for weeks — they assert on `diff.line`, which only the *unified*
+    /// renderer emits, and read "the global default" from a pref the developer can change in Settings.
+    ///
+    /// The cost of pinning is that a fixture launch **overwrites** these keys in the Dev domain (it
+    /// can't be a plain read: the views take them from `Defaults`). Dev is its own domain, so this
+    /// never touches the release app's preferences — but a UI-test run does reset the Dev app's
+    /// inspector and diff-mode choices, which is the deliberate trade for hermetic tests.
+    ///
+    /// A launch argument can't do this job. Argument-domain values arrive as **strings**
+    /// (`-showNotificationsInspector 1` stores `"1"`, not `true`), and `Defaults` reads a natively
+    /// supported type with `as? Bool`, which fails on a string and hands back the key's default
+    /// (`false`) — so the argument doesn't just fail to force the pane open, it *pins it shut*: the
+    /// argument domain outranks the app domain, so it also shadows the persisted value AND every
+    /// later write (`AppStore.apply(.iconClick)`), leaving the pane unopenable for the whole run.
+    /// `UITestFixture`'s own flags survive that only because `UserDefaults.bool(forKey:)` coerces
+    /// strings. Hence a fixture-namespaced argument mirrored into `Defaults` here instead.
+    ///
+    /// `active` is a parameter, defaulting to the real flag, purely so its unit tests never have to
+    /// WRITE `WorkroomUITestFixture`. Production sites still read that key at runtime (behind
+    /// `AppEnvironment.current.isFixture`, such as `AppStore.closeNeedsConfirm`), and
+    /// `-parallel-testing` workers are separate processes sharing one on-disk defaults domain — so a
+    /// class holding the key true for the length of a test body silently changes another class's
+    /// behaviour, in a worker whose diff has nothing to do with any of this. That is the same cross-worker hazard
+    /// `AppStore.confirmOnCloseOverrideForTesting` exists for; passing the state in avoids it at the
+    /// source instead of racing and cleaning up.
+    static func applyFixtureDefaults(active: Bool = fixtureFlag) {
+      guard active else { return }
+      Defaults[.showInspector] = true
+      Defaults[.activeInspectorSection] = inspectorSection
+      Defaults[.diffViewMode] = diffViewMode
+      // Pinned to their `DefaultsKeys` defaults, for the same reason as the booleans above: a dragged
+      // resize PERSISTS (real Dev domain, not fixture-isolated), and a fixture launch otherwise inherits
+      // whatever an earlier drag-resize test left. Found chasing `DiffViewerUITests.
+      // testSideBySideRendersTwoColumns`: the real domain had drifted to inspector.width=406/
+      // sidebar.width=281 (vs. the 300/270 defaults), narrowing the detail column below
+      // `DiffViewer.sideBySideMinWidth` (700) even at the fixture's otherwise-deterministic window width.
+      Defaults[.sidebarWidth] = 270
+      Defaults[.inspectorWidth] = 300
+      // Every section expanded, equal heights. Not optional book-keeping: collapse state decides whether
+      // a section's BODY renders at all (a collapsed section keeps only its header), and it's global +
+      // persisted, so without this a test inherits whichever sections the developer — or the last UI test
+      // to press ⌥⌘C/⌥⌘Y — left shut, and reads as "the panel is broken".
+      Defaults[.inspectorLayout] = InspectorPaneState(
+        collapsed: InspectorPaneState.default.collapsed,
+        weights: inspectorWeights ?? InspectorPaneState.default.weights)
+      // Workroom's own last-fetch stamps, for the same reason as the collapse state: they PERSIST, and a
+      // fetch performed by an earlier test writes one. `RemoteStateModel` takes the later of the backend's
+      // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the
+      // never-fetched state reported "just now" instead.
+      Defaults[.vcsLastFetch] = [:]
+      // The theme family, for the same reason as the collapse state and the fetch stamps: it PERSISTS.
+      // Without this a theme test inherits whatever the developer last picked, and a test that applies
+      // a theme leaves it applied for the next run.
+      Defaults[.themeFamily] = themeFamily
+      // Unfocused-pane dimming, for the same reason as `themeFamily`: it PERSISTS in the real Dev
+      // domain, and it decides whether the pane scrim, the terminal tab strip and the pane header render
+      // at full contrast or 0.45 — so a developer who turns it off once silently rebaselines every later
+      // fixture launch and every screenshot taken from one (issue #162 review).
+      Defaults[.dimUnfocusedPanes] = dimUnfocusedPanes
+      // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
+      // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
+      Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
+      // Pinned "already onboarded" for the same reason as `themeFamily`/`diffViewMode` above: the flag
+      // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
+      // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'
+      // `-WorkroomUITestNoProjects 1` scenario. A test that wants onboarding itself passes
+      // `-WorkroomUITestOnboarding show`, which `OnboardingGate` checks first. `onboardingSeed` (an
+      // explicit true/false) wins when given — the persistence tests use it to seed a known starting
+      // value; otherwise `onboardingRealGate` alone just skips this generic pin, leaving whatever's
+      // already persisted (used on the SECOND launch of a relaunch pair, to read what the first one left).
+      if let seed = onboardingSeed {
+        Defaults[.hasCompletedOnboarding] = seed
+      } else if !onboardingRealGate {
+        Defaults[.hasCompletedOnboarding] = true
+      }
+    }
+
+    /// The fake project list. Idempotent within a launch: the backing temp directories are created if
+    /// missing so each target's terminal can start a shell. The project is reported as `git` so the
+    /// sidebar's root row renders normally; no real VCS call is ever made (loading is short-circuited in `AppStore`, which
+    /// also skips branch resolution for these paths).
+    static func projects() -> [Project] {
+      // Empty list for the no-projects scenario (issue #81 D3) — nothing to create or select.
+      if noProjects { return [] }
+      let vcs = "git"
+      let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("workroom-uitest", isDirectory: true)
+      let projectDir = base.appendingPathComponent(projectName, isDirectory: true)
+      let workroomsBase = base.appendingPathComponent("workrooms", isDirectory: true)
+      let workroomDir = workroomsBase.appendingPathComponent(workroomName, isDirectory: true)
+      // A second workroom only for the drag/reorder scenario, so the tab bar has two chips to swap.
+      let workroomDir2 = workroomsBase.appendingPathComponent(workroomName2, isDirectory: true)
+      var dirs = [projectDir, workroomDir]
+      // The on-disk dir keeps the short `workroomName` regardless (it's just a temp path); only the
+      // MODEL's name — what the chip actually renders — swaps to the oversized value.
+      var workrooms = [
+        Workroom(
+          name: longWorkroomName ? longWorkroomNameValue : workroomName, path: workroomDir.path,
+          vcsName: vcs, warnings: [])
+      ]
+      if twoTabs {
+        dirs.append(workroomDir2)
+        workrooms.append(
+          Workroom(name: workroomName2, path: workroomDir2.path, vcsName: vcs, warnings: []))
+      }
+      // Extra workrooms for the tab-bar overflow scenario (issue #129). `twoTabs` already contributes
+      // `workroomName2`, so skip any name it seeded rather than listing a duplicate.
+      for name in extraWorkroomNames where !workrooms.contains(where: { $0.name == name }) {
+        let dir = workroomsBase.appendingPathComponent(name, isDirectory: true)
+        dirs.append(dir)
+        workrooms.append(Workroom(name: name, path: dir.path, vcsName: vcs, warnings: []))
+      }
+      // A scripted create's workroom, once it has made it (#483).
+      if scriptedCreate, FileManager.default.fileExists(atPath: scriptedWorkroomDirectory.path) {
+        workrooms.append(
+          Workroom(
+            name: scriptedWorkroomName, path: scriptedWorkroomDirectory.path, vcsName: vcs,
+            warnings: []))
+      }
+      for dir in dirs {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      }
+      // Seed one real working-tree file matching a `changedFiles` entry (`Gemfile`), so the in-app
+      // "Open File" (issue #117) renders actual content instead of `PlainFileViewer`'s "File
+      // unavailable" placeholder — `ChangesPanelUITests` asserts the marker below is on screen. Written
+      // only if absent, so it stays idempotent within a launch.
+      let seededGemfile = workroomDir.appendingPathComponent(seededFileName)
+      if !FileManager.default.fileExists(atPath: seededGemfile.path) {
+        try? seededFileContent.write(to: seededGemfile, atomically: true, encoding: .utf8)
+      }
+      // Rewritten every launch, not written-if-absent: this content is an assertion fixture, so a stale
+      // copy left in the temp dir by an older build must not silently outlive a change to it.
+      let seededMarkdown = workroomDir.appendingPathComponent(seededMarkdownFileName)
+      try? seededMarkdownContent.write(to: seededMarkdown, atomically: true, encoding: .utf8)
+      return [Project(path: projectDir.path, vcs: vcs, workrooms: workrooms)]
+    }
+
+    // MARK: - Changes-inspector status
+
+    /// Deterministic VCS status for the fixture **workroom** (`uitest-room`): a dirty git working tree
+    /// on `feature/login` with a mix of root-level and nested changed files, so the Changes panel
+    /// renders its flat file list (rows open `.gitWorktree` diffs) with no real repo — visual QA never
+    /// has to touch (or expose) the developer's actual projects.
+    static var workroomStatus: WorkroomStatus {
+      WorkroomStatus(
+        dirty: true,
+        conflicted: conflicted,
+        changedFiles: changedFiles,
+        insertions: 411, deletions: 222,
+        ci: .passing,
+        branchForCI: "feature/login",
+        // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request.
+        pr: manyChanges
+          ? nil
+          : PullRequestInfo(
+            number: 42, title: "Add session login", state: .open, isDraft: false,
+            url: "https://github.com/acme/app/pull/42", reviewDecision: .changesRequested,
+            // A spread of reviewer states so the panel renders the aggregate header + every row kind:
+            // a bot still generating (pending → no link), and two submitted reviews (approval +
+            // changes-requested) that carry permalinks so the rows render as open-on-GitHub links.
+            reviewers: [
+              Reviewer(identity: .user(login: "copilot-pull-request-reviewer"), state: .requested),
+              Reviewer(
+                identity: .user(login: "iainad"), state: .approved,
+                url: "https://github.com/acme/app/pull/42#pullrequestreview-1001"),
+              Reviewer(
+                identity: .user(login: "octocat"), state: .changesRequested,
+                url: "https://github.com/acme/app/pull/42#pullrequestreview-1002"),
+            ],
+            // Mergeable + clean (issue #88) so the split "Merge" button renders in the fixture for
+            // visual QA of its default/dropdown states.
+            mergeable: true, mergeState: .clean),
+        // All three "checked" stamps set so the inspector shows the seeded data, not "Checking…".
+        lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
+    }
+
+    /// Deterministic status for the fixture **project root**: a clean git branch with passing CI — so
+    /// the inspector renders the git header and the clean empty state.
+    static var rootStatus: WorkroomStatus {
+      WorkroomStatus(
+        dirty: false, changedFiles: [], ci: .passing,
+        branchForCI: "main",
+        // No PR seeded here, so a `prCheckedAt` stamp makes the inspector show the "No pull request"
+        // empty state (not "Checking…").
+        lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
+    }
+
+    // MARK: - Notifications
+
+    /// A deterministic notification history for the notification surfaces (the left-sidebar strip + the
+    /// bell/`+N` popovers, issue #118). The fixture otherwise leaves it empty (real entries only arrive
+    /// when a terminal emits an OSC notification), so this seeds a representative spread — a coalesced
+    /// ×N entry, a wrapping two-line body, a title-only entry, and a body-only (titleless) one — across
+    /// a range of ages so every row variant and the "time ago" line all get visual + UI-test coverage.
+    ///
+    /// Each entry carries a *synthetic* tab id, NOT the workroom's live tab: real notifications are
+    /// raised for terminals you're NOT looking at, and the app dismisses the visible tab's history on
+    /// focus (`dismissFocusedTerminalNotifications`) — keying these to the live tab would wipe them the
+    /// instant the window activates. They keep the real `targetID`, so a row click still routes to the
+    /// workroom (and dismisses by `notifID`); it just can't re-focus a tab that was never opened —
+    /// exactly the graceful path a since-closed terminal already takes.
+    static func notifications(targetID: TerminalTarget.ID) -> [WorkroomNotification] {
+      let source = "\(projectName) / \(workroomName)"
+      func note(_ ago: TimeInterval, _ title: String, _ body: String? = nil, count: Int = 1)
+        -> WorkroomNotification
+      {
+        WorkroomNotification(
+          id: UUID(), targetID: targetID, tabID: UUID(), source: source,
+          title: title, body: body, date: Date().addingTimeInterval(-ago), count: count)
+      }
+      // Oldest first: the store appends chronologically and the panel reverses to newest-first, so the
+      // most recent ("Build finished", just now) lands at the top.
+      return [
+        note(3600, "Tests passed", "All 248 specs green", count: 3),
+        note(
+          900, "Deploy blocked",
+          "Branch protection: 1 required review still missing before this can merge to main."),
+        note(120, "", "Background indexing finished"),
+        note(45, "Lint clean"),
+        note(2, "Build finished", "Workroom Dev compiled in 12.4s"),
+      ]
+    }
+
+    /// The fixture's changed-file list: a small representative set, or a long one (`manyChanges`) so
+    /// the Changes section overflows the inspector for the disclosure-animation repro. Under
+    /// `conflicted` it also carries one `.conflicted` entry so the conflict badge has something to
+    /// render (the other kinds stay, so a test can contrast conflicted against modified/added).
+    private static var changedFiles: [ChangedFile] {
+      var base = [
+        ChangedFile(path: "Gemfile", change: .modified),
+        ChangedFile(path: seededMarkdownFileName, change: .modified),  // drives the preview UI test
+        ChangedFile(path: ".env.example", change: .added),
+        ChangedFile(path: "app/models/user.rb", change: .modified),
+        ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),
+        ChangedFile(path: "config/routes.rb", change: .modified),
+        ChangedFile(path: "test/models/user_test.rb", change: .added),
+        // A DELETED source, so the pane title bar's "Open File" disabled state (there is no working
+        // copy left to open — review D4) is assertable. Nothing else in this list is deleted.
+        ChangedFile(path: "app/models/legacy_user.rb", change: .deleted),
+      ]
+      if conflicted {
+        base.append(ChangedFile(path: conflictedFilePath, change: .conflicted))
+      }
+      if hugeChangeSet {
+        // Comfortably past `CommitSheet.renderCap` (200).
+        return base
+          + (0..<250).map {
+            ChangedFile(path: "vendor/bundle/gems/pkg-\($0)/lib/pkg.rb", change: .untracked)
+          }
+      }
+      guard manyChanges else { return base }
+      let extra = (0..<20).map {
+        ChangedFile(path: "app/views/layouts/v\($0).html.erb", change: .modified)
+      }
+      return base + extra
+    }
+
+    /// A fixed timestamp for the seeded statuses' "last checked" stamps (deterministic; the value
+    /// isn't displayed, only its non-nil-ness gates the loading state).
+    private static let checkedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+    // MARK: - Diff content (issue #66)
+
+    /// A deterministic canned diff for the diff viewer in fixture mode — so the UI tests render a real
+    /// `DiffViewer` without shelling out to git against the fake temp directory. The content encodes
+    /// the file path and the `DiffSource` (git worktree / commit) so a test can assert it
+    /// opened the *right* file's diff from the *right* revision. Two paths get special states for
+    /// coverage: `binary.bin` → binary, `clean.txt` → empty.
+    ///
+    /// Ruby files get a diff whose new-side lines are exactly `rubyFileContent(for:)` (a small Ruby
+    /// snippet), so the real highlight pipeline (detect → parse → map) runs against canned content and
+    /// the syntax-highlight UI test can assert colour was applied. The tag line is a Ruby comment, so
+    /// the existing revision-tag assertions still hold. Non-Ruby paths keep a generic diff with no
+    /// matching content, so they exercise the plain (highlight-skipped) fallback.
+    static func diff(for descriptor: DiffDescriptor) -> DiffResult {
+      let name = (descriptor.path as NSString).lastPathComponent
+      if name == "binary.bin" { return .binary }
+      if name == "clean.txt" { return .empty }
+      if name == "huge.css" { return hugeDiff() }
+      let tag = sourceTag(descriptor.source)
+      if SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby {
+        return .diff(UnifiedDiff.parse(rubyDiffText(tag: tag, path: descriptor.path)))
+      }
+      let raw = """
+        diff --git a/\(descriptor.path) b/\(descriptor.path)
+        @@ -1,4 +1,5 @@
+         context line one
+        -removed old line
+        +added line for \(tag)
+        +marker \(descriptor.path)
+         context line two
+         context line three
+        """
+      return .diff(UnifiedDiff.parse(raw))
+    }
+
+    /// A large synthetic diff for the WORKROOM-2T hang-regression test (`DiffViewerLazyRenderingTests`):
+    /// many separate hunks (not one giant hunk, to exercise the `ForEach`-in-`ForEach`-in-`List` nesting
+    /// the real diff has) of long, no-whitespace-to-wrap-on lines — the minified-CSS shape that actually
+    /// reproduced the App Hang. Defaults to exactly `UnifiedDiff.parse`'s 2000-line cap. Reached only via
+    /// the `huge.css` magic path, so no other fixture path is affected.
+    static func hugeDiff(hunkCount: Int = 20, linesPerHunk: Int = 100) -> DiffResult {
+      var text = ""
+      var newStart = 1
+      for h in 0..<hunkCount {
+        text += "@@ -0,0 +\(newStart),\(linesPerHunk) @@\n"
+        for l in 0..<linesPerHunk {
+          let n = h * linesPerHunk + l
+          let hex = String(format: "%06x", n % 0xFF_FFFF)
+          text +=
+            "+.class-\(n){color:#\(hex);font-family:\"Barlow Condensed\",sans-serif;"
+            + "src:url(/fonts/barlow-condensed-700.woff2) format(\"woff2\");"
+            + "padding:0;margin:0;display:block;position:relative;z-index:1}\n"
+        }
+        newStart += linesPerHunk
+      }
+      return .diff(UnifiedDiff.parse(text))
+    }
+
+    /// Canned new-side file content for highlighting in fixture mode (mirrors `DiffResolver
+    /// .fileContent`). Ruby files return a snippet whose lines match the Ruby diff above; everything
+    /// else returns `nil` so it renders plain.
+    static func fileContent(for descriptor: DiffDescriptor) -> String? {
+      guard SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby else { return nil }
+      return rubyFileContent(tag: sourceTag(descriptor.source), path: descriptor.path)
+    }
+
+    private static func sourceTag(_ source: DiffSource) -> String {
+      switch source {
+      case .gitWorktree: return "git-worktree"
+      case .commit(let id): return "commit-\(id)"
+      }
+    }
+
+    /// The Ruby snippet that is the new-side file (no trailing newline; matches the diff's new lines).
+    private static func rubyFileContent(tag: String, path: String) -> String {
+      """
+      class SessionsManager
+        # added line for \(tag)
+        # marker \(path)
+        def call
+          authenticate
+        end
       end
-    end
-    """
-  }
+      """
+    }
 
-  /// A unified diff whose new side is exactly `rubyFileContent` — line 1 + 4–7 context, lines 2–3
-  /// additions (carrying the revision tag + path), plus one deletion (old side only → renders plain,
-  /// proving deletions are never highlighted).
-  private static func rubyDiffText(tag: String, path: String) -> String {
-    """
-    diff --git a/\(path) b/\(path)
-    @@ -1,6 +1,7 @@
-     class SessionsManager
-    -  # removed \(tag)
-    +  # added line for \(tag)
-    +  # marker \(path)
-       def call
-         authenticate
+    /// A unified diff whose new side is exactly `rubyFileContent` — line 1 + 4–7 context, lines 2–3
+    /// additions (carrying the revision tag + path), plus one deletion (old side only → renders plain,
+    /// proving deletions are never highlighted).
+    private static func rubyDiffText(tag: String, path: String) -> String {
+      """
+      diff --git a/\(path) b/\(path)
+      @@ -1,6 +1,7 @@
+       class SessionsManager
+      -  # removed \(tag)
+      +  # added line for \(tag)
+      +  # marker \(path)
+         def call
+           authenticate
+         end
        end
-     end
-    """
+      """
+    }
+
+    /// The canned VCS backend for History + changeset detail in fixture mode (issue #59). The fake
+    /// workroom dirs aren't real repos, so `HistoryModel` / `ChangesetDetailView` read from this instead
+    /// of the repository router — the History → changeset click-through then runs hermetically.
+    static let vcsProvider: LocalVCSProviding = FixtureVCSProvider()
   }
 
-  /// The canned VCS backend for History + changeset detail in fixture mode (issue #59). The fake
-  /// workroom dirs aren't real repos, so `HistoryModel` / `ChangesetDetailView` read from this instead
-  /// of the repository router — the History → changeset click-through then runs hermetically.
-  static let vcsProvider: LocalVCSProviding = FixtureVCSProvider()
-}
+  /// Deterministic `LocalVCSProviding` for UI-test fixture mode (see `UITestFixture.vcsProvider`). Per-file
+  /// diffs are NOT sourced here: `DiffViewer` serves `UITestFixture.diff(for:)` directly in fixture
+  /// mode, so `fileDiff` is only a protocol stub.
+  struct FixtureVCSProvider: LocalVCSProviding {
+    /// The same canned status the fixture's own status path serves, so a fixture run reading through
+    /// the provider sees what one reading `UITestFixture.workroomStatus` sees. Implemented rather
+    /// than defaulted on the protocol: a default would let a REAL backend that forgot this method
+    /// silently report every workroom clean.
+    func workingStatus(root: URL) throws -> WorkroomStatus {
+      UITestFixture.workroomStatus
+    }
 
-/// Deterministic `LocalVCSProviding` for UI-test fixture mode (see `UITestFixture.vcsProvider`). Per-file
-/// diffs are NOT sourced here: `DiffViewer` serves `UITestFixture.diff(for:)` directly in fixture
-/// mode, so `fileDiff` is only a protocol stub.
-struct FixtureVCSProvider: LocalVCSProviding {
-  /// The same canned status the fixture's own status path serves, so a fixture run reading through
-  /// the provider sees what one reading `UITestFixture.workroomStatus` sees. Implemented rather
-  /// than defaulted on the protocol: a default would let a REAL backend that forgot this method
-  /// silently report every workroom clean.
-  func workingStatus(root: URL) throws -> WorkroomStatus {
-    UITestFixture.workroomStatus
-  }
+    /// Four newest-first commits; the first carries the `main` ref, so the History rows exercise the
+    /// ref chip.
+    static let commits: [VCSCommit] = {
+      let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
+      return (1...4).map { (n: Int) -> VCSCommit in
+        let base: TimeInterval = 1_700_000_000
+        let ts = Date(timeIntervalSince1970: base - TimeInterval(n * 3600))
+        let refs: [String] = n == 1 ? ["main"] : []
+        let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : []
+        // Push state covers all three cases, so the History pane shows EXACTLY ONE badge: commit 2 is
+        // the only `.unpushed` row, commit 3 is pushed, commits 1 and 4 are unknown.
+        let push: VCSPushState = n == 2 ? .unpushed : (n == 3 ? .pushed : .unknown)
+        return VCSCommit(
+          commitID: "fixturecommit\(n)", shortID: "fixc000\(n)",
+          summary: "Fixture commit \(n)",
+          body: n == 1 ? "Extended fixture description.\nA second line of detail." : "",
+          authors: [author], timestamp: ts, refs: refs, parentIDs: parents, pushState: push)
+      }
+    }()
 
-  /// Four newest-first commits; the first carries the `main` ref, so the History rows exercise the
-  /// ref chip.
-  static let commits: [VCSCommit] = {
-    let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
-    return (1...4).map { (n: Int) -> VCSCommit in
+    /// One origin branch, so the badge tooltips name it rather than counting.
+    static let pushScope = VCSPushScope(refName: "origin/main", count: 1)
+
+    /// A large synthetic page for `-WorkroomUITestManyCommits <n>` — newest-first, spread
+    /// over seven author emails so several distinct avatars (and their MD5/Gravatar work) are in play.
+    ///
+    /// Deliberately built only when the flag is set, and deliberately NOT mixed with `commits`: the
+    /// default four-row page is depended on EXACTLY by `HistoryPushStateUITests` (one badge), so it
+    /// must stay byte-identical when the flag is absent.
+    static func manyCommits(_ count: Int) -> [VCSCommit] {
       let base: TimeInterval = 1_700_000_000
-      let ts = Date(timeIntervalSince1970: base - TimeInterval(n * 3600))
-      let refs: [String] = n == 1 ? ["main"] : []
-      let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : []
-      // Push state covers all three cases, so the History pane shows EXACTLY ONE badge: commit 2 is
-      // the only `.unpushed` row, commit 3 is pushed, commits 1 and 4 are unknown.
-      let push: VCSPushState = n == 2 ? .unpushed : (n == 3 ? .pushed : .unknown)
-      return VCSCommit(
-        commitID: "fixturecommit\(n)", shortID: "fixc000\(n)",
-        summary: "Fixture commit \(n)",
-        body: n == 1 ? "Extended fixture description.\nA second line of detail." : "",
-        authors: [author], timestamp: ts, refs: refs, parentIDs: parents, pushState: push)
+      return (0..<count).map { (n: Int) -> VCSCommit in
+        let author = VCSAuthor(name: "Author \(n % 7)", email: "author\(n % 7)@example.com")
+        return VCSCommit(
+          commitID: String(format: "stress%034x", n), shortID: String(format: "s%07x", n),
+          summary: "Stress commit \(n)", body: "", authors: [author],
+          timestamp: Date(timeIntervalSince1970: base - TimeInterval(n * 60)), refs: [],
+          parentIDs: n + 1 < count ? [String(format: "stress%034x", n + 1)] : [],
+          pushState: .unknown)
+      }
     }
-  }()
 
-  /// One origin branch, so the badge tooltips name it rather than counting.
-  static let pushScope = VCSPushScope(refName: "origin/main", count: 1)
+    /// The page `log` serves, so `changeset` resolves the same commits it lists.
+    private static var history: [VCSCommit] {
+      UITestFixture.manyCommits > 0 ? manyCommits(UITestFixture.manyCommits) : commits
+    }
 
-  /// A large synthetic page for `-WorkroomUITestManyCommits <n>` — newest-first, spread
-  /// over seven author emails so several distinct avatars (and their MD5/Gravatar work) are in play.
+    func log(root: URL, limit: Int) throws -> VCSHistoryPage {
+      let all = Self.history
+      let slice = Array(all.prefix(limit))
+      return VCSHistoryPage(
+        commits: slice, reachedEnd: slice.count >= all.count, pushScope: Self.pushScope)
+    }
+
+    func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+      // From the page `log` served. Searching only `commits` made every stress row open
+      // `fixturecommit1`'s detail, so no test could see which commit a click had opened.
+      let commit = Self.history.first { $0.commitID == commitID } ?? Self.commits[0]
+      let files = [
+        VCSChangedFile(path: "src/session.rb", oldPath: nil, kind: .modified),
+        VCSChangedFile(path: "docs/notes.txt", oldPath: nil, kind: .added),
+        // A moved file, so the `old → new` path line has something to render.
+        VCSChangedFile(path: "lib/moved.rb", oldPath: "src/moved.rb", kind: .renamed),
+      ]
+      return VCSChangeset(
+        commit: commit, fullMessage: commit.summary + "\n\nFixture commit body.", files: files,
+        isMerge: false, insertions: 24, deletions: 8, pushScope: Self.pushScope)
+    }
+
+    func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+      "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
+    }
+
+    func workingFileDiff(root: URL, path: String) async throws -> String {
+      "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
+    }
+
+    // Highlighting content is served by `UITestFixture.fileContent` in fixture mode, not the provider.
+    func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
+    func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String?
+    {
+      nil
+    }
+    func workingBaseFileContent(root: URL, path: String) async throws
+      -> String?
+    { nil }
+
+    func currentRef(root: URL) async throws -> VCSRef {
+      VCSRef(name: "main", kind: .branch)
+    }
+  }
+
+  /// The inline agent backend used under `-WorkroomUITestCodingAgentStub`: returns a canned envelope with no
+  /// network, so the XCUITest exercises the real capture + banner without hitting `claude`/`codex`.
+  struct StubCodingAgentRunner: CodingAgentRunning {
+    let envelope: String
+
+    func diagnoseInline(
+      systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
+    ) async -> CodingAgentRunOutcome {
+      .success(stdout: envelope)
+    }
+  }
+
+  /// The `LocalVCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
+  /// and answers every action without running git.
   ///
-  /// Deliberately built only when the flag is set, and deliberately NOT mixed with `commits`: the
-  /// default four-row page is depended on EXACTLY by `HistoryPushStateUITests` (one badge), so it
-  /// must stay byte-identical when the flag is absent.
-  static func manyCommits(_ count: Int) -> [VCSCommit] {
-    let base: TimeInterval = 1_700_000_000
-    return (0..<count).map { (n: Int) -> VCSCommit in
-      let author = VCSAuthor(name: "Author \(n % 7)", email: "author\(n % 7)@example.com")
-      return VCSCommit(
-        commitID: String(format: "stress%034x", n), shortID: String(format: "s%07x", n),
-        summary: "Stress commit \(n)", body: "", authors: [author],
-        timestamp: Date(timeIntervalSince1970: base - TimeInterval(n * 60)), refs: [],
-        parentIDs: n + 1 < count ? [String(format: "stress%034x", n + 1)] : [],
-        pushState: .unknown)
+  /// What no other tier can see is the button→engine seam: whether clicking "Push origin" actually asks
+  /// for a push, whether the confirmation dialog swallows the click, and whether a second click while one
+  /// is in flight is dropped. The engine's own correctness is covered by `VCSRemoteIntegrationTests`
+  /// against real repos.
+  ///
+  /// A test process can't reach into this actor, so assertions read the seam out of the RENDERED state
+  /// instead: `delay` makes the in-flight label ("Pushing…") observable, and `-WorkroomUITestSyncFailure`
+  /// makes the failed action's own label the one shown — both of which name the action that was
+  /// requested, in the accessibility tree, without a side channel.
+  actor FixtureVCSWriter: LocalVCSWriting {
+    /// Set for `-WorkroomUITestSyncFailure`, so the error tier renders.
+    private let failing: Bool
+    /// Delays each action so the in-flight state is observable rather than instantaneous. Zero unless a
+    /// test opts in with `-WorkroomUITestSlowVCS 1` (`UITestFixture.slowVCSActions`).
+    private let delay: TimeInterval
+
+    /// 2.5s when slowed, not a token delay: XCUITest's predicate expectations poll roughly once a
+    /// second, so a sub-second action completes between samples and the in-flight state is never
+    /// observed — the test then fails claiming the state never rendered when it rendered and passed.
+    init(
+      failing: Bool = UITestFixture.syncFailure,
+      delay: TimeInterval = UITestFixture.slowVCSActions ? 2.5 : 0
+    ) {
+      self.failing = failing
+      self.delay = delay
+    }
+
+    func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
+      if UITestFixture.syncReadFailure { return .failed(.locked(nil)) }
+      return UITestFixture.remoteState.map { .state($0) } ?? .absent
+    }
+
+    func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult {
+      await record(.fetch)
+    }
+
+    func push(
+      path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool
+    ) async -> VCSRemoteActionResult {
+      await record(.push)
+    }
+
+    func pullRebase(
+      path: String, projectRoot: String, current: VCSRef, remote: String, tracking: VCSTracking?
+    ) async -> VCSRemoteActionResult {
+      await record(.pull)
+    }
+
+    func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
+      await record(.abortRebase)
+    }
+
+    /// Answers the commit without running git, so the sheet's own seam — selection → button
+    /// count → request, and the in-flight and failure states — is exercisable hermetically. The write's
+    /// real semantics are covered against throwaway repos in `VCSCommitIntegrationTests`, which is the
+    /// only tier that can see them.
+    func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
+      -> VCSCommitResult
+    {
+      if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+      return failing
+        ? .failed(.hookRejected("fixture: pre-commit hook declined\nlint: 2 problems"))
+        : .ok(summary: CLIVCSWriter.commitSummary(request.mode), revision: "fixture01")
+    }
+
+    private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {
+      if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+      return failing
+        ? .failed(.authRequired("fixture: authentication refused"))
+        : .ok(summary: "fixture \(action.rawValue)")
     }
   }
 
-  /// The page `log` serves, so `changeset` resolves the same commits it lists.
-  private static var history: [VCSCommit] {
-    UITestFixture.manyCommits > 0 ? manyCommits(UITestFixture.manyCommits) : commits
-  }
+  /// The CLI under `-WorkroomUITestScriptedCreate 1` (#483): the real one for everything but a local
+  /// create, which it plays out over a few seconds, as `workroom create --json` would report it: the
+  /// fetch skipped, the worktree, "created", then a short setup script. The workroom it makes is a
+  /// directory `UITestFixture.projects()` lists once it exists.
+  final class ScriptedCreateCLI: WorkroomCLIProtocol {
+    static let shared = ScriptedCreateCLI()
+    private let base = WorkroomCLI.shared
 
-  func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-    let all = Self.history
-    let slice = Array(all.prefix(limit))
-    return VCSHistoryPage(
-      commits: slice, reachedEnd: slice.count >= all.count, pushScope: Self.pushScope)
-  }
+    private init() {
+      // A workroom a previous launch made would otherwise be listed before this one creates it.
+      try? FileManager.default.removeItem(at: UITestFixture.scriptedWorkroomDirectory)
+    }
 
-  func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    // From the page `log` served. Searching only `commits` made every stress row open
-    // `fixturecommit1`'s detail, so no test could see which commit a click had opened.
-    let commit = Self.history.first { $0.commitID == commitID } ?? Self.commits[0]
-    let files = [
-      VCSChangedFile(path: "src/session.rb", oldPath: nil, kind: .modified),
-      VCSChangedFile(path: "docs/notes.txt", oldPath: nil, kind: .added),
-      // A moved file, so the `old → new` path line has something to render.
-      VCSChangedFile(path: "lib/moved.rb", oldPath: "src/moved.rb", kind: .renamed),
-    ]
-    return VCSChangeset(
-      commit: commit, fullMessage: commit.summary + "\n\nFixture commit body.", files: files,
-      isMerge: false, insertions: 24, deletions: 8, pushScope: Self.pushScope)
-  }
+    func list(warnings: String, project: String?) async throws -> ListResponse {
+      try await base.list(warnings: warnings, project: project)
+    }
 
-  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
-    "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
-  }
+    func addProject(_ path: String, create: Bool) async throws -> String {
+      try await base.addProject(path, create: create)
+    }
 
-  func workingFileDiff(root: URL, path: String) async throws -> String {
-    "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
-  }
+    func create(
+      project: String, onLog: (@Sendable (String) -> Void)?,
+      onReady: (@Sendable (String, String, Bool) -> Void)?
+    ) async throws -> CreateResponse {
+      throw WorkroomCLIError.cli(kind: "Unsupported", message: "the scripted create reports steps")
+    }
 
-  // Highlighting content is served by `UITestFixture.fileContent` in fixture mode, not the provider.
-  func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
-  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
-    nil
-  }
-  func workingBaseFileContent(root: URL, path: String) async throws
-    -> String?
-  { nil }
-
-  func currentRef(root: URL) async throws -> VCSRef {
-    VCSRef(name: "main", kind: .branch)
-  }
-}
-
-/// The inline agent backend used under `-WorkroomUITestCodingAgentStub`: returns a canned envelope with no
-/// network, so the XCUITest exercises the real capture + banner without hitting `claude`/`codex`.
-struct StubCodingAgentRunner: CodingAgentRunning {
-  let envelope: String
-
-  func diagnoseInline(
-    systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
-  ) async -> CodingAgentRunOutcome {
-    .success(stdout: envelope)
-  }
-}
-
-/// The `LocalVCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
-/// and answers every action without running git.
-///
-/// What no other tier can see is the button→engine seam: whether clicking "Push origin" actually asks
-/// for a push, whether the confirmation dialog swallows the click, and whether a second click while one
-/// is in flight is dropped. The engine's own correctness is covered by `VCSRemoteIntegrationTests`
-/// against real repos.
-///
-/// A test process can't reach into this actor, so assertions read the seam out of the RENDERED state
-/// instead: `delay` makes the in-flight label ("Pushing…") observable, and `-WorkroomUITestSyncFailure`
-/// makes the failed action's own label the one shown — both of which name the action that was
-/// requested, in the accessibility tree, without a side channel.
-actor FixtureVCSWriter: LocalVCSWriting {
-  /// Set for `-WorkroomUITestSyncFailure`, so the error tier renders.
-  private let failing: Bool
-  /// Delays each action so the in-flight state is observable rather than instantaneous. Zero unless a
-  /// test opts in with `-WorkroomUITestSlowVCS 1` (`UITestFixture.slowVCSActions`).
-  private let delay: TimeInterval
-
-  /// 2.5s when slowed, not a token delay: XCUITest's predicate expectations poll roughly once a
-  /// second, so a sub-second action completes between samples and the in-flight state is never
-  /// observed — the test then fails claiming the state never rendered when it rendered and passed.
-  init(
-    failing: Bool = UITestFixture.syncFailure,
-    delay: TimeInterval = UITestFixture.slowVCSActions ? 2.5 : 0
-  ) {
-    self.failing = failing
-    self.delay = delay
-  }
-
-  func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
-    if UITestFixture.syncReadFailure { return .failed(.locked(nil)) }
-    return UITestFixture.remoteState.map { .state($0) } ?? .absent
-  }
-
-  func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult {
-    await record(.fetch)
-  }
-
-  func push(
-    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool
-  ) async -> VCSRemoteActionResult {
-    await record(.push)
-  }
-
-  func pullRebase(
-    path: String, projectRoot: String, current: VCSRef, remote: String, tracking: VCSTracking?
-  ) async -> VCSRemoteActionResult {
-    await record(.pull)
-  }
-
-  func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
-    await record(.abortRebase)
-  }
-
-  /// Answers the commit without running git, so the sheet's own seam — selection → button
-  /// count → request, and the in-flight and failure states — is exercisable hermetically. The write's
-  /// real semantics are covered against throwaway repos in `VCSCommitIntegrationTests`, which is the
-  /// only tier that can see them.
-  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
-    -> VCSCommitResult
-  {
-    if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
-    return failing
-      ? .failed(.hookRejected("fixture: pre-commit hook declined\nlint: 2 problems"))
-      : .ok(summary: CLIVCSWriter.commitSummary(request.mode), revision: "fixture01")
-  }
-
-  private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {
-    if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
-    return failing
-      ? .failed(.authRequired("fixture: authentication refused"))
-      : .ok(summary: "fixture \(action.rawValue)")
-  }
-}
-
-/// The CLI under `-WorkroomUITestScriptedCreate 1` (#483): the real one for everything but a local
-/// create, which it plays out over a few seconds, as `workroom create --json` would report it: the
-/// fetch skipped, the worktree, "created", then a short setup script. The workroom it makes is a
-/// directory `UITestFixture.projects()` lists once it exists.
-final class ScriptedCreateCLI: WorkroomCLIProtocol {
-  static let shared = ScriptedCreateCLI()
-  private let base = WorkroomCLI.shared
-
-  private init() {
-    // A workroom a previous launch made would otherwise be listed before this one creates it.
-    try? FileManager.default.removeItem(at: UITestFixture.scriptedWorkroomDirectory)
-  }
-
-  func list(warnings: String, project: String?) async throws -> ListResponse {
-    try await base.list(warnings: warnings, project: project)
-  }
-
-  func addProject(_ path: String, create: Bool) async throws -> String {
-    try await base.addProject(path, create: create)
-  }
-
-  func create(
-    project: String, onLog: (@Sendable (String) -> Void)?,
-    onReady: (@Sendable (String, String, Bool) -> Void)?
-  ) async throws -> CreateResponse {
-    throw WorkroomCLIError.cli(kind: "Unsupported", message: "the scripted create reports steps")
-  }
-
-  func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
-    -> CreateResponse
-  {
-    let name = UITestFixture.scriptedWorkroomName
-    let path = UITestFixture.scriptedWorkroomDirectory.path
-    func step(_ id: String, _ state: String, _ detail: String? = nil) {
+    func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
+      -> CreateResponse
+    {
+      let name = UITestFixture.scriptedWorkroomName
+      let path = UITestFixture.scriptedWorkroomDirectory.path
+      func step(_ id: String, _ state: String, _ detail: String? = nil) {
+        onEvent(
+          StreamEvent(
+            type: "step", phase: nil, text: nil, name: nil, path: nil, setup: nil, id: id,
+            state: state, detail: detail))
+      }
+      func log(_ text: String, _ id: String) {
+        onEvent(
+          StreamEvent(
+            type: "log", phase: "setup", text: text, name: nil, path: nil, setup: nil, step: id))
+      }
+      step("fetch", "skipped", "No remote to fetch from")
+      step("worktree", "running")
+      log("$ git worktree add -b workroom/\(name) \(path)", "worktree")
+      try await Task.sleep(for: .seconds(1.5))
+      try FileManager.default.createDirectory(
+        at: UITestFixture.scriptedWorkroomDirectory, withIntermediateDirectories: true)
+      log("Preparing worktree (new branch 'workroom/\(name)')", "worktree")
+      step("worktree", "done")
       onEvent(
         StreamEvent(
-          type: "step", phase: nil, text: nil, name: nil, path: nil, setup: nil, id: id,
-          state: state, detail: detail))
+          type: "created", phase: nil, text: nil, name: name, path: path, setup: true, warning: ""))
+      step("script", "running")
+      for line in ["Installing dependencies…", "Done."] {
+        try await Task.sleep(for: .seconds(1))
+        log(line, "script")
+      }
+      step("script", "done")
+      return CreateResponse(name: name, path: path, vcs: "git", project: project)
     }
-    func log(_ text: String, _ id: String) {
-      onEvent(
-        StreamEvent(
-          type: "log", phase: "setup", text: text, name: nil, path: nil, setup: nil, step: id))
+
+    func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws {
+      try await base.delete(name: name, project: project, onLog: onLog)
     }
-    step("fetch", "skipped", "No remote to fetch from")
-    step("worktree", "running")
-    log("$ git worktree add -b workroom/\(name) \(path)", "worktree")
-    try await Task.sleep(for: .seconds(1.5))
-    try FileManager.default.createDirectory(
-      at: UITestFixture.scriptedWorkroomDirectory, withIntermediateDirectories: true)
-    log("Preparing worktree (new branch 'workroom/\(name)')", "worktree")
-    step("worktree", "done")
-    onEvent(
-      StreamEvent(
-        type: "created", phase: nil, text: nil, name: name, path: path, setup: true, warning: ""))
-    step("script", "running")
-    for line in ["Installing dependencies…", "Done."] {
-      try await Task.sleep(for: .seconds(1))
-      log(line, "script")
+
+    func deleteProject(
+      _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: (@Sendable (String) -> Void)?
+    ) async throws -> [URL] {
+      try await base.deleteProject(
+        path, withWorkrooms: withWorkrooms, fromDisk: fromDisk, onLog: onLog)
     }
-    step("script", "done")
-    return CreateResponse(name: name, path: path, vcs: "git", project: project)
   }
 
-  func delete(name: String, project: String, onLog: (@Sendable (String) -> Void)?) async throws {
-    try await base.delete(name: name, project: project, onLog: onLog)
+  extension AppServices {
+    /// The UI-test fixture's services (`-WorkroomUITestFixture 1`): the scripted CLI when a test asks
+    /// for it, the seeded repositories' reader and writer, canned diffs, and seeded statuses, since the
+    /// fixture's paths are temp directories, not repositories. Everything else stays live.
+    @MainActor static var fixture: AppServices {
+      var services = AppServices.live
+      services.cli = UITestFixture.scriptedCreate ? ScriptedCreateCLI.shared : WorkroomCLI.shared
+      services.vcsReader = { _ in UITestFixture.vcsProvider }
+      services.vcsWriter = { _ in FixtureVCSWriter() }
+      // An automatic fetch would race whatever the test is asserting, so it never runs.
+      services.makeRemoteState = {
+        RemoteStateModel(
+          makeWriter: { _ in FixtureVCSWriter() }, debounce: 0, ttl: 0,
+          autoFetchInterval: .greatestFiniteMagnitude)
+      }
+      services.cannedDiffs = CannedDiffs(
+        diff: UITestFixture.diff(for:), fileContent: UITestFixture.fileContent(for:))
+      services.seededStatuses = {
+        SeededStatuses(
+          root: UITestFixture.rootStatus, workroom: UITestFixture.workroomStatus,
+          gitHubCLI: UITestFixture.ghStatus)
+      }
+      return services
+    }
   }
 
-  func deleteProject(
-    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: (@Sendable (String) -> Void)?
-  ) async throws -> [URL] {
-    try await base.deleteProject(
-      path, withWorkrooms: withWorkrooms, fromDisk: fromDisk, onLog: onLog)
-  }
-}
+#endif

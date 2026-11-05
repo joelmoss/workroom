@@ -1256,7 +1256,10 @@ final class GhosttySurfaceView: NSView {
   /// while VoiceOver is genuinely on, or under the UI-test fixture (which needs it regardless, to
   /// assert terminal content in XCUITest — see `accessibilityIdentifier`'s doc).
   private var accessibilityContentEnabled: Bool {
-    AppEnvironment.current.isFixture || NSWorkspace.shared.isVoiceOverEnabled
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return true }
+    #endif
+    return NSWorkspace.shared.isVoiceOverEnabled
   }
 
   /// Expose the visible screen text to the accessibility tree (CMT-3) — VoiceOver's only way to read a
@@ -1298,10 +1301,13 @@ final class GhosttySurfaceView: NSView {
   }
 
   /// **Fixture-only.** A stable id so an XCUITest can find this exact surface among several —
-  /// VoiceOver has no use for it, only test code. Gated on `AppEnvironment.current.isFixture`, itself
-  /// `#if DEBUG`: a release build publishes no identifier.
+  /// VoiceOver has no use for it, only test code. Gated on `AppEnvironment.current.isFixture`, which
+  /// exists only in Debug: a release build publishes no identifier.
   override func accessibilityIdentifier() -> String {
-    AppEnvironment.current.isFixture ? "terminal.surface" : super.accessibilityIdentifier()
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return "terminal.surface" }
+    #endif
+    return super.accessibilityIdentifier()
   }
 
   /// Poll the visible screen at a fixed interval and tell VoiceOver when it changed.

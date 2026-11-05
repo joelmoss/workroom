@@ -12,6 +12,16 @@ import WorkroomDomain
 final class QuickSwitcherController {
   static let shared = QuickSwitcherController()
 
+  /// Under the UI-test flag (`UITestFixture.switcherRevealsImmediately`), the rail reveals at once
+  /// and stays up after the modifier is released. Never in Release.
+  private static var revealsImmediately: Bool {
+    #if DEBUG
+      UITestFixture.switcherRevealsImmediately
+    #else
+      false
+    #endif
+  }
+
   /// One frozen candidate. Frozen at open so the list can't reshuffle under the cursor mid-gesture —
   /// MRU order changes the instant anything is selected, which is exactly what a commit does.
   enum Item {
@@ -156,7 +166,7 @@ final class QuickSwitcherController {
     apply(effect)
     // A held modifier is not drivable by synthetic input (see `switcherRevealsImmediately`), so under
     // the fixture flag skip straight to the revealed state.
-    if UITestFixture.switcherRevealsImmediately { revealTimerFired() }
+    if Self.revealsImmediately { revealTimerFired() }
     return true
   }
 
@@ -220,7 +230,7 @@ final class QuickSwitcherController {
     // Under the reveal fixture flag the "hold" is a synthetic tap, so the modifier is already up by
     // the time the first tick lands and the rail would vanish before anything could look at it. The
     // session then ends on Escape or a click, which is what those tests drive.
-    guard !UITestFixture.switcherRevealsImmediately else { return }
+    guard !Self.revealsImmediately else { return }
     guard !flagsProvider().contains(triggerFlags) else { return }
     apply(reducer.handle(.modifierReleased))
   }

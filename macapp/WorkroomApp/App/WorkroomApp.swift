@@ -53,11 +53,13 @@ struct WorkroomApp: App {
     // below starts reading the environment. `applyFixtureDefaults()` at the end of `init` runs
     // after that probe, so it is the wrong home. A failure crashes the launch: carrying on would
     // run the real rc files, which is what this prevents. Inert in production (DEBUG-only).
-    do {
-      try UITestFixture.applyHermeticShell()
-    } catch {
-      preconditionFailure("could not prepare the hermetic UI-test shell: \(error)")
-    }
+    #if DEBUG
+      do {
+        try UITestFixture.applyHermeticShell()
+      } catch {
+        preconditionFailure("could not prepare the hermetic UI-test shell: \(error)")
+      }
+    #endif
 
     // Enrich it in the background: one `$SHELL -ilc` for what only an interactive
     // login shell knows (`.zshrc`-exported PATH entries, version-manager shims).
@@ -77,8 +79,18 @@ struct WorkroomApp: App {
     // section, diff viewer in the requested layout) in a known state before the first `AppStore`
     // seeds `activeInspectorSection` from `Defaults`. Inert in production — a real user never passes
     // the flag. See `UITestFixture.applyFixtureDefaults`.
-    UITestFixture.applyFixtureDefaults()
-    UITestFixture.endLiveDaemonWhenTheAppExits()
+    #if DEBUG
+      UITestFixture.applyFixtureDefaults()
+      UITestFixture.endLiveDaemonWhenTheAppExits()
+    #endif
+
+    // The app's services, chosen once (ADR 0022): every window's `AppStore`, and the views under
+    // it, use these. Before any store is built.
+    #if DEBUG
+      AppServices.current = AppEnvironment.current.isFixture ? .fixture : .live
+    #else
+      AppServices.current = .live
+    #endif
   }
 
   var body: some Scene {

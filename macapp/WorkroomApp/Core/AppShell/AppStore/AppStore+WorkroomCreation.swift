@@ -557,14 +557,14 @@ extension AppStore {
     for place: RemoteWorkrooms.Place, in project: Project, create: HostOptions?
   ) -> HostOptions.Resolution? {
     guard let provider = place.hostProvider else { return nil }
-    let levels = remoteCreateServices.hostOptionLevels(project, provider)
+    let levels = services.remoteCreate.hostOptionLevels(project, provider)
     return HostOptions.resolve(
       for: provider, create: create, project: levels.project, settings: levels.settings)
   }
 
   private func runRemoteCreate(_ run: CreationRun, place: RemoteWorkrooms.Place) async {
     let path = run.project.path
-    let services = remoteCreateServices
+    let services = self.services.remoteCreate
     var defaultNotUsed: String?
     do {
       run.begin("repository")

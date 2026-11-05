@@ -80,10 +80,10 @@ extension AppStore {
   /// values over a newer one. `force` ignores the TTLs (e.g. a manual refresh). Two stages:
   /// fast local git first, then the slow `gh` CI pass — so the dirty dots land immediately.
   func refreshWorkroomStatuses(force: Bool = false) {
-    // Fixture mode never shells out to git/gh — keep the deterministic seeded status (and let the
-    // manual Refresh button re-apply it rather than wipe it to "unknown").
-    if AppEnvironment.current.isFixture {
-      seedFixtureStatuses()
+    // Seeded statuses never shell out to git/gh — keep them (and let the manual Refresh button
+    // re-apply them rather than wipe them to "unknown").
+    if !probesRepositories {
+      seedStatuses()
       return
     }
     statusSweepTask?.cancel()
@@ -147,7 +147,7 @@ extension AppStore {
   /// task" — is wrong: a cancelled probe holds no fact at all. A `nil` here means the same thing (the
   /// probe told us nothing and there was no prior verdict), so leave the mirror alone in both cases.
   func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
-    if AppEnvironment.current.isFixture { return }
+    if !probesRepositories { return }
     guard let status = await ghAuthCache.status(force: force, resolver: resolver) else { return }
     if Task.isCancelled { return }
     githubCLIStatus = status
@@ -167,7 +167,7 @@ extension AppStore {
   /// when the file-watcher lane is busiest — so like every other lane it hands its read time to
   /// `mergeLocalStatus`, which is where the cross-lane ordering lives.
   func refreshLocalStatus(for sid: SidebarID) {
-    if AppEnvironment.current.isFixture { return }
+    if !probesRepositories { return }
     guard let item = selectedStatusWorkItem(for: sid) else { return }
     // Same two suppressions the selection path applies — another create/commit may still be writing.
     if isCreating(sid) || isCommittingProject(item.sharedLocation) { return }
@@ -187,9 +187,8 @@ extension AppStore {
     // (Re)point the filesystem watcher at the newly-selected workroom so its local status stays live
     // while you edit in its terminal (issue #24 follow-up). Cheap + safe to call on every selection.
     updateSelectedWorkroomWatch()
-    // Fixture mode keeps the deterministic seeded status — selecting a target must not fork a real
-    // probe that would overwrite it.
-    if AppEnvironment.current.isFixture { return }
+    // Seeded statuses stay — selecting a target must not fork a real probe that would overwrite them.
+    if !probesRepositories { return }
     guard let sid = selectedTargetID, let item = selectedStatusWorkItem(for: sid) else { return }
     // Don't probe a workroom whose setup is still writing its worktree — the watcher is already
     // suppressed above; this skips the debounced local+CI probe too. Re-armed post-setup by
@@ -258,21 +257,25 @@ extension AppStore {
     return worst
   }
 
-  /// Seed deterministic VCS status for the UI-test fixture targets so the Changes inspector is
-  /// exercisable hermetically — the fixture paths aren't real repos, so the live probe would only
-  /// ever report "unknown". No-ops outside fixture mode.
-  func seedFixtureStatuses() {
-    guard AppEnvironment.current.isFixture, let project = projects.first else { return }
-    workroomStatuses[.root(project: project.path)] = UITestFixture.rootStatus
+  /// Whether statuses, branches and history come from probing the repositories, rather than the
+  /// services' seeded statuses (the UI-test fixture's, whose paths are not repositories).
+  var probesRepositories: Bool { services.seededStatuses == nil }
+
+  /// Put the services' seeded statuses on the first project's root and first workroom, so the
+  /// Changes inspector is exercisable hermetically — the fixture paths aren't real repos, so the
+  /// live probe would only ever report "unknown". No-ops when the services probe instead.
+  func seedStatuses() {
+    guard let seeded = services.seededStatuses, let project = projects.first else { return }
+    let seed = seeded()
+    workroomStatuses[.root(project: project.path)] = seed.root
     if let workroom = project.workrooms.first {
-      workroomStatuses[.workroom(project: project.path, name: workroom.name)] =
-        UITestFixture.workroomStatus
+      workroomStatuses[.workroom(project: project.path, name: workroom.name)] = seed.workroom
     }
     // Seed here — not only at load — because this runs again on the manual Refresh button, and
-    // `refreshGitHubCLI` no-ops in fixture mode, so a re-seed is the only thing that can restate the
-    // value. Left alone when the flag is absent, so the optimistic `.available` default stands and
-    // every existing fixture test still sees no warning.
-    if let seeded = UITestFixture.ghStatus { githubCLIStatus = seeded }
+    // `refreshGitHubCLI` no-ops when statuses are seeded, so a re-seed is the only thing that can
+    // restate the value. Left alone when there is none, so the optimistic `.available` default
+    // stands and every existing fixture test still sees no warning.
+    if let gitHubCLI = seed.gitHubCLI { githubCLIStatus = gitHubCLI }
   }
 
   // MARK: - Internals
@@ -627,7 +630,7 @@ extension AppStore {
   /// refresh B — leaving the row that actually changed stale and re-probing one that didn't. Every
   /// post-commit refresh therefore names the sid it captured when the sheet opened.
   func refreshStatus(for sid: SidebarID) {
-    guard !AppEnvironment.current.isFixture, let item = selectedStatusWorkItem(for: sid) else {
+    guard probesRepositories, let item = selectedStatusWorkItem(for: sid) else {
       return
     }
     let resolver = statusResolver
@@ -641,10 +644,10 @@ extension AppStore {
 
   /// Point the filesystem watcher at the selected workroom's directory, or stop it when nothing
   /// statusable is selected — or when the selection's create is still in flight (don't watch a tree a
-  /// setup script is actively writing). No-ops in fixture mode (the seeded status must stay
+  /// setup script is actively writing). No-ops when statuses are seeded (they must stay
   /// deterministic).
   func updateSelectedWorkroomWatch() {
-    guard !AppEnvironment.current.isFixture, let sid = selectedTargetID, !isCreating(sid),
+    guard probesRepositories, let sid = selectedTargetID, !isCreating(sid),
       let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else {
       workroomFileWatcher.stop()
@@ -660,7 +663,7 @@ extension AppStore {
   /// `overflow` means some changes are unlisted (or the watch was interrupted and resumed), so `paths`
   /// cannot be trusted to be complete and the `.jj`-internal filter below must not apply.
   func handleWorkroomFileChange(_ paths: [String], overflow: Bool = false) {
-    guard !AppEnvironment.current.isFixture, let sid = selectedTargetID,
+    guard probesRepositories, let sid = selectedTargetID,
       let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else { return }
     // Defensive: never probe a mid-setup worktree. The watcher shouldn't be armed while creating

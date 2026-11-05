@@ -83,20 +83,6 @@ extension AppStore {
   /// (D4). The connect is inside it, so a host that is slow to answer never blanks the workroom.
   static let hostLayoutTimeout: TimeInterval = 5
 
-  /// Where a host's layouts are read and written: its daemon, its service connection brought up
-  /// first (it can drop while the panes' own links stay up), or a fake in a test.
-  nonisolated(unsafe) static var hostLayoutStore:
-    @Sendable (HostID) async throws -> HostLayoutStore = { host in
-      try await RemoteHosts.shared.ensureConnected(host)
-      return try await HostConnectionManager.shared.layouts(host: host)
-    }
-
-  /// A host's live sessions, for the append rule: its daemon, or a fake in a test.
-  nonisolated(unsafe) static var hostSessions:
-    @Sendable (HostID) async throws -> [SessionDescriptor] = {
-      try await HostConnectionManager.shared.sessions(on: $0)
-    }
-
   /// Asks `target`'s host for its layout and sessions, unless this launch has already asked or
   /// another window keeps the workroom's layout, and says whether `target` is now waiting on that
   /// answer: if so, the caller opens no pane, and `applyHostLayout` restores what was chosen.
@@ -116,12 +102,14 @@ extension AppStore {
     let held = deferredTargetSessions[target.id]
     let key = workroom.uuidString
     let targetID = target.id
+    let hostLayoutStore = services.hostLayoutStore
+    let hostSessions = services.hostSessions
     Task { [weak self] in
       let outcome: Result<(HostLayoutResolution, [SessionDescriptor]), Error>
       let deadline = Date().addingTimeInterval(Self.hostLayoutTimeout)
       do {
         let resolution = try await withTimeout(seconds: Self.hostLayoutTimeout) {
-          let store = try await Self.hostLayoutStore(.remote(host))
+          let store = try await hostLayoutStore(.remote(host))
           return try await HostLayoutSync.resolve(
             held: held, key: key, targetID: targetID, store: store)
         }
@@ -129,7 +117,7 @@ extension AppStore {
         // the host's layout, is kept even when the list is late.
         let sessions =
           (try? await withTimeout(seconds: max(0.5, deadline.timeIntervalSinceNow)) {
-            try await Self.hostSessions(.remote(host))
+            try await hostSessions(.remote(host))
           }) ?? []
         outcome = .success((resolution, sessions))
       } catch {
@@ -267,9 +255,10 @@ extension AppStore {
       let ownWrite =
         hostLayouts.unanswered.contains(targetID)
         ? hostLayouts.unansweredWrite[targetID] : nil
+      let hostLayoutStore = services.hostLayoutStore
       let write = Task { [weak self] in
         let result: HostLayoutResolution
-        if let store = try? await Self.hostLayoutStore(.remote(host)) {
+        if let store = try? await hostLayoutStore(.remote(host)) {
           result = await HostLayoutSync.write(
             layout, key: key, expected: expected, store: store, attempts: attempts,
             ownWrite: ownWrite)

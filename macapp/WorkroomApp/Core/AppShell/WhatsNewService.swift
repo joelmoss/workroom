@@ -38,7 +38,9 @@ final class WhatsNewService: ObservableObject {
   /// `maxAutoAttempts` transient failures — never on a single transient error, so a brief offline
   /// blip on the post-update launch doesn't lose the notes forever.
   func checkOnLaunch() async -> [ReleaseNote]? {
-    if UITestFixture.forceWhatsNew { return UITestFixture.whatsNewNotes }
+    #if DEBUG
+      if UITestFixture.forceWhatsNew { return UITestFixture.whatsNewNotes }
+    #endif
 
     guard let currentStr = currentVersion, let current = SemanticVersion(currentStr) else {
       return nil  // unparseable running version: skip, never crash

@@ -45,10 +45,10 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// (the unit tests run in the app's own UserDefaults domain — cf. `ActivitySectionTests`).
   ///
   /// `WorkroomUITestFixture` is deliberately NOT among them: fixture-mode-ness is passed to
-  /// `applyFixtureDefaults(active:)` instead of written, because ~47 production sites branch on that
-  /// key and the parallel test workers share one on-disk defaults domain — holding it true for the
-  /// length of a body here silently early-returns `AppStore.handleRootBranchChange` in whichever
-  /// unrelated class happens to be running beside it. The keys that remain are written by this class
+  /// `applyFixtureDefaults(active:)` instead of written, because production sites still read that key
+  /// at runtime and the parallel test workers share one on-disk defaults domain — holding it true for
+  /// the length of a body here silently changes, for example, `AppStore.closeNeedsConfirm` in
+  /// whichever unrelated class happens to be running beside it. The keys that remain are written by this class
   /// alone (see above), so nothing else can see them mid-flight.
   private var keys: [String] {
     [

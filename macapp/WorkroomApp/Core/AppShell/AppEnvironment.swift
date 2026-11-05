@@ -10,8 +10,9 @@ import Foundation
 /// fixture" is how it once wrote the developer's window state, selection and release-channel
 /// migration.
 ///
-/// Read fresh each time, not cached: tests flip the fixture flag in the argument domain at runtime
-/// (`DiffViewerLazyRenderingTests`, `SharedPrefDefaultsTests`). In Release it is always
+/// No unit test flips a signal at runtime: one that wants fixture services takes them from
+/// `AppServices.fixture` (`DiffViewerLazyRenderingTests` passes its `cannedDiffs`), and
+/// `SharedPrefDefaultsTests` passes fixture-mode-ness as an argument. In Release it is always
 /// (live, none), without reading any defaults: a stray `defaults write` must never latch a shipped
 /// build into fixture mode or a throwaway preferences suite.
 struct AppEnvironment: Equatable {
@@ -21,8 +22,13 @@ struct AppEnvironment: Equatable {
   let services: Services
   let isolation: Isolation
 
-  /// Fixture services: fake projects and statuses instead of the user's real configuration.
-  var isFixture: Bool { services == .fixture }
+  #if DEBUG
+    /// Fixture services: fake projects and statuses instead of the user's real configuration.
+    /// `WorkroomApp.init` turns this into `AppServices.fixture`; what reads it directly is fixture
+    /// behaviour that no service carries, so it exists only in Debug and a Release build cannot
+    /// branch on it.
+    var isFixture: Bool { services == .fixture }
+  #endif
 
   /// Whether this process is running tests **at all**, by any of the three signals that tell them
   /// apart — the one question `UserDefaults.app`, `GhosttyApp.themeConfigURLForCurrentEnvironment`
@@ -71,7 +77,13 @@ struct AppEnvironment: Equatable {
   /// `PATH` entries. Narrower than `isTestProcess`, which also answers true for a hosted unit run —
   /// `WorkroomApp` skips the shell probe there for its own reason, and `ShellEnvironmentTests` needs
   /// the process environment left alone.
-  static var isUILaunch: Bool { UITestFixture.fixtureFlag || UITestFixture.isolatesPreferences }
+  static var isUILaunch: Bool {
+    #if DEBUG
+      UITestFixture.fixtureFlag || UITestFixture.isolatesPreferences
+    #else
+      false
+    #endif
+  }
 
   /// Whether `WorkroomApp.init` starts the background `$SHELL -ilc` probe. Not in a hosted unit run
   /// (`ShellEnvironmentTests` needs the cache to hold only what it put there) and not in a UI-test

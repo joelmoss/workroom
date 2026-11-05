@@ -9,7 +9,7 @@ import XCTest
 
 /// A create's pane against `AppStore` (#483): where it opens, how it lands, how it ends, and what
 /// its failures offer. Local creates run against a fake CLI; remote ones against a fake CLI, a fake
-/// driver and a `FakeDaemon` for the host's git, through `remoteCreateServices`.
+/// driver and a `FakeDaemon` for the host's git, through `services.remoteCreate`.
 @MainActor
 final class CreationFlowTests: XCTestCase {
   private let projectPath = "/private/var/tmp/wr-creation-flow"
@@ -705,7 +705,7 @@ final class CreationFlowTests: XCTestCase {
       scripts.add()
       return .passed
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
     await store.createRemoteWorkroom(in: project, place: .boxd)
     let run = try XCTUnwrap(store.creationRuns.values.first)
@@ -831,7 +831,7 @@ final class CreationFlowTests: XCTestCase {
     services.trustStatus = { _, _, _, _ in
       TrustStatus(trusted: true, scripts: [], localWork: UntrustedSetupCLI.work)
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
@@ -1142,7 +1142,7 @@ final class CreationFlowTests: XCTestCase {
       return RemoteCreateHost(
         key: .boxd(org: "acme", account: "u"), driver: driver, environment: environment)
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
 
     await store.createRemoteWorkroom(
       in: emptyProject, place: .exeDev, hostOptions: HostOptions(image: .value("ubuntu:24.04")))
@@ -1176,7 +1176,7 @@ final class CreationFlowTests: XCTestCase {
       return try await host(place, options)
     }
     services.hostOptionLevels = { _, _ in (project: nil, settings: HostOptions(cpu: .value(8))) }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     await store.createRemoteWorkroom(in: emptyProject, place: .ssh)
     XCTAssertEqual(asked.all, [nil])
   }
@@ -1191,7 +1191,7 @@ final class CreationFlowTests: XCTestCase {
     services.trustStatus = { _, _, _, _ in
       TrustStatus(trusted: false, scripts: [UntrustedSetupCLI.script])
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
 
@@ -1219,7 +1219,7 @@ final class CreationFlowTests: XCTestCase {
       asked.add(devcontainer)
       return TrustStatus(trusted: false, scripts: devcontainer ? [Self.devContainer] : [])
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
 
     await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
 
@@ -1255,7 +1255,7 @@ final class CreationFlowTests: XCTestCase {
         exempt: false)
       return TrustStatus(trusted: approved, scripts: devcontainer ? [config] : [])
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
 
     await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
@@ -1281,7 +1281,7 @@ final class CreationFlowTests: XCTestCase {
       asked.add(devcontainer)
       return TrustStatus(trusted: false, scripts: devcontainer ? [Self.devContainer] : [])
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
     await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
     let run = try XCTUnwrap(store.creationRuns.values.first)
@@ -1311,7 +1311,7 @@ final class CreationFlowTests: XCTestCase {
     services.trustStatus = { _, _, _, devcontainer in
       TrustStatus(trusted: true, scripts: devcontainer ? [compose] : [])
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
 
     await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
@@ -1374,7 +1374,7 @@ final class CreationFlowTests: XCTestCase {
       scripts.add()
       return .passed
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
 
@@ -1414,7 +1414,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4)
     defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(
+    store.services.remoteCreate = services(
       driver: FakeDriver(), daemon: daemon,
       grantRepository: { _ in throw HostDriverError.provisioning("o/r is not shared") })
 
@@ -1435,7 +1435,7 @@ final class CreationFlowTests: XCTestCase {
     let cli = RemoteFakeCLI(projectPath: projectPath)
     let driver = FakeDriver()
     let store = remoteStore(cli)
-    store.remoteCreateServices = services(driver: driver, daemon: daemon)
+    store.services.remoteCreate = services(driver: driver, daemon: daemon)
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
 
@@ -1465,7 +1465,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitFails)
     defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(), daemon: daemon)
+    store.services.remoteCreate = services(driver: FakeDriver(), daemon: daemon)
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
 
@@ -1483,7 +1483,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitFails)
     defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(destroyFails: true), daemon: daemon)
+    store.services.remoteCreate = services(driver: FakeDriver(destroyFails: true), daemon: daemon)
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
 
@@ -1505,7 +1505,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
     defer { daemon.stop() }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(), daemon: daemon)
+    store.services.remoteCreate = services(driver: FakeDriver(), daemon: daemon)
     // The run waits for Done: a create against the fake daemon ends within one poll of the
     // run's start, so watching `creationRuns` for it mid-flight is a race.
     store.closesFinishedCreations = { false }
@@ -1568,7 +1568,7 @@ final class CreationFlowTests: XCTestCase {
       request.onLine("installing")
       return .passed
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.
     store.closesFinishedCreations = { false }
 
@@ -1607,7 +1607,7 @@ final class CreationFlowTests: XCTestCase {
       scripts.add()
       return .passed
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
     await store.createRemoteWorkroom(in: project, place: .boxd)
     let run = try XCTUnwrap(store.creationRuns.values.first)
@@ -1642,7 +1642,7 @@ final class CreationFlowTests: XCTestCase {
       request.onStart()
       return .failed(why)
     }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: project.path)
 
     await store.createRemoteWorkroom(in: project, place: .boxd)
@@ -1671,7 +1671,7 @@ final class CreationFlowTests: XCTestCase {
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     var services = services(driver: FakeDriver(), daemon: daemon)
     services.script = { _ in .failed("setup script failed: couldn't reach the host") }
-    store.remoteCreateServices = services
+    store.services.remoteCreate = services
 
     await store.createRemoteWorkroom(in: project, place: .boxd)
 
@@ -1697,7 +1697,7 @@ final class CreationFlowTests: XCTestCase {
     let project = Project(path: dir.path, vcs: "git", workrooms: [])
     store.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
-    store.remoteCreateServices = services(driver: driver, daemon: daemon)
+    store.services.remoteCreate = services(driver: driver, daemon: daemon)
     // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.
     store.closesFinishedCreations = { false }
 
@@ -1722,7 +1722,7 @@ final class CreationFlowTests: XCTestCase {
     defer { daemon.stop() }
     let plans = Counter()
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(
+    store.services.remoteCreate = services(
       driver: FakeDriver(), daemon: daemon, setup: FakeSetup(), plans: plans)
 
     let task = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
@@ -1746,7 +1746,7 @@ final class CreationFlowTests: XCTestCase {
     let hosts = Counter()
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.selectedTargetID = .root(project: projectPath)
-    store.remoteCreateServices = services(
+    store.services.remoteCreate = services(
       driver: FakeDriver(), daemon: nil, setup: FakeSetup(), hosts: hosts)
 
     let task = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
@@ -1770,7 +1770,7 @@ final class CreationFlowTests: XCTestCase {
     AppStore.announceCreation = { heard.append($0) }
     defer { AppStore.announceCreation = post }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(driver: FakeDriver(), daemon: nil, setup: FakeSetup())
+    store.services.remoteCreate = services(driver: FakeDriver(), daemon: nil, setup: FakeSetup())
 
     let boxd = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
     await waitUntil({ store.pendingRemoteSetup != nil }, "boxd's sheet never came up")
@@ -1832,7 +1832,7 @@ final class CreationFlowTests: XCTestCase {
           user: RemoteWorkrooms.user,
           daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"]))
       let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-      store.remoteCreateServices = services(driver: driver, daemon: daemon)
+      store.services.remoteCreate = services(driver: driver, daemon: daemon)
 
       await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
 
@@ -1861,7 +1861,7 @@ final class CreationFlowTests: XCTestCase {
         user: RemoteWorkrooms.user,
         daemonSocket: RemoteWorkrooms.daemonSocket, labels: ["workroom.provisioner=test"]))
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-    store.remoteCreateServices = services(
+    store.services.remoteCreate = services(
       driver: driver, daemon: daemon, gitHubToken: { throw RemoteWorkrooms.Failure.signedOut })
 
     await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
@@ -1879,7 +1879,7 @@ final class CreationFlowTests: XCTestCase {
     for carryOn in [true, false] {
       let hosts = Counter()
       let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
-      store.remoteCreateServices = services(
+      store.services.remoteCreate = services(
         driver: FakeDriver(), daemon: nil, setup: FakeSetup(), hosts: hosts)
 
       let a = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }

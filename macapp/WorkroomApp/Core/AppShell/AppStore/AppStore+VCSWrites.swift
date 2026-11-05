@@ -45,8 +45,8 @@ extension AppStore {
   /// identity), and run the command. On success re-probe for
   /// GitHub's authoritative state; on failure revert the optimistic flip and surface `stderr`.
   ///
-  /// `AppEnvironment.current.isFixture` must be checked AFTER `applyOptimistic` but BEFORE `prActionInFlight`
-  /// flips — fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
+  /// Fixture mode applies the optimistic update and stops there, before `prActionInFlight` flips —
+  /// fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
   private func performPRWrite(
     arguments: [String], on item: StatusWorkItem,
     applyOptimistic: (SidebarID) -> Void, errorTitle: String
@@ -58,32 +58,29 @@ extension AppStore {
         RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription
       return
     }
-    let github: RepositoryGitHub?
-    if AppEnvironment.current.isFixture {
-      github = nil
-    } else {
-      do {
-        guard let location = item.location else {
-          throw RepositoryRoutingError.registrationRequired
-        }
-        github = try RepositoryRouter.shared.registeredGitHub(
-          for: location, resolver: statusResolver)
-      } catch {
-        self.errorTitle = errorTitle
-        self.errorMessage = error.localizedDescription
-        return
+    #if DEBUG
+      // Fixture mode has no `gh`: the optimistic update below *is* the result.
+      if AppEnvironment.current.isFixture { return applyOptimistic(sid) }
+    #endif
+    let github: RepositoryGitHub
+    do {
+      guard let location = item.location else {
+        throw RepositoryRoutingError.registrationRequired
       }
+      github = try RepositoryRouter.shared.registeredGitHub(
+        for: location, resolver: statusResolver)
+    } catch {
+      self.errorTitle = errorTitle
+      self.errorMessage = error.localizedDescription
+      return
     }
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
-    // "the click did nothing". Keep the prior PR to restore if `gh` fails (and in fixture mode, this
-    // optimistic update *is* the result — no `gh` to confirm it).
+    // "the click did nothing". Keep the prior PR to restore if `gh` fails.
     let priorPR = workroomStatuses[sid]?.pr
     applyOptimistic(sid)
-    if AppEnvironment.current.isFixture { return }
     prActionInFlight = true
     Task { [weak self] in
-      guard let github else { return }
       let r = await github.run(arguments)
       guard let self else { return }
       self.prActionInFlight = false
@@ -120,24 +117,29 @@ extension AppStore {
     guard let item = selectedStatusWorkItem(for: sid) else {
       return completion(.failed(.other("That workroom is no longer available.")))
     }
-    // Fixture mode swaps the WRITER — `FixtureVCSWriter` rather than spawning git, since the
-    // fixture paths aren't real repos and a live write would only ever fail. Only the writer: taking
-    // an early return here instead skipped the whole store-side lane (the in-flight marks, the
+    // The services' local writer, when they have one (the fixture's `FixtureVCSWriter`, since its
+    // paths aren't real repos and a live write would only ever fail), replaces only the WRITER:
+    // taking an early return here instead skipped the whole store-side lane (the in-flight marks, the
     // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
-    // `refreshStatus(for:)` already no-ops under the fixture, so the rest is safe to run.
+    // `refreshStatus(for:)` already no-ops when statuses are seeded, so the rest is safe to run.
+    let localWriter = services.vcsWriter
     Task { [weak self] in
       guard let self else { return }
       let root: RepositoryLocation
-      let writer: VCSWriting?
+      let commit: () async -> VCSCommitResult
       do {
-        if AppEnvironment.current.isFixture {
-          root = try await RepositoryLocation.local(item.projectRoot)
-          writer = nil
+        if let localWriter {
+          let local = try await RepositoryLocation.local(item.projectRoot)
+          let writer = try localWriter(try local.requireLocalURL())
+          root = local
+          commit = {
+            await writer.commit(path: item.path, projectRoot: local.path, request: request)
+          }
         } else {
           let location = try await item.resolvedLocation()
-          let captured = try await RepositoryRouter.shared.writer(for: location)
-          root = try captured.context.requireOwnership()
-          writer = captured
+          let writer = try await RepositoryRouter.shared.writer(for: location)
+          root = try writer.context.requireOwnership()
+          commit = { await writer.commit(request: request) }
         }
       } catch { return completion(.failed(.other(error.localizedDescription))) }
       // Refuse outright rather than queue behind another write (commit/fetch/push/pull, this window
@@ -156,18 +158,7 @@ extension AppStore {
       // permanently, since nothing else ever decrements it, refusing every future write for this
       // project, in every window, until the app restarts.
       let projectStore = self.projectStore
-      let result: VCSCommitResult
-      if AppEnvironment.current.isFixture {
-        result = await FixtureVCSWriter().commit(
-          path: item.path, projectRoot: root.path, request: request)
-      } else {
-        do {
-          guard let writer else { throw RepositoryRoutingError.registrationRequired }
-          result = await writer.commit(request: request)
-        } catch {
-          result = .failed(.other("\(error)"))
-        }
-      }
+      let result = await commit()
       // Decremented, never cleared: a sibling workroom of the same project can be committing too, and
       // dropping the key would re-open every read lane against a write still in progress.
       let remainingCommits = (projectStore.committingProjectRoots[root] ?? 1) - 1
@@ -204,7 +195,9 @@ extension AppStore {
   func stagedContentAtRisk(
     on sid: SidebarID, files: [ChangedFile], completion: @escaping (Result<[String], Error>) -> Void
   ) {
-    if AppEnvironment.current.isFixture { return completion(.success([])) }
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return completion(.success([])) }
+    #endif
     guard let item = selectedStatusWorkItem(for: sid) else {
       return completion(.failure(RepositoryRoutingError.registrationRequired))
     }
