@@ -1089,6 +1089,51 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.7, accuracy: 0.0001)
   }
 
+  /// `main | (feature / bugfix / docs)` rows at thirds. Dragging bugfix beside main leaves
+  /// `feature / docs` at the old third, so evening only the axis bugfix joined keeps feature short.
+  func testASameGroupRearrangeAcrossAxesEvensBoth() {
+    let store = makeStore(["main", "feature", "bugfix", "docs"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    store.insertWorkroomSplit(wr("docs"), beside: wr("bugfix"), edge: .bottom)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("main"), edge: .right)
+    XCTAssertEqual(store.workroomSplits.count, 1)
+    let panes = PaneTreeLayout.plan(
+      store.workroomSplits[0], in: CGRect(x: 0, y: 0, width: 1800, height: 1000)
+    ).panes
+    let widths = [wr("main"), wr("bugfix"), wr("feature")].map { panes[$0]!.width }
+    XCTAssertLessThanOrEqual(widths.max()! - widths.min()!, 1, "three even columns: \(widths)")
+    XCTAssertEqual(
+      panes[wr("feature")]!.height, panes[wr("docs")]!.height, accuracy: 1,
+      "feature and docs split the height evenly")
+  }
+
+  func testPrefOffKeepsARearrangeAsBuilt() {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.autoEvenSplits = { false }
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)  // ½, ¼, ¼
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("main"), edge: .left)
+    let panes = PaneTreeLayout.plan(
+      store.workroomSplits[0], in: CGRect(x: 0, y: 0, width: 1800, height: 1000)
+    ).panes
+    let widths = panes.values.map(\.width)
+    XCTAssertGreaterThan(widths.max()! - widths.min()!, 100, "left as rebuilt: \(widths)")
+  }
+
+  /// Three columns built roomy, then the window shrank: thirds of 800pt fall under the 300pt
+  /// floor, so the rebuilt `(bugfix | main) | feature` keeps its dividers.
+  func testACrampedRearrangeDeclinesToEven() {
+    let store = threeColumnStore()
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 800, height: 900)
+    XCTAssertTrue(store.insertWorkroomSplit(wr("bugfix"), beside: wr("main"), edge: .left))
+    let panes = PaneTreeLayout.plan(
+      store.workroomSplits[0], in: CGRect(x: 0, y: 0, width: 1800, height: 1000)
+    ).panes
+    let widths = panes.values.map(\.width)
+    XCTAssertGreaterThan(widths.max()! - widths.min()!, 100, "not evened: \(widths)")
+  }
+
   func testAnInsertEvensOnlyItsOwnGroup() {
     let store = makeStore(["main", "feature", "docs", "review"])
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // group A

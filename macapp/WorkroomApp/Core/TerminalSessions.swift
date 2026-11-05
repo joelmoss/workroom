@@ -2510,11 +2510,12 @@ final class TerminalSessions: ObservableObject {
   /// the single funnel every split mutation goes through, so "grouping these two leaves those alone"
   /// is enforced in one place rather than at each call site.
   ///
-  /// Evens the tree first when this edit added or removed a pane and the container can honour
-  /// equality (issue #126). The gate is INTENT, not a leaf-count delta: every caller already knows
-  /// whether it is adding, removing, or merely rearranging, and a rearrange must keep the dividers
-  /// the user dragged. `axis` limits the even to one direction: an add passes its split's
-  /// orientation, a removal the orientation of the split the pane left.
+  /// Evens the tree first when `evening` is set and the container can honour equality (issue
+  /// #126). The gate is INTENT, not a leaf-count delta: every caller already knows whether it is
+  /// adding, removing, or rearranging, and a rearrange evens once, after its insert, so its detach
+  /// passes `false`. `axis` limits the even to one direction: an add passes its split's
+  /// orientation, a removal the orientation of the split the pane left, and a rearrange that
+  /// crosses axes nil (both).
   private func setSplit(
     _ tree: TerminalPaneLayout?, groupAt index: Int?, for targetID: TerminalTarget.ID,
     evening: Bool,
