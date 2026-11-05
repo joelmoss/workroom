@@ -19,6 +19,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
   case appearance
   case terminal
   case agent
+  case remoteHosts
   case about
 
   var id: Self { self }
@@ -31,6 +32,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .appearance: return "Appearance"
     case .terminal: return "Terminal"
     case .agent: return "AI Agents"
+    case .remoteHosts: return "Remote Hosts"
     case .about: return "About"
     }
   }
@@ -43,6 +45,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .appearance: return "paintbrush"
     case .terminal: return "terminal"
     case .agent: return "sparkles"
+    case .remoteHosts: return "cloud"
     case .about: return "info.circle"
     }
   }

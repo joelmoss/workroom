@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// The app's Settings window (⌘,). A source-list sidebar (`SettingsPane` rows) on the left, the
 /// selected group's grouped `Form` on the right — the modern macOS System Settings layout, themed to
@@ -80,6 +81,7 @@ struct SettingsView: View {
     case .appearance: AppearanceSettingsPane()
     case .terminal: TerminalSettingsPane()
     case .agent: CodingAgentSettingsPane()
+    case .remoteHosts: RemoteHostsSettingsPane()
     case .about: AboutSettingsPane()
     }
   }
@@ -309,6 +311,51 @@ private struct NewWorkroomsSection: View {
         failure = error.localizedDescription
       }
     }
+  }
+}
+
+/// The host options every boxd and exe.dev workroom is created with (#575, ADR 0065): one group per
+/// provider, shown whether or not it is set up, saving as they change. Project Settings and the
+/// New Workroom dialog's Configure… panel choose over them.
+private struct RemoteHostsSettingsPane: View {
+  @Default(.hostOptions) private var hostOptions
+  @StateObject private var catalog = HostOptionsCatalog()
+
+  var body: some View {
+    // The fields wait for both providers' reads, so their lists and labels don't change under you.
+    Group {
+      if catalog.finished.isSuperset(of: HostProvider.allCases) {
+        Form {
+          ForEach(HostProvider.allCases, id: \.self) { provider in
+            Section {
+              HostOptionsFields(
+                provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
+            } header: {
+              HostOptionsHeader(provider: provider)
+            } footer: {
+              if let failure = catalog.failure[provider] { Text(failure) }
+            }
+          }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+      } else {
+        ProgressView()
+          .controlSize(.small)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
+    }
+    .task {
+      async let boxd: Void = catalog.load(.boxd)
+      async let exeDev: Void = catalog.load(.exeDev)
+      _ = await (boxd, exeDev)
+    }
+  }
+
+  private func binding(_ provider: HostProvider) -> Binding<HostOptions> {
+    Binding(
+      get: { hostOptions[provider.rawValue] ?? HostOptions() },
+      set: { hostOptions[provider.rawValue] = $0.isEmpty ? nil : $0 })
   }
 }
 

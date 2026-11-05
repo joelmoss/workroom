@@ -50,7 +50,9 @@ made from a snapshot the app removes the clone destination right before the clon
 workroom starts from a fresh clone, with none of the old workroom's branch, uncommitted work or
 `.env`; anything installed outside the checkout (the toolchain) stays.
 
-**exe.dev images** (spike, 2026-11-04). The default image, `boldsoftware/exeuntu`, boots systemd,
+**exe.dev images** (spike, 2026-11-04). The default image, `ghcr.io/boldsoftware/exeuntu` (`ls
+--json` names it `boldsoftware/exeuntu`, but `--image=boldsoftware/exeuntu` is looked up on Docker
+Hub, which hasn't it: live gate, 2026-11-04), boots systemd,
 logs in as `exedev` (uid 1000, with sudo), has git, and passed setup first time. A stock
 `ubuntu:24.04` does not work: PID 1 is exe.dev's own `exe-init`, there is no `systemctl`, `sudo` or
 `git`, and ssh as `exedev@` logs in as root, so setup exits 127. Neither `new --json` nor
@@ -174,10 +176,12 @@ Saved settings are left unchanged.
 ## 6. Delivery
 
 One PR, one commit per step. exe.dev's part is built and unit-tested with the rest. The PR is
-merged only after two live creates pass: one exe.dev create with `--image=boldsoftware/exeuntu` set
-explicitly, which proves the flag reaches exe.dev, and one boxd create from a snapshot of a used
-workroom of the same project, which must finish with a new identity and machine-id and none of the
-old screens, layouts or checkout.
+merged only after two live creates pass: one exe.dev create with
+`--image=ghcr.io/boldsoftware/exeuntu` set explicitly, which proves the flag reaches exe.dev
+(passed 2026-11-04, `ExeDevIntegrationTests.testACreateWithAHostImageMakesTheVMFromIt`), and one
+boxd create from a snapshot of a used workroom of the same project, which must finish with a new
+identity and machine-id and none of the old screens, layouts or checkout (passed 2026-11-04,
+`BoxdIntegrationTests.testAMachineFromASnapshotOfAUsedHostStartsClean`).
 
 Sizes over the plan are refused by exe.dev with its own clear error, shown as it comes, for
 example "--cpu cannot exceed 2 — run `billing capacity` to upgrade to a larger plan with more

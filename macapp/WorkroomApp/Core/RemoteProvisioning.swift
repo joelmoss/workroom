@@ -41,7 +41,8 @@ enum RemoteProvisioning {
     /// Removes what is already at the clone's path on a new host, for a boxd host made from a
     /// snapshot of a used workroom (#575): `git clone` refuses a folder that isn't empty, and the
     /// old checkout holds another workroom's branch, changes and `.env`. Nil on a fresh host.
-    var clearCheckout: (@Sendable (HostID, String) async throws -> Void)? = nil
+    /// Given the host, the clone's path and the URL it clones, so only a checkout of that goes.
+    var clearCheckout: (@Sendable (HostID, String, String) async throws -> Void)? = nil
 
     init(
       driver: any HostDriver, daemonSocket: String,
@@ -68,14 +69,8 @@ enum RemoteProvisioning {
       if let boxd = driver as? BoxdHostDriver {
         makeHost = { try await boxd.create(options: options) }
         if options.image != nil {
-          clearCheckout = { host, path in
-            let (status, output) = try await boxd.exec(
-              "rm -rf -- \(PosixShell.quoted(path))", on: host
-            ).communicate(nil, timeout: 120)
-            guard status == 0 else {
-              throw HostDriverError.provisioning(
-                "removing the snapshot's old checkout at \(path) failed: \(output)")
-            }
+          clearCheckout = { host, path, url in
+            try await boxd.clearCheckout(at: path, of: url, on: host)
           }
         }
       } else if let exeDev = driver as? ExeDevHostDriver {
@@ -189,7 +184,7 @@ enum RemoteProvisioning {
       let connected = try await environment.connect(host)
       connection = connected
       ProvisioningProgress.reportStep?(.clone)
-      try await environment.clearCheckout?(host, path)
+      try await environment.clearCheckout?(host, path, cloneURL)
       do {
         _ = try await git(
           ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",

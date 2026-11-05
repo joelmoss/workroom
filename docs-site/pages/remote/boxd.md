@@ -42,6 +42,19 @@ The workroom's terminals run on the boxd machine. A coding agent you start there
 
 If the clone fails with a message that GitHub refused it, a boxd machine reaches GitHub through your boxd git integration. Connect it by running `boxd manage integrations connect git` in a terminal.
 
+## Start from a snapshot
+
+A snapshot saves one of your boxd machines, its disk and memory, so new machines can start from it with your tools already installed. Snapshots belong to the boxd account you're signed in to, and its active org.
+
+- To see them, run `boxd snapshots list` in a terminal. The **Snapshot** setting lists the same ones.
+- To make one, set a machine up as you want it, then run `boxd snapshots save <machine> <name>`. `boxd list` shows your machines' names, and a boxd workroom's **Machine Name** is in its [Details pane](../app/details-and-ports.md).
+
+Choose the snapshot in [Settings ▸ Remote Hosts](../app/settings.md#remote-hosts), in Project Settings, or for one workroom with **Configure…**. See [Choose a host's image and size](overview.md#choose-a-hosts-image-and-size).
+
+A machine made from a snapshot keeps the snapshot's size. Workroom restarts it once, so it gets an identity of its own, and it brings back none of the old machine's terminals, pane layouts or checkout.
+
+If the setting warns that there's no snapshot of that name, you may be signed in to another boxd account or org than the one that saved it. `boxd auth` shows which.
+
 ## Ports
 
 A boxd machine has no **Ports** list in the inspector. To reach a server running on it from a browser, publish the port with boxd. See [Port forwarding](port-forwarding.md#boxd-and-exedev).

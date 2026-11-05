@@ -233,6 +233,19 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertEqual(names, ["prepared", "rails"])
   }
 
+  /// Settings shows the org's default size and caps the sizes at its quota (#575), from
+  /// `manage size get --json` (measured, 2026-11-04).
+  func testTheOrgsDefaultSizeAndQuotaAreRead() async throws {
+    let cli = StubCLI([
+      "manage size": Self.ok(
+        #"{"ceiling_memory_bytes":34359738368,"ceiling_vcpu":8,"memory_bytes":8589934592,"vcpu":2}"#
+      )
+    ])
+    let size = try await driver(cli).defaultSize()
+    XCTAssertEqual(size, .init(vcpu: 2, memoryGB: 8, maxVCPU: 8))
+    XCTAssertEqual(cli.arguments.last, ["manage", "size", "get", "--json"])
+  }
+
   /// A create says which step it is on, for its project row (#356): the machine first, then its
   /// setup, which this one never reaches (the CLI wrote no ssh details).
   func testACreateReportsItsSteps() async throws {
@@ -652,5 +665,83 @@ final class BoxdHostDriverTests: XCTestCase {
     ])
     try await driver(stuck).destroy(.remote(UUID()))
     XCTAssertEqual(stuck.commands, ["machine remove", "snapshots remove"])
+  }
+}
+
+/// What a snapshot create clears before its clone (#575 review, Codex): only the project's own
+/// checkout, as Workroom cloned it on the source host.
+final class BoxdClearCheckoutTests: XCTestCase {
+  // Value: protects=a snapshot create deletes only this project's old checkout, never a host
+  // folder it shares a name with (a repository named `.local` would take the daemon with it);
+  // fails_when=anything at the clone path is removed; why_new=review finding (Codex adversarial,
+  // P1); seam=the script run by real sh and git; no_claim=the ssh hop to a real boxd host
+  func testOnlyTheProjectsOwnCheckoutIsCleared() throws {
+    let root = try FileManager.default.url(
+      for: .itemReplacementDirectory, in: .userDomainMask,
+      appropriateFor: FileManager.default.temporaryDirectory, create: true
+    ).resolvingSymlinksInPath()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = "https://github.com/octocat/Hello-World"
+    func run(_ path: String) throws -> Int32 {
+      let sh = Process()
+      sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+      sh.arguments = ["-c", BoxdHostDriver.clearCheckoutScript(path: path, cloneURL: url)]
+      sh.standardOutput = FileHandle.nullDevice
+      sh.standardError = FileHandle.nullDevice
+      try sh.run()
+      sh.waitUntilExit()
+      return sh.terminationStatus
+    }
+    func shell(_ command: String) throws {
+      let sh = Process()
+      sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+      sh.arguments = ["-c", command]
+      try sh.run()
+      sh.waitUntilExit()
+      XCTAssertEqual(sh.terminationStatus, 0, command)
+    }
+    let exists = { FileManager.default.fileExists(atPath: $0) }
+
+    let checkout = root.appendingPathComponent("Hello-World").path
+    try shell("git init -q '\(checkout)' && git -C '\(checkout)' remote add origin \(url)")
+    XCTAssertEqual(try run(checkout), 0)
+    XCTAssertFalse(exists(checkout), "the project's old checkout stayed")
+
+    let local = root.appendingPathComponent(".local").path
+    try shell("mkdir -p '\(local)/state/workroom' && touch '\(local)/state/workroom/workroomd'")
+    XCTAssertNotEqual(try run(local), 0, "a host folder was taken for a checkout")
+    XCTAssertTrue(exists("\(local)/state/workroom/workroomd"), "a host folder was deleted")
+
+    let other = root.appendingPathComponent("other").path
+    try shell("git init -q '\(other)' && git -C '\(other)' remote add origin https://x.test/y")
+    XCTAssertNotEqual(try run(other), 0)
+    XCTAssertTrue(exists(other), "another repository's checkout was deleted")
+
+    XCTAssertEqual(try run(root.appendingPathComponent("absent").path), 0)
+  }
+
+  // Value: protects=a snapshot create of a project with an ssh origin clears its own checkout
+  // although boxd's git rewrites git@ URLs to https; fails_when=the check compares the rewritten
+  // URL, so every such create fails at the clone; why_new=review finding (Codex, structured);
+  // seam=the script run by real sh and git; no_claim=boxd's own git config
+  func testAnSSHOriginCheckoutIsClearedDespiteBoxdsHTTPSRewrite() throws {
+    let root = try FileManager.default.url(
+      for: .itemReplacementDirectory, in: .userDomainMask,
+      appropriateFor: FileManager.default.temporaryDirectory, create: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = "git@github.com:octocat/Hello-World.git"
+    let checkout = root.appendingPathComponent("Hello-World").path
+    let sh = Process()
+    sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+    sh.arguments = [
+      "-c",
+      "git init -q '\(checkout)' && git -C '\(checkout)' remote add origin \(url)"
+        + " && git -C '\(checkout)' config url.https://github.com/.insteadOf git@github.com:"
+        + " && \(BoxdHostDriver.clearCheckoutScript(path: checkout, cloneURL: url))",
+    ]
+    try sh.run()
+    sh.waitUntilExit()
+    XCTAssertEqual(sh.terminationStatus, 0, "the project's own ssh-origin checkout was refused")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: checkout))
   }
 }

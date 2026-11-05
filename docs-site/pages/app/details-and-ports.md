@@ -19,6 +19,8 @@ Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top
 
 - **Made From** appears for a container workroom: the `devcontainer.json` it was made from, or the image when it had none. A note under it says when the repository's file has changed since, or has been added or removed, since a change applies only to workrooms created after it. See [Your dev container](../remote/containers.md#when-the-file-changes).
 
+- **Custom Image** (exe.dev) or **Made From Snapshot** (boxd), and **Size**, appear for a workroom whose host was created with chosen host options. See [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size).
+
 A remote workroom may also show a short note under these.
 
 Copy buttons briefly show **Copied!** just above the button after copying to the clipboard. The same

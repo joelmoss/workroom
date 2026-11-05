@@ -1,4 +1,5 @@
 import HostDrivers
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -136,6 +137,28 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
     let account = try await driver.signedIn()
     try await aRemoteWorkroomIsMadeAndTakenDownAsTheAppDoesIt(
       provider(driver, key: .exeDev(account: account)))
+  }
+
+  // MARK: Host options
+
+  /// #575's merge gate: a create with a host image passes `--image` to exe.dev, which makes the VM
+  /// from it, and Workroom's setup runs on it. exe.dev's default image lives on ghcr.io: a bare
+  /// `boldsoftware/exeuntu` is looked up on Docker Hub, which hasn't it, though `ls` names the VM's
+  /// image that way (measured, 2026-11-04).
+  func testACreateWithAHostImageMakesTheVMFromIt() async throws {
+    let image = "ghcr.io/boldsoftware/exeuntu"
+    let driver = driver()
+    let host = try await driver.create(options: ResolvedHostOptions(image: image))
+    let listed = try JSONSerialization.jsonObject(with: Data(try lobby(["ls"]).utf8))
+    let row = ((listed as? [String: Any])?["vms"] as? [[String: Any]] ?? [])
+      .first { $0["vm_name"] as? String == name(host) }
+    XCTAssertEqual(
+      row?["image"] as? String, "boldsoftware/exeuntu", "exe.dev says: \(String(describing: row))")
+    XCTAssertEqual(
+      try onBox(host, "cat /etc/workroom-identity"), "\(name(host))\nexit=0",
+      "setup didn't mint the VM's identity")
+    try await driver.destroy(host)
+    XCTAssertEqual(try leftovers(), [], "the VM stayed")
   }
 
   // MARK: exe.dev's own steps

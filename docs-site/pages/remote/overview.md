@@ -58,7 +58,7 @@ The **Details** pane in the inspector shows where a workroom runs: **Running on*
 When you pick a host, the workroom's pane opens at once with a checklist. It shows each step of the create with its time, and a log you can open:
 
 - A container: **Check repository**, **Read devcontainer.json**, **Run initializeCommand**, **Pull image**, **Build image**, **Start container**, **Connect**, **Clone repository**, **Check out branch**, then your `devcontainer.json`'s lifecycle commands after **Copy local files**. See [Docker and Apple containers](containers.md#create-a-container-workroom).
-- boxd: **Check repository**, **Check boxd account**, **Create machine**, **Set up machine**, **Connect**, **Clone repository**, **Check out branch**.
+- boxd: **Check repository**, **Check boxd account**, **Create machine**, **Set up machine**, **Connect**, **Clone repository**, **Check out branch**. A machine made from a snapshot also shows **Restarting host from snapshot** after **Set up machine**.
 - exe.dev: **Check repository**, **Check exe.dev account**, **Create VM**, **Wait for boot**, **Set up machine**, **Connect**, **Clone repository**, **Check out branch**.
 - SSH: enter the host and parent folder, check the host and its key, then make the workroom's
   folder, connect, clone the repository and check out the branch. See [SSH hosts](ssh.md).
@@ -66,6 +66,24 @@ When you pick a host, the workroom's pane opens at once with a checklist. It sho
 After these, **Copy local files** runs if your project has a `.worktreeinclude`, and **Run setup script** runs if it has a `scripts/workroom_setup`. If a step fails, the pane tells you why and offers **Try Again** or **Close**. If the failed create could not take its machine down, the pane says the machine is still running and offers **Delete Workroom…** or **Close** instead.
 
 The first time you use boxd or exe.dev, the **Check ... account** step waits for you while a setup sheet walks you through signing up. See [boxd](boxd.md) and [exe.dev](exe-dev.md).
+
+## Choose a host's image and size
+
+A boxd or exe.dev workroom's host can start from your own image and have the size you choose. On boxd the image is a snapshot of one of your machines. On exe.dev it is a container image.
+
+You can choose them in three places, and the most specific one wins, setting by setting:
+
+1. **For one workroom.** In the **New Workroom** dialog, click **Configure…** beside **boxd** or **exe.dev**, or highlight it and press <kbd>⌘⏎</kbd>. From the sidebar's **New Workroom** menu, choose **boxd ▸ Configure…** or **exe.dev ▸ Configure…**. Their **Create** creates at once, as picking the place in the dialog does. The panel shows what each setting will be and where it comes from. Turn on **Remember for this project** to save the settings you changed to the project. Click **Create Workroom**.
+2. **For one project.** In Project Settings, with the same choices as Settings. The provider's own default is marked **(default)**, and a value from Settings **(app)**. Choosing the value marked **(app)**, or leaving a field empty, follows Settings, so a later change there applies to the project too. Where Settings names its own value, the **(default)** choice gets the provider's default instead.
+3. **For every project.** In [Settings ▸ Remote Hosts](../app/settings.md#remote-hosts).
+
+Picking **boxd** or **exe.dev** in the dialog still creates the workroom at once, with these settings.
+
+A machine made from a snapshot of a used workroom starts clean: none of that workroom's terminals, pane layouts or checkout come with it. The new workroom gets a fresh clone. Anything installed outside the checkout, such as your toolchain, stays.
+
+An exe.dev image has to boot systemd and have `sudo`, `git` and the `exedev` user, as exe.dev's own `ghcr.io/boldsoftware/exeuntu` does. Name the image with its registry: without one, exe.dev looks on Docker Hub. If it doesn't, the create fails at **Wait for boot** or **Set up machine** and names the image. A size your plan doesn't allow fails with exe.dev's own message.
+
+When a create with your own image or size fails while making, restarting or setting up its host, the pane also offers **Try With Provider Defaults**. It creates the workroom again on the provider's default image and size, and changes none of your settings. **Try Again** keeps the settings that create used.
 
 ## Setup and teardown scripts
 

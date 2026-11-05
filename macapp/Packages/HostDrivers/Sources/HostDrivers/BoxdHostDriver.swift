@@ -160,7 +160,12 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
       if snapshot != nil {
         try await ProvisioningProgress.step(.restart) {
           _ = try await cli(["machine", "reboot", name])
-          try await awaitIdentity(of: id, named: name)
+          do { try await awaitIdentity(of: id, named: name) } catch HostDriverError.provisioning(
+            let detail)
+          {
+            throw HostDriverError.provisioning(
+              "\(name)\(made) didn't come back from its restart: \(detail)")
+          }
         }
       }
       return .remote(id)
@@ -373,13 +378,79 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
   /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
   public static let statusTimeout: TimeInterval = 10
 
+  /// Removes the project's old checkout at `path` on `host` (#575): a machine made from a snapshot
+  /// of a used workroom still holds it, and the clone would refuse the folder. Only a checkout of
+  /// `cloneURL` goes, as Workroom cloned it there; anything else at `path` (a host folder a
+  /// repository shares its name with, such as `.local`) stays, and the create fails.
+  public func clearCheckout(at path: String, of cloneURL: String, on host: HostID) async throws {
+    try await setUp(
+      Self.clearCheckoutScript(path: path, cloneURL: cloneURL), on: host, stdin: Data(),
+      timeout: 120,
+      failure: "Workroom kept \(path) on the snapshot: it isn't this project's checkout, or"
+        + " couldn't be removed, so the clone can't go there")
+  }
+
+  /// The shell line `clearCheckout` runs: nothing at `path` is fine; a git checkout whose top is
+  /// `path` and whose origin is `cloneURL` is removed; anything else fails, untouched.
+  public static func clearCheckoutScript(path: String, cloneURL: String) -> String {
+    let path = PosixShell.quoted(path)
+    let url = PosixShell.quoted(cloneURL)
+    // Real paths on both sides: git reports the top through any symlink in the path.
+    return "[ -e \(path) ] || exit 0; "
+      + "[ \"$(git -C \(path) rev-parse --show-toplevel 2>/dev/null)\""
+      + " = \"$(cd \(path) 2>/dev/null && pwd -P)\" ]"
+      // The URL as stored: `remote get-url` applies boxd's `insteadOf` rewrite of git@ URLs to
+      // https (ADR 0049), which would never match the ssh URL the clone was given.
+      + " && [ \"$(git -C \(path) config --get remote.origin.url 2>/dev/null)\" = \(url) ]"
+      + " && rm -rf -- \(path)"
+  }
+
   /// The names of the account's snapshots (#575), for the Host image combo box: `snapshots list
   /// --json` also gives each one's version, status, size and used space, but no id or date.
   public func snapshotNames() async throws -> [String] {
     struct Snapshot: Decodable { let name: String }
     do {
-      return try decode([Snapshot].self, try await cli(["snapshots", "list"]), "your snapshots")
-        .map(\.name)
+      return try decode(
+        [Snapshot].self, try await cli(["snapshots", "list"], timeout: Self.statusTimeout),
+        "your snapshots"
+      )
+      .map(\.name)
+    } catch let failure as CLIFailure {
+      throw HostDriverError.provisioning(failure.localizedDescription)
+    }
+  }
+
+  /// The org's default machine size and its per-machine quota (#575), from `manage size get
+  /// --json` (measured, 2026-11-04): what a create with no size gets, and the largest it may ask.
+  public struct DefaultSize: Equatable, Sendable {
+    public let vcpu: Int
+    public let memoryGB: Int
+    public let maxVCPU: Int
+
+    public init(vcpu: Int, memoryGB: Int, maxVCPU: Int) {
+      self.vcpu = vcpu
+      self.memoryGB = memoryGB
+      self.maxVCPU = maxVCPU
+    }
+  }
+
+  public func defaultSize() async throws -> DefaultSize {
+    struct Read: Decodable {
+      let vcpu: Int
+      let memoryBytes: Int64
+      let ceilingVCPU: Int
+      enum CodingKeys: String, CodingKey {
+        case vcpu
+        case memoryBytes = "memory_bytes"
+        case ceilingVCPU = "ceiling_vcpu"
+      }
+    }
+    do {
+      let read = try decode(
+        Read.self, try await cli(["manage", "size", "get"], timeout: Self.statusTimeout),
+        "your org's default size")
+      return DefaultSize(
+        vcpu: read.vcpu, memoryGB: Int(read.memoryBytes / 1_073_741_824), maxVCPU: read.ceilingVCPU)
     } catch let failure as CLIFailure {
       throw HostDriverError.provisioning(failure.localizedDescription)
     }

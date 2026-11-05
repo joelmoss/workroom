@@ -29,7 +29,8 @@ final class HostOptionsTests: XCTestCase {
     XCTAssertTrue(resolved.options.isProviderDefault)
   }
 
-  /// boxd refuses a size with a snapshot, and has no memory or disk of its own to choose.
+  /// boxd refuses a size with a snapshot, and has no memory or disk of its own to choose. The
+  /// size below is still what a level above inherits, should it override the snapshot.
   func testABoxdSnapshotResolvesSizeToNothing() {
     let settings = HostOptions(cpu: .value(4), memory: .value("16G"), disk: .value("50GB"))
     let project = HostOptions(image: .value("prepared"))
@@ -38,8 +39,26 @@ final class HostOptionsTests: XCTestCase {
       for: .boxd, create: nil, project: project, settings: settings)
 
     XCTAssertEqual(resolved.options, ResolvedHostOptions(image: "prepared"))
-    XCTAssertEqual(resolved.cpu, .init(value: nil, source: nil))
+    XCTAssertEqual(resolved.cpu, .init(value: 4, source: .settings))
     XCTAssertTrue(resolved.sizeTakenBySnapshot)
+  }
+
+  /// Value: protects=a level that overrides a snapshot below it is shown the size the create will
+  /// send; fails_when=the snapshot's level hides the size below, so the picker shows the
+  /// provider's default while the create sends a larger paid size; why_new=review finding (Codex);
+  /// seam=none; no_claim=the picker's rendering
+  func testOverridingASnapshotShowsTheSizeTheCreateSends() {
+    let settings = HostOptions(cpu: .value(8))
+    let project = HostOptions(image: .value("prepared"))
+    let below = HostOptions.resolve(
+      for: .boxd, create: nil, project: project, settings: settings)
+
+    let create = HostOptions(image: .providerDefault)
+    let sent = HostOptions.resolve(
+      for: .boxd, create: create, project: project, settings: settings)
+
+    XCTAssertEqual(sent.options.cpu, 8)
+    XCTAssertEqual(below.cpu.value, sent.options.cpu, "the size shown isn't the size sent")
   }
 
   func testABoxdFreshMachineTakesOnlyItsSize() {

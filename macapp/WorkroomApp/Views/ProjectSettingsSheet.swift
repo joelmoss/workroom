@@ -1,3 +1,4 @@
+import Defaults
 import SwiftUI
 import WorkroomDomain
 
@@ -18,6 +19,9 @@ struct ProjectSettingsSheet: View {
   @State private var command = ""
   @State private var autoRun = false
   @State private var baseBranch = ""
+  /// This project's host options (#575), by `HostProvider.rawValue`.
+  @State private var hostOptions: [String: HostOptions] = [:]
+  @StateObject private var catalog = HostOptionsCatalog()
 
   /// Trim with the same set `RunConfig.hasCommand` uses, so the auto-run gate and what's actually
   /// runnable agree (a newlines-only command must read as blank too — review #7).
@@ -72,6 +76,21 @@ struct ProjectSettingsSheet: View {
               + "branch. Write upstream/main for another remote's branch. Remote workrooms need a "
               + "branch on origin. Leave it empty to use the app default in Settings.")
         }
+        ForEach(HostProvider.allCases, id: \.self) { provider in
+          Section {
+            HostOptionsFields(
+              provider: provider, options: hostOptionsBinding(provider),
+              inherited: HostOptions.resolve(
+                for: provider, create: nil, project: nil,
+                settings: Defaults[.hostOptions][provider.rawValue]),
+              catalog: catalog)
+          } header: {
+            HostOptionsHeader(provider: provider)
+          } footer: {
+            if let failure = catalog.failure[provider] { Text(failure) }
+          }
+          .task { await catalog.load(provider) }
+        }
       }
       .formStyle(.grouped)
 
@@ -88,6 +107,8 @@ struct ProjectSettingsSheet: View {
             let path = project.path
             Task { await store.setBaseBranch(branch, forProject: path) }
           }
+          let chosen = hostOptions.filter { !$0.value.isEmpty }
+          Defaults[.projectHostOptions][project.path] = chosen.isEmpty ? nil : chosen
           dismiss()
         }
         .keyboardShortcut(.defaultAction)
@@ -101,6 +122,13 @@ struct ProjectSettingsSheet: View {
       command = config.command
       autoRun = config.autoRun
       baseBranch = project.baseBranch ?? ""
+      hostOptions = Defaults[.projectHostOptions][project.path] ?? [:]
     }
+  }
+
+  private func hostOptionsBinding(_ provider: HostProvider) -> Binding<HostOptions> {
+    Binding(
+      get: { hostOptions[provider.rawValue] ?? HostOptions() },
+      set: { hostOptions[provider.rawValue] = $0 })
   }
 }

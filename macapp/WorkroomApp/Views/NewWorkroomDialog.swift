@@ -126,17 +126,37 @@ struct NewWorkroomDialog: View {
   {
     let usable = isUsable(place, in: project)
     let reason = place.remote.flatMap(RemoteWorkrooms.unavailability(of:))
-    return Button {
-      pick(place, in: project, split: PickerSplitIntent.requestedFromCurrentModifiers())
-    } label: {
-      PickerRow(
-        icon: place.icon, title: place.name, detail: reason ?? place.detail,
-        help: reason.map { "\(place.name) can't be used: \($0)" } ?? place.detail,
-        isHighlighted: isHighlighted, dimmed: !usable)
+    return HStack(spacing: 6) {
+      Button {
+        pick(place, in: project, split: PickerSplitIntent.requestedFromCurrentModifiers())
+      } label: {
+        PickerRow(
+          icon: place.icon, title: place.name, detail: reason ?? place.detail,
+          help: reason.map { "\(place.name) can't be used: \($0)" } ?? place.detail,
+          isHighlighted: isHighlighted, dimmed: !usable)
+      }
+      .buttonStyle(.plain)
+      .accessibilityIdentifier("newWorkroom.place.\(place.id)")
+      if place.remote?.hostProvider != nil {
+        Button("Configure…") {
+          openOptions(place, in: project, split: PickerSplitIntent.requestedFromCurrentModifiers())
+        }
+        .buttonStyle(.borderless)
+        .help("Choose the host image and size for this workroom (⌘⏎)")
+        .accessibilityIdentifier("newWorkroom.options.\(place.id)")
+      }
     }
-    .buttonStyle(.plain)
     .disabled(!usable)
-    .accessibilityIdentifier("newWorkroom.place.\(place.id)")
+  }
+
+  /// A boxd or exe.dev place's Configure… (#575): the create waits on its host options panel.
+  private func openOptions(_ place: WorkroomPlace, in project: Project, split: Bool = false) {
+    guard let remote = place.remote, remote.hostProvider != nil, isUsable(place, in: project)
+    else { return }
+    onClose()
+    store.pendingHostOptions = PendingHostOptions(
+      project: project, place: remote,
+      splitAnchor: placeAnchor ?? (split ? store.selectedTargetID : nil))
   }
 
   private func projectRow(_ project: Project, isHighlighted: Bool) -> some View {
@@ -205,7 +225,13 @@ struct NewWorkroomDialog: View {
       let split = PickerSplitIntent.requested(press.modifiers)
       if let placing {
         if WorkroomPlace.all.indices.contains(highlighted) {
-          pick(WorkroomPlace.all[highlighted], in: placing, split: split)
+          let place = WorkroomPlace.all[highlighted]
+          // ⌘⏎ opens a boxd or exe.dev place's Configure… (#575); elsewhere it creates, as before.
+          if press.modifiers.contains(.command), place.remote?.hostProvider != nil {
+            openOptions(place, in: placing, split: split)
+          } else {
+            pick(place, in: placing, split: split)
+          }
         }
       } else if let project = ProjectPickerModel.selection(
         filtered: filtered, highlight: highlighted)

@@ -104,6 +104,19 @@ See [Coding agents](coding-agents.md#diagnose-a-failed-command).
 
 See [Coding agents](coding-agents.md#usage).
 
+## Remote Hosts {nightly}
+
+What Workroom creates each new boxd and exe.dev workroom's host with. Existing workrooms keep the host they were made with. There is a group for each provider, shown whether or not you have set that provider up, and each setting saves as you change it. Each group's **info** link opens [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size). In a list, the provider's own default is marked **(default)**, and choosing it leaves the choice to the provider. Where the provider doesn't say what its default is, the list shows **Provider default** instead.
+
+| Setting | What it does |
+| --- | --- |
+| **Snapshot** (boxd) | A snapshot of one of your boxd machines to start new machines from. Pick one from the list, or type a name. A name that the boxd account you're signed in to doesn't have shows a warning, whose **help** link opens [Start from a snapshot](../remote/boxd.md#start-from-a-snapshot). Empty, new machines start fresh. |
+| **Size** (boxd) | One of boxd's sizes, up to your org's limit per machine. Your org's default size is marked **(default)**. A machine made from a snapshot keeps the snapshot's size, so this is off while a snapshot is set. |
+| **Custom image** (exe.dev) | The container image new VMs start from, with its registry: a name without one, such as `boldsoftware/exeuntu`, is looked up on Docker Hub. Empty, exe.dev uses its own `ghcr.io/boldsoftware/exeuntu`. |
+| **CPU**, **Memory**, **Disk** (exe.dev) | The size of new VMs, up to what your plan allows. exe.dev's default CPU and your plan's default disk are marked **(default)**. If Workroom can't read your plan, these are text fields. |
+
+A project can choose its own in Project Settings, and one create can choose its own. See [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size).
+
 ## About
 
 | Setting | What it does |

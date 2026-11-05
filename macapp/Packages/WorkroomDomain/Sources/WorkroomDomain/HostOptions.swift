@@ -12,6 +12,39 @@ public enum HostProvider: String, Codable, Hashable, Sendable, CaseIterable {
     case .exeDev: "exe.dev"
     }
   }
+
+  /// What the provider starts a host from when a level names an image.
+  public var imageKind: HostImageKind {
+    switch self {
+    case .boxd: .snapshot
+    case .exeDev: .containerImage
+    }
+  }
+}
+
+/// What a provider's host image is (#575), and so what the app calls it and whether it can list
+/// the account's own.
+public enum HostImageKind: Sendable {
+  /// A snapshot of one of the account's machines, which the fields list and check by name.
+  case snapshot
+  /// A container image, named with its registry.
+  case containerImage
+
+  /// The host option field's label.
+  public var fieldLabel: String {
+    switch self {
+    case .snapshot: "Snapshot"
+    case .containerImage: "Custom image"
+    }
+  }
+
+  /// The label for what a workroom's host was made from, in its Details pane.
+  public var madeFromLabel: String {
+    switch self {
+    case .snapshot: "Made From Snapshot"
+    case .containerImage: "Custom Image"
+    }
+  }
 }
 
 /// One host option at one level, when the level sets it: Provider default (explicitly none) or a
@@ -82,13 +115,16 @@ public struct HostOptions: Codable, Hashable, Sendable {
     public var cpu: Resolved<Int>
     public var memory: Resolved<String>
     public var disk: Resolved<String>
-    /// A boxd snapshot is the image, so size resolves to nothing: boxd refuses `--vcpu` and
-    /// `--memory` with a snapshot ("forks and snapshot restores keep their source's size").
+    /// A boxd snapshot is the image, so the create gets no size: boxd refuses `--vcpu` and
+    /// `--memory` with a snapshot ("forks and snapshot restores keep their source's size"). `cpu`
+    /// still holds the size below, which a level that overrides the snapshot inherits.
     public var sizeTakenBySnapshot: Bool
 
+    /// What the create sends.
     public var options: ResolvedHostOptions {
       ResolvedHostOptions(
-        image: image.value, cpu: cpu.value, memory: memory.value, disk: disk.value)
+        image: image.value, cpu: sizeTakenBySnapshot ? nil : cpu.value, memory: memory.value,
+        disk: disk.value)
     }
   }
 
@@ -119,10 +155,9 @@ public struct HostOptions: Codable, Hashable, Sendable {
         image: image, cpu: walk(\.cpu), memory: walk(\.memory), disk: walk(\.disk),
         sizeTakenBySnapshot: false)
     case .boxd:
-      let snapshot = image.value != nil
       return Resolution(
-        image: image, cpu: snapshot ? Resolved(value: nil, source: nil) : walk(\.cpu),
-        memory: none, disk: none, sizeTakenBySnapshot: snapshot)
+        image: image, cpu: walk(\.cpu), memory: none, disk: none,
+        sizeTakenBySnapshot: image.value != nil)
     }
   }
 }

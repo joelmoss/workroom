@@ -1,4 +1,5 @@
 import HostDrivers
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -138,6 +139,57 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
   /// every fresh machine boots with the image's one machine-id and host key (measured).
   func testFreshMachinesHaveAnIdentityOfTheirOwn() async throws {
     try await freshHostsHaveAnIdentityOfTheirOwn(provider())
+  }
+
+  /// #575's merge gate: a machine made from a snapshot of a used workroom's host restarts into an
+  /// identity of its own, brings back none of the old host's terminals or pane layouts, and its
+  /// old checkout is cleared so the create's clone goes in. The source is "used" by hand: a saved
+  /// screen, a layout and a checkout where a workroom keeps them.
+  func testAMachineFromASnapshotOfAUsedHostStartsClean() async throws {
+    let driver = driver()
+    let source = try await driver.create()
+    let state = BoxdHostDriver.stateDirectory
+    let checkout = "/home/\(BoxdHostDriver.user)/Hello-World"
+    let url = "https://github.com/octocat/Hello-World"
+    XCTAssertEqual(
+      try onBox(
+        source,
+        "mkdir -p \(state)/screens/s1 \(state)/layouts"
+          + " && git clone --quiet --depth 1 \(url) \(checkout)"
+          + " && touch \(state)/screens/s1/screen \(state)/layouts/l1 \(checkout)/.env"),
+      "exit=0")
+    let sourceMachineID = try onBox(source, "cat /etc/machine-id")
+    let snapshot = "\(prefix!)-snap"
+    try boxd(["snapshots", "save", name(source), snapshot])
+
+    let options = ResolvedHostOptions(image: snapshot)
+    let restored = try await driver.create(options: options)
+    XCTAssertEqual(
+      try onBox(restored, "cat /etc/workroom-identity"), "\(name(restored))\nexit=0",
+      "the restored machine kept another's identity")
+    XCTAssertNotEqual(
+      try onBox(restored, "cat /etc/machine-id"), sourceMachineID,
+      "the restored machine kept the source's machine-id")
+    XCTAssertEqual(
+      try onBox(restored, "ls -A \(state)/screens; ls -A \(state)/layouts 2>/dev/null; true"),
+      "exit=0", "the source's screens or layouts came back")
+
+    // The create's clone step clears the old checkout first, as the app wires it.
+    var environment = RemoteProvisioning.Environment(
+      driver: driver, daemonSocket: driver.daemonSocket)
+    environment.made(with: options, by: driver)
+    try await XCTUnwrap(environment.clearCheckout)(restored, checkout, url)
+    XCTAssertEqual(
+      try onBox(
+        restored,
+        "git clone --quiet --depth 1 \(url) \(checkout)"
+          + " && test ! -e \(checkout)/.env"),
+      "exit=0", "the clone didn't go into a clean folder")
+
+    try await driver.destroy(restored)
+    try await driver.destroy(source)
+    try boxd(["snapshots", "remove", snapshot, "-y"])
+    XCTAssertEqual(try leftovers("machine") + leftovers("snapshots"), [], "something stayed")
   }
 
   /// AC 5, for the provider's steps: a create that fails at its CLI step, or after it ran (`+`:
