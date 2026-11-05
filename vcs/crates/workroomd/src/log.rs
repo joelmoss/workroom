@@ -222,8 +222,8 @@ extern "C" fn on_fatal_signal(signal: libc::c_int) {
 /// Has each of `FATAL_SIGNALS` write a line here before it ends the daemon, as it would have.
 ///
 /// The handler only writes the signal's number to a pipe, all a handler may safely do; a thread
-/// reads it, logs it, and raises it again with the default action, so the daemon still dies of that
-/// signal with the same status. `execve` resets caught signals to their default, so a session's
+/// reads it, logs it (waiting a second at most), and raises it again with the default action, so
+/// the daemon still dies of that signal with the same status. One inherited as ignored is left so. `execve` resets caught signals to their default, so a session's
 /// shell is not affected, and a hand-off's next program installs its own.
 pub fn note_fatal_signals() {
     let mut fds = [0; 2];
@@ -242,7 +242,18 @@ pub fn note_fatal_signals() {
             // SAFETY: one byte into a live local, from a descriptor this thread alone reads.
             while unsafe { libc::read(read, (&mut byte as *mut u8).cast(), 1) } != 1 {}
             let signal = libc::c_int::from(byte);
-            crate::note!("{}; exiting", describe_status(signal));
+            // The line is written from its own thread and waited for briefly: a stderr that blocks
+            // (a supervisor's pipe nobody drains) must not stop the signal from ending the daemon.
+            let (logged, wait) = std::sync::mpsc::channel();
+            if std::thread::Builder::new()
+                .spawn(move || {
+                    crate::note!("{}; exiting", describe_status(signal));
+                    let _ = logged.send(());
+                })
+                .is_ok()
+            {
+                let _ = wait.recv_timeout(std::time::Duration::from_secs(1));
+            }
             // SAFETY: plain integers; the default action for every one of these ends the process.
             unsafe {
                 libc::signal(signal, libc::SIG_DFL);
@@ -262,6 +273,16 @@ pub fn note_fatal_signals() {
     // SAFETY: `getpid` takes no arguments.
     DAEMON_PID.store(unsafe { libc::getpid() }, Ordering::Relaxed);
     for signal in FATAL_SIGNALS {
+        // A signal the daemon was started with ignored stays ignored: `start.sh` runs an SSH host's
+        // daemon under `nohup` and in the background, and logging must not make SIGHUP fatal there.
+        // SAFETY: `sigaction` is plain old data, for which all zeroes is a valid value.
+        let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: a null new action only reads the current one into the live `previous`.
+        if unsafe { libc::sigaction(signal, std::ptr::null(), &mut previous) } != 0
+            || previous.sa_sigaction == libc::SIG_IGN
+        {
+            continue;
+        }
         // SAFETY: `sigaction` is plain old data, for which all zeroes is a valid value.
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = on_fatal_signal as extern "C" fn(libc::c_int) as usize;
