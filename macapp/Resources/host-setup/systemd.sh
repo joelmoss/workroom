@@ -36,9 +36,11 @@ socket=$2
 screens=$3
 daemon_dir=$(dirname "$socket")
 daemon="$daemon_dir/workroomd"
+# The daemon keeps its layouts beside its screens (`layout::dir_beside`), and makes the directory.
+layouts="$(dirname "$screens")/layouts"
 home=$(getent passwd "$user" | cut -d: -f6)
 
-case "$socket$screens" in
+case "$socket$screens$layouts" in
   *[!A-Za-z0-9/._-]*)
     echo "workroom: refusing a path systemd would need quoted: $socket $screens" >&2
     exit 2
@@ -66,7 +68,9 @@ ssh-keygen -A
 rm -f /etc/machine-id /var/lib/dbus/machine-id
 systemd-machine-id-setup
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
-rm -rf "$screens"
+# A new identity starts clean: a host made from a snapshot of a used one (#575) brings back none of
+# its terminals or pane layouts.
+rm -rf "$screens" "$layouts"
 install -d -o "$user" -g "$user" -m 700 "$screens"
 hostname > "\$marker"
 EOF

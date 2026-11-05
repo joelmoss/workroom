@@ -16,6 +16,8 @@ public enum ProvisioningProgress {
     /// A container's devcontainer.json (#308): reading it, its initializeCommand on this Mac, its
     /// image's build, and its lifecycle commands in the container after the clone.
     case config, initialize, build, onCreate, updateContent, postCreate, postStart
+    /// Restarting a boxd host made from a snapshot (#575), so its identity unit mints its own.
+    case restart
   }
 
   /// Told each `Step` as it starts, for a create's progress on its project row. Set with

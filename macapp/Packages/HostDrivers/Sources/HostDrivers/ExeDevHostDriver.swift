@@ -1,6 +1,7 @@
 import CryptoKit
 import DaemonConnection
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import os
@@ -105,19 +106,47 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
 
   // MARK: Provisioning
 
-  /// A fresh VM, set up as a workroom's host: the identity unit has minted its identity and the
-  /// supervisor is waiting for a daemon. A VM that gets no further is removed.
-  public func create() async throws -> HostID {
+  /// What a failed setup says, naming the image when one was chosen (#575).
+  public static func setupFailure(name: String, image: String?) -> String {
+    imageFailure(image, "setting up \(name) failed")
+  }
+
+  /// `detail`, led by the chosen image and what Workroom's setup needs of it: the usual reason an
+  /// image fails at boot or setup (spike, 2026-11-04: `ubuntu:24.04` has none of them).
+  static func imageFailure(_ image: String?, _ detail: String) -> String {
+    guard let image else { return detail }
+    return "Workroom's setup didn't run on \(image) (it needs systemd, sudo and the exedev user):"
+      + " \(detail)"
+  }
+
+  /// A VM of exe.dev's default image and size, set up as a workroom's host.
+  public func create() async throws -> HostID { try await create(options: ResolvedHostOptions()) }
+
+  /// A VM made with `options` (#575), set up as a workroom's host: the identity unit has minted
+  /// its identity and the supervisor is waiting for a daemon. A VM that gets no further is
+  /// removed. What an image holds is exe.dev's and the user's concern: one without systemd, sudo
+  /// or the exedev user fails at boot or setup, which then names it.
+  public func create(options: ResolvedHostOptions) async throws -> HostID {
     // The app announces the account step itself (it asks before the driver does): only its log here.
     try await ProvisioningProgress.step(.account, report: false) { try await checkAccount() }
     let id = UUID()
     let name = name(of: id)
+    let flags: [String] = [
+      options.image.map { ["--image", $0] }, options.cpu.map { ["--cpu", String($0)] },
+      options.memory.map { ["--memory", $0] }, options.disk.map { ["--disk", $0] },
+    ].compactMap { $0 }.flatMap { $0 }
     try markPending(id)
     do {
       try await ProvisioningProgress.step(.machine) {
-        _ = try await cli(["new", "--name", name, "--no-email"])
+        _ = try await cli(["new", "--name", name, "--no-email"] + flags)
       }
-      try await ProvisioningProgress.step(.boot) { try await awaitBoot(of: id) }
+      try await ProvisioningProgress.step(.boot) {
+        do { try await awaitBoot(of: id) } catch HostDriverError.provisioning(let detail)
+          where options.image != nil
+        {
+          throw HostDriverError.provisioning(Self.imageFailure(options.image, detail))
+        }
+      }
       try await ProvisioningProgress.step(.setup) {
         let command =
           "sudo sh -s -- "
@@ -125,7 +154,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
           .map(PosixShell.quoted).joined(separator: " ")
         try await setUp(
           command, on: .remote(id), stdin: Data(try HostSetup.systemdScript().utf8),
-          timeout: 120, failure: "setting up \(name) failed")
+          timeout: 120, failure: Self.setupFailure(name: name, image: options.image))
         // git and gh reach GitHub through exe.dev's integration, never with a token on the VM.
         try await setUp(
           "sudo sh -s -- /etc/profile.d", on: .remote(id),
@@ -360,6 +389,34 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
       said:
         "an answer Workroom doesn't know: \(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))"
     )
+  }
+
+  /// What the plan lets a VM have (#575), from `billing plan --json` (measured, 2026-11-04): the
+  /// caps on the Settings size pickers, and the disk a VM gets when none is chosen.
+  public struct PlanLimits: Decodable, Equatable, Sendable {
+    public let maxCPUs: Int
+    public let maxMemoryGB: Int
+    public let defaultDiskGB: Int?
+
+    public init(maxCPUs: Int, maxMemoryGB: Int, defaultDiskGB: Int?) {
+      self.maxCPUs = maxCPUs
+      self.maxMemoryGB = maxMemoryGB
+      self.defaultDiskGB = defaultDiskGB
+    }
+
+    enum CodingKeys: String, CodingKey {
+      case maxCPUs = "max_cpus"
+      case maxMemoryGB = "max_memory_gb"
+      case defaultDiskGB = "default_disk_gb"
+    }
+  }
+
+  public func planLimits() async throws -> PlanLimits {
+    do {
+      return try decode(PlanLimits.self, try await cli(["billing", "plan"]), "your plan")
+    } catch let failure as CLIFailure {
+      throw HostDriverError.provisioning(failure.localizedDescription)
+    }
   }
 
   /// Whether the account's plan lets it make VMs: a new account's is Basic with `max_vms` 0, and
@@ -708,8 +765,17 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
   private func run(_ arguments: [String], timeout: TimeInterval) async -> CommandResult {
     // The command as typed, without ssh's options (they name the agent socket and the config).
     ProvisioningProgress.record(command: "ssh", [Self.lobby] + arguments)
+    // ssh joins its words with spaces and exe.dev splits them again, honouring POSIX quotes
+    // (probe, 2026-11-04): a word with anything but these characters goes quoted, to stay one.
+    let words = arguments.map { word in
+      !word.isEmpty
+        && word.allSatisfy {
+          $0.isASCII && ($0.isLetter || $0.isNumber || "-_./:=@,+".contains($0))
+        }
+        ? word : PosixShell.quoted(word)
+    }
     let result = await runner.runNetwork(
-      "/usr/bin/ssh", Self.sshOptions + [Self.lobby] + arguments,
+      "/usr/bin/ssh", Self.sshOptions + [Self.lobby] + words,
       in: NSHomeDirectory(), timeout: timeout)
     ProvisioningProgress.record(result.stdout)
     ProvisioningProgress.record(result.stderr)
