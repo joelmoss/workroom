@@ -3,7 +3,7 @@ import Foundation
 /// Generic filter + keyboard-highlight core shared by every searchable list-picker (New Workroom's
 /// `ProjectPickerModel`, Open Workroom's `OpenPickerModel`, …). Pure value logic — no AppKit /
 /// SwiftUI — so every branch runs headless. The view owns the `query` / `highlight` `@State`; this
-/// just computes. Mirrors `EdgeRevealReducer` / `TabReorderMath`.
+/// just computes. Mirrors `EdgeRevealReducer` / `TabStripMath.swift`.
 ///
 ///   type ──► filtered(items, query, key:)  → the visible rows
 ///   ↑/↓  ──► move(highlight, by:, count:)   → clamped index, NO side effects

@@ -2,7 +2,7 @@ import SwiftUI
 
 // The overflow *scaffolding* for the two horizontal tab strips — the terminal strip
 // (`TerminalTabStrip`) and the Workrooms tab bar (`WorkroomTabBar`, issue #129). One home for the
-// wiring, not just the numbers: `TabReorderMath.swift` shares the constants and the predicate, but the
+// wiring, not just the numbers: `TabStripMath.swift` shares the constants and the predicate, but the
 // assembly around them is where the traps are, and a wrong modifier order in one strip was invisible
 // from the other. This owns all three width measurements, the inline↔pinned decision, the trailing
 // alpha ramp, and the load-bearing modifier order, so neither strip hand-maintains any of it.
