@@ -51,17 +51,12 @@ pub fn run_serve(
     mut screens: Option<PathBuf>,
     as_user: Become,
 ) -> ExitCode {
-    let timeout = match idle_timeout(idle.as_deref()) {
-        Ok(timeout) => timeout,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    // Reported once the log exists, below: a spawned daemon's stderr is /dev/null until then.
+    let timeout = idle_timeout(idle.as_deref());
     // This is Workroom's existing local/remote lifetime distinction: every remote driver starts
     // `serve --idle-timeout never`, while the Mac's app and attach client use the idle default.
     // Choose before any request threads start, and reselect from the carried argv after hand-off.
-    crate::vcs::configure_read_environment(timeout == Duration::MAX);
+    crate::vcs::configure_read_environment(timeout == Ok(Duration::MAX));
     // Before anything is made, so all of it is the user's: a container's entrypoint starts as root.
     if let Some(user) = as_user.user {
         let account = match crate::account::lookup(&user) {
@@ -87,6 +82,16 @@ pub fn run_serve(
     // The log lives beside the socket, so its folder comes first; the lock reports a failure.
     let _ = serve::make_socket_folder(&socket);
     crate::log::redirect_stderr(&socket);
+    // Every way out from here writes a line: a return below, a panic, or a signal that ends it.
+    crate::log::note_panics();
+    crate::log::note_fatal_signals();
+    let timeout = match timeout {
+        Ok(timeout) => timeout,
+        Err(e) => {
+            crate::note!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     // First, before an update can replace the file at this path: see `handoff::Context::digest`.
     let digest = handoff::own_binary()
         .and_then(|path| handoff::digest(&path))
@@ -112,9 +117,15 @@ pub fn run_serve(
             // non-zero exit: the other daemon is serving, which is all the caller wanted.
             let lock = match serve::acquire_instance_lock(&socket) {
                 Ok(lock) => lock,
-                Err(serve::ServeError::AlreadyRunning(_)) => return ExitCode::SUCCESS,
+                Err(serve::ServeError::AlreadyRunning(_)) => {
+                    crate::note!(
+                        "not serving {}: another daemon already is",
+                        socket.display()
+                    );
+                    return ExitCode::SUCCESS;
+                }
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    crate::note!("error: {e}");
                     return ExitCode::FAILURE;
                 }
             };
@@ -175,9 +186,12 @@ pub fn run_serve(
     // The lock this program holds, taken or carried over by a hand-off, and the log stderr is.
     daemon.keep_fresh(lock.fd(), libc::STDERR_FILENO, serve::FRESHEN_EVERY);
     match daemon.run(listener, &socket, timeout) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            crate::note!("exiting: no session or client for {}s", timeout.as_secs());
+            ExitCode::SUCCESS
+        }
         Err(e) => {
-            eprintln!("error: {e}");
+            crate::note!("error: stopped serving {}: {e}", socket.display());
             ExitCode::FAILURE
         }
     }
