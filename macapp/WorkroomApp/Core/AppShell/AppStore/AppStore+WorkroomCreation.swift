@@ -521,11 +521,6 @@ extension AppStore {
     var failed = false
   }
 
-  /// The progress of the create whose pane `sid` is, or nil when it has none.
-  func createStep(for sid: SidebarID) -> CreateStep? {
-    creationRun(for: sid).map(CreateStep.init)
-  }
-
   /// Why no workroom can be created in `project` right now, as the New Workroom menu shows it beside
   /// an entry (#309), or nil when one can. Creates in one project may overlap (#483).
   func createBlockedReason(in project: Project) -> String? {

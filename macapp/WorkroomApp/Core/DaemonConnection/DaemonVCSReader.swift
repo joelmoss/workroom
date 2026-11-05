@@ -116,9 +116,9 @@ enum DaemonPushState: String, Decodable, Sendable {
     }
   }
 }
-// ponytail: `Ancestor` (and DaemonCommit's change-id/working-copy/root/divergence fields) are
-// jj-era wire shape, still decoded so an older daemon's replies keep parsing. A git reader never
-// sends `Ancestor`; read it as a branch. Prune once app/daemon skew no longer spans #266.
+// `Ancestor` is jj-era wire shape: a daemon from before #266 can still send it, and an unknown
+// case would fail the decode, so it stays and reads as a branch. A git reader never sends it.
+// DaemonCommit declares no jj-era field: the decoder ignores the ones an older daemon still sends.
 enum DaemonRefKind: String, Decodable, Sendable {
   case branch = "Branch"
   case ancestor = "Ancestor"
@@ -144,17 +144,12 @@ struct DaemonScope: Decodable, Sendable {
 struct DaemonCommit: Decodable, Sendable {
   let commitId: String
   let shortId: String
-  let changeId: String?
   let summary: String
   let body: String
   let authors: [DaemonAuthor]
   let timestampMs: Int64
   let refs: [String]
   let parentIds: [String]
-  let isWorkingCopy: Bool
-  let isRoot: Bool
-  let changeOffset: Int?
-  let divergentSiblings: [DaemonCommit]
   let pushState: DaemonPushState
   var model: VCSCommit {
     VCSCommit(

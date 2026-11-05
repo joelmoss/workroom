@@ -52,12 +52,6 @@ extension AppStore {
     visibleWorkroomSplit.flatMap { resolvedSplitLeaves(of: $0) }
   }
 
-  /// Whether any real (≥2 live members) split group exists at all, regardless of what's selected —
-  /// "is this window grouped".
-  var workroomSplitActive: Bool {
-    workroomSplits.contains { resolvedSplitLeaves(of: $0) != nil }
-  }
-
   /// Whether a split is currently *shown*: the selected workroom belongs to a group with ≥2 live
   /// members. Mirrors `TerminalSessions.split(for:)` — groups are persistent state; selecting a
   /// workroom outside every group shows it solo without dissolving anything (the group reappears on
