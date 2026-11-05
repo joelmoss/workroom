@@ -397,27 +397,39 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
     public let maxCPUs: Int
     public let maxMemoryGB: Int
     public let defaultDiskGB: Int?
+    public let maxDiskGB: Int?
 
-    public init(maxCPUs: Int, maxMemoryGB: Int, defaultDiskGB: Int?) {
+    public init(maxCPUs: Int, maxMemoryGB: Int, defaultDiskGB: Int?, maxDiskGB: Int?) {
       self.maxCPUs = maxCPUs
       self.maxMemoryGB = maxMemoryGB
       self.defaultDiskGB = defaultDiskGB
+      self.maxDiskGB = maxDiskGB
     }
 
     enum CodingKeys: String, CodingKey {
       case maxCPUs = "max_cpus"
       case maxMemoryGB = "max_memory_gb"
       case defaultDiskGB = "default_disk_gb"
+      case maxDiskGB = "max_disk_gb"
     }
   }
 
+  /// What `new` uses with no `--cpu` (its help, 2026-11-04: "default 2"). exe.dev reports no
+  /// default memory, so none is shown.
+  public static let defaultCPUs = 2
+
   public func planLimits() async throws -> PlanLimits {
     do {
-      return try decode(PlanLimits.self, try await cli(["billing", "plan"]), "your plan")
+      // A screen's read, not a create's: an ssh that hangs mustn't hide the fields for 120 s.
+      return try decode(
+        PlanLimits.self, try await cli(["billing", "plan"], timeout: Self.readTimeout), "your plan")
     } catch let failure as CLIFailure {
       throw HostDriverError.provisioning(failure.localizedDescription)
     }
   }
+
+  /// How long a read for the host option fields waits: ssh's own handshake allows 20 s.
+  public static let readTimeout: TimeInterval = 20
 
   /// Whether the account's plan lets it make VMs: a new account's is Basic with `max_vms` 0, and
   /// `new` refuses it until a plan is chosen (spike, 2026-10-12). `paid` is no guide.

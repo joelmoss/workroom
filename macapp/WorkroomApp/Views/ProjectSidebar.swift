@@ -232,9 +232,33 @@ struct ProjectSidebar: View {
     }
     Section("Remote") {
       ForEach(RemoteWorkrooms.Place.remoteProviders, id: \.self) { place in
-        newRemoteWorkroomButton(at: place, in: project)
+        if place.hostProvider != nil {
+          hostOptionsPlaceMenu(at: place, in: project)
+        } else {
+          newRemoteWorkroomButton(at: place, in: project)
+        }
       }
     }
+  }
+
+  /// boxd or exe.dev (#575): a submenu with Create, at once with the resolved host options, and
+  /// Configure…, which opens one create's host options first.
+  private func hostOptionsPlaceMenu(at place: RemoteWorkrooms.Place, in project: Project)
+    -> some View
+  {
+    let reason = RemoteWorkrooms.unavailability(of: place)
+    return Menu(reason.map { "\(place.displayName) — \($0)" } ?? place.displayName) {
+      newRemoteWorkroomButton(at: place, in: project, title: "Create")
+      Button("Configure…") {
+        store.pendingHostOptions = PendingHostOptions(project: project, place: place)
+      }
+      .help("Choose the image and size for this \(place.displayName) workroom first")
+    }
+    .help(
+      reason.map { "\(place.displayName) can't be used: \($0)" }
+        ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
+    )
+    .disabled(reason != nil || !store.canCreateRemoteWorkroom(in: project))
   }
 
   /// New Workroom on this Mac. Creates in one project may overlap, each in its own pane (#483).
@@ -249,9 +273,10 @@ struct ProjectSidebar: View {
   }
 
   /// New Workroom at `place` (#309, #356): a local container, or a boxd machine, cloned from the
-  /// project's GitHub origin. One that can't be used now says why in its title.
+  /// project's GitHub origin. One that can't be used now says why in its title. `title` replaces
+  /// the place's name, as Create does inside a place's own submenu.
   private func newRemoteWorkroomButton(
-    at place: RemoteWorkrooms.Place, in project: Project
+    at place: RemoteWorkrooms.Place, in project: Project, title: String? = nil
   ) -> some View {
     #if DEBUG
       Self.menuEvaluations += 1
@@ -262,7 +287,7 @@ struct ProjectSidebar: View {
     return Button {
       Task { await store.createRemoteWorkroom(in: project, place: place) }
     } label: {
-      Text(reason.map { "\(place.displayName) — \($0)" } ?? place.displayName)
+      Text(title ?? reason.map { "\(place.displayName) — \($0)" } ?? place.displayName)
     }
     .help(
       reason.map { "\(place.displayName) can't be used: \($0)" }

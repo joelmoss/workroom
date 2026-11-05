@@ -40,9 +40,27 @@ struct DetailsPanel: View {
           Text(note).font(.caption2).foregroundStyle(.secondary)
         }
         devContainer(target)
+        hostOptions(target)
       }
       .padding(12)
       ports(target)
+    }
+  }
+
+  /// The host options a boxd or exe.dev workroom was made with (#575). Nothing for one made before
+  /// them, or on the provider's defaults.
+  @ViewBuilder
+  private func hostOptions(_ target: TerminalTarget) -> some View {
+    if let sid = store.inspectorTargetID, let (workroom, _) = store.workroomAndProject(for: sid),
+      let made = workroom.host?.madeWith, !made.isProviderDefault
+    {
+      if let image = made.image, let provider = target.hostPlace?.hostProvider {
+        fact(provider.imageKind.madeFromLabel, image, copyable: true)
+      }
+      let size = [
+        made.cpu.map { "\($0) CPU" }, made.memory, made.disk.map { "\($0) disk" },
+      ].compactMap { $0 }
+      if !size.isEmpty { fact("Size", size.joined(separator: ", ")) }
     }
   }
 

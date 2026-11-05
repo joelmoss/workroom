@@ -64,6 +64,15 @@ struct PendingProjectSettings: Identifiable {
   var id: String { project.id }
 }
 
+/// A boxd or exe.dev create waiting on its Options panel (#575): the place, and where the workroom
+/// lands, taken when it was asked for.
+struct PendingHostOptions: Identifiable {
+  let project: Project
+  let place: RemoteWorkrooms.Place
+  var splitAnchor: SidebarID?
+  let id = UUID()
+}
+
 /// A way past an error, offered on its sheet: a label and what it does.
 struct ErrorAction {
   /// What the sheet asks before running an action that needs it.
@@ -182,6 +191,9 @@ final class ModalState {
   /// A remote create waiting on the user's setup at its provider (drives `RemoteSetupSheet`).
   var pendingRemoteSetup: PendingRemoteSetup?
 
+  /// A boxd or exe.dev create waiting on its host options (drives `HostOptionsPanel`, #575).
+  var pendingHostOptions: PendingHostOptions?
+
   /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
   /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
   /// it closes itself when one of these comes up). Those are `@State` in RootView rather than the
@@ -211,6 +223,6 @@ final class ModalState {
       // Same for the commit sheet: without this, ⌥⇧⌘P could fire a push behind an open commit
       // dialog, and the terminal-scoped shortcuts would still reach a surface the user can't see.
       || pendingCommit != nil
-      || pendingRemoteSetup != nil
+      || pendingRemoteSetup != nil || pendingHostOptions != nil
   }
 }

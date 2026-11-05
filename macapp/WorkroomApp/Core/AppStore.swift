@@ -729,6 +729,10 @@ final class AppStore: ObservableObject {
     get { modals.pendingRemoteSetup }
     set { modals.pendingRemoteSetup = newValue }
   }
+  var pendingHostOptions: PendingHostOptions? {
+    get { modals.pendingHostOptions }
+    set { modals.pendingHostOptions = newValue }
+  }
   var pendingRemoteConfirm: PendingVCSAction? {
     get { modals.pendingRemoteConfirm }
     set { modals.pendingRemoteConfirm = newValue }

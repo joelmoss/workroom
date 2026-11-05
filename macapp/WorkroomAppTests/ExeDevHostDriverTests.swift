@@ -819,7 +819,8 @@ final class ExeDevHostDriverTests: XCTestCase {
         #"{"max_cpus":2,"max_memory_gb":4,"default_disk_gb":25,"max_disk_gb":1024,"max_vms":50}"#)
     ])
     let limits = try await driver(exe).planLimits()
-    XCTAssertEqual(limits, .init(maxCPUs: 2, maxMemoryGB: 4, defaultDiskGB: 25))
+    XCTAssertEqual(
+      limits, .init(maxCPUs: 2, maxMemoryGB: 4, defaultDiskGB: 25, maxDiskGB: 1024))
   }
 
   /// A failed setup on a chosen image names it and what Workroom's setup needs (#575).

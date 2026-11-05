@@ -287,8 +287,9 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     defer { fake.stop() }
     let cleared = CheckpointLog()
     var env = environment(gitHubToken: nil, connect: Self.connecting(to: fake))
-    env.clearCheckout = { host, path in
+    env.clearCheckout = { host, path, url in
       XCTAssertEqual(path, "/p")
+      XCTAssertEqual(url, "u", "the removal wasn't told which repository may go")
       XCTAssertEqual(fake.receivedExecs.count, 0, "git ran before the old checkout went")
       cleared.add(host)
     }
@@ -299,9 +300,32 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
 
     let driver = CountingDriver()
     var failing = environment(gitHubToken: nil, driver: driver, connect: Self.connecting(to: fake))
-    failing.clearCheckout = { _, _ in throw HostDriverError.provisioning("rm failed") }
+    failing.clearCheckout = { _, _, _ in throw HostDriverError.provisioning("rm failed") }
     _ = try? await RemoteProvisioning.provision(cloneURL: "u", path: "/p", branch: "b", in: failing)
     XCTAssertEqual(driver.destroys, 1, "a host whose old checkout stayed was kept")
+  }
+
+  // Value: protects=only a boxd create from a snapshot removes anything at the clone's path
+  // (#575, D5); fails_when=the removal is wired for a fresh boxd host or an exe.dev one;
+  // why_new=the test above injects the hook directly; seam=none; no_claim=the rm on a real host
+  /// The old-checkout removal is wired for a snapshot create and nothing else.
+  func testOnlyASnapshotCreateRemovesAnythingBeforeTheClone() {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-made-with-\(UUID().uuidString)")
+    let boxd = BoxdHostDriver(
+      configuration: .init(
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: directory,
+        knownHosts: directory, home: directory),
+      directory: directory)
+    let exeDev = ExeDevHostDriver(configuration: .init(), directory: directory)
+    func wired(_ options: ResolvedHostOptions, _ driver: any HostDriver) -> (Bool, Bool) {
+      var env = environment(gitHubToken: nil, driver: driver)
+      env.made(with: options, by: driver)
+      return (env.makeHost != nil, env.clearCheckout != nil)
+    }
+    XCTAssertTrue(wired(ResolvedHostOptions(image: "snap"), boxd) == (true, true))
+    XCTAssertTrue(wired(ResolvedHostOptions(cpu: 4), boxd) == (true, false))
+    XCTAssertTrue(wired(ResolvedHostOptions(image: "img"), exeDev) == (true, false))
   }
 
   private func execs(of fake: FakeDaemon) throws -> [[String: Any]] {
