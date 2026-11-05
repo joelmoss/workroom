@@ -120,7 +120,7 @@ _Avoid_: Generic host, BYO host, server
 The adapter for one kind of host that reaches it, and creates and destroys it where Workroom makes it: a local container runtime, boxd, exe.dev or SSH.
 
 **Host options**:
-What a boxd or exe.dev host is created with: its host image, its size, and any extra arguments for the provider's create command. Set for all projects, for one project, or for a single create; the most specific choice wins.
+What a boxd or exe.dev host is created with: its host image and its size. Set for all projects, for one project, or for a single create; the most specific choice wins.
 _Avoid_: Machine options, create flags
 
 **Host image**:
