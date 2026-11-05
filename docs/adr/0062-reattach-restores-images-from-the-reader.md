@@ -20,4 +20,4 @@ Accepted costs: a slow client can pause another client on the same session for o
 
 Rejected: a transfer thread per client (needs parser state shared under a lock order opposite to `attach`'s); sending images inside the repaint (stalls the pty for their whole size); libghostty snapshots (no compatibility between revisions, and they reach another daemon, not the app's surface); lazy loading for hidden panes (a pane that is not mounted does not attach, and the rest needs a new signal from the app).
 
-Source: [#551](https://github.com/joelmoss/workroom/issues/551), [`vcs/crates/workroomd/src/images.rs`](../../vcs/crates/workroomd/src/images.rs) (module comment), [`terminal.rs`](../../vcs/crates/workroomd/src/terminal.rs).
+Source: [#551](https://github.com/joelmoss/workroom/issues/551), [`vcs/crates/workroomd/src/terminal/images.rs`](../../vcs/crates/workroomd/src/terminal/images.rs) (module comment), [`terminal.rs`](../../vcs/crates/workroomd/src/terminal/vt.rs).

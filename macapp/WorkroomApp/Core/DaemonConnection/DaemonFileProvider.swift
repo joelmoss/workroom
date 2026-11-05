@@ -4,7 +4,7 @@ import WorkroomSystem
 import WorkroomVCS
 
 /// `Service::File` (`0x03`) on a workroomd connection. Everything here is the wire contract of
-/// `vcs/crates/workroomd/src/file.rs` and `watch.rs`; the two are kept in step by
+/// `vcs/crates/workroomd/src/vcs/file.rs` and `watch.rs`; the two are kept in step by
 /// `DaemonFileIntegrationTests`, which drives the real daemon binary.
 struct DaemonFileProvider: FileProviding {
   /// What every daemon with a File service answers a method it doesn't know with, as `Unsupported`

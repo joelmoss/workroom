@@ -4,7 +4,7 @@ import Foundation
 /// `Service::Layout` (`0x06`) on a workroomd connection: each remote workroom's pane layout, kept on
 /// its host so any Mac that opens the workroom rebuilds the same tabs and splits (#255,
 /// `docs/designs/oq8-cross-machine-reattach.md`). Everything here is the wire contract of
-/// `vcs/crates/workroomd/src/layout.rs`; `DaemonLayoutTests` drives the real daemon.
+/// `vcs/crates/workroomd/src/host/layout.rs`; `DaemonLayoutTests` drives the real daemon.
 ///
 /// The daemon keeps a layout as opaque bytes behind a revision. A `put` names the revision it read,
 /// and one that has moved is refused with `DaemonLayoutError.stale`, carrying the current revision.

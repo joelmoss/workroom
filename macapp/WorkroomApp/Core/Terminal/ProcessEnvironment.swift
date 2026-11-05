@@ -1,7 +1,7 @@
 import Darwin
 
 /// Reads one variable from another process's environment, as workroomd does for a daemon-backed
-/// pane (`vcs/crates/workroomd/src/process.rs`). The Quick Terminal's shell is the app's own child,
+/// pane (`vcs/crates/workroomd/src/terminal/process.rs`). The Quick Terminal's shell is the app's own child,
 /// not a daemon session, so it asks here instead (#480's Claude profile).
 enum ProcessEnvironment {
   /// `key`'s value in `pid`'s exec-time environment; nil when unset or unreadable (another user's

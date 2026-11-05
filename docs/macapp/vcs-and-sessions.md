@@ -82,7 +82,7 @@ attaches to older Swift helpers that are still running (issue #154):
   0062). A newer app does not kill a running daemon: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
   (`DaemonHandOff.start()`, protocol 6, `workroomd hand-off`, #230), in every build; see
-  the module comment in `vcs/crates/workroomd/src/handoff.rs` for the mechanics, and ADR 0009 for
+  the module comment in `vcs/crates/workroomd/src/daemon/handoff.rs` for the mechanics, and ADR 0009 for
   why.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — attach-only now. The `daemon`
   subcommand is gone, so this build cannot start one; the tool only attaches to Swift helpers an app at or
@@ -94,7 +94,7 @@ supervisor opts in (`workroomd serve --screens <dir>`), the daemon keeps each se
 disk and, after a reboot kills the shells, answers a reattach for a session it no longer holds with
 that screen plus a bottom-row notice rather than the usual fresh shell. The app needs no code for
 this: the notice arrives as ordinary VT bytes over the same reattach path `terminal-state` already
-repaints from. See the module comment in `vcs/crates/workroomd/src/screens.rs` for the
+repaints from. See the module comment in `vcs/crates/workroomd/src/terminal/screens.rs` for the
 write/prune/restore mechanics, and ADR 0031 for why. The supervisor boxd and exe.dev hosts run
 (`Resources/host-setup/systemd.sh`) passes `--screens`, as does the ssh fixture's.
 

@@ -39,14 +39,14 @@ answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
 `Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
 that fails says the provider's fix (`RemoteWorkrooms.Place.credentialHint`). A local container's git
 asks the Mac's own `gh` through `CredentialRelay` (#309), whose daemon side is `workroomd credential`
-(`vcs/crates/workroomd/src/credential.rs`). A new user's first exe.dev create walks them through
+(`vcs/crates/workroomd/src/host/credential.rs`). A new user's first exe.dev create walks them through
 exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
 `make app-run-exedev-fresh`.
 
 An SSH host uses the credentials its user set up on the server, with the origin's GitHub URL
 scheme retained (ADR 0056); it gets no Mac credential relay. For every remote kind, the daemon
 builds the app's git environment from a cached, bounded login-shell probe, then applies the
-existing scrub and pins (`vcs/crates/workroomd/src/vcs.rs`).
+existing scrub and pins (`vcs/crates/workroomd/src/vcs/service.rs`).
 
 ## SSH driver (#378)
 

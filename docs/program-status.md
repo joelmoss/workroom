@@ -258,8 +258,8 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 
 | What | Where |
 |---|---|
-| Answering the probe | `vcs/crates/workroomd/src/terminal.rs` (`PROBE_REPLY`): the shadow terminal answers it |
-| Record rules, command results (#473), unprobed programs | `vcs/crates/workroomd/src/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
+| Answering the probe | `vcs/crates/workroomd/src/terminal/vt.rs` (`PROBE_REPLY`): the shadow terminal answers it |
+| Record rules, command results (#473), unprobed programs | `vcs/crates/workroomd/src/terminal/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
 | The service: subscribe, `seen`, `clear` | `program_status.rs`: `Hub` publishes, `dispatch` answers |
 | `workroomd program-status` | `vcs/crates/workroomd/src/cli/program_status.rs` |
 | Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonVCSConnection.swift`; shared fixtures in `testdata/program-status/` |

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use workroomd::serve::handle_connection;
-use workroomd::session::SessionStore;
+use workroomd::daemon::serve::handle_connection;
+use workroomd::terminal::session::SessionStore;
 use wr_protocol::envelope::Hello;
 
 pub fn daemon_binary() -> PathBuf {

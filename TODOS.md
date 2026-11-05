@@ -390,8 +390,8 @@ to the bundled daemon (on for Nightly and Dev only, commit 26b9d881) is on for s
 
 **Context / how to start:** #266 kept them deliberately (`Request`/`ExecRequest` are
 `deny_unknown_fields`; older apps decode the Commit fields non-optionally); each is marked with a
-`ponytail:` comment. Start at `vcs/crates/workroomd/src/vcs.rs` `Request`/`ExecRequest`,
-`vcs/crates/workroomd/src/file.rs` `Request`, `macapp/WorkroomApp/Core/DaemonConnection/DaemonVCSReader.swift`
+`ponytail:` comment. Start at `vcs/crates/workroomd/src/vcs/service.rs` `Request`/`ExecRequest`,
+`vcs/crates/workroomd/src/vcs/file.rs` `Request`, `macapp/WorkroomApp/Core/DaemonConnection/DaemonVCSReader.swift`
 `DaemonCommit`, and `vcs/crates/wr-vcs-model/src/lib.rs` `Commit`.
 
 **Depends on / blocked by:** #266 landing; stable hand-off or a protocol version gate.
@@ -548,7 +548,7 @@ unaffected.
 **Context:** `--rcfile` does not apply to a login shell, so a fix needs another way in, such as a
 `PROMPT_COMMAND` hook set from the environment. Probed 2026-10-14: `ghostty.bash` sourced from an
 rcfile under bash 3.2 does report correct `133;D` exit codes, so the script itself works there.
-Start at `vcs/crates/workroomd/src/shell.rs` (`bash_integration`). Upstream declines it, so the
+Start at `vcs/crates/workroomd/src/terminal/shell.rs` (`bash_integration`). Upstream declines it, so the
 libghostty path would stay without it.
 
 **Priority:** P3, effort M.

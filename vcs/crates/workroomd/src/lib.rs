@@ -5,34 +5,18 @@
 //! whatever bidirectional stream a driver opens — and because local is the same code path minus
 //! the network, every local session is the remote path's test harness.
 //!
-//! See docs/designs/remote-workrooms.md. Phase 1 is the protocol and the terminal service; the VCS,
-//! file, status and port-forwarding services are Phase 2 over the same envelope.
+//! See docs/designs/remote-workrooms.md. Where each service lives:
+//!
+//! - Terminal: `terminal` (`terminal::session` is the store; `daemon::serve` handles its frames)
+//! - Control: `daemon::serve`, beside Terminal's frames; a hand-off is `daemon::handoff`
+//! - VCS: `vcs::service`
+//! - File: `vcs::file`, with `vcs::watch`
+//! - Forward: `host::forward`
+//! - Layout: `host::layout`
+//! - ProgramStatus: `terminal::program_status`
 
-pub mod account;
 pub mod cli;
-pub mod credential;
-mod file;
-pub mod forward;
-mod handoff;
-mod images;
-mod input;
-mod layout;
-mod log;
-mod process;
-pub mod program_status;
-pub mod pty;
-mod rpc;
-pub mod run;
-pub mod screens;
-pub mod serve;
-pub mod session;
-mod shadow;
-mod shell;
-pub mod transport;
+pub mod daemon;
+pub mod host;
+pub mod terminal;
 mod vcs;
-mod watch;
-
-/// The shadow terminal that makes a reattaching client see the session instead of a blank screen.
-/// Behind a feature because it links libghostty-vt — see the crate's Cargo.toml.
-#[cfg(feature = "terminal-state")]
-mod terminal;

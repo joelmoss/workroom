@@ -18,13 +18,13 @@ fn run_credential_relay(args: &[String], socket: Option<&Path>) -> ExitCode {
         eprintln!("error: could not read the relay's secret from stdin");
         return ExitCode::FAILURE;
     }
-    let result = crate::credential::directory(socket)
-        .map_err(crate::credential::CredentialError::from)
-        .and_then(|dir| crate::credential::install_relay(&dir, port, &secret))
+    let result = crate::host::credential::directory(socket)
+        .map_err(crate::host::credential::CredentialError::from)
+        .and_then(|dir| crate::host::credential::install_relay(&dir, port, &secret))
         .and_then(|()| {
             let binary = std::env::current_exe()?;
-            let helper = crate::credential::helper_command(&binary, socket);
-            Ok(crate::credential::configure_git(
+            let helper = crate::host::credential::helper_command(&binary, socket);
+            Ok(crate::host::credential::configure_git(
                 || std::process::Command::new("git"),
                 &helper,
             )?)
@@ -47,10 +47,15 @@ pub fn run_credential(args: &[String]) -> ExitCode {
     if action == "relay" {
         return run_credential_relay(args, socket.as_deref());
     }
-    let result = crate::credential::directory(socket.as_deref())
-        .map_err(crate::credential::CredentialError::from)
+    let result = crate::host::credential::directory(socket.as_deref())
+        .map_err(crate::host::credential::CredentialError::from)
         .and_then(|dir| {
-            crate::credential::credential(&dir, action, std::io::stdin().lock(), std::io::stdout())
+            crate::host::credential::credential(
+                &dir,
+                action,
+                std::io::stdin().lock(),
+                std::io::stdout(),
+            )
         });
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -75,21 +80,4 @@ fn action(args: &[String]) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::action;
-
-    #[test]
-    fn the_action_is_found_after_the_socket_git_was_given() {
-        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(action(&args(&["credential", "get"])), "get");
-        assert_eq!(
-            action(&args(&["credential", "--socket", "/run/w.sock", "get"])),
-            "get"
-        );
-        assert_eq!(
-            action(&args(&["credential", "relay", "--port", "1"])),
-            "relay"
-        );
-        assert_eq!(action(&args(&["credential"])), "");
-    }
-}
+mod tests;

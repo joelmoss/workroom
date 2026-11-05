@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::{DAEMON_UNAVAILABLE, flag, handshake};
-use crate::serve;
+use crate::daemon::serve;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, MIN_PROGRAM_STATUS_VERSION, Service};
 
 /// The `--json` output's shape; bumped when a field changes meaning or goes.

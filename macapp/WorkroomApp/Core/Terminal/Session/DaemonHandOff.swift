@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// Replaces the running local daemon's program with the one this app bundles, keeping every session
-/// and its shell's pid (#230; `workroomd hand-off`, `vcs/crates/workroomd/src/handoff.rs`).
+/// and its shell's pid (#230; `workroomd hand-off`, `vcs/crates/workroomd/src/daemon/handoff.rs`).
 ///
 /// Without it a daemon from an older app runs until 30s after its last terminal closes, which can
 /// be days, and meanwhile the services it predates degrade (design doc, "The local Mac hands off

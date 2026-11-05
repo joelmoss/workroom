@@ -6,7 +6,7 @@ import WorkroomVCS
 
 // `Service::Forward` (`0x05`) on a workroomd connection: a loopback TCP port on the daemon's box,
 // reachable at `127.0.0.1:<local port>` on this Mac (issue #208). Everything here is the wire
-// contract of `vcs/crates/workroomd/src/forward.rs`.
+// contract of `vcs/crates/workroomd/src/host/forward.rs`.
 //
 // **A forward only carries while the app is attached.** Every forwarded socket is owned by the
 // multiplex connection that opened it and the daemon closes it with that connection, so nothing here

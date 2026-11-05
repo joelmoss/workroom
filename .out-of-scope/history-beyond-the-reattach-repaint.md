@@ -1,6 +1,6 @@
 # History beyond the reattach repaint
 
-A pane that reattaches to a workroomd session gets the screen plus the newest history that fits the repaint's budget, about 4 MiB (`REPAINT_MAX_BYTES`, `format_tail` in `vcs/crates/workroomd/src/terminal.rs`). The daemon keeps more than that, the app's own 50 MB, but there is no way to page the older part into the app: no paged history over the attach protocol, and no separate history viewer.
+A pane that reattaches to a workroomd session gets the screen plus the newest history that fits the repaint's budget, about 4 MiB (`REPAINT_MAX_BYTES`, `format_tail` in `vcs/crates/workroomd/src/terminal/vt.rs`). The daemon keeps more than that, the app's own 50 MB, but there is no way to page the older part into the app: no paged history over the attach protocol, and no separate history viewer.
 
 ## Why this is out of scope
 
