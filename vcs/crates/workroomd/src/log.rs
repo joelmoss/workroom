@@ -10,6 +10,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Past this the log is renamed to `workroomd.log.1` and a fresh one begun (`rotate`), so a long-lived
@@ -165,6 +166,111 @@ fn stderr_is(path: &Path) -> bool {
     }
 }
 
+/// A panic on any thread is one timestamped line here, then whatever the previous hook prints. A
+/// panic on the main thread ends the daemon, and the default hook's untimestamped lines alone do not
+/// say when.
+pub fn note_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        crate::note!(
+            "panic on thread {}: {info}",
+            thread.name().unwrap_or("unnamed")
+        );
+        previous(info);
+    }));
+}
+
+/// The signals whose default action ends the daemon without a crash report. The faults (SIGSEGV,
+/// SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP) are left alone: the system's crash reporter already
+/// records those, and a handler would get in its way. SIGKILL and SIGSTOP cannot be caught.
+const FATAL_SIGNALS: [libc::c_int; 11] = [
+    libc::SIGTERM,
+    libc::SIGHUP,
+    libc::SIGINT,
+    libc::SIGQUIT,
+    libc::SIGUSR1,
+    libc::SIGUSR2,
+    libc::SIGALRM,
+    libc::SIGXCPU,
+    libc::SIGXFSZ,
+    libc::SIGVTALRM,
+    libc::SIGPROF,
+];
+
+/// The write end of the pipe `on_fatal_signal` reports on, and the pid that installed it.
+static SIGNAL_PIPE: AtomicI32 = AtomicI32::new(-1);
+static DAEMON_PID: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn on_fatal_signal(signal: libc::c_int) {
+    // A child between fork and exec still has this handler and the pipe; its signal is its own.
+    // SAFETY: `getpid` and `write` are async-signal-safe and take no pointers we do not own.
+    if unsafe { libc::getpid() } != DAEMON_PID.load(Ordering::Relaxed) {
+        return;
+    }
+    let byte = signal as u8;
+    // SAFETY: as above; one byte from a live local.
+    unsafe {
+        libc::write(
+            SIGNAL_PIPE.load(Ordering::Relaxed),
+            (&byte as *const u8).cast(),
+            1,
+        )
+    };
+}
+
+/// Has each of `FATAL_SIGNALS` write a line here before it ends the daemon, as it would have.
+///
+/// The handler only writes the signal's number to a pipe, all a handler may safely do; a thread
+/// reads it, logs it, and raises it again with the default action, so the daemon still dies of that
+/// signal with the same status. `execve` resets caught signals to their default, so a session's
+/// shell is not affected, and a hand-off's next program installs its own.
+pub fn note_fatal_signals() {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` is a live two-element array, as `pipe` requires.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    for fd in fds {
+        crate::pty::set_cloexec(fd, true);
+    }
+    let [read, write] = fds;
+    let reader = std::thread::Builder::new()
+        .name("fatal-signals".into())
+        .spawn(move || {
+            let mut byte = 0u8;
+            // SAFETY: one byte into a live local, from a descriptor this thread alone reads.
+            while unsafe { libc::read(read, (&mut byte as *mut u8).cast(), 1) } != 1 {}
+            let signal = libc::c_int::from(byte);
+            crate::note!("{}; exiting", describe_status(signal));
+            // SAFETY: plain integers; the default action for every one of these ends the process.
+            unsafe {
+                libc::signal(signal, libc::SIG_DFL);
+                libc::raise(signal);
+            }
+            std::process::exit(128 + signal);
+        });
+    if reader.is_err() {
+        // SAFETY: both descriptors are this function's own and nothing else has them.
+        unsafe {
+            libc::close(read);
+            libc::close(write);
+        }
+        return;
+    }
+    SIGNAL_PIPE.store(write, Ordering::Relaxed);
+    // SAFETY: `getpid` takes no arguments.
+    DAEMON_PID.store(unsafe { libc::getpid() }, Ordering::Relaxed);
+    for signal in FATAL_SIGNALS {
+        // SAFETY: `sigaction` is plain old data, for which all zeroes is a valid value.
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = on_fatal_signal as extern "C" fn(libc::c_int) as usize;
+        action.sa_flags = libc::SA_RESTART;
+        // SAFETY: `action` is a live, initialised sigaction and the old action is not asked for.
+        unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) };
+    }
+}
+
 /// A `waitpid` status as a person reads it: "exited 0", "killed by signal 1 (SIGHUP)".
 pub fn describe_status(status: i32) -> String {
     let signal = status & 0o177;
@@ -176,6 +282,9 @@ pub fn describe_status(status: i32) -> String {
         libc::SIGINT => " (SIGINT)",
         libc::SIGKILL => " (SIGKILL)",
         libc::SIGTERM => " (SIGTERM)",
+        libc::SIGQUIT => " (SIGQUIT)",
+        libc::SIGUSR1 => " (SIGUSR1)",
+        libc::SIGUSR2 => " (SIGUSR2)",
         _ => "",
     };
     format!("killed by signal {signal}{name}")
