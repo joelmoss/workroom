@@ -39,6 +39,16 @@ enum RemoteWorkrooms {
       }
     }
 
+    /// The provider whose hosts take host options (#575): boxd's and exe.dev's. A container's
+    /// image and size are devcontainer.json's (ADR 0060), and an SSH host is the user's own.
+    var hostProvider: HostProvider? {
+      switch self {
+      case .boxd: .boxd
+      case .exeDev: .exeDev
+      case .container, .ssh: nil
+      }
+    }
+
     /// Its SF Symbol, wherever a workroom or a choice of place is shown: a container on this Mac
     /// is on the local network, a remote provider's machine is in the cloud.
     var icon: String {
@@ -429,7 +439,7 @@ enum RemoteWorkrooms {
     config: (digest: String, file: String?)? = nil, key: RemoteHosts.DriverKey = .init(),
     driver: any HostTerminalDriver,
     environment: RemoteProvisioning.Environment, recorder: Recorder,
-    pendingIn: URL? = RemoteHosts.pendingIn
+    pendingIn: URL? = RemoteHosts.pendingIn, madeWith: ResolvedHostOptions? = nil
   ) async throws -> Created {
     // Before anything is made or recorded: a repository the provider can't reach fails at once. Its
     // commands go in the `repository` row's log (#483), without starting that row again: the app
@@ -494,6 +504,7 @@ enum RemoteWorkrooms {
       var descriptor = describing(
         instance.host, key: key, driver: driver, credentials: instance.relayed)
       descriptor.workroomID = workroomID
+      descriptor.madeWith = madeWith
       descriptor.container?.configDigest = config?.digest
       descriptor.container?.configFile = config?.file
       // Its own GitHub identity, for PR and CI status (`registrations`).

@@ -1085,7 +1085,7 @@ final class CreationFlowTests: XCTestCase {
           defaultNotUsed: nil)
       },
       setupNeeded: { _ in setup },
-      host: { _ in
+      host: { _, _ in
         hosts.add()
         guard let daemon else { throw HostDriverError.provisioning("no host") }
         let socket = daemon.socketPath
@@ -1105,6 +1105,80 @@ final class CreationFlowTests: XCTestCase {
     store.projects = [project(["anchor"])]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     return store
+  }
+
+  /// Settings' host options, changed between tries as a user fixing them would.
+  private final class Levels: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: HostOptions?
+    var settings: HostOptions? {
+      get { lock.withLock { stored } }
+      set { lock.withLock { stored = newValue } }
+    }
+  }
+
+  /// Value: protects=#575, a create's own host options survive Try Again while the project's and
+  /// Settings' are read afresh, and Try With Provider Defaults makes the host with none, which a
+  /// Try Again after it keeps (eng review D4); fails_when=retryCreation drops the run's options,
+  /// caches the levels, or Provider Defaults lasts only one try; why_new=no create carried host
+  /// options before; no_claim=the flags each driver sends (driver tests)
+  func testHostOptionsAcrossTryAgainAndTryWithProviderDefaults() async throws {
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: FakeDriver(), daemon: nil)
+    let levels = Levels()
+    levels.settings = HostOptions(cpu: .value(2))
+    let asked = Calls<ResolvedHostOptions?>()
+    services.hostOptionLevels = { _, _ in (project: nil, settings: levels.settings) }
+    services.host = { _, options in
+      asked.add(options)
+      let driver = FakeDriver()
+      var environment = RemoteProvisioning.Environment(
+        driver: driver, daemonSocket: driver.daemonSocket)
+      // The provider refuses the machine, as exe.dev refuses an image it can't pull.
+      environment.makeHost = {
+        ProvisioningProgress.reportStep?(.machine)
+        throw HostDriverError.provisioning("refused")
+      }
+      return RemoteCreateHost(
+        key: .boxd(org: "acme", account: "u"), driver: driver, environment: environment)
+    }
+    store.remoteCreateServices = services
+
+    await store.createRemoteWorkroom(
+      in: emptyProject, place: .exeDev, hostOptions: HostOptions(image: .value("ubuntu:24.04")))
+    var run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(asked.all.last, ResolvedHostOptions(image: "ubuntu:24.04", cpu: 2))
+    XCTAssertTrue(run.offersProviderDefaults, "\(run.steps.map { ($0.id, $0.state) })")
+
+    levels.settings = HostOptions(cpu: .value(4))
+    await store.retryCreation(run)
+    run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(asked.all.last, ResolvedHostOptions(image: "ubuntu:24.04", cpu: 4))
+
+    await store.retryCreation(run, hostOptions: .providerDefaults)
+    run = try XCTUnwrap(store.creationRuns.values.first)
+    XCTAssertEqual(asked.all.last, ResolvedHostOptions())
+    XCTAssertFalse(run.offersProviderDefaults, "offered again with nothing left to drop")
+
+    await store.retryCreation(run)
+    XCTAssertEqual(asked.all.last, ResolvedHostOptions())
+    XCTAssertEqual(levels.settings, HostOptions(cpu: .value(4)), "Settings were changed")
+  }
+
+  /// Only boxd and exe.dev hosts take host options: an SSH host is the user's own server.
+  func testAnSSHCreateAsksForNoHostOptions() async throws {
+    let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    var services = services(driver: FakeDriver(), daemon: nil)
+    let asked = Calls<ResolvedHostOptions?>()
+    let host = services.host
+    services.host = { place, options in
+      asked.add(options)
+      return try await host(place, options)
+    }
+    services.hostOptionLevels = { _, _ in (project: nil, settings: HostOptions(cpu: .value(8))) }
+    store.remoteCreateServices = services
+    await store.createRemoteWorkroom(in: emptyProject, place: .ssh)
+    XCTAssertEqual(asked.all, [nil])
   }
 
   /// Value: protects=#363, a remote create whose setup script this Mac has not approved stops before

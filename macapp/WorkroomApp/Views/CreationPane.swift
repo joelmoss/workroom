@@ -77,7 +77,7 @@ struct CreationPane: View {
     GeometryReader { geo in
       // A ScrollView offers its content unlimited height, so the column's height is worked out here
       // (D9): the pane's, with the log taking what the header and rows leave.
-      let footer = P.footer(for: run.outcome)
+      let footer = P.footer(for: run)
       let logHeight = P.openLogHeight(
         pane: geo.size.height - 2 * inset,
         fixed: headerHeight + run.steps.compactMap { rowHeights[$0.id] }.reduce(0, +)
@@ -212,7 +212,7 @@ struct CreationPane: View {
       store.finishCreation(run)
       return .handled
     }
-    guard let footer = P.footer(for: run.outcome), let chosen = action(footer) else {
+    guard let footer = P.footer(for: run), let chosen = action(footer) else {
       return .ignored
     }
     perform(chosen)
@@ -225,6 +225,7 @@ struct CreationPane: View {
     case .reviewScript: store.presentSetupApproval(run)
     case .chooseStart: store.presentStartChoice(run)
     case .defaultImage: Task { await store.retryCreation(run, skipsDevContainer: true) }
+    case .providerDefaults: Task { await store.retryCreation(run, hostOptions: .providerDefaults) }
     case .close, .cancel: store.closeCreation(run)
     case .openAnyway: store.openCreatedWorkroomAnyway(run)
     case .deleteWorkroom: deleteWorkroom()
@@ -453,6 +454,7 @@ private struct CreationFailureNotice: View {
 
   @ViewBuilder private var buttonList: some View {
     button(footer.secondary)
+    if let alternative = footer.alternative { button(alternative) }
     // The default: prominent, and answering Return while focus is in this pane (D16).
     button(footer.primary).buttonStyle(.borderedProminent)
   }

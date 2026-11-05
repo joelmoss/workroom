@@ -209,6 +209,36 @@ final class CreationPanePresentationTests: XCTestCase {
       ])
   }
 
+  /// Value: protects=#575, Try With Provider Defaults shows only on a create that used host
+  /// options, failed making or setting up its host, and left nothing running; fails_when=it shows
+  /// beside a left-behind machine (another paid host) or on a clone failure; no_claim=the rerun
+  /// (CreationFlowTests)
+  @MainActor
+  func testTryWithProviderDefaultsOnlyWhereItCanHelp() {
+    func run(failing step: String, madeWith: ResolvedHostOptions?, leftBehind: Bool = false)
+      -> CreationRun
+    {
+      let run = CreationRun(
+        project: Project(path: "/code/acme-web", vcs: "git", workrooms: []), kind: .exeDev,
+        splitAnchor: nil, previousSelection: nil)
+      run.madeWith = madeWith
+      run.begin(step)
+      run.fail(.remoteFailed(message: "x", leftBehind: leftBehind))
+      return run
+    }
+    let image = ResolvedHostOptions(image: "ubuntu:24.04")
+    XCTAssertEqual(
+      P.footer(for: run(failing: "setup", madeWith: image))?.alternative, .providerDefaults)
+    XCTAssertEqual(
+      P.footer(for: run(failing: "machine", madeWith: image))?.alternative, .providerDefaults)
+    XCTAssertNil(P.footer(for: run(failing: "clone", madeWith: image))?.alternative)
+    XCTAssertNil(P.footer(for: run(failing: "setup", madeWith: ResolvedHostOptions()))?.alternative)
+    XCTAssertNil(P.footer(for: run(failing: "setup", madeWith: nil))?.alternative)
+    XCTAssertNil(
+      P.footer(for: run(failing: "setup", madeWith: image, leftBehind: true))?.alternative)
+    XCTAssertEqual(P.Action.providerDefaults.title, "Try With Provider Defaults")
+  }
+
   /// Value: protects=D16, Escape answers only where Close is shown; fails_when=Escape triggers
   /// Delete Workroom or Open Anyway; no_claim=focus scoping (a view concern)
   func testEscapeAnswersOnlyAClose() {

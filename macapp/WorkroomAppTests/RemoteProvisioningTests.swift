@@ -277,6 +277,33 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     XCTAssertEqual(connects.take(), [], "an unrecorded host was used")
   }
 
+  // Value: protects=a host made from a snapshot of a used workroom has its old checkout removed
+  // before the clone, and a failed removal takes the host down (#575, D5); fails_when=the hook
+  // runs after the clone or outside the rollback; why_new=no create cleared a path before;
+  // seam=none; no_claim=the rm on a real boxd host (live gate)
+  /// A snapshot's old checkout goes before the clone, which would refuse a folder that isn't empty.
+  func testASnapshotsOldCheckoutIsRemovedBeforeTheClone() async throws {
+    let fake = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
+    defer { fake.stop() }
+    let cleared = CheckpointLog()
+    var env = environment(gitHubToken: nil, connect: Self.connecting(to: fake))
+    env.clearCheckout = { host, path in
+      XCTAssertEqual(path, "/p")
+      XCTAssertEqual(fake.receivedExecs.count, 0, "git ran before the old checkout went")
+      cleared.add(host)
+    }
+    let instance = try await RemoteProvisioning.provision(
+      cloneURL: "u", path: "/p", branch: "b", in: env)
+    await instance.connection.close()
+    XCTAssertEqual(cleared.all, [instance.host])
+
+    let driver = CountingDriver()
+    var failing = environment(gitHubToken: nil, driver: driver, connect: Self.connecting(to: fake))
+    failing.clearCheckout = { _, _ in throw HostDriverError.provisioning("rm failed") }
+    _ = try? await RemoteProvisioning.provision(cloneURL: "u", path: "/p", branch: "b", in: failing)
+    XCTAssertEqual(driver.destroys, 1, "a host whose old checkout stayed was kept")
+  }
+
   private func execs(of fake: FakeDaemon) throws -> [[String: Any]] {
     try fake.receivedExecs.map {
       try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])

@@ -1,6 +1,7 @@
 import Defaults
 import DesignSystem
 import Foundation
+import WorkroomDomain
 
 // MARK: - Dotted key names cannot be OBSERVED (measured 2026-09-03)
 //
@@ -45,6 +46,10 @@ struct RunConfig: Codable, Hashable, Defaults.Serializable {
   var hasCommand: Bool { !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 }
 
+/// Host options (#575) are stored as JSON, as `RunConfig` is: their field and case names are the
+/// stored-data contract (`HostOptionsTests.testStoredOptionsDecode`).
+extension HostOptions: Defaults.Serializable {}
+
 /// The single source of truth for every persisted preference: each `Key` owns both the
 /// UserDefaults key string *and* the default value, so a default lives in exactly one place
 /// (no more duplicating it across an enum getter and every `@Default`/`@AppStorage` site).
@@ -80,6 +85,14 @@ extension Defaults.Keys {
   /// Confirm before closing a terminal (closing kills its shell and any running process, no undo).
   static let confirmOnCloseTerminal = Key<Bool>(
     "confirmOnCloseTerminal", default: true, suite: .app)
+
+  /// The host options every boxd and exe.dev workroom is created with (#575, ADR 0065), keyed by
+  /// `HostProvider.rawValue`: Settings ▸ Remote Hosts.
+  static let hostOptions = Key<[String: HostOptions]>("hostOptions", default: [:], suite: .app)
+  /// One project's host options, over Settings', keyed by the project's absolute path, then by
+  /// `HostProvider.rawValue`: Project Settings ▸ Remote Hosts.
+  static let projectHostOptions = Key<[String: [String: HostOptions]]>(
+    "projectHostOptions", default: [:], suite: .app)
 
   /// CPUs and memory (`8G`) each container workroom gets (#309), over the defaults
   /// `RemoteHosts.resources` picks. Hidden: `defaults write <bundle id> containerCPUs -int 6`.
