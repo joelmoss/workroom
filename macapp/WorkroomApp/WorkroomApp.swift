@@ -134,6 +134,7 @@ struct WorkroomApp: App {
         .environmentObject(codingAgentUsage)
         .environmentObject(claudeUsageBridge)
     }
+    .windowResizability(.contentMinSize)
     .restorationBehavior(.disabled)
 
     // The first-run onboarding wizard (issue #151). A plain `Window` scene, like `Settings` — no
