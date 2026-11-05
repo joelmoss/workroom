@@ -1,33 +1,74 @@
 import Defaults
+import Observation
 
-/// The panes the Settings window's back and forward buttons walk, as System Settings' do: a new
-/// choice clears the way forward, and choosing the open pane is no step.
+/// Where the Settings window is: a pane, and in Projects, the project open in it (nil: the list).
+struct SettingsLocation: Equatable {
+  var pane: SettingsPane
+  var project: String?
+}
+
+/// The places the Settings window's back and forward buttons walk, as System Settings' do: a new
+/// choice clears the way forward, and choosing where you are is no step.
 struct SettingsHistory: Equatable {
-  private var back: [SettingsPane] = []
-  private var forward: [SettingsPane] = []
+  private var back: [SettingsLocation] = []
+  private var forward: [SettingsLocation] = []
 
   var canGoBack: Bool { !back.isEmpty }
   var canGoForward: Bool { !forward.isEmpty }
 
-  /// `current` is left for `next`, chosen in the sidebar.
-  mutating func leave(_ current: SettingsPane, for next: SettingsPane) {
+  /// `current` is left for `next`, chosen in the sidebar or a pane.
+  mutating func leave(_ current: SettingsLocation, for next: SettingsLocation) {
     guard current != next else { return }
     back.append(current)
     forward.removeAll()
   }
 
-  /// The pane before `current`, or nil at the first.
-  mutating func goBack(from current: SettingsPane) -> SettingsPane? {
+  /// The place before `current`, or nil at the first.
+  mutating func goBack(from current: SettingsLocation) -> SettingsLocation? {
     guard let previous = back.popLast() else { return nil }
     forward.append(current)
     return previous
   }
 
-  /// The pane gone back from, or nil when there is none.
-  mutating func goForward(from current: SettingsPane) -> SettingsPane? {
+  /// The place gone back from, or nil when there is none.
+  mutating func goForward(from current: SettingsLocation) -> SettingsLocation? {
     guard let next = forward.popLast() else { return nil }
     back.append(current)
     return next
+  }
+}
+
+/// Which project Settings ▸ Projects shows. Main windows ask for one through `show(project:)`, so
+/// the pane opens on it whether the Settings window was open already or opens for it.
+@MainActor
+@Observable
+final class SettingsRoute {
+  static let shared = SettingsRoute()
+
+  /// The project open in the pane, by path; nil shows the list of projects.
+  var project: String?
+  /// The project whose Run found no command (#127): its pane warns while the command is blank.
+  private(set) var warnedProject: String?
+  /// Bumped on every `show`, so an open Settings window goes to the project asked for.
+  private(set) var requests = 0
+  private var requested: String?
+
+  func show(project path: String, runWarning: Bool) {
+    requested = path
+    warnedProject = runWarning ? path : nil
+    Defaults[.settingsSelectedPane] = .projects
+    requests += 1
+  }
+
+  /// Run's warning is for its one request: leaving the project ends it.
+  func leave(project path: String) {
+    if warnedProject == path { warnedProject = nil }
+  }
+
+  /// The project a main window asked for that the Settings window has yet to go to.
+  func takeRequest() -> String? {
+    defer { requested = nil }
+    return requested
   }
 }
 
@@ -50,6 +91,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
   case appearance
   case terminal
   case agent
+  case projects
   case remoteHosts
   case about
 
@@ -63,6 +105,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .appearance: return "Appearance"
     case .terminal: return "Terminal"
     case .agent: return "AI Agents"
+    case .projects: return "Projects"
     case .remoteHosts: return "Remote Hosts"
     case .about: return "About"
     }
@@ -76,6 +119,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .appearance: return "paintbrush"
     case .terminal: return "terminal"
     case .agent: return "sparkles"
+    case .projects: return "folder"
     case .remoteHosts: return "cloud"
     case .about: return "info.circle"
     }

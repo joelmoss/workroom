@@ -1073,7 +1073,7 @@ struct RemoteCreateServices {
       },
       hostOptionLevels: { project, provider in
         (
-          project: Defaults[.projectHostOptions][project.path]?[provider.rawValue],
+          project: Defaults[.projectHostOptions][project: project.path, provider: provider],
           settings: Defaults[.hostOptions][provider.rawValue]
         )
       },

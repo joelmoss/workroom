@@ -1,6 +1,6 @@
 import XCTest
 
-/// ⌘R on a workroom with no run command opens the Project Settings sheet with the "no command
+/// ⌘R on a workroom with no run command opens Settings ▸ Projects with the "no command
 /// yet" warning (issue #127) — not a silent no-op.
 final class RunSettingsPromptUITests: XCTestCase {
   override func setUp() {
@@ -36,17 +36,16 @@ final class RunSettingsPromptUITests: XCTestCase {
     return app
   }
 
-  /// Closes the Project Settings sheet via its Cancel button and proves it is gone. Escape is not
-  /// relied on, and the next step's `runWarning`/`runCommand` waits would be vacuous against a sheet
-  /// that is still open.
-  private func cancelProjectSettings(_ app: XCUIApplication) {
-    app.buttons["Cancel"].click()
+  /// Closes the Settings window with ⌘W and proves it is gone: the next step's
+  /// `runWarning`/`runCommand` waits would be vacuous against a window that is still open.
+  private func closeProjectSettings(_ app: XCUIApplication) {
+    app.typeKey("w", modifierFlags: .command)
     XCTAssertTrue(
       app.textFields["projectSettings.runCommand"].waitForNonExistence(timeout: 5),
-      "Cancel should close the sheet")
+      "⌘W should close the Settings window")
     XCTAssertTrue(
       app.staticTexts["projectSettings.runWarning"].waitForNonExistence(timeout: 5),
-      "the warning should go with the sheet")
+      "the warning should go with the window")
   }
 
   /// Three doors into Project Settings on one launch, in order:
@@ -72,7 +71,7 @@ final class RunSettingsPromptUITests: XCTestCase {
     XCTAssertTrue(
       app.textFields["projectSettings.runCommand"].waitForExistence(timeout: 5),
       "the run-command field should be present so the user can define one")
-    cancelProjectSettings(app)
+    closeProjectSettings(app)
 
     // 2. The header Run button.
     let pane = app.descendants(matching: .any).matching(identifier: "workroom.pane").firstMatch
@@ -86,7 +85,7 @@ final class RunSettingsPromptUITests: XCTestCase {
     XCTAssertTrue(
       app.staticTexts["projectSettings.runWarning"].waitForExistence(timeout: 10),
       "clicking Run with nothing configured should open Project Settings, warned")
-    cancelProjectSettings(app)
+    closeProjectSettings(app)
 
     // 3. The context menu. "Project Settings…" lives on the PROJECT row's context menu
     // (ProjectSidebar.swift), not the workroom row's — unlike ⌘R, which acts on the selected workroom.
@@ -95,7 +94,7 @@ final class RunSettingsPromptUITests: XCTestCase {
 
     XCTAssertTrue(
       app.textFields["projectSettings.runCommand"].waitForExistence(timeout: 10),
-      "the settings sheet should open")
+      "Settings ▸ Projects should open on the project")
     XCTAssertFalse(
       app.staticTexts["projectSettings.runWarning"].exists,
       "the plain Project Settings entry must not show the Run warning")

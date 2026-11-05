@@ -135,11 +135,11 @@ team uses.
 A run command is what you run most in a workroom, such as `npm run dev` or `bin/rails server`. Once it is
 set, <kbd>⌘R</kbd> starts it in any of the project's workrooms, in a tab of its own.
 
-1. Right-click the project in the sidebar and choose **Project Settings…**.
-2. Under **Run Command**, enter the command.
+1. Right-click the project in the sidebar and choose **Project Settings…**. **Settings ▸ Projects**
+   opens on the project.
+2. Under **Run Command**, enter the command and press <kbd>Return</kbd>.
 3. To start it in every new workroom by itself, turn on **Run automatically when a workroom is
    created**.
-4. Click **Save**.
 
 | Action  | Keys                                    |
 | ------- | --------------------------------------- |
@@ -150,8 +150,8 @@ set, <kbd>⌘R</kbd> starts it in any of the project's workrooms, in a tab of it
 ## Choose the branch new workrooms start from {nightly}
 
 New workrooms start from the default branch on `origin`, freshly fetched. To start them from another
-branch, such as `develop`, set the project's base branch in **Project Settings…**, under **New
-Workrooms**. To set a default for every project, use **Settings**, under **New Workrooms**.
+branch, such as `develop`, set the project's base branch in **Settings ▸ Projects**, under **New
+Workrooms**. To set a default for every project, use **Settings ▸ General**, under **New Workrooms**.
 
 From the CLI:
 

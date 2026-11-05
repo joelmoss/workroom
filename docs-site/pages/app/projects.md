@@ -9,7 +9,7 @@ A project is a Git repository you have registered with Workroom. This page shows
 
 The sidebar on the left lists every project. Each project expands into its root, then its workrooms. The root is the project's own checkout. Click the project name to expand or collapse it. Workroom remembers which projects are open, and which one you had selected, when you relaunch.
 
-Each project row has a **+** button that creates a workroom. See [Workrooms](workrooms.md#create-a-workroom). Hover the row to reveal a gear button, which opens [Project Settings](#project-settings).
+Each project row has a **+** button that creates a workroom. See [Workrooms](workrooms.md#create-a-workroom). Hover the row to reveal a gear button, which opens the project's [settings](#project-settings).
 
 Right-click a project row for **New Workroom**, **Project Settings…** and **Delete Project…**.
 
@@ -29,9 +29,13 @@ The **Add Project** button stays off until the path is absolute. In **Create new
 > [!NOTE]
 > Workroom does not accept a path on another computer, such as `ssh://…` or `host:repo`. Add the project from a local repository. A remote workroom always belongs to a local project. See [Remote workrooms](../remote/overview.md).
 
-## Project Settings
+## Project settings
 
-Open Project Settings from the gear on a project row, or from the project's right-click menu. Your changes apply when you click **Save**. **Cancel** throws them away.
+A project's settings are in **Settings ▸ Projects**. The pane lists your projects; click one to open its settings, and the back button at the top of the window to return to the list. The gear on a project row, and **Project Settings…** in its right-click menu, open the project's settings straight away.
+
+Changes apply straight away. A text field saves when you press <kbd>Return</kbd> or leave it.
+
+In Nightly, the pane also holds the project's boxd and exe.dev options. See [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size).
 
 ### Run command
 
@@ -39,7 +43,7 @@ Open Project Settings from the gear on a project row, or from the project's righ
 
 Turn on **Run automatically when a workroom is created** to start the command in every new workroom. The switch is off, and stays off, while the command is empty.
 
-If you press <kbd>⌘R</kbd> in a project that has no run command, Project Settings opens with a warning that you cannot run the workroom until you set one.
+If you press <kbd>⌘R</kbd> in a project that has no run command, **Settings ▸ Projects** opens on it with a warning that you cannot run the workroom until you set one.
 
 ### Base branch {nightly}
 

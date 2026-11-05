@@ -18,6 +18,7 @@ struct RootView: View {
   @EnvironmentObject var updater: Updater
   @EnvironmentObject var whatsNew: WhatsNewService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.openSettings) private var openSettings
   /// Drives the title-bar accessory's dim while a dialog is up, matched to `DialogOverlay`'s backdrop.
   @Environment(\.colorScheme) private var colorScheme
   @Default(.theme) private var theme
@@ -342,11 +343,14 @@ struct RootView: View {
           },
           onCancel: { store.pendingWorkroomLabel = nil })
       }
-      // Project Settings sheet (issue #7 origin; issue #127 adds the no-command-Run trigger). One
-      // store-level presenter for both entry points — see `PendingProjectSettings`'s doc comment.
-      .sheet(item: $store.pendingProjectSettings) { pending in
-        ProjectSettingsSheet(project: pending.project, showsRunWarning: pending.showsRunWarning)
-          .environmentObject(store)
+      // A project's settings open in Settings ▸ Projects (issue #7; #127 adds the no-command Run).
+      // Cleared at once: the request is handed on, and no sheet holds this window's shortcuts.
+      .onChange(of: store.pendingProjectSettings?.id) {
+        guard let pending = store.pendingProjectSettings else { return }
+        store.pendingProjectSettings = nil
+        SettingsRoute.shared.show(
+          project: pending.project.path, runWarning: pending.showsRunWarning)
+        openSettings()
       }
       // One boxd or exe.dev create's host options (#575), from the New Workroom dialog or menu.
       .sheet(item: $store.pendingHostOptions) { pending in

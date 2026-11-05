@@ -52,12 +52,9 @@ struct PendingWorkroomLabel: Identifiable {
   var id: String { TerminalTarget.workroomID(project: project.path, name: workroom.name) }
 }
 
-/// The project-settings sheet's one presentation source (issue #127): used both by the plain
-/// "Project Settings…" entry points (hover button / context menu — `showsRunWarning: false`) and
-/// by Run invoked with no command configured (`showsRunWarning: true`). Unified into ONE
-/// store-level pending state — not one local to `ProjectSidebar` plus a second store-level one —
-/// because ⌘R is a global key monitor that can fire while the sheet is already open from the other
-/// entry point; two independent `.sheet(item:)` presenters would race (eng review issue #127-eng-1).
+/// A request for a project's settings (issue #127), from the plain "Project Settings…" entry points
+/// (hover button / context menu — `showsRunWarning: false`) or from Run invoked with no command
+/// configured (`showsRunWarning: true`). `RootView` hands it to Settings ▸ Projects and clears it.
 struct PendingProjectSettings: Identifiable {
   let project: Project
   var showsRunWarning: Bool = false
@@ -165,19 +162,16 @@ final class ModalState {
   /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
   /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
   var pendingWorkroomLabel: PendingWorkroomLabel?
-  /// The project-settings sheet's one presentation source (drives `ProjectSettingsSheet`, issue #7
-  /// origin, issue #127 adds the no-command-Run trigger). Set by the project row's hover button /
-  /// context menu (`showsRunWarning: false`), or by `runOrFocusRunCommand` when Run is invoked with
-  /// no command configured (`showsRunWarning: true`). See `PendingProjectSettings`'s doc comment for
-  /// why this is ONE store-level source rather than a sidebar-local `@State` plus a second one.
+  /// A request for a project's settings, which `RootView` hands to Settings ▸ Projects and clears
+  /// at once. See `PendingProjectSettings`.
   var pendingProjectSettings: PendingProjectSettings?
   /// A remote action awaiting confirmation — currently only a pull over a dirty working tree, where
   /// `--autostash` will stash and reapply.
   ///
-  /// Store-level rather than a `RightInspector` `@State` for the same reason `pendingProjectSettings` is:
-  /// there are two entry points (the toolbar segment and the Room menu's ⌥⇧⌘P), and a gate
-  /// owned by one view can only guard that view. It carries the `SidebarID` it was raised for so the
-  /// confirmed action can't be redirected onto whatever is selected by the time the dialog is answered.
+  /// Store-level rather than a `RightInspector` `@State`: there are two entry points (the toolbar
+  /// segment and the Room menu's ⌥⇧⌘P), and a gate owned by one view can only guard that view. It
+  /// carries the `SidebarID` it was raised for so the confirmed action can't be redirected onto
+  /// whatever is selected by the time the dialog is answered.
   var pendingRemoteConfirm: PendingVCSAction?
 
   /// The commit sheet's target, or nil when it's closed. Presented from the Changes section header.
@@ -216,7 +210,7 @@ final class ModalState {
     activePicker != nil || auxSheetPresented || pendingDeletion != nil
       || pendingWorkroomClose != nil || pendingStartChoice != nil
       || pendingProjectDeletion != nil || pendingWorkroomLabel != nil
-      || pendingProjectSettings != nil || errorMessage != nil
+      || errorMessage != nil
       // Included so the Room menu's Fetch/Push/Pull shortcuts are inert while the confirmation is up
       // — otherwise ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
       || pendingRemoteConfirm != nil

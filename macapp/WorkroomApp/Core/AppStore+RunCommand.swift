@@ -100,10 +100,10 @@ extension AppStore {
   }
 
   /// The run config for a project path (empty if none set). Single read path for the toolbar, menu,
-  /// settings sheet, and auto-run. Stored app-side in `Defaults` (GUI-only — the CLI can't hold a
+  /// Settings ▸ Projects, and auto-run. Stored app-side in `Defaults` (GUI-only — the CLI can't hold a
   /// long-running process, so it's deliberately out of the `--json` contract, like branch labels).
   func runConfig(forProject projectPath: String) -> RunConfig {
-    _ = runConfigRevision  // a read Observation tracks: `Defaults` itself is not observable
+    _ = projectStore.runConfigRevision  // a read Observation tracks: `Defaults` is not observable
     return Defaults[.runCommands][projectPath] ?? .empty
   }
 
@@ -139,32 +139,28 @@ extension AppStore {
 
   /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
   /// through the CLI, which owns it so `workroom create` in a terminal agrees.
-  func setBaseBranch(_ branch: String?, forProject projectPath: String) async {
+  /// Returns the CLI's error when it refused, which this window shows unless `presentingError` is
+  /// false (Settings ▸ Projects shows it by the field).
+  @discardableResult
+  func setBaseBranch(
+    _ branch: String?, forProject projectPath: String, presentingError: Bool = true
+  ) async -> String? {
     let trimmed = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+    var refused: String?
     do {
       try await cli.setBaseBranch(
         project: projectPath, branch: trimmed?.isEmpty == false ? trimmed : nil)
     } catch {
-      present(error)
+      refused = errorText(error)
+      if presentingError { present(error) }
     }
     await reload()
+    return refused
   }
 
-  /// Persist a project's run config. A blank command with auto-run off removes the entry so the map
-  /// doesn't accrue dead keys. Bumps `runConfigRevision` so the toolbar/menu re-render
-  /// `hasRunCommand` the moment Save commits (those consumers observe this store — issue #7
-  /// reactivity, OV-A).
+  /// Persist a project's run config, through the project store every window shares.
   func setRunConfig(_ config: RunConfig, forProject projectPath: String) {
-    runConfigRevision += 1
-    var map = Defaults[.runCommands]
-    if config.hasCommand || config.autoRun {
-      map[projectPath] = RunConfig(
-        command: config.command.trimmingCharacters(in: .whitespacesAndNewlines),
-        autoRun: config.autoRun)
-    } else {
-      map[projectPath] = nil
-    }
-    Defaults[.runCommands] = map
+    projectStore.setRunConfig(config, forProject: projectPath)
   }
 
   // MARK: Run command — actions (issue #7)
@@ -577,15 +573,12 @@ extension AppStore {
     runStates[target.id] = .stopped(tab: oldTab)
     guard hasRunCommand(forProject: project.path) else {
       // #127 follow-up: the command was cleared while a stopped-but-open run pane sat waiting for
-      // this restart. Mirror the `.armed`/`.none` branch's warning (same non-clobber guard) instead
-      // of silently closing the pane — closing it here used to look exactly like ⌘R had done
-      // nothing, with no way to tell "there's no command" from "the restart itself failed". Leaving
-      // the pane open (not closing `oldTab`) also sidesteps issue #67's focus-preservation semantics
-      // entirely: nothing about focus changes until the user actually configures a command and
-      // restarts again.
-      if pendingProjectSettings == nil {
-        pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
-      }
+      // this restart. Mirror the `.armed`/`.none` branch's warning instead of silently closing the
+      // pane — closing it here used to look exactly like ⌘R had done nothing, with no way to tell
+      // "there's no command" from "the restart itself failed". Leaving the pane open (not closing
+      // `oldTab`) also sidesteps issue #67's focus-preservation semantics entirely: nothing about
+      // focus changes until the user actually configures a command and restarts again.
+      pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
       return
     }
     let command = runConfig(forProject: project.path).command.trimmingCharacters(
@@ -680,8 +673,8 @@ extension AppStore {
   ///        └───────┬────────┘
   ///                │no
   ///        ┌───────┴──────────┐
-  ///        │ hasRunCommand?    │──NO───▶  pendingProjectSettings = ⟨project, warning:true⟩  [NEW]
-  ///        └───────┬──────────┘          (only if no sheet is already open — see guard below)
+  ///        │ hasRunCommand?    │──NO───▶  pendingProjectSettings = ⟨project, warning:true⟩
+  ///        └───────┬──────────┘
   ///                │yes
   ///                ▼
   ///          startRunCommand(for: target)
@@ -710,24 +703,14 @@ extension AppStore {
         owner.revealRunTerminal()
       } else if let project = project(forTarget: target), !hasRunCommand(forProject: project.path) {
         // Issue #127: ⌘R on a target with no run command configured used to silently no-op inside
-        // `startRunCommand`'s guard. Surface the settings sheet with a warning instead of doing nothing.
+        // `startRunCommand`'s guard. Open the project's settings with a warning instead.
         //
         // Reached by BOTH ⌘R and a click now: the workroom pane header's Run button is always shown for a
         // present target (issue #139 follow-up) precisely so this branch can teach you how to configure a
         // command. It was written when every Run button hid itself behind `canRunCommand` and only the
         // keyboard could get here — so this is a widening of an existing path, not a new one. (The
         // sidebar's per-row buttons still hide.)
-        if pendingProjectSettings == nil {
-          pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
-        }
-        // else: a settings sheet is already open (any reason, any project) — intentionally do
-        // nothing further, rather than clobber it. This is deliberate and self-contained (issue
-        // #127-eng-4, adversarial review): a second ⌘R for a DIFFERENT no-command target while a
-        // sheet is already presented would otherwise silently overwrite the pending item, discarding
-        // any unsaved typing with no confirmation — and there's genuine, unverified uncertainty about
-        // whether SwiftUI's `.sheet(item:)` even refreshes the banner correctly when the identity is
-        // unchanged. (Previously this fell through to `startRunCommand`'s own unrelated no-command
-        // guard, which happened to produce the same no-op — but only by coincidence, not by design.)
+        pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
       } else {
         startRunCommand(for: target)
       }

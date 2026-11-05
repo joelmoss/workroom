@@ -11,28 +11,28 @@ struct HostOptionsPanel: View {
   @EnvironmentObject private var store: AppStore
   @State private var options = HostOptions()
   @State private var remember = false
-  @StateObject private var catalog = HostOptionsCatalog()
+  @ObservedObject private var catalog = HostOptionsCatalog.shared
+  // Read only so the panel redraws when Settings or Settings ▸ Projects change them while it's
+  // open: what it shows inheriting is what the create gets (`hostOptionResolution` reads them).
+  @Default(.hostOptions) private var hostOptions
+  @Default(.projectHostOptions) private var projectHostOptions
 
   var body: some View {
     if let provider = pending.place.hostProvider {
       VStack(spacing: 0) {
         Form {
-          Section {
-            HostOptionsFields(
-              provider: provider, options: $options,
-              inherited: store.hostOptionResolution(
-                for: pending.place, in: pending.project, create: nil),
-              catalog: catalog)
-          } header: {
-            Text("\(provider.displayName) Host for \(pending.project.displayName)")
-          } footer: {
-            if let failure = catalog.failure[provider] { Text(failure) }
-          }
+          HostOptionsSection(
+            provider: provider, options: $options,
+            inherited: store.hostOptionResolution(
+              for: pending.place, in: pending.project, create: nil),
+            catalog: catalog,
+            title: "\(provider.displayName) Host for \(pending.project.displayName)")
           Section {
             Toggle("Remember for this project", isOn: $remember)
               .accessibilityIdentifier("hostOptions.remember")
           } footer: {
-            Text("Saves only the fields set here to Project Settings; the rest follow Settings.")
+            Text(
+              "Saves only the fields set here to Settings ▸ Projects; the rest follow Settings.")
           }
         }
         .formStyle(.grouped)
@@ -49,7 +49,6 @@ struct HostOptionsPanel: View {
         .padding()
       }
       .frame(width: 460)
-      .task { await catalog.load(provider) }
     }
   }
 
@@ -57,9 +56,9 @@ struct HostOptionsPanel: View {
     let pending = pending
     let options = options
     if remember, !options.isEmpty {
-      var saved = Defaults[.projectHostOptions][pending.project.path] ?? [:]
-      saved[provider.rawValue] = options.overlaid(on: saved[provider.rawValue] ?? HostOptions())
-      Defaults[.projectHostOptions][pending.project.path] = saved
+      let path = pending.project.path
+      let saved = Defaults[.projectHostOptions][project: path, provider: provider] ?? HostOptions()
+      Defaults[.projectHostOptions][project: path, provider: provider] = options.overlaid(on: saved)
     }
     store.pendingHostOptions = nil
     Task {
