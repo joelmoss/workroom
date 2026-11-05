@@ -567,7 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // ⌘R: run-or-focus the selected workroom's run command (issue #7) — caught here so it fires
       // before the terminal swallows it, like ⌘1–9. Consumed unconditionally (⌘R has no terminal use
       // we want to preserve); a no-op when nothing's selected, but no command configured now opens the
-      // Project Settings sheet with a warning instead of doing nothing (issue #127).
+      // project's settings with a warning instead of doing nothing (issue #127).
       if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "r" {
         Task { @MainActor in Self.shortcutStore(for: window)?.runOrFocusRunCommand() }
         return nil

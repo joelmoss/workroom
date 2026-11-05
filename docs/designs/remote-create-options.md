@@ -46,9 +46,12 @@ machine". A fresh boxd host logs in as `boxd` (uid 1000, in the sudo group), wit
 
 A snapshot of a used workroom of the same project still holds that workroom's checkout at the clone
 destination, `/home/boxd/<repo>`, and `git clone` refuses a folder that isn't empty. So on a host
-made from a snapshot the app removes the clone destination right before the clone. The new
-workroom starts from a fresh clone, with none of the old workroom's branch, uncommitted work or
-`.env`; anything installed outside the checkout (the toolchain) stays.
+made from a snapshot the app removes the old checkout right before the clone, and only that: a git
+checkout at the destination whose `origin` is the repository being cloned. Anything else there (a
+host folder a repository shares its name with, such as `.local`, which holds the daemon) stays, and
+the create fails saying so (review, 2026-11-05). The new workroom starts from a fresh clone, with
+none of the old workroom's branch, uncommitted work or `.env`; anything installed outside the
+checkout (the toolchain) stays.
 
 **exe.dev images** (spike, 2026-11-04). The default image, `ghcr.io/boldsoftware/exeuntu` (`ls
 --json` names it `boldsoftware/exeuntu`, but `--image=boldsoftware/exeuntu` is looked up on Docker
@@ -111,25 +114,30 @@ to nothing and its controls are disabled with boxd's reason ("a snapshot keeps i
 show, because setting options needs no account. A group whose provider isn't set up says so in its
 footer. Fields save live.
 
-- boxd: *Host image* is a combo box filled from `boxd snapshots list --json` (which gives name,
+- boxd: *Snapshot* is a combo box filled from `boxd snapshots list --json` (which gives name,
   version, status, size and used space, but no id or date), and you can also type a name. If the
-  saved name isn't in the loaded list, the field warns "No snapshot named X in this account". Saving
-  is still allowed, because the list can fail to load. *Size* is a picker of the four sizes.
-- exe.dev: *Host image* is a text field. *CPU* and *Memory* are pickers capped by
-  `billing plan --json` (`max_cpus`, and memory to match). *Disk* is a number field whose
-  placeholder is the plan's `default_disk_gb`. If the plan can't be read, these become free text.
+  saved name isn't in the loaded list, the field warns "No snapshot of that name in this boxd
+  account - help". Saving is still allowed, because the list can fail to load. *Size* is a picker
+  of the four sizes, faded and disabled while a snapshot is set.
+- exe.dev: *Custom image* is a text field. *CPU* and *Memory* are pickers capped by
+  `billing plan --json` (`max_cpus`, and memory to match). *Disk* is a picker of fixed sizes up to
+  the plan's maximum, with its `default_disk_gb` among them. If the plan can't be read, these
+  become free text.
 
-The snapshot list and the plan are read once when a pane or panel appears, off the main actor. The
+In each list the provider's default is marked **(default)**, and in a project's a value from
+Settings is marked **(app)**. The snapshot list and the plan are read off the main actor when a
+section appears, per provider, each section keeping its height while it waits. A good read is
+kept for two minutes and shared by every screen; the Settings window reads afresh as it opens. The
 one-click create never waits on them: it resolves from `Defaults` alone.
 
-**Project Settings ▸ Remote Hosts** has the same fields, saved with the rest of the sheet on Save.
-Placeholders show what's inherited from Settings.
+**Settings ▸ Projects** (built in place of Project Settings ▸ Remote Hosts, 2026-11-05) lists the
+projects; one's settings have the same fields, saved as they change.
 
 **At create time**, picking a place still creates straight away with the resolved options. Each
-boxd and exe.dev row in the New Workroom dialog gets an "Options…" button, also reachable with ⌘⏎
-on the highlighted row (on other rows ⌘⏎ still creates, and ⌥⌘⏎ keeps asking for a split). The
-sidebar's New Workroom menu gets "boxd Options…" and "exe.dev Options…". Both open a panel showing
-every resolved value and where it came from ("from project", "from Settings"), with a **Remember
+boxd and exe.dev row in the New Workroom dialog gets a "Configure…" button, also reachable with ⌘⏎
+on the highlighted row (on other rows ⌘⏎ still creates, and ⌥⌘⏎ keeps asking for a split). In the
+sidebar's New Workroom menu, boxd and exe.dev are submenus with "Create" and "Configure…".
+Configure… opens a panel showing every resolved value and where it came from, with a **Remember
 for this project** checkbox that saves only the fields you changed there.
 
 **A failed create.** Try Again uses the options chosen at create time, and reads Settings and
@@ -161,7 +169,7 @@ Saved settings are left unchanged.
 - `CreationRun` carries the create-time options and `retryCreation` copies them, as it does
   `skipsSetup`. `RemoteWorkrooms.Place` and `CreationKind` are unchanged: `Place` keys the shared
   provider setup sheet. `runRemoteCreate` resolves the options, sets `makeHost`, and on a snapshot
-  create removes the clone destination before the clone. Try With Provider Defaults sits beside
+  create removes the old checkout of the same repository before the clone. Try With Provider Defaults sits beside
   Try Again in `CreationPanePresentation`, only for `.remoteFailed(leftBehind: false)`.
 - `HostDescriptor`: `madeWith: ResolvedHostOptions?` for the Details pane. Older records decode
   with nil. The CLI stores the descriptor verbatim (`internal/config`), so it needs no change.

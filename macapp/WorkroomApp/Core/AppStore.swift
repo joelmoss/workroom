@@ -1689,10 +1689,6 @@ final class AppStore: ObservableObject {
 
   // MARK: Run command (issue #7)
 
-  /// Bumped by `setRunConfig` and read by `runConfig(forProject:)`, so views that show a run command
-  /// re-render when it is saved: the config itself lives in `Defaults`, which Observation cannot see.
-  var runConfigRevision = 0
-
   /// The run command's state and its process mechanics (issue #7). Starting a run and applying its
   /// status stay in `AppStore+RunCommand.swift`, since they read the store. The members below forward
   /// to it, so views and tests read run state through the store as before.
@@ -2185,17 +2181,7 @@ final class AppStore: ObservableObject {
     // to a survivor / dissolves below two, re-pointing selection. Runs after selection is validated so
     // history/notifications/run-toolbar (all keyed on `selectedTargetID`) follow the survivor.
     pruneWorkroomSplitToLiveLeaves(formerSelection: formerSelection)
-    let liveIDs = Set(fresh.map(\.id))
     let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
-    // Drop a pending sheet whose project was deleted from ANOTHER window (issue #127 follow-up,
-    // adversarial review): `removeProjectLocally` only clears these for the deleting window's own
-    // store, but every window's periodic/on-focus reload comes through here. Without this, a second
-    // window's still-open sheet keeps referencing the now-gone project, and Save would silently
-    // write `Defaults[.runCommands]` for a deleted path — the same stale-config leak this diff
-    // otherwise closes, just via a path this fix didn't originally cover.
-    if let pending = pendingProjectSettings, !liveIDs.contains(pending.project.id) {
-      pendingProjectSettings = nil
-    }
     if let pendingLabel = pendingWorkroomLabel,
       !liveSidebarIDs.contains(
         .workroom(project: pendingLabel.project.path, name: pendingLabel.workroom.name))
@@ -2905,10 +2891,6 @@ final class AppStore: ObservableObject {
       stamps[project.path] = nil
       Defaults[.vcsLastFetch] = stamps
     }
-    // Drop any pending sheet targeting this project — otherwise its Save path (e.g.
-    // setRunConfig(forProject:)) still fires for the now-deleted path, and a later re-add of the
-    // same path would silently inherit the stale config (#127 follow-up).
-    if pendingProjectSettings?.project.path == project.path { pendingProjectSettings = nil }
     if pendingWorkroomLabel?.project.path == project.path { pendingWorkroomLabel = nil }
     return targetIDs
   }

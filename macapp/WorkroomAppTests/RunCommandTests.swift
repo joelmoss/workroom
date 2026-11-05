@@ -149,7 +149,7 @@ final class RunCommandTests: XCTestCase {
   }
 
   /// Issue #127: ⌘R/toolbar Run on a target with no run command configured must not silently
-  /// no-op — it should surface the Project Settings sheet with a warning. This is the mandatory
+  /// no-op — it should open the project's settings with a warning. This is the mandatory
   /// regression test for `runOrFocusRunCommand`'s `.armed/.none` branch: none of this file's other
   /// `runOrFocusRunCommand()` calls exercise the no-command case (they all pre-configure a command).
   func testRunOrFocusPresentsProjectSettingsWithWarningWhenNoCommand() {
@@ -171,24 +171,6 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(PendingProjectSettings(project: p).showsRunWarning)
   }
 
-  /// Found by the review's Testing + Maintainability specialists (independently, same root cause):
-  /// the `pendingProjectSettings == nil` guard added in eng review (issue #127-eng-4) — so a second
-  /// ⌘R for a DIFFERENT no-command target can't silently overwrite an already-open settings sheet —
-  /// had no test proving it actually works.
-  func testRunOrFocusDoesNotClobberAnAlreadyOpenSettingsSheet() {
-    let store = makeStore([project("/a", workrooms: []), project("/b", workrooms: ["main"])])
-    store.pendingProjectSettings = PendingProjectSettings(project: project("/a", workrooms: []))
-    let tB = target(store, "/b", "main")
-    store.selectedTargetID = .workroom(project: "/b", name: "main")
-
-    store.runOrFocusRunCommand()
-
-    XCTAssertEqual(
-      store.pendingProjectSettings?.project.path, "/a",
-      "must not clobber the already-open sheet with a different project")
-    XCTAssertNil(store.runTabID(for: tB.id))
-  }
-
   /// Found by the Testing specialist: every other test here stops at "the sheet opens" or "no
   /// warning shown" — none confirmed the fix's actual payoff, that configuring a command from the
   /// warned sheet lets a subsequent ⌘R really run it.
@@ -200,13 +182,33 @@ final class RunCommandTests: XCTestCase {
     store.runOrFocusRunCommand()
     XCTAssertNotNil(store.pendingProjectSettings)
 
-    // Simulates `ProjectSettingsSheet`'s Save button: persist the command, then dismiss.
+    // Simulates the request handed to Settings ▸ Projects, and a command saved there.
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     store.pendingProjectSettings = nil
 
     store.runOrFocusRunCommand()
 
     XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+  }
+
+  /// Value: protects=a run command saved in Settings ▸ Projects (or any window) re-renders every
+  /// window's Run controls; fails_when=a window reading the config isn't told it changed;
+  /// why_new=Settings has no store of its own; seam=a shared ProjectStore; no_claim=the toolbar's
+  /// rendering
+  func testARunCommandSavedFromSettingsReachesEveryWindow() {
+    let shared = ProjectStore()
+    let window = AppStore(projectStore: shared)
+    var changed = false
+    withObservationTracking {
+      _ = window.hasRunCommand(forProject: "/a")
+    } onChange: {
+      changed = true
+    }
+
+    shared.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+
+    XCTAssertTrue(changed, "a window showing the run command wasn't told it changed")
+    XCTAssertTrue(window.hasRunCommand(forProject: "/a"))
   }
 
   /// Issue #127-eng-4 (outside-voice review): the owner-elsewhere branch takes precedence over the
@@ -236,7 +238,7 @@ final class RunCommandTests: XCTestCase {
       "must not start a duplicate run — the owner window already runs it (issue #70)")
     XCTAssertNil(
       selectingStore.pendingProjectSettings,
-      "owner-elsewhere takes precedence over the no-command branch — no settings sheet either")
+      "owner-elsewhere takes precedence over the no-command branch — no project settings either")
   }
 
   // MARK: Per-target Run (issue #139)
@@ -677,7 +679,7 @@ final class RunCommandTests: XCTestCase {
   /// present target (issue #139 follow-up) and a press with no command configured opens Project Settings
   /// with the warning, exactly as ⌘R does — a visible button that teaches you how to configure it beats
   /// no button at all. A sidebar *row* is a different case: it's a list of many workrooms, where a button
-  /// per row that only opens a settings sheet would be noise.
+  /// per row that only opens the project's settings would be noise.
   func testCanRunCommandGate() {
     let store = makeStore([])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")

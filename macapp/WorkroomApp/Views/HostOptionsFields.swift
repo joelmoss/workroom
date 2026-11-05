@@ -3,51 +3,168 @@ import SwiftUI
 import WorkroomDomain
 
 /// What the host option fields learn from the provider (#575): a boxd account's snapshots and its
-/// org's default size and quota, and an exe.dev plan's limits and default disk. Read once when the
+/// org's default size and quota, and an exe.dev plan's limits and default disk. Read when the
 /// fields appear, off the main path; a create never waits on them. Nil until read, and still nil
 /// when the read failed, which `failure` says.
+///
+/// One for the app, so Remote Hosts, Projects and Configure… share what was read. A good read is
+/// kept for two minutes, and a failed one not at all; the Settings window reads afresh as it opens,
+/// so a snapshot saved meanwhile shows. A provider's fields keep showing what was read while a new
+/// read is under way.
 @MainActor
 final class HostOptionsCatalog: ObservableObject {
-  @Published private(set) var snapshots: [String]?
-  @Published private(set) var boxdSize: BoxdHostDriver.DefaultSize?
-  @Published private(set) var plan: ExeDevHostDriver.PlanLimits?
-  @Published private(set) var failure: [HostProvider: String] = [:]
-  /// The providers whose read is over, whether it worked or not.
-  @Published private(set) var finished: Set<HostProvider> = []
-  private var loaded: Set<HostProvider> = []
+  static let shared = HostOptionsCatalog()
+  /// How long a good read is used before the provider is asked again.
+  static let freshFor: TimeInterval = 120
 
+  /// Everything the reads found, in one value, so a read's findings change the catalog once.
+  struct Found {
+    var snapshots: [String]?
+    var boxdSize: BoxdHostDriver.DefaultSize?
+    var plan: ExeDevHostDriver.PlanLimits?
+    var failure: [HostProvider: String] = [:]
+    /// The providers whose read is over, whether it worked or not.
+    var finished: Set<HostProvider> = []
+  }
+
+  @Published private(set) var found = Found()
+  var snapshots: [String]? { found.snapshots }
+  var boxdSize: BoxdHostDriver.DefaultSize? { found.boxdSize }
+  var plan: ExeDevHostDriver.PlanLimits? { found.plan }
+  var failure: [HostProvider: String] { found.failure }
+  var finished: Set<HostProvider> { found.finished }
+  /// When each provider was last read well.
+  private var readAt: [HostProvider: Date] = [:]
+  /// Each provider's read under way, which every screen asking for it waits on.
+  private var reading: [HostProvider: Task<Reading, Never>] = [:]
+
+  /// What one provider's read found.
+  enum Reading {
+    case boxd(snapshots: [String], size: BoxdHostDriver.DefaultSize?)
+    case exeDev(ExeDevHostDriver.PlanLimits)
+    /// What to say instead: the provider isn't installed, set up or reachable.
+    case failed(String)
+  }
+
+  /// Seams for tests: the clock, and the read itself.
+  var now: () -> Date = Date.init
+  var fetch: ((HostProvider) async -> Reading)?
+
+  /// Reads `provider` unless it was read well under `freshFor` ago; a read already under way is
+  /// waited on instead. The read is the catalog's, not the asking screen's, so a screen going away
+  /// doesn't cut it short for another still waiting. What it found is set all at once, so its
+  /// sections redraw once.
   func load(_ provider: HostProvider) async {
-    guard loaded.insert(provider).inserted else { return }
-    defer { finished.insert(provider) }
+    if let at = readAt[provider], now().timeIntervalSince(at) < Self.freshFor { return }
+    if let running = reading[provider] {
+      _ = await running.value
+      return
+    }
+    let fetch = fetch ?? read
+    let task = Task { await fetch(provider) }
+    reading[provider] = task
+    let reading = await task.value
+    self.reading[provider] = nil
+    var next = found
+    switch reading {
+    case .boxd(let names, let size):
+      next.snapshots = names
+      next.boxdSize = size
+    case .exeDev(let limits):
+      next.plan = limits
+    case .failed:
+      break
+    }
+    if case .failed(let message) = reading {
+      next.failure[provider] = message
+      readAt[provider] = nil
+    } else {
+      next.failure[provider] = nil
+      readAt[provider] = now()
+    }
+    next.finished.insert(provider)
+    found = next
+  }
+
+  /// Makes every provider's next read a fresh one, as the Settings window opens. Nothing is read
+  /// here: a provider is asked only when one of its sections shows (Remote Hosts, a project's
+  /// settings, Configure…), so opening Settings on another pane asks none (exe.dev's read is an
+  /// ssh login).
+  func markStale() {
+    readAt = [:]
+  }
+
+  private func read(_ provider: HostProvider) async -> Reading {
     do {
       switch provider {
       case .boxd:
-        guard let cli = RemoteHosts.boxdExecutable() else {
-          failure[.boxd] = "boxd isn't installed yet. Creating a boxd workroom sets it up."
-          return
+        guard RemoteHosts.boxdExecutable() != nil else {
+          return .failed("boxd isn't installed yet. Creating a boxd workroom sets it up.")
         }
-        let driver = BoxdHostDriver(
-          configuration: RemoteHosts.boxdConfiguration(cli: cli), directory: RemoteHosts.directory)
-        // Only the size's own labels need it: the snapshots' failure is the one said.
-        boxdSize = try? await driver.defaultSize()
-        snapshots = try await driver.snapshotNames()
+        // The shared driver for whoever is signed in now: a create's key also names the account,
+        // which would cost a sign-in read before every read here.
+        guard
+          let driver = try RemoteHosts.shared.driver(.boxd(org: nil, account: nil))
+            as? BoxdHostDriver
+        else { return .failed("boxd couldn't be reached.") }
+        // Read together. Only the size's own labels need it: the snapshots' failure is the one said.
+        async let size = try? driver.defaultSize()
+        async let names = driver.snapshotNames()
+        return .boxd(snapshots: try await names, size: await size)
       case .exeDev:
-        plan = try await ExeDevHostDriver(configuration: .init(), directory: RemoteHosts.hosts)
-          .planLimits()
+        guard
+          let driver = try RemoteHosts.shared.driver(.exeDev(account: nil)) as? ExeDevHostDriver
+        else { return .failed("exe.dev couldn't be reached.") }
+        return .exeDev(try await driver.planLimits())
       }
     } catch {
       // Usually a provider not set up yet (story 40): options can still be saved before signing up.
       let name = provider.displayName
       let reason = error.localizedDescription
-      failure[provider] =
+      return .failed(
         "\(name) isn't set up, or couldn't be reached: \(reason)\(reason.hasSuffix(".") ? "" : ".")"
-        + " Creating a \(name) workroom sets it up."
+          + " Creating a \(name) workroom sets it up.")
     }
   }
 }
 
-/// A provider's host options heading (#575), the same in Settings ▸ Remote Hosts and Project
-/// Settings: what the group is for, with "info" linking to how host options work.
+/// A provider's host options as a form section, in Settings ▸ Remote Hosts, Settings ▸ Projects
+/// and the Configure… panel.
+/// Its fields wait for this provider's read only, so their lists and labels don't change under you
+/// and nothing else waits on it. Until then they are laid out but hidden, with a spinner by the
+/// heading, so the section already has its height and nothing moves when they show.
+struct HostOptionsSection: View {
+  let provider: HostProvider
+  @Binding var options: HostOptions
+  let inherited: HostOptions.Resolution?
+  @ObservedObject var catalog: HostOptionsCatalog
+  /// The heading, when not the Settings one.
+  var title: String?
+
+  var body: some View {
+    let loading = !catalog.finished.contains(provider)
+    Section {
+      HostOptionsFields(
+        provider: provider, options: $options, inherited: inherited, catalog: catalog
+      )
+      .opacity(loading ? 0 : 1)
+      .disabled(loading)
+      .accessibilityHidden(loading)
+    } header: {
+      HStack {
+        if let title { Text(title) } else { HostOptionsHeader(provider: provider) }
+        Spacer()
+        if loading { ProgressView().controlSize(.small) }
+      }
+    } footer: {
+      if let failure = catalog.failure[provider] { Text(failure) }
+    }
+    .task { await catalog.load(provider) }
+  }
+}
+
+/// A provider's host options heading in Settings (#575): what the group is for, with "info"
+/// linking to how host options work.
 struct HostOptionsHeader: View {
   let provider: HostProvider
 

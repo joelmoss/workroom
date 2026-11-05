@@ -5,7 +5,7 @@ description: Every setting in the Workroom app, pane by pane, with what each one
 
 Open Settings with <kbd>⌘,</kbd> (**Workroom ▸ Settings…**), or click the gear at the bottom of the right-hand activity bar. The window has a list of panes on the left. Changes apply straight away, and Workroom remembers the pane you were on.
 
-Settings that belong to one project, such as its run command, are in [Project Settings](projects.md#project-settings).
+Settings that belong to one project, such as its run command, are in the [Projects](#projects) pane.
 
 ## General
 
@@ -31,7 +31,7 @@ The question appears whether or not **Confirm before quitting** is on. See [Quit
 | **Base branch** | The branch new workrooms start from in every project that sets none of its own. Leave it empty to use `origin`'s default branch. |
 | **Close the checklist automatically when done** | Closes a new workroom's checklist a moment after the workroom is ready, instead of waiting for you to click **Done**. |
 
-New workrooms start from `origin`'s copy of the base branch, otherwise the local branch. Write `upstream/main` to start from another remote's branch, such as a fork's upstream. A project's own base branch in Project Settings wins. The field saves when you press <kbd>Return</kbd> or leave it. See [Projects](projects.md#base-branch) and [Workrooms](workrooms.md#watch-the-steps).
+New workrooms start from `origin`'s copy of the base branch, otherwise the local branch. Write `upstream/main` to start from another remote's branch, such as a fork's upstream. A project's own base branch in [Projects](#projects) wins. The field saves when you press <kbd>Return</kbd> or leave it. See [Projects](projects.md#base-branch) and [Workrooms](workrooms.md#watch-the-steps).
 
 ## Notifications {nightly}
 
@@ -104,6 +104,10 @@ See [Coding agents](coding-agents.md#diagnose-a-failed-command).
 
 See [Coding agents](coding-agents.md#usage).
 
+## Projects
+
+The pane lists your projects. Click one to open its settings, and the back button to return to the list. They are its run command and, in Nightly, its base branch and its boxd and exe.dev options. The gear on a project row in the sidebar, and **Project Settings…** in its right-click menu, open this pane on that project. A text field saves when you press <kbd>Return</kbd> or leave it. See [Project settings](projects.md#project-settings).
+
 ## Remote Hosts {nightly}
 
 What Workroom creates each new boxd and exe.dev workroom's host with. Existing workrooms keep the host they were made with. There is a group for each provider, shown whether or not you have set that provider up, and each setting saves as you change it. Each group's **info** link opens [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size). In a list, the provider's own default is marked **(default)**, and choosing it leaves the choice to the provider. Where the provider doesn't say what its default is, the list shows **Provider default** instead.
@@ -115,7 +119,7 @@ What Workroom creates each new boxd and exe.dev workroom's host with. Existing w
 | **Custom image** (exe.dev) | The container image new VMs start from, with its registry: a name without one, such as `boldsoftware/exeuntu`, is looked up on Docker Hub. Empty, exe.dev uses its own `ghcr.io/boldsoftware/exeuntu`. |
 | **CPU**, **Memory**, **Disk** (exe.dev) | The size of new VMs, up to what your plan allows. exe.dev's default CPU and your plan's default disk are marked **(default)**. If Workroom can't read your plan, these are text fields. |
 
-A project can choose its own in Project Settings, and one create can choose its own. See [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size).
+A project can choose its own in [Projects](#projects), and one create can choose its own. See [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size).
 
 ## About
 

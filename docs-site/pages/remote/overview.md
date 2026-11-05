@@ -30,7 +30,7 @@ In the menu, Docker and Apple Container sit under **Local containers**, and boxd
 A remote workroom is always a workroom of a project that is on your Mac. You cannot add a project that exists only on a host.
 
 - The project's `origin` must be on github.com. Workroom clones the repository on the host from `origin`, and reads pull request status through your Mac's `gh`.
-- The workroom's base branch must be on `origin`. A remote workroom cannot start from a branch that only exists on your Mac, or on a remote other than `origin`. If it cannot, the create stops and tells you to push the branch or change the base branch in **Project Settings**.
+- The workroom's base branch must be on `origin`. A remote workroom cannot start from a branch that only exists on your Mac, or on a remote other than `origin`. If it cannot, the create stops and tells you to push the branch or change the project's base branch in **Settings ▸ Projects**.
 - Only pushed work reaches the host. Changes and commits that are only on your Mac do not appear in a remote workroom until you push them.
 
 ## What runs where
@@ -74,7 +74,7 @@ A boxd or exe.dev workroom's host can start from your own image and have the siz
 You can choose them in three places, and the most specific one wins, setting by setting:
 
 1. **For one workroom.** In the **New Workroom** dialog, click **Configure…** beside **boxd** or **exe.dev**, or highlight it and press <kbd>⌘⏎</kbd>. From the sidebar's **New Workroom** menu, choose **boxd ▸ Configure…** or **exe.dev ▸ Configure…**. Their **Create** creates at once, as picking the place in the dialog does. The panel shows what each setting will be and where it comes from. Turn on **Remember for this project** to save the settings you changed to the project. Click **Create Workroom**.
-2. **For one project.** In Project Settings, with the same choices as Settings. The provider's own default is marked **(default)**, and a value from Settings **(app)**. Choosing the value marked **(app)**, or leaving a field empty, follows Settings, so a later change there applies to the project too. Where Settings names its own value, the **(default)** choice gets the provider's default instead.
+2. **For one project.** In [Settings ▸ Projects](../app/settings.md#projects), with the same choices as Remote Hosts. The provider's own default is marked **(default)**, and a value from Settings **(app)**. Choosing the value marked **(app)**, or leaving a field empty, follows Settings, so a later change there applies to the project too. Where Settings names its own value, the **(default)** choice gets the provider's default instead.
 3. **For every project.** In [Settings ▸ Remote Hosts](../app/settings.md#remote-hosts).
 
 Picking **boxd** or **exe.dev** in the dialog still creates the workroom at once, with these settings.

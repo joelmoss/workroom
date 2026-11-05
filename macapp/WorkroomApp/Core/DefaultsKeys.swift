@@ -90,7 +90,7 @@ extension Defaults.Keys {
   /// `HostProvider.rawValue`: Settings ▸ Remote Hosts.
   static let hostOptions = Key<[String: HostOptions]>("hostOptions", default: [:], suite: .app)
   /// One project's host options, over Settings', keyed by the project's absolute path, then by
-  /// `HostProvider.rawValue`: Project Settings ▸ Remote Hosts.
+  /// `HostProvider.rawValue`: Settings ▸ Projects.
   static let projectHostOptions = Key<[String: [String: HostOptions]]>(
     "projectHostOptions", default: [:], suite: .app)
 
@@ -365,4 +365,18 @@ struct InspectorPaneState: Codable, Defaults.Serializable, Equatable {
 
   static let `default` = InspectorPaneState(
     collapsed: [false, false, false, false], weights: [1, 1, 1, 1])
+}
+
+/// `Defaults[.projectHostOptions]`'s one read and write (#575): a project's options for one
+/// provider. Setting empty options, or nil, removes them, and a project left with none goes, so
+/// the map never holds empty entries.
+extension Dictionary where Key == String, Value == [String: HostOptions] {
+  subscript(project path: String, provider provider: HostProvider) -> HostOptions? {
+    get { self[path]?[provider.rawValue] }
+    set {
+      var chosen = self[path] ?? [:]
+      chosen[provider.rawValue] = newValue?.isEmpty == false ? newValue : nil
+      self[path] = chosen.isEmpty ? nil : chosen
+    }
+  }
 }

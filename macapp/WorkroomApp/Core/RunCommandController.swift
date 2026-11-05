@@ -16,7 +16,7 @@ enum RunSessionKey {
 /// dismissal bookkeeping, signalling the run's supervisor through its daemon (#522), and the
 /// graceful teardown. Owned by `AppStore` as `runCommand`. What needs the rest of the store stays
 /// in `AppStore+RunCommand.swift`: starting and respawning a run (project, run config, host
-/// layout, the settings sheet), applying the supervisor's status (the failure banner and
+/// layout, the project settings request), applying the supervisor's status (the failure banner and
 /// diagnosis), the derived toast list (selection), and the selection-scoped menu actions.
 ///
 /// A run is a daemon session (a run session) whose supervisor the daemon runs, on this Mac or on

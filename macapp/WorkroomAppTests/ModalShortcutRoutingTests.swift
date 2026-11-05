@@ -125,7 +125,6 @@ final class ModalShortcutRoutingTests: XCTestCase {
         "pendingWorkroomLabel",
         { $0.pendingWorkroomLabel = .init(workroom: workroom, project: project) }
       ),
-      ("pendingProjectSettings", { $0.pendingProjectSettings = .init(project: project) }),
       (
         "pendingRemoteSetup",
         {
@@ -136,6 +135,11 @@ final class ModalShortcutRoutingTests: XCTestCase {
                 configuration: .init(),
                 directory: FileManager.default.temporaryDirectory)))
         }
+      ),
+      (
+        // The Configure… panel (#575), so menu shortcuts can't reach a surface hidden behind it.
+        "pendingHostOptions",
+        { $0.pendingHostOptions = PendingHostOptions(project: project, place: .boxd) }
       ),
       (
         // Value: protects=menu shortcuts go inert while the start choice is up; fails_when=

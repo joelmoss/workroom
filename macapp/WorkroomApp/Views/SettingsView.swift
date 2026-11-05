@@ -20,6 +20,10 @@ import WorkroomDomain
 /// everything observing them (appearance in `RootView`, copy-on-select, ⌘-click file opening) — are
 /// unchanged; only the surface moves. The selected pane persists via `Defaults[.settingsSelectedPane]`.
 struct SettingsView: View {
+  /// The Settings window's title, which `SettingsWindowThemer` keeps it at, for the Window menu,
+  /// VoiceOver and anything that has to tell this window from the others.
+  static let windowTitle = "Settings"
+
   // Selection is `@State`, NOT `@Default`: the `Defaults` SwiftUI wrapper invalidates the view
   // asynchronously (its `objectWillChange` fires from a detached `Defaults.updates` task), so a
   // `@Default`-driven click only repainted on the *next* runloop tick — i.e. after a cursor move.
@@ -54,14 +58,47 @@ struct SettingsView: View {
     .background(ThemeService.shared.tokens.panel.ignoresSafeArea())
     .background(SettingsWindowThemer())
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
-    .onAppear { selection = Defaults[.settingsSelectedPane] }
+    .onAppear {
+      selection = Defaults[.settingsSelectedPane]
+      // Fresh host option reads each time Settings opens, so a snapshot saved meanwhile shows.
+      HostOptionsCatalog.shared.markStale()
+      if let project = SettingsRoute.shared.takeRequest() { SettingsRoute.shared.project = project }
+    }
+    // A main window asked for a project's settings while this window was open.
+    .onChange(of: SettingsRoute.shared.requests) {
+      if let project = SettingsRoute.shared.takeRequest() {
+        go(to: SettingsLocation(pane: .projects, project: project))
+      }
+    }
   }
 
-  /// Back and forward through the panes visited, then the open pane's name.
+  /// Where the window is now.
+  private var location: SettingsLocation {
+    SettingsLocation(
+      pane: selection, project: selection == .projects ? SettingsRoute.shared.project : nil)
+  }
+
+  /// The open project's name in Projects, else the pane's.
+  private var title: String {
+    if let path = location.project,
+      let project = ProjectStore.shared.projects.first(where: { $0.path == path })
+    {
+      return project.displayName
+    }
+    return selection.label
+  }
+
+  /// Goes to `next` as a step back can undo.
+  private func go(to next: SettingsLocation) {
+    history.leave(location, for: next)
+    show(next)
+  }
+
+  /// Back and forward through the places visited, then where the window is.
   private var header: some View {
     HStack(spacing: 4) {
       Button {
-        if let previous = history.goBack(from: selection) { show(previous) }
+        if let previous = history.goBack(from: location) { show(previous) }
       } label: {
         Image(systemName: "chevron.left").frame(width: 22, height: 22)
       }
@@ -70,7 +107,7 @@ struct SettingsView: View {
       .help("Back")
       .accessibilityLabel("Back")
       Button {
-        if let next = history.goForward(from: selection) { show(next) }
+        if let next = history.goForward(from: location) { show(next) }
       } label: {
         Image(systemName: "chevron.right").frame(width: 22, height: 22)
       }
@@ -78,7 +115,8 @@ struct SettingsView: View {
       .keyboardShortcut("]", modifiers: .command)
       .help("Forward")
       .accessibilityLabel("Forward")
-      Text(selection.label)
+      Text(title)
+        .lineLimit(1)
         .font(.title3.weight(.semibold))
         .padding(.leading, 6)
         .accessibilityAddTraits(.isHeader)
@@ -89,18 +127,19 @@ struct SettingsView: View {
     .frame(height: Self.headerHeight)
   }
 
-  /// Shows `pane` and keeps it for the next time the window opens.
-  private func show(_ pane: SettingsPane) {
-    selection = pane
-    Defaults[.settingsSelectedPane] = pane
+  /// Shows `location`, and keeps its pane for the next time the window opens.
+  private func show(_ location: SettingsLocation) {
+    selection = location.pane
+    Defaults[.settingsSelectedPane] = location.pane
+    if location.pane == .projects { SettingsRoute.shared.project = location.project }
   }
 
   private var sidebar: some View {
     List {
       ForEach(SettingsPane.allCases) { pane in
         Button {
-          history.leave(selection, for: pane)
-          show(pane)
+          // Projects opens on its list, as a System Settings pane opens on its top page.
+          go(to: SettingsLocation(pane: pane))
         } label: {
           Label {
             Text(pane.label)
@@ -137,6 +176,8 @@ struct SettingsView: View {
     case .appearance: AppearanceSettingsPane()
     case .terminal: TerminalSettingsPane()
     case .agent: CodingAgentSettingsPane()
+    case .projects:
+      ProjectsSettingsPane(open: { go(to: SettingsLocation(pane: .projects, project: $0)) })
     case .remoteHosts: RemoteHostsSettingsPane()
     case .about: AboutSettingsPane()
     }
@@ -173,6 +214,7 @@ extension SettingsPane {
     case .appearance: .indigo
     case .terminal: Color(white: 0.25)
     case .agent: .purple
+    case .projects: .orange
     case .remoteHosts: .blue
     case .about: .teal
     }
@@ -261,7 +303,7 @@ private struct SettingsWindowThemer: NSViewRepresentable {
     // window "<App> Settings" ("Workroom Dev Settings" in Debug), so it is re-set on each
     // notification so SwiftUI's default doesn't win.
     if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
-    if window.title != "Settings" { window.title = "Settings" }
+    if window.title != SettingsView.windowTitle { window.title = SettingsView.windowTitle }
     if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
     let panel = ThemeService.shared.tokens.nsPanel
     if window.backgroundColor != panel { window.backgroundColor = panel }
@@ -375,7 +417,7 @@ private struct NewWorkroomsSection: View {
       Text(
         "New workrooms start from origin's copy of this branch, else the local branch. Write "
           + "upstream/main for another remote's branch, such as a fork's upstream. A project's own "
-          + "base branch in Project Settings wins.")
+          + "base branch in Projects wins.")
     }
     .task {
       let current = (try? await WorkroomCLI.shared.list(warnings: "none", project: nil))?.baseBranch
@@ -403,41 +445,21 @@ private struct NewWorkroomsSection: View {
 }
 
 /// The host options every boxd and exe.dev workroom is created with (#575, ADR 0065): one group per
-/// provider, shown whether or not it is set up, saving as they change. Project Settings and the
-/// New Workroom dialog's Configure… panel choose over them.
+/// provider, shown whether or not it is set up, saving as they change. Settings ▸ Projects and
+/// the New Workroom dialog's Configure… panel choose over them.
 private struct RemoteHostsSettingsPane: View {
   @Default(.hostOptions) private var hostOptions
-  @StateObject private var catalog = HostOptionsCatalog()
+  @ObservedObject private var catalog = HostOptionsCatalog.shared
 
   var body: some View {
-    // The fields wait for both providers' reads, so their lists and labels don't change under you.
-    Group {
-      if catalog.finished.isSuperset(of: HostProvider.allCases) {
-        Form {
-          ForEach(HostProvider.allCases, id: \.self) { provider in
-            Section {
-              HostOptionsFields(
-                provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
-            } header: {
-              HostOptionsHeader(provider: provider)
-            } footer: {
-              if let failure = catalog.failure[provider] { Text(failure) }
-            }
-          }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-      } else {
-        ProgressView()
-          .controlSize(.small)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+    Form {
+      ForEach(HostProvider.allCases, id: \.self) { provider in
+        HostOptionsSection(
+          provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
       }
     }
-    .task {
-      async let boxd: Void = catalog.load(.boxd)
-      async let exeDev: Void = catalog.load(.exeDev)
-      _ = await (boxd, exeDev)
-    }
+    .formStyle(.grouped)
+    .scrollContentBackground(.hidden)
   }
 
   private func binding(_ provider: HostProvider) -> Binding<HostOptions> {

@@ -63,6 +63,8 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   var projectBase: String?
   /// What `setBaseBranch` was asked to store, in order.
   private(set) var baseBranches: [String?] = []
+  /// Thrown by `setBaseBranch`, as the CLI refuses a branch.
+  var baseBranchRefusal: Error?
 
   init(
     projectPath: String, workroomName: String, hasSetup: Bool, logLines: [String] = [],
@@ -79,6 +81,7 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
 
   func setBaseBranch(project: String, branch: String?) async throws {
     baseBranches.append(branch)
+    if let baseBranchRefusal { throw baseBranchRefusal }
   }
 
   private var workroomAbsPath: String { "\(projectPath)/.workrooms/\(workroomName)" }
@@ -486,6 +489,29 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await store.setBaseBranch("   ", forProject: projectPath)
 
     XCTAssertEqual(fake.baseBranches, ["develop", nil])
+  }
+
+  // Value: protects=a base branch the CLI refuses comes back to Settings ▸ Projects, which shows
+  // it by the field instead of a workroom window, and a window's own save still shows it there;
+  // fails_when=the refusal is swallowed (the field reads saved) or shown in a window as well;
+  // why_new=review finding (testing); seam=the fake CLI; no_claim=the CLI's own validation
+  /// A refused base branch is returned, and shown in this window only when asked.
+  func testSetBaseBranchReturnsTheRefusalAndShowsItOnlyWhenAsked() async {
+    let fake = CreatingFakeCLI(projectPath: projectPath, workroomName: "x", hasSetup: false)
+    let store = makeStore(fake)
+    let accepted = await store.setBaseBranch("develop", forProject: projectPath)
+    XCTAssertNil(accepted, "an accepted branch came back as refused")
+
+    fake.baseBranchRefusal = NSError(
+      domain: "workroom", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "No branch featur on origin."])
+    let refused = await store.setBaseBranch(
+      "featur", forProject: projectPath, presentingError: false)
+    XCTAssertNotNil(refused, "the refusal was swallowed")
+    XCTAssertNil(store.errorMessage, "Settings' save was shown in a window too")
+
+    await store.setBaseBranch("featur", forProject: projectPath)
+    XCTAssertNotNil(store.errorMessage, "a window's own save didn't show the refusal")
   }
 
   /// With NO setup script the create clears itself when it completes: no run survives, and the new

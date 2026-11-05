@@ -118,10 +118,8 @@ struct ProjectSidebar: View {
     // sits flush under the title bar via `SidebarColumn`'s `topMargin: 0`). A solid `safeAreaInset`
     // like the footer — reserves an 8pt strip of the card surface, matching the card's side margin.
     .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 8) }
-    // Per-project run-command settings (issue #7) is presented from `RootView` via
-    // `store.pendingProjectSettings` — re-homed off sidebar-local state (issue #127) so ⌘R (a
-    // global shortcut) can also trigger it reliably, from one source, even when this sidebar isn't
-    // what the user last interacted with.
+    // A project's settings (issue #7) open in Settings ▸ Projects through
+    // `store.pendingProjectSettings`, which ⌘R (a global shortcut) sets too (issue #127).
     // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
     // so the ⌘O / ⌘⌫ menu commands present reliably even when this sidebar is collapsed in
     // Workrooms View. Local buttons here route through `store.requestAddProject` / `pendingDeletion`.
