@@ -1063,21 +1063,30 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001)
   }
 
-  /// THE defect the leaf-count design had. `insertWorkroomSplit` detaches before it inserts, so a
-  /// count-delta gate fires on both halves of a same-group move and evens a pure rearrange twice.
-  /// Must be tested with THREE members: a two-member same-group move dissolves and re-appends at
-  /// 0.5 regardless, so it would pass vacuously.
-  func testASameGroupRearrangeKeepsItsDividers() {
+  /// `main | feature | bugfix` with bugfix dragged left of main rebuilds the tree as
+  /// `(bugfix | main) | feature`; left alone that is ¼, ¼, ½. Must be tested with THREE members: a
+  /// two-member same-group move dissolves and re-appends at 0.5 regardless, so it would pass
+  /// vacuously.
+  func testASameGroupRearrangeEvensTheGroup() {
+    let store = threeColumnStore()
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("main"), edge: .left)
+    XCTAssertEqual(store.workroomSplits.count, 1)
+    let panes = PaneTreeLayout.plan(
+      store.workroomSplits[0], in: CGRect(x: 0, y: 0, width: 1800, height: 1000)
+    ).panes
+    XCTAssertEqual(Set(panes.keys), [wr("main"), wr("feature"), wr("bugfix")])
+    let widths = panes.values.map(\.width)
+    XCTAssertLessThanOrEqual(widths.max()! - widths.min()!, 1, "three even columns: \(widths)")
+  }
+
+  /// `main | (feature / bugfix)`: moving feature below bugfix rearranges top/bottom only, so the
+  /// left/right divider the user dragged stays.
+  func testASameGroupRearrangeAlongOneAxisKeepsTheOtherAxisDividers() {
     let store = threePaneStore()
     store.setWorkroomSplitRatio(0.7, forSplit: rootSplitID(store)!)
-    let before = store.workroomSplits
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
-    XCTAssertEqual(
-      rootRatio(store) ?? -1, 0.7, accuracy: 0.0001,
-      "a rearrange within the group must not even — the panes are the same ones")
-    XCTAssertEqual(
-      Set(store.workroomSplits.first?.tabIDs ?? []), Set(before.first?.tabIDs ?? []),
-      "and the same members remain")
+    store.insertWorkroomSplit(wr("feature"), beside: wr("bugfix"), edge: .bottom)
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("bugfix"), wr("feature")])
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.7, accuracy: 0.0001)
   }
 
   func testAnInsertEvensOnlyItsOwnGroup() {

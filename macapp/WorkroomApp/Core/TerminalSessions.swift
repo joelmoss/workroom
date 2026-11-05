@@ -1713,12 +1713,14 @@ final class TerminalSessions: ObservableObject {
     if addsAMember, !fits(splitting: dest, orientation: edge.orientation, for: target) { return }
 
     // Detach first, insert second — and re-resolve the destination's group AFTER the detach, because
-    // removing the last-but-one member deletes a group and shifts every later index. `evening` is
-    // `addsAMember` on BOTH halves: a genuine move evens the group left behind and the one joined,
-    // while a rearrange within one group skips evening and so keeps every ANCESTOR ratio the user
-    // dragged. Not every ratio — `removingLeaf` collapses the moved leaf's immediate parent and
-    // `inserting` rebuilds it at 0.5, so that one divider resets (and a two-pane group, which falls
-    // below two leaves and is deleted, resets entirely). That is master's behaviour too, unchanged.
+    // removing the last-but-one member deletes a group and shifts every later index. A genuine move
+    // evens the group left behind and the one joined. A rearrange within one group rebuilds the tree
+    // around the moved pane (`A | B | C` with C dropped left of A comes out ¼, ¼, ½), so it skips
+    // the detach's evening and is evened once, after the insert, along both the axis it left and the
+    // one it joined.
+    let leftAxis =
+      addsAMember ? nil : fromIndex.flatMap { splitsByTarget[target.id]?[$0].axis(around: movedID) }
+    let evenAxis = addsAMember || leftAxis == edge.orientation ? edge.orientation : nil
     removeFromGroup(movedID, for: target.id, evening: addsAMember)
     let index = splitIndex(containing: destID, for: target.id)
     let base = index.map { splitsByTarget[target.id]![$0] } ?? .leaf(destID)
@@ -1726,7 +1728,7 @@ final class TerminalSessions: ObservableObject {
       base.inserting(
         movedID, beside: destID, orientation: edge.orientation,
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5),
-      groupAt: index, for: target.id, evening: addsAMember, along: edge.orientation)
+      groupAt: index, for: target.id, evening: true, along: evenAxis)
     insertID(movedID, after: destID, for: target)  // display normalises the contiguous run
     setFocused(movedID, for: target.id)
     reconcileOcclusion(for: target)

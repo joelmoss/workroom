@@ -1643,16 +1643,30 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
 
-  func testARearrangeWithinTheSplitKeepsItsDividers() {
-    // `moveTabIntoSplit` with a tab that is ALREADY a member changes no pane count — it just moves
-    // one pane to another edge — so the dividers the user dragged must survive it.
+  func testARearrangeWithinTheSplitEvensIt() {
+    // `a | b | c` with c dragged to the left of a rebuilds the tree as `(c | a) | b`; left alone
+    // that is ¼, ¼, ½.
+    let s = makeSessions()
+    threeColumns(s)
+    let ids = s.splits(for: target).first!.tabIDs
+    s.moveTabIntoSplit(ids[2], ontoEdge: .left, of: ids[0], for: target)
+    let panes = PaneTreeLayout.plan(
+      s.splits(for: target).first!, in: CGRect(x: 0, y: 0, width: 1200, height: 900)
+    ).panes
+    XCTAssertEqual(panes.count, 3)
+    let widths = panes.values.map(\.width)
+    XCTAssertLessThanOrEqual(widths.max()! - widths.min()!, 1, "three even columns: \(widths)")
+  }
+
+  func testARearrangeAlongOneAxisKeepsTheOtherAxisDividers() {
+    // `a | (b / c)`: swapping b and c moves a pane top/bottom only, so the left/right divider the
+    // user dragged stays.
     let s = makeSessions()
     threePanes(s)
     s.setRatio(0.7, forSplit: rootSplitID(s)!, for: target)
     let ids = s.splits(for: target).first!.tabIDs
-    s.moveTabIntoSplit(ids[2], ontoEdge: .right, of: ids[1], for: target)
-    XCTAssertEqual(
-      rootRatio(s) ?? -1, 0.7, accuracy: 0.0001, "same panes, new edge — not an addition")
+    s.moveTabIntoSplit(ids[1], ontoEdge: .bottom, of: ids[2], for: target)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.7, accuracy: 0.0001)
   }
 
   func testDraggingASoloTabInEvensTheSplit() {
