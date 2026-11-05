@@ -44,9 +44,9 @@ var includeArchiveCmd = &cobra.Command{
 			return err
 		}
 		if jsonOutput {
-			return writeJSONSuccess(os.Stdout, "include-archive", map[string]any{
-				"paths": nonNil(res.Copied), "count": len(res.Copied), "bytes": res.Bytes,
-				"warnings": nonNil(res.Failures), "skipped": nonNil(inc.Symlinks),
+			return writeJSONSuccess(os.Stdout, "include-archive", includeArchivePayload{
+				Bytes: res.Bytes, Count: len(res.Copied), Paths: nonNil(res.Copied), Skipped: nonNil(inc.Symlinks),
+				Warnings: nonNil(res.Failures),
 			})
 		}
 		fmt.Printf("Archived %d files to %s\n", len(res.Copied), includeArchiveOutput)

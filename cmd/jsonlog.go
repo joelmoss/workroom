@@ -28,8 +28,8 @@ func newJSONLogWriter(w io.Writer, phase string) *jsonLogWriter {
 }
 
 // writeJSONEvent emits a single NDJSON event line on w (stderr), alongside the log
-// events. Used for non-log stream events such as "created".
-func writeJSONEvent(w io.Writer, obj map[string]any) {
+// events. Used for non-log stream events such as "created" (stepEvent, createdEvent).
+func writeJSONEvent(w io.Writer, obj any) {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(obj) // Encode appends a newline, yielding one NDJSON record

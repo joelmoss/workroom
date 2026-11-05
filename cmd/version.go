@@ -27,10 +27,8 @@ var versionCmd = &cobra.Command{
 			if bakedChannel != "" {
 				ch = bakedChannel
 			}
-			return writeJSONSuccess(os.Stdout, "version", map[string]any{
-				"version":               versionStr,
-				"channel":               ch,
-				"config_schema_version": 2,
+			return writeJSONSuccess(os.Stdout, "version", versionPayload{
+				Channel: ch, ConfigSchemaVersion: 2, Version: versionStr,
 			})
 		}
 		fmt.Println(versionStr)

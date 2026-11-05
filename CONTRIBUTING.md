@@ -172,6 +172,7 @@ workroom/
 │   ├── claim.go             # Hidden; `claim-provisioned`; used by a Dev build of the app to move its remote entries into its own config
 │   ├── include_archive.go   # Hidden; `include-archive --output`; used by the app to tar a root's included files (.worktreeinclude) for a remote workroom
 │   ├── json.go              # --json success/error envelope writers
+│   ├── payload.go           # One typed struct per --json payload and NDJSON event; nested fields in key order, as the goldens
 │   ├── jsonlog.go           # NDJSON streaming of setup/teardown output (stderr)
 │   └── helpers.go           # cwd / --project resolution
 ├── internal/

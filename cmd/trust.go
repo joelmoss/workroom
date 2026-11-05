@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/joelmoss/workroom/internal/ui"
-	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -87,7 +86,7 @@ var trustCmd = &cobra.Command{
 			lines = append(lines, ui.Green(fmt.Sprintf("Approved %s %s.", sc.File, sc.OriginLabel())))
 		}
 		if jsonOutput {
-			return writeJSONSuccess(os.Stdout, "trust", map[string]any{"scripts": scriptsJSON(scripts)})
+			return writeJSONSuccess(os.Stdout, "trust", trustPayload{Scripts: newScriptPayloads(scripts)})
 		}
 		lines = append(lines, absentScripts(scripts)...)
 		fmt.Println(strings.Join(lines, "\n"))
@@ -112,13 +111,10 @@ var trustStatusCmd = &cobra.Command{
 			trusted = trusted && sc.Trusted
 		}
 		if jsonOutput {
-			payload := map[string]any{"trusted": trusted, "scripts": scriptsJSON(scripts)}
-			if start != "" {
-				payload["start"] = start
-			}
+			payload := trustStatusPayload{Scripts: newScriptPayloads(scripts), Start: start, Trusted: trusted}
 			// What a create from that start leaves out, for a remote create to warn about.
 			if work.Any() {
-				payload["local_work"] = localWorkJSON(work)
+				payload.LocalWork = newLocalWorkPayload(work)
 			}
 			if err := writeJSONSuccess(os.Stdout, "trust status", payload); err != nil {
 				return err
@@ -163,7 +159,7 @@ var untrustCmd = &cobra.Command{
 			return err
 		}
 		if jsonOutput {
-			return writeJSONSuccess(os.Stdout, "untrust", map[string]any{"project": dir})
+			return writeJSONSuccess(os.Stdout, "untrust", untrustPayload{Project: dir})
 		}
 		fmt.Println("Forgot the approval of this project's scripts.")
 		return nil
@@ -174,8 +170,8 @@ var untrustCmd = &cobra.Command{
 // with --stdin, else the scripts it would run next and the local work a create from that start
 // leaves out of the main checkout, which trust status reports for a remote create to warn about.
 // With --base it also says the commit that start names, which a remote create checks out.
-func judgedScripts() (*workroom.Service, string, []workroom.Script, vcs.LocalWork, string, error) {
-	var work vcs.LocalWork
+func judgedScripts() (*workroom.Service, string, []workroom.Script, workroom.LocalWork, string, error) {
+	var work workroom.LocalWork
 	svc, err := newService()
 	if err != nil {
 		return nil, "", nil, work, "", err
@@ -236,14 +232,6 @@ func absentScripts(scripts []workroom.Script) []string {
 		}
 	}
 	return lines
-}
-
-func scriptsJSON(scripts []workroom.Script) []map[string]any {
-	out := make([]map[string]any, 0, len(scripts))
-	for _, sc := range scripts {
-		out = append(out, scriptJSON(sc))
-	}
-	return out
 }
 
 func init() {

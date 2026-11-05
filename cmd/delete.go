@@ -52,7 +52,7 @@ var deleteCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			return writeJSONSuccess(os.Stdout, "delete", map[string]any{"name": name})
+			return writeJSONSuccess(os.Stdout, "delete", deletePayload{Name: name})
 		}
 
 		return runDeleteHuman(svc, dir, args, confirmFlag, os.Stdout)

@@ -65,9 +65,9 @@ type Service struct {
 	Start Start
 	// ChooseStartFn, when set, is told the local work a create would leave out and answers where it
 	// starts. A person at a terminal is asked.
-	ChooseStartFn func(vcs.LocalWork) (Start, error)
+	ChooseStartFn func(LocalWork) (Start, error)
 	// StartCommit, when set, is the start point a create question was asked about (the commit a
-	// vcs.QuestionError reported): the create answering it fetches nothing and starts there
+	// QuestionError reported): the create answering it fetches nothing and starts there
 	// (ADR 0059). One it can't use is ErrStartCommitUnusable.
 	StartCommit string
 }

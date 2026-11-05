@@ -84,7 +84,7 @@ func resetCLI() {
 		}
 	}
 	walk(rootCmd)
-	currentCommand, jsonErrorExtra = "", nil
+	currentCommand, jsonErrorCreated = "", nil
 	rootCmd.SetArgs(nil)
 }
 

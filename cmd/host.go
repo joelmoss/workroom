@@ -81,7 +81,7 @@ func setHost(host map[string]any) error {
 		return err
 	}
 	if jsonOutput {
-		return writeJSONSuccess(os.Stdout, "host", map[string]any{"project": dir, "workroom": hostWorkroom})
+		return writeJSONSuccess(os.Stdout, "host", hostPayload{Project: dir, Workroom: hostWorkroom})
 	}
 	return nil
 }

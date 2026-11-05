@@ -11,7 +11,6 @@ import (
 
 	"github.com/joelmoss/workroom/internal/errs"
 	"github.com/joelmoss/workroom/internal/ui"
-	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/spf13/cobra"
 )
@@ -81,39 +80,28 @@ var createCmd = &cobra.Command{
 					logWriter.Flush()
 					logWriter.step = id
 				}
-				event := map[string]any{"type": "step", "id": id, "state": state}
-				if detail != "" {
-					event["detail"] = detail
-				}
-				writeJSONEvent(os.Stderr, event)
+				writeJSONEvent(os.Stderr, stepEvent{Detail: detail, ID: id, State: state, Type: "step"})
 			}
 			// Emit an early "created" event (before setup runs) so the GUI can mount
 			// the workroom and dock the streaming setup log under its terminal.
 			svc.OnReady = func(r workroom.CreateResult) {
-				writeJSONEvent(os.Stderr, map[string]any{
-					"type": "created", "name": r.Name, "path": r.Path, "vcs": r.VCS, "project": r.Project,
-					"setup": r.HasSetup, "warning": r.Warning,
+				writeJSONEvent(os.Stderr, createdEvent{
+					Name: r.Name, Path: r.Path, Project: r.Project, Setup: r.HasSetup, Type: "created", VCS: r.VCS,
+					Warning: r.Warning,
 				})
 			}
 			res, err := svc.CreateNamed(dir, nil)
 			logWriter.Flush()
+			created := createPayload{Name: res.Name, Path: res.Path, Project: res.Project, VCS: res.VCS, Warning: res.Warning}
 			if err != nil {
 				// Create is not transactional: on setup failure the workroom already
 				// exists, so report it so the GUI can offer to delete it.
 				if res.Name != "" {
-					created := map[string]any{"name": res.Name, "path": res.Path, "vcs": res.VCS, "project": res.Project}
-					if res.Warning != "" {
-						created["warning"] = res.Warning
-					}
-					jsonErrorExtra = map[string]any{"created": created}
+					jsonErrorCreated = &created
 				}
 				return err
 			}
-			payload := map[string]any{"name": res.Name, "path": res.Path, "vcs": res.VCS, "project": res.Project}
-			if res.Warning != "" {
-				payload["warning"] = res.Warning
-			}
-			return writeJSONSuccess(os.Stdout, "create", payload)
+			return writeJSONSuccess(os.Stdout, "create", created)
 		}
 
 		return createWorkroom(svc, dir, os.Stdout, !createNoEditor)
@@ -175,7 +163,7 @@ var askSelect = ui.Select
 
 // chooseStart asks a person at a terminal what a create that would leave work out includes: the
 // commits and changes, the commits only, or neither. Only the choices that apply are offered.
-func chooseStart(work vcs.LocalWork) (workroom.Start, error) {
+func chooseStart(work workroom.LocalWork) (workroom.Start, error) {
 	var starts []workroom.Start
 	var options []string
 	switch {
@@ -236,8 +224,8 @@ func createRemote(svc *workroom.Service, dir string) error {
 		return err
 	}
 	if jsonOutput {
-		return writeJSONSuccess(os.Stdout, "create", map[string]any{
-			"name": res.Name, "path": res.Path, "vcs": res.VCS, "project": res.Project,
+		return writeJSONSuccess(os.Stdout, "create", createPayload{
+			Name: res.Name, Path: res.Path, Project: res.Project, VCS: res.VCS,
 		})
 	}
 	fmt.Println(res.Name)
