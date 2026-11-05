@@ -1669,6 +1669,53 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(s) ?? -1, 0.7, accuracy: 0.0001)
   }
 
+  func testARearrangeAcrossAxesEvensBoth() {
+    // `a | (b / c / d)` rows at thirds. Dragging c beside a leaves `b / d` at the old third, so
+    // evening only the axis c joined would keep b at a third of the height.
+    let s = makeSessions()
+    threePanes(s)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    let ids = s.splits(for: target).first!.tabIDs
+    XCTAssertEqual(ids.count, 4, "precondition: a | (b / c / d)")
+    s.moveTabIntoSplit(ids[2], ontoEdge: .right, of: ids[0], for: target)
+    let panes = PaneTreeLayout.plan(
+      s.splits(for: target).first!, in: CGRect(x: 0, y: 0, width: 1200, height: 900)
+    ).panes
+    let widths = [ids[0], ids[2], ids[1]].map { panes[$0]!.width }
+    XCTAssertLessThanOrEqual(widths.max()! - widths.min()!, 1, "three even columns: \(widths)")
+    XCTAssertEqual(
+      panes[ids[1]]!.height, panes[ids[3]]!.height, accuracy: 1, "b and d split the height evenly")
+  }
+
+  func testPrefOffKeepsARearrangeAsBuilt() {
+    let s = makeSessions()
+    s.autoEvenSplits = { false }
+    threeColumns(s)  // a | (b | c) at halves: ½, ¼, ¼
+    let ids = s.splits(for: target).first!.tabIDs
+    s.moveTabIntoSplit(ids[2], ontoEdge: .left, of: ids[0], for: target)
+    let panes = PaneTreeLayout.plan(
+      s.splits(for: target).first!, in: CGRect(x: 0, y: 0, width: 1200, height: 900)
+    ).panes
+    let widths = panes.values.map(\.width)
+    XCTAssertGreaterThan(widths.max()! - widths.min()!, 100, "left as rebuilt: \(widths)")
+  }
+
+  func testACrampedRearrangeDeclinesToEven() {
+    // Three columns built roomy, then the window shrank: thirds of 800pt fall under the 300pt
+    // floor, so the rebuilt `(c | a) | b` keeps its dividers.
+    let s = makeSessions()
+    threeColumns(s)
+    let ids = s.splits(for: target).first!.tabIDs
+    s.paneSpace[target.id] = CGRect(x: 0, y: 0, width: 800, height: 900)
+    s.moveTabIntoSplit(ids[2], ontoEdge: .left, of: ids[0], for: target)
+    XCTAssertEqual(s.splits(for: target).first?.tabIDs.count, 3, "the move was made")
+    let panes = PaneTreeLayout.plan(
+      s.splits(for: target).first!, in: CGRect(x: 0, y: 0, width: 1800, height: 900)
+    ).panes
+    let widths = panes.values.map(\.width)
+    XCTAssertGreaterThan(widths.max()! - widths.min()!, 100, "not evened: \(widths)")
+  }
+
   func testDraggingASoloTabInEvensTheSplit() {
     // The other half of `moveTabIntoSplit`: a tab from outside the split IS an addition.
     let s = makeSessions()
