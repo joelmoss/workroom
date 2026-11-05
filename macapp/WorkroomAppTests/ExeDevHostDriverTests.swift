@@ -1,6 +1,7 @@
 import CryptoKit
 import DaemonConnection
 import HostDrivers
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -788,6 +789,46 @@ final class ExeDevHostDriverTests: XCTestCase {
     let new = try XCTUnwrap(exe.arguments(of: "new"))
     XCTAssertFalse(new.contains("--tag"), "\(new)")
     XCTAssertEqual(exe.commands, ["new", "rm"])
+  }
+
+  /// Host options (#575) reach `new`, and only those set. exe.dev parses the words ssh sends again
+  /// and honours POSIX quotes (probe, 2026-11-04), so a value with a space arrives quoted, as one.
+  func testACreateAsksExeDevForTheResolvedHostOptions() async throws {
+    let refused = CommandResult(
+      stdout: #"{"error":"VM limit reached"}"#, stderr: "", exitCode: 1, timedOut: false)
+    let cases: [(ResolvedHostOptions, [String])] = [
+      (ResolvedHostOptions(), []),
+      (
+        ResolvedHostOptions(image: "boldsoftware/exeuntu", cpu: 2, memory: "8 GB", disk: "20GB"),
+        ["--image", "boldsoftware/exeuntu", "--cpu", "2", "--memory", "'8 GB'", "--disk", "20GB"]
+      ),
+    ]
+    for (options, flags) in cases {
+      let exe = StubExeDev(["new": refused])
+      _ = try? await driver(exe).create(options: options)
+      let new = try XCTUnwrap(exe.arguments(of: "new"))
+      XCTAssertEqual(Array(new.dropFirst(3).dropLast()), flags, "\(new)")
+    }
+  }
+
+  /// The size pickers are capped by the plan (#575), read from `billing plan --json` (measured,
+  /// 2026-11-04).
+  func testThePlansLimitsCapTheSizePickers() async throws {
+    let exe = StubExeDev([
+      "billing plan": Self.ok(
+        #"{"max_cpus":2,"max_memory_gb":4,"default_disk_gb":25,"max_disk_gb":1024,"max_vms":50}"#)
+    ])
+    let limits = try await driver(exe).planLimits()
+    XCTAssertEqual(limits, .init(maxCPUs: 2, maxMemoryGB: 4, defaultDiskGB: 25))
+  }
+
+  /// A failed setup on a chosen image names it and what Workroom's setup needs (#575).
+  func testASetupFailureOnAChosenImageNamesIt() {
+    XCTAssertEqual(
+      ExeDevHostDriver.setupFailure(name: "vm", image: "ubuntu:24.04"),
+      "Workroom's setup didn't run on ubuntu:24.04 (it needs systemd, sudo and the exedev user):"
+        + " setting up vm failed")
+    XCTAssertEqual(ExeDevHostDriver.setupFailure(name: "vm", image: nil), "setting up vm failed")
   }
 
   /// `rm` exits 0 whatever happened (spike), so a delete reads what it printed: deleted, or not

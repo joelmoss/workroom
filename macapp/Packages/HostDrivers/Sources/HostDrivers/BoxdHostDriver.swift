@@ -1,5 +1,6 @@
 import DaemonConnection
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import os
@@ -118,16 +119,32 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
 
   // MARK: Provisioning
 
-  /// A fresh machine, set up as a workroom's host: the identity unit has minted its identity and
-  /// the supervisor is waiting for a daemon. A machine that gets no further is removed.
-  public func create() async throws -> HostID {
+  /// A fresh machine of the org's default size, set up as a workroom's host.
+  public func create() async throws -> HostID { try await create(options: ResolvedHostOptions()) }
+
+  /// A machine made with `options` (#575), set up as a workroom's host: the identity unit has
+  /// minted its identity and the supervisor is waiting for a daemon. A machine that gets no
+  /// further is removed.
+  ///
+  /// A machine made from a snapshot resumes the snapshot's memory instead of booting, so the
+  /// identity unit (which runs at boot) never mints: it keeps the source's identity, machine-id
+  /// and running daemon (spike, 2026-11-04). Setup first writes the current unit, then a reboot
+  /// runs it, minting the machine's own identity and emptying the screens and layouts.
+  public func create(options: ResolvedHostOptions) async throws -> HostID {
     // The app announces the account step itself (it asks before the driver does): only its log here.
     try await ProvisioningProgress.step(.account, report: false) { try await checkOrg() }
     let id = UUID()
     let name = name(of: id)
+    let snapshot = options.image
+    // boxd refuses a size with a snapshot: it keeps its source's.
+    let flags =
+      snapshot.map { ["--from-snapshot", $0] } ?? options.cpu.map { ["--vcpu", String($0)] } ?? []
+    let made = snapshot.map { " from snapshot \($0)" } ?? ""
     try markPending(id)
     do {
-      try await ProvisioningProgress.step(.machine) { _ = try await cli(["machine", "new", name]) }
+      try await ProvisioningProgress.step(.machine) {
+        _ = try await cli(["machine", "new", name] + flags)
+      }
       try await ProvisioningProgress.step(.setup) {
         let script = try HostSetup.systemdScript()
         let user = try ssh(id).user
@@ -137,8 +154,14 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
           .map(PosixShell.quoted).joined(separator: " ")
         try await setUp(
           command, on: .remote(id), stdin: Data(script.utf8), timeout: 120,
-          failure: "setting up \(name) failed")
-        try await awaitIdentity(of: id, named: name)
+          failure: "setting up \(name)\(made) failed")
+        if snapshot == nil { try await awaitIdentity(of: id, named: name) }
+      }
+      if snapshot != nil {
+        try await ProvisioningProgress.step(.restart) {
+          _ = try await cli(["machine", "reboot", name])
+          try await awaitIdentity(of: id, named: name)
+        }
       }
       return .remote(id)
     } catch {
@@ -349,6 +372,18 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
   /// How long a status read (`presence`) waits for the CLI: a status sweep and a
   /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
   public static let statusTimeout: TimeInterval = 10
+
+  /// The names of the account's snapshots (#575), for the Host image combo box: `snapshots list
+  /// --json` also gives each one's version, status, size and used space, but no id or date.
+  public func snapshotNames() async throws -> [String] {
+    struct Snapshot: Decodable { let name: String }
+    do {
+      return try decode([Snapshot].self, try await cli(["snapshots", "list"]), "your snapshots")
+        .map(\.name)
+    } catch let failure as CLIFailure {
+      throw HostDriverError.provisioning(failure.localizedDescription)
+    }
+  }
 
   /// The statuses a connection would wake from: suspended and hibernated.
   public static let asleepStatuses: Set<String> = ["standby", "hibernated"]

@@ -1,4 +1,5 @@
 import HostDrivers
+import WorkroomDomain
 import WorkroomSystem
 import XCTest
 
@@ -201,6 +202,35 @@ final class BoxdHostDriverTests: XCTestCase {
       XCTAssertTrue(detail.contains("no ssh details"), detail)
     }
     XCTAssertEqual(cli.commands, ["machine new", "machine remove"], "the machine was kept")
+  }
+
+  /// Host options (#575) reach `machine new`: a size on a fresh machine, a snapshot on its own
+  /// (boxd refuses a size with one), and nothing for the provider's default.
+  func testACreateAsksBoxdForTheResolvedHostOptions() async throws {
+    let cases: [(ResolvedHostOptions, [String])] = [
+      (ResolvedHostOptions(), []),
+      (ResolvedHostOptions(cpu: 4), ["--vcpu", "4"]),
+      (ResolvedHostOptions(image: "prepared box"), ["--from-snapshot", "prepared box"]),
+    ]
+    for (options, flags) in cases {
+      let cli = StubCLI([
+        "machine new": Self.ok(#"{"name":"x"}"#),
+        "machine remove": Self.ok(#"{"status":"destroyed"}"#),
+      ])
+      _ = try? await driver(cli).create(options: options)
+      let new = try XCTUnwrap(cli.arguments.first { $0.prefix(2) == ["machine", "new"] })
+      XCTAssertEqual(Array(new.dropFirst(3).filter { $0 != "--json" }), flags, "\(options)")
+    }
+  }
+
+  /// The Host image combo box lists the account's snapshots by name (#575).
+  func testSnapshotsAreListedByName() async throws {
+    let cli = StubCLI([
+      "snapshots list": Self.ok(
+        #"[{"name":"prepared","version":2,"status":"ready","size":"8G"},{"name":"rails"}]"#)
+    ])
+    let names = try await driver(cli).snapshotNames()
+    XCTAssertEqual(names, ["prepared", "rails"])
   }
 
   /// A create says which step it is on, for its project row (#356): the machine first, then its

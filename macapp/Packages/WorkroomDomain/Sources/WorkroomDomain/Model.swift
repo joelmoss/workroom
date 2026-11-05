@@ -119,6 +119,9 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   /// The user's ssh destination, kept exactly as typed, and the checked remote home.
   public var sshDestination: String? = nil
   public var sshHome: String? = nil
+  /// The host options a boxd or exe.dev host was created with (#575), for the Details pane; nil
+  /// on a host made before them.
+  public var madeWith: ResolvedHostOptions? = nil
 
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   public var isRelayed: Bool { credentials == "relay" }
@@ -132,6 +135,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     case cloneURL = "clone_url"
     case sshDestination = "ssh_destination"
     case sshHome = "ssh_home"
+    case madeWith = "made_with"
   }
 
   public init(
@@ -139,7 +143,8 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     workroomID: UUID? = nil, repository: String? = nil,
     cloneURL: String? = nil, path: String? = nil, container: ContainerHostRecord? = nil,
     bases: [HostDescriptor]? = nil, credentials: String? = nil, org: String? = nil,
-    account: String? = nil, sshDestination: String? = nil, sshHome: String? = nil
+    account: String? = nil, sshDestination: String? = nil, sshHome: String? = nil,
+    madeWith: ResolvedHostOptions? = nil
   ) {
     self.state = state
     self.driver = driver
@@ -156,6 +161,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     self.account = account
     self.sshDestination = sshDestination
     self.sshHome = sshHome
+    self.madeWith = madeWith
   }
 
   public init(from decoder: Decoder) throws {
@@ -175,6 +181,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     account = try? fields?.decodeIfPresent(String.self, forKey: .account)
     sshDestination = try? fields?.decodeIfPresent(String.self, forKey: .sshDestination)
     sshHome = try? fields?.decodeIfPresent(String.self, forKey: .sshHome)
+    madeWith = try? fields?.decodeIfPresent(ResolvedHostOptions.self, forKey: .madeWith)
   }
 }
 
