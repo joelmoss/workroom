@@ -54,6 +54,81 @@ fn a_signal_that_ends_the_daemon_is_logged_and_still_ends_it() {
     );
 }
 
+/// `start.sh` runs an SSH host's daemon under `nohup`: a SIGHUP it was started ignoring must stay
+/// harmless, not become a logged exit that takes every session with it.
+#[test]
+fn a_signal_the_daemon_was_started_ignoring_stays_ignored() {
+    let workspace = Workspace::new("exit-ignored");
+    let socket = workspace.socket();
+    let mut daemon = Spawned(
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' HUP; exec \"$0\" serve --socket \"$1\" --idle-timeout 60")
+            .arg(daemon_binary())
+            .arg(&socket)
+            .env("SHELL", "/bin/sh")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn daemon"),
+    );
+    assert!(wait_for(Duration::from_secs(5), || socket.exists()));
+
+    // SAFETY: a plain kill of the child this test spawned.
+    unsafe { libc::kill(daemon.id() as i32, libc::SIGHUP) };
+    std::thread::sleep(Duration::from_millis(500));
+    let log = std::fs::read_to_string(socket.with_extension("log")).unwrap_or_default();
+    assert!(daemon.try_wait().expect("wait").is_none(), "{log}");
+    assert!(!log.contains("SIGHUP"), "{log}");
+}
+
+/// A stderr that blocks (a supervisor's pipe nobody drains) costs the line, never the exit.
+#[test]
+fn a_signal_still_ends_a_daemon_whose_stderr_is_full() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let workspace = Workspace::new("exit-full-stderr");
+    let socket = workspace.socket();
+    let mut fds = [0; 2];
+    // SAFETY: `fds` is a live two-element array, as `pipe` requires.
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    // SAFETY: both descriptors were just made by `pipe` and nothing else owns them.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    // Fill the pipe, so the daemon's first line blocks with the stderr lock held.
+    // SAFETY: plain integers on a descriptor this test owns.
+    unsafe { libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK) };
+    let chunk = [b'x'; 4096];
+    loop {
+        // SAFETY: the pointer and length come from one live array.
+        let written = unsafe { libc::write(fds[1], chunk.as_ptr().cast(), chunk.len()) };
+        if written <= 0 {
+            break;
+        }
+    }
+    // SAFETY: as above.
+    unsafe { libc::fcntl(fds[1], libc::F_SETFL, 0) };
+    let mut daemon = Spawned(
+        Command::new(daemon_binary())
+            .args(["serve", "--socket"])
+            .arg(&socket)
+            .args(["--idle-timeout", "60"])
+            .env("SHELL", "/bin/sh")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(write))
+            .spawn()
+            .expect("spawn daemon"),
+    );
+    assert!(wait_for(Duration::from_secs(5), || socket.exists()));
+    std::thread::sleep(Duration::from_millis(200));
+
+    // SAFETY: a plain kill of the child this test spawned.
+    unsafe { libc::kill(daemon.id() as i32, libc::SIGTERM) };
+    let status = exit_of(&mut daemon).expect("a full stderr kept the daemon from SIGTERM");
+    drop(read);
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+}
+
 #[test]
 fn an_idle_exit_is_logged() {
     let workspace = Workspace::new("exit-idle");
