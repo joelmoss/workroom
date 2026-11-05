@@ -75,8 +75,8 @@ def main():
         "xcrun", "swiftc", "-O", "-swift-version", "6", "-target",
         f"{platform.machine()}-apple-macos15.0", "-F", str(framework),
         "-framework", "Sentry", "-framework", "AppKit", "-lc++", "-lz",
-        str(root / "macapp/WorkroomApp/Core/SentryConfig.swift"),
-        str(root / "macapp/WorkroomApp/Core/LaunchSignposts.swift"),
+        str(root / "macapp/WorkroomApp/Core/AppShell/SentryConfig.swift"),
+        str(root / "macapp/WorkroomApp/Core/AppShell/LaunchSignposts.swift"),
         str(Path(__file__).with_name("Failure.swift")),
         str(Path(__file__).with_name("main.swift")), "-o", str(executable),
     ]
@@ -84,8 +84,8 @@ def main():
     source_hashes = {
         str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in (
-            root / "macapp/WorkroomApp/Core/SentryConfig.swift",
-            root / "macapp/WorkroomApp/Core/LaunchSignposts.swift",
+            root / "macapp/WorkroomApp/Core/AppShell/SentryConfig.swift",
+            root / "macapp/WorkroomApp/Core/AppShell/LaunchSignposts.swift",
             Path(__file__).with_name("Failure.swift"),
             Path(__file__).with_name("main.swift"),
         )

@@ -536,7 +536,8 @@ final class TerminalSessionsTests: XCTestCase {
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // WorkroomAppTests
         .deletingLastPathComponent()  // macapp
-        .appendingPathComponent("WorkroomApp/Core/TerminalSessions.swift"), encoding: .utf8)
+        .appendingPathComponent("WorkroomApp/Core/Terminal/TerminalSessions.swift"), encoding: .utf8
+    )
 
     guard
       let declaration = source.components(separatedBy: "func isDirectoryTitle").dropFirst().first

@@ -80,7 +80,8 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
       "parser regressed — `Updater` is declared only as `@EnvironmentObject private var`")
 
     let injected = try String(
-      contentsOf: macappRoot.appendingPathComponent("WorkroomApp/Views/DetachedPaneView.swift"),
+      contentsOf: macappRoot.appendingPathComponent(
+        "WorkroomApp/Views/Terminal/DetachedPaneView.swift"),
       encoding: .utf8)
     // The modifier body: everything between the function and the end of its chain.
     guard let modifier = injected.range(of: "func detachedPaneEnvironment") else {

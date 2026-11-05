@@ -1503,7 +1503,7 @@ struct WorkroomCommands: Commands {
   @ContentBuilder private var menuCommands: some Commands {
     CommandGroup(after: .appInfo) {
       // Sparkle update check, sitting directly beneath "About Workroom". Disabled while a check is
-      // already running. See Core/Updater.swift.
+      // already running. See Core/AppShell/Updater.swift.
       Button("Check for Updates…") { updater.checkForUpdates() }
         .disabled(!updater.canCheckForUpdates)
     }

@@ -671,7 +671,7 @@ They are separate because Sparkle offers every *untagged* item to every client w
 still backstops a cross-product install, but it is a backstop, not the channel filter.
 
 The canonical tag → channel classification lives in **`internal/channel`** (Go), mirrored by
-`macapp/WorkroomApp/Core/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — keep the
+`macapp/WorkroomApp/Core/AppShell/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — keep the
 three in sync. All appcast-writing workflows (`release`, `nightly`, `appcast-notes`) share a
 `concurrency: appcast-feed` group so they can't
 clobber each other's `appcast.xml` edits.

@@ -33,7 +33,7 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
 - **Codaset's CI** (`.github/workflows/ci.yml`) runs on PRs and pushes to master. It has no deploy
   job.
 - **This repo is public.** The CLI is built on cobra v1.10.2 (`go.mod`). The canonical shortcut list
-  is `macapp/WorkroomApp/Views/KeyboardShortcutsView.swift`. The app has no Help menu entries of
+  is `macapp/WorkroomApp/Views/AppShell/KeyboardShortcutsView.swift`. The app has no Help menu entries of
   its own.
 
 ## Decisions

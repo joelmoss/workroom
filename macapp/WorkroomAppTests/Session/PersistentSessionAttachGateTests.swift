@@ -39,7 +39,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
         .deletingLastPathComponent()  // Session/
         .deletingLastPathComponent()  // WorkroomAppTests/
         .deletingLastPathComponent()  // macapp/
-        .appendingPathComponent("WorkroomApp/Core/GhosttySurfaceView.swift")
+        .appendingPathComponent("WorkroomApp/Core/Terminal/GhosttySurfaceView.swift")
       return try String(contentsOf: url, encoding: .utf8)
     }
   }
@@ -158,7 +158,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("WorkroomApp/Core/TerminalSessions.swift")
+      .appendingPathComponent("WorkroomApp/Core/Terminal/TerminalSessions.swift")
     let source = try String(contentsOf: url, encoding: .utf8)
 
     guard let start = source.range(of: "private func assignedSessionID") else {

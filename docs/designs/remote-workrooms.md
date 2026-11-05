@@ -3112,7 +3112,7 @@ disagreement passes every test on either side alone while presenting as an empty
    - **Push state: exact.** `repo.rev_walk(head).with_hidden(refs/remotes/*)` reproduces
      `git rev-list HEAD --not --remotes` directly; no second revwalk implementation needed.
    - **One gotcha that would have been a real bug:** gix reports the **tree** nodes along a changed
-     path as changes in their own right — a commit touching `macapp/WorkroomApp/Core/AppStore.swift`
+     path as changes in their own right — a commit touching `macapp/WorkroomApp/Core/AppShell/AppStore/AppStore.swift`
      also yields a `Modification` for `macapp`. git's `--raw` and libgit2's deltas only ever name
      blobs. Unfiltered this inflated a 4-file commit to 8 and would have collided
      `VCSChangedFile.id` on a directory name. Filter on `entry_mode.is_tree()`.
@@ -3484,7 +3484,7 @@ disagreement passes every test on either side alone while presenting as an empty
     so even the stream transport is a subprocess rather than an SDK call.
 
     That makes the driver the same shape as something the app already has and has debugged:
-    **`WorkroomCLI`** (`macapp/WorkroomApp/Core/WorkroomCLI.swift`, 390 lines) drives the bundled Go
+    **`WorkroomCLI`** (`macapp/WorkroomApp/Core/WorkroomManagement/WorkroomCLI.swift`, 390 lines) drives the bundled Go
     binary over a `--json` contract behind a protocol seam, with structured errors, timeouts,
     user-initiated cancellation and NDJSON log streaming via `onLog` — every affordance a
     `HostDriver` needs, including the streaming one. `boxd`'s own `--json` on every command

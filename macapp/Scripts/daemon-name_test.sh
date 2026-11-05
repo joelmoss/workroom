@@ -29,9 +29,9 @@ hits="$(git -C "$ROOT" grep --no-color -n -I -E 'wr-agen|wr_agen|WR_AGEN|WR-AGEN
   ':!macapp/Packages/HostDrivers/Sources/HostDrivers/DaemonInstall.swift' \
   ':!macapp/Packages/HostDrivers/Sources/HostDrivers/SSHTransport.swift' \
   ':!macapp/Resources/daemon-bootstrap/probe.sh' \
-  ':!macapp/WorkroomApp/Core/Session/DaemonBootstrap.swift' \
-  ':!macapp/WorkroomApp/Core/Session/PersistentSessionPaths.swift' \
-  ':!macapp/WorkroomApp/Core/Session/SessionBackend.swift' \
+  ':!macapp/WorkroomApp/Core/Terminal/Session/DaemonBootstrap.swift' \
+  ':!macapp/WorkroomApp/Core/Terminal/Session/PersistentSessionPaths.swift' \
+  ':!macapp/WorkroomApp/Core/Terminal/Session/SessionBackend.swift' \
   ':!macapp/WorkroomAppTests/HostStreamTests.swift' \
   ':!macapp/WorkroomAppTests/Session/DaemonBootstrapScriptTests.swift' \
   ':!macapp/WorkroomAppTests/Session/DaemonBootstrapTests.swift' \

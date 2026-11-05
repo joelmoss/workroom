@@ -6,12 +6,12 @@ Read [host states](../remote-host-states.md) before performing an action on a ho
 ## Creating a workroom (#483)
 
 Every create, local, container or remote, and from any door (sidebar, context menu, File ▸ New
-Workroom…), is a `CreationRun` (`Core/CreationRun.swift`) in `ProjectStore.creationRuns`, shared by
+Workroom…), is a `CreationRun` (`Core/WorkroomManagement/CreationRun.swift`) in `ProjectStore.creationRuns`, shared by
 every window. Its pane opens on the click, before any work: beside the split anchor, or as the
 selection, as a `.creation(project:id:)` target that becomes the workroom's
 `.workroom(project:name:)` in place once it has a name (`creationRunForTarget` records it before
 the reload that publishes it, so no window mounts a terminal there early). While a run lasts, its
-pane draws `Views/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
+pane draws `Views/WorkroomManagement/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
 `removeWorkroomSplitMember` refuses a running one. The pane lists the kind's plan of steps
 (`CreationKind.plan`; a local create leaves out the setup script's row when the project has no
 `scripts/workroom_setup`, and `CreationRun.begin` puts it back if a script runs anyway), fed by

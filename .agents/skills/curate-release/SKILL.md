@@ -33,7 +33,7 @@ covers `release/**`. Full runbook: CONTRIBUTING "Patch releases", including the 
 updater).
 
 Canonical tag→channel classification is `internal/channel` (Go), mirrored by
-`macapp/WorkroomApp/Core/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — **keep the
+`macapp/WorkroomApp/Core/AppShell/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — **keep the
 three in lockstep**. **Two Sparkle feeds**, both assets on the fixed `appcast` release: `appcast.xml` (stable + pre)
 and `appcast-nightly.xml` (one rolling item). Nightly needs its own because Sparkle offers every
 UNTAGGED item to every client whatever `allowedChannels` says — on the shared feed a Nightly

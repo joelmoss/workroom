@@ -259,9 +259,10 @@ final class ThemeServiceTests: XCTestCase {
       .deletingLastPathComponent()  // macapp
       .appendingPathComponent("WorkroomApp/Core")
     let themeService = try String(
-      contentsOf: coreDir.appendingPathComponent("ThemeService.swift"), encoding: .utf8)
+      contentsOf: coreDir.appendingPathComponent("AppShell/ThemeService.swift"), encoding: .utf8)
     let terminalSessions = try String(
-      contentsOf: coreDir.appendingPathComponent("TerminalSessions.swift"), encoding: .utf8)
+      contentsOf: coreDir.appendingPathComponent("Terminal/TerminalSessions.swift"),
+      encoding: .utf8)
 
     XCTAssertTrue(
       themeService.contains("AppleInterfaceThemeChangedNotification"),

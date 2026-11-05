@@ -1,6 +1,6 @@
 # Bundled libghostty runtime resources
 
-`GHOSTTY_RESOURCES_DIR` points here at launch (see Core/GhosttyApp.swift). libghostty needs:
+`GHOSTTY_RESOURCES_DIR` points here at launch (see Core/Terminal/GhosttyApp.swift). libghostty needs:
 
 - `terminfo/` — the `xterm-ghostty` / `ghostty` terminfo entries. libghostty sets
   `TERM=xterm-ghostty` for the shell but NOT `TERMINFO`, and macOS has no system entry for it, so

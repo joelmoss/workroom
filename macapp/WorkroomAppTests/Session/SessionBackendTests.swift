@@ -232,7 +232,7 @@ final class SessionBackendTests: XCTestCase {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .deletingLastPathComponent()
-        .appendingPathComponent("WorkroomApp/Core/DefaultsKeys.swift"),
+        .appendingPathComponent("WorkroomApp/Core/AppShell/DefaultsKeys.swift"),
       encoding: .utf8)
     XCTAssertFalse(
       source.contains("sessionBackend"),

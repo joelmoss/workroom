@@ -25,7 +25,7 @@ Release channels and Sparkle feeds are documented in
   DECLARATION and falls back to `UserDefaults.standard`, and `WorkroomAppTests` is *app-hosted*
   (`TEST_HOST` is `Workroom Dev.app`) — so one key declared without the suite makes `make app-test`
   rewrite the developer's own theme, release channel, inspector layout and run commands.
-  `Core/DefaultsSuite.swift` defines `UserDefaults.app`: the real domain normally, a throwaway
+  `Core/AppShell/DefaultsSuite.swift` defines `UserDefaults.app`: the real domain normally, a throwaway
   `com.developwithstyle.workroom.tests*` suite under XCTest or an XCUITest launch (per-pid and
   wiped for hosted unit runs, since `make app-test` shards across parallel workers; one stable
   name, never wiped, for XCUITest so a quit-and-relaunch test still sees what it left). The whole
@@ -56,7 +56,7 @@ Release channels and Sparkle feeds are documented in
   the app and the daemon ship** — read it there rather than trusting a version quoted anywhere else.
   Bumping it is not a one-line change (see the procedure under §N of `macapp/QA-libghostty.md`). The
   build needs Zig and Xcode's Metal toolchain; `xcodegen generate` runs it. The terminal surface
-  (`Core/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
+  (`Core/Terminal/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
   bundled `Resources/ghostty` (terminfo + shell-integration) must ship for the engine to start.
 
 - **The child environment has two layers, and only one of them is reliable** (`WorkroomSystem/ShellEnvironment.swift`).

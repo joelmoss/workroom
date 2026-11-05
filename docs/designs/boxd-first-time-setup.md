@@ -12,7 +12,7 @@ A user who has never set up boxd gets no help from Workroom:
 
 - **CLI missing.** The boxd entry in the sidebar's New Workroom menu and in the New Workroom picker is
   greyed out with "not installed" (`RemoteWorkrooms.unavailability(of:)`,
-  `macapp/WorkroomApp/Core/RemoteWorkrooms.swift:84`). Nothing on that path says where to get it.
+  `macapp/WorkroomApp/Core/RemoteHosts/RemoteWorkrooms.swift:84`). Nothing on that path says where to get it.
 - **Signed out.** The create calls `RemoteHosts.key(for: .boxd)` →
   `BoxdHostDriver.signedIn()`, which runs `boxd auth --json` with a 120 s timeout. Measured on boxd
   0.2.23: signed out, that command does not fail. It prints "Not logged in. Let's fix that.", tries
@@ -395,9 +395,9 @@ Report file: this document.
 feature answers: none proposed (no cuts); structure: B, Smaller arrangement (D1, 2026-10-13);
 accepted scope: the approved feature list unchanged (driver fix, dev harness, shared RemoteSetup
 layer with exe.dev moved onto it, boxd Install / Account / GitHub, Billing only if the probe says so),
-arranged as four new files: `Core/RemoteSetup.swift` (protocol `RemoteSetup`, `SetupPoller`,
-`PendingRemoteSetup`), `Core/BoxdSetup.swift`, `Views/RemoteSetupSheet.swift`,
-`Views/BoxdSetupSheet.swift`. exe.dev's step content stays in `ExeDevSetupSheet.swift`; the create
+arranged as four new files: `Core/RemoteHosts/RemoteSetup.swift` (protocol `RemoteSetup`, `SetupPoller`,
+`PendingRemoteSetup`), `Core/RemoteHosts/BoxdSetup.swift`, `Views/RemoteHosts/RemoteSetupSheet.swift`,
+`Views/RemoteHosts/BoxdSetupSheet.swift`. exe.dev's step content stays in `ExeDevSetupSheet.swift`; the create
 gate in `AppStore+WorkroomCreation` switches on the place (two cases), with no `RemoteSetups`
 registry; `confirmedThisLaunch` stays a static on each model. pending remedies: R1.
 Scope Challenge result: scope accepted as-is (a smaller arrangement that keeps scope is not a
@@ -533,7 +533,7 @@ factual corrections; 5 won't-fix (needs a quit mid-sign-in; nothing persists).
 
 ### Section 2: Code quality
 
-1. [P2] (confidence: 8/10) `macapp/WorkroomApp/Core/ExeDevSetup.swift:290` (Claude) — `private func
+1. [P2] (confidence: 8/10) `macapp/WorkroomApp/Core/RemoteHosts/ExeDevSetup.swift:290` (Claude) — `private func
    poll()` is the loop `SetupPoller` lifts out. Shared-code rubric: two callers (this one, existing;
    `BoxdSetup`, proposed in the approved design), same contract (3 s doubling to 30 s, cancel on a
    newer `pollID`, stop when nothing waits). Extraction is part of the approved approach B (D4 in
@@ -789,15 +789,15 @@ finding above. Run with Claude Code or Codex; checkbox as you ship.
   - Verify: `make app-test`; credential and account() table tests red when the guard is removed
 - [x] **T3 (P1, human: ~1.5d / CC: ~45min)** — macapp — shared `RemoteSetup` layer; move exe.dev onto it unchanged
   - Surfaced by: Section 2 item 1, Section 3 CRITICAL exe.dev contract
-  - Files: new `Core/RemoteSetup.swift`, `Views/RemoteSetupSheet.swift`; `Core/ExeDevSetup.swift`, `Views/ExeDevSetupSheet.swift`, `Core/ModalState.swift`, `Views/RootView.swift`, `Core/AppStore+WorkroomCreation.swift`, `WorkroomAppTests/ExeDevHostDriverTests.swift`
+  - Files: new `Core/RemoteHosts/RemoteSetup.swift`, `Views/RemoteHosts/RemoteSetupSheet.swift`; `Core/RemoteHosts/ExeDevSetup.swift`, `Views/RemoteHosts/ExeDevSetupSheet.swift`, `Core/AppShell/ModalState.swift`, `Views/AppShell/RootView.swift`, `Core/AppShell/AppStore/AppStore+WorkroomCreation.swift`, `WorkroomAppTests/ExeDevHostDriverTests.swift`
   - Verify: `make app-test`; `make app-run-exedev-fresh` walk-through unchanged
 - [x] **T4 (P1, human: ~1d / CC: ~40min)** — macapp — `BoxdSetup` + `BoxdSetupSheet` (Install without `-y`, Sign In, Connect GitHub; 60 s checks); boxd entry no longer greyed out
   - Surfaced by: Section 1 items 3-4, Section 3 BoxdSetup tests
-  - Files: new `Core/BoxdSetup.swift`, `Views/BoxdSetupSheet.swift`; `Core/RemoteWorkrooms.swift`, `Core/AppStore+WorkroomCreation.swift`, new `WorkroomAppTests/BoxdSetupTests.swift`
+  - Files: new `Core/RemoteHosts/BoxdSetup.swift`, `Views/RemoteHosts/BoxdSetupSheet.swift`; `Core/RemoteHosts/RemoteWorkrooms.swift`, `Core/AppShell/AppStore/AppStore+WorkroomCreation.swift`, new `WorkroomAppTests/BoxdSetupTests.swift`
   - Verify: `make app-test`
 - [x] **T5 (P1, human: ~3h / CC: ~20min)** — harness — `make app-run-boxd-fresh` with throwaway `HOME` for boxd children, ssh paths and executable discovery
   - Surfaced by: Section 1 item 1, Outside Voice 3
-  - Files: `Makefile`, `macapp/Scripts/`, `macapp/WorkroomApp/Core/RemoteWorkrooms.swift`
+  - Files: `Makefile`, `macapp/Scripts/`, `macapp/WorkroomApp/Core/RemoteHosts/RemoteWorkrooms.swift`
   - Verify: Install step shows on a Mac with boxd installed; full fresh-user flow reaches a running workroom
 - [x] **T6 (P2, human: ~30min / CC: ~5min)** — docs — release note and AGENTS.md entry for the harness
   - Surfaced by: Distribution Plan

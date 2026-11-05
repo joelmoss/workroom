@@ -38,7 +38,7 @@ For terminal-session and repository-routing changes:
   unchanged classifier behaves differently, inspect the inputs both paths feed it.
 - Give each fix a negative control. Name the neighbouring property it could damage (locks,
   parser state, cancellation or caller error handling) and test that property too.
-- For any change under `Core/Session/`, to `VCSProviding`/`VCSWriting` routing, or under
+- For any change under `Core/Terminal/Session/`, to `VCSProviding`/`VCSWriting` routing, or under
   `vcs/crates/workroomd`, dispatch an independent adversarial reviewer. Give it the diff, intent
   and evidence gate. Re-reading your own code does not replace that pass.
 

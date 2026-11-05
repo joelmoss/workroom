@@ -34,7 +34,7 @@ For user-facing wording, follow [app copy](../app-copy.md).
 ## Layout
 
 **VCS info that only the GUI needs** (e.g. the sidebar root row's current branch)
-is resolved app-side in `Core/BranchResolver.swift` (per project, async, with a per-call
+is resolved app-side in `Core/WorkroomManagement/BranchResolver.swift` (per project, async, with a per-call
 timeout) — deliberately NOT added to the `workroom --json` contract, which the human CLI
 never shows.
 

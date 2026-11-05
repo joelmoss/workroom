@@ -121,7 +121,7 @@ as a Run Script phase **after Compile Sources**.
 ## Auto-update (Sparkle)
 
 The app self-updates via [Sparkle](https://sparkle-project.org): it polls an *appcast* feed and
-installs newer, EdDSA-signed DMGs. Wiring lives in `Core/Updater.swift` (the "Check for
+installs newer, EdDSA-signed DMGs. Wiring lives in `Core/AppShell/Updater.swift` (the "Check for
 Updates…" menu item and the Settings toggle); the `SU*` keys in `project.yml` set the feed URL,
 the public key, and automatic checks (on by default). The update artifact is the same notarized
 DMG we ship, signed with an Ed25519 key whose **public** half is embedded as `SUPublicEDKey`.
@@ -161,18 +161,21 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 
 ## Architecture
 
+- `Core/<Context>/` and `Views/<Context>/` — one folder per `CONTEXT.md` context (`AppShell`,
+  `WorkroomManagement`, `VersionControl`, `Terminal`, `RemoteHosts`, `DaemonConnection`,
+  `CodingAgents`); a new file goes in the folder of the context that owns it.
 - `WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git.
-- `Core/WorkroomCLI.swift` — `Process` wrapper over the bundled binary: locates it in the
+- `Core/WorkroomManagement/WorkroomCLI.swift` — `Process` wrapper over the bundled binary: locates it in the
   bundle, overlays `PATH` onto the inherited env, drains stdout/stderr concurrently,
   enforces per-command timeouts, and decodes the JSON envelope (`ok` / `error.kind`).
-- `Core/AppStore.swift` — `@MainActor` store; loads via `list --json` (config-only first,
+- `Core/AppShell/AppStore/AppStore.swift` — `@MainActor` store; loads via `list --json` (config-only first,
   then `--warnings=fast`), and mutates via `add-project` / `create` / `delete`.
-- `Core/TerminalSessions.swift` — caches one live terminal **per workroom** for the app
+- `Core/Terminal/TerminalSessions.swift` — caches one live terminal **per workroom** for the app
   session so switching doesn't kill running shells (decision D2).
 - `Views/` — `NavigationSplitView`: projects sidebar · workroom list · terminal detail,
   with empty/error states, a destructive delete confirmation, and a detail toolbar.
-- `Core/Models.swift` — `Codable` mirrors of the `--json` contract (lenient decoding).
-- `Core/SessionSnapshot.swift` / `SessionStore.swift` / `SessionCoordinator.swift` — the saved
+- `Core/WorkroomManagement/Models.swift` — `Codable` mirrors of the `--json` contract (lenient decoding).
+- `Core/Terminal/SessionSnapshot.swift` / `SessionStore.swift` / `SessionCoordinator.swift` — the saved
   session (issue #46): open panels, split layouts, selection and window frames, restored on the next
   launch. Stored as
   `~/Library/Application Support/Workroom/<bundle id>/session.json` — scoped by bundle id so
