@@ -13,6 +13,7 @@ import SwiftUI
 struct ActivityBar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var projectStore: ProjectStore
+  @EnvironmentObject var vcsStatus: VCSStatusService
   @Default(.showInspector) private var showInspector
   // Bumped on `.themeDidChange` so the flat panel fill repaints live on a theme switch (tokens are
   // read from the `ThemeService` singleton, which SwiftUI doesn't observe on its own).
@@ -68,7 +69,7 @@ struct ActivityBar: View {
   /// Changes pane is empty and the dot stays hidden), matching what the pane actually shows.
   private var changesDirty: Bool {
     guard let id = store.inspectorTargetID else { return false }
-    return projectStore.workroomStatuses[id]?.dirty == true
+    return vcsStatus.workroomStatuses[id]?.dirty == true
   }
 }
 

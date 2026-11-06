@@ -66,8 +66,8 @@ extension View {
   /// that wants it renders. It cost a crash when the pane's status bar reached for
   /// `claudeUsageBridge` and `codingAgentUsage`, which are scene-level in `WorkroomApp` and so were absent
   /// here. If a pane ever grows a dependency on `updater`, `whatsNew`, `remoteState`,
-  /// `projectStore` or `runCommands` (today purely `RootView` chrome, and the only five of the
-  /// app's thirteen environment objects left out), add it here.
+  /// `projectStore`, `vcsStatus` or `runCommands` (today purely `RootView` chrome, and the only six
+  /// of the app's fourteen environment objects left out), add it here.
   func detachedPaneEnvironment(store: AppStore, sessions: TerminalSessions) -> some View {
     self
       .environmentObject(store)

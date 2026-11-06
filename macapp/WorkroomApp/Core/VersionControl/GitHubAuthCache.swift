@@ -5,7 +5,7 @@ import WorkroomVCS
 ///
 /// Whether you are signed in to `gh` is a fact about the MACHINE, not about a window. But `AppStore`
 /// is per-window (`WorkroomApp.swift` mints one per `WindowSeed`) while the verdict lives on the
-/// shared `ProjectStore`, and the staleness check used to sit *before* the await with the stamp
+/// app's `VCSStatusService`, and the staleness check used to sit *before* the await with the stamp
 /// *after* it — so two windows opening together both read "no stamp yet", both forked `gh`, and the
 /// later write won. This collapses that into one owner.
 ///
@@ -27,15 +27,14 @@ import WorkroomVCS
 ///                           (concurrent forced callers still join each other)
 /// ```
 ///
-/// Deliberately an INSTANCE, owned per-`ProjectStore` rather than a `static let shared` — the same
-/// reasoning `VCSToolVersionCache` now follows too. `AppStore.init` documents that "tests build an
-/// isolated `AppStore()` (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL —
-/// with static state one test's injected fake runner can serve another test's probe, and a
-/// tests-only `reset()` cannot stop an already-in-flight task from repopulating the cache
-/// afterwards. Per-`ProjectStore` ownership gets that isolation from a guarantee the codebase
-/// already makes.
+/// Deliberately an INSTANCE, owned per-`VCSStatusService` rather than a `static let shared` — the
+/// same reasoning `VCSToolVersionCache` now follows too. Tests build an isolated `AppStore()` (own
+/// fresh `VCSStatusService`), and `make app-test` runs classes in PARALLEL — with static state one
+/// test's injected fake runner can serve another test's probe, and a tests-only `reset()` cannot stop
+/// an already-in-flight task from repopulating the cache afterwards. Per-service ownership gets that
+/// isolation from a guarantee the codebase already makes.
 actor GitHubAuthCache {
-  typealias Probe = WorkroomStatusResolver.GHAuthProbe
+  typealias Probe = GitHubStatusResolver.GHAuthProbe
 
   /// How long a settled verdict is trusted.
   private let ttl: Duration
@@ -68,7 +67,7 @@ actor GitHubAuthCache {
   ///
   /// `nil` means "no verdict to report": the probe told us nothing AND nothing was cached, so the
   /// caller must leave whatever it is showing alone. It is never a synonym for `.available`.
-  func status(force: Bool = false, resolver: WorkroomStatusResolver) async -> GitHubCLIStatus? {
+  func status(force: Bool = false, resolver: GitHubStatusResolver) async -> GitHubCLIStatus? {
     if !force, let cached, isFresh(cached) { return cached.status }
     // A non-forced caller is happy with any answer in flight. A FORCED one (the manual Refresh
     // button) must not be handed a result from a probe that started before the user asked — that

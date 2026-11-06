@@ -25,7 +25,8 @@ struct AppServices {
   /// Diffs and file contents with no repository behind them. Nil reads the repository.
   var cannedDiffs: CannedDiffs?
   /// Workroom statuses shown instead of probing git and gh, for paths that are not repositories.
-  /// Nil probes, and watches the repositories for changes.
+  /// Nil probes, and watches the repositories for changes. Read from `current` by the app-wide
+  /// `VCSStatusService`, which no single window's store owns.
   var seededStatuses: (@MainActor () -> SeededStatuses)?
   /// What a remote create reaches beyond the app: GitHub and the project's git, the provider's
   /// account, and its hosts.

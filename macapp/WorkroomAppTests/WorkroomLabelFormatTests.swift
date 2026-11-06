@@ -104,7 +104,7 @@ final class WorkroomLabelFormatTests: XCTestCase {
     // Unresolved: RootPresentation.make renders "root" as a PLACEHOLDER — it must not pose as a branch.
     XCTAssertNil(store.label(for: sid).branch, "an unresolved ref has no branch")
     XCTAssertEqual(store.label(for: sid).full, "platform")
-    store.projectStore.rootRefs["/Users/me/platform"] = RootRef(branch: "main", kind: .branch)
+    store.vcsStatus.rootRefs["/Users/me/platform"] = RootRef(branch: "main", kind: .branch)
     XCTAssertEqual(store.label(for: sid).branch, "main")
     XCTAssertNil(store.label(for: sid).workroom)
     XCTAssertEqual(store.label(for: sid).full, "platform", "branch stays out of the title")

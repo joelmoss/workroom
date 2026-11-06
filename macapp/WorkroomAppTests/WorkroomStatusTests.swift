@@ -163,7 +163,7 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(VCSStatusPresentation.accessibilityLabel(s), "status unavailable, timed out")
   }
 
-  // MARK: - AppStore.aggregateStatus (project-row badge: worst child wins)
+  // MARK: - VCSStatusService.aggregateStatus (project-row badge: worst child wins)
 
   @MainActor
   func testAggregateStatusPicksWorstChild() {
@@ -177,22 +177,22 @@ final class WorkroomStatusTests: XCTestCase {
     store.projectStore.projects = [project]
 
     // clean + dirty → dirty wins
-    store.projectStore.workroomStatuses[.workroom(project: "/p", name: "a")] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[.workroom(project: "/p", name: "a")] = WorkroomStatus(
       dirty: false)
-    store.projectStore.workroomStatuses[.workroom(project: "/p", name: "b")] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[.workroom(project: "/p", name: "b")] = WorkroomStatus(
       dirty: true)
-    XCTAssertEqual(store.aggregateStatus(forProject: "/p")?.dirty, true)
+    XCTAssertEqual(store.vcsStatus.aggregateStatus(forProject: "/p")?.dirty, true)
 
     // a conflicted root outranks a dirty workroom
-    store.projectStore.workroomStatuses[.root(project: "/p")] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[.root(project: "/p")] = WorkroomStatus(
       dirty: true, conflicted: true)
-    XCTAssertEqual(store.aggregateStatus(forProject: "/p")?.conflicted, true)
+    XCTAssertEqual(store.vcsStatus.aggregateStatus(forProject: "/p")?.conflicted, true)
 
     // everything clean → nothing to show
-    store.projectStore.workroomStatuses[.root(project: "/p")] = WorkroomStatus(dirty: false)
-    store.projectStore.workroomStatuses[.workroom(project: "/p", name: "b")] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[.root(project: "/p")] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[.workroom(project: "/p", name: "b")] = WorkroomStatus(
       dirty: false)
-    XCTAssertNil(store.aggregateStatus(forProject: "/p"))
+    XCTAssertNil(store.vcsStatus.aggregateStatus(forProject: "/p"))
   }
 
   /// A workroom's status work item is keyed by its project's root, the shared repository its writes
@@ -207,7 +207,7 @@ final class WorkroomStatusTests: XCTestCase {
           Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: [])
         ])
     ]
-    let items = store.statusWorkItems()
+    let items = store.vcsStatus.statusWorkItems()
     let workroomItem = items.first { $0.sid == .workroom(project: "/p", name: "feat") }
     // Must be the PROJECT's path ("/p"), not the workroom's own path ("/p/feat") — the shared
     // repository the workroom's writes are keyed by.
@@ -229,11 +229,13 @@ final class WorkroomStatusTests: XCTestCase {
         ])
     ]
     XCTAssertEqual(
-      store.statusWorkItems().map(\.sid),
+      store.vcsStatus.statusWorkItems().map(\.sid),
       [.root(project: "/p"), .workroom(project: "/p", name: "local")])
     // The selection lane (watch + probe on select) and `targetExists` go through this one.
-    XCTAssertNil(store.selectedStatusWorkItem(for: .workroom(project: "/p", name: "remote")))
-    XCTAssertNotNil(store.selectedStatusWorkItem(for: .workroom(project: "/p", name: "local")))
+    XCTAssertNil(
+      store.vcsStatus.selectedStatusWorkItem(for: .workroom(project: "/p", name: "remote")))
+    XCTAssertNotNil(
+      store.vcsStatus.selectedStatusWorkItem(for: .workroom(project: "/p", name: "local")))
   }
 
   /// A remote workroom on a host this build can't take down (#253) is refused before the
@@ -274,14 +276,14 @@ final class WorkroomStatusTests: XCTestCase {
     let fake = FakeWorkroomCLI(
       canonical: "/p", projects: [Project(path: "/p", vcs: "git", workrooms: [remote])])
     let store = AppStore(cli: fake)
-    store.projectStore.workroomStatuses[.root(project: "/p")] = WorkroomStatus(dirty: false)
-    store.projectStore.workroomStatuses[.workroom(project: "/p", name: "a")] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[.root(project: "/p")] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[.workroom(project: "/p", name: "a")] = WorkroomStatus(
       dirty: true)
 
     await store.reload()
 
-    XCTAssertNil(store.projectStore.workroomStatuses[.workroom(project: "/p", name: "a")])
-    XCTAssertNotNil(store.projectStore.workroomStatuses[.root(project: "/p")])
+    XCTAssertNil(store.vcsStatus.workroomStatuses[.workroom(project: "/p", name: "a")])
+    XCTAssertNotNil(store.vcsStatus.workroomStatuses[.root(project: "/p")])
   }
 
   // MARK: - mergeLocalStatus carries the full local probe forward
@@ -297,8 +299,8 @@ final class WorkroomStatusTests: XCTestCase {
       dirty: true,
       changedFiles: [ChangedFile(path: "a.rb", change: .added)],
       insertions: 3, deletions: 1, branchForCI: "feature")
-    store.mergeLocalStatus(fresh, into: sid)
-    let stored = store.projectStore.workroomStatuses[sid]
+    store.vcsStatus.mergeLocalStatus(fresh, into: sid)
+    let stored = store.vcsStatus.workroomStatuses[sid]
     XCTAssertEqual(stored?.dirty, true)
     XCTAssertEqual(stored?.changedFiles, [ChangedFile(path: "a.rb", change: .added)])
     XCTAssertEqual(stored?.insertions, 3)
@@ -314,10 +316,10 @@ final class WorkroomStatusTests: XCTestCase {
     store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     // Seed: a prior snapshot with CI already resolved.
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: true, ci: .passing)
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: true, ci: .passing)
     let gitFresh = WorkroomStatus(dirty: false, branchForCI: "main")
-    store.mergeLocalStatus(gitFresh, into: sid)
-    let stored = store.projectStore.workroomStatuses[sid]
+    store.vcsStatus.mergeLocalStatus(gitFresh, into: sid)
+    let stored = store.vcsStatus.workroomStatuses[sid]
     XCTAssertEqual(stored?.ci, .passing)  // CI preserved across the local refresh
     XCTAssertEqual(stored?.branchForCI, "main")
     XCTAssertEqual(stored?.dirty, false)
@@ -550,16 +552,16 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: true,
       pr: PullRequestInfo(
         number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved,
         reviewers: [Reviewer(identity: .user(login: "iainad"), state: .approved)]))
-    store.mergeLocalStatus(
+    store.vcsStatus.mergeLocalStatus(
       WorkroomStatus(dirty: false, branchForCI: "main"), into: sid)
     // The PR survives the local refresh, with its reviewers.
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.number, 5)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.reviewers.count, 1)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.number, 5)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.reviewers.count, 1)
   }
 
   /// The deleted-mid-sweep guard: a status sweep captures its work-list up front, so a workroom
@@ -570,9 +572,9 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = []  // the project the sweep captured has since been deleted
     let sid = SidebarID.root(project: "/gone")
-    store.mergeLocalStatus(
+    store.vcsStatus.mergeLocalStatus(
       WorkroomStatus(dirty: true, branchForCI: "main"), into: sid)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid])  // no ghost entry created
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid])  // no ghost entry created
   }
 
   // MARK: - PRAction (Phase 2b: gh command mapping + state availability)
@@ -785,22 +787,22 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false)
 
     // .list → rows set + loaded marker stamped
-    store.applyChecksStatus(.list([check("a", .passing)]), to: sid)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.checks?.count, 1)
-    XCTAssertNotNil(store.projectStore.workroomStatuses[sid]?.checksCheckedAt)
+    store.vcsStatus.applyChecksStatus(.list([check("a", .passing)]), to: sid)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.checks?.count, 1)
+    XCTAssertNotNil(store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt)
 
     // .absent → loaded-empty ([]), NOT nil — so the panel won't fall back to the run-list aggregate
-    store.applyChecksStatus(.absent, to: sid)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.checks, [])
-    XCTAssertNotNil(store.projectStore.workroomStatuses[sid]?.checksCheckedAt)
+    store.vcsStatus.applyChecksStatus(.absent, to: sid)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.checks, [])
+    XCTAssertNotNil(store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt)
 
     // .keepPrior after a prior load → keeps the last good list (doesn't blank)
-    store.applyChecksStatus(.list([check("z", .failing)]), to: sid)
-    store.applyChecksStatus(.keepPrior, to: sid)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.checks?.map(\.name), ["z"])
+    store.vcsStatus.applyChecksStatus(.list([check("z", .failing)]), to: sid)
+    store.vcsStatus.applyChecksStatus(.keepPrior, to: sid)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.checks?.map(\.name), ["z"])
   }
 
   /// keepPrior on a first-ever probe (never loaded) leaves the marker nil so the next probe retries.
@@ -809,10 +811,10 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false)
-    store.applyChecksStatus(.keepPrior, to: sid)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid]?.checks)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid]?.checksCheckedAt)
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false)
+    store.vcsStatus.applyChecksStatus(.keepPrior, to: sid)
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid]?.checks)
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt)
   }
 
   /// REGRESSION (issue #75): selecting a row whose PR number changed must drop the old PR's checks
@@ -822,20 +824,20 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
       pr: PullRequestInfo(
         number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
         reviewers: []),
       checks: [check("old", .passing)])
-    store.projectStore.workroomStatuses[sid]?.checksCheckedAt = Date()
-    store.applyPRStatus(
+    store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt = Date()
+    store.vcsStatus.applyPRStatus(
       .info(
         PullRequestInfo(
           number: 9, title: "t2", state: .open, isDraft: false, url: "u2", reviewDecision: nil,
           reviewers: [])), to: sid)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid]?.checks)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid]?.checksCheckedAt)
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid]?.checks)
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt)
   }
 
   /// The same PR number (e.g. the raw→enriched re-apply) keeps the checks.
@@ -844,19 +846,19 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
       pr: PullRequestInfo(
         number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
         reviewers: []),
       checks: [check("keep", .passing)])
-    store.projectStore.workroomStatuses[sid]?.checksCheckedAt = Date()
-    store.applyPRStatus(
+    store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt = Date()
+    store.vcsStatus.applyPRStatus(
       .info(
         PullRequestInfo(
           number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved,
           reviewers: [Reviewer(identity: .user(login: "a"), state: .approved)])), to: sid)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.checks?.map(\.name), ["keep"])
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.checks?.map(\.name), ["keep"])
   }
 
   /// REGRESSION (issue #75): a disappearing PR (.absent) must clear checks — `resolveChecks` won't
@@ -866,17 +868,17 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
       pr: PullRequestInfo(
         number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
         reviewers: []),
       checks: [check("old", .passing)])
-    store.projectStore.workroomStatuses[sid]?.checksCheckedAt = Date()
-    store.applyPRStatus(.absent, to: sid)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid]?.pr)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid]?.checks)
-    XCTAssertNil(store.projectStore.workroomStatuses[sid]?.checksCheckedAt)
+    store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt = Date()
+    store.vcsStatus.applyPRStatus(.absent, to: sid)
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid]?.pr)
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid]?.checks)
+    XCTAssertNil(store.vcsStatus.workroomStatuses[sid]?.checksCheckedAt)
   }
 
   // MARK: - performPRAction optimistic update + revert-on-failure (issue #77 follow-up)
@@ -899,7 +901,7 @@ final class WorkroomStatusTests: XCTestCase {
     store.projectStore.projects = [Project(path: p, vcs: "git", workrooms: [])]
     RepositoryRouter.shared.replaceLocal(
       try await RepositoryRouter.prepare(store.projectStore.projects))
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "pr already ready", exitCode: 1, timedOut: false)
       })
@@ -907,17 +909,17 @@ final class WorkroomStatusTests: XCTestCase {
     let draft = PullRequestInfo(
       number: 5, title: "t", state: .open, isDraft: true, url: "u", reviewDecision: nil,
       reviewers: [])
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: draft)
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: draft)
 
     store.performPRAction(.markReady, number: 5, on: sid)
     // Optimistic: the draft flag is cleared the instant the action is invoked, before `gh` returns.
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.isDraft, false)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.isDraft, false)
     XCTAssertTrue(store.prActionInFlight)
 
     await waitUntilIdle(store)
 
     // gh failed → reverted to the original draft, with the error surfaced.
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr, draft)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr, draft)
     XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t ready for review")
     XCTAssertEqual(store.modals.errorMessage, "pr already ready")
   }
@@ -930,20 +932,20 @@ final class WorkroomStatusTests: XCTestCase {
     store.projectStore.projects = [Project(path: p, vcs: "git", workrooms: [])]
     RepositoryRouter.shared.replaceLocal(
       try await RepositoryRouter.prepare(store.projectStore.projects))
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
       })
     let sid = SidebarID.root(project: p)
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
       pr: PullRequestInfo(
         number: 7, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
         reviewers: []))
 
     store.performPRAction(.convertToDraft, number: 7, on: sid)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.isDraft, true)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.state, .open)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.isDraft, true)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.state, .open)
   }
 
   /// `performMerge` shares `performPRAction`'s gh-write lifecycle (`performPRWrite`) but had no direct
@@ -956,7 +958,7 @@ final class WorkroomStatusTests: XCTestCase {
     store.projectStore.projects = [Project(path: p, vcs: "git", workrooms: [])]
     RepositoryRouter.shared.replaceLocal(
       try await RepositoryRouter.prepare(store.projectStore.projects))
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "not mergeable", exitCode: 1, timedOut: false)
       })
@@ -964,18 +966,18 @@ final class WorkroomStatusTests: XCTestCase {
     let open = PullRequestInfo(
       number: 9, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
       reviewers: [], mergeable: true)
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: open)
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: open)
 
     store.performMerge(.squash, number: 9, on: sid)
     // Optimistic: flipped to merged (and unmergeable) the instant the action is invoked.
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.state, .merged)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.mergeable, false)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.state, .merged)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.mergeable, false)
     XCTAssertTrue(store.prActionInFlight)
 
     await waitUntilIdle(store)
 
     // gh failed → reverted to the original open/mergeable PR, with the error surfaced.
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr, open)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr, open)
     XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t merge pull request")
     XCTAssertEqual(store.modals.errorMessage, "not mergeable")
   }
@@ -996,11 +998,11 @@ final class WorkroomStatusTests: XCTestCase {
   func testCancelledGitHubCLIProbePublishesNothing() async {
     let store = AppStore()
     let runner = GatedGHRunner()
-    store.statusResolver = WorkroomStatusResolver(runner: runner)
-    store.projectStore.githubCLIStatus = .available
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(runner: runner)
+    store.vcsStatus.githubCLIStatus = .available
 
-    let resolver = store.statusResolver
-    let task = Task { await store.refreshGitHubCLI(resolver: resolver) }
+    let resolver = store.vcsStatus.statusResolver
+    let task = Task { await store.vcsStatus.refreshGitHubCLI(resolver: resolver) }
     // Cancel only once the probe is genuinely in flight, or the guard under test never runs.
     let deadline = Date().addingTimeInterval(2)
     while !runner.enteredGHProbe && Date() < deadline {
@@ -1031,7 +1033,7 @@ final class WorkroomStatusTests: XCTestCase {
       returnedInTime, "refreshGitHubCLI did not return within 5s of the probe being released")
 
     XCTAssertEqual(
-      store.projectStore.githubCLIStatus, .available, "a cancelled probe published a verdict")
+      store.vcsStatus.githubCLIStatus, .available, "a cancelled probe published a verdict")
   }
 
   /// `.keepPrior` (a killed or crashed child that was never cancelled — jetsam, SIGSEGV, a signal
@@ -1040,17 +1042,17 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testKeepPriorGitHubCLIProbeLeavesTheStatusUntouched() async {
     let store = AppStore()
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
       })
     // A TRUE warning that must not be erased.
-    store.projectStore.githubCLIStatus = .notAuthenticated
+    store.vcsStatus.githubCLIStatus = .notAuthenticated
 
-    await store.refreshGitHubCLI(resolver: store.statusResolver)
+    await store.vcsStatus.refreshGitHubCLI(resolver: store.vcsStatus.statusResolver)
 
     XCTAssertEqual(
-      store.projectStore.githubCLIStatus, .notAuthenticated,
+      store.vcsStatus.githubCLIStatus, .notAuthenticated,
       "an uninformative probe erased a correct warning — the inverse false claim")
   }
 

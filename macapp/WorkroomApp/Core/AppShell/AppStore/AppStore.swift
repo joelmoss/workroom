@@ -9,8 +9,9 @@ import WorkroomDomain
 import WorkroomVCS
 
 /// One window's state and actions. Production builds one store per window (issue #70); the
-/// project data every window shares lives in `ProjectStore.shared`. All CLI work is awaited (it
-/// runs off the main thread inside WorkroomCLI), keeping the UI responsive.
+/// project data every window shares lives in `ProjectStore.shared`, and its VCS status in
+/// `VCSStatusService.shared`. All CLI work is awaited (it runs off the main thread inside
+/// WorkroomCLI), keeping the UI responsive.
 @MainActor
 @Observable
 // `ObservableObject` stays only so the window root can hold the store in a `@StateObject`, which
@@ -19,12 +20,14 @@ import WorkroomVCS
 // its `objectWillChange`: views and the menu commands (`@FocusedValue(AppStore.self)`) observe the
 // store through Observation.
 final class AppStore: ObservableObject {
-  /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
-  /// it that is identical across windows (root labels, VCS/CI status cache, GitHub-CLI status, busy
-  /// set). Views take it from the environment and the store's code reads it here. The create and
-  /// delete sets still proxy through to it, and Observation tracks those reads through it, so
-  /// views/menus observing this store still re-render when the shared data changes.
+  /// Shared, app-wide project data (issue #70). Holds the project list and what is identical across
+  /// windows about it. Views take it from the environment and the store's code reads it here. The
+  /// create and delete sets still proxy through to it, and Observation tracks those reads through it,
+  /// so views/menus observing this store still re-render when the shared data changes.
   let projectStore: ProjectStore
+  /// The app's VCS status: every workroom's status, the sweep, and the writes in flight. Views take
+  /// it from the environment and the store's code reads it here.
+  let vcsStatus: VCSStatusService
   /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
   /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
   /// forgotten. It fires far more often than the session changes (every live title, every activity
@@ -687,7 +690,7 @@ final class AppStore: ObservableObject {
     guard let target = remoteState.target else { return }
     // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
     // will stash and reapply, which is worth saying before it happens.
-    if action == .pull, projectStore.workroomStatuses[target.sid]?.dirty == true {
+    if action == .pull, vcsStatus.workroomStatuses[target.sid]?.dirty == true {
       modals.pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
       return
     }
@@ -720,7 +723,7 @@ final class AppStore: ObservableObject {
       if AppEnvironment.current.isFixture { return }
     #endif
     guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-    let cache = projectStore.vcsToolVersionCache
+    let cache = vcsStatus.vcsToolVersionCache
     Task { [weak self] in
       let report = await cache.report()
       self?.vcsToolReport = report
@@ -741,12 +744,9 @@ final class AppStore: ObservableObject {
   /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
   /// slow sweep never writes stale labels over a newer one.
   private var branchTask: Task<Void, Never>?
-  /// VCS/CI status resolution (issue #24). `internal` (not `private`) so the
-  /// `AppStore+WorkroomStatus.swift` extension can drive them. Tasks are cancelled+replaced
-  /// per sweep / per selection so a slow probe never writes stale status over a newer one. `var`
-  /// (not `let`) so tests can inject a `WorkroomStatusResolver` with a mock command runner.
-  var statusResolver: WorkroomStatusResolver
-  var statusSweepTask: Task<Void, Never>?
+  /// The selection's status probe (issue #24), cancelled and replaced per selection so a slow probe
+  /// never writes stale status over a newer one. `internal` (not `private`) so the
+  /// `AppStore+WorkroomStatus.swift` extension can drive it.
   var selectionStatusTask: Task<Void, Never>?
   /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
   /// for filesystem changes (issue #24 follow-up). Retargeted on selection; see
@@ -811,12 +811,14 @@ final class AppStore: ObservableObject {
     private var fixtureAutoSelect = true
   #endif
 
-  /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared` and
-  /// `RunCommands.shared`; tests build an isolated `AppStore()` (own fresh `ProjectStore` and
-  /// `RunCommands`), inject `projects`, and drive the real recording/navigation paths. `init` does
-  /// no CLI work (only `bootstrap()`/`load()` do).
+  /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`,
+  /// `VCSStatusService.shared` and `RunCommands.shared`; tests build an isolated `AppStore()` (own
+  /// fresh `ProjectStore`, `VCSStatusService` and `RunCommands`), inject `projects`, and drive the
+  /// real recording/navigation paths. A `vcsStatus` brings its own `projectStore`. `init` does no CLI
+  /// work (only `bootstrap()`/`load()` do).
   init(
-    projectStore: ProjectStore? = nil, runCommands: RunCommands? = nil,
+    projectStore: ProjectStore? = nil, vcsStatus: VCSStatusService? = nil,
+    runCommands: RunCommands? = nil,
     cli: WorkroomCLIProtocol? = nil, commitHistory: HistoryModel? = nil,
     remoteState: RemoteStateModel? = nil, notifications: NotificationCenterStore? = nil
   ) {
@@ -828,9 +830,11 @@ final class AppStore: ObservableObject {
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
     // The notification list follows the same rule.
     self.notifications = notifications ?? NotificationCenterStore()
-    let store = projectStore ?? ProjectStore()
+    let store = projectStore ?? vcsStatus?.projectStore ?? ProjectStore()
     self.projectStore = store
-    self.statusResolver = WorkroomStatusResolver(ciCache: store.ciResultCache)
+    let status = vcsStatus ?? VCSStatusService(projectStore: store)
+    precondition(status.projectStore === store, "a window's VCS status is over its own projects")
+    self.vcsStatus = status
     // `commitHistory` is assigned here (not inline) for the same @MainActor reason: a test injects a
     // stub to observe the live-refresh triggers; otherwise it reads through the services' reader.
     self.commitHistory = commitHistory ?? HistoryModel(resolve: services.vcsReader)
@@ -850,12 +854,14 @@ final class AppStore: ObservableObject {
     // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
     // every branch-showing surface reads through `branchName(for:)`.
     self.remoteState.onBranchResolved = { [weak self] target, name in
-      guard let self, self.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      guard let self,
+        self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
       else { return }
       self.setResolvedBranchName(name, for: target.sid)
     }
     self.remoteState.onDidMutate = { [weak self] action, target in
-      guard let self, self.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      guard let self,
+        self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
       else { return }
       self.handleRemoteMutation(action, on: target.sid, location: target.location)
     }
@@ -865,18 +871,21 @@ final class AppStore: ObservableObject {
     // Cross-window write-in-flight refusal (VCS-foundation eng-review) — see `isWritingProject`'s
     // doc. `canStartWrite` defaults to "never busy" when unwired, so a model built without an
     // `AppStore` (unit tests) behaves as it did before this was added.
-    self.remoteState.canStartWrite = { [weak self] root in !(self?.isWritingProject(root) ?? false)
+    self.remoteState.canStartWrite = { [weak self] root in
+      !(self?.vcsStatus.isWritingProject(root) ?? false)
     }
-    self.remoteState.writeDidStart = { [weak self] root in self?.beginWrite(projectRoot: root) }
-    // Captured STRONGLY, not through `self`: `writingProjectRoots` lives on the shared, cross-window
-    // `ProjectStore`, and this release must run even if THIS window's `AppStore` (and its
+    self.remoteState.writeDidStart = { [weak self] root in
+      self?.vcsStatus.beginWrite(projectRoot: root)
+    }
+    // Captured STRONGLY, not through `self`: `writingProjectRoots` lives on the app-wide
+    // `VCSStatusService`, and this release must run even if THIS window's `AppStore` (and its
     // `RemoteStateModel`) is deallocated before the write finishes — e.g. the window closed
     // mid-fetch/push/pull. A release gated on `self` staying alive would leak the counter
     // permanently, refusing every future write for this project, in every window, until relaunch.
     // `RemoteStateModel.perform` already captures this closure's VALUE as a local before its own
     // `Task` starts, for the identical reason on its side of the chain.
-    self.remoteState.writeDidFinish = { [projectStore = self.projectStore] root in
-      AppStore.releaseWrite(projectRoot: root, in: projectStore)
+    self.remoteState.writeDidFinish = { [vcsStatus = self.vcsStatus] root in
+      vcsStatus.endWrite(projectRoot: root)
     }
     pendingRestoreSelection = Defaults[.sidebarSelection].flatMap(TargetID.init(encoded:))
     // Everything `TerminalSessions` reports comes through one synchronous sink, handled in
@@ -896,6 +905,10 @@ final class AppStore: ObservableObject {
       // Same reason as the notification route: the run terminal may be a detached pane (#172).
       self.window(forTab: self.runCommand.runStates[targetID]?.tab)?.makeKeyAndOrderFront(nil)
       self.revealRunTerminal()
+    }
+    // Every local status merge, from any window's lane or the sweep, settles this window's caches.
+    self.vcsStatus.register(self) { [weak self] sid, status in
+      self?.localStatusDidMerge(status, into: sid)
     }
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
@@ -1717,7 +1730,7 @@ final class AppStore: ObservableObject {
             response.baseBranch?.isEmpty == false ? response.baseBranch : nil
           apply(response.projects, registrations: registrations)
           resolveBranches()
-          refreshWorkroomStatuses()
+          vcsStatus.refreshWorkroomStatuses()
         } else {
           reconcileWindow(with: projectStore.projects)
         }
@@ -1893,7 +1906,7 @@ final class AppStore: ObservableObject {
       }
       // Seed deterministic Changes-inspector status (the fixture paths aren't real repos, so the live
       // probe would only report "unknown"); the resolver sweep is skipped in fixture mode.
-      seedStatuses()
+      vcsStatus.seedStatuses()
       lastLoadAt = Date()
     }
   #endif
@@ -1948,11 +1961,11 @@ final class AppStore: ObservableObject {
     }
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))
-    projectStore.rootRefs = projectStore.rootRefs.filter { liveIDs.contains($0.key) }
+    vcsStatus.rootRefs = vcsStatus.rootRefs.filter { liveIDs.contains($0.key) }
     // Keyed on what the sweep probes, not on the sidebar: a workroom that turned remote is no longer
     // refreshed, so its last local status would otherwise tint it and its project's badge forever.
-    let probed = Set(statusWorkItems().map(\.sid))
-    projectStore.workroomStatuses = projectStore.workroomStatuses.filter {
+    let probed = Set(vcsStatus.statusWorkItems().map(\.sid))
+    vcsStatus.workroomStatuses = vcsStatus.workroomStatuses.filter {
       probed.contains($0.key)
     }
     reconcileWindow(with: fresh)
@@ -2095,8 +2108,8 @@ final class AppStore: ObservableObject {
         for await (id, ref) in group {
           guard !Task.isCancelled, let self else { break }
           // Keep the prior label.
-          if ref.kind == .none, self.projectStore.rootRefs[id] != nil { continue }
-          self.projectStore.rootRefs[id] = ref
+          if ref.kind == .none, self.vcsStatus.rootRefs[id] != nil { continue }
+          self.vcsStatus.rootRefs[id] = ref
         }
       }
     }
@@ -2108,7 +2121,7 @@ final class AppStore: ObservableObject {
   /// services seed statuses (the fixture's temp-dir paths aren't real repos — match
   /// `resolveBranches`, which skips them too).
   func updateRootBranchWatches() {
-    guard probesRepositories else {
+    guard vcsStatus.probesRepositories else {
       for w in rootBranchWatchers.values { w.stop() }
       rootBranchWatchers.removeAll()
       for t in rootBranchRefreshTasks.values { t.cancel() }
@@ -2145,7 +2158,8 @@ final class AppStore: ObservableObject {
   /// doesn't invalidate the sidebar). Cancel-and-replace per project so a write burst resolves once;
   /// `.none` never clobbers a prior label (matches `resolveBranches`).
   func handleRootBranchChange(projectID: Project.ID) {
-    guard probesRepositories, let p = projectStore.projects.first(where: { $0.id == projectID })
+    guard vcsStatus.probesRepositories,
+      let p = projectStore.projects.first(where: { $0.id == projectID })
     else { return }
     // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / ref
     // update in the project or one of its workrooms (git worktree refs land in the shared `.git`, so
@@ -2175,9 +2189,9 @@ final class AppStore: ObservableObject {
       let ref = await resolver.resolve(path: p.path, vcs: p.vcs)
       guard let self, !Task.isCancelled else { return }
       // Keep the prior label; an unchanged one is not written, so the store does not churn.
-      if ref.kind == .none, self.projectStore.rootRefs[projectID] != nil { return }
-      if self.projectStore.rootRefs[projectID] == ref { return }
-      self.projectStore.rootRefs[projectID] = ref
+      if ref.kind == .none, self.vcsStatus.rootRefs[projectID] != nil { return }
+      if self.vcsStatus.rootRefs[projectID] == ref { return }
+      self.vcsStatus.rootRefs[projectID] = ref
     }
   }
 
@@ -2277,7 +2291,7 @@ final class AppStore: ObservableObject {
     // create/delete race) — `apply` filters tombstoned workrooms until the teardown completes.
     deletingWorkrooms.insert(targetID)
     removeWorkroomLocally(workroom, in: project)
-    projectStore.workroomStatuses[sid] = nil
+    vcsStatus.workroomStatuses[sid] = nil
     // Clear the deleted workroom from EVERY window's split + selection (issue #70, OV #7) — another
     // window may have had it open/selected; "stale-id self-heal" only fixes model lookup, not live
     // surfaces or processes.
@@ -2681,11 +2695,11 @@ final class AppStore: ObservableObject {
     // Clear selection if it pointed anywhere inside this project (its root or any workroom).
     if let sel = selectedTargetID, sel.belongsToProject(project.path) { selectedTargetID = nil }
     removeWorkroomSplitMember(.root(project: project.path))
-    projectStore.workroomStatuses[.root(project: project.path)] = nil
+    vcsStatus.workroomStatuses[.root(project: project.path)] = nil
     setResolvedBranchName(nil, for: .root(project: project.path))
     for w in project.workrooms {
       removeWorkroomSplitMember(.workroom(project: project.path, name: w.name))
-      projectStore.workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
+      vcsStatus.workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
       setResolvedBranchName(nil, for: .workroom(project: project.path, name: w.name))
     }
     // Drop the project's create runs as well — `deleteProject` calls `detachTarget` only on the
@@ -3480,7 +3494,7 @@ final class AppStore: ObservableObject {
       await refresh?.value
       guard let self else { return }
       self.remoteState.noteConflictState(
-        self.projectStore.workroomStatuses[sid]?.conflicted == true, for: sid, location: location)
+        self.vcsStatus.workroomStatuses[sid]?.conflicted == true, for: sid, location: location)
     }
   }
 
@@ -3507,7 +3521,7 @@ final class AppStore: ObservableObject {
       return WorkroomLabel(
         project: project, workroom: displayName(forWorkroom: name, inProject: path))
     case .root(let path):
-      let ref = projectStore.rootRefs[path] ?? .unresolved
+      let ref = vcsStatus.rootRefs[path] ?? .unresolved
       let branch = ref.kind == .none ? nil : RootPresentation.make(ref).label
       return WorkroomLabel(project: project, branch: branch)
     case .creation(_, let id):

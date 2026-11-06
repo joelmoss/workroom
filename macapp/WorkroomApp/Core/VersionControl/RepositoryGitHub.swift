@@ -46,9 +46,9 @@ struct RepositoryGitHub: Sendable {
   /// config (they do, unless `extensions.worktreeConfig` gives one a remote of its own).
   func repository() async -> GitHubRepositoryResolution {
     if let supplied { return .found(supplied) }
-    let resolver = resolver
+    let gitHub = resolver.gitHub
     let dir = sharedPath
-    return await lookup.resolve { await resolver.resolveRepository(in: dir) }
+    return await lookup.resolve { await gitHub.resolveRepository(in: dir) }
   }
 
   /// `repository` is a lookup the caller already made (the CI sweep asks once per project and shares
@@ -69,7 +69,7 @@ struct RepositoryGitHub: Sendable {
     guard isLocal else { return CIStatusSnapshot(.absent) }
     // The branch tip is a cheap local read; do it before the network lookup, as before.
     guard
-      let commit = await resolver.localCICommit(path: path, branch: branch)
+      let commit = await resolver.git.localCICommit(path: path, branch: branch)
     else { return CIStatusSnapshot(.absent) }
     let found: GitHubRepositoryResolution
     if let resolution { found = resolution } else { found = await repository() }
@@ -79,14 +79,14 @@ struct RepositoryGitHub: Sendable {
     case .absent: return CIStatusSnapshot(.absent)
     case .keepPrior: return CIStatusSnapshot(.keepPrior)
     case .found(let repo):
-      return await resolver.resolveCISnapshot(repo: repo, commit: commit, force: force)
+      return await resolver.gitHub.resolveCISnapshot(repo: repo, commit: commit, force: force)
     }
   }
 
   func pullRequest(branch: String?) async -> PRResolution {
     let resolved: String?
     if isLocal {
-      resolved = await resolver.localBranch(path: path, branch: branch)
+      resolved = await resolver.git.localBranch(path: path, branch: branch)
     } else {
       resolved = branch
     }
@@ -96,7 +96,7 @@ struct RepositoryGitHub: Sendable {
     switch found {
     case .absent: return .absent
     case .keepPrior: return .keepPrior
-    case .found(let repo): return await resolver.resolvePRRaw(repo: repo, branch: resolved)
+    case .found(let repo): return await resolver.gitHub.resolvePRRaw(repo: repo, branch: resolved)
     }
   }
 
@@ -104,7 +104,7 @@ struct RepositoryGitHub: Sendable {
     let found = await repository()
     if Task.isCancelled { return resolution }
     guard case .found(let repo) = found else { return resolution }
-    return await resolver.enrichPR(resolution, repo: repo)
+    return await resolver.gitHub.enrichPR(resolution, repo: repo)
   }
 
   func checks(number: Int) async -> ChecksResolution {
@@ -113,7 +113,7 @@ struct RepositoryGitHub: Sendable {
     switch found {
     case .absent: return .absent
     case .keepPrior: return .keepPrior
-    case .found(let repo): return await resolver.resolveChecks(repo: repo, number: number)
+    case .found(let repo): return await resolver.gitHub.resolveChecks(repo: repo, number: number)
     }
   }
 
@@ -123,7 +123,7 @@ struct RepositoryGitHub: Sendable {
   func run(_ arguments: [String]) async -> CommandResult {
     let message: String
     switch await repository() {
-    case .found(let repo): return await resolver.runPRCommand(arguments, repo: repo)
+    case .found(let repo): return await resolver.gitHub.runPRCommand(arguments, repo: repo)
     // A blip is a retry-in-a-minute condition, and so is an offline Mac (a connection failure is
     // `keepPrior` in `ghPreflight`); "no repository" reads as a permanent problem.
     case .keepPrior:

@@ -20,6 +20,7 @@ struct ProjectSidebar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var projectStore: ProjectStore
+  @EnvironmentObject var vcsStatus: VCSStatusService
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -416,7 +417,7 @@ struct ProjectSidebar: View {
     #endif
     let id = SidebarID.root(project: project.path)
     let target = project.rootTarget
-    let style = RootPresentation.make(projectStore.rootRefs[project.id] ?? .unresolved)
+    let style = RootPresentation.make(vcsStatus.rootRefs[project.id] ?? .unresolved)
     let waiting = terminals.blockedTerminalCount(forTargetID: target.id)
     let failed =
       terminals.isProgressFailed(forTargetID: target.id)
@@ -923,7 +924,7 @@ private struct SidebarUnreadDot: View {
 /// Only the glyph needs the VCS dictionary. Reading it in the row builder made every sweep rebuild
 /// the entire List, including offscreen rows and unrelated notification badges (#534).
 private struct SidebarStatusGlyph: View {
-  @EnvironmentObject private var projectStore: ProjectStore
+  @EnvironmentObject private var vcsStatus: VCSStatusService
   let id: SidebarID
   let symbol: String
 
@@ -931,12 +932,12 @@ private struct SidebarStatusGlyph: View {
     Image(systemName: symbol)
       .font(.system(size: 10))
       .foregroundStyle(
-        VCSStatusPresentation.iconTint(projectStore.workroomStatuses[id] ?? .unresolved))
+        VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[id] ?? .unresolved))
   }
 }
 
 private struct SidebarRootStatusLabel: ViewModifier {
-  @EnvironmentObject private var projectStore: ProjectStore
+  @EnvironmentObject private var vcsStatus: VCSStatusService
   let id: SidebarID
   let rootLabel: String
   let programLabels: [String]
@@ -945,7 +946,7 @@ private struct SidebarRootStatusLabel: ViewModifier {
     let label =
       ([
         rootLabel,
-        VCSStatusPresentation.accessibilityLabel(projectStore.workroomStatuses[id] ?? .unresolved),
+        VCSStatusPresentation.accessibilityLabel(vcsStatus.workroomStatuses[id] ?? .unresolved),
       ]
       + programLabels).filter { !$0.isEmpty }.joined(separator: ", ")
     return content.accessibilityLabel(label)
@@ -953,11 +954,11 @@ private struct SidebarRootStatusLabel: ViewModifier {
 }
 
 private struct SidebarAggregateStatus: View {
-  @EnvironmentObject private var store: AppStore
+  @EnvironmentObject private var vcsStatus: VCSStatusService
   let projectPath: String
 
   var body: some View {
-    if let status = store.aggregateStatus(forProject: projectPath) {
+    if let status = vcsStatus.aggregateStatus(forProject: projectPath) {
       VCSAggregateDot(status: status)
     }
   }

@@ -21,7 +21,7 @@ final class RoomCommandStateTests: XCTestCase {
     store.selectedTargetID = id
     store.selectionStatusTask?.cancel()
     store.refreshSelectionHasTabs()
-    store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: true)
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: true)
     return (store, id)
   }
 
@@ -36,23 +36,23 @@ final class RoomCommandStateTests: XCTestCase {
     defer { Task { await store.terminals.reapAll() } }
     let before = RoomCommandState.read(store)
     XCTAssertTrue(before.canCommit)
-    store.mergeLocalStatus(
+    store.vcsStatus.mergeLocalStatus(
       WorkroomStatus(dirty: true), into: .root(project: "/room-command-other"))
     XCTAssertEqual(RoomCommandState.read(store), before)
-    store.mergeLocalStatus(WorkroomStatus(dirty: true, insertions: 42), into: id)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: true, insertions: 42), into: id)
     XCTAssertEqual(RoomCommandState.read(store), before, "counts and freshness are not menu inputs")
   }
 
   func testDirtyAndCommittingStateDriveCommitEligibility() {
     let (store, id) = store()
     defer { Task { await store.terminals.reapAll() } }
-    store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: false)
     XCTAssertFalse(RoomCommandState.read(store).canCommit)
-    store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: true)
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: true)
     XCTAssertTrue(RoomCommandState.read(store).canCommit)
-    store.projectStore.committingTargets.insert(id)
+    store.vcsStatus.committingTargets.insert(id)
     XCTAssertFalse(RoomCommandState.read(store).canCommit)
-    store.projectStore.committingTargets.remove(id)
+    store.vcsStatus.committingTargets.remove(id)
     XCTAssertTrue(RoomCommandState.read(store).canCommit)
     store.selectedTargetID = nil
     XCTAssertFalse(RoomCommandState.read(store).canCommit)
@@ -61,13 +61,13 @@ final class RoomCommandStateTests: XCTestCase {
   func testPullRequestActionsInFlightAndModalGatesRemainLive() {
     let (store, id) = store()
     defer { Task { await store.terminals.reapAll() } }
-    store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: true, pr: pr(draft: true))
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: true, pr: pr(draft: true))
     let draft = RoomCommandState.read(store)
     XCTAssertEqual(draft.pullRequest?.number, 12)
     XCTAssertEqual(draft.pullRequest?.url, "https://github.com/example/repo/pull/12")
     XCTAssertEqual(draft.pullRequest?.draftAction, .markReady)
     XCTAssertTrue(draft.canChangeDraft)
-    store.projectStore.workroomStatuses[id] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(
       dirty: true, pr: pr(draft: true, title: "Retitled"))
     XCTAssertEqual(RoomCommandState.read(store), draft, "an unused PR title must not rebuild menus")
     store.prActionInFlight = true
@@ -81,7 +81,7 @@ final class RoomCommandStateTests: XCTestCase {
     XCTAssertTrue(modal.canRevealInFinder, "Finder's existing modal behavior is unchanged")
     store.modals.auxSheetPresented = false
     XCTAssertEqual(RoomCommandState.read(store), draft)
-    store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: true, pr: pr(draft: false))
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: true, pr: pr(draft: false))
     XCTAssertEqual(RoomCommandState.read(store).pullRequest?.draftAction, .convertToDraft)
   }
 

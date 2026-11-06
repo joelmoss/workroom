@@ -38,7 +38,7 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertFalse(r.ok)
     // ORDERING LOCK: the timeout path SIGTERMs the child, so a timed-out result carries `signaled`
     // too and `exitCode` is the signal number, not an exit status. Every classifier must therefore
-    // test `timedOut` BEFORE `signaled` — see `WorkroomStatusResolver.classifyGitHubCLI`.
+    // test `timedOut` BEFORE `signaled` — see `GitHubStatusResolver.classifyGitHubCLI`.
     XCTAssertTrue(r.signaled, "our timeout kills the child, so a timeout is also a signal")
     XCTAssertEqual(r.exitCode, 15)  // SIGTERM, not something `sleep` chose
   }

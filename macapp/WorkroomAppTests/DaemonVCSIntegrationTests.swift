@@ -321,7 +321,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
       _ = try await reader.workingStatus()
       XCTFail("closed channel returned status")
     } catch is HostConnectionError {}
-    let status = await WorkroomStatusResolver(router: router).resolve(location: location)
+    let status = await WorkingStatusResolver(router: router).resolve(location: location)
     XCTAssertNil(status.dirty)
     XCTAssertEqual(status.failure, .unavailable)
   }

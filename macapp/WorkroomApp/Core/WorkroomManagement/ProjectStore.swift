@@ -2,16 +2,16 @@ import Foundation
 import WorkroomDomain
 import WorkroomVCS
 
-/// Shared, app-wide project data: the project list plus everything derived from it that is
-/// identical across windows — root branch labels, the VCS/CI status cache, GitHub-CLI
-/// availability, and the in-flight project busy set. Extracted from `AppStore` (issue #70) so that
-/// multiple per-window `AppStore`s can share one project list while each keeps its own selection,
-/// terminals, splits, history, and run state.
+/// Shared, app-wide project data: the project list plus what is identical across windows about it —
+/// its creates and deletes in flight and the saved session. Extracted from `AppStore` (issue #70) so
+/// that multiple per-window `AppStore`s can share one project list while each keeps its own
+/// selection, terminals, splits, history, and run state.
 ///
 /// Views take it from the environment and the store reaches it as `projectStore`. `AppStore` still
 /// forwards the create and delete sets, which Observation tracks through it. Each project's run
-/// config is the app's `RunCommands`'. List requests are ordered here across windows; each `AppStore` reconciles its
-/// own window after an accepted read.
+/// config is the app's `RunCommands`', and its VCS status the app's `VCSStatusService`'. List
+/// requests are ordered here across windows; each `AppStore` reconciles its own window after an
+/// accepted read.
 @MainActor
 @Observable
 // `ObservableObject` only so views can take it as an `@EnvironmentObject`, as they take the store;
@@ -76,55 +76,6 @@ final class ProjectStore: ObservableObject {
     return true
   }
 
-  /// Per-project resolved root branch labels, hydrated asynchronously after each load (see
-  /// `AppStore.resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
-  ///
-  /// This and the other status collections are computed over private stored ones so that a write
-  /// which changes nothing notifies no one: `@Observable` skips an equal whole-value assignment, but
-  /// an in-place write (`workroomStatuses[sid] = s`, `insert(_:)`) to a stored property always
-  /// notifies. The setter makes every write the first kind, as `AppStore`'s forwarding proxies once
-  /// did; a status sweep that finds nothing new must not redraw the sidebar.
-  var rootRefs: [Project.ID: RootRef] {
-    get { storedRootRefs }
-    set { storedRootRefs = newValue }
-  }
-  private var storedRootRefs: [Project.ID: RootRef] = [:]
-
-  /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes panel
-  /// (issue #24), keyed by `SidebarID`. Resolved app-side, best-effort/"last checked". Shared so two
-  /// windows showing the same workroom report a consistent badge and don't double the probes.
-  /// Deliberately NOT persisted. Hydrated after each load, on selection, and on focus; see
-  /// `AppStore+WorkroomStatus.swift`.
-  var workroomStatuses: [SidebarID: WorkroomStatus] {
-    get { storedWorkroomStatuses }
-    set { storedWorkroomStatuses = newValue }
-  }
-  private var storedWorkroomStatuses: [SidebarID: WorkroomStatus] = [:]
-
-  /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
-  /// no warning flashes before the first check; refreshed by `AppStore.refreshGitHubCLI`. Drives
-  /// the Pull Request section's warning and gates the `gh` probes when not available.
-  var githubCLIStatus: GitHubCLIStatus = .available
-
-  /// Owns the `gh auth status` probe: its freshness clock AND its single-flight, so N windows share
-  /// one `gh` and the staleness check can't interleave with the write the way a bare timestamp on
-  /// this class did. `githubCLIStatus` above is the SwiftUI-observable mirror of what it decided.
-  ///
-  /// A `var` purely so tests can swap in an instance with millisecond TTLs; production never
-  /// reassigns it.
-  var ghAuthCache = GitHubAuthCache()
-  /// Commit-keyed CI facts shared by windows, with the same five-minute lifetime as the sweep.
-  let ciResultCache = GitHubCIResultCache()
-
-  /// Owns the `git --version` probe: its freshness clock AND its single-flight, so N windows share
-  /// one probe rather than racing two. `vcsToolReport` on `AppStore` mirrors what
-  /// this decided (per-window, since `apply(projects)` runs per-window even though the underlying
-  /// facts are machine-wide).
-  ///
-  /// A `var` for the same reason `ghAuthCache` is: tests swap in an instance with millisecond TTLs;
-  /// production never reassigns it.
-  var vcsToolVersionCache = VCSToolVersionCache()
-
   /// Target ids of workrooms whose create process is still running — from the moment the workroom
   /// has a name until the CLI or the provisioning returns (issue #116, #483). A workroom here must not
   /// be deleted: its setup is running against it. Shared across windows so a delete from ANY window
@@ -143,47 +94,6 @@ final class ProjectStore: ObservableObject {
   /// Creates waiting on a provider's setup, one entry per provider, in the order they began waiting
   /// (R2, #483). Only the first has its sheet up, one sheet at a time across every window.
   var remoteSetupWaits: [RemoteSetupWait] = []
-
-  /// Sidebar rows with a commit in flight, for the per-row button state.
-  ///
-  /// Shared across windows for the reason `creatingWorkrooms` is: `AppStore` is per WINDOW, but
-  /// `RepositoryWriteGate` and the `index.lock` contention it exists to prevent are per PROCESS. Held on
-  /// the window's own store, a second window's 15s sweep, FSEvents lane and Refresh button all saw an
-  /// empty set and kept probing a repo mid-write.
-  var committingTargets: Set<SidebarID> {
-    get { storedCommittingTargets }
-    set { storedCommittingTargets = newValue }
-  }
-  private var storedCommittingTargets: Set<SidebarID> = []
-
-  /// How many commits are in flight against each project root, which is what the read lanes actually
-  /// have to stand clear of.
-  ///
-  /// Keyed by project root, not by row: the gate serializes on the project root, and a git worktree's
-  /// index and refs live in the MAIN repo — so a commit in workroom A contends with a status probe of
-  /// workroom B of the same project, which a per-row check waved straight through. Counted rather than
-  /// a `Set` because the app's premise is N parallel workrooms, so two of one project can legitimately
-  /// commit at once and the first to finish must not clear the other's suppression.
-  var committingProjectRoots: [RepositoryLocation: Int] {
-    get { storedCommittingProjectRoots }
-    set { storedCommittingProjectRoots = newValue }
-  }
-  private var storedCommittingProjectRoots: [RepositoryLocation: Int] = [:]
-
-  /// How many writes (commit, fetch, push, or pull) are in flight against each project root,
-  /// across every window. Checked by the write ACTIONS THEMSELVES before starting — not just
-  /// by read lanes — so a second write on the same project root is refused outright rather than
-  /// queuing into `RepositoryWriteGate` and possibly racing a live one past its wedge-detection
-  /// ceiling (VCS-foundation eng-review: the gate's `maxChainWait` self-heal is far shorter than
-  /// fetch/pull's own timeouts, so two windows could otherwise both queue a write and run them
-  /// concurrently on the shared `.git`). Distinct from `committingProjectRoots`, which exists for
-  /// a different reason (suppressing READ lanes during a commit specifically) and keeps its own
-  /// narrower role unchanged; this counter is the umbrella that all four write kinds share.
-  var writingProjectRoots: [RepositoryLocation: Int] {
-    get { storedWritingProjectRoots }
-    set { storedWritingProjectRoots = newValue }
-  }
-  private var storedWritingProjectRoots: [RepositoryLocation: Int] = [:]
 
   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of

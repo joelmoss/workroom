@@ -212,7 +212,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   // MARK: The dirty-tree confirmation gate
 
   private func markDirty(_ store: AppStore, _ sid: SidebarID) {
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: true, lastChecked: Date())
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: true, lastChecked: Date())
   }
 
   /// **The gate must live in the STORE, not the toolbar.** It used to sit in `VCSToolbar.perform`, so the
@@ -240,7 +240,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     let (store, writer) = makeStore(visible: true, section: .changes)
     let sid = SidebarID.workroom(project: "/p", name: "feat")
     await select(store, sid)
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false, lastChecked: Date())
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, lastChecked: Date())
 
     store.performRemoteAction(.pull)
     await store.remoteState.awaitCurrentLoad()

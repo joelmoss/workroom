@@ -24,8 +24,8 @@ struct RoomCommandState: Equatable {
         canCommit: false, pullRequest: nil, canChangeDraft: false, canRevealInFinder: canReveal)
     }
     let pr =
-      store.projectStore.githubCLIStatus == .available
-      ? store.projectStore.workroomStatuses[sid]?.pr : nil
+      store.vcsStatus.githubCLIStatus == .available
+      ? store.vcsStatus.workroomStatuses[sid]?.pr : nil
     let draftAction = pr.flatMap {
       PRAction.available(for: $0).first { $0 == .markReady || $0 == .convertToDraft }
     }

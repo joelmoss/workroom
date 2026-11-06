@@ -68,14 +68,14 @@ final class AppStoreDeleteProjectTests: XCTestCase {
   func testRemoveProjectLocallyDropsStatuses() {
     let p = project("/a", workrooms: ["feat"])
     let store = makeStore([p])
-    store.projectStore.workroomStatuses[.root(project: "/a")] = .unresolved
-    store.projectStore.workroomStatuses[.workroom(project: "/a", name: "feat")] = .unresolved
+    store.vcsStatus.workroomStatuses[.root(project: "/a")] = .unresolved
+    store.vcsStatus.workroomStatuses[.workroom(project: "/a", name: "feat")] = .unresolved
 
     store.removeProjectLocally(p)
 
-    XCTAssertNil(store.projectStore.workroomStatuses[.root(project: "/a")], "root status must drop")
+    XCTAssertNil(store.vcsStatus.workroomStatuses[.root(project: "/a")], "root status must drop")
     XCTAssertNil(
-      store.projectStore.workroomStatuses[.workroom(project: "/a", name: "feat")],
+      store.vcsStatus.workroomStatuses[.workroom(project: "/a", name: "feat")],
       "workroom status must drop")
   }
 

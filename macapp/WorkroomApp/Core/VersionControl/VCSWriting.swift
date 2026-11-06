@@ -144,7 +144,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// there is no picker to fill, so this only ever answers "which remotes exist" and "does my branch
   /// have a counterpart".
   static func gitRemoteRefsArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening + [
+    GitRepositoryProbe.gitHardening + [
       "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "refs/remotes",
     ]
   }
@@ -157,7 +157,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// perfectly well. Config is the authority for "is there a remote"; the refs still answer "does my
   /// branch have a counterpart".
   static func gitRemoteListArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening + ["remote"]
+    GitRepositoryProbe.gitHardening + ["remote"]
   }
 
   /// Exact two-way divergence, independent of the user's `push.default`.
@@ -172,7 +172,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `A...B` with `--left-right --count` prints `<only in A>\t<only in B>`, so with `A = HEAD` the
   /// left number is ahead and the right is behind.
   static func gitCountsArgs(remote: String, branch: String) -> [String] {
-    WorkroomStatusResolver.gitHardening + [
+    GitRepositoryProbe.gitHardening + [
       "rev-list", "--left-right", "--count", "HEAD...refs/remotes/\(remote)/\(branch)",
     ]
   }
@@ -182,7 +182,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// either — `FETCH_HEAD` is exactly what `gitLastFetch` reads.
   /// `--` closes the option list. See `gitPushArgs` for why every builder in this file does that.
   static func gitFetchArgs(remote: String) -> [String] {
-    WorkroomStatusResolver.gitHardening + ["fetch", "--", remote]
+    GitRepositoryProbe.gitHardening + ["fetch", "--", remote]
   }
 
   /// `--set-upstream` only when there is no counterpart yet; passing it on every push would rewrite
@@ -209,7 +209,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// and it also pins the push to this one ref regardless of `push.default`. `--` alone would fix THIS
   /// builder, but not the pull one (see `gitPullArgs`), so both use refspecs for one rule.
   static func gitPushArgs(branch: String, remote: String, setUpstream: Bool) -> [String] {
-    WorkroomStatusResolver.gitHardening + ["push", "--porcelain"]
+    GitRepositoryProbe.gitHardening + ["push", "--porcelain"]
       + (setUpstream ? ["--set-upstream"] : [])
       + ["--", remote, "refs/heads/\(branch):refs/heads/\(branch)"]
   }
@@ -240,12 +240,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `fetch -- <remote> <branch>`. So the operand boundary is per-subcommand and cannot be reasoned about
   /// from `--` alone; a `refs/heads/` prefix can never look like an option, so that is the rule used.
   static func gitPullArgs(remote: String, branch: String) -> [String] {
-    WorkroomStatusResolver.gitHardening
+    GitRepositoryProbe.gitHardening
       + ["pull", "--rebase", "--autostash", "--", remote, "refs/heads/\(branch)"]
   }
 
   static func gitAbortRebaseArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening + ["rebase", "--abort"]
+    GitRepositoryProbe.gitHardening + ["rebase", "--abort"]
   }
 
   // MARK: - git commit argument builders
@@ -315,7 +315,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `gitUnstageArgs` when the commit that follows it fails. Tracked files are never staged — see
   /// `gitCommitOnlyArgs`.
   static func gitIntentToAddArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening
+    GitRepositoryProbe.gitHardening
       + ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"]
   }
 
@@ -325,7 +325,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// untracked, exactly as the user left it. `--ignore-unmatch` so a path something else removed in
   /// the meantime cannot turn cleanup into a second error on top of the one being reported.
   static func gitUnstageArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening
+    GitRepositoryProbe.gitHardening
       + [
         "rm", "--cached", "--quiet", "--ignore-unmatch", "--pathspec-from-file=-",
         "--pathspec-file-nul",
@@ -345,7 +345,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// argument. Note `--cleanup` still applies: git strips trailing whitespace and collapses runs of
   /// blank lines, so what is recorded can differ slightly from what was typed.
   static func gitCommitOnlyArgs(message: String) -> [String] {
-    WorkroomStatusResolver.gitHardening
+    GitRepositoryProbe.gitHardening
       + ["commit", "--only", "--pathspec-from-file=-", "--pathspec-file-nul", "-m", message]
   }
 
@@ -356,7 +356,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// entire premise is that you choose what gets recorded, an Amend that silently commits whatever
   /// happens to be staged is the same defect wearing a different verb.
   static func gitAmendMessageArgs(message: String) -> [String] {
-    WorkroomStatusResolver.gitHardening + ["commit", "--amend", "--only", "-m", message]
+    GitRepositoryProbe.gitHardening + ["commit", "--amend", "--only", "-m", message]
   }
 
   /// Porcelain status for the staged-content guard.
@@ -367,7 +367,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// paths as argv is the `E2BIG` problem the commit path avoids. One unfiltered read plus an
   /// in-memory filter is cheaper and cannot fail on an odd name.
   static func gitStatusPorcelainArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening + ["status", "--porcelain", "-z"]
+    GitRepositoryProbe.gitHardening + ["status", "--porcelain", "-z"]
   }
 
   /// Which of `paths` hold staged content that committing would DISCARD.
@@ -410,12 +410,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// Used to tell "the commit didn't happen" from "the commit happened and something after it
   /// failed" — see `VCSCommitResult.committedThenFailed`.
   static func gitHeadArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening + ["rev-parse", "--verify", "HEAD"]
+    GitRepositoryProbe.gitHardening + ["rev-parse", "--verify", "HEAD"]
   }
 
   /// Exits 1 with no output only when HEAD names no commit yet; any failed read exits 128.
   static func gitUnbornHeadArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening + ["rev-parse", "--verify", "-q", "HEAD"]
+    GitRepositoryProbe.gitHardening + ["rev-parse", "--verify", "-q", "HEAD"]
   }
 
   /// The subject of the commit an amend would rewrite.
@@ -425,7 +425,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// destroys before the click, not leave it recoverable only from the reflog. `%s` rather than `%B`
   /// deliberately — this is a label, and a multi-line body would wrap the dialog.
   static func gitHeadSubjectArgs() -> [String] {
-    WorkroomStatusResolver.gitHardening + ["log", "-1", "--no-color", "--pretty=format:%h %s"]
+    GitRepositoryProbe.gitHardening + ["log", "-1", "--no-color", "--pretty=format:%h %s"]
   }
 
   // MARK: - Parsers

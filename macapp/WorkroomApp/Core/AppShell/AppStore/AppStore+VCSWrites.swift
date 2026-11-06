@@ -4,22 +4,24 @@ import WorkroomVCS
 
 /// The VCS write actions the status inspector offers: PR actions and merges through `gh`, and
 /// commits with their preflight. Moved out of `AppStore+WorkroomStatus.swift` as is, so that file
-/// only reads status. Coupling points: these write into `workroomStatuses` (optimistically, then
-/// from a fresh probe) and use `selectedStatusWorkItem(for:)`, `refreshStatus(for:)` and the
-/// `beginWrite`/`endWrite` bookkeeping, which stay with the status code.
+/// only reads status. Coupling points: these write into `vcsStatus.workroomStatuses`
+/// (optimistically, then from a fresh probe) and use its `selectedStatusWorkItem(for:)` and
+/// `beginWrite`/`endWrite` bookkeeping, and this window's `refreshStatus(for:)`.
 extension AppStore {
   /// Whether `sid` has anything a commit could record, and none is in flight: the Changes header's
   /// commit button and Room ▸ Commit… both ask this.
   func canCommit(_ sid: SidebarID?) -> Bool {
-    guard let sid, sid.isStatusable, let status = projectStore.workroomStatuses[sid],
-      !isCommitting(sid)
+    guard let sid, sid.isStatusable, let status = vcsStatus.workroomStatuses[sid],
+      !vcsStatus.isCommitting(sid)
     else { return false }
     return !(status.isClean || status.isUnknown)
   }
 
   /// Open the commit dialog for `sid`, when it has something to commit.
   func requestCommit(_ sid: SidebarID?) {
-    guard let sid, canCommit(sid), selectedStatusWorkItem(for: sid) != nil else { return }
+    guard let sid, canCommit(sid), vcsStatus.selectedStatusWorkItem(for: sid) != nil else {
+      return
+    }
     modals.pendingCommit = PendingCommit(sid: sid)
   }
 
@@ -28,11 +30,13 @@ extension AppStore {
   /// status instead of spawning `gh`, so the actions menu is exercisable hermetically. Delegates the
   /// whole lifecycle to `performPRWrite`, shared with `performMerge`.
   func performPRAction(_ action: PRAction, number: Int, on sid: SidebarID) {
-    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
     performPRAction(action, number: number, on: item)
   }
 
-  func performPRAction(_ action: PRAction, number: Int, on item: StatusWorkItem) {
+  func performPRAction(
+    _ action: PRAction, number: Int, on item: VCSStatusService.StatusWorkItem
+  ) {
     performPRWrite(
       arguments: action.arguments(number: number), on: item,
       applyOptimistic: { self.applyOptimisticPRAction(action, on: $0) },
@@ -49,7 +53,7 @@ extension AppStore {
   /// Fixture mode applies the optimistic update and stops there, before `prActionInFlight` flips —
   /// fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
   private func performPRWrite(
-    arguments: [String], on item: StatusWorkItem,
+    arguments: [String], on item: VCSStatusService.StatusWorkItem,
     applyOptimistic: (SidebarID) -> Void, errorTitle: String
   ) {
     let sid = item.sid
@@ -60,14 +64,14 @@ extension AppStore {
       return
     }
     // Seeded statuses have no `gh` behind them: the optimistic update below *is* the result.
-    guard probesRepositories else { return applyOptimistic(sid) }
+    guard vcsStatus.probesRepositories else { return applyOptimistic(sid) }
     let github: RepositoryGitHub
     do {
       guard let location = item.location else {
         throw RepositoryRoutingError.registrationRequired
       }
       github = try RepositoryRouter.shared.registeredGitHub(
-        for: location, resolver: statusResolver)
+        for: location, resolver: vcsStatus.statusResolver)
     } catch {
       self.modals.errorTitle = errorTitle
       self.modals.errorMessage = error.localizedDescription
@@ -76,22 +80,22 @@ extension AppStore {
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
     // "the click did nothing". Keep the prior PR to restore if `gh` fails.
-    let priorPR = projectStore.workroomStatuses[sid]?.pr
+    let priorPR = vcsStatus.workroomStatuses[sid]?.pr
     applyOptimistic(sid)
     prActionInFlight = true
     Task { [weak self] in
       let r = await github.run(arguments)
       guard let self else { return }
       self.prActionInFlight = false
-      guard self.selectedStatusWorkItem(for: sid) == item else { return }
+      guard self.vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
       if r.ok {
         // Re-probe to replace the optimistic state with GitHub's authoritative one.
         self.scheduleSelectedStatusRefresh()
       } else {
         // The command failed — undo the optimistic flip so the UI doesn't lie, then surface stderr.
-        if var s = self.projectStore.workroomStatuses[sid] {
+        if var s = self.vcsStatus.workroomStatuses[sid] {
           s.pr = priorPR
-          self.projectStore.workroomStatuses[sid] = s
+          self.vcsStatus.workroomStatuses[sid] = s
         }
         self.modals.errorTitle = errorTitle
         let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -113,7 +117,7 @@ extension AppStore {
     _ request: VCSCommitRequest, on sid: SidebarID,
     completion: @escaping (VCSCommitResult) -> Void
   ) {
-    guard let item = selectedStatusWorkItem(for: sid) else {
+    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
       return completion(.failed(.other("That workroom is no longer available.")))
     }
     // The services' local writer, when they have one (the fixture's `FixtureVCSWriter`, since its
@@ -144,30 +148,30 @@ extension AppStore {
       // Refuse outright rather than queue behind another write (commit/fetch/push/pull, this window
       // or another) on the same project root — see `isWritingProject`'s doc for why queuing into
       // `RepositoryWriteGate` here would risk racing it past the gate's own wedge-detection ceiling.
-      guard !isWritingProject(root) else {
+      guard !self.vcsStatus.isWritingProject(root) else {
         return completion(.failed(.locked(nil)))
       }
-      self.projectStore.committingTargets.insert(sid)
-      self.projectStore.committingProjectRoots[root, default: 0] += 1
-      beginWrite(projectRoot: root)
+      self.vcsStatus.committingTargets.insert(sid)
+      self.vcsStatus.committingProjectRoots[root, default: 0] += 1
+      self.vcsStatus.beginWrite(projectRoot: root)
       // Captured STRONGLY, not through `self`: `committingProjectRoots`/`writingProjectRoots` live on
-      // this shared, cross-window store, and their release below must run even if THIS window's
+      // the app-wide `VCSStatusService`, and their release below must run even if THIS window's
       // `AppStore` is deallocated before the write finishes (e.g. the window is closed mid-commit). A
       // release gated on `self` staying alive would leak both counters — `writingProjectRoots`
       // permanently, since nothing else ever decrements it, refusing every future write for this
       // project, in every window, until the app restarts.
-      let projectStore = self.projectStore
+      let vcsStatus = self.vcsStatus
       let result = await commit()
       // Decremented, never cleared: a sibling workroom of the same project can be committing too, and
       // dropping the key would re-open every read lane against a write still in progress.
-      let remainingCommits = (projectStore.committingProjectRoots[root] ?? 1) - 1
+      let remainingCommits = (vcsStatus.committingProjectRoots[root] ?? 1) - 1
       if remainingCommits > 0 {
-        projectStore.committingProjectRoots[root] = remainingCommits
+        vcsStatus.committingProjectRoots[root] = remainingCommits
       } else {
-        projectStore.committingProjectRoots.removeValue(forKey: root)
+        vcsStatus.committingProjectRoots.removeValue(forKey: root)
       }
-      Self.releaseWrite(projectRoot: root, in: projectStore)
-      self.projectStore.committingTargets.remove(sid)
+      vcsStatus.endWrite(projectRoot: root)
+      self.vcsStatus.committingTargets.remove(sid)
       switch result {
       case .ok, .committedThenFailed:
         // Refresh by the CAPTURED sid: the watcher lane is suppressed while the commit runs
@@ -194,8 +198,8 @@ extension AppStore {
   func stagedContentAtRisk(
     on sid: SidebarID, files: [ChangedFile], completion: @escaping (Result<[String], Error>) -> Void
   ) {
-    guard probesRepositories else { return completion(.success([])) }
-    guard let item = selectedStatusWorkItem(for: sid) else {
+    guard vcsStatus.probesRepositories else { return completion(.success([])) }
+    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
       return completion(.failure(RepositoryRoutingError.registrationRequired))
     }
     Task {
@@ -219,7 +223,7 @@ extension AppStore {
   func commitPreflight(
     on sid: SidebarID, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
   ) {
-    guard let item = selectedStatusWorkItem(for: sid) else {
+    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
       return completion(.failure(RepositoryRoutingError.registrationRequired))
     }
     Task {
@@ -235,7 +239,7 @@ extension AppStore {
   /// immediately on click, before the command returns. The real path restores the prior PR if `gh`
   /// fails and re-probes on success; fixture mode keeps this as the final result.
   private func applyOptimisticPRAction(_ action: PRAction, on sid: SidebarID) {
-    guard var s = projectStore.workroomStatuses[sid], let pr = s.pr else { return }
+    guard var s = vcsStatus.workroomStatuses[sid], let pr = s.pr else { return }
     let state: PullRequestInfo.State
     let draft: Bool
     switch action {
@@ -258,7 +262,7 @@ extension AppStore {
       number: pr.number, title: pr.title, state: state, isDraft: draft, url: pr.url,
       reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
       mergeable: pr.mergeable, mergeState: pr.mergeState)
-    projectStore.workroomStatuses[sid] = s
+    vcsStatus.workroomStatuses[sid] = s
   }
 
   /// Merge the selected workroom's PR (issue #88) with `method`: shell to `gh pr merge`, refresh on
@@ -267,7 +271,7 @@ extension AppStore {
   /// strategy is a parameter, so it's kept separate from the state-only `PRAction` verbs. In fixture
   /// mode it optimistically flips the PR to merged instead of spawning `gh`.
   func performMerge(_ method: PRMergeMethod, number: Int, on sid: SidebarID) {
-    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
     performPRWrite(
       arguments: method.arguments(number: number), on: item,
       applyOptimistic: { self.applyOptimisticMerge(on: $0) },
@@ -278,11 +282,11 @@ extension AppStore {
   /// disappears the instant the user confirms. `mergeable` is cleared so `canMerge` is false too.
   /// The real path restores the prior PR if `gh` fails and re-probes on success.
   private func applyOptimisticMerge(on sid: SidebarID) {
-    guard var s = projectStore.workroomStatuses[sid], let pr = s.pr else { return }
+    guard var s = vcsStatus.workroomStatuses[sid], let pr = s.pr else { return }
     s.pr = PullRequestInfo(
       number: pr.number, title: pr.title, state: .merged, isDraft: false, url: pr.url,
       reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
       mergeable: false, mergeState: pr.mergeState)
-    projectStore.workroomStatuses[sid] = s
+    vcsStatus.workroomStatuses[sid] = s
   }
 }

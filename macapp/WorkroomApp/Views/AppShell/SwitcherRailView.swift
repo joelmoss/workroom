@@ -140,7 +140,7 @@ extension SwitcherCard {
   /// state. Conflicts win — they are the one state you want to notice from a switcher.
   @MainActor
   static func vcsTail(for sid: SidebarID, in store: AppStore) -> String? {
-    guard let status = store.projectStore.workroomStatuses[sid] else { return nil }
+    guard let status = store.vcsStatus.workroomStatuses[sid] else { return nil }
     if status.conflicted { return "conflicts" }
     if let added = status.insertions, let removed = status.deletions, added + removed > 0 {
       return "+\(added) −\(removed)"

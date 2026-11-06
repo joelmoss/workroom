@@ -156,7 +156,7 @@ enum FileListing {
   /// repository-configured `core.fsmonitor` command; see `gitHardening`.
   static let command: (executable: String, args: [String]) = (
     "git",
-    WorkroomStatusResolver.gitHardening + [
+    GitRepositoryProbe.gitHardening + [
       "ls-files", "--cached", "--others", "--exclude-standard", "-z",
     ]
   )

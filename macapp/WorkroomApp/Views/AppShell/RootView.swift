@@ -97,6 +97,7 @@ struct RootView: View {
     .environmentObject(runCommand)
     .environmentObject(runCommands)
     .environmentObject(store.projectStore)
+    .environmentObject(store.vcsStatus)
     .environmentObject(notifications)
     .environmentObject(terminals)
     .environmentObject(updater)
@@ -370,7 +371,7 @@ struct RootView: View {
       .sheet(item: $modals.pendingCommit) { pending in
         CommitSheet(pending: pending, onDismiss: { modals.pendingCommit = nil })
           .environmentObject(store)
-          .environmentObject(store.projectStore)
+          .environmentObject(store.vcsStatus)
       }
       // A first create at a remote provider, held until the user's account there is ready.
       // A sheet dismissed any other way than its buttons cancels, so no create waits for good.

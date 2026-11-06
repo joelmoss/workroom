@@ -244,8 +244,8 @@ public struct CICheck: Equatable, Sendable, Identifiable {
 /// only whether one is set (the Changes panel's "Checking…", the PR panel's loaded markers). So a
 /// probe that changed nothing on screen yields an equal status, and the `@Observable` store stores an
 /// equal value without notifying: the fresh clocks are kept and nothing redraws. That needs every
-/// status write to be a whole-value set, as `AppStore.workroomStatuses`'s proxy makes it; an in-place
-/// subscript write on the store itself would notify regardless.
+/// status write to be a whole-value set, as `VCSStatusService.workroomStatuses`'s computed setter
+/// makes it; an in-place subscript write on the store itself would notify regardless.
 @propertyWrapper
 public struct PresenceEquatable<Value: Sendable>: Equatable, Sendable {
   public var wrappedValue: Value?
@@ -295,8 +295,8 @@ public struct WorkroomStatus: Equatable, Sendable {
   public var checks: [CICheck]?
   @PresenceEquatable public var lastChecked: Date?
   /// When the local read behind these values FINISHED, stamped by
-  /// `WorkroomStatusResolver.resolve(location:)`. Five independent lanes probe local status (see
-  /// `AppStore+WorkroomStatus`), none ordered against the others, so a slow probe can merge after a
+  /// `WorkingStatusResolver.resolve(location:)`. Five independent lanes probe local status (see
+  /// `VCSStatusService`), none ordered against the others, so a slow probe can merge after a
   /// faster one that read the tree LATER — and `lastChecked` cannot tell those apart, because it
   /// records the landing, not the read. This is what `mergeLocalStatus` compares to refuse a result
   /// stamped earlier than the one it already holds. Local-probe fields only; the CI/PR stages keep

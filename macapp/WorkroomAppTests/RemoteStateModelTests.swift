@@ -326,7 +326,7 @@ final class RemoteStateModelTests: XCTestCase {
 
   /// `writeDidStart`/`writeDidFinish` must bracket the actual write exactly once each, with the
   /// project root the action ran against — this is what lets the store maintain a per-project
-  /// write-in-flight count that `canStartWrite` (wired to `AppStore.isWritingProject`) reads.
+  /// write-in-flight count that `canStartWrite` (wired to `VCSStatusService.isWritingProject`) reads.
   func testWriteStartAndFinishBracketASuccessfulAction() async {
     let writer = StubWriter(state: .state(state(ahead: 1)))
     let m = model(writer, ttl: 0)

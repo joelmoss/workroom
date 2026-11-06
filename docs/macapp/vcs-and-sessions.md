@@ -59,8 +59,12 @@ files are the only ones in the app touching raw libgit2:
 **Read surface & routing.** `Core/VersionControl/RepositoryServices.swift` defines the context-bound `VCSProviding`
 protocol. `RepositoryRouter` captures the shared ownership for a validated host/path identity;
 native engines implement `LocalVCSProviding` behind its local adapter, and `GitProvider` wraps
-SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — no CLI text
-parsing. Reads never take a repository lock and are not gated.
+SwiftGitX. `WorkingStatusResolver` and `BranchResolver` read through this layer — no CLI text
+parsing. Reads never take a repository lock and are not gated. The exceptions run `git` themselves
+and live in one place, `GitRepositoryProbe`: a checkout's origin and remotes, whether origin has a
+branch, and the branch and commit a local CI probe keys off. `gh` runs in `GitHubStatusResolver`.
+The app-wide `VCSStatusService` holds every workroom's status and runs the sweep; each window keeps
+only the probes that follow its selection.
 
 **Writes are serialized per project.** git worktrees of one project share the backing `.git`, so a
 commit in one workroom and a fetch or pull in another contend for the same `index.lock` /

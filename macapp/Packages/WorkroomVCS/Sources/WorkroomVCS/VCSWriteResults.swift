@@ -18,7 +18,7 @@ public enum VCSRemoteAction: String, Equatable, Sendable, CaseIterable {
 /// Why a remote read or action failed.
 ///
 /// Deliberately NOT folded into `VCSError`: that enum is the backend-*read* taxonomy
-/// (`lockContention`/`staleSnapshot`/`partialData`/…) and `WorkroomStatusResolver.failure(for:)`
+/// (`lockContention`/`staleSnapshot`/`partialData`/…) and `WorkingStatusResolver.failure(for:)`
 /// switches over it exhaustively to choose a sidebar badge. `.authRequired` has no sidebar badge and
 /// no sensible answer there, so adding it would force a meaningless decision in a function that
 /// currently has a principled one for every case. Same reasoning that put `CIResolution`/`PRResolution`

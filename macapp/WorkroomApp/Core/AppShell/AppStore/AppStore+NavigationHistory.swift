@@ -141,7 +141,7 @@ extension AppStore {
       // A recorded payload carries the change kind the file had when it was recorded, so step 3 writes a
       // stale one back. Settle it from live status, through the same path the sweep uses — replay is not
       // a special case, it just arrives at an already-refreshed tab a moment sooner.
-      refreshOpenDiffChangeKinds(for: loc.target, status: projectStore.workroomStatuses[loc.target])
+      refreshOpenDiffChangeKinds(for: loc.target, status: vcsStatus.workroomStatuses[loc.target])
     }
   }
 

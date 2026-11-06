@@ -52,7 +52,7 @@ enum VCSToolVersions {
     /// `.unknown` passes on purpose: a probe that timed out or printed something we couldn't parse is
     /// not evidence of an old tool, and disabling a working feature on a failed *guess* is worse than
     /// letting the command itself report a real error. Same never-cry-wolf rule
-    /// `WorkroomStatusResolver.classifyGitHubCLI` follows for `gh`.
+    /// `GitHubStatusResolver.classifyGitHubCLI` follows for `gh`.
     static func isUsable(_ status: Status) -> Bool {
       switch status {
       case .ok, .unknown: return true

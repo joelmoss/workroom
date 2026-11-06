@@ -100,21 +100,21 @@ final class GitHubCIResultCacheTests: XCTestCase {
   }
 
   @MainActor
-  func testWindowsShareFactsOnlyWithinTheirProjectStore() async {
-    let shared = ProjectStore()
+  func testWindowsShareFactsOnlyWithinTheirVCSStatusService() async {
+    let shared = VCSStatusService(projectStore: ProjectStore())
     let probe = CICommandProbe()
-    let first = AppStore(projectStore: shared)
-    let second = AppStore(projectStore: shared)
+    let first = AppStore(vcsStatus: shared)
+    let second = AppStore(vcsStatus: shared)
     let isolated = AppStore()
     for store in [first, second, isolated] {
-      store.statusResolver = WorkroomStatusResolver(
-        runner: probe, ciCache: store.statusResolver.ciCache)
+      store.vcsStatus.statusResolver = WorkroomStatusResolver(
+        runner: probe, ciCache: store.vcsStatus.statusResolver.gitHub.ciCache)
     }
-    _ = await first.statusResolver.resolveCI(repo: repo, commit: "1234567")
-    _ = await second.statusResolver.resolveCI(repo: repo, commit: "1234567")
+    _ = await first.vcsStatus.statusResolver.gitHub.resolveCI(repo: repo, commit: "1234567")
+    _ = await second.vcsStatus.statusResolver.gitHub.resolveCI(repo: repo, commit: "1234567")
     let sharedCalls = await probe.calls
     XCTAssertEqual(sharedCalls, 1, "windows must reuse the shared ProjectStore's CI fact")
-    _ = await isolated.statusResolver.resolveCI(repo: repo, commit: "1234567")
+    _ = await isolated.vcsStatus.statusResolver.gitHub.resolveCI(repo: repo, commit: "1234567")
     let isolatedCalls = await probe.calls
     XCTAssertEqual(isolatedCalls, 2, "an isolated store must not inherit another store's cache")
   }

@@ -48,7 +48,7 @@ final class VCSWritingTests: XCTestCase {
       CLIVCSWriter.gitAbortRebaseArgs(),
     ] {
       XCTAssertEqual(
-        Array(args.prefix(2)), WorkroomStatusResolver.gitHardening,
+        Array(args.prefix(2)), GitRepositoryProbe.gitHardening,
         "every git invocation must be hardened: \(args)")
     }
   }
@@ -796,7 +796,7 @@ final class VCSWritingTests: XCTestCase {
   /// reverse a change they never made.
   func testUnstageArgsRemoveOnlyTheIndexEntryNotTheFile() {
     let args = CLIVCSWriter.gitUnstageArgs()
-    XCTAssertEqual(Array(args.prefix(2)), WorkroomStatusResolver.gitHardening)
+    XCTAssertEqual(Array(args.prefix(2)), GitRepositoryProbe.gitHardening)
     XCTAssertTrue(args.contains("rm"))
     XCTAssertTrue(args.contains("--cached"), "the file itself must survive; only the entry goes")
     XCTAssertTrue(
@@ -810,7 +810,7 @@ final class VCSWritingTests: XCTestCase {
   /// wrap the dialog. Read-only, hardened, and `--no-color` so the label can never carry escapes.
   func testHeadSubjectReadIsAOneLineLabel() {
     let args = CLIVCSWriter.gitHeadSubjectArgs()
-    XCTAssertEqual(Array(args.prefix(2)), WorkroomStatusResolver.gitHardening)
+    XCTAssertEqual(Array(args.prefix(2)), GitRepositoryProbe.gitHardening)
     XCTAssertTrue(args.contains("-1"), "one commit: the one amend would rewrite")
     XCTAssertTrue(args.contains("--pretty=format:%h %s"))
     XCTAssertTrue(args.contains("--no-color"), "a label must not carry terminal escapes")

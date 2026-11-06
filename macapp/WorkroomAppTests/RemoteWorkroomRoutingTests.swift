@@ -153,7 +153,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
+    let status = await WorkingStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertEqual(status.failure, .asleep)
     XCTAssertNil(status.dirty)
@@ -172,7 +172,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
+    let status = await WorkingStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertNotEqual(status.failure, .asleep)
     XCTAssertNotNil(status.failure)
@@ -188,7 +188,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
+    let status = await WorkingStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertEqual(status.failure, .olderLayout)
     XCTAssertNil(status.dirty)
@@ -239,14 +239,15 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
       RemoteWorkrooms.registrations(store.projectStore.projects))
 
     let item = try XCTUnwrap(
-      store.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "a")))
+      store.vcsStatus.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "a")))
     XCTAssertEqual(item.location, try .remote(host: host, path: path))
     XCTAssertFalse(item.permitsLocalAccess)
     XCTAssertTrue(item.permitsGitHubAccess)
     XCTAssertEqual(item.sharedLocation, item.location)
-    XCTAssertNil(store.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "b")))
+    XCTAssertNil(
+      store.vcsStatus.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "b")))
     XCTAssertEqual(
-      store.statusWorkItems().map(\.sid),
+      store.vcsStatus.statusWorkItems().map(\.sid),
       [.root(project: "/proj"), .workroom(project: "/proj", name: "a")])
   }
 }

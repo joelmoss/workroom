@@ -179,15 +179,15 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     store.projectStore.projects = (0..<8).map { throwawayProject("\($0)") }
 
     let counter = InFlightCounter()
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: MissingToolRunner(), router: countingRouter(counter))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertLessThanOrEqual(
-      counter.peak, AppStore.localConcurrency,
-      "runLocalSweep let more than its cap of \(AppStore.localConcurrency) local probes run at once"
+      counter.peak, VCSStatusService.localConcurrency,
+      "runLocalSweep let more than its cap of \(VCSStatusService.localConcurrency) local probes run at once"
     )
     XCTAssertGreaterThan(
       counter.peak, 1,
@@ -201,7 +201,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   func testAWedgedLocalReadReadsAsTimeout() async throws {
     let project = throwawayProject("wedged")
     let location = try await RepositoryLocation.local(project.path)
-    let resolver = WorkroomStatusResolver(
+    let resolver = WorkingStatusResolver(
       timeout: 0.05, router: countingRouter(InFlightCounter(), delay: 1))
 
     let status = await resolver.resolve(location: location)
@@ -231,19 +231,19 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     // fails_when=resolve(item:) routes a located item through .shared again; why_new=the local-cap test
     // only drives items without a location; seam=none
     let localCounter = InFlightCounter()
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: CountingGHRunner(counter: ghCounter), router: countingRouter(localCounter))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertGreaterThan(
       localCounter.peak, 0,
       "a registered item's status was not read through the resolver's injected router")
 
     XCTAssertLessThanOrEqual(
-      ghCounter.peak, AppStore.ciConcurrency,
-      "runCISweep let more than its cap of \(AppStore.ciConcurrency) CI probes run at once")
+      ghCounter.peak, VCSStatusService.ciConcurrency,
+      "runCISweep let more than its cap of \(VCSStatusService.ciConcurrency) CI probes run at once")
     XCTAssertGreaterThan(
       ghCounter.peak, 1,
       "the fan-out never actually overlapped — this test would pass even against a fully serial "
@@ -275,11 +275,11 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
       try await RepositoryRouter.prepare(store.projectStore.projects))
 
     let runner = LookupCountingRunner()
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: runner, router: countingRouter(InFlightCounter()))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertEqual(runner.lookups, 2, "expected one repository lookup per project")
     XCTAssertEqual(runner.queries.count, 6, "every root and workroom should get a CI probe")
@@ -302,11 +302,11 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     let runner = LookupCountingRunner(
       lookupResult: CommandResult(
         stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true))
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: runner, router: countingRouter(InFlightCounter()))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertEqual(runner.lookups, 1, "a failed lookup was retried by the project's workrooms")
     XCTAssertTrue(runner.queries.isEmpty, "a CI probe ran against an unresolved repository")

@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Workroom
 
-/// Integration tests that exercise `WorkroomStatusResolver` against REAL git repos through the
+/// Integration tests that exercise `WorkingStatusResolver` against REAL git repos through the
 /// REAL `StatusCommandRunner` (no mock). These prove the status reads match what the actual
 /// binaries emit (git 2.54 verified) — the unit tests only cover hand-written fixtures.
 ///
@@ -30,7 +30,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       let router = RepositoryRouter()
       try router.register(
         .init(location: location, sharedLocation: shared))
-      return await WorkroomStatusResolver(router: router).resolve(location: location)
+      return await WorkingStatusResolver(router: router).resolve(location: location)
     } catch {
       XCTFail("\(error)")
       return WorkroomStatus(dirty: nil, failure: .unavailable)

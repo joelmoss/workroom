@@ -48,13 +48,7 @@ private func fail() -> CommandResult {
   CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
 }
 
-final class WorkroomStatusResolverTests: XCTestCase {
-
-  /// An existing directory, so the `.missingPath` guard in `resolve(location:)` passes.
-  private let existing = NSTemporaryDirectory()
-
-  // git status is now read structurally via GitProvider (SwiftGitX); the porcelain-v2 parser is
-  // gone. See WorkroomStatusIntegrationTests.testGitProviderWorkingStatus* for real-repo coverage.
+final class GitHubStatusResolverTests: XCTestCase {
 
   // MARK: - classifyCheckRollup (#76: sidebar CI from GitHub's status-check rollup)
 
@@ -64,32 +58,32 @@ final class WorkroomStatusResolverTests: XCTestCase {
   }
 
   func testCheckRollupPassing() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("SUCCESS")), .state(.passing))
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(rollup("SUCCESS")), .state(.passing))
   }
 
   func testCheckRollupFailing() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("FAILURE")), .state(.failing))
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("ERROR")), .state(.failing))
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(rollup("FAILURE")), .state(.failing))
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(rollup("ERROR")), .state(.failing))
   }
 
   func testCheckRollupRunning() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("PENDING")), .state(.running))
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("EXPECTED")), .state(.running))
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(rollup("PENDING")), .state(.running))
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(rollup("EXPECTED")), .state(.running))
   }
 
   /// No checks on the commit ⇒ a null rollup (or null object) ⇒ .absent (no glyph).
   func testCheckRollupNullIsAbsent() {
     XCTAssertEqual(
-      WorkroomStatusResolver.classifyCheckRollup(
+      GitHubStatusResolver.classifyCheckRollup(
         ok(#"{"data":{"repository":{"object":{"statusCheckRollup":null}}}}"#)), .absent)
     XCTAssertEqual(
-      WorkroomStatusResolver.classifyCheckRollup(
+      GitHubStatusResolver.classifyCheckRollup(
         ok(#"{"data":{"repository":{"object":null}}}"#)), .absent)
   }
 
   /// An unknown/future StatusState renders nothing rather than a misleading glyph.
   func testCheckRollupUnknownStateIsAbsent() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("WAT")), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(rollup("WAT")), .absent)
   }
 
   /// `gh api graphql` returns HTTP 200 (exit 0) with an `errors` payload on a GraphQL-level error —
@@ -97,84 +91,41 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testCheckRollupGraphQLErrorsKeepsPrior() {
     let r = ok(
       #"{"data":{"repository":null},"errors":[{"message":"Could not resolve to a Repository"}]}"#)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(r), .keepPrior)
   }
 
   func testCheckRollupMalformedKeepsPrior() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(ok("not json")), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(ok("not json")), .keepPrior)
   }
 
   func testCheckRollupGhMissingIsAbsent() {
     let r = CommandResult(
       stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(r), .absent)
   }
 
   func testCheckRollupRateLimitKeepsPrior() {
     let r = CommandResult(
       stdout: "", stderr: "API rate limit exceeded", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(r), .keepPrior)
   }
 
   func testCheckRollupServerErrorKeepsPrior() {
     let r = CommandResult(
       stdout: "", stderr: "HTTP 503 Service Unavailable", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(r), .keepPrior)
   }
 
   func testCheckRollupTimeoutKeepsPrior() {
     let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(r), .keepPrior)
   }
 
   func testCheckRollupQueryEmbedsOwnerNameOid() {
-    let q = WorkroomStatusResolver.checkRollupQuery(owner: "octo", name: "repo", oid: "abc123")
+    let q = GitHubStatusResolver.checkRollupQuery(owner: "octo", name: "repo", oid: "abc123")
     XCTAssertTrue(q.contains(#"repository(owner:"octo",name:"repo")"#))
     XCTAssertTrue(q.contains(#"object(oid:"abc123")"#))
     XCTAssertTrue(q.contains("statusCheckRollup{state}"))
-  }
-
-  // MARK: - resolveLocal (end-to-end via the mock)
-
-  func testResolveLocalMissingPath() async {
-    let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("") })
-    let missing = "/definitely/not/here-\(UUID().uuidString)"
-    let s = await r.resolveLocal(path: missing)
-    XCTAssertNil(s.dirty)  // unknown, NOT clean
-    XCTAssertEqual(s.failure, .missingPath)
-  }
-
-  // A dirty git working tree is now read via GitProvider/SwiftGitX (not the mock runner + porcelain
-  // parser) — covered by WorkroomStatusIntegrationTests.testGitProviderWorkingStatus on a real repo.
-
-  func testResolveLocalGitFailureIsUnknownNotClean() async {
-    // `existing` is a real directory but NOT a git repo, so the SwiftGitX read fails → notRepository.
-    // The regression-critical property: a failed probe is UNKNOWN, never clean.
-    let r = WorkroomStatusResolver()
-    let s = await r.resolveLocal(path: existing)
-    XCTAssertNil(s.dirty)
-    XCTAssertFalse(s.isClean)
-    XCTAssertTrue(s.isUnknown)
-    XCTAssertEqual(s.failure, .notRepository)
-  }
-
-  // MARK: - typed backend error → status failure
-
-  /// Every `VCSError` the backends can raise must land on a badge deliberately, since a probe failure
-  /// is the one status the user can't verify by looking at the row. The two retryable states get
-  /// their own badge; the rest keep `.notRepository`, which is what the git side needs — `GitProvider`
-  /// can't bind SwiftGitX's typed error, so a missing/broken repo arrives as `.io`.
-  func testFailureMappingPerVCSError() {
-    XCTAssertEqual(WorkroomStatusResolver.failure(for: .lockContention), .busy)
-    XCTAssertEqual(WorkroomStatusResolver.failure(for: .staleSnapshot), .staleWorkingCopy)
-    XCTAssertEqual(
-      WorkroomStatusResolver.failure(for: .unsupportedRepo("no .git")), .notRepository)
-    XCTAssertEqual(WorkroomStatusResolver.failure(for: .notFound("f.txt")), .notRepository)
-    XCTAssertEqual(
-      WorkroomStatusResolver.failure(for: .partialData("diff read failed")), .notRepository)
-    XCTAssertEqual(
-      WorkroomStatusResolver.failure(for: .backendVersion("from-the-future")), .notRepository)
-    XCTAssertEqual(WorkroomStatusResolver.failure(for: .io("boom")), .notRepository)
   }
 
   // MARK: - resolveCI (by repository identity)
@@ -185,7 +136,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     #"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"SUCCESS"}}}}}"#
 
   func testResolveCIPassing() async {
-    let r = WorkroomStatusResolver(
+    let r = GitHubStatusResolver(
       runner: MockStatusRunner { exe, args in
         (exe == "gh" && args.contains("graphql")) ? ok(self.rollupPassing) : ok("")
       })
@@ -200,7 +151,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let runner = RecordingStatusRunner { _, _ in
       ok(#"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"FAILURE"}}}}}"#)
     }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     let res = await r.resolveCI(repo: repo, commit: sha)
     XCTAssertEqual(res, .state(.failing))
     XCTAssertEqual(runner.calls.count, 1)
@@ -219,7 +170,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// refused before a process is spawned.
   func testResolveCIRefusesANonCommit() async {
     let runner = RecordingStatusRunner { _, _ in ok(self.rollupPassing) }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     for bad in ["", "HEADSHA", "abc", "0123456\"){x", String(repeating: "a", count: 65)] {
       let res = await r.resolveCI(repo: repo, commit: bad)
       XCTAssertEqual(res, .absent, "commit \(bad)")
@@ -234,7 +185,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let runner = RecordingStatusRunner { exe, args in
       args.contains("graphql") ? ok(self.rollupPassing) : ok("[]")
     }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     _ = await r.resolveCI(repo: ghe, commit: sha)
     _ = await r.resolvePRRaw(repo: ghe, branch: "main")
     _ = await r.resolveChecks(repo: ghe, number: 4)
@@ -253,59 +204,11 @@ final class WorkroomStatusResolverTests: XCTestCase {
 
   func testResolveRepositoryFoundReadsTheRemoteURL() async {
     let runner = RecordingStatusRunner { _, _ in ok("https://github.com/octo/repo\n") }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     let res = await r.resolveRepository(in: "/proj")
     XCTAssertEqual(res, .found(repo))
     XCTAssertEqual(runner.calls.first?.dir, "/proj")  // the ONE call that needs a directory
     XCTAssertEqual(runner.calls.first?.args, ["repo", "view", "--json", "url", "-q", ".url"])
-  }
-
-  /// A create without gh (a remote provider's needs none) reads the repository from the project's
-  /// own origin remote (#260); a project with no origin, or git failing, has none.
-  func testOriginRepositoryReadsGitAlone() async {
-    let runner = RecordingStatusRunner { _, _ in ok("git@github.com:octo/repo.git\n") }
-    let found = await WorkroomStatusResolver(runner: runner).originRepository(in: "/proj")
-    XCTAssertEqual(found, repo)
-    XCTAssertEqual(runner.calls.first?.dir, "/proj")
-    XCTAssertEqual(runner.calls.first?.args, ["remote", "get-url", "origin"])
-    let none = await WorkroomStatusResolver(
-      runner: MockStatusRunner { _, _ in
-        CommandResult(
-          stdout: "", stderr: "error: No such remote 'origin'", exitCode: 2, timedOut: false)
-      }
-    ).originRepository(in: "/proj")
-    XCTAssertNil(none)
-  }
-
-  /// A remote create reads the project's remotes to tell `upstream/main` from an origin branch.
-  func testRemoteNamesListsGitRemotes() async {
-    let names = await WorkroomStatusResolver(
-      runner: MockStatusRunner { _, args in
-        XCTAssertEqual(args, ["remote"])
-        return ok("origin\nupstream\n")
-      }
-    ).remoteNames(in: "/proj")
-    XCTAssertEqual(names, ["origin", "upstream"])
-  }
-
-  /// A remote create checks origin has the project's base branch: `ls-remote --exit-code` exits 2
-  /// only for no match, so anything else (offline, no credentials) is left undecided.
-  func testOriginHasBranchReadsLsRemotesExitCode() async {
-    func ask(_ code: Int32) async -> Bool? {
-      await WorkroomStatusResolver(
-        runner: MockStatusRunner { _, args in
-          XCTAssertEqual(
-            args, ["ls-remote", "--exit-code", "--heads", "origin", "refs/heads/develop"])
-          return CommandResult(stdout: "", stderr: "", exitCode: code, timedOut: false)
-        }
-      ).originHasBranch("develop", in: "/proj")
-    }
-    let found = await ask(0)
-    let missing = await ask(2)
-    let unknown = await ask(128)
-    XCTAssertEqual(found, true)
-    XCTAssertEqual(missing, false)
-    XCTAssertNil(unknown)
   }
 
   /// REGRESSION. The PR panel, checks list and CI badge all depend on this answer now, and they used
@@ -313,7 +216,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// into "no repository" would blank a good panel on a blip.
   func testResolveRepositoryClassifiesFailuresLikeEveryOtherGhProbe() async {
     func lookup(_ result: CommandResult) async -> GitHubRepositoryResolution {
-      await WorkroomStatusResolver(runner: MockStatusRunner { _, _ in result })
+      await GitHubStatusResolver(runner: MockStatusRunner { _, _ in result })
         .resolveRepository(in: "/proj")
     }
     let timedOut = CommandResult(
@@ -351,7 +254,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":42,"title":"Add login","state":"OPEN","isDraft":false,"url":"https://x/42","reviewDecision":"APPROVED"}]"#
     )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else {
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else {
       return XCTFail("expected .info")
     }
     XCTAssertEqual(pr.number, 42)
@@ -366,7 +269,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyPRDraftEmptyReviewIsNil() {
     let r = ok(
       #"[{"number":7,"title":"WIP","state":"OPEN","isDraft":true,"url":"u","reviewDecision":""}]"#)
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertTrue(pr.isDraft)
     XCTAssertEqual(pr.state, .open)  // a draft is still OPEN
     XCTAssertNil(pr.reviewDecision)  // "" → nil
@@ -379,8 +282,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let closed = ok(
       #"[{"number":2,"title":"c","state":"CLOSED","isDraft":false,"url":"u","reviewDecision":null}]"#
     )
-    guard case .info(let mpr) = WorkroomStatusResolver.classifyPR(merged),
-      case .info(let cpr) = WorkroomStatusResolver.classifyPR(closed)
+    guard case .info(let mpr) = GitHubStatusResolver.classifyPR(merged),
+      case .info(let cpr) = GitHubStatusResolver.classifyPR(closed)
     else { return XCTFail() }
     XCTAssertEqual(mpr.state, .merged)
     XCTAssertEqual(cpr.state, .closed)
@@ -394,43 +297,43 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let rr = ok(
       #"[{"number":2,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"REVIEW_REQUIRED"}]"#
     )
-    guard case .info(let crpr) = WorkroomStatusResolver.classifyPR(cr),
-      case .info(let rrpr) = WorkroomStatusResolver.classifyPR(rr)
+    guard case .info(let crpr) = GitHubStatusResolver.classifyPR(cr),
+      case .info(let rrpr) = GitHubStatusResolver.classifyPR(rr)
     else { return XCTFail() }
     XCTAssertEqual(crpr.reviewDecision, .changesRequested)
     XCTAssertEqual(rrpr.reviewDecision, .reviewRequired)
   }
 
   func testClassifyPREmptyArrayIsAbsent() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(ok("[]")), .absent)  // no PR for the branch
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(ok("[]")), .absent)  // no PR for the branch
   }
 
   func testClassifyPRGhMissingIsAbsent() {
     let r = CommandResult(
       stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(r), .absent)
   }
 
   func testClassifyPRNotOkIsAbsent() {
     let r = CommandResult(
       stdout: "", stderr: "no git remote found", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(r), .absent)
   }
 
   func testClassifyPRRateLimitKeepsPrior() {
     let r = CommandResult(
       stdout: "", stderr: "API rate limit exceeded", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(r), .keepPrior)
   }
 
   func testClassifyPRTimeoutKeepsPrior() {
     let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(r), .keepPrior)
   }
 
   func testClassifyPRMalformedKeepsPrior() {
     // Malformed/truncated JSON must NOT erase the PR badge (a valid empty array still → .absent).
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(ok("not json")), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(ok("not json")), .keepPrior)
   }
 
   func testClassifyPRMergeability() {
@@ -438,7 +341,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let clean = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}]"#
     )
-    guard case .info(let cpr) = WorkroomStatusResolver.classifyPR(clean) else { return XCTFail() }
+    guard case .info(let cpr) = GitHubStatusResolver.classifyPR(clean) else { return XCTFail() }
     XCTAssertEqual(cpr.mergeable, true)
     XCTAssertEqual(cpr.mergeState, .clean)
     XCTAssertTrue(cpr.canMerge)
@@ -447,7 +350,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let dirty = ok(
       #"[{"number":2,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"}]"#
     )
-    guard case .info(let dpr) = WorkroomStatusResolver.classifyPR(dirty) else { return XCTFail() }
+    guard case .info(let dpr) = GitHubStatusResolver.classifyPR(dirty) else { return XCTFail() }
     XCTAssertEqual(dpr.mergeable, false)
     XCTAssertEqual(dpr.mergeState, .dirty)
     XCTAssertFalse(dpr.canMerge)
@@ -456,7 +359,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let unknown = ok(
       #"[{"number":3,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN"}]"#
     )
-    guard case .info(let upr) = WorkroomStatusResolver.classifyPR(unknown) else { return XCTFail() }
+    guard case .info(let upr) = GitHubStatusResolver.classifyPR(unknown) else { return XCTFail() }
     XCTAssertNil(upr.mergeable)
     XCTAssertEqual(upr.mergeState, .unknown)
     XCTAssertFalse(upr.canMerge)
@@ -466,7 +369,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     // Back-compat: JSON without the merge fields decodes cleanly with nil mergeability (button off).
     let r = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#)
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertNil(pr.mergeable)
     XCTAssertNil(pr.mergeState)
     XCTAssertFalse(pr.canMerge)
@@ -478,7 +381,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"MERGEABLE","mergeStateStatus":"QUEUED"}]"#
     )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertEqual(pr.mergeState, .unknown)
     XCTAssertFalse(pr.canMerge)
   }
@@ -489,7 +392,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":3,"title":"t","state":"LOCKED","isDraft":false,"url":"u","reviewDecision":null}]"#
     )
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(r), .keepPrior)
   }
 
   // MARK: - classifyPR reviewers (issue #52)
@@ -498,7 +401,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"CHANGES_REQUESTED","latestReviews":[{"author":{"login":"iainad"},"state":"APPROVED"},{"author":{"login":"octocat"},"state":"CHANGES_REQUESTED"},{"author":{"login":"carl"},"state":"COMMENTED"},{"author":{"login":"dot"},"state":"DISMISSED"}],"reviewRequests":[{"login":"copilot-pull-request-reviewer"}]}]"#
     )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertEqual(pr.reviewDecision, .changesRequested)
     let byID = Dictionary(uniqueKeysWithValues: pr.reviewers.map { ($0.id, $0.state) })
     XCTAssertEqual(byID["user:iainad"], .approved)
@@ -515,7 +418,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"REVIEW_REQUIRED","latestReviews":[{"author":{"login":"octocat"},"state":"CHANGES_REQUESTED"}],"reviewRequests":[{"login":"octocat"}]}]"#
     )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertEqual(pr.reviewers.count, 1)
     XCTAssertEqual(pr.reviewers.first?.id, "user:octocat")
     XCTAssertEqual(pr.reviewers.first?.state, .requested)
@@ -525,7 +428,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"latestReviews":[],"reviewRequests":[{"__typename":"Team","name":"Platform","slug":"platform"}]}]"#
     )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertEqual(pr.reviewers.count, 1)
     XCTAssertEqual(pr.reviewers.first?.identity, .team(slug: "platform"))
     XCTAssertEqual(pr.reviewers.first?.state, .requested)
@@ -536,7 +439,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"latestReviews":[{"author":{"login":"a"},"state":"PENDING"},{"author":{"login":"b"},"state":"APPROVED"}],"reviewRequests":[]}]"#
     )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertEqual(pr.reviewers.map(\.id), ["user:b"])
   }
 
@@ -545,7 +448,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"latestReviews":[{"author":null,"state":"APPROVED"}],"reviewRequests":[{"login":null,"slug":null}]}]"#
     )
-    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    guard case .info(let pr) = GitHubStatusResolver.classifyPR(r) else { return XCTFail() }
     XCTAssertTrue(pr.reviewers.isEmpty)
   }
 
@@ -555,7 +458,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"{"data":{"resource":{"latestReviews":{"nodes":[{"author":{"login":"iainad"},"url":"https://x/9#pullrequestreview-1"},{"author":{"login":"octocat"},"url":"https://x/9#pullrequestreview-2"}]}}}}"#
     )
-    let map = WorkroomStatusResolver.parseReviewURLs(r)
+    let map = GitHubStatusResolver.parseReviewURLs(r)
     XCTAssertEqual(map["iainad"], "https://x/9#pullrequestreview-1")
     XCTAssertEqual(map["octocat"], "https://x/9#pullrequestreview-2")
   }
@@ -566,22 +469,22 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let r = ok(
       #"{"data":{"resource":{"latestReviews":{"nodes":[{"author":null,"url":"u"},{"author":{"login":"a"},"url":null},{"author":{"login":""},"url":"u"},{"author":{"login":"ok"},"url":"good"}]}}}}"#
     )
-    XCTAssertEqual(WorkroomStatusResolver.parseReviewURLs(r), ["ok": "good"])
+    XCTAssertEqual(GitHubStatusResolver.parseReviewURLs(r), ["ok": "good"])
   }
 
   /// Best-effort: a non-JSON body, an unresolved PR (`resource:null`), or a GraphQL `errors` payload
   /// all yield an empty map so the enrichment probe can never blank the reviewer rows.
   func testParseReviewURLsMalformedIsEmpty() {
-    XCTAssertTrue(WorkroomStatusResolver.parseReviewURLs(ok("not json")).isEmpty)
+    XCTAssertTrue(GitHubStatusResolver.parseReviewURLs(ok("not json")).isEmpty)
     XCTAssertTrue(
-      WorkroomStatusResolver.parseReviewURLs(ok(#"{"data":{"resource":null}}"#)).isEmpty)
+      GitHubStatusResolver.parseReviewURLs(ok(#"{"data":{"resource":null}}"#)).isEmpty)
     XCTAssertTrue(
-      WorkroomStatusResolver.parseReviewURLs(ok(#"{"errors":[{"message":"rate limited"}]}"#))
+      GitHubStatusResolver.parseReviewURLs(ok(#"{"errors":[{"message":"rate limited"}]}"#))
         .isEmpty)
   }
 
   func testReviewURLQueryEmbedsPRURL() {
-    let q = WorkroomStatusResolver.reviewURLQuery(prURL: "https://github.com/o/r/pull/9")
+    let q = GitHubStatusResolver.reviewURLQuery(prURL: "https://github.com/o/r/pull/9")
     XCTAssertTrue(q.contains(#"resource(url:"https://github.com/o/r/pull/9")"#))
     XCTAssertTrue(q.contains("latestReviews"))
   }
@@ -595,7 +498,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
       #"[{"number":9,"title":"t","state":"OPEN","isDraft":false,"url":"https://x/9","reviewDecision":"APPROVED","latestReviews":[{"author":{"login":"iainad"},"state":"APPROVED"}],"reviewRequests":[{"login":"carl"}]}]"#
     let gqlJSON =
       #"{"data":{"resource":{"latestReviews":{"nodes":[{"author":{"login":"iainad"},"url":"https://x/9#pullrequestreview-7"}]}}}}"#
-    let r = WorkroomStatusResolver(
+    let r = GitHubStatusResolver(
       runner: MockStatusRunner { exe, args in
         guard exe == "gh" else { return ok("") }
         if args.contains("graphql") { return ok(gqlJSON) }
@@ -616,7 +519,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let runner = RecordingStatusRunner { exe, args in
       (exe == "gh" && args.contains("pr")) ? ok(prJSON) : ok("")
     }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     let res = await resolvePR(r, branch: "main")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     XCTAssertNil(pr.reviewers.first?.url)
@@ -627,7 +530,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testResolvePRReviewURLProbeFailureKeepsPR() async {
     let prJSON =
       #"[{"number":9,"title":"t","state":"OPEN","isDraft":false,"url":"https://x/9","reviewDecision":"APPROVED","latestReviews":[{"author":{"login":"iainad"},"state":"APPROVED"}],"reviewRequests":[]}]"#
-    let r = WorkroomStatusResolver(
+    let r = GitHubStatusResolver(
       runner: MockStatusRunner { exe, args in
         if exe == "gh", args.contains("graphql") {
           return CommandResult(stdout: "boom", stderr: "x", exitCode: 1, timedOut: false)
@@ -646,7 +549,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testResolvePRWithBranch() async {
     let json =
       #"[{"number":9,"title":"Feature","state":"OPEN","isDraft":false,"url":"https://x/9","reviewDecision":"APPROVED"}]"#
-    let r = WorkroomStatusResolver(
+    let r = GitHubStatusResolver(
       runner: MockStatusRunner { exe, args in
         (exe == "gh" && args.contains("pr")) ? ok(json) : ok("")
       })
@@ -657,7 +560,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   }
 
   /// `gh pr list` for a branch, then the reviewer-permalink enrichment — what a selection refresh does.
-  private func resolvePR(_ r: WorkroomStatusResolver, branch: String) async -> PRResolution {
+  private func resolvePR(_ r: GitHubStatusResolver, branch: String) async -> PRResolution {
     await r.enrichPR(await r.resolvePRRaw(repo: repo, branch: branch), repo: repo)
   }
 
@@ -667,7 +570,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json =
       #"[{"number":9,"title":"F","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#
     let runner = RecordingStatusRunner { _, _ in ok(json) }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     let res = await r.resolvePRRaw(repo: repo, branch: "feature/login")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     XCTAssertEqual(pr.number, 9)
@@ -681,7 +584,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// A write is aimed at the named repository too, not at whatever the neutral directory resolves to.
   func testRunPRCommandNamesTheRepository() async {
     let runner = RecordingStatusRunner { _, _ in ok("") }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     _ = await r.runPRCommand(["pr", "merge", "9", "--squash"], repo: repo)
     XCTAssertEqual(
       runner.calls.first?.args, ["pr", "merge", "9", "--squash", "--repo", "github.com/octo/repo"])
@@ -692,8 +595,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
     // A `gh` exit-1 whose stderr contains "timeout" (a network blip, distinct from the timedOut
     // flag) → keepPrior, so a transient failure doesn't erase the badge.
     let r = CommandResult(stdout: "", stderr: "dial tcp: i/o timeout", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(r), .keepPrior)
   }
 
   // MARK: - classifyGitHubCLI
@@ -701,18 +604,18 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyGitHubCLINotInstalled() {
     let r = CommandResult(
       stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notInstalled))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(r), .verdict(.notInstalled))
   }
 
   func testClassifyGitHubCLINotAuthenticated() {
     let r = CommandResult(
       stdout: "", stderr: "You are not logged into any GitHub hosts.", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
   }
 
   func testClassifyGitHubCLIAvailable() {
     let r = ok("github.com\n  \u{2713} Logged in to github.com account joelmoss")
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.available))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(r), .verdict(.available))
   }
 
   /// A timeout learned NOTHING, so it must not publish a verdict in either direction. It used to
@@ -720,7 +623,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// `.notAuthenticated` and leave the user with a silent panel.
   func testClassifyGitHubCLITimeoutKeepsPrior() {
     let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(r), .keepPrior)
   }
 
   /// REGRESSION (the false, sticky "GitHub CLI not signed in"): a cancelled probe is SIGKILLed, so
@@ -730,7 +633,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyGitHubCLISignalledKeepsPrior() {
     let killed = CommandResult(
       stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(killed), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(killed), .keepPrior)
   }
 
   /// The exact cancellation shape: gh had begun writing its JSON when the SIGKILL landed, so the
@@ -739,7 +642,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let partial = CommandResult(
       stdout: #"{"hosts":{"github.com":[{"sta"#, stderr: "", exitCode: 9, timedOut: false,
       signaled: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(partial), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(partial), .keepPrior)
   }
 
   /// ORDERING LOCK: `signaled` suppresses only the ambiguous exit-code FALLBACK, never a complete
@@ -751,7 +654,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
       {"hosts":{"github.com":[{"state":"error","active":true,"error":"HTTP 401: Bad credentials"}]}}
       """#
     let r = CommandResult(stdout: json, stderr: "", exitCode: 9, timedOut: false, signaled: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
   }
 
   /// A gh older than 2.57 REJECTS `--json`/`--active` rather than ignoring them: measured exit 1,
@@ -762,7 +665,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let old = CommandResult(
       stdout: "", stderr: "unknown flag: --json\n\nUsage:  gh auth status [flags]\n", exitCode: 1,
       timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(old), .verdict(.tooOld))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(old), .verdict(.tooOld))
   }
 
   /// `--active` shares the same 2.57 floor and gh reports whichever flag it parses first, so the
@@ -770,7 +673,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyGitHubCLIUnknownFlagMatchesEitherFlag() {
     let active = CommandResult(
       stdout: "", stderr: "unknown flag: --active", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(active), .verdict(.tooOld))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(active), .verdict(.tooOld))
   }
 
   /// A *successful* probe whose payload happens to contain the words must not be read as a version
@@ -779,7 +682,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let branchNamedOddly = ok(
       #"{"hosts":{"github.com":[{"state":"success","active":true,"login":"unknown flag"}]}}"#)
     XCTAssertEqual(
-      WorkroomStatusResolver.classifyGitHubCLI(branchNamedOddly), .verdict(.available))
+      GitHubStatusResolver.classifyGitHubCLI(branchNamedOddly), .verdict(.available))
   }
 
   /// An offline Mac is a blip, not "no PR": each stderr below is what `gh` 2.102 printed with the
@@ -795,10 +698,10 @@ final class WorkroomStatusResolverTests: XCTestCase {
     ]
     for stderr in stderrs {
       let r = CommandResult(stdout: "", stderr: stderr, exitCode: 1, timedOut: false)
-      XCTAssertEqual(WorkroomStatusResolver.ghPreflight(r), .keepPrior, stderr)
-      XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior, stderr)
-      XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior, stderr)
-      XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior, stderr)
+      XCTAssertEqual(GitHubStatusResolver.ghPreflight(r), .keepPrior, stderr)
+      XCTAssertEqual(GitHubStatusResolver.classifyPR(r), .keepPrior, stderr)
+      XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(r), .keepPrior, stderr)
+      XCTAssertEqual(GitHubStatusResolver.classifyChecks(r), .keepPrior, stderr)
     }
   }
 
@@ -807,23 +710,23 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testGHPreflightBare503IsNotATransientFailure() {
     let r = CommandResult(
       stdout: "", stderr: "no git remotes found for octo/svc-503", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.ghPreflight(r), .absent)
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .absent)
+    XCTAssertEqual(GitHubStatusResolver.ghPreflight(r), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(r), .absent)
   }
 
   /// A signalled `gh pr list`/`gh run list` must not clear a good PR/CI badge either.
   func testGHPreflightSignalledKeepsPrior() {
     let killed = CommandResult(
       stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
-    XCTAssertEqual(WorkroomStatusResolver.ghPreflight(killed), .keepPrior)
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(killed), .keepPrior)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(killed), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.ghPreflight(killed), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyPR(killed), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyCheckRollup(killed), .keepPrior)
   }
 
   // MARK: - resolveGitHubCLI (end-to-end via the mock)
 
   func testResolveGitHubCLIInstalledAndAuthed() async {
-    let r = WorkroomStatusResolver(
+    let r = GitHubStatusResolver(
       runner: MockStatusRunner { exe, args in
         (exe == "gh" && args.contains("auth")) ? ok("Logged in") : ok("")
       })
@@ -832,7 +735,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   }
 
   func testResolveGitHubCLIMissing() async {
-    let r = WorkroomStatusResolver(
+    let r = GitHubStatusResolver(
       runner: MockStatusRunner { _, _ in
         CommandResult(stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
       })
@@ -850,7 +753,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let runner = RecordingStatusRunner { _, _ in
       ok(#"{"hosts":{"github.com":[{"state":"success"}]}}"#)
     }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     let status = await r.resolveGitHubCLI()
     XCTAssertEqual(status, .verdict(.available))
     let authCall = runner.calls.first { $0.exe == "gh" && $0.args.contains("auth") }
@@ -863,7 +766,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// A validated active account → available.
   func testClassifyGitHubCLIJSONSuccess() {
     let json = #"{"hosts":{"github.com":[{"state":"success","active":true,"login":"joelmoss"}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
   }
 
   /// The #86 bug: a network blip while validating the token surfaces as a *transport* error (no HTTP
@@ -873,7 +776,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json = #"""
       {"hosts":{"github.com":[{"state":"error","active":true,"login":"joelmoss","error":"Get \"https://api.github.com/\": dial tcp: lookup api.github.com: no such host"}]}}
       """#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
   }
 
   /// Policy lock (#86): the classifier recognizes a 401 as a real logout and treats *every other*
@@ -884,12 +787,12 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyGitHubCLIJSONUnrecognizedErrorIsAvailable() {
     let weird =
       #"{"hosts":{"github.com":[{"state":"error","active":true,"error":"something unexpected"}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(weird)), .verdict(.available))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(ok(weird)), .verdict(.available))
     let sso =
       #"{"hosts":{"github.com":[{"state":"error","active":true,"error":"HTTP 403: Resource protected by organization SAML enforcement"}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(sso)), .verdict(.available))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(ok(sso)), .verdict(.available))
     let noErrorKey = #"{"hosts":{"github.com":[{"state":"error","active":true}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(noErrorKey)), .verdict(.available))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(ok(noErrorKey)), .verdict(.available))
   }
 
   /// A genuinely rejected token (HTTP 401 / bad credentials) → really logged out, keep the warning.
@@ -897,13 +800,13 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json = #"""
       {"hosts":{"github.com":[{"state":"error","active":true,"login":"joelmoss","error":"HTTP 401: Bad credentials (https://api.github.com/)"}]}}
       """#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.notAuthenticated))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.notAuthenticated))
   }
 
   /// No accounts configured → genuinely logged out.
   func testClassifyGitHubCLIJSONNoAccountsIsNotAuthenticated() {
     XCTAssertEqual(
-      WorkroomStatusResolver.classifyGitHubCLI(ok(#"{"hosts":{}}"#)), .verdict(.notAuthenticated))
+      GitHubStatusResolver.classifyGitHubCLI(ok(#"{"hosts":{}}"#)), .verdict(.notAuthenticated))
   }
 
   /// A working active account wins even when a *secondary* host's account errors (#50): the default
@@ -912,7 +815,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json = #"""
       {"hosts":{"github.com":[{"state":"success","active":true}],"ghe.example.com":[{"state":"error","active":true,"error":"HTTP 401: Bad credentials"}]}}
       """#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
   }
 
   /// Unparseable stdout (a fatal gh error) falls back to the exit-code heuristic: a clean exit is
@@ -922,10 +825,10 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// default to `signaled: false`, so they must still produce verdicts rather than `.keepPrior`.
   func testClassifyGitHubCLINonJSONFallback() {
     XCTAssertEqual(
-      WorkroomStatusResolver.classifyGitHubCLI(ok("Logged in to github.com")), .verdict(.available))
+      GitHubStatusResolver.classifyGitHubCLI(ok("Logged in to github.com")), .verdict(.available))
     let failed = CommandResult(
       stdout: "", stderr: "You are not logged into any GitHub hosts.", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(failed), .verdict(.notAuthenticated))
+    XCTAssertEqual(GitHubStatusResolver.classifyGitHubCLI(failed), .verdict(.notAuthenticated))
   }
 
   // MARK: - classifyChecks (issue #75)
@@ -936,7 +839,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
       [{"name":"build","bucket":"pass","state":"SUCCESS","link":"https://x/b","workflow":"CI"},
        {"name":"lint","bucket":"pass","state":"SUCCESS","link":"https://x/l","workflow":"CI"}]
       """#
-    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(ok(json)) else {
+    guard case .list(let checks) = GitHubStatusResolver.classifyChecks(ok(json)) else {
       return XCTFail("expected .list")
     }
     XCTAssertEqual(checks.count, 2)
@@ -951,7 +854,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json =
       #"[{"name":"test","bucket":"fail","state":"FAILURE","link":"https://x/t","workflow":"CI"}]"#
     let r = CommandResult(stdout: json, stderr: "", exitCode: 1, timedOut: false)
-    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(r) else {
+    guard case .list(let checks) = GitHubStatusResolver.classifyChecks(r) else {
       return XCTFail("expected .list despite exit 1")
     }
     XCTAssertEqual(checks.first?.state, .failing)
@@ -962,7 +865,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json =
       #"[{"name":"e2e","bucket":"pending","state":"IN_PROGRESS","link":"","workflow":"CI"}]"#
     let r = CommandResult(stdout: json, stderr: "", exitCode: 8, timedOut: false)
-    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(r) else {
+    guard case .list(let checks) = GitHubStatusResolver.classifyChecks(r) else {
       return XCTFail("expected .list despite exit 8")
     }
     XCTAssertEqual(checks.first?.state, .pending)
@@ -975,7 +878,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
       [{"name":"a","bucket":"pass"},{"name":"b","bucket":"fail"},{"name":"c","bucket":"pending"},
        {"name":"d","bucket":"skipping"},{"name":"e","bucket":"cancel"},{"name":"f","bucket":"???"}]
       """#
-    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(ok(json)) else {
+    guard case .list(let checks) = GitHubStatusResolver.classifyChecks(ok(json)) else {
       return XCTFail("expected .list")
     }
     let byName = Dictionary(uniqueKeysWithValues: checks.map { ($0.name, $0.state) })
@@ -989,37 +892,37 @@ final class WorkroomStatusResolverTests: XCTestCase {
 
   /// A valid empty array ⇒ "loaded, no checks" → .absent (the store maps it to `[]`).
   func testClassifyChecksEmptyArrayIsAbsent() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(ok("[]")), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(ok("[]")), .absent)
   }
 
   /// "No checks reported" on a branch: gh exits non-zero with an empty stdout + a stderr message.
   func testClassifyChecksNoChecksReportedIsAbsent() {
     let r = CommandResult(
       stdout: "", stderr: "no checks reported on the 'main' branch", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(r), .absent)
   }
 
   func testClassifyChecksGhMissingIsAbsent() {
     let r = CommandResult(
       stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .absent)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(r), .absent)
   }
 
   func testClassifyChecksRateLimitKeepsPrior() {
     let r = CommandResult(
       stdout: "", stderr: "API rate limit exceeded", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(r), .keepPrior)
   }
 
   func testClassifyChecksTimeoutKeepsPrior() {
     let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(r), .keepPrior)
   }
 
   /// Non-empty but unparseable stdout (truncated output / schema change) keeps the last good rows,
   /// mirroring classifyCI/classifyPR — only an EMPTY stdout falls through to .absent.
   func testClassifyChecksMalformedKeepsPrior() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(ok("not json")), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(ok("not json")), .keepPrior)
   }
 
   /// A KILLED child (SIGKILL/SIGTERM from a cancelled lane, jetsam, a crash, sleep/wake) wrote
@@ -1028,7 +931,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// the empty list as authoritative — a failing PR rendered green until the row was re-selected.
   func testClassifyChecksSignaledKeepsPrior() {
     let r = CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior)
+    XCTAssertEqual(GitHubStatusResolver.classifyChecks(r), .keepPrior)
   }
 
   /// ORDERING LOCK: a killed child that had already written a COMPLETE payload really did report
@@ -1037,7 +940,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyChecksSignaledWithCompletePayloadStillParses() {
     let json = #"[{"name":"build","bucket":"fail"}]"#
     let r = CommandResult(stdout: json, stderr: "", exitCode: 9, timedOut: false, signaled: true)
-    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(r) else {
+    guard case .list(let checks) = GitHubStatusResolver.classifyChecks(r) else {
       return XCTFail("expected .list")
     }
     XCTAssertEqual(checks.map(\.state), [.failing])
@@ -1049,7 +952,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testResolveChecksNamesTheRepositoryInNeutralDirectory() async {
     let json = #"[{"name":"build","bucket":"pass"}]"#
     let runner = RecordingStatusRunner { exe, _ in exe == "gh" ? ok(json) : ok("") }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     let res = await r.resolveChecks(repo: repo, number: 9)
     XCTAssertEqual(res, .list([CICheck(name: "build", state: .passing, workflow: nil, link: nil)]))
     let gh = runner.calls.first { $0.exe == "gh" }
@@ -1061,7 +964,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// `[]` ⇒ loaded, no checks — distinct from absent, and unchanged by naming the repository.
   func testResolveChecksEmptyListIsAbsent() async {
     let runner = RecordingStatusRunner { exe, _ in exe == "gh" ? ok("[]") : ok("") }
-    let r = WorkroomStatusResolver(runner: runner)
+    let r = GitHubStatusResolver(runner: runner)
     let res = await r.resolveChecks(repo: repo, number: 3)
     XCTAssertEqual(res, .absent)
     XCTAssertTrue(runner.calls.first?.args.contains("3") ?? false)

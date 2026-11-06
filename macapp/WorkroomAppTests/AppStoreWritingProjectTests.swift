@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Workroom
 
-/// `AppStore.isWritingProject`/`beginWrite`/`endWrite` — the cross-window write-in-flight refusal
+/// `VCSStatusService.isWritingProject`/`beginWrite`/`endWrite` — the cross-window write-in-flight refusal
 /// (VCS-foundation eng-review). `committingProjectRoots`/`isCommittingProject` exist to suppress READ
 /// lanes during a commit; this is the separate, umbrella mechanism that all four write kinds
 /// (commit/fetch/push/pull) check BEFORE starting, so a second write on the same project root is
@@ -31,20 +31,21 @@ final class AppStoreWritingProjectTests: XCTestCase {
   func testIsWritingProjectTracksBeginAndEnd() async throws {
     let proj = try await RepositoryLocation.local("/proj")
     let store = try await makeStore([])
-    XCTAssertFalse(store.isWritingProject(proj))
-    store.beginWrite(projectRoot: proj)
-    XCTAssertTrue(store.isWritingProject(proj))
-    store.endWrite(projectRoot: proj)
-    XCTAssertFalse(store.isWritingProject(proj))
+    XCTAssertFalse(store.vcsStatus.isWritingProject(proj))
+    store.vcsStatus.beginWrite(projectRoot: proj)
+    XCTAssertTrue(store.vcsStatus.isWritingProject(proj))
+    store.vcsStatus.endWrite(projectRoot: proj)
+    XCTAssertFalse(store.vcsStatus.isWritingProject(proj))
   }
 
   func testIsWritingProjectIsPerProjectRoot() async throws {
     let a = try await RepositoryLocation.local("/a")
     let b = try await RepositoryLocation.local("/b")
     let store = try await makeStore([])
-    store.beginWrite(projectRoot: a)
-    XCTAssertTrue(store.isWritingProject(a))
-    XCTAssertFalse(store.isWritingProject(b), "a different project root must be unaffected")
+    store.vcsStatus.beginWrite(projectRoot: a)
+    XCTAssertTrue(store.vcsStatus.isWritingProject(a))
+    XCTAssertFalse(
+      store.vcsStatus.isWritingProject(b), "a different project root must be unaffected")
   }
 
   /// Counted, not a flag: two sibling writes can legitimately be marked in flight against one root
@@ -53,13 +54,14 @@ final class AppStoreWritingProjectTests: XCTestCase {
   func testEndWriteDecrementsRatherThanClears() async throws {
     let proj = try await RepositoryLocation.local("/proj")
     let store = try await makeStore([])
-    store.beginWrite(projectRoot: proj)
-    store.beginWrite(projectRoot: proj)
-    store.endWrite(projectRoot: proj)
+    store.vcsStatus.beginWrite(projectRoot: proj)
+    store.vcsStatus.beginWrite(projectRoot: proj)
+    store.vcsStatus.endWrite(projectRoot: proj)
     XCTAssertTrue(
-      store.isWritingProject(proj), "one of two writes finished — the other is still in flight")
-    store.endWrite(projectRoot: proj)
-    XCTAssertFalse(store.isWritingProject(proj))
+      store.vcsStatus.isWritingProject(proj),
+      "one of two writes finished — the other is still in flight")
+    store.vcsStatus.endWrite(projectRoot: proj)
+    XCTAssertFalse(store.vcsStatus.isWritingProject(proj))
   }
 
   /// `endWrite` on a root with no recorded write must not underflow into a negative count that
@@ -67,8 +69,8 @@ final class AppStoreWritingProjectTests: XCTestCase {
   func testEndWriteOnAnUntrackedRootIsSafe() async throws {
     let never = try await RepositoryLocation.local("/never-began")
     let store = try await makeStore([])
-    store.endWrite(projectRoot: never)
-    XCTAssertFalse(store.isWritingProject(never))
+    store.vcsStatus.endWrite(projectRoot: never)
+    XCTAssertFalse(store.vcsStatus.isWritingProject(never))
   }
 
   /// `performCommit` must refuse immediately — never touching the writer, never entering
@@ -82,7 +84,7 @@ final class AppStoreWritingProjectTests: XCTestCase {
     let proj = try await RepositoryLocation.local(root)
     let store = try await makeStore([project(root, workrooms: ["feat"])])
     let sid = SidebarID.workroom(project: root, name: "feat")
-    store.beginWrite(projectRoot: proj)
+    store.vcsStatus.beginWrite(projectRoot: proj)
 
     let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
     var results: [VCSCommitResult] = []
@@ -95,11 +97,12 @@ final class AppStoreWritingProjectTests: XCTestCase {
 
     XCTAssertEqual(results, [.failed(.locked(nil))])
     XCTAssertFalse(
-      store.isCommitting(sid), "the refused commit must never have marked itself as committing")
+      store.vcsStatus.isCommitting(sid),
+      "the refused commit must never have marked itself as committing")
   }
 
-  /// **The mechanism the write-in-flight leak fix depends on.** `AppStore.releaseWrite` must release
-  /// the mark against a `ProjectStore` directly, with no live `AppStore` involved at all — this is
+  /// **The mechanism the write-in-flight leak fix depends on.** `VCSStatusService.endWrite` must
+  /// release the mark with no live `AppStore` involved at all — this is
   /// what lets `performCommit`'s Task and `RemoteStateModel`'s `writeDidFinish` wiring release the
   /// mark even after the `AppStore`/`RemoteStateModel` that started the write has already been
   /// deallocated (e.g. the window closed mid-write). If this ever required a live `AppStore`, a
@@ -107,11 +110,11 @@ final class AppStoreWritingProjectTests: XCTestCase {
   /// project, in every window, until the app restarts.
   func testReleaseWriteWorksAgainstAProjectStoreAloneNoAppStoreNeeded() async throws {
     let proj = try await RepositoryLocation.local("/proj")
-    let projectStore = ProjectStore()
-    projectStore.writingProjectRoots[proj] = 1
-    AppStore.releaseWrite(projectRoot: proj, in: projectStore)
+    let vcsStatus = VCSStatusService(projectStore: ProjectStore())
+    vcsStatus.writingProjectRoots[proj] = 1
+    vcsStatus.endWrite(projectRoot: proj)
     XCTAssertNil(
-      projectStore.writingProjectRoots[proj],
+      vcsStatus.writingProjectRoots[proj],
       "the mark must clear even though no AppStore instance was ever touched")
   }
 
@@ -125,26 +128,26 @@ final class AppStoreWritingProjectTests: XCTestCase {
       store.performCommit(request, on: sid) { continuation.resume(returning: $0) }
     }
     guard case .failed = result else { return XCTFail("unregistered write succeeded") }
-    XCTAssertFalse(store.isCommitting(sid))
-    XCTAssertTrue(store.projectStore.writingProjectRoots.isEmpty)
+    XCTAssertFalse(store.vcsStatus.isCommitting(sid))
+    XCTAssertTrue(store.vcsStatus.writingProjectRoots.isEmpty)
   }
 }
 
 extension AppStoreWritingProjectTests {
   func testSamePathOnDifferentHostsHasIndependentCrossWindowSuppression() throws {
-    let shared = ProjectStore()
-    let firstWindow = AppStore(projectStore: shared)
-    let secondWindow = AppStore(projectStore: shared)
+    let shared = VCSStatusService(projectStore: ProjectStore())
+    let firstWindow = AppStore(vcsStatus: shared)
+    let secondWindow = AppStore(vcsStatus: shared)
     let one = try RepositoryLocation.remote(host: UUID(), path: "/repo")
     let two = try RepositoryLocation.remote(host: UUID(), path: "/repo")
-    firstWindow.beginWrite(projectRoot: one)
-    XCTAssertTrue(secondWindow.isWritingProject(one))
-    XCTAssertFalse(secondWindow.isWritingProject(two))
-    secondWindow.beginWrite(projectRoot: two)
-    firstWindow.endWrite(projectRoot: one)
-    XCTAssertFalse(secondWindow.isWritingProject(one))
-    XCTAssertTrue(secondWindow.isWritingProject(two))
-    secondWindow.endWrite(projectRoot: two)
+    firstWindow.vcsStatus.beginWrite(projectRoot: one)
+    XCTAssertTrue(secondWindow.vcsStatus.isWritingProject(one))
+    XCTAssertFalse(secondWindow.vcsStatus.isWritingProject(two))
+    secondWindow.vcsStatus.beginWrite(projectRoot: two)
+    firstWindow.vcsStatus.endWrite(projectRoot: one)
+    XCTAssertFalse(secondWindow.vcsStatus.isWritingProject(one))
+    XCTAssertTrue(secondWindow.vcsStatus.isWritingProject(two))
+    secondWindow.vcsStatus.endWrite(projectRoot: two)
     XCTAssertTrue(shared.writingProjectRoots.isEmpty)
   }
 
@@ -159,24 +162,24 @@ extension AppStoreWritingProjectTests {
 
     XCTAssertFalse(store.canCommit(nil), "nothing inspected")
     XCTAssertFalse(store.canCommit(wr), "no status read yet")
-    store.projectStore.workroomStatuses[wr] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[wr] = WorkroomStatus(dirty: false)
     XCTAssertFalse(store.canCommit(wr), "clean")
-    store.projectStore.workroomStatuses[wr] = .unresolved
+    store.vcsStatus.workroomStatuses[wr] = .unresolved
     XCTAssertFalse(store.canCommit(wr), "unknown")
-    store.projectStore.workroomStatuses[.project("/proj")] = WorkroomStatus(dirty: true)
+    store.vcsStatus.workroomStatuses[.project("/proj")] = WorkroomStatus(dirty: true)
     XCTAssertFalse(store.canCommit(.project("/proj")), "a group header has no status to commit")
 
-    store.projectStore.workroomStatuses[wr] = WorkroomStatus(dirty: true)
-    store.projectStore.workroomStatuses[root] = WorkroomStatus(dirty: true)
+    store.vcsStatus.workroomStatuses[wr] = WorkroomStatus(dirty: true)
+    store.vcsStatus.workroomStatuses[root] = WorkroomStatus(dirty: true)
     XCTAssertTrue(store.canCommit(wr))
     XCTAssertTrue(store.canCommit(root))
 
-    store.projectStore.committingTargets.insert(wr)
+    store.vcsStatus.committingTargets.insert(wr)
     XCTAssertFalse(store.canCommit(wr), "a commit is already in flight")
     store.requestCommit(wr)
     XCTAssertNil(store.modals.pendingCommit)
 
-    store.projectStore.committingTargets.remove(wr)
+    store.vcsStatus.committingTargets.remove(wr)
     store.requestCommit(nil)
     XCTAssertNil(store.modals.pendingCommit)
     store.requestCommit(wr)

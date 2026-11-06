@@ -100,7 +100,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     store.selectedTargetID = selected
     store.selectionStatusTask?.cancel()
     store.refreshSelectionHasTabs()
-    store.projectStore.workroomStatuses[selected] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[selected] = WorkroomStatus(dirty: false)
     XCTAssertEqual(store.inspectorTargetID, selected)
 
     let flags = Flags()
@@ -134,7 +134,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     }
     await flush(hosting)
     XCTAssertNotNil(item("Commit…", in: NSApp.mainMenu), "must host the real Room menu")
-    store.mergeLocalStatus(WorkroomStatus(dirty: true), into: selected)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: true), into: selected)
     XCTAssertTrue(store.canCommit(selected), "fixture must have committable changes")
     await flush(hosting)
     guard commitEnabledWhileOpen(window) == true else {
@@ -146,7 +146,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
           + "inspected=\(String(describing: store.inspectorTargetID)), passes=\(WorkroomCommands.bodyPasses), "
           + "nativeItems=\(items("Commit…", in: NSApp.mainMenu).map { $0.isEnabled })")
     }
-    store.mergeLocalStatus(WorkroomStatus(dirty: false), into: selected)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: false), into: selected)
     await flush(hosting)
     XCTAssertEqual(
       commitEnabledWhileOpen(window), false,
@@ -155,7 +155,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     let pr = PullRequestInfo(
       number: 12, title: "A change", state: .open, isDraft: true,
       url: "https://github.com/example/repo/pull/12", reviewDecision: nil, reviewers: [])
-    store.projectStore.workroomStatuses[selected] = WorkroomStatus(dirty: true, pr: pr)
+    store.vcsStatus.workroomStatuses[selected] = WorkroomStatus(dirty: true, pr: pr)
     await flush(hosting)
     var room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room["Go to Pull Request"], true)
@@ -174,7 +174,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     await flush(hosting)
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room[PRAction.markReady.label], true)
-    store.projectStore.workroomStatuses[selected] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[selected] = WorkroomStatus(dirty: false)
     await flush(hosting)
     XCTAssertEqual(commitEnabledWhileOpen(window), false)
     await flush(hosting)
@@ -197,7 +197,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     for sample in 0..<3 {
       WorkroomCommands.bodyPasses = 0
       let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-      store.mergeLocalStatus(WorkroomStatus(dirty: sample.isMultiple(of: 2)), into: other)
+      store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: sample.isMultiple(of: 2)), into: other)
       await flush(hosting)
       samples.append(Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start) / 1_000_000)
       passes.append(WorkroomCommands.bodyPasses)

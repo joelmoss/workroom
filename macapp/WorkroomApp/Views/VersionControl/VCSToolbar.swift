@@ -79,7 +79,7 @@ struct VCSToolbar: View {
   @ObservedObject var model: RemoteStateModel
 
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var projectStore: ProjectStore
+  @EnvironmentObject var vcsStatus: VCSStatusService
   /// `ThemeService.shared` isn't observed by SwiftUI, so a theme switch would otherwise leave the
   /// hairlines stale. Same pattern as `ActivityBar`.
   @State private var themeTick = 0
@@ -117,7 +117,7 @@ struct VCSToolbar: View {
     guard let sid = model.target?.sid else { return false }
     return VCSSyncPresenter.pullConflicted(
       lastPullConflicted: model.lastPullConflicted,
-      statusConflicted: projectStore.workroomStatuses[sid]?.conflicted == true)
+      statusConflicted: vcsStatus.workroomStatuses[sid]?.conflicted == true)
   }
 
   var body: some View {

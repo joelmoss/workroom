@@ -792,13 +792,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testIsCreatingHelper() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let wrID = TargetID.workroom(project: projectPath, name: "wr")
-    XCTAssertFalse(store.isCreating(.workroom(project: projectPath, name: "wr")))
+    XCTAssertFalse(store.vcsStatus.isCreating(.workroom(project: projectPath, name: "wr")))
     store.creatingWorkrooms.insert(wrID)
-    XCTAssertTrue(store.isCreating(.workroom(project: projectPath, name: "wr")))
+    XCTAssertTrue(store.vcsStatus.isCreating(.workroom(project: projectPath, name: "wr")))
     XCTAssertFalse(
-      store.isCreating(.workroom(project: projectPath, name: "other")),
+      store.vcsStatus.isCreating(.workroom(project: projectPath, name: "other")),
       "a different workroom isn't creating")
-    XCTAssertFalse(store.isCreating(.root(project: projectPath)), "a root row is never creating")
+    XCTAssertFalse(
+      store.vcsStatus.isCreating(.root(project: projectPath)), "a root row is never creating")
   }
 
   /// REGRESSION: while a workroom's setup is in flight, NEITHER the status sweep NOR a file-change
@@ -825,7 +826,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     try? await Task.sleep(nanoseconds: 500_000_000)
 
     XCTAssertNil(
-      store.projectStore.workroomStatuses[sid]?.failure,
+      store.vcsStatus.workroomStatuses[sid]?.failure,
       "no VCS probe may run against a worktree whose setup is in flight")
   }
 
@@ -846,7 +847,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     // A probe ran and resolved a status: wrPath isn't a real repo, so it's `.notRepository`.
     await waitUntil(
-      { store.projectStore.workroomStatuses[sid]?.failure == .notRepository },
+      { store.vcsStatus.workroomStatuses[sid]?.failure == .notRepository },
       "once setup completes the worktree must be probed again")
   }
 
@@ -1428,28 +1429,28 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     stale.localReadAt = early
 
     // The later read lands FIRST — the fast lane.
-    store.mergeLocalStatus(fresh, into: sid)
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.dirty, true)
+    store.vcsStatus.mergeLocalStatus(fresh, into: sid)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.dirty, true)
 
     // Then the earlier read lands, from a lane that saw an older tree but resolved slower. It must be
     // dropped even though it is the newer WRITE.
-    store.mergeLocalStatus(stale, into: sid)
+    store.vcsStatus.mergeLocalStatus(stale, into: sid)
     XCTAssertEqual(
-      store.projectStore.workroomStatuses[sid]?.dirty, true,
+      store.vcsStatus.workroomStatuses[sid]?.dirty, true,
       "a result read earlier must not overwrite one that saw the tree later")
 
     // Ordering never blocks genuine progress: a later read still lands.
     var newest = WorkroomStatus.unresolved
     newest.dirty = false
     newest.localReadAt = late.addingTimeInterval(1)
-    store.mergeLocalStatus(newest, into: sid)
+    store.vcsStatus.mergeLocalStatus(newest, into: sid)
     XCTAssertEqual(
-      store.projectStore.workroomStatuses[sid]?.dirty, false, "a genuinely later read must win")
+      store.vcsStatus.workroomStatuses[sid]?.dirty, false, "a genuinely later read must win")
 
     // And an unstamped status (hand-built, as several tests do) can't be ordered, so it merges.
-    store.mergeLocalStatus(WorkroomStatus(dirty: true), into: sid)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: true), into: sid)
     XCTAssertEqual(
-      store.projectStore.workroomStatuses[sid]?.dirty, true, "an unstamped result still merges")
+      store.vcsStatus.workroomStatuses[sid]?.dirty, true, "an unstamped result still merges")
   }
 
   /// A probe that found nothing new redraws nothing, yet keeps its clocks (#503). Every status view
@@ -1464,7 +1465,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     store.projectStore.projects = [proj]
     let sid = SidebarID.workroom(project: root, name: "wr")
     let early = Date()
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: true, lastChecked: .distantPast, localReadAt: early)
 
     var same = WorkroomStatus.unresolved
@@ -1472,38 +1473,38 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     same.localReadAt = early.addingTimeInterval(2)
     var notified = false
     withObservationTracking {
-      _ = store.projectStore.workroomStatuses
+      _ = store.vcsStatus.workroomStatuses
     } onChange: {
       notified = true
     }
-    store.mergeLocalStatus(same, into: sid)
+    store.vcsStatus.mergeLocalStatus(same, into: sid)
     XCTAssertFalse(notified, "a probe that changed nothing on screen must not redraw")
-    XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.localReadAt, same.localReadAt)
+    XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.localReadAt, same.localReadAt)
     XCTAssertGreaterThan(
-      store.projectStore.workroomStatuses[sid]?.lastChecked ?? .distantPast, .distantPast,
+      store.vcsStatus.workroomStatuses[sid]?.lastChecked ?? .distantPast, .distantPast,
       "the TTL gate must see this check")
 
     // The silently stored read still orders: one that read the tree before it is dropped.
     var stale = WorkroomStatus.unresolved
     stale.dirty = false
     stale.localReadAt = early.addingTimeInterval(1)
-    store.mergeLocalStatus(stale, into: sid)
+    store.vcsStatus.mergeLocalStatus(stale, into: sid)
     XCTAssertEqual(
-      store.projectStore.workroomStatuses[sid]?.dirty, true, "an older read must not win")
+      store.vcsStatus.workroomStatuses[sid]?.dirty, true, "an older read must not win")
 
     // A first check with nothing else new still redraws: "Checking…" has to clear.
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: true, localReadAt: early.addingTimeInterval(3))
     notified = false
     withObservationTracking {
-      _ = store.projectStore.workroomStatuses
+      _ = store.vcsStatus.workroomStatuses
     } onChange: {
       notified = true
     }
     var firstCheck = WorkroomStatus.unresolved
     firstCheck.dirty = true
     firstCheck.localReadAt = early.addingTimeInterval(4)
-    store.mergeLocalStatus(firstCheck, into: sid)
+    store.vcsStatus.mergeLocalStatus(firstCheck, into: sid)
     XCTAssertTrue(notified, "a clock that appears must redraw")
   }
 
@@ -1520,25 +1521,25 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     // actually runs resolves `.notRepository` — and carries the resolver's own read stamp.
     store.refreshLocalStatus(for: sid)
     await waitUntil(
-      { store.projectStore.workroomStatuses[sid]?.failure == .notRepository },
+      { store.vcsStatus.workroomStatuses[sid]?.failure == .notRepository },
       "the probe must merge normally")
     XCTAssertNotNil(
-      store.projectStore.workroomStatuses[sid]?.localReadAt,
+      store.vcsStatus.workroomStatuses[sid]?.localReadAt,
       "the resolver must stamp the read it performed")
 
     // A result already recorded from a LATER read wins over the probe's own older one.
     var fresher = WorkroomStatus.unresolved
     fresher.dirty = true
     fresher.localReadAt = Date().addingTimeInterval(60)
-    store.projectStore.workroomStatuses[sid] = fresher
+    store.vcsStatus.workroomStatuses[sid] = fresher
 
     store.refreshLocalStatus(for: sid)
     try? await Task.sleep(nanoseconds: 400_000_000)  // > the probe's own resolve time
 
     XCTAssertEqual(
-      store.projectStore.workroomStatuses[sid]?.dirty, true, "the later read must survive")
+      store.vcsStatus.workroomStatuses[sid]?.dirty, true, "the later read must survive")
     XCTAssertNil(
-      store.projectStore.workroomStatuses[sid]?.failure,
+      store.vcsStatus.workroomStatuses[sid]?.failure,
       "the older read must not have merged over it")
   }
 

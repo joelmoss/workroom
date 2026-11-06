@@ -25,13 +25,14 @@ final class SidebarBenchmarkTests: XCTestCase {
     }
     store.collapsedProjects = []
     let id = SidebarID.root(project: store.projectStore.projects[0].path)
-    store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: false)
     ProjectSidebar.rowEvaluations = 0
     let hosting = NSHostingView(
       rootView: ProjectSidebar()
         .environmentObject(store)
         .environmentObject(store.runCommand)
         .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700))
@@ -46,10 +47,10 @@ final class SidebarBenchmarkTests: XCTestCase {
     hosting.displayIfNeeded()
     XCTAssertGreaterThan(ProjectSidebar.rowEvaluations, 0, "must render actual rows")
     ProjectSidebar.rowEvaluations = 0
-    store.mergeLocalStatus(WorkroomStatus(dirty: true), into: id)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: true), into: id)
     settle(hosting)
     XCTAssertEqual(ProjectSidebar.rowEvaluations, 0, "a VCS badge change must not rebuild the tree")
-    store.mergeLocalStatus(WorkroomStatus(dirty: false), into: id)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: false), into: id)
     settle(hosting)
     XCTAssertEqual(ProjectSidebar.rowEvaluations, 0)
     store.notifications.recordNotice(
@@ -95,6 +96,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         .environmentObject(store)
         .environmentObject(store.runCommand)
         .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700))
@@ -168,6 +170,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         .environmentObject(store)
         .environmentObject(store.runCommand)
         .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700)
@@ -199,7 +202,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         ProjectSidebar.menuEvaluations = 0
         let start = DispatchTime.now().uptimeNanoseconds
         let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-        store.mergeLocalStatus(
+        store.vcsStatus.mergeLocalStatus(
           WorkroomStatus(dirty: sample.isMultiple(of: 2)),
           into: .root(project: store.projectStore.projects[0].path))
         await draw(hosting)

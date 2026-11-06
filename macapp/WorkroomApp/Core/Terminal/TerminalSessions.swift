@@ -1122,7 +1122,7 @@ final class TerminalSessions: ObservableObject {
 
   /// How a pane's live branch is read (`TerminalState.liveBranch`). Settable for tests.
   var resolveBranch: @Sendable (String) async -> String? = {
-    await WorkroomStatusResolver().localBranch(path: $0, branch: nil)
+    await GitRepositoryProbe().localBranch(path: $0, branch: nil)
   }
   /// Each pane's in-flight branch read: a newer folder's must win over an older one's.
   private var branchQueries: [TerminalTab.ID: Task<Void, Never>] = [:]

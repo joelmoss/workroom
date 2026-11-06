@@ -2,158 +2,12 @@ import Foundation
 import WorkroomDomain
 import WorkroomVCS
 
-/// Workroom VCS + CI status scheduling (issue #24). Split out of `AppStore` (already large) per
-/// the `AppStore+WorkroomSplit.swift` convention. Best-effort / "last checked", NOT real-time:
-/// statuses refresh on load, on app focus (via reload), on selection (debounced), and never via
-/// a file watcher in Phase 1. The fan-out across all workrooms is bounded (so 50 workrooms
-/// don't fork 50 git + 50 gh processes at once); CI is a second, slower stage that never blocks
-/// the dirty dot, and is gated by a much longer TTL than the local git probe. Three separate lanes
-/// here (this sweep, `scheduleSelectedStatusRefresh`, `handleWorkroomFileChange`) can all read the
-/// same project concurrently, and nothing orders their RESULTS — a slow probe still lands after a
-/// faster one that read the tree later — so `resolve(location:)` stamps each read's completion and
-/// `mergeLocalStatus` drops a result stamped earlier than the one already recorded.
+/// The status probes that follow this window's selection (issue #24): the debounced selection
+/// refresh, the selected workroom's filesystem watch, and the probes that name one row. The status
+/// itself, the sweep and the writes in flight are the app's `VCSStatusService`; every result merges
+/// there (`mergeLocalStatus`), which is where the lanes are ordered against each other.
 extension AppStore {
-  fileprivate static let localStatusTTL: TimeInterval = 15  // git dirty/changed-files
-  fileprivate static let ciStatusTTL = GitHubCIResultCache.defaultTTL  // gh CI (network)
-  // The `gh auth status` TTL lives in `GitHubAuthCache`, which owns that probe's freshness outright.
-  static let localConcurrency = 5
-  static let ciConcurrency = 2
   fileprivate static let selectionDebounce: TimeInterval = 0.3  // arrow-key row cycling coalesce
-
-  struct StatusWorkItem: Sendable, Equatable {
-    let sid: SidebarID
-    let path: String
-    /// The project root. Equals `path` for the root row; for a workroom it's the parent project's
-    /// path — the shared repository its writes are keyed by.
-    let projectRoot: String
-    let location: RepositoryLocation?
-
-    init(
-      sid: SidebarID, path: String, projectRoot: String,
-      location: RepositoryLocation? = nil
-    ) {
-      self.sid = sid
-      self.path = path
-      self.projectRoot = projectRoot
-      self.location = location ?? RepositoryRouter.shared.localLocation(for: path)
-    }
-
-    func resolvedLocation() async throws -> RepositoryLocation {
-      if let location { return location }
-      return try await RepositoryLocation.local(path)
-    }
-
-    var permitsLocalAccess: Bool { location == nil || location?.host == .local }
-    /// Whether GitHub status may be read for, or written through, this item: a local one, or a
-    /// remote one registered with a GitHub identity (`gh` stays on this Mac — only the repository's
-    /// NAME comes from the registration). A remote item without one is still refused.
-    var permitsGitHubAccess: Bool {
-      permitsLocalAccess
-        || location.flatMap { RepositoryRouter.shared.entry(for: $0)?.github } != nil
-    }
-    var sharedLocation: RepositoryLocation? {
-      location.flatMap { RepositoryRouter.shared.entry(for: $0)?.sharedLocation }
-    }
-  }
-
-  /// Every root + workroom as a status work item.
-  func statusWorkItems() -> [StatusWorkItem] {
-    var items: [StatusWorkItem] = []
-    for p in projectStore.projects {
-      items.append(
-        StatusWorkItem(sid: .root(project: p.id), path: p.path, projectRoot: p.path))
-      // A remote workroom's path is not a path on this Mac: a reachable one is probed on its host,
-      // and any other has nothing to probe.
-      for w in p.workrooms where w.isRemote {
-        if let item = remoteStatusWorkItem(w, in: p) { items.append(item) }
-      }
-      for w in p.workrooms where !w.isRemote {
-        items.append(
-          StatusWorkItem(
-            sid: .workroom(project: p.id, name: w.name), path: w.path, projectRoot: p.path))
-      }
-    }
-    return items
-  }
-
-  /// Sweep every workroom's status. Cancels any in-flight sweep so a slow one can't write stale
-  /// values over a newer one. `force` ignores the TTLs (e.g. a manual refresh). Two stages:
-  /// fast local git first, then the slow `gh` CI pass — so the dirty dots land immediately.
-  func refreshWorkroomStatuses(force: Bool = false) {
-    // Seeded statuses never shell out to git/gh — keep them (and let the manual Refresh button
-    // re-apply them rather than wipe them to "unknown").
-    if !probesRepositories {
-      seedStatuses()
-      return
-    }
-    statusSweepTask?.cancel()
-    let resolver = statusResolver
-    let now = Date()
-    let localTTL = Self.localStatusTTL
-    let ciTTL = Self.ciStatusTTL
-    let localItems = statusWorkItems().filter { item in
-      // Never sweep a workroom whose setup is still writing its worktree (issue: create-time FSEvents
-      // storm) — even on `force`. Its status is refreshed once, post-setup, by `createWorkroom`.
-      // Covers this window's create AND another window's, since `creatingWorkrooms` is shared.
-      if isCreating(item.sid) { return false }
-      // Nor one whose PROJECT has a commit in flight — see `isCommittingProject`. Also honoured on
-      // `force`, because a manual Refresh during a long hook races the write just as readily as the
-      // timer does.
-      if isCommittingProject(item.sharedLocation) { return false }
-      guard !force else { return true }
-      guard let checked = projectStore.workroomStatuses[item.sid]?.lastChecked else { return true }
-      return now.timeIntervalSince(checked) >= localTTL
-    }
-    // `.utility` so this background sweep yields CPU to a mounting terminal surface + its login shell.
-    statusSweepTask = Task(priority: .utility) { [weak self] in
-      guard let self else { return }
-      let interval = LaunchSignposts.begin("Workroom status sweep")
-      defer { LaunchSignposts.end("Workroom status sweep", interval) }
-      await self.runLocalSweep(localItems, resolver: resolver, cap: Self.localConcurrency)
-      if Task.isCancelled { return }
-      // Guard the network stage: if `gh` isn't installed/authenticated, skip the whole CI sweep
-      // rather than spawn a `gh` per dirty workroom only to have each fail.
-      await self.refreshGitHubCLI(resolver: resolver, force: force)
-      if Task.isCancelled { return }
-      guard self.projectStore.githubCLIStatus == .available else { return }
-      let ciItems = self.statusWorkItems().filter { item in
-        guard let s = self.projectStore.workroomStatuses[item.sid], s.dirty != nil, s.failure == nil
-        else {
-          return false
-        }
-        guard !force else { return true }
-        guard let c = s.ciCheckedAt else { return true }
-        return now.timeIntervalSince(c) >= ciTTL
-      }
-      if Task.isCancelled { return }
-      await self.runCISweep(ciItems, resolver: resolver, cap: Self.ciConcurrency, force: force)
-    }
-  }
-
-  /// Mirror the `gh` verdict onto the observable store so the warning + probe guards reflect whether
-  /// `gh` is usable. Freshness, single-flight and the `force` contract all belong to
-  /// `GitHubAuthCache`; this function only decides whether to paint what it says. No-ops in fixture
-  /// mode (the fixture seeds the status directly).
-  ///
-  /// **This is the one status mutation that happens INSIDE an awaited function**, so the callers' own
-  /// `Task.isCancelled` checks run too late to protect it — the guard has to live here. It was
-  /// missing, and that was the false, sticky "GitHub CLI not signed in": a superseded sweep or a
-  /// workroom switched mid-probe SIGKILLs the `gh` child, `StatusCommandRunner`'s non-throwing
-  /// continuation still hands back `exitCode: 9` with empty stdout, and the classifier read that as a
-  /// logout. Publishing it also stamped the freshness clock, so the staleness gate turned every lane
-  /// that would have healed the value into an early return for a full minute — the wrong answer
-  /// suppressing its own repair, escapable only via the Refresh button's `force`.
-  ///
-  /// The tempting instinct — "gh's auth state is machine-global, so record it even from a cancelled
-  /// task" — is wrong: a cancelled probe holds no fact at all. A `nil` here means the same thing (the
-  /// probe told us nothing and there was no prior verdict), so leave the mirror alone in both cases.
-  func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
-    if !probesRepositories { return }
-    guard let status = await projectStore.ghAuthCache.status(force: force, resolver: resolver)
-    else { return }
-    if Task.isCancelled { return }
-    projectStore.githubCLIStatus = status
-  }
 
   /// Probe ONE workroom's local status now, whatever is selected (issue #167). The post-create
   /// refresh needs this: `scheduleSelectedStatusRefresh` below reads `selectedTargetID`, and when two
@@ -169,15 +23,16 @@ extension AppStore {
   /// when the file-watcher lane is busiest — so like every other lane it hands its read time to
   /// `mergeLocalStatus`, which is where the cross-lane ordering lives.
   func refreshLocalStatus(for sid: SidebarID) {
-    if !probesRepositories { return }
-    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    let vcsStatus = vcsStatus
+    if !vcsStatus.probesRepositories { return }
+    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
     // Same two suppressions the selection path applies — another create/commit may still be writing.
-    if isCreating(sid) || isCommittingProject(item.sharedLocation) { return }
-    let resolver = statusResolver
+    if vcsStatus.isCreating(sid) || vcsStatus.isCommittingProject(item.sharedLocation) { return }
+    let working = vcsStatus.statusResolver.working
     Task { [weak self] in
-      let fresh = await resolver.resolve(item: item)
-      guard let self, self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      let fresh = await working.resolve(item: item)
+      guard self != nil, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.mergeLocalStatus(fresh, into: sid)
     }
   }
 
@@ -189,25 +44,28 @@ extension AppStore {
     // (Re)point the filesystem watcher at the newly-selected workroom so its local status stays live
     // while you edit in its terminal (issue #24 follow-up). Cheap + safe to call on every selection.
     updateSelectedWorkroomWatch()
+    let vcsStatus = vcsStatus
     // Seeded statuses stay — selecting a target must not fork a real probe that would overwrite them.
-    if !probesRepositories { return }
-    guard let sid = selectedTargetID, let item = selectedStatusWorkItem(for: sid) else { return }
+    if !vcsStatus.probesRepositories { return }
+    guard let sid = selectedTargetID, let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
+      return
+    }
     // Don't probe a workroom whose setup is still writing its worktree — the watcher is already
     // suppressed above; this skips the debounced local+CI probe too. Re-armed post-setup by
     // `createWorkroom` calling this again once `creatingWorkrooms` no longer holds the id.
-    if isCreating(sid) { return }
+    if vcsStatus.isCreating(sid) { return }
     // By project root, not by row: a git worktree's index and refs live in the MAIN repo, so probing
     // workroom B while workroom A of the same project commits contends on the same `index.lock`.
-    if isCommittingProject(item.sharedLocation) { return }
-    let resolver = statusResolver
+    if vcsStatus.isCommittingProject(item.sharedLocation) { return }
+    let resolver = vcsStatus.statusResolver
     selectionStatusTask = Task { [weak self] in
       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
       if Task.isCancelled { return }
-      guard let self else { return }
-      let fresh = await resolver.resolve(item: item)
+      guard self != nil else { return }
+      let fresh = await resolver.working.resolve(item: item)
       if Task.isCancelled { return }
-      guard self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      guard vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.mergeLocalStatus(fresh, into: sid)
       guard item.permitsGitHubAccess else { return }
       let github: RepositoryGitHub
       do {
@@ -220,233 +78,39 @@ extension AppStore {
         github = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
       } catch { return }
       // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
-      await self.refreshGitHubCLI(resolver: resolver)
+      await vcsStatus.refreshGitHubCLI(resolver: resolver)
       if Task.isCancelled { return }
-      guard self.projectStore.githubCLIStatus == .available else { return }
+      guard vcsStatus.githubCLIStatus == .available else { return }
       // CI and the PR list are independent — run them concurrently. Apply CI the moment it lands so
       // the sidebar/tab glyph never waits on the PR probe.
       async let ciRes = github.ciSnapshot(branch: fresh.branchForCI)
       async let prRawRes = github.pullRequest(branch: fresh.branchForCI)
       let ci = await ciRes
-      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.applyCIStatus(ci.resolution, to: sid, checkedAt: ci.checkedAt)
+      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.applyCIStatus(ci.resolution, to: sid, checkedAt: ci.checkedAt)
       let prRaw = await prRawRes
-      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.applyPRStatus(prRaw, to: sid)
+      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.applyPRStatus(prRaw, to: sid)
       // With the PR number in hand, fetch its checks and enrich reviewer permalinks concurrently —
       // checks must not wait behind the (conditional) reviewer-URL GraphQL round-trip (issue #75).
       guard case .info(let info) = prRaw else { return }
       async let enrichedRes = github.enrich(prRaw)
       async let checksRes = github.checks(number: info.number)
       let enriched = await enrichedRes
-      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.applyPRStatus(enriched, to: sid)
+      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.applyPRStatus(enriched, to: sid)
       let checks = await checksRes
-      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.applyChecksStatus(checks, to: sid)
+      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.applyChecksStatus(checks, to: sid)
     }
   }
 
-  /// The worst-status child of a project (root + workrooms), for the collapsed project row's
-  /// aggregate badge. nil when nothing needs attention (all clean / unresolved).
-  func aggregateStatus(forProject projectPath: String) -> WorkroomStatus? {
-    guard let p = projectStore.projects.first(where: { $0.id == projectPath }) else { return nil }
-    var sids: [SidebarID] = [.root(project: p.id)]
-    sids += p.workrooms.map { SidebarID.workroom(project: p.id, name: $0.name) }
-    let worst = sids.compactMap { projectStore.workroomStatuses[$0] }
-      .max(by: { $0.aggregateWeight < $1.aggregateWeight })
-    guard let worst, worst.aggregateWeight > 0 else { return nil }
-    return worst
-  }
-
-  /// Whether statuses, branches and history come from probing the repositories, rather than the
-  /// services' seeded statuses (the UI-test fixture's, whose paths are not repositories).
-  var probesRepositories: Bool { services.seededStatuses == nil }
-
-  /// Put the services' seeded statuses on the first project's root and first workroom, so the
-  /// Changes inspector is exercisable hermetically — the fixture paths aren't real repos, so the
-  /// live probe would only ever report "unknown". No-ops when the services probe instead.
-  func seedStatuses() {
-    guard let seeded = services.seededStatuses, let project = projectStore.projects.first else {
-      return
-    }
-    let seed = seeded()
-    projectStore.workroomStatuses[.root(project: project.path)] = seed.root
-    if let workroom = project.workrooms.first {
-      projectStore.workroomStatuses[.workroom(project: project.path, name: workroom.name)] =
-        seed.workroom
-    }
-    // Seed here — not only at load — because this runs again on the manual Refresh button, and
-    // `refreshGitHubCLI` no-ops when statuses are seeded, so a re-seed is the only thing that can
-    // restate the value. Left alone when there is none, so the optimistic `.available` default
-    // stands and every existing fixture test still sees no warning.
-    if let gitHubCLI = seed.gitHubCLI { projectStore.githubCLIStatus = gitHubCLI }
-  }
-
-  // MARK: - Internals
-
-  /// Whether `sid` still maps to a live root/workroom. A status sweep captures its work-list up
-  /// front, so a workroom can be deleted before its (slow) probe lands — without this guard the
-  /// merge would write a ghost entry into `workroomStatuses` for a target that no longer exists.
-  private func targetExists(_ sid: SidebarID) -> Bool {
-    selectedStatusWorkItem(for: sid) != nil
-  }
-
-  /// `internal` rather than `private`: the commit sheet needs a row's path to open against it.
-  func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
-    switch sid {
-    case .root(let path):
-      guard let p = projectStore.projects.first(where: { $0.id == path }) else { return nil }
-      return StatusWorkItem(sid: sid, path: p.path, projectRoot: p.path)
-    case .workroom(let path, let name):
-      guard let p = projectStore.projects.first(where: { $0.id == path }),
-        let w = p.workrooms.first(where: { $0.id == name })
-      else { return nil }
-      // A remote workroom's item is on its host. One this app can't reach has none, which also
-      // makes `targetExists` false, so commits, PR actions and late status merges skip it.
-      if w.isRemote { return remoteStatusWorkItem(w, in: p) }
-      return StatusWorkItem(sid: sid, path: w.path, projectRoot: p.path)
-    case .project, .creation:
-      return nil
-    }
-  }
-
-  /// A reachable remote workroom's item (#253): read via its daemon at its location on its host,
-  /// and its own shared root there (`RemoteWorkrooms.registrations`).
-  private func remoteStatusWorkItem(_ w: Workroom, in p: Project) -> StatusWorkItem? {
-    guard let host = w.reachableHost,
-      let location = try? RepositoryLocation.remote(host: host, path: w.path)
-    else { return nil }
-    return StatusWorkItem(
-      sid: .workroom(project: p.id, name: w.name), path: w.path, projectRoot: w.path,
-      location: location)
-  }
-
-  /// Bounded fan-out: at most `cap` local probes in flight; refill as each completes.
-  private func runLocalSweep(_ items: [StatusWorkItem], resolver: WorkroomStatusResolver, cap: Int)
-    async
-  {
-    guard !items.isEmpty else { return }
-    await withTaskGroup(of: (StatusWorkItem, WorkroomStatus).self) { group in
-      var idx = 0
-      let initial = min(cap, items.count)
-      while idx < initial {
-        let item = items[idx]
-        idx += 1
-        group.addTask {
-          (
-            item,
-            await resolver.resolve(item: item)
-          )
-        }
-      }
-      while let (item, fresh) = await group.next() {
-        if Task.isCancelled { break }
-        if selectedStatusWorkItem(for: item.sid) == item { mergeLocalStatus(fresh, into: item.sid) }
-        if idx < items.count {
-          let item = items[idx]
-          idx += 1
-          group.addTask {
-            (
-              item,
-              await resolver.resolve(item: item)
-            )
-          }
-        }
-      }
-    }
-  }
-
-  private func runCISweep(
-    _ items: [StatusWorkItem], resolver: WorkroomStatusResolver, cap: Int, force: Bool
-  )
-    async
-  {
-    var services: [(StatusWorkItem, RepositoryGitHub)] = []
-    // One repository lookup per PROJECT, shared by all its workrooms — and the whole answer, not just
-    // a found repo: a `keepPrior` blip must reach every workroom's CI probe or the project's badges
-    // blank. (Each workroom has its own `RepositoryGitHub`, so its per-instance lookup cannot span
-    // them.)
-    var repositories: [RepositoryLocation: GitHubRepositoryResolution] = [:]
-    for item in items where item.permitsGitHubAccess {
-      if Task.isCancelled { return }
-      do {
-        let location: RepositoryLocation
-        if let supplied = item.location {
-          location = supplied
-        } else {
-          location = try await RepositoryLocation.local(item.path)
-        }
-        let service = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
-        let key = service.context.sharedLocation ?? service.context.location
-        if repositories[key] == nil { repositories[key] = await service.repository() }
-        services.append((item, service))
-      } catch { continue }
-    }
-    let branches = projectStore.workroomStatuses.mapValues(\.branchForCI)
-    await withTaskGroup(of: (StatusWorkItem, CIStatusSnapshot).self) { group in
-      var index = 0
-      func enqueue() {
-        guard index < services.count else { return }
-        let (item, service) = services[index]
-        index += 1
-        let branch = branches[item.sid] ?? nil
-        let key = service.context.sharedLocation ?? service.context.location
-        let repository = repositories[key]
-        group.addTask {
-          (item, await service.ciSnapshot(branch: branch, repository: repository, force: force))
-        }
-      }
-      for _ in 0..<min(cap, services.count) { enqueue() }
-      while let (item, result) = await group.next() {
-        if Task.isCancelled { break }
-        if selectedStatusWorkItem(for: item.sid) == item {
-          applyCIStatus(result.resolution, to: item.sid, checkedAt: result.checkedAt)
-        }
-        enqueue()
-      }
-    }
-  }
-
-  /// Merge a fresh local result into the stored snapshot, preserving the (separately-resolved)
-  /// CI fields so a local refresh never wipes the CI badge.
-  /// Ordering comes from `fresh.localReadAt`, which `WorkroomStatusResolver.resolve(location:)` stamps when
-  /// the read FINISHED. Deliberately not a caller-supplied invocation time: a read can queue for a
-  /// while before it observes anything, so invocation time would call a probe older when it
-  /// actually saw a later tree. A result with no stamp (a hand-built status in a test)
-  /// cannot be ordered, so it merges.
-  ///
-  /// The five local lanes (this file's sweep, selection refresh, post-commit refresh, file-watcher
-  /// refresh, and the post-create probe) cancel-and-replace within themselves but are NOT ordered
-  /// against each other, so a slow probe routinely lands after a faster one that read the tree later.
-  /// Ordering on merge time cannot fix that — by then both results exist and the timestamps say
-  /// nothing about which tree each one saw. So the ordering lives here, on the read: a result whose
-  /// read began before the recorded one's is dropped. That is what keeps a stale answer off the dirty
-  /// dot no matter which lane wins the race, rather than each lane guarding itself and getting the
-  /// comparison subtly wrong.
-  func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID) {
-    guard targetExists(sid) else { return }  // deleted mid-sweep → don't write a ghost entry
-    if let readAt = fresh.localReadAt, let prior = projectStore.workroomStatuses[sid]?.localReadAt,
-      prior > readAt
-    {
-      return
-    }
-    var s = projectStore.workroomStatuses[sid] ?? .unresolved
-    s.dirty = fresh.dirty
-    s.conflicted = fresh.conflicted
-    s.changedFiles = fresh.changedFiles
-    s.insertions = fresh.insertions
-    s.deletions = fresh.deletions
-    s.branchForCI = fresh.branchForCI
-    s.failure = fresh.failure
-    s.localReadAt = fresh.localReadAt
-    s.lastChecked = Date()
-    projectStore.workroomStatuses[sid] = s
-    // This sweep is the freshest evidence anyone has for these two, so it settles both of the caches
-    // that would otherwise go on asserting a record-time answer: the branch name the toolbar
-    // published, and the change kind an open diff tab captured when it opened.
-    pruneResolvedBranchNameIfDrifted(sid, sweptBranch: fresh.branchForCI)
-    refreshOpenDiffChangeKinds(for: sid, status: s)
+  /// What this window caches from a status, settled by every local merge (`VCSStatusService.register`
+  /// in `init`): the branch name its toolbar published, and the change kind an open diff tab captured
+  /// when it opened. A merge is the freshest evidence anyone has for both.
+  func localStatusDidMerge(_ status: WorkroomStatus, into sid: SidebarID) {
+    pruneResolvedBranchNameIfDrifted(sid, sweptBranch: status.branchForCI)
+    refreshOpenDiffChangeKinds(for: sid, status: status)
   }
 
   /// The current branch label for a terminal target, for the detail-panel status bar (issue
@@ -475,10 +139,10 @@ extension AppStore {
   /// 3. The project root's `RootRef`, resolved by `BranchResolver`.
   func branchName(for sid: SidebarID) -> String? {
     if let resolved = resolvedBranchNames[sid], !resolved.isEmpty { return resolved }
-    let status = projectStore.workroomStatuses[sid]
+    let status = vcsStatus.workroomStatuses[sid]
     if let branch = status?.branchForCI, !branch.isEmpty { return branch }
     if case .root(let project) = sid {
-      let label = RootPresentation.make(projectStore.rootRefs[project] ?? .unresolved).label
+      let label = RootPresentation.make(vcsStatus.rootRefs[project] ?? .unresolved).label
       return label.isEmpty ? nil : label
     }
     return nil
@@ -502,166 +166,7 @@ extension AppStore {
     setResolvedBranchName(nil, for: sid)
   }
 
-  private func applyCIStatus(_ res: CIResolution, to sid: SidebarID, checkedAt: Date) {
-    guard var s = projectStore.workroomStatuses[sid] else { return }
-    switch res {
-    case .state(let x):
-      s.ci = x
-      s.ciCheckedAt = checkedAt
-    case .absent:
-      s.ci = nil
-      s.ciCheckedAt = checkedAt
-    case .keepPrior:
-      // Transient rate-limit / network blip. Stamp `ciCheckedAt` so the TTL throttles re-probes —
-      // but ONLY if we've probed before (ciCheckedAt set). On a first-ever probe that blips, leave
-      // it nil so the next sweep retries instead of hiding CI for the full TTL on one blip. Coarse
-      // but cheap; true exponential backoff is a future refinement.
-      if s.ciCheckedAt != nil { s.ciCheckedAt = checkedAt }
-    }
-    projectStore.workroomStatuses[sid] = s
-  }
-
-  // Internal (not `private`) so `@testable` can drive the checks lifecycle (clear-on-PR-change /
-  // clear-on-no-PR, issue #75) directly.
-  func applyPRStatus(_ res: PRResolution, to sid: SidebarID) {
-    guard var s = projectStore.workroomStatuses[sid] else { return }
-    switch res {
-    case .info(let pr):
-      // Checks are keyed to a PR's identity (issue #75). If the PR changed (different number), the
-      // old PR's checks are stale — drop them so they can't render under the new PR until
-      // `resolveChecks` refills them. Same number ⇒ keep them (e.g. the raw→enriched re-apply).
-      if s.pr?.number != pr.number {
-        s.checks = nil
-        s.checksCheckedAt = nil
-      }
-      s.pr = pr
-      s.prCheckedAt = Date()
-    case .absent:
-      // No PR ⇒ `resolveChecks` won't run, so the checks must be cleared here (not only in
-      // `applyChecksStatus`) or a disappearing PR would leave its checks rendered.
-      s.pr = nil
-      s.checks = nil
-      s.checksCheckedAt = nil
-      s.prCheckedAt = Date()
-    case .keepPrior:
-      // Transient blip: keep the last good PR. Stamp `prCheckedAt` so the TTL throttles re-probes,
-      // but only if we've probed before — a first-ever blip leaves it nil so the next sweep retries.
-      if s.prCheckedAt != nil { s.prCheckedAt = Date() }
-    }
-    projectStore.workroomStatuses[sid] = s
-  }
-
-  /// Apply a PR-checks probe result (issue #75). `.list` (including `[]` for "loaded, no checks")
-  /// sets the rows and stamps `checksCheckedAt`. `.absent` (no checks reported / gh error) is *also*
-  /// a loaded state — it stamps with an empty list, distinct from the not-loaded `nil`, so the panel
-  /// stops falling back to the run-list aggregate. `.keepPrior` (transient blip) keeps the last good
-  /// list, stamping only if we've probed before (so a first-ever blip retries next time). Internal
-  /// (not `private`) so `@testable` reaches it. The clear-on-no-PR / clear-on-PR-change paths live in
-  /// `applyPRStatus` — `resolveChecks` never runs without a PR.
-  func applyChecksStatus(_ res: ChecksResolution, to sid: SidebarID) {
-    guard var s = projectStore.workroomStatuses[sid] else { return }
-    switch res {
-    case .list(let checks):
-      s.checks = checks
-      s.checksCheckedAt = Date()
-    case .absent:
-      s.checks = []
-      s.checksCheckedAt = Date()
-    case .keepPrior:
-      if s.checksCheckedAt != nil { s.checksCheckedAt = Date() }
-    }
-    projectStore.workroomStatuses[sid] = s
-  }
-
   // MARK: - Live filesystem watch (selected workroom)
-
-  /// Whether `sid` is a workroom whose create/setup is still in flight (issue: create-time FSEvents
-  /// storm). While a setup script writes the worktree (e.g. `npm install`), arming the recursive
-  /// FSEvents watcher on it or probing its VCS status is pointless churn — the tree isn't settled and
-  /// FSEvents floods ~70 callbacks/sec under that load. `creatingWorkrooms` (set as setup begins,
-  /// cleared when it finishes) is the exact signal; this is the single conversion point from the
-  /// `SidebarID`-keyed status world to the `TerminalTarget.ID`-keyed `creatingWorkrooms` set. Roots
-  /// and projects are never "creating".
-  func isCreating(_ sid: SidebarID) -> Bool {
-    guard case .workroom(let project, let name) = sid else { return false }
-    return creatingWorkrooms.contains(.workroom(project: project, name: name))
-  }
-
-  /// Whether a commit is running for this row. Suppresses the same three lanes `isCreating` does, for
-  /// a closely-related reason.
-  ///
-  /// Status probes are reads and never queue behind the write gate, so without this a probe would
-  /// run **concurrently with the commit** — contending on `index.lock`. Suppressing the lanes is the
-  /// fix.
-  ///
-  /// It also stops the panel rendering a half-staged tree: `git commit` moves the index and refs as it
-  /// goes, and `GitProvider.workingStatus` collapses index and worktree deltas into one row, so a
-  /// probe landing mid-commit shows a state that never really existed.
-  func isCommitting(_ sid: SidebarID) -> Bool { projectStore.committingTargets.contains(sid) }
-
-  /// Whether ANY workroom of this project has a commit in flight.
-  ///
-  /// The question every read lane has to ask, rather than `isCommitting(sid)`: a project's workrooms
-  /// share one repository, so a sibling's commit churns the files this workroom's probe reads.
-  /// Suppression is what keeps these lanes off a repo mid-write; reads are not gated.
-  func isCommittingProject(_ repository: RepositoryLocation?) -> Bool {
-    guard let repository else { return false }
-    return projectStore.committingProjectRoots[repository, default: 0] > 0
-  }
-
-  func isCommittingProject(_ projectRoot: String) -> Bool {
-    guard let location = RepositoryRouter.shared.localLocation(for: projectRoot) else {
-      return false
-    }
-    return projectStore.committingProjectRoots[location, default: 0] > 0
-  }
-
-  /// Whether ANY write (commit, fetch, push, or pull) is in flight against this project root, in
-  /// this window or another. Checked by the write actions themselves BEFORE they start — the
-  /// umbrella `isCommittingProject` above never was, and neither was any fetch/push/pull call
-  /// site, which is what let two windows each queue a write on the same project and run them
-  /// concurrently once `RepositoryWriteGate`'s self-heal ceiling passed. A write that finds this true
-  /// refuses outright (surfaced as `.locked(nil)` — "The repository was busy. Try again.") rather
-  /// than queuing into the gate and racing the one already running.
-  func isWritingProject(_ projectRoot: String) -> Bool {
-    guard let location = RepositoryRouter.shared.localLocation(for: projectRoot) else {
-      return false
-    }
-    return isWritingProject(location)
-  }
-
-  func isWritingProject(_ repository: RepositoryLocation) -> Bool {
-    projectStore.writingProjectRoots[repository, default: 0] > 0
-  }
-
-  /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
-  /// `defer` or an equivalent unconditional cleanup, mirroring how `committingProjectRoots` is
-  /// incremented/decremented around `performCommit`'s own write below.
-  func beginWrite(projectRoot: RepositoryLocation) {
-    projectStore.writingProjectRoots[projectRoot, default: 0] += 1
-  }
-
-  /// Mark a write finishing against `projectRoot`. Decremented rather than cleared, matching
-  /// `committingProjectRoots`'s own shape: in steady state this should only ever be 0 or 1, since
-  /// `isWritingProject` refuses a second write before `beginWrite` is ever called for it — but
-  /// decrementing (not clearing) is the robust form if that invariant is ever violated by a future
-  /// caller, the same defensive reasoning `committingProjectRoots` already applies.
-  func endWrite(projectRoot: RepositoryLocation) {
-    Self.releaseWrite(projectRoot: projectRoot, in: projectStore)
-  }
-
-  /// The shared logic behind `endWrite`, taking `ProjectStore` explicitly so a caller that only has
-  /// a STRONGLY-captured `ProjectStore` (not a live `AppStore`) can release the mark directly —
-  /// `performCommit`'s Task and the `writeDidFinish` closure wired in `AppStore.init` both need this,
-  /// since either can run after the `AppStore`/`RemoteStateModel` that started the write is gone.
-  static func releaseWrite(projectRoot: RepositoryLocation, in projectStore: ProjectStore) {
-    let remaining = (projectStore.writingProjectRoots[projectRoot] ?? 1) - 1
-    if remaining > 0 {
-      projectStore.writingProjectRoots[projectRoot] = remaining
-    } else {
-      projectStore.writingProjectRoots.removeValue(forKey: projectRoot)
-    }
-  }
 
   /// Re-probe ONE row's local status, named explicitly.
   ///
@@ -670,15 +175,16 @@ extension AppStore {
   /// refresh B — leaving the row that actually changed stale and re-probing one that didn't. Every
   /// post-commit refresh therefore names the sid it captured when the sheet opened.
   func refreshStatus(for sid: SidebarID) {
-    guard probesRepositories, let item = selectedStatusWorkItem(for: sid) else {
+    let vcsStatus = vcsStatus
+    guard vcsStatus.probesRepositories, let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
       return
     }
-    let resolver = statusResolver
+    let working = vcsStatus.statusResolver.working
     Task { [weak self] in
-      let fresh = await resolver.resolve(item: item)
-      guard let self, self.targetExists(sid) else { return }
-      guard self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      let fresh = await working.resolve(item: item)
+      guard self != nil, vcsStatus.targetExists(sid) else { return }
+      guard vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.mergeLocalStatus(fresh, into: sid)
     }
   }
 
@@ -687,8 +193,8 @@ extension AppStore {
   /// setup script is actively writing). No-ops when statuses are seeded (they must stay
   /// deterministic).
   func updateSelectedWorkroomWatch() {
-    guard probesRepositories, let sid = selectedTargetID, !isCreating(sid),
-      let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
+    guard vcsStatus.probesRepositories, let sid = selectedTargetID, !vcsStatus.isCreating(sid),
+      let item = vcsStatus.selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else {
       workroomFileWatcher.stop()
       return
@@ -703,29 +209,30 @@ extension AppStore {
   /// `overflow` means some changes are unlisted (or the watch was interrupted and resumed), so `paths`
   /// cannot be trusted to be complete and the `.jj`-internal filter below must not apply.
   func handleWorkroomFileChange(_ paths: [String], overflow: Bool = false) {
-    guard probesRepositories, let sid = selectedTargetID,
-      let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
+    let vcsStatus = vcsStatus
+    guard vcsStatus.probesRepositories, let sid = selectedTargetID,
+      let item = vcsStatus.selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else { return }
     // Defensive: never probe a mid-setup worktree. The watcher shouldn't be armed while creating
     // (updateSelectedWorkroomWatch stops it), but a stray in-flight FSEvents callback can land during
     // the stop transition — bail so it can't fork a probe against the tree the setup script is writing.
-    if isCreating(sid) { return }
+    if vcsStatus.isCreating(sid) { return }
     // Same for a commit in flight, keyed by project root — a git worktree's index lives in the main
     // repo, so a sibling workroom's commit churns the very files this probe reads. This lane is the
     // one that would fire MOST during a git commit: git's own index and ref churn is deliberately
     // let through as real signal, so `git add`/`git commit` would each fork a probe against a tree
     // mid-write.
-    if isCommittingProject(item.sharedLocation) { return }
+    if vcsStatus.isCommittingProject(item.sharedLocation) { return }
     // A colocated repo left from jj can still have `jj` run in it, which churns `.jj/`; Workroom never
     // writes there, so a burst that touched ONLY jj-internal paths says nothing about the tree.
     if !overflow, !paths.isEmpty, paths.allSatisfy(Self.isJJInternalPath) { return }
-    let resolver = statusResolver
+    let working = vcsStatus.statusResolver.working
     watchRefreshTask?.cancel()
     watchRefreshTask = Task { [weak self] in
-      let fresh = await resolver.resolve(item: item)
+      let fresh = await working.resolve(item: item)
       guard let self, !Task.isCancelled, self.selectedTargetID == sid else { return }
-      guard self.selectedStatusWorkItem(for: sid) == item else { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      guard vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
+      vcsStatus.mergeLocalStatus(fresh, into: sid)
     }
   }
 

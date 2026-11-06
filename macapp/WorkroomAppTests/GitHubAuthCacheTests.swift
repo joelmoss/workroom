@@ -18,7 +18,7 @@ final class GitHubAuthCacheTests: XCTestCase {
       stdout: #"{"hosts":{"github.com":[{"state":"success","active":true}]}}"#,
       delay: .milliseconds(80))
     let cache = GitHubAuthCache()
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     let results = await withTaskGroup(of: GitHubCLIStatus?.self) { group in
       for _ in 0..<5 { group.addTask { await cache.status(resolver: resolver) } }
@@ -36,7 +36,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testASecondCallInsideTheTTLDoesNotReprobe() async {
     let runner = CountingGHRunner(stdout: successJSON)
     let cache = GitHubAuthCache(ttl: .seconds(60))
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     _ = await cache.status(resolver: resolver)
     _ = await cache.status(resolver: resolver)
@@ -47,7 +47,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testAStaleVerdictIsReprobed() async {
     let runner = CountingGHRunner(stdout: successJSON)
     let cache = GitHubAuthCache(ttl: .milliseconds(20))
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     _ = await cache.status(resolver: resolver)
     try? await Task.sleep(nanoseconds: 40_000_000)
@@ -62,7 +62,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testNotAuthenticatedIsReconfirmedOnTheShorterNegativeTTL() async {
     let runner = CountingGHRunner(stdout: #"{"hosts":{}}"#)
     let cache = GitHubAuthCache(ttl: .seconds(60), negativeTTL: .milliseconds(20))
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     let first = await cache.status(resolver: resolver)
     XCTAssertEqual(first, .notAuthenticated)
@@ -77,7 +77,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testAvailableKeepsTheFullTTL() async {
     let runner = CountingGHRunner(stdout: successJSON)
     let cache = GitHubAuthCache(ttl: .seconds(60), negativeTTL: .milliseconds(20))
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     _ = await cache.status(resolver: resolver)
     try? await Task.sleep(nanoseconds: 40_000_000)
@@ -91,7 +91,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testForceBypassesAFreshVerdict() async {
     let runner = CountingGHRunner(stdout: successJSON)
     let cache = GitHubAuthCache(ttl: .seconds(60))
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     _ = await cache.status(resolver: resolver)
     _ = await cache.status(force: true, resolver: resolver)
@@ -104,7 +104,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testForceDoesNotJoinAnInFlightNonForcedProbe() async {
     let runner = CountingGHRunner(stdout: successJSON, delay: .milliseconds(120))
     let cache = GitHubAuthCache(ttl: .seconds(60))
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     let background = Task { await cache.status(resolver: resolver) }
     // Let the non-forced probe get in flight before forcing.
@@ -122,7 +122,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testKeepPriorReturnsNilWhenNothingIsCached() async {
     let runner = CountingGHRunner(signalled: true)
     let cache = GitHubAuthCache()
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     let status = await cache.status(resolver: resolver)
 
@@ -132,7 +132,7 @@ final class GitHubAuthCacheTests: XCTestCase {
   func testKeepPriorPreservesThePriorVerdictAndDoesNotStamp() async {
     let runner = SwitchableGHRunner(stdout: #"{"hosts":{}}"#)
     let cache = GitHubAuthCache(ttl: .seconds(60), negativeTTL: .milliseconds(20))
-    let resolver = WorkroomStatusResolver(runner: runner)
+    let resolver = GitHubStatusResolver(runner: runner)
 
     let first = await cache.status(resolver: resolver)
     XCTAssertEqual(first, .notAuthenticated)
@@ -160,8 +160,8 @@ final class GitHubAuthCacheTests: XCTestCase {
     let cacheA = GitHubAuthCache()
     let cacheB = GitHubAuthCache()
 
-    let a = await cacheA.status(resolver: WorkroomStatusResolver(runner: runnerA))
-    let b = await cacheB.status(resolver: WorkroomStatusResolver(runner: runnerB))
+    let a = await cacheA.status(resolver: GitHubStatusResolver(runner: runnerA))
+    let b = await cacheB.status(resolver: GitHubStatusResolver(runner: runnerB))
 
     XCTAssertEqual(a, .available)
     XCTAssertEqual(b, .notAuthenticated)

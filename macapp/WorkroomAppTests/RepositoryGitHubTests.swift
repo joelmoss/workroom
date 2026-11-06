@@ -508,8 +508,8 @@ final class RepositoryGitHubTests: XCTestCase {
     try router.register(
       .init(location: withIdentity, sharedLocation: withIdentity, github: octo))
     try router.register(.init(location: without, sharedLocation: without))
-    func item(_ location: RepositoryLocation?) -> AppStore.StatusWorkItem {
-      AppStore.StatusWorkItem(
+    func item(_ location: RepositoryLocation?) -> VCSStatusService.StatusWorkItem {
+      VCSStatusService.StatusWorkItem(
         sid: .root(project: "/srv"), path: "/srv", projectRoot: "/srv",
         location: location)
     }

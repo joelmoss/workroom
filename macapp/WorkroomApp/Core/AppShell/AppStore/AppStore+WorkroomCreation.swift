@@ -1123,12 +1123,12 @@ extension AppStore {
   func planRemoteCreate(for project: Project) async throws -> RemoteCreatePlan {
     // gh first, as it knows which remote is GitHub's; without it (not installed, or signed out,
     // which a remote provider's workroom doesn't need) origin says (#260).
-    let resolver = WorkroomStatusResolver()
+    let git = GitRepositoryProbe()
     var repository: GitHubRepository?
-    if case .found(let found) = await resolver.resolveRepository(in: project.path) {
+    if case .found(let found) = await GitHubStatusResolver().resolveRepository(in: project.path) {
       repository = found
     } else {
-      repository = await resolver.originRepository(in: project.path)
+      repository = await git.originRepository(in: project.path)
     }
     guard let repository else {
       throw RemoteWorkrooms.Failure.notOnGitHub(
@@ -1145,19 +1145,19 @@ extension AppStore {
     var defaultNotUsed: String?
     if let base = effectiveBaseBranch(for: project) {
       let (remote, branch) = RemoteWorkrooms.splitBase(
-        base, remotes: await resolver.remoteNames(in: project.path))
+        base, remotes: await git.remoteNames(in: project.path))
       let fromDefault = project.baseBranch == nil
       if remote != "origin" {
         guard fromDefault else { throw RemoteWorkrooms.Failure.baseBranchOnOtherRemote(base) }
         defaultNotUsed = base
-      } else if await resolver.originHasBranch(branch, in: project.path) == false {
+      } else if await git.originHasBranch(branch, in: project.path) == false {
         guard fromDefault else { throw RemoteWorkrooms.Failure.baseBranchNotOnOrigin(branch) }
         defaultNotUsed = base
       } else {
         startBranch = branch
       }
     }
-    let origin = await resolver.originURL(in: project.path)
+    let origin = await git.originURL(in: project.path)
     return RemoteCreatePlan(
       repository: repository,
       cloneURL: RemoteWorkrooms.cloneURL(

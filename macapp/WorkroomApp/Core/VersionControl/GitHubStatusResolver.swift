@@ -1,4 +1,3 @@
-import DaemonConnection
 import Foundation
 import WorkroomSystem
 import WorkroomVCS
@@ -28,113 +27,27 @@ enum ChecksResolution: Equatable, Sendable {
   case keepPrior
 }
 
-/// Resolves VCS status through the repository router and GitHub status through git/gh. App-side (not in
-/// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
-/// `list` instant, isolates a slow repo to its own row. Stage 1 (`resolveLocal`) is fast/local;
-/// stage 2 (`resolveCI`) is the slow network call and runs separately so it never blocks the
-/// dirty dot. Pure parsers are `static` so they're unit-tested without spawning anything.
-struct WorkroomStatusResolver: Sendable {
+/// Resolves GitHub status through `gh`: the repository a checkout names, CI, the pull request, its
+/// checks and reviewer links, PR write commands, and whether `gh` itself is usable. App-side (not in
+/// the `workroom --json` contract) for the same reasons as `BranchResolver`. This is the slow,
+/// network stage of a status sweep, run separately so it never blocks the dirty dot
+/// (`WorkingStatusResolver` is the fast local one). Pure parsers are `static` so they're
+/// unit-tested without spawning anything.
+struct GitHubStatusResolver: Sendable {
   let runner: StatusCommandRunning
-  var timeout: TimeInterval  // local git
   var ciTimeout: TimeInterval  // gh (network)
-  /// Where local and remote status reads are routed. `.shared` in the app; tests inject a router
-  /// whose `localReader` is a double, so the sweep's real path is the one under test.
-  let router: RepositoryRouter
   let ciCache: GitHubCIResultCache
 
   init(
-    runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
-    ciTimeout: TimeInterval = 10, router: RepositoryRouter = .shared,
+    runner: StatusCommandRunning = StatusCommandRunner(), ciTimeout: TimeInterval = 10,
     ciCache: GitHubCIResultCache = GitHubCIResultCache()
   ) {
     self.runner = runner
-    self.timeout = timeout
     self.ciTimeout = ciTimeout
-    self.router = router
     self.ciCache = ciCache
   }
 
-  /// `-c` overrides prepended to every `git` invocation that can read the index or run a diff (the
-  /// origin and remote probes below read only config and refs, so they go without). A workroom can
-  /// be a clone of an *untrusted* repo, and the status sweep runs git automatically on
-  /// load/focus/selection — without this, a repo-local `core.fsmonitor` runs an arbitrary program on a plain `git status`. The diff probe
-  /// additionally passes `--no-ext-diff`/`--no-textconv` (and the runner unsets `GIT_EXTERNAL_DIFF`)
-  /// so `diff.external`/textconv config can't execute either. These flags go before the subcommand.
-  static let gitHardening = ["-c", "core.fsmonitor="]
-
-  // MARK: Stage 1 — local VCS status
-
-  func resolveLocal(path: String) async -> WorkroomStatus {
-    do {
-      return await resolve(location: try await RepositoryLocation.local(path))
-    } catch {
-      return WorkroomStatus(dirty: nil, failure: .unavailable)
-    }
-  }
-
-  func resolve(item: AppStore.StatusWorkItem) async -> WorkroomStatus {
-    if let location = item.location { return await resolve(location: location) }
-    return await resolveLocal(path: item.path)
-  }
-
-  func resolve(location: RepositoryLocation) async -> WorkroomStatus {
-    let interval = LaunchSignposts.begin("Working status")
-    defer { LaunchSignposts.end("Working status", interval) }
-    var status: WorkroomStatus
-    do {
-      if location.host == .local {
-        let exists = try await runBlocking { FileManager.default.fileExists(atPath: location.path) }
-        guard exists else {
-          var missing = WorkroomStatus(dirty: nil, failure: .missingPath)
-          missing.localReadAt = Date()
-          return missing
-        }
-      }
-      let reader = try await router.reader(for: location)
-      status = try await withTimeout(seconds: timeout) {
-        try await reader.workingStatus()
-      }
-    } catch RepositoryRoutingError.registrationRequired {
-      status = WorkroomStatus(dirty: nil, failure: .registrationRequired)
-    } catch RepositoryRoutingError.asleep {
-      status = WorkroomStatus(dirty: nil, failure: .asleep)
-    } catch RepositoryRoutingError.olderLayout {
-      status = WorkroomStatus(dirty: nil, failure: .olderLayout)
-    } catch is RepositoryRoutingError, is HostConnectionError {
-      status = WorkroomStatus(dirty: nil, failure: .unavailable)
-    } catch is VCSTimeoutError, is VCSCancellationError {
-      status = WorkroomStatus(dirty: nil, failure: .timeout)
-    } catch let error as VCSError {
-      status = WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
-    } catch { status = WorkroomStatus(dirty: nil, failure: .notRepository) }
-    // Stamp when this read FINISHED, so `mergeLocalStatus` can order results that its five unordered
-    // lanes produce. It has to be stamped here rather than by the caller: a read can queue behind
-    // others for a while before it observes anything, so the caller's invocation time can say a
-    // probe is older when it actually saw a LATER tree. Completion is the closest observable
-    // bound on when the tree was seen. (Two overlapping reads can still finish in the opposite order
-    // to their observations; closing that needs a filesystem generation number, not a clock.)
-    status.localReadAt = Date()
-    return status
-  }
-
-  /// Which "unknown" badge a typed backend error earns. Pure, so the mapping is unit-tested without
-  /// a repo.
-  ///
-  /// Only the two states a *retry* can clear get their own badge: a repository that refused the
-  /// read as busy (`.busy`) and a working tree that moved under the read (`.staleWorkingCopy`) — both
-  /// self-describing in the sidebar tooltip and the Changes panel.
-  /// Everything else stays `.notRepository`, which is also the honest answer for the common git case:
-  /// `GitProvider` can't bind SwiftGitX's typed error (a Swift 6 SIL crash — see its doc), so a
-  /// missing/broken repo arrives as `.io` and must keep reading as "not a repository".
-  static func failure(for error: VCSError) -> VCSStatusFailure {
-    switch error {
-    case .lockContention: return .busy
-    case .staleSnapshot: return .staleWorkingCopy
-    case .unsupportedRepo, .notFound, .partialData, .backendVersion, .io: return .notRepository
-    }
-  }
-
-  // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
+  // MARK: CI (slow, network; never blocks the local stage)
 
   /// Where every `gh` probe runs. Each one names its repository explicitly (`--repo` /
   /// `--hostname`), so none depends on a working directory: a remote workroom has no local one
@@ -175,47 +88,12 @@ struct WorkroomStatusResolver: Sendable {
     return .found(repo)
   }
 
-  /// The GitHub repository `dir`'s `origin` remote names, from git alone (#260): for a remote
-  /// workroom's create when `gh` can't answer, since a remote provider's workroom needs no `gh`.
-  /// nil with no origin, or one that names no GitHub-shaped repository.
-  func originRepository(in dir: String) async -> GitHubRepository? {
-    await originURL(in: dir).flatMap(GitHubRepository.init(remote:))
-  }
-
-  /// `dir`'s origin URL, as git config has it; nil when git fails.
-  func originURL(in dir: String) async -> String? {
-    let r = await runner.run("git", ["remote", "get-url", "origin"], in: dir, timeout: timeout)
-    guard r.exitCode == 0, !r.timedOut else { return nil }
-    return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  /// The names of `dir`'s git remotes, from local config; empty when git fails.
-  func remoteNames(in dir: String) async -> [String] {
-    let r = await runner.run("git", ["remote"], in: dir, timeout: timeout)
-    guard r.exitCode == 0, !r.timedOut else { return [] }
-    return r.stdout.split(whereSeparator: \.isNewline).map(String.init)
-  }
-
-  /// Whether `dir`'s origin has `branch`, asked of origin itself: nil when that can't be told
-  /// (offline, no credentials, a timeout), as `git ls-remote --exit-code` exits 2 only for no match.
-  func originHasBranch(_ branch: String, in dir: String) async -> Bool? {
-    // A network call: the network runner (the shell's ssh agent and BatchMode) and its timeout.
-    let r = await runner.runNetwork(
-      "git", ["ls-remote", "--exit-code", "--heads", "origin", "refs/heads/\(branch)"], in: dir,
-      timeout: ciTimeout)
-    guard !r.timedOut else { return nil }
-    switch r.exitCode {
-    case 0: return true
-    case 2: return false
-    default: return nil
-    }
-  }
-
   /// CI for `commit`, as GitHub's own combined **status check rollup** for that commit — the same
   /// aggregate the GitHub UI shows, covering *all* check types (Actions check-runs + external commit
   /// statuses + check-run apps), not just Actions runs (#76).
   ///
-  /// `commit` is the branch tip the caller resolved (`localCICommit` for a local host). Everything
+  /// `commit` is the branch tip the caller resolved (`GitRepositoryProbe.localCICommit` for a local
+  /// host). Everything
   /// goes through the
   /// authenticated `gh` token, so private repos work with no extra config. CI is hidden whenever the
   /// commit can't be resolved.
@@ -334,48 +212,6 @@ struct WorkroomStatusResolver: Sendable {
       map[login] = url
     }
     return map
-  }
-
-  // MARK: Local-only derivation (a local host reads these from its own checkout)
-
-  /// The branch a PR/CI probe keys off, for a **local** host: the stage-1 branch when known; else
-  /// the checked-out ref via `git symbolic-ref` (nil for a detached HEAD). A remote host has no
-  /// checkout to ask, so it never calls this and treats a nil branch as absent.
-  func localBranch(path: String, branch: String?) async -> String? {
-    await resolveBranchName(branch, in: path)
-  }
-
-  /// The commit CI must match for a **local** host — see `ciMatchCommit`. nil ⇒ no resolvable
-  /// branch or commit ⇒ the caller treats CI as absent.
-  func localCICommit(path: String, branch: String?) async -> String? {
-    guard await localBranch(path: path, branch: branch) != nil else { return nil }
-    return await ciMatchCommit(path: path)
-  }
-
-  /// The commit a `gh run` must match to count as "this branch's CI": `HEAD` (the branch tip).
-  /// `nil` ⇒ unresolved ⇒ absent.
-  private func ciMatchCommit(path: String) async -> String? {
-    let r = await runner.run(
-      "git", Self.gitHardening + ["rev-parse", "HEAD"], in: path, timeout: timeout)
-    guard r.ok else { return nil }
-    let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    return sha.isEmpty ? nil : sha
-  }
-
-  /// The git branch CI/PR key off: the stage-1 branch when known, else the checked-out git ref
-  /// via `git symbolic-ref` (empty for a *detached* HEAD). Returns `nil` when neither yields
-  /// a non-empty name. Faithful to the prior inline fallback: a non-nil `branch` is used as-is (the
-  /// symbolic-ref probe runs only when it's nil).
-  private func resolveBranchName(_ branch: String?, in path: String) async -> String? {
-    var branchName = branch
-    if branchName == nil {
-      let b = await runner.run(
-        "git", Self.gitHardening + ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path,
-        timeout: timeout)
-      branchName = b.ok ? b.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-    }
-    guard let branchName, !branchName.isEmpty else { return nil }
-    return branchName
   }
 
   /// Run a mutating `gh pr …` command (Phase 2b PR actions) against `repo`. Network timeout, like

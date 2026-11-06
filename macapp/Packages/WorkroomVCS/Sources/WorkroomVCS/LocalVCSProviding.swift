@@ -35,7 +35,7 @@ public protocol LocalVCSProviding: Sendable {
     -> String?
   /// The working copy's status: dirty flag, changed files, ± line counts, and the branch CI should
   /// be looked up for. Synchronous and throwing, with no timeout of its own — callers that need one
-  /// wrap it (`WorkroomStatusResolver` bounds it with `withTimeout`).
+  /// wrap it (`WorkingStatusResolver` bounds it with `withTimeout`).
   ///
   /// Returns a `WorkroomStatus` with `ci`, `failure` and `localReadAt` unset: those are the
   /// resolver's to fill, not a backend's.

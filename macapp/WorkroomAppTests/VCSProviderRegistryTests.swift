@@ -80,7 +80,7 @@ final class RepositoryRoutingTests: XCTestCase {
           XCTFail("constructed local writer for remote")
         } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.remote(host))) }
       }
-      let failed = await WorkroomStatusResolver(router: router).resolve(location: remote)
+      let failed = await WorkingStatusResolver(router: router).resolve(location: remote)
       XCTAssertNil(failed.dirty)
       XCTAssertEqual(failed.failure, .unavailable)
       let context = try await router.context(for: remote)
@@ -391,16 +391,16 @@ extension RepositoryRoutingTests {
     let prior = PullRequestInfo(
       number: 1, title: "t", state: .open, isDraft: false,
       url: "u", reviewDecision: nil, reviewers: [])
-    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: prior)
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: prior)
     let runner = HostCountingRunner()
-    store.statusResolver = WorkroomStatusResolver(runner: runner)
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(runner: runner)
     for host in [UUID(), UUID()] {
       let remote = try RepositoryLocation.remote(host: host, path: path)
-      let item = AppStore.StatusWorkItem(
+      let item = VCSStatusService.StatusWorkItem(
         sid: sid, path: path, projectRoot: path,
         location: remote)
       store.performPRAction(.convertToDraft, number: 1, on: item)
-      XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr, prior)
+      XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr, prior)
       XCTAssertFalse(store.prActionInFlight)
       XCTAssertEqual(
         store.modals.errorMessage,
@@ -474,7 +474,7 @@ extension RepositoryRoutingTests {
 
   func testMissingPathStatusKeepsCompletionTimestamp() async throws {
     let location = try await RepositoryLocation.local("/private/tmp/missing-\(UUID().uuidString)")
-    let status = await WorkroomStatusResolver(router: RepositoryRouter()).resolve(
+    let status = await WorkingStatusResolver(router: RepositoryRouter()).resolve(
       location: location)
     XCTAssertEqual(status.failure, .missingPath)
     XCTAssertNotNil(status.localReadAt)

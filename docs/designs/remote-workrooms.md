@@ -106,8 +106,8 @@ Nothing in the repo hosts a workroom remotely today. There is no remote-exec, ne
 or cloud-provider code anywhere in the Go CLI, the Rust `vcs/` crate, or the Swift app, and
 `RemoteStateModel.swift` is git-remote ahead/behind, not a network host. The app is not, however,
 network-naive: it already reaches the GitHub API through the user's `gh` CLI (including
-`gh api graphql`, `WorkroomStatusResolver.swift:323`, and `gh auth status --active --json hosts`
-at `:458` behind `GitHubAuthCache`), and already configures ssh for git — `StatusCommandRunner.swift:172`
+`gh api graphql`, `GitHubStatusResolver.swift`, and `gh auth status --active --json hosts`
+behind `GitHubAuthCache`), and already configures ssh for git — `StatusCommandRunner.swift:172`
 sets `GIT_SSH_COMMAND … -o BatchMode=yes`, and `VCSRemoteFailure` carries a `hostKeyUnverified`
 case. That existing surface matters for credentials (premise 6).
 

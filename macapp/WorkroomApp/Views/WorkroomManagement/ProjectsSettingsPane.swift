@@ -262,7 +262,8 @@ private struct ProjectSettingsForm: View {
     guard projectExists, let branch = draft.branchToSave() else { return }
     // The CLI owns the branch; any window's store can ask it, and with none open a throwaway one
     // can, as onboarding's does, since every store shares `ProjectStore.shared`.
-    let store = WindowRegistry.shared.lastActiveStore ?? AppStore(projectStore: .shared)
+    let store =
+      WindowRegistry.shared.lastActiveStore ?? AppStore(projectStore: .shared, vcsStatus: .shared)
     let path = project.path
     // One at a time, in the order made: a quick second save mustn't land before the first.
     let previous = branchSave

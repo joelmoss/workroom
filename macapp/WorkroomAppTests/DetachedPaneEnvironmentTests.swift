@@ -16,12 +16,13 @@ import XCTest
 /// documented.
 final class DetachedPaneEnvironmentTests: XCTestCase {
   /// The ones the pane subtree genuinely cannot reach: `RootView` chrome only (the update pill, the
-  /// What's New dialog, the Room menu state, the VCS status the sidebar, tab bar, inspector and
-  /// commit sheet read, and the run config the workroom pane's Run button and the delete warnings
+  /// What's New dialog, the Room menu state, the project list and VCS status the sidebar, tab bar,
+  /// inspector and commit sheet read, and the run config the workroom pane's Run button and the delete warnings
   /// read). If a pane ever needs one, it goes into `detachedPaneEnvironment` and comes out of
   /// here — deliberately, rather than by a test quietly going green.
   private let sceneOnly: Set<String> = [
-    "Updater", "WhatsNewService", "RemoteStateModel", "ProjectStore", "RunCommands",
+    "Updater", "WhatsNewService", "RemoteStateModel", "ProjectStore", "VCSStatusService",
+    "RunCommands",
   ]
 
   /// How each type is supplied, since several arrive through an owner rather than by their own name

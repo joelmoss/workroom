@@ -5,7 +5,7 @@ import Foundation
 /// checkout (a remote workroom, issue #207).
 ///
 /// **Every value is validated, and there is no other way to make one.** `owner` and `name` are
-/// interpolated into a GraphQL string (`WorkroomStatusResolver.checkRollupQuery`) and `host` goes
+/// interpolated into a GraphQL string (`GitHubStatusResolver.checkRollupQuery`) and `host` goes
 /// to `gh` as an argument. That was safe while `gh` itself produced those strings; an identity that
 /// can now be supplied from elsewhere (a registration, a test) must not be able to break the query
 /// or read as a flag.
