@@ -225,10 +225,10 @@ extension AppStore {
   ) async {
     guard destination !== self,
       let (sid, into) = destination.quickTerminalPaneTarget(workroom),
-      let tab = terminals.tab(tabID, for: target)
+      terminals.tab(tabID, for: target) != nil
     else { return }
     // Nil for a pane with no background session (an Investigate tab's agent): nothing to retag.
-    let sessionID = tab.surface?.persistentSessionID
+    let sessionID = terminals.surface(of: tabID)?.persistentSessionID
     let service = terminals.sessionService
     if let sessionID,
       !(await service.retag(sessionID: sessionID, workroom: into.sessionWorkroomKey))
@@ -362,7 +362,7 @@ extension AppStore {
     terminals.adopt(handOff.sessions)
     if target.remoteHost == nil, !target.isRemoteWorkroom,
       handOff.sessions.tabs.contains(where: {
-        guard let view = $0.surface else { return false }
+        guard let view = handOff.sessions.surfaces[$0.id] else { return false }
         return view.persistentSessionIsRestored && view.persistentSessionID != nil
           && view.surface == nil
       })

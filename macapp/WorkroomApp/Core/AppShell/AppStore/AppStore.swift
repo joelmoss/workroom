@@ -1329,6 +1329,7 @@ final class AppStore: ObservableObject {
     tab: TerminalTab, target: TerminalTarget, origin: CGPoint?, frame: NSRect?
   ) {
     let tabID = tab.id
+    let surface = terminals.surface(of: tabID)
     let location = detachedLocation(for: target)
     detachedPanes.open(
       tabID: tabID, title: tab.title, project: location.project, workroom: location.workroom,
@@ -1337,7 +1338,7 @@ final class AppStore: ObservableObject {
       onDock: { [weak self] in self?.dockPane(tabID, for: target) },
       content: {
         DetachedPaneView(
-          tabID: tabID, content: tab.content, target: target,
+          tabID: tabID, content: tab.content, surface: surface, target: target,
           sessions: terminals, store: self,
           onTitleChange: { [weak self] title in
             guard let self else { return }
@@ -1713,15 +1714,17 @@ final class AppStore: ObservableObject {
           // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
           let target = workroom.target(inProject: project.path)
           terminals.ensureTab(for: target)
+          let firstSurface = terminals.tabs(for: target).first.flatMap {
+            terminals.surface(of: $0.id)
+          }
           if let title = UITestFixture.usageCodingAgentTitle {
-            terminals.tabs(for: target).first?.surface?.handleTitleChange(title)
+            firstSurface?.handleTitleChange(title)
           }
           // Oversized tab title for the pane title bar's truncation tests (issue #150). Same route as
           // the agent title above — a shell-set title latches as `liveTitle`, which is what
           // `TerminalTab.title` (and so the chip and the pane bar) reads first.
           if UITestFixture.longTabTitle {
-            terminals.tabs(for: target).first?.surface?
-              .handleTitleChange(UITestFixture.longTabTitleValue)
+            firstSurface?.handleTitleChange(UITestFixture.longTabTitleValue)
           }
           // Two-tab scenario (drag/reorder XCUITest, issue #23): also open a terminal for the second
           // workroom so the workroom tab bar shows two chips to reorder.
@@ -2344,7 +2347,7 @@ final class AppStore: ObservableObject {
       if AppEnvironment.current.isFixture { return false }
     #endif
     return Self.resolveConfirmOnClose(override: confirmOnCloseOverrideForTesting)
-      && tabs.contains { !($0.surface?.processHasExited ?? true) }
+      && tabs.contains { !(terminals.surface(of: $0.id)?.processHasExited ?? true) }
   }
 
   /// The override-or-setting half of `closeNeedsConfirm`, lifted out as a pure static so it can be
@@ -2462,7 +2465,7 @@ final class AppStore: ObservableObject {
   /// when nothing's selected / no terminal exists. Drives the Go menu's scroll items (issue #42).
   private var focusedSurface: GhosttySurfaceView? {
     guard let target = selectedTarget else { return nil }
-    return terminals.focusedTab(for: target)?.surface
+    return terminals.focusedTab(for: target).flatMap { terminals.surface(of: $0.id) }
   }
 
   /// Scroll the focused terminal to the top / bottom of its scrollback (issue #42). Driven by the Go
@@ -2781,7 +2784,7 @@ final class AppStore: ObservableObject {
   /// focus in it: from an inspector field, ⇧⌘M goes to the selected terminal if it is the one waiting.
   var focusedTerminalSession: UUID? {
     guard let target = primaryTarget, let tab = terminals.focusedTab(for: target),
-      tab.surface?.isEffectivelyFocused == true
+      terminals.surface(of: tab.id)?.isEffectivelyFocused == true
     else {
       return nil
     }
@@ -2892,7 +2895,8 @@ final class AppStore: ObservableObject {
   /// looking at that terminal.
   func dismissFocusedTerminalNotifications() {
     guard hostWindow?.isKeyWindow == true, let target = selectedTarget,
-      let active = terminals.activeTab(for: target), active.surface?.holdsFirstResponder == true
+      let active = terminals.activeTab(for: target),
+      terminals.surface(of: active.id)?.holdsFirstResponder == true
     else { return }
     notifications.dismiss(tab: active.id)
   }

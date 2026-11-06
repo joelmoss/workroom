@@ -19,6 +19,8 @@ struct TerminalStatusBar: View {
   /// The pane's terminal, or nil for a non-terminal (diff / file / changeset) pane — which shows no
   /// cwd, run state or diagnosis, only the branch.
   let state: TerminalState?
+  /// The pane's terminal surface, for the diagnosis' "Insert fix" and Investigate; nil with `state`.
+  var surface: GhosttySurfaceView?
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
@@ -30,9 +32,13 @@ struct TerminalStatusBar: View {
 
   private let theme = ThemeService.shared
 
-  /// This pane's live cwd (a remote pane's host path, then observed state, then the surface's
-  /// last-known); nil for a diff pane.
-  private var cwd: String? { state.flatMap { $0.hostCwd ?? $0.cwd ?? $0.view.lastKnownCwd } }
+  /// This pane's live cwd (a remote pane's host path, else the shell's last report); nil for a diff
+  /// pane. The surface is the live read for a detached pane, whose `state` is the copy taken when
+  /// its window opened (`DetachedPaneController` reads its content once).
+  private var cwd: String? {
+    guard let state else { return nil }
+    return state.hostCwd ?? state.cwd ?? surface?.lastKnownCwd
+  }
 
   /// Whether `cwd` is a path on a remote pane's host (#239), which names nothing on this Mac.
   private var cwdIsOnHost: Bool { state?.hostCwd != nil }
@@ -176,11 +182,11 @@ struct TerminalStatusBar: View {
         state: bannerState,
         onDiagnose: { codingAgentManager.diagnose(tab: tabID, target: target.id) },
         onInsertFix: { fix in
-          state?.view.sendText(fix)
+          surface?.sendText(fix)
           showingDiagnosis = false
         },
         onInvestigate: {
-          _ = store.startInvestigate(bannerState: bannerState, target: target, surface: state?.view)
+          _ = store.startInvestigate(bannerState: bannerState, target: target, surface: surface)
           codingAgentManager.dismiss(tab: tabID)
           showingDiagnosis = false
         },

@@ -62,13 +62,15 @@ final class QuickTerminalSessionsTests: XCTestCase {
     let sessions = makeSessions()
     let tab = sessions.addTab(for: target)
     XCTAssertEqual(
-      tab.surface?.offersWindowToggle, false, "no Move to New Window in its right-click menu")
+      sessions.surface(tab)?.offersWindowToggle, false,
+      "no Move to New Window in its right-click menu")
     sessions.detachPane(tab.id, for: target, at: .zero)
     XCTAssertTrue(sessions.detachedTabIDs.isEmpty, "a drag out of the window leaves it put")
 
     let workroom = makeSessions(quickTerminal: false)
     XCTAssertEqual(
-      workroom.addTab(for: target).surface?.offersWindowToggle, true, "workroom panes still can")
+      workroom.surface(workroom.addTab(for: target))?.offersWindowToggle, true,
+      "workroom panes still can")
   }
 
   func testEachPaneReadsItsOwnFoldersBranch() async throws {
@@ -77,7 +79,7 @@ final class QuickTerminalSessionsTests: XCTestCase {
     await sessions.liveBranchRead(forTab: tab.id)
     XCTAssertEqual(state(tab.id, in: sessions)?.liveBranch, "branch/a")
 
-    try XCTUnwrap(tab.surface).handlePwd("/b")
+    try XCTUnwrap(sessions.surface(tab)).handlePwd("/b")
     await sessions.liveBranchRead(forTab: tab.id)
     XCTAssertEqual(state(tab.id, in: sessions)?.liveBranch, "branch/b", "follows a cd")
   }

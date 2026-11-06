@@ -36,7 +36,7 @@ final class TitleLayoutBenchmarkTests: XCTestCase {
     store.projectStore.projects = [project]
     let target = try XCTUnwrap(store.target(for: .root(project: project.path)))
     let tab = store.terminals.addTab(for: target)
-    let surface = try XCTUnwrap(tab.surface)
+    let surface = try XCTUnwrap(store.terminals.surface(tab))
     let hosting = NSHostingView(
       rootView: WorkroomTerminalsView(target: target, sessions: store.terminals)
         .environmentObject(store)

@@ -22,8 +22,9 @@ typealias TerminalPaneLayout = PaneLayout<TerminalTab.ID>
 /// split can mix a terminal pane and a diff pane. Terminal-only state lives INSIDE the `.terminal`
 /// payload, so a content tab carries none of it. `TerminalTab` stays a value type on purpose: a
 /// live-title/progress/preview update mutates a copy and reassigns the dict, which is what drives
-/// `@Published` (a reference type would not). The surface, when present, is a shared reference the tab
-/// owns; `teardown(_:)` frees it (a no-op for content tabs — they have no surface).
+/// `@Published` (a reference type would not). It holds no view: a terminal tab's surface is its
+/// window's, in `TerminalSessions`' `SurfaceRegistry`, and `teardown(_:)` frees it (a no-op for
+/// content tabs — they have no surface).
 struct TerminalTab: Identifiable {
   let id = UUID()
   var content: TabContent
@@ -39,14 +40,6 @@ struct TerminalTab: Identifiable {
   /// the toolbar can set it and the pane's `PlainFileViewer` can read it, mirroring
   /// `diffViewModeOverride`. Only meaningful for a `.file` tab whose file is Markdown.
   var markdownPreviewOverride: Bool?
-
-  /// The terminal surface this tab owns, or nil for a content (e.g. diff) tab. The single accessor
-  /// every surface-specific path (occlusion, theme reload, teardown, run-state) funnels through, so
-  /// a content tab transparently does *fewer* surface operations — never more.
-  var surface: GhosttySurfaceView? {
-    if case .terminal(let s) = content { return s.view }
-    return nil
-  }
 
   /// What the tab strip displays: a terminal's live/idle title, or a content tab's own title (a
   /// diff's filename). A view reads it through `TabTitleReader`, in a leaf, as a terminal's title
@@ -106,11 +99,6 @@ struct TerminalTab: Identifiable {
   var recognizedTool: RecognizedTool? {
     if case .terminal(let s) = content { return s.activeTool }
     return nil
-  }
-
-  /// A terminal tab wrapping a freshly-created surface.
-  static func terminal(view: GhosttySurfaceView, defaultTitle: String) -> TerminalTab {
-    TerminalTab(content: .terminal(TerminalState(view: view, defaultTitle: defaultTitle)))
   }
 
   /// A diff content tab from its descriptor (issue #66).
@@ -270,22 +258,21 @@ extension TabSession {
   /// A tab whose command runs in its own process (an Investigate tab) returns nil: its process dies
   /// with the app. A run tab is kept (#522): its run session outlives the app, and restoring it
   /// reattaches to the run rather than starting it, so it is marked `run` and saved with its
-  /// session. Identified by the surface, not by `RunCommandController.runStates`, so a tab whose run
-  /// bookkeeping has already moved on is still saved as what it is.
-  @MainActor init?(key: String, tab: TerminalTab) {
+  /// session. Identified by the tab's own launch (`TerminalLaunch.isSaved`), not by
+  /// `RunCommandController.runStates`, so a tab whose run bookkeeping has already moved on is still
+  /// saved as what it is.
+  init?(key: String, tab: TerminalTab) {
     switch tab.content {
     case .terminal(let state):
-      let run = state.view.isRunSession
-      guard !state.view.isRunCommandSurface || run else { return nil }
+      guard state.launch.isSaved else { return nil }
       self.init(
         key: key, kind: Self.terminalKind,
-        // The LAST REPORTED cwd, which is the whole value of restoring a terminal. `state.cwd` is
-        // the shell's latest report mirrored into observable state; `lastKnownCwd` is the surface's
-        // own copy and covers a tab whose mirror never updated.
+        // The LAST REPORTED cwd, which is the whole value of restoring a terminal: the shell's
+        // latest report, written to the tab as the surface hears it (`updateCwd`).
         terminal: TerminalPayload(
-          defaultTitle: state.defaultTitle, cwd: state.cwd ?? state.view.lastKnownCwd,
-          sessionID: (state.sessionID ?? state.view.persistentSessionID)?.uuidString,
-          run: run ? true : nil))
+          defaultTitle: state.defaultTitle, cwd: state.cwd,
+          sessionID: state.sessionID?.uuidString,
+          run: state.launch.isRunSession ? true : nil))
     case .diff(let descriptor):
       self.init(
         key: key, kind: Self.diffKind,
@@ -368,13 +355,21 @@ final class LiveTitle {
   var text: String?
 }
 
-/// The state a terminal tab owns: its surface plus the live-title/progress the surface reports. Kept
-/// in the `.terminal` payload so a content tab carries none of it.
+/// The state a terminal tab owns: what it was launched as, and the live title, cwd and progress its
+/// surface reports. Kept in the `.terminal` payload so a content tab carries none of it. The surface
+/// itself is not here (`SurfaceRegistry`): each fact a reader needs is stored here once, written
+/// as the surface learns it, so no reader asks the view.
 struct TerminalState {
-  /// The 1:1 terminal surface this tab owns.
-  let view: GhosttySurfaceView
-  /// Daemon session this pane attaches to (separate from `tab.id`, which remints on restore).
+  /// Daemon session this pane attaches to (separate from `tab.id`, which remints on restore). Set
+  /// when the tab is made and when it is pointed at another session (`TerminalSessionAttachment`),
+  /// each time together with the surface's attach id (`persistentSessionID`), so the two agree.
   var sessionID: UUID?
+  /// What the pane's process is (a shell, a command in its own process, or a run session), as its
+  /// surface was told when the tab was made. Never changes.
+  let launch: TerminalLaunch
+  /// The directory the surface was made to start in, before any shell report: what the pane's
+  /// branch is read from until `cwd` arrives.
+  let launchDirectory: String
   /// Shown until the surface reports a title — and again whenever it reports an empty one.
   let defaultTitle: String
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
@@ -399,9 +394,10 @@ struct TerminalState {
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
   /// #141) — a broader, data-driven sibling of `activeCodingAgentBackend`, latched/cleared identically.
   var activeTool: RecognizedTool?
-  /// The surface's latest reported cwd (`GHOSTTY_ACTION_PWD` via shell integration), mirrored here as
-  /// observable state so the detail-panel status bar shows the live directory (issue #49). Nil until
-  /// the shell first reports; the status bar falls back to the surface's `lastKnownCwd` / target path.
+  /// The shell's latest reported cwd (`GHOSTTY_ACTION_PWD` via shell integration), written here by
+  /// `updateCwd` in the same call that records it on the surface (`handlePwd` raises `.cwdChanged`
+  /// synchronously), so the status bar shows the live directory (issue #49) and a saved layout
+  /// keeps it. Nil until the shell first reports.
   var cwd: String?
   /// A remote pane's working directory ON ITS HOST (#239), from the host daemon's session list:
   /// libghostty drops an OSC 7 report whose host is not this Mac, so `cwd` never hears from a remote
@@ -422,6 +418,15 @@ struct TerminalState {
   /// What the program in this terminal reports over OSC 7501 (#358), from the host's daemon. Nil
   /// when it reports nothing: no record left and no reporting run.
   var programStatus: ProgramStatusRollup?
+
+  init(
+    defaultTitle: String, launch: TerminalLaunch, launchDirectory: String, sessionID: UUID? = nil
+  ) {
+    self.defaultTitle = defaultTitle
+    self.launch = launch
+    self.launchDirectory = launchDirectory
+    self.sessionID = sessionID
+  }
 
   /// Precedence, one mark per slot: blocked > error > running > done > idle. A reporting program
   /// decides; otherwise OSC 9;4 does, and a `done` or `error` left from an earlier run only adds
@@ -493,7 +498,10 @@ final class TerminalSessions: ObservableObject {
   /// terminal number it hands out) or removed (`reap`). A target whose tabs all closed or moved
   /// away keeps its entry, emptied, so `ensureTab` does not read it as never opened. Every change
   /// inside an entry sends this object's `objectWillChange` first (`TargetPanes`).
-  @Published private var targets: [TerminalTarget.ID: TargetPanes] = [:]
+  @Published private var targets: [TerminalTarget.ID: TargetPanes<TerminalTab>] = [:]
+  /// The surface of every terminal tab in `targets`, by tab id. Not `@Published`: an entry comes
+  /// and goes in the same call as its tab's record, which publishes.
+  private var surfaces = SurfaceRegistry()
   /// Bumped when a *visible but non-focused* pane reports activity (D3): the renderer flashes that
   /// pane's border instead of badging it (you can see it, so no banner/badge — just a glance cue).
   /// Keyed by tab id; the value is an opaque counter the leaf view watches for changes.
@@ -922,8 +930,15 @@ final class TerminalSessions: ObservableObject {
   func view(
     forTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID
   ) -> GhosttySurfaceView? {
-    targets[targetID]?.tabs[tabID]?.surface
+    guard targets[targetID]?.tabs[tabID] != nil else { return nil }
+    return surfaces[tabID]
   }
+
+  /// The surface of terminal tab `tabID`, or nil for a content tab or a tab this window does not
+  /// hold. The single accessor every surface-specific path (occlusion, theme reload, teardown,
+  /// run-state) funnels through, so a content tab transparently does *fewer* surface operations —
+  /// never more.
+  func surface(of tabID: TerminalTab.ID) -> GhosttySurfaceView? { surfaces[tabID] }
 
   /// The focused tab (selection), falling back to the first tab in strip order.
   func focusedTab(for target: TerminalTarget) -> TerminalTab? {
@@ -1132,7 +1147,7 @@ final class TerminalSessions: ObservableObject {
     guard readsPaneBranches, let tab = targets[target]?.tabs[tabID],
       case .terminal(let state) = tab.content
     else { return }
-    let path = state.cwd ?? state.view.lastKnownCwd ?? state.view.workingDirectory
+    let path = state.cwd ?? state.launchDirectory
     let resolveBranch = resolveBranch
     branchQueries[tabID]?.cancel()
     branchQueries[tabID] = Task { [weak self] in
@@ -1424,7 +1439,7 @@ final class TerminalSessions: ObservableObject {
     } else {
       // Issue #67 (run in the background): not focusing means the pane never mounts, so spawn the
       // surface off-window now — otherwise the command would never start and the toast would lie.
-      tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+      surfaces[tab.id]?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
     }
     reconcileOcclusion(for: target)
     return tab
@@ -1443,7 +1458,7 @@ final class TerminalSessions: ObservableObject {
     if focus {
       setFocused(tab.id, for: target.id)
     } else {
-      tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+      surfaces[tab.id]?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
     }
     reconcileOcclusion(for: target)
     return tab
@@ -1498,7 +1513,7 @@ final class TerminalSessions: ObservableObject {
     } else {
       // Background restart (issue #67): keep it unfocused, but spawn off-window so the respawned
       // command actually runs (the new tab won't mount until the user opens it).
-      tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+      surfaces[tab.id]?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
     }
     reconcileOcclusion(for: target)
     return tab
@@ -1571,13 +1586,11 @@ final class TerminalSessions: ObservableObject {
       return TerminalTab.changeset(desc)
     }
     // A remote pane's directory is the host's answer (`hostCwd`): its local surface sees no OSC 7.
-    var cwd = anchor.surface?.lastKnownCwd ?? target.path
+    let anchorState: TerminalState?
+    if case .terminal(let state) = anchor.content { anchorState = state } else { anchorState = nil }
+    var cwd = anchorState?.cwd ?? target.path
     if target.remoteHost != nil {
-      if case .terminal(let state) = anchor.content, let hostCwd = state.hostCwd {
-        cwd = hostCwd
-      } else {
-        cwd = target.path
-      }
+      cwd = anchorState?.hostCwd ?? target.path
     }
     return makeTerminalTab(for: target, cwd: cwd)
   }
@@ -1757,6 +1770,9 @@ final class TerminalSessions: ObservableObject {
     let target: TerminalTarget
     /// Every tab, detached panes included, in strip order.
     let tabs: [TerminalTab]
+    /// The terminal tabs' surfaces, by tab id, taken out of this window's `SurfaceRegistry`: the
+    /// hand-off keeps them alive until the other window adopts them, as the tab values once did.
+    let surfaces: [TerminalTab.ID: GhosttySurfaceView]
     let splits: [TerminalPaneLayout]
     let focused: TerminalTab.ID?
     let counter: Int
@@ -1777,7 +1793,7 @@ final class TerminalSessions: ObservableObject {
     let tabs = panes.orderedTabs
     let ids = tabs.map(\.id)
     let handOff = TargetHandOff(
-      target: target, tabs: tabs, splits: panes.state.splits.groups,
+      target: target, tabs: tabs, surfaces: surfaces.remove(ids), splits: panes.state.splits.groups,
       focused: panes.state.focused, counter: panes.state.counter ?? ids.count,
       detached: Dictionary(
         uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }),
@@ -1809,10 +1825,11 @@ final class TerminalSessions: ObservableObject {
     let wasFocused = targets[target.id]?.state.focused == tabID
     let successor = closeSuccessor(of: tabID, for: target)
     if tab.isPreview { persist(tabID, for: target) }
+    let view = surfaces.remove(tabID)
     let handOff = TargetHandOff(
-      target: destination, tabs: [tab], splits: [], focused: tabID, counter: 0, detached: [:],
-      agent: [tabID: codingAgentManager.handOff(tabID)])
-    if let view = tab.surface {
+      target: destination, tabs: [tab], surfaces: view.map { [tabID: $0] } ?? [:], splits: [],
+      focused: tabID, counter: 0, detached: [:], agent: [tabID: codingAgentManager.handOff(tabID)])
+    if let view {
       let project = destination.id.projectPath ?? destination.path
       view.sessionMetadata = view.sessionMetadata.map { entry in
         switch entry.key {
@@ -1841,10 +1858,13 @@ final class TerminalSessions: ObservableObject {
     let ownPreview = merging && previewTabID(in: target.id) != nil
     for tab in handOff.tabs {
       let panes = openPanes(target.id)
+      if let view = handOff.surfaces[tab.id] { surfaces.register(view, for: tab.id) }
       panes.setTab(tab)
       panes.updateState { $0.order.append(tab.id) }
-      guard case .terminal(let state) = tab.content else { continue }
-      wire(state.view, tab: tab.id, target: target)
+      guard case .terminal(let state) = tab.content, let view = handOff.surfaces[tab.id] else {
+        continue
+      }
+      wire(view, tab: tab.id, target: target)
       if state.sessionID != nil {
         followProgramStatus(on: target.remoteHost.map(HostID.remote) ?? .local)
       }
@@ -1986,12 +2006,18 @@ final class TerminalSessions: ObservableObject {
     // still waits for the kill (#297).
     let service = sessionService
     service.closeKillStarted(remote: remote)
+    // The task keeps the torn-down surface alive until the session's end is answered, as the tab
+    // value it captured did when the tab held its view, so a pane closed from inside one of its own
+    // callbacks is never freed under that callback's stack.
+    let view = surfaces[tabID]
     Task {
       let ended = await self.endPersistentSession(for: tab)
+      withExtendedLifetime(view) {}
       service.closeKillEnded(remote: remote)
       if remote && !ended { self.onEvent?(.remoteCloseFailed(target.id, title: target.title)) }
     }
     teardown(tab)
+    surfaces.remove(tabID)
     // A lone remaining member is not a group any more; two or more get evened, since their dividers
     // still budget space for the pane that just closed (issue #126).
     remove(tabID, from: target.id)
@@ -2028,7 +2054,9 @@ final class TerminalSessions: ObservableObject {
       forgetPerTabWork(tab.id)
     }
     await sessionService.endSessions(matchingWorkroom: id.encoded)
-    // Tabs, order, splits, focus and numbering go at once, without a focus change to report.
+    // Tabs, order, splits, focus and numbering go at once, without a focus change to report, and
+    // the surfaces with them: every tab the target holds now, as its records go.
+    surfaces.remove(Array(tabRecords(id).keys))
     targets[id] = nil
     announcedShownSlots[id] = nil
     recency.forgetPanes(removedIDs)
@@ -2056,7 +2084,7 @@ final class TerminalSessions: ObservableObject {
     for panes in targets.values {
       for tab in panes.tabs.values {
         // Content tabs have no surface to re-theme.
-        guard let surface = tab.surface else { continue }
+        guard let surface = surfaces[tab.id] else { continue }
         if let config { surface.updateConfig(config) }
         surface.applyColorScheme(isDark: isDark)
       }
@@ -2075,7 +2103,7 @@ final class TerminalSessions: ObservableObject {
     for tab in tabRecords(target.id).values {
       // Only terminal tabs own a GPU surface to occlude; a content tab (diff) pauses itself by
       // unmounting from the window when it leaves the screen, so there's nothing to toggle here.
-      tab.surface?.setVisible(visible.contains(tab.id))
+      surfaces[tab.id]?.setVisible(visible.contains(tab.id))
     }
   }
 
@@ -2095,7 +2123,7 @@ final class TerminalSessions: ObservableObject {
       return
     }
     let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: s.view.lastKnownCwd) else {
+    guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: s.cwd) else {
       return
     }
     // Read once, for the agent and the tool alike: a second live PID read is a TOCTOU gap where the
@@ -2103,7 +2131,8 @@ final class TerminalSessions: ObservableObject {
     // a title the pane already shows: programs resend their title on every redraw, and the read
     // takes the engine's render lock and a `proc_name` call each time. A program recognised only
     // by its process name, under a title it did not change, is picked up at its next title.
-    let foregroundExecutableName = s.liveTitle == trimmed ? nil : s.view.foregroundExecutableName
+    let foregroundExecutableName =
+      s.liveTitle == trimmed ? nil : surfaces[tabID]?.foregroundExecutableName
     let detectedCodingAgent =
       CodingAgentProcessRecognition.backend(forProcessName: foregroundExecutableName)
       ?? CodingAgentTitleRecognition.backend(for: trimmed)
@@ -2151,10 +2180,10 @@ final class TerminalSessions: ObservableObject {
     guard let tab = targets[target]?.tabs[tabID], case .terminal(let s) = tab.content else {
       return
     }
-    guard let session = s.sessionID ?? s.view.persistentSessionID else {
+    guard let session = s.sessionID else {
       // No background session to ask (a Quick Terminal pane, or a shell opened while the helper
       // was down): the shell is this app's own child, so read it as workroomd would.
-      let profile = Self.localClaudeProfile(of: s.view)
+      let profile = surfaces[tabID].map(Self.localClaudeProfile(of:)) ?? .notReported
       mutateTerminalState(tabID, target: target) {
         if $0.activeCodingAgentBackend == .claude { $0.claudeProfile = profile }
       }
@@ -2198,8 +2227,9 @@ final class TerminalSessions: ObservableObject {
       ?? .notReported
   }
 
-  /// Mirror the surface's reported cwd into observable tab state so the status bar tracks it live
-  /// (issue #49).
+  /// The one writer of `TerminalState.cwd`: the surface's report, written to the tab in the call
+  /// that records it on the surface (`handlePwd` raises `.cwdChanged` synchronously), so the status
+  /// bar tracks it live (issue #49), a split starts in it and a saved layout keeps it.
   private func updateCwd(_ cwd: String, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
     guard let tab = targets[target]?.tabs[tabID], case .terminal(let s) = tab.content,
       s.cwd != cwd
@@ -2253,7 +2283,7 @@ final class TerminalSessions: ObservableObject {
   /// connects to a host to answer this.
   private func refreshHostCwd(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
     guard let tab = targets[target]?.tabs[tabID], case .terminal(let s) = tab.content,
-      let session = s.sessionID ?? s.view.persistentSessionID,
+      let session = s.sessionID,
       let host = sessionService.remoteHost(of: session)
     else { return }
     hostCwdQueries[tabID]?.cancel()
@@ -2295,14 +2325,14 @@ final class TerminalSessions: ObservableObject {
       codingAgentManager.commandFinished(tab: tabID, target: target, failure: nil)
       return
     }
-    let view = s.view
+    let view = surfaces[tabID]
     let failure = FailedCommand(
       command: s.liveTitle,
-      cwd: view.lastKnownCwd,
+      cwd: s.cwd,
       exitCode: exitCode,
       shell: (ShellEnvironment.loginShell() as NSString).lastPathComponent,
-      output: view.readCommandRegion() ?? "",
-      isRunTab: view.isRunCommandSurface,
+      output: view?.readCommandRegion() ?? "",
+      isRunTab: view?.isRunCommandSurface ?? false,
       isRemote: s.sessionID.map(sessionService.isRemote) ?? false)
     codingAgentManager.commandFinished(tab: tabID, target: target, failure: failure)
   }
@@ -2409,16 +2439,16 @@ final class TerminalSessions: ObservableObject {
     // Pre-layout fallback: the pane's own rect (or its surface), judged by the anchor-only rule.
     let rect =
       paneRects[target.id]?[tab.id]
-      ?? tab.surface.map { CGRect(origin: .zero, size: $0.bounds.size) }
+      ?? surfaces[tab.id].map { CGRect(origin: .zero, size: $0.bounds.size) }
     guard let rect else { return true }
     return PaneTreeLayout.canSplit(rect, along: orientation)
   }
 
   /// `targetID`'s panes, made (empty) when it has none yet. The one place an entry is added, and
   /// where each is wired to send this object's `objectWillChange` before its every change.
-  private func openPanes(_ targetID: TerminalTarget.ID) -> TargetPanes {
+  private func openPanes(_ targetID: TerminalTarget.ID) -> TargetPanes<TerminalTab> {
     if let panes = targets[targetID] { return panes }
-    let panes = TargetPanes { [weak self] in self?.objectWillChange.send() }
+    let panes = TargetPanes<TerminalTab> { [weak self] in self?.objectWillChange.send() }
     targets[targetID] = panes
     return panes
   }
@@ -2552,15 +2582,20 @@ final class TerminalSessions: ObservableObject {
     // a session that may no longer exist. A fresh pane's id was minted a line ago.
     view.persistentSessionIsRestored = sessionID != nil
     view.sessionMetadata = metadata
-    var tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
-    if case .terminal(var state) = tab.content {
-      state.sessionID = assignedSessionID
-      if let assignedSessionID {
-        followProgramStatus(on: target.remoteHost.map(HostID.remote) ?? .local)
-        state.programStatus = programStatus.rollup(for: assignedSessionID)
-      }
-      tab.content = .terminal(state)
+    // The tab's facts are what the surface was just told, read back once: its launch and start
+    // directory never change, and its session changes with its surface's, through
+    // `TerminalSessionAttachment`.
+    var state = TerminalState(
+      defaultTitle: title ?? "Terminal \(count)",
+      launch: TerminalLaunch(
+        isRunSession: view.isRunSession, runsCommand: view.isRunCommandSurface),
+      launchDirectory: view.workingDirectory, sessionID: assignedSessionID)
+    if let assignedSessionID {
+      followProgramStatus(on: target.remoteHost.map(HostID.remote) ?? .local)
+      state.programStatus = programStatus.rollup(for: assignedSessionID)
     }
+    let tab = TerminalTab(content: .terminal(state))
+    surfaces.register(view, for: tab.id)
     wire(view, tab: tab.id, target: target)
     return tab
   }
@@ -2658,7 +2693,7 @@ final class TerminalSessions: ObservableObject {
   func applyRunStatus(_ change: ProgramStatusMonitor.Change) {
     for (targetID, panes) in targets {
       for (tabID, tab) in panes.tabs {
-        guard case .terminal(let state) = tab.content, state.view.isRunSession,
+        guard case .terminal(let state) = tab.content, state.launch.isRunSession,
           let sessionID = state.sessionID,
           (sessionService.remoteHost(of: sessionID) ?? .local) == change.host,
           change.isSnapshot || change.sessions.contains(sessionID)
@@ -2672,7 +2707,7 @@ final class TerminalSessions: ObservableObject {
   /// host's snapshot may have come): its state, or that it is gone once the host has answered.
   func reportRunStatus(tab tabID: TerminalTab.ID, target: TerminalTarget) {
     guard case .terminal(let state)? = targets[target.id]?.tabs[tabID]?.content,
-      state.view.isRunSession, let sessionID = state.sessionID
+      state.launch.isRunSession, let sessionID = state.sessionID
     else { return }
     reportRunStatus(
       of: sessionID, tab: tabID, target: target.id,
@@ -2699,7 +2734,9 @@ final class TerminalSessions: ObservableObject {
         else { continue }
         let rollup = programStatus.rollup(for: sessionID)
         guard rollup != state.programStatus else { continue }
-        if state.view.isEffectivelyFocused, rollup?.done != nil, state.programStatus?.done == nil {
+        if surfaces[tabID]?.isEffectivelyFocused == true, rollup?.done != nil,
+          state.programStatus?.done == nil
+        {
           watchedDone.insert(tabID)
         }
         mutateTerminalState(tabID, target: targetID) { $0.programStatus = rollup }
@@ -2759,7 +2796,7 @@ final class TerminalSessions: ObservableObject {
         guard case .terminal(let state) = tab.content, state.sessionID == session else {
           return nil
         }
-        return (targetID, tabID, state.view.isEffectivelyFocused)
+        return (targetID, tabID, surfaces[tabID]?.isEffectivelyFocused == true)
       }
     }
   }
@@ -2917,7 +2954,7 @@ final class TerminalSessions: ObservableObject {
   /// Tear down a tab's surface (clears callbacks before freeing, so no in-flight libghostty callback
   /// touches a dead view). A no-op for a content tab — it owns no surface, so there's nothing to free
   /// (and the refactor therefore frees *strictly fewer* surfaces than before — no new free races).
-  private func teardown(_ tab: TerminalTab) { tab.surface?.tearDown() }
+  private func teardown(_ tab: TerminalTab) { surfaces[tab.id]?.tearDown() }
 
   func owner(of sessionID: UUID, in target: TerminalTarget) -> TerminalTab.ID? {
     tabRecords(target.id).first { _, tab in
@@ -2992,16 +3029,16 @@ final class TerminalSessions: ObservableObject {
             if backend == .claude { $0.claudeProfile = Self.claudeProfile(from: descriptor) }
           }
         }
-        guard state.view.surface == nil else { continue }
+        guard let view = surfaces[tab.id], view.surface == nil else { continue }
         // A yield alone may immediately re-enter the main actor without an AppKit update. Give
         // display/input a frame between hidden engines; visible panes mount eagerly as usual.
         do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
         // Closing, moving or reassigning a pane during the new suspension must not recreate it.
         guard reattaches(target), let current = targets[target]?.tabs[tab.id],
           case .terminal(let currentState) = current.content,
-          currentState.sessionID == sessionID, currentState.view === state.view
+          currentState.sessionID == sessionID, surfaces[tab.id] === view
         else { continue }
-        currentState.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
+        view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
       }
     }
   }

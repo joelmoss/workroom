@@ -69,6 +69,7 @@ final class WorkroomHandOverTests: XCTestCase {
     origin.terminals.splitTab(third.id, on: .right, for: t)
     let splits = origin.terminals.splits(for: t)
     let focused = origin.terminals.focusedTab(for: t)?.id
+    let firstSurface = origin.terminals.surface(first)
 
     origin.moveWorkroom(sid, to: destination)
 
@@ -80,7 +81,7 @@ final class WorkroomHandOverTests: XCTestCase {
       destination.terminals.allTabs(for: t).prefix(2).map(\.id), [first.id, second.id],
       "the same tab ids, in the same order")
     XCTAssertTrue(
-      destination.terminals.tab(first.id, for: t)?.surface === first.surface,
+      destination.terminals.surface(destination.terminals.tab(first.id, for: t)) === firstSurface,
       "the same surface, not a new one reattached")
     XCTAssertEqual(destination.terminals.splits(for: t), splits)
     XCTAssertEqual(destination.terminals.focusedTab(for: t)?.id, focused)
@@ -121,12 +122,13 @@ final class WorkroomHandOverTests: XCTestCase {
     let destination = makeStore()
     let t = target(origin)
     let tab = origin.terminals.addTab(for: t)
+    let surface = origin.terminals.surface(tab)
 
     origin.moveWorkroom(sid, to: destination)
-    tab.surface?.handleTitleChange("vim notes.md")
+    surface?.handleTitleChange("vim notes.md")
 
     XCTAssertEqual(destination.terminals.tab(tab.id, for: t)?.title, "vim notes.md")
-    XCTAssertNotNil(tab.surface?.onEvent, "a hand-over never tears the surface down")
+    XCTAssertNotNil(surface?.onEvent, "a hand-over never tears the surface down")
   }
 
   /// Value: protects=a move ends no session, so its programs keep running (Q2); fails_when=the
@@ -201,13 +203,14 @@ final class WorkroomHandOverTests: XCTestCase {
     _ = origin.terminals.addTab(for: t)
     let run = origin.terminals.addRunTab(for: t, command: "sleep 1000", cwd: "/p/a", focus: false)
     origin.runCommand.runStates[t.id] = .running(tab: run.id, interrupted: false)
+    let runSurface = origin.terminals.surface(run)
 
     origin.moveWorkroom(sid, to: destination)
 
     XCTAssertNil(origin.runCommand.runStates[t.id])
     XCTAssertEqual(
       destination.runCommand.runStates[t.id], .running(tab: run.id, interrupted: false))
-    run.surface?.onEvent?(.childExited(0))
+    runSurface?.onEvent?(.childExited(0))
     XCTAssertEqual(
       destination.runCommand.runStates[t.id], .stopped(tab: run.id),
       "the exit was the destination's to hear")
@@ -226,12 +229,13 @@ final class WorkroomHandOverTests: XCTestCase {
     let replaced = destination.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
     destination.runCommand.runStates[t.id] = .running(tab: replaced.id, interrupted: false)
     // Its supervisor is still up, so its close waits for it to exit.
-    replaced.surface?.liveProcessOverrideForTesting = true
+    let replacedSurface = destination.terminals.surface(replaced)
+    replacedSurface?.liveProcessOverrideForTesting = true
 
     origin.moveWorkroom(sid, to: destination)
     XCTAssertNotNil(destination.terminals.tab(replaced.id, for: t), "still stopping")
-    replaced.surface?.liveProcessOverrideForTesting = false
-    replaced.surface?.onEvent?(.childExited(0))
+    replacedSurface?.liveProcessOverrideForTesting = false
+    replacedSurface?.onEvent?(.childExited(0))
 
     XCTAssertEqual(
       destination.runCommand.runStates[t.id], .running(tab: moved.id, interrupted: false))
@@ -626,11 +630,11 @@ final class WorkroomHandOverTests: XCTestCase {
     let pane = store.terminals.addTab(for: t)
     defer { store.detachedPanes.closeAll() }
 
-    pane.surface?.onEvent?(.windowToggleRequested)
+    store.terminals.surface(pane)?.onEvent?(.windowToggleRequested)
     XCTAssertTrue(store.terminals.detachedTabIDs.contains(pane.id), "first toggle tears it off")
     XCTAssertNotNil(store.detachedPanes.window(for: pane.id))
 
-    pane.surface?.onEvent?(.windowToggleRequested)
+    store.terminals.surface(pane)?.onEvent?(.windowToggleRequested)
     XCTAssertFalse(store.terminals.detachedTabIDs.contains(pane.id), "second toggle docks it")
   }
 
@@ -756,7 +760,7 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(destination.runCommand.investigateTabs[probe.id], t.id)
     XCTAssertTrue(destination.runCommand.dismissedRunToasts.contains(t.id))
     XCTAssertTrue(destination.runCommand.runningToastAutoHidden.contains(t.id))
-    probe.surface?.onEvent?(.childExited(0))
+    destination.terminals.surface(probe)?.onEvent?(.childExited(0))
     XCTAssertNil(
       destination.runCommand.investigateTabs[probe.id], "its exit is the destination's to hear")
   }
@@ -934,6 +938,7 @@ final class WorkroomHandOverTests: XCTestCase {
     let t = target(window)
     var emptied = false
     quick.onTargetEmptied = { _ in emptied = true }
+    let paneSurface = quick.terminals.surface(pane)
 
     await quick.moveQuickTerminalPane(
       pane.id, of: QuickTerminalController.target(), to: window, into: sid)
@@ -941,15 +946,16 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(quick.terminals.tabCount(forTargetID: QuickTerminalController.targetID), 0)
     XCTAssertTrue(emptied, "its last pane leaving closes the Quick Terminal")
     XCTAssertTrue(
-      window.terminals.tab(pane.id, for: t)?.surface === pane.surface, "the same surface")
+      window.terminals.surface(window.terminals.tab(pane.id, for: t)) === paneSurface,
+      "the same surface")
     XCTAssertEqual(window.terminals.allTabs(for: t).last?.id, pane.id, "after the workroom's own")
     XCTAssertEqual(window.terminals.focusedTab(for: t)?.id, pane.id)
     XCTAssertEqual(
-      pane.surface?.sessionMetadata.first { $0.key == SessionMetadataKey.workroom }?.value,
+      paneSurface?.sessionMetadata.first { $0.key == SessionMetadataKey.workroom }?.value,
       t.sessionWorkroomKey, "a reattach names its new workroom")
-    pane.surface?.handleTitleChange("vim")
+    paneSurface?.handleTitleChange("vim")
     XCTAssertEqual(window.terminals.tab(pane.id, for: t)?.title, "vim", "it reports to the window")
-    XCTAssertNil(pane.surface?.moveToWorkroomChoices, "no Move to Workroom once it is a workroom's")
+    XCTAssertNil(paneSurface?.moveToWorkroomChoices, "no Move to Workroom once it is a workroom's")
   }
 
   /// Value: protects=the shell is retagged as the workroom's before it moves, and a refusal moves
@@ -964,7 +970,7 @@ final class WorkroomHandOverTests: XCTestCase {
       return answer
     }
     let session = UUID()
-    pane.surface?.persistentSessionID = session
+    quick.terminals.surface(pane)?.persistentSessionID = session
     let quickTarget = QuickTerminalController.target()
 
     await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)
@@ -1104,6 +1110,7 @@ final class WorkroomHandOverTests: XCTestCase {
   func testAMovedInvestigateTabStaysAnInvestigateSession() async {
     let (quick, pane, window) = makeQuickTerminalMove()
     quick.runCommand.investigateTabs[pane.id] = QuickTerminalController.targetID
+    let paneSurface = quick.terminals.surface(pane)
 
     await quick.moveQuickTerminalPane(
       pane.id, of: QuickTerminalController.target(), to: window, into: sid)
@@ -1112,7 +1119,7 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(
       window.runCommand.investigateTabs[pane.id], target(window).id,
       "what RunCommands.hasLiveInvestigateSession reads before a delete")
-    pane.surface?.onEvent?(.childExited(0))
+    paneSurface?.onEvent?(.childExited(0))
     XCTAssertNil(window.runCommand.investigateTabs[pane.id], "its exit ends it there")
   }
 
@@ -1147,7 +1154,7 @@ final class WorkroomHandOverTests: XCTestCase {
       if asked.count == 1 { self.shared.projects = [] }
       return true
     }
-    pane.surface?.persistentSessionID = UUID()
+    quick.terminals.surface(pane)?.persistentSessionID = UUID()
     let quickTarget = QuickTerminalController.target()
     let key = target(window).sessionWorkroomKey
 

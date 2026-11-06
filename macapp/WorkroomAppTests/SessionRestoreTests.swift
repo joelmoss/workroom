@@ -68,22 +68,22 @@ final class SessionRestoreTests: XCTestCase {
         command == "claude" ? [.claude] : command == "codex" ? [.codex] : []
       XCTAssertEqual(sessions.activeCodingAgentBackends, expected, command)
       XCTAssertFalse(sessions.isRunning(forTargetID: target.id), "recovery must not imply activity")
-      tab.surface?.handleCommandFinished(rawExitCode: 0)
+      sessions.surface(tab)?.handleCommandFinished(rawExitCode: 0)
       XCTAssertTrue(
         sessions.activeCodingAgentBackends.isEmpty, "agent exit must clear recovered usage")
 
       // A provider title may arrive before discovery completes; keep it and recover recognition.
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) {
-        tab.surface?.handleTitleChange("✻ Planning…")
+        sessions.surface(tab)?.handleTitleChange("✻ Planning…")
         return [descriptor]
       }
       XCTAssertEqual(sessions.activeCodingAgentBackends, expected)
       XCTAssertEqual(sessions.tabs(for: target).first?.title, "✻ Planning…")
-      tab.surface?.handleCommandFinished(rawExitCode: 0)
+      sessions.surface(tab)?.handleCommandFinished(rawExitCode: 0)
 
       // A finish during discovery invalidates the captured command, even without a live title.
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) {
-        tab.surface?.handleCommandFinished(rawExitCode: 0)
+        sessions.surface(tab)?.handleCommandFinished(rawExitCode: 0)
         return [descriptor]
       }
       XCTAssertTrue(
@@ -136,7 +136,9 @@ final class SessionRestoreTests: XCTestCase {
     let finish = Task {
       try? await Task.sleep(for: .milliseconds(1))
       // Whichever pane is first in the dictionary, both commands finish during its pause.
-      for tab in sessions.tabs(for: target) { tab.surface?.handleCommandFinished(rawExitCode: 0) }
+      for tab in sessions.tabs(for: target) {
+        sessions.surface(tab)?.handleCommandFinished(rawExitCode: 0)
+      }
     }
     await sessions.materializeLivePersistentSessions(reattaches: Self.every) { descriptors }
     await finish.value
@@ -153,7 +155,8 @@ final class SessionRestoreTests: XCTestCase {
         tabs: [terminal("a", title: "Terminal 1", cwd: "/definitely/not/a/real/directory")]),
       for: target)
 
-    XCTAssertEqual(sessions.tabs(for: target).first?.surface?.workingDirectory, target.path)
+    XCTAssertEqual(
+      sessions.surface(sessions.tabs(for: target).first)?.workingDirectory, target.path)
   }
 
   /// A restore is not a visit: it materialises saved panes across EVERY target at launch, so seeding
@@ -349,7 +352,7 @@ final class SessionRestoreTests: XCTestCase {
       for: target)
     for tab in sessions.tabs(for: target) {
       XCTAssertTrue(
-        tab.surface?.canSpawnSurface == true, "no restored terminal may have spawned yet")
+        sessions.surface(tab)?.canSpawnSurface == true, "no restored terminal may have spawned yet")
     }
   }
 
@@ -555,7 +558,8 @@ final class SessionRestoreTests: XCTestCase {
     store.ensureInitialTerminal(for: target)
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the session was not restored")
     XCTAssertEqual(
-      store.terminals.tabs(for: target).first?.surface?.workingDirectory, NSHomeDirectory(),
+      store.terminals.surface(store.terminals.tabs(for: target).first)?.workingDirectory,
+      NSHomeDirectory(),
       "its terminal is not a pane on the host")
     XCTAssertTrue(store.deferredTargetSessions.isEmpty)
     XCTAssertTrue(store.selectionHasTabs, "the inspector was not told the workroom has tabs")

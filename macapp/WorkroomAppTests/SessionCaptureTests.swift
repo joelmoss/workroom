@@ -42,6 +42,26 @@ final class SessionCaptureTests: XCTestCase {
 
   // MARK: Shape
 
+  /// The saved cwd is the shell's last report, which reaches the tab in the same call that tells
+  /// the surface: a pane that never reported saves none, and its restore opens at the target.
+  /// Value: protects=a restored terminal reopens where its shell last was; fails_when=the report
+  /// stops reaching the tab (`updateCwd`), now that the capture reads only the tab; why_new=no test
+  /// saved a reported cwd; seam=none; no_claim=libghostty's OSC 7 parsing.
+  func testCapturesTheCwdTheShellLastReported() throws {
+    let sessions = makeSessions()
+    let quiet = sessions.addTab(for: target)
+    let moved = sessions.addTab(for: target)
+    let surface = try XCTUnwrap(sessions.surface(moved))
+    surface.handlePwd("/work/one")
+    surface.handlePwd("/work/two")
+
+    let captured = try XCTUnwrap(capture(sessions))
+    let cwds = Dictionary(
+      uniqueKeysWithValues: captured.tabs.map { ($0.key, $0.terminal?.cwd) })
+    XCTAssertEqual(cwds[moved.id.uuidString], "/work/two")
+    XCTAssertEqual(cwds[quiet.id.uuidString], .some(nil), "no report, no saved directory")
+  }
+
   func testCapturesTabsInStripOrderWithTheCounter() throws {
     let sessions = makeSessions()
     sessions.addTab(for: target)

@@ -271,7 +271,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testIsRunningDrivenByProgressNotTitle() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
 
     // A fresh tab sits at the prompt — nothing running.
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
@@ -304,7 +304,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testCommandFinishedClearsProgress() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
 
     view.handleProgressReport(true)
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
@@ -320,7 +320,7 @@ final class TerminalSessionsTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     s.addTab(for: target)
-    let view = s.tabs(for: target)[1].surface!
+    let view = s.surface(s.tabs(for: target)[1])!
 
     view.handleProgressReport(true, failed: true)
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
@@ -348,7 +348,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testTruncatedDirectoryTitleIsTreatedAsDirectory() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
     view.handlePwd("/var/data/dev/workroom/macapp/WorkroomApp")  // ≥4 deep → zsh truncates
 
     view.handleTitleChange("…/workroom/macapp/WorkroomApp")
@@ -362,11 +362,11 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
 
     // Progress reported in the second tab makes the whole target "running".
-    s.tabs(for: target)[1].surface!.handleProgressReport(true)
+    s.surface(s.tabs(for: target)[1])!.handleProgressReport(true)
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
 
     // It clears once that tab goes idle (the first never reported progress).
-    s.tabs(for: target)[1].surface!.handleProgressReport(false)
+    s.surface(s.tabs(for: target)[1])!.handleProgressReport(false)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 
@@ -380,7 +380,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testRunningCommandShowsThenClearsWhenFinished() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
 
     // A running command takes over from the default…
     view.handleTitleChange("npm run dev")
@@ -402,7 +402,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testTitleChangeDoesNotRepublishTheTabMap() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
     var publishes = 0
     let watching = s.objectWillChange.sink { _ in publishes += 1 }
     // Titles no registry recognises: a newly recognised tool or agent republishes, by design.
@@ -411,6 +411,43 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).first?.title, "⠙ thinking", "the title still shows")
     XCTAssertEqual(publishes, 0, "a title alone republished the tab map")
     watching.cancel()
+  }
+
+  /// A closed pane's surface outlives the close call: a pane closed from its own callback (a key at
+  /// a run's exit prompt) must not be freed under that callback's stack. The tab value used to keep
+  /// it alive in the close's session-end task; with the surface in the registry, that task does.
+  /// Value: protects=no free under a surface's own callback; fails_when=closeTab stops holding the
+  /// view across its session-end task; why_new=the tab value held it implicitly; seam=none;
+  /// no_claim=libghostty's own free timing.
+  func testAClosedSurfaceLivesUntilItsSessionEndIsAnswered() async throws {
+    // A remote pane always has a session, and its end waits here until the test answers it.
+    let (answer, answered) = AsyncStream.makeStream(of: Void.self)
+    let s = makeSessions()
+    s.sessionService = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned },
+      endRemote: { _, _ in
+        for await _ in answer { break }
+        return true
+      })
+    s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
+    var remote = target
+    remote.remoteHost = UUID()
+    s.addTab(for: remote)
+    let closing = s.addTab(for: remote)
+    weak var surface: GhosttySurfaceView?
+    autoreleasepool {
+      surface = s.surface(closing)
+      s.closeTab(closing.id, for: remote)
+    }
+    XCTAssertNil(s.surface(of: closing.id), "the window no longer holds it")
+    // Long enough for anything else the close scheduled to have let go of it.
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertNotNil(surface, "still held while its session's end is pending")
+    XCTAssertTrue(surface?.isTornDown == true, "and torn down, so it can never spawn again")
+
+    answered.yield()
+    for _ in 0..<200 where surface != nil { try await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertNil(surface, "freed once the session's end is answered")
   }
 
   /// A target's panes live in their own object, but every change to them still publishes the
@@ -446,15 +483,15 @@ final class TerminalSessionsTests: XCTestCase {
     let other = TerminalTarget(
       id: .workroom(project: "/p", name: "other"), title: "other", path: "/tmp", isMissing: false)
     sessions.addTab(for: target)
-    let first = sessions.tabs(for: target)[0].surface!
+    let first = sessions.surface(sessions.tabs(for: target)[0])!
     first.foregroundProcessNameForTesting = "codex"
     first.handleTitleChange("Codex")
     sessions.addTab(for: target)
-    let second = sessions.tabs(for: target)[1].surface!
+    let second = sessions.surface(sessions.tabs(for: target)[1])!
     second.foregroundProcessNameForTesting = "codex"
     second.handleTitleChange("Codex")
     sessions.addTab(for: other)
-    let claude = sessions.tabs(for: other)[0].surface!
+    let claude = sessions.surface(sessions.tabs(for: other)[0])!
     claude.foregroundProcessNameForTesting = "claude"
     claude.handleTitleChange("Claude")
     sessions.addTab(for: other)  // The focused tab is an ordinary shell.
@@ -471,7 +508,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testCodexAgentSurvivesProviderTitleRepaint() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
 
     view.foregroundProcessNameForTesting = "codex"
     view.handleTitleChange("Implement the requested changes")
@@ -490,7 +527,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testRecognizedToolLatchesSurvivesRepaintAndClears() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
 
     view.foregroundProcessNameForTesting = "git"
     view.handleTitleChange("git status")
@@ -514,7 +551,7 @@ final class TerminalSessionsTests: XCTestCase {
     var recorded: [String] = []
     s.recordUnrecognizedTool = { recorded.append($0) }
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
 
     view.foregroundProcessNameForTesting = "some-random-tool"
     view.handleTitleChange("some-random-tool --flag")
@@ -529,7 +566,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testDirectoryTitlesAreIgnoredSoTheCommandSurvives() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
     view.handlePwd("/var/data/proj")  // cwd outside $HOME, so its `~` form is itself
 
     // The directory title the shell sets at the prompt is ignored → default stays.
@@ -549,7 +586,7 @@ final class TerminalSessionsTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     s.addTab(for: target)
-    s.tabs(for: target)[1].surface!.handleTitleChange("vim")
+    s.surface(s.tabs(for: target)[1])!.handleTitleChange("vim")
     XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "vim"])
   }
 
@@ -646,7 +683,7 @@ final class TerminalSessionsTests: XCTestCase {
       return GhosttySurfaceView(workingDirectory: cwd)
     }
     s.addTab(for: target)  // first surface spawns at the target path
-    s.tabs(for: target).first!.surface!.handlePwd("/work/here")
+    s.surface(s.tabs(for: target).first)!.handlePwd("/work/here")
     s.splitFocusedPane(for: target, orientation: .horizontal)
     XCTAssertEqual(cwds.count, 2)
     XCTAssertEqual(cwds.last, "/work/here")  // the split inherits the focused pane's cwd
@@ -655,7 +692,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testSplitRefusedWhenPaneTooSmall() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
     view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)  // < 2 × either axis floor
     s.splitFocusedPane(for: target, orientation: .horizontal)
     XCTAssertEqual(s.tabs(for: target).count, 1)  // refused — no sliver
@@ -676,7 +713,7 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
     let tab = s.tabs(for: target).first!
     // The surface alone would REFUSE: (200-4)/2 = 98 < 300.
-    tab.surface!.frame = CGRect(x: 0, y: 0, width: 200, height: 600)
+    s.surface(tab)!.frame = CGRect(x: 0, y: 0, width: 200, height: 600)
     // The pane the renderer actually laid out PERMITS: (1000-4)/2 = 498 ≥ 300.
     s.paneRects[target.id] = [tab.id: CGRect(x: 0, y: 0, width: 1000, height: 600)]
     s.splitFocusedPane(for: target, orientation: .horizontal)
@@ -692,7 +729,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testSurfaceBoundsStillGuardBeforeFirstLayout() {
     let s = makeSessions()
     s.addTab(for: target)
-    s.tabs(for: target).first!.surface!.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    s.surface(s.tabs(for: target).first)!.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
     XCTAssertNil(s.paneRects[target.id], "no layout has run yet")
     s.splitFocusedPane(for: target, orientation: .horizontal)
     XCTAssertEqual(s.tabs(for: target).count, 1, "refused on the surface's bounds alone")
@@ -705,7 +742,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testSplitRefusalFollowsTheAxisBeingDivided() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.surface!
+    let view = s.surface(s.tabs(for: target).first)!
     view.frame = CGRect(x: 0, y: 0, width: 400, height: 600)
     s.splitFocusedPane(for: target, orientation: .horizontal)  // (400-4)/2 = 198 < 300
     XCTAssertEqual(
@@ -812,14 +849,14 @@ final class TerminalSessionsTests: XCTestCase {
       let s = makeSessions()
       let previous = s.addTab(for: target).id
       let current = s.addTab(for: target).id
-      let surface = s.tab(current, for: target)?.surface
+      let surface = s.surface(s.tab(current, for: target))
       s.dropTabFromStrip(current, ontoEdge: edge, of: current, for: target)
       XCTAssertEqual(
         s.split(for: target)?.tabIDs,
         edge.placesDroppedFirst ? [current, previous] : [previous, current])
       XCTAssertEqual(s.activeTab(for: target)?.id, current)
       XCTAssertEqual(s.tabs(for: target).count, 2)
-      XCTAssertTrue(s.tab(current, for: target)?.surface === surface)
+      XCTAssertTrue(s.surface(s.tab(current, for: target)) === surface)
     }
   }
 
@@ -1209,7 +1246,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.activeTab(for: target)?.id, id)
     XCTAssertTrue(tabs.first!.isPreview)
     XCTAssertEqual(tabs.first?.title, "a.swift")  // basename only
-    XCTAssertNil(tabs.first?.surface)  // a content tab owns no surface
+    XCTAssertNil(s.surface(tabs.first))  // a content tab owns no surface
   }
 
   // MARK: File preview/persist tabs (mirror the diff mechanics; share the preview slot)
@@ -1222,7 +1259,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.activeTab(for: target)?.id, id)
     XCTAssertTrue(tabs.first!.isPreview)
     XCTAssertEqual(tabs.first?.title, "notes.md")  // basename only
-    XCTAssertNil(tabs.first?.surface)  // a content tab owns no surface
+    XCTAssertNil(s.surface(tabs.first))  // a content tab owns no surface
   }
 
   func testSecondFilePreviewRetargetsInPlaceKeepingID() {
@@ -1330,7 +1367,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).count, 2)
     XCTAssertEqual(s.activeTab(for: target)?.id, diff)
     // Select the terminal, then preview another file → still the SAME single preview tab.
-    let term = s.tabs(for: target).first { $0.surface != nil }!.id
+    let term = s.tabs(for: target).first { s.surface($0) != nil }!.id
     s.select(term, for: target)
     let diff2 = s.openDiffPreview(diffDesc("c.swift"), for: target)
     XCTAssertEqual(diff, diff2)
@@ -1388,7 +1425,7 @@ final class TerminalSessionsTests: XCTestCase {
     let diff = s.openDiffPreview(diffDesc("a.swift"), for: target)  // focused
     s.closeTab(diff, for: target)
     XCTAssertEqual(s.tabs(for: target).count, 1)
-    XCTAssertNotNil(s.activeTab(for: target)?.surface)  // revealed the terminal
+    XCTAssertNotNil(s.surface(s.activeTab(for: target)))  // revealed the terminal
   }
 
   func testReapClearsContentTabs() async {
@@ -1411,7 +1448,7 @@ final class TerminalSessionsTests: XCTestCase {
     // The new pane is a diff (no surface) of the SAME file, focused and un-persisted…
     let new = s.activeTab(for: target)!
     XCTAssertNotEqual(new.id, diff)
-    XCTAssertNil(new.surface)
+    XCTAssertNil(s.surface(new))
     XCTAssertEqual(new.title, "a.swift")
     XCTAssertTrue(new.isPreview)
     // …and the original anchor is now pinned (persisted) so it can't be retargeted out from under us.
@@ -1831,6 +1868,20 @@ final class RemotePaneFooterTests: XCTestCase {
     return state
   }
 
+  /// Give `tab` the session `addTab` keeps only where persistent sessions are available, which a CI
+  /// runner's are not: on the tab and as its surface's attach id, as a pane made with one has it.
+  private func give(
+    _ session: UUID, to tab: TerminalTab?, in sessions: TerminalSessions,
+    target: TerminalTarget
+  ) throws {
+    var tab = try XCTUnwrap(tab)
+    guard case .terminal(var state) = tab.content else { return XCTFail("not a terminal") }
+    state.sessionID = session
+    tab.content = .terminal(state)
+    sessions.replace(tab, for: target)
+    try XCTUnwrap(sessions.surface(tab)).persistentSessionID = session
+  }
+
   private func waitFor(_ condition: () -> Bool) async throws {
     for _ in 0..<300 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
   }
@@ -1842,10 +1893,9 @@ final class RemotePaneFooterTests: XCTestCase {
     let connection = HostCwdConnection(directory: "/home/w")
     let s = try await makeSessions(connection, on: .remote(hostID))
     s.addTab(for: target, sessionID: session)
-    let view = try XCTUnwrap(s.tabs(for: target).first?.surface)
-    // `addTab` keeps a session id only where persistent sessions are available, which a CI runner's
-    // are not; a remote pane always has one.
-    view.persistentSessionID = session
+    let view = try XCTUnwrap(s.surface(s.tabs(for: target).first))
+    // A remote pane always has one.
+    try give(session, to: s.tabs(for: target).first, in: s, target: target)
 
     view.handleTitleChange("~")
     try await waitFor { state(in: s)?.hostCwd == "/home/w" }
@@ -1887,10 +1937,9 @@ final class RemotePaneFooterTests: XCTestCase {
     let manager = HostConnectionManager()
     s.hostConnections = manager
     s.addTab(for: target, sessionID: session)
-    let view = try XCTUnwrap(s.tabs(for: target).first?.surface)
-    // `addTab` keeps a session id only where persistent sessions are available, which a CI runner's
-    // are not; a remote pane always has one.
-    view.persistentSessionID = session
+    let view = try XCTUnwrap(s.surface(s.tabs(for: target).first))
+    // A remote pane always has one.
+    try give(session, to: s.tabs(for: target).first, in: s, target: target)
 
     view.handleTitleChange("~")
     try await Task.sleep(for: .milliseconds(100))
@@ -1923,8 +1972,8 @@ final class RemotePaneFooterTests: XCTestCase {
     let remote = TerminalTarget(
       id: target.id, title: "r", path: "/home/w", unavailability: .remote, remoteHost: hostID)
     s.addTab(for: remote, sessionID: session)
-    let view = try XCTUnwrap(s.tabs(for: remote).first?.surface)
-    view.persistentSessionID = session
+    let view = try XCTUnwrap(s.surface(s.tabs(for: remote).first))
+    try give(session, to: s.tabs(for: remote).first, in: s, target: remote)
     view.handleTitleChange("~")
     func hostCwd() -> String? {
       guard case .terminal(let state)? = s.tabs(for: remote).first?.content else { return nil }
@@ -1956,10 +2005,10 @@ final class RemotePaneFooterTests: XCTestCase {
     s.addTab(for: target, sessionID: session)
     // Set by hand for the reason given in the test above.
     let tabs = s.tabs(for: target)
-    try XCTUnwrap(tabs.first?.surface).persistentSessionID = UUID()
-    try XCTUnwrap(tabs.last?.surface).persistentSessionID = session
+    try give(UUID(), to: tabs.first, in: s, target: target)
+    try give(session, to: tabs.last, in: s, target: target)
     for tab in tabs {
-      let view = try XCTUnwrap(tab.surface)
+      let view = try XCTUnwrap(s.surface(tab))
       view.handleTitleChange("~")
       view.handleCommandFinished(rawExitCode: 0)
     }

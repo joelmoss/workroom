@@ -29,11 +29,9 @@ final class PaneToolbarPresentationTests: XCTestCase {
       ChangesetDescriptor(commitID: "abc123", title: "Add the thing", isPreview: false))
   }
 
-  /// A `GhosttySurfaceView` is inert until it enters a window, so building one costs nothing and
-  /// spawns no shell (same construction `SwitcherMarkTests` uses).
+  /// A terminal tab's content holds no surface, so this builds no view.
   private func terminal() -> TabContent {
-    .terminal(
-      TerminalState(view: GhosttySurfaceView(workingDirectory: "/tmp"), defaultTitle: "zsh"))
+    .terminal(TerminalState(defaultTitle: "zsh", launch: .shell, launchDirectory: "/tmp"))
   }
 
   /// A diff pane is the fully-dressed case: the view-mode switch, "Open File", and therefore the rule

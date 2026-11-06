@@ -20,6 +20,8 @@ import SwiftUI
 struct DetachedPaneView: View {
   let tabID: TerminalTab.ID
   let content: TabContent
+  /// The pane's terminal surface, nil for a content pane (`PaneLeafView.surface`).
+  let surface: GhosttySurfaceView?
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
   let store: AppStore
@@ -31,7 +33,7 @@ struct DetachedPaneView: View {
 
   var body: some View {
     PaneLeafView(
-      tabID: tabID, content: content, target: target, sessions: sessions,
+      tabID: tabID, content: content, surface: surface, target: target, sessions: sessions,
       focused: true, multiPane: false, surfaceActive: true,
       dimUnfocusedPanes: false, workroomIsSplit: false,
       paneIndex: 1, paneCount: 1, coordinateSpace: Self.space,

@@ -180,7 +180,8 @@ final class WindowRegistry: ObservableObject {
   /// DECSET-1004 focus report either way.
   private func reconcileTerminalFocus(in window: NSWindow, store: AppStore) {
     guard let target = store.selectedTarget,
-      let surface = store.terminals.focusedTab(for: target)?.surface,
+      let tab = store.terminals.focusedTab(for: target),
+      let surface = store.terminals.surface(of: tab.id),
       TerminalFocusReconciliation.shouldRestoreFirstResponder(in: window, to: surface)
     else { return }
     window.makeFirstResponder(surface)

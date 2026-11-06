@@ -12,18 +12,21 @@ enum TerminalSessionAttachment {
     sessions: TerminalSessions
   ) -> Bool {
     guard var tab = sessions.focusedTab(for: target),
-      case .terminal(var state) = tab.content
+      case .terminal(var state) = tab.content,
+      let view = sessions.surface(of: tab.id)
     else { return false }
     if let owner = sessions.owner(of: sessionID, in: target), owner != tab.id {
       return false
     }
+    // The tab's session id and its surface's attach id are written together, here and when the
+    // tab is made (`TerminalSessions.makeTerminalTab`), so readers of the tab's need not ask the view.
     let previous = state.sessionID
     state.sessionID = sessionID
-    state.view.persistentSessionID = sessionID
+    view.persistentSessionID = sessionID
     // Always restored: this path exists to point a pane at a session that already exists, chosen
     // by the user from the detached-sessions list.
-    state.view.persistentSessionIsRestored = true
-    state.view.reattachPersistentSession()
+    view.persistentSessionIsRestored = true
+    view.reattachPersistentSession()
     tab.content = .terminal(state)
     sessions.replace(tab, for: target)
     sessions.refreshProgramStatus(tab: tab.id, target: target.id)

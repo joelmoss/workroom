@@ -249,9 +249,9 @@ extension AppStore {
   /// not whatever had painted when the out-of-band `.status` file landed).
   private func diagnoseRunFailure(target: TerminalTarget, tab: TerminalTab.ID, exitCode: Int32) {
     guard terminals.codingAgentManager.isEnabled,
-      case .terminal(let s)? = terminals.tab(tab, for: target)?.content
+      case .terminal? = terminals.tab(tab, for: target)?.content,
+      let view = terminals.surface(of: tab)
     else { return }
-    let view = s.view
     let command = project(forTargetID: target.id).map {
       runCommands.runConfig(forProject: $0.path).command
     }
@@ -360,7 +360,8 @@ extension AppStore {
     // no daemon could take the run (D5), nothing runs: say so rather than show a lying "running"
     // toast. (Foreground starts spawn on mount, so the surface is legitimately nil here — the exit
     // of the pane's notice says it then, through `markRunExited`.)
-    if !focus, tab.surface?.didSpawnFail == true || tab.surface?.refusedRun == true {
+    let surface = terminals.surface(of: tab.id)
+    if !focus, surface?.didSpawnFail == true || surface?.refusedRun == true {
       runCommand.runOutcomes[target.id] = .failedToStart
       runCommand.runStates[target.id] = .stopped(tab: tab.id)
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
@@ -446,7 +447,8 @@ extension AppStore {
     runCommand.runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
     runCommand.resetRunToast(for: target.id)  // restart re-arms the toast + cancels a stale timer
     runCommand.lastRunStatus[target.id] = nil
-    if !wasFocused, tab.surface?.didSpawnFail == true || tab.surface?.refusedRun == true {
+    let surface = terminals.surface(of: tab.id)
+    if !wasFocused, surface?.didSpawnFail == true || surface?.refusedRun == true {
       runCommand.runOutcomes[target.id] = .failedToStart
       runCommand.runStates[target.id] = .stopped(tab: tab.id)
       runCommand.scheduleRunToastAutoDismiss(for: target.id)

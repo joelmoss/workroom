@@ -89,7 +89,7 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
                 terminal: TerminalPayload(defaultTitle: "Terminal 1", sessionID: id.uuidString))
             ]),
           for: target)
-        let view = try XCTUnwrap(sessions.tabs(for: target).first?.surface)
+        let view = try XCTUnwrap(sessions.surface(sessions.tabs(for: target).first))
         // Keep the model's recovery identity, but engine creation runs our inert command rather
         // than touching a shared helper. The restore factory and recovery loop are unchanged.
         view.persistentSessionID = nil

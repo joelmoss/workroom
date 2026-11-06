@@ -235,8 +235,8 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let window = AlwaysKeyWindow(
       contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
       backing: .buffered, defer: false)
-    window.contentView?.addSubview(tab.surface!)
-    window.makeFirstResponder(tab.surface)
+    window.contentView?.addSubview(store.terminals.surface(tab)!)
+    window.makeFirstResponder(store.terminals.surface(tab))
     let id = session(tab)
     monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
     monitor.seed(id, records: [done()])
@@ -246,7 +246,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
     monitor.seed(id, records: [done()])
     XCTAssertEqual(finishes.count, 1, "control: the same pane alerts once nobody is looking")
-    tab.surface?.removeFromSuperview()
+    store.terminals.surface(tab)?.removeFromSuperview()
   }
 
   /// Once the program that finished has gone, the next one's notifications are its own (a build
@@ -465,10 +465,10 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let window = AlwaysKeyWindow(
       contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
       backing: .buffered, defer: false)
-    window.contentView?.addSubview(tab.surface!)
+    window.contentView?.addSubview(store.terminals.surface(tab)!)
     // ⇧⌘M's "current" terminal is the selected one only once it has keyboard focus.
     XCTAssertNil(store.focusedTerminalSession, "selected, without keyboard focus")
-    window.makeFirstResponder(tab.surface)
+    window.makeFirstResponder(store.terminals.surface(tab))
     XCTAssertEqual(
       store.focusedTerminalSession,
       store.terminals.sessionID(forTab: tab.id, inTarget: target.id))
@@ -480,7 +480,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
 
     store.dismissFocusedTerminalNotifications()
     XCTAssertEqual(store.notifications.items.count, 0)
-    tab.surface?.removeFromSuperview()
+    store.terminals.surface(tab)?.removeFromSuperview()
   }
 
   /// The title names the workroom, or a root's project, so the origin line never repeats it: a

@@ -568,7 +568,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     let monitor = ProgramStatusMonitor()
     let s = makeSessions(monitor)
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     func indicator() -> PaneIndicator { s.tabs(for: target)[0].indicator }
 
@@ -604,7 +604,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     let monitor = ProgramStatusMonitor()
     let s = makeSessions(monitor)
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     func indicator() -> PaneIndicator { s.tabs(for: target)[0].indicator }
     let failed = ProgramStatusRecord(id: "shell command", state: .error, exitCode: 1)
@@ -677,7 +677,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     monitor.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
     let s = makeSessions(monitor)
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     for _ in 0..<200 where monitor.hosts[.local] != .live {
       connection.push(.snapshotComplete(boot: "b", sessions: []))
@@ -707,7 +707,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     let s = makeSessions(monitor)
     s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     for _ in 0..<200 where monitor.hosts[.local] != .live {
       connection.push(.snapshotComplete(boot: "b", sessions: []))

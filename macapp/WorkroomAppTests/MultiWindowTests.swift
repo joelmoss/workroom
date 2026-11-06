@@ -164,8 +164,8 @@ final class MultiWindowTests: XCTestCase {
     }
     registry.register(window: firstWindow, store: first)
     registry.register(window: secondWindow, store: second)
-    let codex = first.terminals.tabs(for: target)[0].surface!
-    let claude = second.terminals.tabs(for: target)[0].surface!
+    let codex = first.terminals.surface(first.terminals.tabs(for: target)[0])!
+    let claude = second.terminals.surface(second.terminals.tabs(for: target)[0])!
     codex.foregroundProcessNameForTesting = "codex"
     codex.handleTitleChange("Codex")
     claude.foregroundProcessNameForTesting = "claude"
@@ -377,8 +377,8 @@ final class MultiWindowTests: XCTestCase {
     window.runCommands.setRunConfig(
       RunConfig(command: "echo hi", autoRun: false), forProject: project)
     window.startRunCommand(for: target)
-    return window.runCommand.runTabID(for: id).flatMap { window.terminals.tab($0, for: target) }?
-      .surface
+    return window.terminals.surface(
+      window.runCommand.runTabID(for: id).flatMap { window.terminals.tab($0, for: target) })
   }
 
   /// Value: protects=a create started in one window becomes its workroom in another that shows its

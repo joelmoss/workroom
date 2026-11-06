@@ -91,7 +91,8 @@ struct PaneTreeView: View {
         ForEach(Array(layout.tabIDs.enumerated()), id: \.element) { index, tabID in
           if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
             PaneLeafView(
-              tabID: tabID, content: tab.content, target: target, sessions: sessions,
+              tabID: tabID, content: tab.content, surface: sessions.surface(of: tabID),
+              target: target, sessions: sessions,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
               surfaceActive: surfaceActive, dimUnfocusedPanes: dimUnfocusedPanes,
               workroomIsSplit: workroomIsSplit,
@@ -296,6 +297,11 @@ struct PaneLeafView: View {
   /// The pane's content — a terminal surface or non-terminal content (issue #66). All the pane chrome
   /// (focus ring, dim scrim, drag handle, a11y) wraps *both* kinds; only the centre swaps.
   let content: TabContent
+  /// A terminal pane's surface, read from the sessions by whoever builds this leaf, beside
+  /// `content`; nil for a content pane. Passed in rather than looked up here, so a last update
+  /// pass after the tab has moved to another window (#444) still holds the surface it rendered,
+  /// and `mayHostSurface` is what keeps that pass from taking it back.
+  let surface: GhosttySurfaceView?
   /// The target this pane belongs to — its `path` is the workroom directory handed to a diff pane (so
   /// its `DiffResolver` runs against the right repo), and it routes the diff pane's context-menu actions.
   let target: TerminalTarget
@@ -492,35 +498,10 @@ struct PaneLeafView: View {
   /// same rounded shape the focus border draws (the terminal host already clips itself).
   @ViewBuilder private var paneContent: some View {
     switch content {
+    // A terminal leaf's builder always reads its surface with `content`, so the `if` is one slot.
     case .terminal(let s):
-      // The terminal and its status bar (issue #49) stack as one rounded panel: the surface rounds
-      // only its top corners, the enclosing clip rounds the bar's bottom, so every pane — including
-      // each split member — carries its own bar as part of the pane.
-      VStack(spacing: 0) {
-        // `activePicker != nil` reports the pane as UNfocused while a New/Open Workroom dialog is up,
-        // which makes `applyFocus` resign the surface's first responder so the dialog's search field
-        // can hold it (issue: the dialog was not blocking). Deliberately folded into `isFocusedPane`
-        // rather than added as a second parameter: the container's existing not-focused branch already
-        // does exactly the right resign, guard included, so a `suspendsFocus` flag would have been a
-        // byte-for-byte duplicate of it. PaneTreeView's own `focused` still drives the focus ring, the
-        // find bar and the a11y trait, so only the AppKit responder follows the dialog.
-        TerminalContainerView(
-          view: s.view, isFocusedPane: focused && modals.activePicker == nil,
-          // Only the host whose kind matches the model may hold the surface (issue #172): the pane
-          // tree while the tab is docked, the detached window while it is not. And only in the
-          // window whose sessions own the tab: one moved to another window (#444) leaves this
-          // window's tree a last pass that would otherwise take the surface back.
-          mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached
-            && sessions.containsTab(tabID)
-        )
-        // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
-        // is per-surface, and only the focused pane can be searched. Nothing until active.
-        .overlay(alignment: .topTrailing) {
-          if focused {
-            TerminalSearchBar(model: s.view.searchModel)
-          }
-        }
-        TerminalStatusBar(target: target, tabID: tabID, state: s)
+      if let surface {
+        terminalPanel(s, surface: surface)
       }
     case .diff(let descriptor):
       // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
@@ -566,6 +547,39 @@ struct PaneLeafView: View {
       } else {
         contentPanel(detail)
       }
+    }
+  }
+
+  /// A terminal pane's centre: its surface and its status bar.
+  private func terminalPanel(_ s: TerminalState, surface: GhosttySurfaceView) -> some View {
+    // The terminal and its status bar (issue #49) stack as one rounded panel: the surface rounds
+    // only its top corners, the enclosing clip rounds the bar's bottom, so every pane — including
+    // each split member — carries its own bar as part of the pane.
+    VStack(spacing: 0) {
+      // `activePicker != nil` reports the pane as UNfocused while a New/Open Workroom dialog is up,
+      // which makes `applyFocus` resign the surface's first responder so the dialog's search field
+      // can hold it (issue: the dialog was not blocking). Deliberately folded into `isFocusedPane`
+      // rather than added as a second parameter: the container's existing not-focused branch already
+      // does exactly the right resign, guard included, so a `suspendsFocus` flag would have been a
+      // byte-for-byte duplicate of it. PaneTreeView's own `focused` still drives the focus ring, the
+      // find bar and the a11y trait, so only the AppKit responder follows the dialog.
+      TerminalContainerView(
+        view: surface, isFocusedPane: focused && modals.activePicker == nil,
+        // Only the host whose kind matches the model may hold the surface (issue #172): the pane
+        // tree while the tab is docked, the detached window while it is not. And only in the
+        // window whose sessions own the tab: one moved to another window (#444) leaves this
+        // window's tree a last pass that would otherwise take the surface back.
+        mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached
+          && sessions.containsTab(tabID)
+      )
+      // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
+      // is per-surface, and only the focused pane can be searched. Nothing until active.
+      .overlay(alignment: .topTrailing) {
+        if focused {
+          TerminalSearchBar(model: surface.searchModel)
+        }
+      }
+      TerminalStatusBar(target: target, tabID: tabID, state: s, surface: surface)
     }
   }
 

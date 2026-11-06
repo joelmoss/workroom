@@ -229,10 +229,10 @@ final class PaneRenderingTests: XCTestCase {
     let mounted = waitForSurfaces(in: view, count: 1)
     XCTAssertEqual(mounted.count, 1, "the origin renders only the pane it still owns")
     XCTAssertNotNil(
-      s.tab(detached, for: target)?.surface,
+      s.surface(s.tab(detached, for: target)),
       "the detached tab keeps its surface — it moved windows, it did not die")
     XCTAssertEqual(
-      s.tab(stay.id, for: target)?.surface, mounted.first,
+      s.surface(s.tab(stay.id, for: target)), mounted.first,
       "and the one still mounted is the one that stayed")
 
   }
@@ -251,7 +251,7 @@ final class PaneRenderingTests: XCTestCase {
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
     let detached = s.focusedTab(for: target)!.id
-    let surface = s.tab(detached, for: target)!.surface!
+    let surface = s.surface(s.tab(detached, for: target))!
 
     let (origin, originView) = host(s)
     defer {
@@ -299,7 +299,7 @@ final class PaneRenderingTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     let second = s.addTab(for: target)
-    let surface = s.tab(second.id, for: target)?.surface
+    let surface = s.surface(s.tab(second.id, for: target))
     s.detachPane(second.id, for: target, at: .zero)
     let (window, view) = host(s)
     defer {

@@ -412,11 +412,12 @@ struct TerminalTabStrip: View {
         state: state,
         onDiagnose: { codingAgentManager.diagnose(tab: tab.id, target: target.id) },
         onInsertFix: { fix in
-          tab.surface?.sendText(fix)
+          sessions.surface(of: tab.id)?.sendText(fix)
           codingAgentPopoverTab = nil
         },
         onInvestigate: {
-          _ = store.startInvestigate(bannerState: state, target: target, surface: tab.surface)
+          _ = store.startInvestigate(
+            bannerState: state, target: target, surface: sessions.surface(of: tab.id))
           codingAgentManager.dismiss(tab: tab.id)
           codingAgentPopoverTab = nil
         },

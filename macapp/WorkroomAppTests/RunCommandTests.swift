@@ -90,7 +90,7 @@ final class RunCommandTests: XCTestCase {
   /// The run terminal's surface view (so a test can simulate supervisor exit via `handleChildExited`).
   private func runView(_ store: AppStore, _ target: TerminalTarget) -> GhosttySurfaceView? {
     store.runCommand.runTabID(for: target.id).flatMap {
-      store.terminals.tab($0, for: target)?.surface
+      store.terminals.surface(store.terminals.tab($0, for: target))
     }
   }
 
@@ -141,7 +141,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let tab = store.startInvestigate(
       bannerState: investigateBanner(t), target: t, surface: nil, codingAgentSetting: "auto")
-    XCTAssertEqual(tab.surface?.isRunSession, false)
+    XCTAssertEqual(store.terminals.surface(tab)?.isRunSession, false)
   }
 
   func testStartIsNoOpWithoutCommand() {
@@ -514,7 +514,7 @@ final class RunCommandTests: XCTestCase {
       bannerState: investigateBanner(t), target: t, surface: nil)
     XCTAssertNotNil(store.terminals.tab(investigate.id, for: t))
 
-    investigate.surface?.onEvent?(.closeRequested)
+    store.terminals.surface(investigate)?.onEvent?(.closeRequested)
 
     XCTAssertNil(store.terminals.tab(investigate.id, for: t))
     XCTAssertNil(store.runCommand.investigateTabs[investigate.id])
@@ -974,7 +974,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(store.runCommand.hasLiveRunCommand)
 
     let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
-    let surface1 = try! XCTUnwrap(tab1.surface)
+    let surface1 = try! XCTUnwrap(store.terminals.surface(tab1))
     surface1.liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
@@ -986,7 +986,7 @@ final class RunCommandTests: XCTestCase {
     // Cleanup path 2: the tab is closed/reaped (`.tabsRemoved`) — independent of `.childExited`
     // ever firing (it isn't guaranteed to, per libghostty exit-reporting flakiness).
     let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
-    let surface2 = try! XCTUnwrap(tab2.surface)
+    let surface2 = try! XCTUnwrap(store.terminals.surface(tab2))
     surface2.liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
@@ -999,7 +999,7 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
     let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
-    let surface = try! XCTUnwrap(tab.surface)
+    let surface = try! XCTUnwrap(store.terminals.surface(tab))
     surface.liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
@@ -1025,7 +1025,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(runCommands.hasLiveInvestigateSession(for: [t.id]))
 
     let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
-    try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
+    try! XCTUnwrap(store.terminals.surface(tab)).liveProcessOverrideForTesting = true
 
     XCTAssertTrue(runCommands.hasLiveInvestigateSession(for: [t.id]))
     XCTAssertFalse(
@@ -1040,7 +1040,7 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
     let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
-    try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
+    try! XCTUnwrap(store.terminals.surface(tab)).liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
     await store.reapTargetLocally(t.id)
@@ -1058,8 +1058,8 @@ final class RunCommandTests: XCTestCase {
     let bannerState = investigateBanner(t)
     let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
-    try! XCTUnwrap(tab1.surface).liveProcessOverrideForTesting = false
-    try! XCTUnwrap(tab2.surface).liveProcessOverrideForTesting = true
+    try! XCTUnwrap(store.terminals.surface(tab1)).liveProcessOverrideForTesting = false
+    try! XCTUnwrap(store.terminals.surface(tab2)).liveProcessOverrideForTesting = true
 
     XCTAssertTrue(
       store.runCommand.hasLiveRunCommand,
