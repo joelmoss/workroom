@@ -37,143 +37,7 @@ use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_protocol::terminal::AttachRequest;
 
 /// Drives a daemon from the client side of a stream, speaking the real protocol.
-struct Client {
-    reader: FdStream,
-    writer: FdStream,
-    decoder: EnvelopeDecoder,
-    seen: Vec<u8>,
-    /// Envelopes for every service but Terminal, kept until `envelope` asks for them. Terminal
-    /// output keeps flowing while a request is in flight, and neither may eat the other's bytes.
-    other: Vec<Envelope>,
-}
-
-impl Client {
-    /// One read that honours a deadline. The reader is non-blocking, so `WouldBlock` means "not
-    /// yet" rather than an error — treating it as one is what made every read site here either
-    /// hang or spuriously fail.
-    fn read_some(&mut self, buffer: &mut [u8], deadline: Instant) -> Option<usize> {
-        while Instant::now() < deadline {
-            match self.reader.read(buffer) {
-                Ok(0) => return None,
-                Ok(n) => return Some(n),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(_) => return None,
-            }
-        }
-        None
-    }
-
-    fn handshake(&mut self) {
-        self.writer
-            .write_all(&Hello::current("test-client").encode())
-            .expect("send hello");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut greeting = Vec::new();
-        let mut byte = [0u8; 1];
-        loop {
-            if let Ok(Some(_)) = Hello::decode(&greeting) {
-                break;
-            }
-            let n = self
-                .read_some(&mut byte, deadline)
-                .expect("the daemon closed the stream or never greeted");
-            greeting.push(byte[..n][0]);
-        }
-    }
-
-    fn send(&mut self, service: Service, stream: u32, frame: Frame) {
-        self.writer
-            .write_all(&Envelope::new(service, stream, frame.encode()).encode())
-            .expect("send");
-    }
-
-    /// Sends a frame one byte at a time. A remote stream can split anywhere, and the daemon must
-    /// not care — a decoder that assumed whole frames would pass every other test here.
-    fn send_bytewise(&mut self, service: Service, stream: u32, frame: Frame) {
-        let bytes = Envelope::new(service, stream, frame.encode()).encode();
-        for byte in bytes {
-            self.writer.write_all(&[byte]).expect("send byte");
-        }
-    }
-
-    /// Accumulates output until `needle` appears, or the deadline passes.
-    fn read_until(&mut self, needle: &str, timeout: Duration) -> String {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if String::from_utf8_lossy(&self.seen).contains(needle) {
-                break;
-            }
-            if !self.pump(deadline) {
-                break;
-            }
-        }
-        String::from_utf8_lossy(&self.seen).into_owned()
-    }
-
-    /// Reads once and sorts what arrived: terminal output into `seen`, the rest into `other`.
-    /// False when the stream ended or the deadline passed.
-    fn pump(&mut self, deadline: Instant) -> bool {
-        let mut buffer = [0u8; 65536];
-        let Some(n) = self.read_some(&mut buffer, deadline) else {
-            return false;
-        };
-        self.decoder.push(&buffer[..n]);
-        // A decode error panics here, naming itself, rather than surfacing later as a timeout.
-        while let Some(envelope) = self.decoder.next_envelope().expect("a malformed envelope") {
-            if envelope.service != Service::Terminal {
-                self.other.push(envelope);
-                continue;
-            }
-            let mut frames = FrameDecoder::new();
-            frames.push(&envelope.payload);
-            while let Some(frame) = frames.next_frame().expect("a malformed frame") {
-                if frame.kind == FrameKind::Output {
-                    self.seen.extend_from_slice(&frame.payload);
-                }
-            }
-        }
-        true
-    }
-
-    /// The next envelope on `service`/`stream`, or a panic naming what never came.
-    fn envelope(&mut self, service: Service, stream: u32, timeout: Duration) -> Envelope {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(index) = self
-                .other
-                .iter()
-                .position(|e| e.service == service && e.stream == stream)
-            {
-                return self.other.remove(index);
-            }
-            assert!(
-                self.pump(deadline),
-                "nothing arrived on {service:?} stream {stream}"
-            );
-        }
-    }
-
-    /// One request to a JSON service (VCS, File, Status): the request goes out as one envelope,
-    /// and the reply comes back as chunks whose first byte says whether more follow.
-    fn request(&mut self, service: Service, stream: u32, request: &Value) -> Value {
-        self.writer
-            .write_all(
-                &Envelope::new(service, stream, serde_json::to_vec(request).unwrap()).encode(),
-            )
-            .expect("send request");
-        let mut assembled = Vec::new();
-        loop {
-            let envelope = self.envelope(service, stream, Duration::from_secs(20));
-            let (last, body) = envelope.payload.split_first().expect("empty reply chunk");
-            assembled.extend_from_slice(body);
-            if *last == 1 {
-                return serde_json::from_slice(&assembled).expect("a JSON reply");
-            }
-        }
-    }
-}
+type Client = common::RpcClient<FdStream, FdStream>;
 
 /// Serves a daemon over a pipe on a background thread, and hands back the client end.
 fn serve_over_pipe(sessions: SessionStore) -> (Client, std::thread::JoinHandle<()>) {
@@ -183,16 +47,7 @@ fn serve_over_pipe(sessions: SessionStore) -> (Client, std::thread::JoinHandle<(
         let _ = handle_connection(daemon, sessions);
     });
     set_nonblocking(&pair.client_reader).expect("non-blocking client reader");
-    (
-        Client {
-            reader: pair.client_reader,
-            writer: pair.client_writer,
-            decoder: EnvelopeDecoder::new(),
-            seen: Vec::new(),
-            other: Vec::new(),
-        },
-        handle,
-    )
+    (Client::over(pair.client_reader, pair.client_writer), handle)
 }
 
 fn attach_frame(id: [u8; 16]) -> Frame {
@@ -952,13 +807,7 @@ impl Relay {
         set_nonblocking(&reader).expect("non-blocking relay stdout");
         Relay {
             child,
-            client: Client {
-                reader,
-                writer: FdStream::new(stdin.as_raw_fd()),
-                decoder: EnvelopeDecoder::new(),
-                seen: Vec::new(),
-                other: Vec::new(),
-            },
+            client: Client::over(reader, FdStream::new(stdin.as_raw_fd())),
             stdin: Some(stdin),
             _stdout: Some(stdout),
         }
@@ -1507,13 +1356,7 @@ fn a_relay_whose_stdin_and_stdout_are_one_socket_keeps_reading() {
 
     let reader = FdStream::new(ours.as_raw_fd());
     set_nonblocking(&reader).expect("non-blocking client reader");
-    let mut client = Client {
-        reader,
-        writer: FdStream::new(ours.as_raw_fd()),
-        decoder: EnvelopeDecoder::new(),
-        seen: Vec::new(),
-        other: Vec::new(),
-    };
+    let mut client = Client::over(reader, FdStream::new(ours.as_raw_fd()));
     client.handshake();
     let reply = client.request(Service::Status, 1, &json!({"method": "status"}));
 

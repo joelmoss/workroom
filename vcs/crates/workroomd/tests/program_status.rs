@@ -10,65 +10,35 @@ mod common;
 
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use workroomd::testing::{SessionId, SessionSpec, SessionStore};
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
+use wr_protocol::envelope::Service;
 
-struct Client {
-    stream: UnixStream,
-    decoder: EnvelopeDecoder,
-    next_stream: u32,
-}
+struct Client(common::RpcClient);
 
 impl Client {
     fn connect(store: &SessionStore) -> Client {
-        let (stream, _server) = common::connect_in_process_to("program-status-test", store.clone());
-        stream
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .unwrap();
-        Client {
-            stream,
-            decoder: EnvelopeDecoder::new(),
-            next_stream: 1,
-        }
+        let (rpc, _server) = common::RpcClient::connect_to(
+            "program-status-test",
+            store.clone(),
+            Duration::from_millis(50),
+        );
+        Client(rpc)
     }
 
     fn send_bytes(&mut self, payload: Vec<u8>) -> u32 {
-        let stream = self.next_stream;
-        self.next_stream += 1;
-        self.stream
-            .write_all(&Envelope::new(Service::ProgramStatus, stream, payload).encode())
-            .unwrap();
+        let stream = self.0.take_stream();
+        self.0.send_payload(Service::ProgramStatus, stream, payload);
         stream
     }
 
     /// The next envelope as (stream, JSON), or `None` once `timeout` passes.
     fn next(&mut self, timeout: Duration) -> Option<(u32, Value)> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(envelope) = self.decoder.next_envelope().unwrap() {
-                assert_eq!(envelope.service, Service::ProgramStatus);
-                let (flag, body) = envelope.payload.split_first().unwrap();
-                assert_eq!(*flag, 1, "every reply and event is one final envelope");
-                return Some((envelope.stream, serde_json::from_slice(body).unwrap()));
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            let mut bytes = [0u8; 65536];
-            match self.stream.read(&mut bytes) {
-                Ok(0) => panic!("the daemon closed the connection"),
-                Ok(n) => self.decoder.push(&bytes[..n]),
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
-                Err(e) => panic!("read failed: {e}"),
-            }
-        }
+        let envelope = self.0.next(timeout)?;
+        assert_eq!(envelope.service, Service::ProgramStatus);
+        let (flag, body) = envelope.payload.split_first().unwrap();
+        assert_eq!(*flag, 1, "every reply and event is one final envelope");
+        Some((envelope.stream, serde_json::from_slice(body).unwrap()))
     }
 
     /// The reply to `request`, which must come before anything else.
@@ -208,9 +178,12 @@ fn requests_are_answered_in_the_shapes_the_app_decodes() {
 #[cfg(feature = "terminal-state")]
 mod live {
     use super::*;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use wr_protocol::envelope::Envelope;
 
     /// libghostty's answer to `OSC 7501 ; ?`, before the probe's own terminator.
     const ANSWER: &str =

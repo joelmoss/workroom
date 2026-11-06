@@ -7,33 +7,36 @@ mod common;
 
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
+use wr_protocol::envelope::{Envelope, Service};
 
 struct Client {
-    stream: UnixStream,
-    decoder: EnvelopeDecoder,
-    next_stream: u32,
+    rpc: common::RpcClient,
     events: VecDeque<Value>,
     server: Option<std::thread::JoinHandle<()>>,
 }
 
+impl std::ops::Deref for Client {
+    type Target = common::RpcClient;
+    fn deref(&self) -> &common::RpcClient {
+        &self.rpc
+    }
+}
+
+impl std::ops::DerefMut for Client {
+    fn deref_mut(&mut self) -> &mut common::RpcClient {
+        &mut self.rpc
+    }
+}
+
 impl Client {
     fn connect() -> Client {
-        let (stream, server) = common::connect_in_process("file-test");
-        // Short reads only from here: the greeting can be slow on a loaded machine, and a timeout
-        // during it would panic the test for a scheduling reason.
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
+        let (rpc, server) = common::RpcClient::connect("file-test", Duration::from_millis(200));
         Client {
-            stream,
-            decoder: EnvelopeDecoder::new(),
-            next_stream: 1,
+            rpc,
             events: VecDeque::new(),
             server: Some(server),
         }
@@ -41,38 +44,17 @@ impl Client {
 
     /// The next whole envelope, or `None` when nothing arrived within the read timeout.
     fn envelope(&mut self) -> Option<Envelope> {
-        loop {
-            if let Some(envelope) = self.decoder.next_envelope().unwrap() {
-                return Some(envelope);
-            }
-            let mut bytes = [0u8; 65536];
-            match self.stream.read(&mut bytes) {
-                Ok(0) => return None,
-                Ok(count) => self.decoder.push(&bytes[..count]),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    return None;
-                }
-                Err(error) => panic!("read failed: {error}"),
-            }
-        }
+        self.rpc.next(Duration::from_millis(200))
     }
 
     fn send(&mut self, request: &Value) -> u32 {
-        let stream = self.next_stream;
-        self.next_stream += 1;
+        let stream = self.rpc.take_stream();
         self.send_raw(stream, serde_json::to_vec(request).unwrap());
         stream
     }
 
     fn send_raw(&mut self, stream: u32, payload: Vec<u8>) {
-        self.stream
-            .write_all(&Envelope::new(Service::File, stream, payload).encode())
-            .unwrap();
+        self.rpc.send_payload(Service::File, stream, payload);
     }
 
     /// Send a request and wait for its reply, setting aside any events that arrive first.
@@ -136,7 +118,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        let _ = self.rpc.writer.shutdown(std::net::Shutdown::Both);
         if let Some(server) = self.server.take() {
             let _ = server.join();
         }
@@ -196,7 +178,7 @@ fn watch_registration_does_not_starve_other_requests() {
     }
     let probe_stream = 17;
     client
-        .stream
+        .writer
         .write_all(
             &Envelope::new(
                 Service::Vcs,

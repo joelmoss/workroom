@@ -268,6 +268,269 @@ pub fn has_terminal_state() -> bool {
         .unwrap_or(false)
 }
 
+/// A client of a daemon's envelope protocol over any byte stream, shared by the service tests:
+/// the request/reply services' JSON requests and their chunked replies, the envelopes in between,
+/// and a Terminal stream's output. Each test file wraps one with what is particular to its service.
+///
+/// Envelopes are sorted as they arrive: Terminal output into `seen`, every other envelope into
+/// `other` until something asks for it, so output that keeps flowing while a request is in flight
+/// and the request's reply never eat each other's bytes.
+pub struct RpcClient<R: Read = UnixStream, W: Write = UnixStream> {
+    pub reader: R,
+    pub writer: W,
+    decoder: wr_protocol::envelope::EnvelopeDecoder,
+    /// Terminal output so far.
+    pub seen: Vec<u8>,
+    /// Envelopes for every service but Terminal, in arrival order, kept until asked for.
+    pub other: Vec<wr_protocol::envelope::Envelope>,
+    /// The stream the next `request` takes. Stream 0 is the daemon's events, never a request's.
+    pub next_stream: u32,
+    /// The stream ended. `read_until` and `pump` stop on it; `next` and `next_on` panic on it, so a
+    /// check that nothing arrives cannot pass on a daemon that hung up.
+    pub closed: bool,
+}
+
+impl RpcClient {
+    /// Connects to a daemon served in this process with a session store of its own
+    /// (`connect_in_process`). Reads wait at most `read_timeout` each, from after the greeting:
+    /// the greeting can be slow on a loaded machine, and a timeout during it would panic the test
+    /// for a scheduling reason.
+    pub fn connect(name: &str, read_timeout: Duration) -> (RpcClient, std::thread::JoinHandle<()>) {
+        Self::connect_to(name, SessionStore::new(), read_timeout)
+    }
+
+    /// `connect` to a session store the test holds too.
+    pub fn connect_to(
+        name: &str,
+        sessions: SessionStore,
+        read_timeout: Duration,
+    ) -> (RpcClient, std::thread::JoinHandle<()>) {
+        let (stream, server) = connect_in_process_to(name, sessions);
+        stream.set_read_timeout(Some(read_timeout)).unwrap();
+        let reader = stream.try_clone().unwrap();
+        (RpcClient::over(reader, stream), server)
+    }
+}
+
+impl<R: Read, W: Write> RpcClient<R, W> {
+    /// A client over a stream that has not been greeted yet (`handshake`), or already has.
+    pub fn over(reader: R, writer: W) -> RpcClient<R, W> {
+        RpcClient {
+            reader,
+            writer,
+            decoder: wr_protocol::envelope::EnvelopeDecoder::new(),
+            seen: Vec::new(),
+            other: Vec::new(),
+            next_stream: 1,
+            closed: false,
+        }
+    }
+
+    /// One read that honours a deadline. `WouldBlock` (a non-blocking reader, or a read timeout)
+    /// means "not yet" rather than an error — treating it as one is what made every read site
+    /// here either hang or spuriously fail. None when the stream ended (`closed`) or the deadline
+    /// passed.
+    pub fn read_some(&mut self, buffer: &mut [u8], deadline: Instant) -> Option<usize> {
+        while Instant::now() < deadline {
+            match self.reader.read(buffer) {
+                Ok(0) => {
+                    self.closed = true;
+                    return None;
+                }
+                Ok(n) => return Some(n),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => {
+                    self.closed = true;
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// Greets the daemon and reads its greeting, within five seconds.
+    pub fn handshake(&mut self) {
+        self.writer
+            .write_all(&Hello::current("test-client").encode())
+            .expect("send hello");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut greeting = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            if let Ok(Some(_)) = Hello::decode(&greeting) {
+                break;
+            }
+            let n = self
+                .read_some(&mut byte, deadline)
+                .expect("the daemon closed the stream or never greeted");
+            greeting.push(byte[..n][0]);
+        }
+    }
+
+    /// Sends one envelope.
+    pub fn send_payload(
+        &mut self,
+        service: wr_protocol::envelope::Service,
+        stream: u32,
+        payload: Vec<u8>,
+    ) {
+        self.writer
+            .write_all(&wr_protocol::envelope::Envelope::new(service, stream, payload).encode())
+            .expect("send");
+    }
+
+    /// Sends one frame.
+    pub fn send(
+        &mut self,
+        service: wr_protocol::envelope::Service,
+        stream: u32,
+        frame: wr_protocol::frame::Frame,
+    ) {
+        self.send_payload(service, stream, frame.encode());
+    }
+
+    /// Sends a frame one byte at a time. A remote stream can split anywhere, and the daemon must
+    /// not care — a decoder that assumed whole frames would pass every other test here.
+    pub fn send_bytewise(
+        &mut self,
+        service: wr_protocol::envelope::Service,
+        stream: u32,
+        frame: wr_protocol::frame::Frame,
+    ) {
+        let bytes = wr_protocol::envelope::Envelope::new(service, stream, frame.encode()).encode();
+        for byte in bytes {
+            self.writer.write_all(&[byte]).expect("send byte");
+        }
+    }
+
+    /// Reads once and sorts what arrived: terminal output into `seen`, the rest into `other`.
+    /// False when the stream ended or the deadline passed.
+    pub fn pump(&mut self, deadline: Instant) -> bool {
+        use wr_protocol::envelope::Service;
+        use wr_protocol::frame::{FrameDecoder, FrameKind};
+        let mut buffer = [0u8; 65536];
+        let Some(n) = self.read_some(&mut buffer, deadline) else {
+            return false;
+        };
+        self.decoder.push(&buffer[..n]);
+        // A decode error panics here, naming itself, rather than surfacing later as a timeout.
+        while let Some(envelope) = self.decoder.next_envelope().expect("a malformed envelope") {
+            if envelope.service != Service::Terminal {
+                self.other.push(envelope);
+                continue;
+            }
+            let mut frames = FrameDecoder::new();
+            frames.push(&envelope.payload);
+            while let Some(frame) = frames.next_frame().expect("a malformed frame") {
+                if frame.kind == FrameKind::Output {
+                    self.seen.extend_from_slice(&frame.payload);
+                }
+            }
+        }
+        true
+    }
+
+    /// The next envelope that is not Terminal output, on any service and stream, in arrival
+    /// order; None when nothing comes within `timeout`. Panics when the daemon hung up: silence
+    /// and a closed connection are not the same answer.
+    pub fn next(&mut self, timeout: Duration) -> Option<wr_protocol::envelope::Envelope> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !self.other.is_empty() {
+                return Some(self.other.remove(0));
+            }
+            if !self.pump(deadline) {
+                assert!(!self.closed, "the daemon closed the connection");
+                return None;
+            }
+        }
+    }
+
+    /// The next envelope on `service`/`stream`, setting aside the rest; None when nothing comes
+    /// within `timeout`. Panics when the daemon hung up, as `next` does.
+    pub fn next_on(
+        &mut self,
+        service: wr_protocol::envelope::Service,
+        stream: u32,
+        timeout: Duration,
+    ) -> Option<wr_protocol::envelope::Envelope> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(index) = self
+                .other
+                .iter()
+                .position(|e| e.service == service && e.stream == stream)
+            {
+                return Some(self.other.remove(index));
+            }
+            if !self.pump(deadline) {
+                assert!(!self.closed, "the daemon closed the connection");
+                return None;
+            }
+        }
+    }
+
+    /// The next envelope on `service`/`stream`, or a panic naming what never came.
+    pub fn envelope(
+        &mut self,
+        service: wr_protocol::envelope::Service,
+        stream: u32,
+        timeout: Duration,
+    ) -> wr_protocol::envelope::Envelope {
+        self.next_on(service, stream, timeout)
+            .unwrap_or_else(|| panic!("nothing arrived on {service:?} stream {stream}"))
+    }
+
+    /// The stream the next request takes.
+    pub fn take_stream(&mut self) -> u32 {
+        let stream = self.next_stream;
+        self.next_stream += 1;
+        stream
+    }
+
+    /// One request to a JSON service (VCS, File, Status, Layout, ProgramStatus): the request goes
+    /// out as one envelope, and the reply comes back as chunks whose first byte says whether more
+    /// follow.
+    pub fn request(
+        &mut self,
+        service: wr_protocol::envelope::Service,
+        stream: u32,
+        request: &serde_json::Value,
+    ) -> serde_json::Value {
+        self.send_payload(service, stream, serde_json::to_vec(request).unwrap());
+        let mut assembled = Vec::new();
+        loop {
+            let envelope = self.envelope(service, stream, Duration::from_secs(20));
+            let (last, body) = envelope.payload.split_first().expect("empty reply chunk");
+            assembled.extend_from_slice(body);
+            if *last == 1 {
+                return serde_json::from_slice(&assembled).expect("a JSON reply");
+            }
+        }
+    }
+
+    /// Accumulates Terminal output until `needle` appears, or the deadline passes.
+    pub fn read_until(&mut self, needle: &str, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if String::from_utf8_lossy(&self.seen).contains(needle) {
+                break;
+            }
+            if !self.pump(deadline) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&self.seen).into_owned()
+    }
+}
+
 /// A connection to a daemon served in this process, greeted as `name`: the daemon's side runs
 /// `handle_connection` on a thread of its own, with a session store of its own. The stream has no
 /// read timeout yet; each caller picks its own once the greeting is done.

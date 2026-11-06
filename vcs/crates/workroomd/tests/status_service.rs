@@ -7,68 +7,25 @@ mod common;
 
 use serde_json::{Value, json};
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
+use std::time::Duration;
+use wr_protocol::envelope::{Envelope, Service};
 
-struct Client {
-    stream: UnixStream,
-    decoder: EnvelopeDecoder,
-    next_stream: u32,
-}
+struct Client(common::RpcClient);
 
 impl Client {
     fn connect() -> Client {
-        let (stream, _server) = common::connect_in_process("status-test");
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        Client {
-            stream,
-            decoder: EnvelopeDecoder::new(),
-            next_stream: 1,
-        }
+        let (rpc, _server) = common::RpcClient::connect("status-test", Duration::from_millis(200));
+        Client(rpc)
     }
 
+    /// The reply to `request`, which must be the only thing the daemon sends: nothing on another
+    /// stream or service.
     fn request(&mut self, request: &Value) -> Value {
-        let stream = self.next_stream;
-        self.next_stream += 1;
-        self.stream
-            .write_all(
-                &Envelope::new(
-                    Service::Status,
-                    stream,
-                    serde_json::to_vec(request).unwrap(),
-                )
-                .encode(),
-            )
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut assembled = Vec::new();
-        while Instant::now() < deadline {
-            if let Some(envelope) = self.decoder.next_envelope().unwrap() {
-                assert_eq!(envelope.service, Service::Status);
-                assert_eq!(envelope.stream, stream);
-                let (flag, body) = envelope.payload.split_first().unwrap();
-                assembled.extend_from_slice(body);
-                if *flag == 1 {
-                    return serde_json::from_slice(&assembled).unwrap();
-                }
-                continue;
-            }
-            let mut bytes = [0u8; 65536];
-            match self.stream.read(&mut bytes) {
-                Ok(0) => panic!("the daemon closed the connection"),
-                Ok(count) => self.decoder.push(&bytes[..count]),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
-                Err(error) => panic!("read failed: {error}"),
-            }
-        }
-        panic!("no reply on stream {stream}");
+        let stream = self.0.take_stream();
+        let reply = self.0.request(Service::Status, stream, request);
+        let stray: Vec<_> = self.0.other.iter().map(|e| (e.service, e.stream)).collect();
+        assert!(stray.is_empty(), "arrived besides the reply: {stray:?}");
+        reply
     }
 }
 
@@ -93,7 +50,8 @@ fn every_status_request_is_refused_as_unsupported() {
 fn a_request_on_stream_zero_gets_no_reply() {
     let mut client = Client::connect();
     client
-        .stream
+        .0
+        .writer
         .write_all(
             &Envelope::new(
                 Service::Status,
@@ -104,7 +62,7 @@ fn a_request_on_stream_zero_gets_no_reply() {
         )
         .unwrap();
     let mut bytes = [0u8; 64];
-    match client.stream.read(&mut bytes) {
+    match client.0.reader.read(&mut bytes) {
         Err(error)
             if matches!(
                 error.kind(),
