@@ -17,7 +17,7 @@ final class MultiWindowTests: XCTestCase {
     )
   }
 
-  private func notification(_ targetID: String) -> WorkroomNotification {
+  private func notification(_ targetID: TargetID) -> WorkroomNotification {
     WorkroomNotification(
       id: UUID(), targetID: targetID, tabID: UUID(), source: "src",
       title: "t", body: nil, date: Date(timeIntervalSince1970: 0), count: 1)
@@ -106,7 +106,8 @@ final class MultiWindowTests: XCTestCase {
     let second = AppStore(projectStore: ProjectStore())
     let firstWindow = NSWindow()
     let secondWindow = NSWindow()
-    let target = TerminalTarget(id: "root|/tmp", title: "test", path: "/tmp", isMissing: false)
+    let target = TerminalTarget(
+      id: .root(project: "/tmp"), title: "test", path: "/tmp", isMissing: false)
     for store in [first, second] {
       store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
       store.terminals.addTab(for: target)
@@ -142,9 +143,10 @@ final class MultiWindowTests: XCTestCase {
     registry.register(window: NSWindow(), store: a)
     registry.register(window: NSWindow(), store: b)
 
-    a.notifications.seedForTesting([notification("t1")])
+    a.notifications.seedForTesting([notification(.root(project: "/t1"))])
     b.notifications.record(
-      targetID: "t2", tabID: UUID(), activity: .osc(title: "done", body: nil), focused: false)
+      targetID: .root(project: "/t2"), tabID: UUID(), activity: .osc(title: "done", body: nil),
+      focused: false)
 
     XCTAssertEqual(a.notifications.items.count, 2, "A lists B's notification")
     XCTAssertEqual(registry.aggregateUnread, 2, "the count follows the list without a recompute")

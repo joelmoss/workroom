@@ -46,23 +46,27 @@ final class WorkroomsViewTests: XCTestCase {
 
   // MARK: orderedActiveTargets (pure)
 
+  private let a = TargetID.root(project: "a")
+  private let b = TargetID.root(project: "b")
+  private let c = TargetID.root(project: "c")
+
   func testKeepsPersistedOrderAndFiltersInactive() {
-    let r = AppStore.orderedActiveTargets(persisted: ["a", "b", "c"], active: ["a", "c"])
-    XCTAssertEqual(r, ["a", "c"])
+    let r = AppStore.orderedActiveTargets(persisted: [a, b, c], active: [a, c])
+    XCTAssertEqual(r, [a, c])
   }
 
   func testAppendsNewActiveSorted() {
-    let r = AppStore.orderedActiveTargets(persisted: ["b"], active: ["b", "a"])
-    XCTAssertEqual(r, ["b", "a"])  // b kept from persisted; a (new) appended via sorted extras
+    let r = AppStore.orderedActiveTargets(persisted: [b], active: [b, a])
+    XCTAssertEqual(r, [b, a])  // b kept from persisted; a (new) appended via sorted extras
   }
 
   func testInactiveTargetNeverIncluded() {
     // A persisted id with no terminal (not in `active`) drops out — tabs follow terminal presence.
-    XCTAssertEqual(AppStore.orderedActiveTargets(persisted: ["a", "b"], active: ["a"]), ["a"])
+    XCTAssertEqual(AppStore.orderedActiveTargets(persisted: [a, b], active: [a]), [a])
   }
 
   func testEmptyActiveIsEmpty() {
-    XCTAssertEqual(AppStore.orderedActiveTargets(persisted: ["a"], active: []), [])
+    XCTAssertEqual(AppStore.orderedActiveTargets(persisted: [a], active: []), [])
   }
 
   // MARK: activeTargetIDs (terminal presence)
@@ -130,8 +134,8 @@ final class WorkroomsViewTests: XCTestCase {
   func testFocusWorkroomTabSwitchesByIndex() {
     let store = makeStore([project("/a", workrooms: ["main", "feature"])])
     store.workroomTabOrder = [
-      TerminalTarget.workroomID(project: "/a", name: "main"),
-      TerminalTarget.workroomID(project: "/a", name: "feature"),
+      TargetID.workroom(project: "/a", name: "main"),
+      TargetID.workroom(project: "/a", name: "feature"),
     ]
     activate(store, .workroom(project: "/a", name: "main"))
     activate(store, .workroom(project: "/a", name: "feature"))
@@ -157,8 +161,8 @@ final class WorkroomsViewTests: XCTestCase {
   func testCycleWorkroomTabWrapsBothWays() {
     let store = makeStore([project("/a", workrooms: ["main", "feature"])])
     store.workroomTabOrder = [
-      TerminalTarget.workroomID(project: "/a", name: "main"),
-      TerminalTarget.workroomID(project: "/a", name: "feature"),
+      TargetID.workroom(project: "/a", name: "main"),
+      TargetID.workroom(project: "/a", name: "feature"),
     ]
     activate(store, .workroom(project: "/a", name: "main"))
     activate(store, .workroom(project: "/a", name: "feature"))
@@ -189,8 +193,8 @@ final class WorkroomsViewTests: XCTestCase {
     // (←) at the leftmost — spatially matching the arrow, like the on-tab step.
     let store = makeStore([project("/a", workrooms: ["main", "feature"])])
     store.workroomTabOrder = [
-      TerminalTarget.workroomID(project: "/a", name: "main"),
-      TerminalTarget.workroomID(project: "/a", name: "feature"),
+      TargetID.workroom(project: "/a", name: "main"),
+      TargetID.workroom(project: "/a", name: "feature"),
     ]
     activate(store, .workroom(project: "/a", name: "main"))
     activate(store, .workroom(project: "/a", name: "feature"))
@@ -212,9 +216,9 @@ final class WorkroomsViewTests: XCTestCase {
     // the middle chip (bugfix) ← lands on main (left) and → on feature (right) — not the raw neighbour.
     let store = makeStore([project("/a", workrooms: ["main", "feature", "bugfix"])])
     store.workroomTabOrder = [
-      TerminalTarget.workroomID(project: "/a", name: "main"),
-      TerminalTarget.workroomID(project: "/a", name: "feature"),
-      TerminalTarget.workroomID(project: "/a", name: "bugfix"),
+      TargetID.workroom(project: "/a", name: "main"),
+      TargetID.workroom(project: "/a", name: "feature"),
+      TargetID.workroom(project: "/a", name: "bugfix"),
     ]
     activate(store, .workroom(project: "/a", name: "main"))
     activate(store, .workroom(project: "/a", name: "feature"))

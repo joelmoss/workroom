@@ -303,7 +303,7 @@ struct WorkroomTabBar: View {
         let move = drag.commit(
           ids: tabs.map(\.sid), spacing: tabSpacing, finalTranslation: translation)
       else { return }
-      var order = tabs.compactMap { AppStore.targetIDString(for: $0.sid) }
+      var order = tabs.compactMap { $0.sid.targetID }
       let moved = order.remove(at: move.from)
       order.insert(moved, at: move.to)
       store.workroomTabOrder = order

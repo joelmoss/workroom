@@ -7,7 +7,8 @@ import XCTest
 /// Alerts, merges and the waiting count for terminals that need the user (#358).
 @MainActor
 final class ProgramStatusAlertsTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|al", title: "al", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "al"), title: "al", path: "/tmp", isMissing: false)
   private var monitor: ProgramStatusMonitor!
   private var alerts: ProgramStatusAlerts!
   private var store: AppStore!

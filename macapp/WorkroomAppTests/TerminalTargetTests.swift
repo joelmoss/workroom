@@ -12,13 +12,13 @@ final class TerminalTargetTests: XCTestCase {
     let a = Workroom(name: "sunny", path: "/wr/a/sunny", vcsName: "workroom/sunny", warnings: [])
     let b = Workroom(name: "sunny", path: "/wr/b/sunny", vcsName: "workroom/sunny", warnings: [])
     XCTAssertNotEqual(a.target(inProject: "/proj-a").id, b.target(inProject: "/proj-b").id)
-    XCTAssertEqual(a.target(inProject: "/proj-a").id, "wr|/proj-a|sunny")
+    XCTAssertEqual(a.target(inProject: "/proj-a").id.encoded, "wr|/proj-a|sunny")
   }
 
   func testRootTargetID() {
     let p = Project(path: "/proj-a", vcs: "git", workrooms: [])
-    XCTAssertEqual(p.rootTarget.id, "root|/proj-a")
-    XCTAssertNotEqual(p.rootTarget.id, "wr|/proj-a|sunny")
+    XCTAssertEqual(p.rootTarget.id.encoded, "root|/proj-a")
+    XCTAssertNotEqual(p.rootTarget.id.encoded, "wr|/proj-a|sunny")
   }
 
   func testWorkroomMissingFlagFromBlockingWarning() {

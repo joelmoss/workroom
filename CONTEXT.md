@@ -24,7 +24,7 @@ _Avoid_: Workspace
 A project's own checkout, shown in the sidebar beside its workrooms.
 
 **Target**:
-A root or a workroom, as the thing a window selects and opens terminals in.
+A root or a workroom, as the thing a window selects and opens terminals in. A create's pane before its workroom has a name is one too, and so is the Quick Terminal, which has no sidebar row (`TargetID`).
 
 **Base branch**:
 The branch a new workroom starts from, set per project or for all projects.

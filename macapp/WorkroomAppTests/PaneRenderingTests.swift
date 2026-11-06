@@ -16,7 +16,7 @@ import XCTest
 @MainActor
 final class PaneRenderingTests: XCTestCase {
   private let target = TerminalTarget(
-    id: "wr|/p|panes", title: "panes", path: "/tmp", isMissing: false)
+    id: .workroom(project: "/p", name: "panes"), title: "panes", path: "/tmp", isMissing: false)
 
   private func makeSessions() -> TerminalSessions {
     let s = TerminalSessions()

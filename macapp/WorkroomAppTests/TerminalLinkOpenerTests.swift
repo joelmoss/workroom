@@ -604,8 +604,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testARemoteParentTraversalIsResolvedOnTheHost() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
     let sessions = TerminalSessions()
     func provider(resolved: [String: String] = [:], failing: [String: Error] = [:])
       -> (RepositoryLocation) async throws -> FileProviding
@@ -721,7 +721,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
 
     let host = UUID()
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: root.path, unavailability: .remote, remoteHost: host)
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: root.path,
+      unavailability: .remote, remoteHost: host)
     let location = try XCTUnwrap(target.remoteLocation)
     let sessions = TerminalSessions()
     sessions.remoteFiles = { location in
@@ -742,8 +743,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testCmdClickInARemotePaneOpensTheHostsFileInTheViewer() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
@@ -775,8 +776,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testTheRemoteProbeSkipsRefusedCandidatesAndStopsOnAHostFailure() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
     let sessions = TerminalSessions()
     let files: [String: Data] = ["a.rb": Data("x\n".utf8)]
     func provider(failing: [String: Error]) -> (RepositoryLocation) async throws
@@ -822,8 +823,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testAnOpenURLLinkInARemotePaneOpensTheHostsFile() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
@@ -874,8 +875,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testARemotePanesGateNeverAsksTheHost() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
     let asked = Counter()
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
@@ -910,8 +911,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testARemoteClickIsReplacedByTheNextAndDroppedForAClosedPane() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }

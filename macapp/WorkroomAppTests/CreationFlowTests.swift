@@ -82,7 +82,7 @@ final class CreationFlowTests: XCTestCase {
     fake.release("wr")
     let store = makeStore(fake)
     store.creationSuccessHold = .seconds(1)
-    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let id = TargetID.workroom(project: projectPath, name: "wr")
 
     let task = Task { await store.createWorkroom(in: emptyProject) }
     await waitUntil(
@@ -104,7 +104,7 @@ final class CreationFlowTests: XCTestCase {
     fake.release("wr")
     let store = makeStore(fake)
     store.closesFinishedCreations = { false }
-    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let id = TargetID.workroom(project: projectPath, name: "wr")
 
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
@@ -165,7 +165,7 @@ final class CreationFlowTests: XCTestCase {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: true)
     fake.release("wr")
     let store = makeStore(fake)
-    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let id = TargetID.workroom(project: projectPath, name: "wr")
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
     defer { store.setRunConfig(.empty, forProject: projectPath) }
 
@@ -189,7 +189,7 @@ final class CreationFlowTests: XCTestCase {
     fake.release("wr")
     let store = makeStore(fake)
     store.closesFinishedCreations = { false }
-    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let id = TargetID.workroom(project: projectPath, name: "wr")
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
     defer { store.setRunConfig(.empty, forProject: projectPath) }
 
@@ -1391,7 +1391,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(scripts.count, 0, "the setup script ran on a half-set-up container")
     let name = try XCTUnwrap(run.name)
     XCTAssertNil(
-      store.runStates[TerminalTarget.workroomID(project: projectPath, name: name)],
+      store.runStates[TargetID.workroom(project: projectPath, name: name)],
       "Open Anyway must not start the run against a half-set-up container")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
   }
@@ -1493,7 +1493,7 @@ final class CreationFlowTests: XCTestCase {
     guard case .remoteFailed(_, leftBehind: true) = run.outcome else {
       return XCTFail("expected a left-behind failure, got \(run.outcome)")
     }
-    let id = TerminalTarget.workroomID(project: projectPath, name: "calm-river")
+    let id = TargetID.workroom(project: projectPath, name: "calm-river")
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-river"))
     XCTAssertTrue(store.isCreationBlocking(id), "its pane still shows the failed run")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
@@ -1518,7 +1518,7 @@ final class CreationFlowTests: XCTestCase {
 
     XCTAssertEqual(run.outcome, .succeeded)
     XCTAssertNotNil(
-      store.runStates[TerminalTarget.workroomID(project: projectPath, name: "calm-river")],
+      store.runStates[TargetID.workroom(project: projectPath, name: "calm-river")],
       "auto-run was armed for the workroom's first terminal, and runs on its host (#522)")
     XCTAssertEqual(
       run.steps.map(\.state),
@@ -1656,7 +1656,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertFalse(cli.calls.contains("delete calm-river"), "the record was forgotten")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
     XCTAssertNil(
-      store.runStates[TerminalTarget.workroomID(project: project.path, name: "calm-river")],
+      store.runStates[TargetID.workroom(project: project.path, name: "calm-river")],
       "Open Anyway must not start the run against a half-set-up tree (issue #7)")
   }
 

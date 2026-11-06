@@ -10,7 +10,7 @@ import XCTest
 @MainActor
 final class SessionCaptureTests: XCTestCase {
   private let target = TerminalTarget(
-    id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   private func makeSessions() -> TerminalSessions {
     let sessions = TerminalSessions()
@@ -34,7 +34,7 @@ final class SessionCaptureTests: XCTestCase {
     }
     guard !tabs.isEmpty else { return nil }
     return TargetSession(
-      targetID: target.id, tabs: tabs,
+      targetID: target.id.encoded, tabs: tabs,
       splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)

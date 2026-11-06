@@ -218,7 +218,8 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     ).target(inProject: "/proj")
     XCTAssertEqual(tagged.sessionWorkroomKey, workroomID.uuidString)
 
-    let local = TerminalTarget(id: "wr|/proj|b", title: "b", path: "/proj/b", isMissing: false)
+    let local = TerminalTarget(
+      id: .workroom(project: "/proj", name: "b"), title: "b", path: "/proj/b", isMissing: false)
     XCTAssertEqual(local.sessionWorkroomKey, "wr|/proj|b")
     // A remote workroom recorded before workroom ids (#251) has none, and keeps its target id.
     XCTAssertEqual(

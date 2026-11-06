@@ -14,7 +14,8 @@ import XCTest
 /// classes under parallel workers.
 @MainActor
 final class AppStoreCloseTabsTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   private func makeStore(confirmOnClose: Bool = false) -> AppStore {
     let store = AppStore()
@@ -95,7 +96,7 @@ final class AppStoreCloseTabsTests: XCTestCase {
   }
 
   private func failed(_ name: String) -> (TerminalTarget.ID, String) {
-    (TerminalTarget.workroomID(project: "/p", name: name), name)
+    (TargetID.workroom(project: "/p", name: name), name)
   }
 
   /// Value: protects=a closed remote pane whose host kept its session shows an alert naming the workroom, but not once a quit has begun; fails_when=AppStore drops the handler or ignores isTerminating; why_new=RemotePaneCloseTests stops at TerminalSessions' .remoteCloseFailed event; seam=none

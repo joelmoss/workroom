@@ -125,7 +125,7 @@ final class ProjectStore {
   /// shows a create shows the same checklist.
   var creationRuns: [UUID: CreationRun] = [:]
 
-  /// The run each pane belongs to: its provisional `TerminalTarget.creationID`, then its workroom's
+  /// The run each pane belongs to: its provisional `TargetID.creation`, then its workroom's
   /// own id once it has a name. A target here keeps its terminal withheld in every window until the
   /// run ends (issue #167), which is why the named id goes in before the reload that publishes it.
   var creationRunForTarget: [TerminalTarget.ID: UUID] = [:]

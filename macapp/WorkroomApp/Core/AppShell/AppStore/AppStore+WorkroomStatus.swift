@@ -544,7 +544,7 @@ extension AppStore {
   /// and projects are never "creating".
   func isCreating(_ sid: SidebarID) -> Bool {
     guard case .workroom(let project, let name) = sid else { return false }
-    return creatingWorkrooms.contains(TerminalTarget.workroomID(project: project, name: name))
+    return creatingWorkrooms.contains(.workroom(project: project, name: name))
   }
 
   /// Whether a commit is running for this row. Suppresses the same three lanes `isCreating` does, for

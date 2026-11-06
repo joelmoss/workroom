@@ -191,7 +191,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
     try onHost(fixture, "mkdir -p \(path)/lib && echo hi > \(path)/lib/only-here.rb")
     let (connection, id) = try await connect(fixture.host)
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: path, unavailability: .remote, remoteHost: id)
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: path,
+      unavailability: .remote, remoteHost: id)
     let sessions = TerminalSessions()
     sessions.remoteFiles = { location in
       try connection.files(context: FileContext(location: location, sharedLocation: nil))

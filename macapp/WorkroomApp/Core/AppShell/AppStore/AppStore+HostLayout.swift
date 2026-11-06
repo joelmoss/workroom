@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire
@@ -111,7 +112,7 @@ extension AppStore {
         let resolution = try await withTimeout(seconds: Self.hostLayoutTimeout) {
           let store = try await hostLayoutStore(.remote(host))
           return try await HostLayoutSync.resolve(
-            held: held, key: key, targetID: targetID, store: store)
+            held: held, key: key, targetID: targetID.encoded, store: store)
         }
         // Best effort, in what is left of the wait: a resolution, which may already have written
         // the host's layout, is kept even when the list is late.
@@ -187,7 +188,7 @@ extension AppStore {
       // A session the layout does not name comes back as a tab (premise 3); the append is an
       // ordinary change, written through with the next save.
       session = HostLayoutSync.appending(
-        sessions, key: key, to: resolution.session, targetID: targetID)
+        sessions, key: key, to: resolution.session, targetID: targetID.encoded)
       hostHasIt = !resolution.stale && session == resolution.session
     case .failure(let error):
       // Kept as this Mac had them, for the next launch, whatever this one can do.
@@ -224,7 +225,9 @@ extension AppStore {
       terminals.restore(session, for: target)
       refreshSelectionHasTabs()
       if hostHasIt,
-        let shown = captureWindowSession().targets.first(where: { $0.targetID == targetID })
+        let shown = captureWindowSession().targets.first(where: {
+          $0.targetID == targetID.encoded
+        })
       {
         hostLayouts.written[targetID] = try? HostLayout.encode(shown, key: key)
       }
@@ -281,7 +284,9 @@ extension AppStore {
     guard !hostLayouts.fetched.isEmpty else { return [] }
     rebindMovedWorkrooms()
     let captured = Dictionary(
-      captureWindowSession().targets.map { ($0.targetID, $0) },
+      captureWindowSession().targets.compactMap { saved in
+        TargetID(encoded: saved.targetID).map { ($0, saved) }
+      },
       uniquingKeysWith: { first, _ in first })
     return hostLayouts.fetched.filter { !hostLayouts.readOnly.contains($0) }.compactMap {
       targetID in
@@ -294,7 +299,7 @@ extension AppStore {
       if let current = captured[targetID] {
         layout = current
       } else if hostLayouts.written[targetID] != nil {
-        layout = TargetSession(targetID: targetID, tabs: [])
+        layout = TargetSession(targetID: targetID.encoded, tabs: [])
       } else {
         return nil
       }
@@ -469,10 +474,10 @@ extension AppStore {
   }
 
   /// `captured` with this window's record of its host's copy, for `session.json`.
-  func withHostLayoutState(_ captured: TargetSession) -> TargetSession {
+  func withHostLayoutState(_ captured: TargetSession, of id: TerminalTarget.ID) -> TargetSession {
     var target = captured
-    target.hostRevision = hostLayouts.revisions[captured.targetID]
-    target.hostLayoutStale = hostLayouts.stale.contains(captured.targetID) ? true : nil
+    target.hostRevision = hostLayouts.revisions[id]
+    target.hostLayoutStale = hostLayouts.stale.contains(id) ? true : nil
     return target
   }
 }

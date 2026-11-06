@@ -141,7 +141,8 @@ extension AppStore {
     if let pane = WindowRegistry.shared.detachedPane(at: screenPoint),
       let paneTarget = terminals.targetID(ofTab: pane)
     {
-      return quickTerminalPaneTarget(Self.sidebarID(forTargetID: paneTarget, in: projects))?.sid
+      return quickTerminalPaneTarget(Self.validatedSelection(paneTarget.sidebarID, in: projects))?
+        .sid
     }
     let hit =
       workroomTabRowPoint(screenPoint).flatMap { point in

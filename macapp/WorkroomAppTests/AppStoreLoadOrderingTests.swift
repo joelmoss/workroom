@@ -288,7 +288,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let shared = ProjectStore()
     let first = makeStore(shared, cli: cli)
     let second = makeStore(shared, cli: cli)
-    first.pendingRestoreSelection = TerminalTarget.workroomID(project: path, name: "saved")
+    first.pendingRestoreSelection = TargetID.workroom(project: path, name: "saved")
     let older = Task { await first.reload() }
     await fulfillment(of: [started[0]], timeout: 5)
     let newer = Task { await second.reload() }

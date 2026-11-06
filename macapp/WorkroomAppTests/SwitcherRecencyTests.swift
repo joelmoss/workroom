@@ -154,7 +154,7 @@ final class SwitcherRecencyTests: XCTestCase {
       WorkroomSlot(
         store: visible, sid: sid,
         target: TerminalTarget(
-          id: TerminalTarget.workroomID(project: "/p", name: "w"), title: "w", path: "/p/w",
+          id: TargetID.workroom(project: "/p", name: "w"), title: "w", path: "/p/w",
           isMissing: false))
     ])
     XCTAssertEqual(

@@ -8,7 +8,7 @@ import XCTest
 @MainActor
 final class QuickTerminalSessionsTests: XCTestCase {
   private let target = TerminalTarget(
-    id: "workroom.quickTerminal", title: "Quick Terminal", path: "/a", unavailability: nil)
+    id: .quickTerminal, title: "Quick Terminal", path: "/a", unavailability: nil)
 
   private func makeSessions(
     quickTerminal: Bool = true, backend: SessionBackendAvailability = .notBundled

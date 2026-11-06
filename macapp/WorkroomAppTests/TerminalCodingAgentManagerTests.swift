@@ -14,7 +14,7 @@ private let successEnvelope: String = {
 /// real CLI. The manager is `@MainActor`, so is the test.
 @MainActor
 final class TerminalCodingAgentManagerTests: XCTestCase {
-  private let target: TerminalTarget.ID = "wr|/p|x"
+  private let target: TerminalTarget.ID = .workroom(project: "/p", name: "x")
 
   private func makeManager(
     outcome: CodingAgentRunOutcome = .success(stdout: successEnvelope),

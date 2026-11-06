@@ -14,7 +14,7 @@ import XCTest
 final class DeleteMountsNoPaneTests: XCTestCase {
   private let projectPath = "/private/var/tmp/wr-delete-pane"
   private var goneID: TerminalTarget.ID {
-    TerminalTarget.workroomID(project: projectPath, name: "gone")
+    TargetID.workroom(project: projectPath, name: "gone")
   }
 
   /// `RootView.workroomSplitBody`, without the window chrome.
@@ -45,7 +45,7 @@ final class DeleteMountsNoPaneTests: XCTestCase {
     let project: Project
     let cli: FakeWorkroomCLI
     let window: NSWindow
-    let opened: () -> [String]
+    let opened: () -> [TerminalTarget.ID]
   }
 
   /// `gone`'s create failed, so its terminal is withheld behind the create's pane, and it is selected.
@@ -56,7 +56,7 @@ final class DeleteMountsNoPaneTests: XCTestCase {
     let project = Project(path: projectPath, vcs: "git", workrooms: workrooms)
     let cli = FakeWorkroomCLI(canonical: projectPath, projects: [project])
     let store = AppStore(cli: cli)
-    var opened: [String] = []
+    var opened: [TerminalTarget.ID] = []
     store.terminals.makeView = { target, cwd, _ in
       opened.append(target.id)
       return GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)

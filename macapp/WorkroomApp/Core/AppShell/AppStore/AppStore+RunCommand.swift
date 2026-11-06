@@ -90,13 +90,15 @@ extension AppStore {
     }
   }
 
-  /// The owning project of a target by id (mirrors `notificationSource`'s scan) — for the run toast's
-  /// command label.
+  /// The owning project of a listed root or workroom, or nil once it is gone (and for a create's
+  /// pane and the Quick Terminal).
+  ///
+  /// Compares **ids only**. Materialising `rootTarget` here would `stat` every project directory on
+  /// the render path (`TerminalStatusBar.body` → `branchLabel` → `validatedSelection`), which is
+  /// what hung the app in WORKROOM-3D. A lookup never needs the `isMissing`/`title` a target carries.
   func project(forTargetID id: TerminalTarget.ID) -> Project? {
-    projects.first { p in
-      TerminalTarget.rootID(project: p.path) == id
-        || p.workrooms.contains { TerminalTarget.workroomID(project: p.path, name: $0.name) == id }
-    }
+    guard Self.validatedSelection(id.sidebarID, in: projects) != nil else { return nil }
+    return projects.first { $0.path == id.projectPath }
   }
 
   /// The run config for a project path (empty if none set). Single read path for the toolbar, menu,
@@ -165,42 +167,13 @@ extension AppStore {
 
   // MARK: Run command — actions (issue #7)
 
-  /// The owning project of a terminal target (root or workroom), by matching the live project list.
-  ///
-  /// Compares **ids only** — same as `sidebarID(forTarget:)` below. Materialising `rootTarget`
-  /// here would `stat` every project directory on the render path (`TerminalStatusBar.body` →
-  /// `branchLabel` → here), which is what hung the app in WORKROOM-3D. A lookup never needs the
-  /// `isMissing`/`title` a target carries.
-  private func project(forTarget target: TerminalTarget) -> Project? {
-    projects.first { p in
-      TerminalTarget.rootID(project: p.path) == target.id
-        || p.workrooms.contains {
-          TerminalTarget.workroomID(project: p.path, name: $0.name) == target.id
-        }
-    }
-  }
-
   /// The current branch label for a terminal target, for the detail-panel status bar (issue
   /// #49). Reuses the already-resolved sidebar caches — the per-workroom local status (`branchForCI`)
   /// and the project root's `RootRef` — so it adds no new VCS calls. Nil until those resolve, or when
   /// no branch is resolvable (the status bar then just omits the segment).
   func branchLabel(for target: TerminalTarget) -> String? {
-    guard let sid = sidebarID(forTarget: target) else { return nil }
+    guard let sid = Self.validatedSelection(target.id.sidebarID, in: projects) else { return nil }
     return branchName(for: sid)
-  }
-
-  /// The `SidebarID` a terminal target belongs to, or nil when the target no longer resolves.
-  func sidebarID(forTarget target: TerminalTarget) -> SidebarID? {
-    guard let project = project(forTarget: target) else { return nil }
-    if TerminalTarget.rootID(project: project.path) == target.id {
-      return .root(project: project.path)
-    }
-    if let workroom = project.workrooms.first(where: {
-      TerminalTarget.workroomID(project: project.path, name: $0.name) == target.id
-    }) {
-      return .workroom(project: project.path, name: workroom.name)
-    }
-    return nil
   }
 
   /// **The** answer to "what branch is this?", for every surface that shows one: the status
@@ -349,7 +322,7 @@ extension AppStore {
       case .terminal(let s)? = terminals.tab(tab, for: target)?.content
     else { return }
     let view = s.view
-    let command = project(forTarget: target).map { runConfig(forProject: $0.path).command }
+    let command = project(forTargetID: target.id).map { runConfig(forProject: $0.path).command }
     let shell = (ShellEnvironment.loginShell() as NSString).lastPathComponent
 
     Task { @MainActor in
@@ -380,7 +353,7 @@ extension AppStore {
   /// foreground tab; a toast surfaces its status. `focus: true` is only for auto-run on a freshly
   /// created workroom where the run would be the sole tab (Arch #5) — there we DO show it.
   func startRunCommand(for target: TerminalTarget, focus: Bool = false) {
-    guard target.opensTerminals, let project = project(forTarget: target) else { return }
+    guard target.opensTerminals, let project = project(forTargetID: target.id) else { return }
     if hostLayouts.fetching.contains(target.id) {
       return whenHostLayoutRestored(target) { [weak self] target in
         self?.startRunCommand(for: target, focus: focus)
@@ -527,7 +500,7 @@ extension AppStore {
   /// `oldTab` first so its port frees (SIGHUP) before the new instance binds — the graceful-restart
   /// ordering.
   private func respawnRunCommand(replacing oldTab: TerminalTab.ID, for target: TerminalTarget) {
-    guard target.opensTerminals, let project = project(forTarget: target) else {
+    guard target.opensTerminals, let project = project(forTargetID: target.id) else {
       terminals.closeTab(oldTab, for: target)
       return
     }
@@ -610,7 +583,7 @@ extension AppStore {
   /// `target` already *is* the selection.
   private func focusTargetPane(_ target: TerminalTarget) {
     guard selectedTarget?.id != target.id,
-      let sid = Self.sidebarID(forTargetID: target.id, in: projects)
+      let sid = Self.validatedSelection(target.id.sidebarID, in: projects)
     else { return }
     focusWorkroomMember(sid)
   }
@@ -669,7 +642,9 @@ extension AppStore {
         // Same reason as the notification route: the run terminal may be a detached pane (#172).
         owner.window(forTab: owner.runStates[target.id]?.tab)?.makeKeyAndOrderFront(nil)
         owner.revealRunTerminal()
-      } else if let project = project(forTarget: target), !hasRunCommand(forProject: project.path) {
+      } else if let project = project(forTargetID: target.id),
+        !hasRunCommand(forProject: project.path)
+      {
         // Issue #127: ⌘R on a target with no run command configured used to silently no-op inside
         // `startRunCommand`'s guard. Open the project's settings with a warning instead.
         //
@@ -709,7 +684,8 @@ extension AppStore {
       selectedTarget.flatMap { runStates[$0.id]?.tab != nil ? $0.id : nil }
       ?? runStates.first { $0.value.tab != nil }?.key
     guard let targetID, let runTab = runStates[targetID]?.tab,
-      let sid = Self.sidebarID(forTargetID: targetID, in: projects), let target = target(for: sid)
+      let sid = Self.validatedSelection(targetID.sidebarID, in: projects),
+      let target = target(for: sid)
     else { return }
     selectedTargetID = sid
     selectedProjectID = Self.projectPath(of: sid)
@@ -805,7 +781,7 @@ extension AppStore {
   func ensureInitialTerminal(for target: TerminalTarget) {
     // A delete drops the target first, and a failed create's pane still runs this as it leaves: the
     // terminal would be freed moments later, mid-attach, which is the #547 freeze.
-    guard Self.sidebarID(forTargetID: target.id, in: projects) != nil else { return }
+    guard Self.validatedSelection(target.id.sidebarID, in: projects) != nil else { return }
     // A remote workroom whose host keeps its layout waits for it rather than open a fresh pane
     // (#255, D4): `applyHostLayout` comes back here once the host has answered, or not in time.
     if fetchHostLayoutIfNeeded(for: target) {

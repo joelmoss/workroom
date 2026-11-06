@@ -22,7 +22,7 @@ extension AppStore {
 
   /// The run whose pane `sid` is, while it lasts.
   func creationRun(for sid: SidebarID) -> CreationRun? {
-    Self.targetIDString(for: sid).flatMap(creationRun(forTargetID:))
+    sid.targetID.flatMap(creationRun(forTargetID:))
   }
 
   /// Whether a create is still running in the project, named or not (O1).
@@ -32,7 +32,7 @@ extension AppStore {
 
   /// The pane `run` shows in: its provisional one until its name lands, then its workroom's.
   func paneID(of run: CreationRun) -> SidebarID {
-    if creationRunForTarget[TerminalTarget.creationID(run.id)] != run.id, let name = run.name {
+    if creationRunForTarget[TargetID.creation(run.id)] != run.id, let name = run.name {
       return .workroom(project: run.project.path, name: name)
     }
     return .creation(project: run.project.path, id: run.id)
@@ -41,7 +41,7 @@ extension AppStore {
   /// Records `run` under its provisional pane.
   func register(_ run: CreationRun) {
     creationRuns[run.id] = run
-    creationRunForTarget[TerminalTarget.creationID(run.id)] = run.id
+    creationRunForTarget[TargetID.creation(run.id)] = run.id
   }
 
   /// Drops `run`, and with it every pane id it held, so its terminal mounts. A `.creation` pane it
@@ -134,7 +134,7 @@ extension AppStore {
   /// between (R3), and it is undeletable until the create's process ends.
   private func nameCreationRun(_ run: CreationRun, _ name: String) async {
     let path = run.project.path
-    let id = TerminalTarget.workroomID(project: path, name: name)
+    let id = TargetID.workroom(project: path, name: name)
     creatingWorkrooms.insert(id)
     creationRunForTarget[id] = run.id
     run.setName(name)
@@ -143,13 +143,15 @@ extension AppStore {
     for store in affectedStores {
       store.replacePane(pane, with: .workroom(project: path, name: name))
     }
-    creationRunForTarget[TerminalTarget.creationID(run.id)] = nil
+    creationRunForTarget[TargetID.creation(run.id)] = nil
   }
 
   /// The create's process ended: its workroom can be deleted and probed again (issue #116).
   private func releaseCreatingWorkroom(_ id: TerminalTarget.ID) {
     creatingWorkrooms.remove(id)
-    if let sid = Self.sidebarID(forTargetID: id, in: projects) { refreshLocalStatus(for: sid) }
+    if let sid = Self.validatedSelection(id.sidebarID, in: projects) {
+      refreshLocalStatus(for: sid)
+    }
     scheduleSelectedStatusRefresh()
   }
 
@@ -161,7 +163,7 @@ extension AppStore {
     run.succeed()
     if let name = run.name {
       Self.announceCreation(CreationPanePresentation.successAnnouncement(name: name))
-      let id = TerminalTarget.workroomID(project: run.project.path, name: name)
+      let id = TargetID.workroom(project: run.project.path, name: name)
       if case .armed = runStates[id],
         let target = target(for: .workroom(project: run.project.path, name: name))
       {
@@ -454,7 +456,7 @@ extension AppStore {
   ) async {
     // Claim BEFORE recording anything: a create that has already finished (its box closed) must not
     // insert a guard nobody is left to remove (issue #167, defect 1).
-    let id = TerminalTarget.workroomID(project: run.project.path, name: name)
+    let id = TargetID.workroom(project: run.project.path, name: name)
     guard landing.claim(id) else { return }
     await nameCreationRun(run, name)
     armAutoRunIfConfigured(id, in: run.project)
@@ -657,7 +659,7 @@ extension AppStore {
       // Before the setup script: the reload adopts the host, which marks a relayed one so the
       // script's connect puts git's credentials up for it.
       await reload()
-      let id = TerminalTarget.workroomID(project: path, name: created.name)
+      let id = TargetID.workroom(project: path, name: created.name)
       // Still undeletable while the script runs, as a local create's workroom is (issue #116).
       var setupFailure: String?
       if hookFailure != nil {
@@ -701,7 +703,7 @@ extension AppStore {
       await reload()
       failCreationRun(run, .remoteFailed(message: errorText(error), leftBehind: leftBehind))
       if let name = run.name {
-        let id = TerminalTarget.workroomID(project: path, name: name)
+        let id = TargetID.workroom(project: path, name: name)
         if case .armed = runStates[id] { runStates[id] = nil }  // as above
         releaseCreatingWorkroom(id)
       }
@@ -742,7 +744,7 @@ extension AppStore {
       let name = try await reserve(hostPath, descriptor)
       await self?.nameCreationRun(run, name)
       await self?.armAutoRunIfConfigured(
-        TerminalTarget.workroomID(project: path, name: name), in: run.project)
+        TargetID.workroom(project: path, name: name), in: run.project)
       return name
     }
     if let reserveInParent = recorder.reserveInParent {
@@ -750,7 +752,7 @@ extension AppStore {
         let name = try await reserveInParent(parent, descriptor)
         await self?.nameCreationRun(run, name)
         await self?.armAutoRunIfConfigured(
-          TerminalTarget.workroomID(project: path, name: name), in: run.project)
+          TargetID.workroom(project: path, name: name), in: run.project)
         return name
       }
     }
@@ -914,9 +916,9 @@ extension AppStore {
   /// window before a reload can prune it, keeping its log and Try Again.
   private func returnPaneToRun(_ run: CreationRun, name: String) {
     let path = run.project.path
-    let id = TerminalTarget.workroomID(project: path, name: name)
+    let id = TargetID.workroom(project: path, name: name)
     guard creationRunForTarget[id] == run.id else { return }
-    creationRunForTarget[TerminalTarget.creationID(run.id)] = run.id
+    creationRunForTarget[TargetID.creation(run.id)] = run.id
     creationRunForTarget[id] = nil
     creatingWorkrooms.remove(id)
     for store in affectedStores {
@@ -986,7 +988,7 @@ extension AppStore {
   /// disable while this holds so it can't be torn down mid-setup (issue #116). Shared across windows.
   func isCreatingWorkroom(_ workroom: Workroom, in project: Project) -> Bool {
     creatingWorkrooms.contains(
-      TerminalTarget.workroomID(project: project.path, name: workroom.name))
+      TargetID.workroom(project: project.path, name: workroom.name))
       // A remote create (#253) is in this set from just after its workroom has a name; until then,
       // its run says so. One a crash left at `creating` is deletable.
       || (workroom.host?.lifecycle == .creating && hasRunningCreation(inProject: project.path))

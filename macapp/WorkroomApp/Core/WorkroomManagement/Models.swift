@@ -16,7 +16,7 @@ import WorkroomDomain
 /// project-scoped, so same-named workrooms in different projects (and roots) never share a
 /// terminal or setup log.
 struct TerminalTarget: Identifiable, Hashable {
-  let id: String
+  let id: TargetID
   let title: String
   let path: String
   /// Why this target cannot be opened on this Mac, or nil when it can. Every local action (terminal,
@@ -64,7 +64,7 @@ struct TerminalTarget: Identifiable, Hashable {
   /// What a session in this target is tagged with (`SessionMetadataKey.workroom`), and what the
   /// app matches a session's tag against: the workroom's own id for a remote workroom that has
   /// one, `id` otherwise (#255).
-  var sessionWorkroomKey: String { remoteWorkroomID?.uuidString ?? id }
+  var sessionWorkroomKey: String { remoteWorkroomID?.uuidString ?? id.encoded }
 
   /// Why no pane can mount here, or nil when one can: `unavailability`, except for a remote
   /// workroom whose host this app reaches.
@@ -123,19 +123,11 @@ struct TerminalTarget: Identifiable, Hashable {
       }
     }
   }
-
-  // The id format lives ONLY here (and in the two builders below). Anything that needs a
-  // target id — terminal/log keying, reaping — goes through these, so the project-scoping
-  // that fixes the same-name collision can't drift.
-  static func workroomID(project: String, name: String) -> String { "wr|\(project)|\(name)" }
-  static func rootID(project: String) -> String { "root|\(project)" }
-  /// A create's pane before its workroom has a name (#483).
-  static func creationID(_ id: UUID) -> String { "creation:\(id.uuidString)" }
 }
 
 extension TerminalTarget {
   /// A local target: missing means its directory is gone.
-  init(id: String, title: String, path: String, isMissing: Bool) {
+  init(id: TargetID, title: String, path: String, isMissing: Bool) {
     self.init(
       id: id, title: title, path: path, unavailability: isMissing ? .directoryMissing : nil)
   }
@@ -148,7 +140,7 @@ extension Workroom {
   /// The id stays keyed on the immutable `name`.
   func target(inProject projectPath: String) -> TerminalTarget {
     TerminalTarget(
-      id: TerminalTarget.workroomID(project: projectPath, name: name),
+      id: .workroom(project: projectPath, name: name),
       title: displayName, path: path, unavailability: unavailability,
       remoteHost: reachableHost, remoteNote: remoteNote, hostKind: host?.kindDescription,
       machineName: host?.machineName, hostPlace: host.flatMap(RemoteHosts.DriverKey.init)?.kind,
@@ -201,7 +193,7 @@ extension Project {
   /// workroom directory, so `isMissing` is checked against the filesystem.
   var rootTarget: TerminalTarget {
     TerminalTarget(
-      id: TerminalTarget.rootID(project: path), title: displayName, path: path,
+      id: .root(project: path), title: displayName, path: path,
       isMissing: !FileManager.default.fileExists(atPath: path))
   }
 }

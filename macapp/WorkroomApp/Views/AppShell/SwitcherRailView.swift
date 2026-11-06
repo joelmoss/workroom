@@ -103,7 +103,7 @@ extension SwitcherCard {
       // The monogram follows the DISPLAYED name so it matches what you read; the colour follows the
       // target id, which a relabel doesn't change — so relabelling re-letters the mark without moving
       // the hue you actually recognise.
-      well = .mark(SwitcherMark(displayName: displayed, stableKey: slot.target.id))
+      well = .mark(SwitcherMark(displayName: displayed, stableKey: slot.target.id.encoded))
       stableSubtitle = label?.branch ?? label?.project ?? ""
       liveSubtitle = slot.store.flatMap { Self.vcsTail(for: slot.sid, in: $0) }
       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0

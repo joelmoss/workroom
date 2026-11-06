@@ -420,9 +420,11 @@ struct TabSession: Codable, Hashable, Sendable {
 
 /// One terminal target's panes: its tabs in strip order, its split groups, and what was focused.
 struct TargetSession: Codable, Hashable, Sendable {
-  /// `TerminalTarget.ID` — "wr|<project>|<name>" or "root|<project>". The same encoding
-  /// `Defaults[.sidebarSelection]` and `workroomTabOrder` already use, resolved back through
-  /// `AppStore.sidebarID(forTargetID:in:)`, which drops ids that no longer exist.
+  /// `TargetID.encoded` — "wr|<project>|<name>" or "root|<project>". The same encoding
+  /// `Defaults[.sidebarSelection]` and `workroomTabOrder` already use, read back through
+  /// `TargetID(encoded:)` and `AppStore.validatedSelection`, which drops ids that no longer exist.
+  /// A string, not a `TargetID`, because a host's copy holds the workroom's own key here
+  /// (`HostLayout.encode`), which is no target id.
   var targetID: String
   /// Strip order. The array IS the order — no second field to fall out of sync with it.
   @Lossy var tabs: [TabSession]
@@ -477,11 +479,11 @@ struct WindowSession: Codable, Hashable, Sendable {
   var frame: String?
   /// Whether this was the key window, so the user lands where they left off.
   var isKey: Bool
-  /// `TerminalTarget.ID` of the selected workroom. Authoritative over `Defaults[.sidebarSelection]`,
+  /// `TargetID.encoded` of the selected workroom. Authoritative over `Defaults[.sidebarSelection]`,
   /// which is the single-slot cold-start fallback for a first launch with no session.
   var selectedTargetID: String?
   @Lossy var targets: [TargetSession]
-  /// `AppStore.workroomSplits` — leaves are `TerminalTarget.ID` strings. Several disjoint groups can
+  /// `AppStore.workroomSplits` — leaves are `TargetID.encoded` strings. Several disjoint groups can
   /// coexist; each needs two or more live leaves to survive.
   @Lossy var workroomSplits: [LayoutNode<String>]
   /// `AppStore.expandedTerminalTargets` — which sidebar terminal subtrees are open.

@@ -49,7 +49,7 @@ struct PendingProjectDeletion: Identifiable {
 struct PendingWorkroomLabel: Identifiable {
   let workroom: Workroom
   let project: Project
-  var id: String { TerminalTarget.workroomID(project: project.path, name: workroom.name) }
+  var id: TargetID { .workroom(project: project.path, name: workroom.name) }
 }
 
 /// A request for a project's settings (issue #127), from the plain "Project Settings…" entry points

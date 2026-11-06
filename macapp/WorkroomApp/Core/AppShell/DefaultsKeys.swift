@@ -230,7 +230,7 @@ extension Defaults.Keys {
   /// fallback is always the same one used for unknown/404 avatars, so nothing else changes.
   static let loadRemoteAvatars = Key<Bool>("loadRemoteAvatars", default: true, suite: .app)
 
-  /// The persisted selected sidebar target as a `TerminalTarget.ID` string, or nil (issue #14).
+  /// The persisted selected sidebar target as a `TargetID.encoded` string, or nil (issue #14).
   static let sidebarSelection = Key<String?>("sidebar.selectionTargetID", default: nil, suite: .app)
 
   /// The last-viewed pane in the Settings window (⌘,), so it reopens where you left it (macOS
@@ -254,7 +254,7 @@ extension Defaults.Keys {
   /// `Defaults` keys are static, so per-project keys aren't an option.
   static let runCommands = Key<[String: RunConfig]>("runCommands", default: [:], suite: .app)
 
-  /// Remembered order of the workroom tab bar, as `TerminalTarget.ID` strings (issue #23, same
+  /// Remembered order of the workroom tab bar, as `TargetID.encoded` strings (issue #23, same
   /// encoding as `sidebarSelection`). Terminals now DO survive a relaunch (issue #46), but this stays
   /// an ordering hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [], suite: .app)
@@ -290,7 +290,7 @@ extension Defaults.Keys {
   /// the two must not be confused. Shared across ALL workrooms and windows — switching the selected
   /// workroom changes the inspector's *content* but never its section collapse/size (a single global
   /// shape, not per-workroom). A stored layout whose entry count doesn't match the current section
-  /// count is discarded to the default on load. (Was a per-workroom map keyed by `targetIDString`; a
+  /// count is discarded to the default on load. (Was a per-workroom map keyed by the target id; a
   /// new key string means old per-workroom data is simply ignored.)
   ///
   /// `.v2` because History moved *into* the Changes stack: the entry count didn't change (History
@@ -329,8 +329,8 @@ extension Defaults.Keys {
   /// to unified regardless). Stored as the bare raw string via `DiffViewMode: PreferRawRepresentable`.
   static let diffViewMode = Key<DiffViewMode>("diffViewMode", default: .unified, suite: .app)
 
-  /// Per-workroom display label (issue #41), keyed by the workroom's `targetIDString`
-  /// ("wr|<project>|<name>", via `TerminalTarget.workroomID`). A label is a display-only alias —
+  /// Per-workroom display label (issue #41), keyed by the workroom's target id
+  /// ("wr|<project>|<name>", `TargetID.workroom(…).encoded`). A label is a display-only alias —
   /// the real workroom name and its git worktree are unchanged. Absence of a key means no
   /// label. Invariant: stored values are always trimmed and non-empty (normalised at the write
   /// boundary in `AppStore.setWorkroomLabel`); a cleared label removes the key rather than storing

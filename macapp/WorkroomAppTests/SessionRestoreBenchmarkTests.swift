@@ -77,12 +77,12 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
       let restoreStart = DispatchTime.now().uptimeNanoseconds
       for index in 0..<count {
         let target = TerminalTarget(
-          id: "root|\(directory.path)/\(index)", title: "Fixture \(index)",
+          id: .root(project: "\(directory.path)/\(index)"), title: "Fixture \(index)",
           path: directory.path, isMissing: false)
         let id = UUID()
         sessions.restore(
           TargetSession(
-            targetID: target.id,
+            targetID: target.id.encoded,
             tabs: [
               TabSession(
                 key: "pane", kind: TabSession.terminalKind,

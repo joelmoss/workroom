@@ -498,9 +498,9 @@ final class WorkroomSplitTests: XCTestCase {
     // into a contiguous run at main's slot: [main, bugfix, feature].
     let store = makeStore([project("/a", workrooms: ["main", "feature", "bugfix"])])
     store.workroomTabOrder = [
-      TerminalTarget.workroomID(project: "/a", name: "main"),
-      TerminalTarget.workroomID(project: "/a", name: "feature"),
-      TerminalTarget.workroomID(project: "/a", name: "bugfix"),
+      TargetID.workroom(project: "/a", name: "main"),
+      TargetID.workroom(project: "/a", name: "feature"),
+      TargetID.workroom(project: "/a", name: "bugfix"),
     ]
     for name in ["main", "feature", "bugfix"] {
       store.terminals.addTab(for: store.target(for: wr(name))!)  // make all three active in the bar
@@ -690,7 +690,7 @@ final class WorkroomSplitTests: XCTestCase {
   private func store4() -> AppStore {
     let names = ["main", "feature", "docs", "review"]
     let store = makeStore([project("/a", workrooms: names)])
-    store.workroomTabOrder = names.map { TerminalTarget.workroomID(project: "/a", name: $0) }
+    store.workroomTabOrder = names.map { TargetID.workroom(project: "/a", name: $0) }
     for name in names { store.terminals.addTab(for: store.target(for: wr(name))!) }
     return store
   }
@@ -747,7 +747,7 @@ final class WorkroomSplitTests: XCTestCase {
     // Each group is pulled into a contiguous run at its own earliest member's slot.
     let store = store4()
     store.workroomTabOrder = ["main", "docs", "feature", "review"].map {
-      TerminalTarget.workroomID(project: "/a", name: $0)
+      TargetID.workroom(project: "/a", name: $0)
     }
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)

@@ -107,7 +107,8 @@ final class AppStoreSessionRestoreTests: XCTestCase {
 
     store.claimSessionIfNeeded()
     XCTAssertNotNil(store.pendingSessionRestore)
-    XCTAssertEqual(store.pendingRestoreSelection, "wr|/p|calm-otter", "the session owns selection")
+    XCTAssertEqual(
+      store.pendingRestoreSelection?.encoded, "wr|/p|calm-otter", "the session owns selection")
 
     // Idempotent: `WindowAccessor` can resolve the same window more than once.
     let claimed = store.pendingSessionRestore
@@ -168,12 +169,12 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.projectStore.consumeInitialRestore())
 
     store.claimSessionIfNeeded()
-    XCTAssertEqual(store.pendingRestoreSelection, "wr|/p|calm-otter")
+    XCTAssertEqual(store.pendingRestoreSelection?.encoded, "wr|/p|calm-otter")
 
     await store.bootstrap(restore: true)
 
     XCTAssertEqual(
-      AppStore.targetIDString(for: store.selectedTargetID), "wr|/p|calm-otter",
+      store.selectedTargetID?.targetID?.encoded, "wr|/p|calm-otter",
       "a sibling restored from the session must not open blank")
   }
 
@@ -200,7 +201,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     saved.selectedTargetID = nil
     let store = makeStore(projects: projects, session: saved)
     // As `AppStore.init` seeds it from `Defaults[.sidebarSelection]`.
-    store.pendingRestoreSelection = "wr|/p|calm-otter"
+    store.pendingRestoreSelection = TargetID(encoded: "wr|/p|calm-otter")
 
     store.claimSessionIfNeeded()
 
@@ -341,7 +342,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertEqual(
       store.workroomSplits.first?.tabIDs,
       [.workroom(project: "/p", name: "one"), .workroom(project: "/p", name: "two")])
-    XCTAssertEqual(store.expandedTerminalTargets, ["wr|/p|one"])
+    XCTAssertEqual(store.expandedTerminalTargets, [.workroom(project: "/p", name: "one")])
   }
 
   /// A group whose second workroom was deleted is not a group any more.

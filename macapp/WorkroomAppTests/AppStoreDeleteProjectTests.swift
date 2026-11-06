@@ -32,9 +32,9 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     XCTAssertEqual(
       Set(targets),
       [
-        TerminalTarget.rootID(project: "/a"),
-        TerminalTarget.workroomID(project: "/a", name: "feat"),
-        TerminalTarget.workroomID(project: "/a", name: "bug"),
+        TargetID.root(project: "/a"),
+        TargetID.workroom(project: "/a", name: "feat"),
+        TargetID.workroom(project: "/a", name: "bug"),
       ], "should return the root + every workroom target id")
   }
 

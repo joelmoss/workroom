@@ -173,7 +173,7 @@ struct VCSToolbar: View {
   /// Re-runs the `.task` when the toolbar points somewhere new. Keyed on the target's identity rather
   /// than the whole `Target`, which carries paths that never change independently of it.
   private var activationKey: String {
-    AppStore.targetIDString(for: store.inspectorTargetID) ?? ""
+    store.inspectorTargetID?.targetID?.encoded ?? ""
   }
 
   /// Full-bleed, unlike `TitlebarDivider` (a 14pt inline group rule) — it's what makes the three cells

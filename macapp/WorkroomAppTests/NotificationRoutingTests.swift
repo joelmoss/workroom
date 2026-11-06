@@ -7,24 +7,27 @@ import XCTest
 /// pure pieces of the click loop; the SwiftUI/window glue is verified manually (decision 3.1).
 final class NotificationRoutingTests: XCTestCase {
 
-  // MARK: TerminalTarget.ID → SidebarID reverse-lookup (AppStore.sidebarID)
+  // MARK: Stored target id → listed SidebarID (TargetID(encoded:) + AppStore.validatedSelection)
+
+  private func listedSidebarID(_ encoded: String, in projects: [Project]) -> SidebarID? {
+    AppStore.validatedSelection(TargetID(encoded: encoded)?.sidebarID, in: projects)
+  }
 
   func testReverseLookupRoot() {
     let p = Project(path: "/a", vcs: "git", workrooms: [])
-    XCTAssertEqual(AppStore.sidebarID(forTargetID: "root|/a", in: [p]), .root(project: "/a"))
+    XCTAssertEqual(listedSidebarID("root|/a", in: [p]), .root(project: "/a"))
   }
 
   func testReverseLookupWorkroom() {
     let w = Workroom(name: "foo", path: "/a/foo", vcsName: "git", warnings: [])
     let p = Project(path: "/a", vcs: "git", workrooms: [w])
-    XCTAssertEqual(
-      AppStore.sidebarID(forTargetID: "wr|/a|foo", in: [p]), .workroom(project: "/a", name: "foo"))
+    XCTAssertEqual(listedSidebarID("wr|/a|foo", in: [p]), .workroom(project: "/a", name: "foo"))
   }
 
   func testReverseLookupMissingIsNil() {
     let p = Project(path: "/a", vcs: "git", workrooms: [])
-    XCTAssertNil(AppStore.sidebarID(forTargetID: "wr|/a|gone", in: [p]))
-    XCTAssertNil(AppStore.sidebarID(forTargetID: "root|/gone", in: [p]))
+    XCTAssertNil(listedSidebarID("wr|/a|gone", in: [p]))
+    XCTAssertNil(listedSidebarID("root|/gone", in: [p]))
   }
 
   // MARK: Banner gating (NotificationGate)
@@ -47,8 +50,8 @@ final class NotificationRoutingTests: XCTestCase {
     let tab = UUID()
     let notifID = UUID()
     let n = WorkroomNotification(
-      id: notifID, targetID: "wr|/a|foo", tabID: tab, source: "a / foo", title: "T",
-      body: "B", date: Date(timeIntervalSince1970: 0), count: 1)
+      id: notifID, targetID: .workroom(project: "/a", name: "foo"), tabID: tab, source: "a / foo",
+      title: "T", body: "B", date: Date(timeIntervalSince1970: 0), count: 1)
     let p = SystemNotifier.payload(for: n)
     XCTAssertEqual(p.identifier, tab.uuidString)  // one banner per tab → re-post replaces
     XCTAssertEqual(p.title, "T")

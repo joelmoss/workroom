@@ -712,8 +712,10 @@ final class RunCommandTests: XCTestCase {
   func testCanRunCommandGate() {
     let store = makeStore([])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
-    let present = TerminalTarget(id: "x", title: "main", path: "/a/main", isMissing: false)
-    let missing = TerminalTarget(id: "y", title: "gone", path: "/a/gone", isMissing: true)
+    let present = TerminalTarget(
+      id: .workroom(project: "/a", name: "x"), title: "main", path: "/a/main", isMissing: false)
+    let missing = TerminalTarget(
+      id: .workroom(project: "/a", name: "y"), title: "gone", path: "/a/gone", isMissing: true)
 
     XCTAssertTrue(store.canRunCommand(for: present, inProject: "/a"))
     XCTAssertFalse(store.canRunCommand(for: missing, inProject: "/a"), "missing → no run controls")
@@ -1594,11 +1596,11 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([])
     var invalidated = false
     withObservationTracking {
-      _ = store.isRunCommandRunning(for: "t")
+      _ = store.isRunCommandRunning(for: .root(project: "t"))
     } onChange: {
       invalidated = true
     }
-    store.armAutoRun(forWorkroom: "t")
+    store.armAutoRun(forWorkroom: .root(project: "t"))
     XCTAssertTrue(invalidated, "a forwarded read must track RunCommandController")
   }
 
@@ -1823,11 +1825,13 @@ final class RunCommandTests: XCTestCase {
         target.tabs.contains { $0.terminal?.run == true }
       }.map(\.targetID)
     }
-    XCTAssertEqual(Set(savedRunTabs()), [live.id, parked.id], "both are saved while Workroom runs")
+    XCTAssertEqual(
+      Set(savedRunTabs()), [live.id.encoded, parked.id.encoded],
+      "both are saved while Workroom runs")
 
     AppStore.quitStopsRuns = true
     defer { AppStore.quitStopsRuns = false }
-    XCTAssertEqual(savedRunTabs(), [parked.id], "the run the quit stops is left out")
+    XCTAssertEqual(savedRunTabs(), [parked.id.encoded], "the run the quit stops is left out")
   }
 
   /// A saved run tab comes back as the target's run, reattached and waiting for its state.
@@ -1837,7 +1841,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let session = UUID()
     let saved = TargetSession(
-      targetID: t.id,
+      targetID: t.id.encoded,
       tabs: [
         TabSession(
           key: "r", kind: TabSession.terminalKind,

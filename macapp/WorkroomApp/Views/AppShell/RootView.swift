@@ -278,7 +278,7 @@ struct RootView: View {
           )
         } else if let target = store.pendingDeletion,
           WindowRegistry.shared.hasLiveInvestigateSession(for: [
-            TerminalTarget.workroomID(project: target.project.path, name: target.workroom.name)
+            TargetID.workroom(project: target.project.path, name: target.workroom.name)
           ])
         {
           Text(
@@ -321,9 +321,9 @@ struct RootView: View {
           // which keeps files on disk) — warn if any target in this project has a live Investigate
           // session, since none of the sheet's existing per-scope copy mentions stopping one.
           hasLiveInvestigateSession: WindowRegistry.shared.hasLiveInvestigateSession(
-            for: [TerminalTarget.rootID(project: pending.project.path)]
+            for: [TargetID.root(project: pending.project.path)]
               + pending.project.workrooms.map {
-                TerminalTarget.workroomID(project: pending.project.path, name: $0.name)
+                TargetID.workroom(project: pending.project.path, name: $0.name)
               }),
           onDelete: { scope in
             store.pendingProjectDeletion = nil

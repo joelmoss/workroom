@@ -20,11 +20,11 @@ extension AppStore {
       windowKey: sessionKey.uuidString,
       frame: hostWindow.map { NSStringFromRect($0.frame) },
       isKey: hostWindow?.isKeyWindow ?? false,
-      selectedTargetID: Self.targetIDString(for: selectedTargetID),
+      selectedTargetID: selectedTargetID?.targetID?.encoded,
       targets: captureTargetSessions(),
       workroomSplits: captureWorkroomSplits(),
       expandedTargets: expandedTerminalTargets.isEmpty
-        ? nil : expandedTerminalTargets.sorted())
+        ? nil : expandedTerminalTargets.sorted().map(\.encoded))
   }
 
   /// Set by a quit that stops dev servers, before it saves: their run tabs are left out of the
@@ -85,19 +85,19 @@ extension AppStore {
       }
       return withHostLayoutState(
         TargetSession(
-          targetID: targetID, tabs: tabs, splits: splits,
+          targetID: targetID.encoded, tabs: tabs, splits: splits,
           focusedKey: captured.focused.flatMap { keysByTabID[$0] },
-          terminalCounter: captured.counter))
+          terminalCounter: captured.counter), of: targetID)
     }
   }
 
   /// The workroom-into-workroom split groups, with `SidebarID` leaves reduced to the same target-id
-  /// strings `Defaults[.sidebarSelection]` and `workroomTabOrder` already persist — so no new id
-  /// format ships, and `AppStore.sidebarID(forTargetID:in:)` resolves them back (dropping any that
-  /// no longer exist).
+  /// strings `Defaults[.sidebarSelection]` and `workroomTabOrder` already persist (`TargetID.encoded`)
+  /// — so no new id format ships, and restore reads them back through `TargetID(encoded:)` and
+  /// `validatedSelection` (dropping any that no longer exist).
   private func captureWorkroomSplits() -> [LayoutNode<String>] {
     workroomSplits.compactMap { layout in
-      LayoutNode<String>.capture(layout) { Self.targetIDString(for: $0) }
+      LayoutNode<String>.capture(layout) { $0.targetID?.encoded }
     }
   }
 
@@ -130,7 +130,7 @@ extension AppStore {
     // with nothing selected. Overwriting only on non-nil would let the single-slot Defaults key —
     // last written by whichever OTHER window was active — decide this window's selection, which is
     // exactly the per-window authority the session file exists to provide.
-    pendingRestoreSelection = claimed.selectedTargetID
+    pendingRestoreSelection = claimed.selectedTargetID.flatMap(TargetID.init(encoded:))
   }
 
   /// Rehydrate the claimed session at the end of `apply(_:)`. One-shot: `apply` runs twice per
@@ -146,7 +146,9 @@ extension AppStore {
     for saved in session.targets {
       // A target that no longer resolves — its workroom was deleted between launches — is dropped
       // whole, the same self-heal `validatedSelection` and `pruneWorkroomSplitToLiveLeaves` apply.
-      guard let sid = Self.sidebarID(forTargetID: saved.targetID, in: projects),
+      guard
+        let sid = Self.validatedSelection(
+          TargetID(encoded: saved.targetID)?.sidebarID, in: projects),
         let target = target(for: sid)
       else { continue }
       // A remote workroom this app can't reach (#253) waits: its terminals built now would be
@@ -171,13 +173,17 @@ extension AppStore {
     // and a group left with fewer than two leaves dissolves — `materialize` enforces that, so a
     // one-workroom "group" can never reach the live model.
     workroomSplits = session.workroomSplits.compactMap { saved in
-      saved.materialize { Self.sidebarID(forTargetID: $0, in: projects) }
+      saved.materialize {
+        Self.validatedSelection(TargetID(encoded: $0)?.sidebarID, in: projects)
+      }
     }
     // Sidebar terminal-subtree expansion (issue #30). Only for targets that actually came back —
     // an expand flag pointing at nothing would render an empty disclosure.
     // A held target's flag is kept for when it comes back; below two tabs it renders nothing.
-    expandedTerminalTargets = Set(session.expandedTargets ?? []).intersection(
-      restoredTargetIDs.union(deferredTargetSessions.keys))
+    expandedTerminalTargets = Set(
+      (session.expandedTargets ?? []).compactMap(TargetID.init(encoded:))
+    )
+    .intersection(restoredTargetIDs.union(deferredTargetSessions.keys))
 
     refreshSelectionHasTabs()
 
@@ -235,7 +241,7 @@ extension AppStore {
     // that triggered the sweep: a workroom added in between must not lose its first session.
     Task {
       await PersistentSessionService.shared.endOrphanedSessions {
-        Self.sidebarID(forTargetID: $0, in: self.projects) != nil
+        Self.validatedSelection(TargetID(encoded: $0)?.sidebarID, in: self.projects) != nil
       }
     }
   }

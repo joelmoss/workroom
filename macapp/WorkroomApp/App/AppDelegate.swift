@@ -514,7 +514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
     let info = response.notification.request.content.userInfo
-    if let targetID = info["targetID"] as? String {
+    if let targetID = (info["targetID"] as? String).flatMap(TargetID.init(encoded:)) {
       let tabID = (info["tabID"] as? String).flatMap(UUID.init(uuidString:))
       let notifID = (info["notifID"] as? String).flatMap(UUID.init(uuidString:))
       Task { @MainActor in

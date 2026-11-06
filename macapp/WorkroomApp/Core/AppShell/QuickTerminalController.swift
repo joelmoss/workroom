@@ -123,7 +123,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     TerminalTarget(
       id: targetID, title: "Quick Terminal", path: newTabDirectory(), unavailability: nil)
   }
-  nonisolated static let targetID: TerminalTarget.ID = "workroom.quickTerminal"
+  nonisolated static let targetID: TerminalTarget.ID = .quickTerminal
   private var themeObserver: NSObjectProtocol?
   /// Guards `tearDownState` against the re-entrancy of `window.close()` → `windowWillClose`.
   private var tearingDown = false
@@ -441,7 +441,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// For the launch sweep: a session tag that still resolves. The Quick Terminal's never does, so a
   /// crash or force quit, which skips `endSessionsAtQuit`, can't leave its shells running unseen.
   nonisolated static func sweepResolves(_ workroomTag: String) -> Bool {
-    workroomTag != targetID
+    workroomTag != targetID.encoded
   }
 
   // MARK: Dragging along the edges

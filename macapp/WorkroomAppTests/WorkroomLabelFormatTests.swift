@@ -38,7 +38,7 @@ final class WorkroomLabelFormatTests: XCTestCase {
     // origin line must be one format. Before T7 the chip rendered "p/Auth" and this rendered "p / Auth".
     XCTAssertEqual(
       AppStore.notificationSource(
-        forTargetID: TerminalTarget.workroomID(project: "/p", name: "fox"), in: projects),
+        forTargetID: TargetID.workroom(project: "/p", name: "fox"), in: projects),
       WorkroomLabel(project: "p", workroom: "Auth").full)
   }
 

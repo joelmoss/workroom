@@ -42,7 +42,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
   }
 
   private func tid(_ name: String, in path: String = "/a") -> TerminalTarget.ID {
-    TerminalTarget.workroomID(project: path, name: name)
+    TargetID.workroom(project: path, name: name)
   }
 
   private func persistentDiff(_ path: String) -> DiffDescriptor {

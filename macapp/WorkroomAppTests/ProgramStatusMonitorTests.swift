@@ -498,7 +498,8 @@ private final class ConnectionQueue: @unchecked Sendable {
 /// What program status does to a pane's indicators (#358).
 @MainActor
 final class ProgramStatusPaneTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|ps", title: "ps", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "ps"), title: "ps", path: "/tmp", isMissing: false)
 
   private func makeSessions(_ monitor: ProgramStatusMonitor) -> TerminalSessions {
     let sessions = TerminalSessions()

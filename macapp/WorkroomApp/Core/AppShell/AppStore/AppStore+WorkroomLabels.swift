@@ -22,7 +22,7 @@ extension AppStore {
         path: project.path, vcs: project.vcs,
         workrooms: project.workrooms.map { wr in
           var wr = wr
-          wr.label = labels[TerminalTarget.workroomID(project: project.path, name: wr.name)]
+          wr.label = labels[TargetID.workroom(project: project.path, name: wr.name).encoded]
           return wr
         }, host: project.host, baseBranch: project.baseBranch)
     }
@@ -38,7 +38,7 @@ extension AppStore {
     var liveKeys = Set<String>()
     for project in live {
       for wr in project.workrooms {
-        liveKeys.insert(TerminalTarget.workroomID(project: project.path, name: wr.name))
+        liveKeys.insert(TargetID.workroom(project: project.path, name: wr.name).encoded)
       }
     }
     let pruned = labels.filter { liveKeys.contains($0.key) }
@@ -51,7 +51,7 @@ extension AppStore {
     var labels = Defaults[.workroomLabels]
     var changed = false
     for name in workroomNames {
-      if labels.removeValue(forKey: TerminalTarget.workroomID(project: path, name: name)) != nil {
+      if labels.removeValue(forKey: TargetID.workroom(project: path, name: name).encoded) != nil {
         changed = true
       }
     }
@@ -72,7 +72,7 @@ extension AppStore {
   /// the shared `projects`, so every window re-renders instantly with no CLI call and without running
   /// the heavyweight `apply` (which would needlessly re-validate selection and prune splits).
   func setWorkroomLabel(_ workroom: Workroom, in project: Project, to raw: String) {
-    let key = TerminalTarget.workroomID(project: project.path, name: workroom.name)
+    let key = TargetID.workroom(project: project.path, name: workroom.name).encoded
     var labels = Defaults[.workroomLabels]
     if let normalized = WorkroomDomain.Workroom.normalizedLabel(raw) {
       labels[key] = normalized

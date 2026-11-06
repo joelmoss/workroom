@@ -96,7 +96,7 @@ final class WorkroomHandOverTests: XCTestCase {
     let t = target(origin)
     origin.terminals.restore(
       TargetSession(
-        targetID: t.id,
+        targetID: t.id.encoded,
         tabs: [
           TabSession(
             key: "hidden", kind: TabSession.terminalKind,
@@ -150,7 +150,9 @@ final class WorkroomHandOverTests: XCTestCase {
       sessions.recordUnrecognizedTool = { _ in }
       sessions.recency = SwitcherRecency()
     }
-    var t = TerminalTarget(id: "remote-\(UUID())", title: "r", path: "/r", isMissing: false)
+    var t = TerminalTarget(
+      id: .workroom(project: "/r", name: "remote-\(UUID())"), title: "r", path: "/r",
+      isMissing: false)
     t.remoteHost = UUID()
     let tab = from.addTab(for: t)
     let session = try XCTUnwrap(from.sessionID(forTab: tab.id, inTarget: t.id))
@@ -410,7 +412,8 @@ final class WorkroomHandOverTests: XCTestCase {
     let note = notifications.record(
       targetID: t.id, tabID: UUID(), activity: .osc(title: "done", body: nil), focused: false)!
     let gone = notifications.record(
-      targetID: "/deleted", tabID: UUID(), activity: .osc(title: "x", body: nil), focused: false)!
+      targetID: .root(project: "/deleted"), tabID: UUID(), activity: .osc(title: "x", body: nil),
+      focused: false)!
 
     registry.open(note)
     XCTAssertEqual(a.selectedTargetID, sid)
@@ -760,7 +763,9 @@ final class WorkroomHandOverTests: XCTestCase {
   func testARemoteWorkroomsHostLayoutKeepingMoves() {
     let origin = makeOrigin()
     let destination = makeStore()
-    var t = TerminalTarget(id: "remote-\(UUID())", title: "r", path: "/r", isMissing: false)
+    var t = TerminalTarget(
+      id: .workroom(project: "/r", name: "remote-\(UUID())"), title: "r", path: "/r",
+      isMissing: false)
     let workroom = UUID()
     t.remoteHost = UUID()
     t.remoteWorkroomID = workroom
@@ -784,7 +789,9 @@ final class WorkroomHandOverTests: XCTestCase {
   func testAnInFlightHostWriteFinishesBeforeTheDestinationTakesOver() async {
     let origin = makeOrigin()
     let destination = makeStore()
-    var t = TerminalTarget(id: "remote-\(UUID())", title: "r", path: "/r", isMissing: false)
+    var t = TerminalTarget(
+      id: .workroom(project: "/r", name: "remote-\(UUID())"), title: "r", path: "/r",
+      isMissing: false)
     let workroom = UUID()
     t.remoteHost = UUID()
     t.remoteWorkroomID = workroom

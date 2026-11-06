@@ -38,7 +38,7 @@ final class WorkroomLabelTests: XCTestCase {
   }
 
   private func key(_ project: String, _ name: String) -> String {
-    TerminalTarget.workroomID(project: project, name: name)
+    TargetID.workroom(project: project, name: name).encoded
   }
 
   // MARK: Model — displayName / normalizedLabel
@@ -81,7 +81,7 @@ final class WorkroomLabelTests: XCTestCase {
     wr.label = "Auth"
     XCTAssertEqual(wr.target(inProject: "/p").title, "Auth")
     XCTAssertEqual(
-      wr.target(inProject: "/p").id, key("/p", "fox"), "id stays keyed on the real name")
+      wr.target(inProject: "/p").id.encoded, key("/p", "fox"), "id stays keyed on the real name")
   }
 
   // MARK: View presentation — split title bar name source (issue #113 regression)
@@ -206,12 +206,14 @@ final class WorkroomLabelTests: XCTestCase {
     fox.label = "Auth"
     let projects = [Project(path: "/p", vcs: "git", workrooms: [fox])]
     XCTAssertEqual(
-      AppStore.notificationSource(forTargetID: key("/p", "fox"), in: projects), "p / Auth")
+      AppStore.notificationSource(
+        forTargetID: .workroom(project: "/p", name: "fox"), in: projects), "p / Auth")
     XCTAssertEqual(
-      AppStore.notificationSource(forTargetID: TerminalTarget.rootID(project: "/p"), in: projects),
+      AppStore.notificationSource(forTargetID: TargetID.root(project: "/p"), in: projects),
       "p")
     XCTAssertEqual(
-      AppStore.notificationSource(forTargetID: key("/p", "ghost"), in: projects), "",
+      AppStore.notificationSource(
+        forTargetID: .workroom(project: "/p", name: "ghost"), in: projects), "",
       "a since-deleted target resolves empty so callers fall back to the stored snapshot")
   }
 

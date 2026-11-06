@@ -11,7 +11,8 @@ import XCTest
 /// PTY when it enters a window, so constructing one here is inert.
 @MainActor
 final class TerminalSessionsTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   private func makeSessions() -> TerminalSessions {
     let sessions = TerminalSessions()
@@ -41,7 +42,8 @@ final class TerminalSessionsTests: XCTestCase {
     s.recency = SwitcherRecency()
     let host = UUID()
     let remote = TerminalTarget(
-      id: "wr|/p|far", title: "far", path: "/home/workroom/r", unavailability: .remote,
+      id: .workroom(project: "/p", name: "far"), title: "far", path: "/home/workroom/r",
+      unavailability: .remote,
       remoteHost: host)
 
     let tab = s.addTab(for: remote)
@@ -214,7 +216,8 @@ final class TerminalSessionsTests: XCTestCase {
   /// pane in another workroom is not somewhere this close can land.
   func testCloseSuccessorIgnoresMoreRecentPaneFromAnotherTarget() {
     let s = makeSessions()
-    let other = TerminalTarget(id: "wr|/p|other", title: "other", path: "/tmp", isMissing: false)
+    let other = TerminalTarget(
+      id: .workroom(project: "/p", name: "other"), title: "other", path: "/tmp", isMissing: false)
     s.addTab(for: target)
     s.addTab(for: target)
     s.addTab(for: target)  // focus order: 1 → 2 → 3
@@ -369,7 +372,7 @@ final class TerminalSessionsTests: XCTestCase {
 
   func testUnknownTargetIsNotRunning() {
     let s = makeSessions()
-    XCTAssertFalse(s.isRunning(forTargetID: "wr|/p|never-opened"))
+    XCTAssertFalse(s.isRunning(forTargetID: .workroom(project: "/p", name: "never-opened")))
   }
 
   // MARK: Live titles (issue #2)
@@ -412,7 +415,8 @@ final class TerminalSessionsTests: XCTestCase {
 
   func testActiveAgentsIncludeBackgroundTargetsAndDeduplicateProviders() {
     let sessions = makeSessions()
-    let other = TerminalTarget(id: "wr|/p|other", title: "other", path: "/tmp", isMissing: false)
+    let other = TerminalTarget(
+      id: .workroom(project: "/p", name: "other"), title: "other", path: "/tmp", isMissing: false)
     sessions.addTab(for: target)
     let first = sessions.tabs(for: target)[0].surface!
     first.foregroundProcessNameForTesting = "codex"
@@ -1453,7 +1457,8 @@ final class TerminalSessionsTests: XCTestCase {
 /// layout.
 @MainActor
 final class ContentPaneFloorTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   private func makeSessions() -> TerminalSessions {
     let sessions = TerminalSessions()
@@ -1535,7 +1540,8 @@ final class ContentPaneFloorTests: XCTestCase {
 /// cross-process.
 @MainActor
 final class TerminalSplitAutoEvenTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   private func makeSessions(space: CGRect = CGRect(x: 0, y: 0, width: 1800, height: 1000))
     -> TerminalSessions
@@ -1765,7 +1771,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
 @MainActor
 final class RemotePaneFooterTests: XCTestCase {
   private let target = TerminalTarget(
-    id: "wr|/p|remote", title: "r", path: "/tmp", isMissing: false)
+    id: .workroom(project: "/p", name: "remote"), title: "r", path: "/tmp", isMissing: false)
 
   private func makeSessions(_ connection: HostCwdConnection, on host: HostID) async throws
     -> TerminalSessions
@@ -1971,7 +1977,8 @@ private final class HostCwdConnection: HostServiceConnection, @unchecked Sendabl
 @MainActor
 final class RemotePaneCloseTests: XCTestCase {
   private func remoteTarget() -> TerminalTarget {
-    var target = TerminalTarget(id: "wr|/p|remote", title: "remote", path: "/w", isMissing: false)
+    var target = TerminalTarget(
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/w", isMissing: false)
     target.remoteHost = UUID()
     return target
   }
@@ -2081,7 +2088,8 @@ final class RemotePaneCloseTests: XCTestCase {
   /// Value: protects=one host reconnecting retries only its own closed panes, never waking another host; fails_when=the retry loop drops its per-host filter; why_new=the other retry tests use one host; seam=hostUpdates
   func testAReconnectRetriesOnlyItsOwnHostsSessions() async throws {
     let near = remoteTarget()
-    var far = TerminalTarget(id: "wr|/p|far", title: "far", path: "/w", isMissing: false)
+    var far = TerminalTarget(
+      id: .workroom(project: "/p", name: "far"), title: "far", path: "/w", isMissing: false)
     far.remoteHost = UUID()
     let (nearUpdates, nearConnection) = AsyncStream<HostConnectionManager.Snapshot>.makeStream()
     let (farUpdates, _) = AsyncStream<HostConnectionManager.Snapshot>.makeStream()
@@ -2218,7 +2226,8 @@ final class RemotePaneCloseTests: XCTestCase {
 
   /// Value: protects=a closed LOCAL pane's kill is counted as local, so a quit waits for it even past its deadline; fails_when=closeTab counts a local close as remote (or not at all); why_new=quitKeepsWaiting's test pins the rule, not which count a close lands in; seam=none
   func testAQuitWaitsForALocalCloseEvenPastItsDeadline() async throws {
-    let target = TerminalTarget(id: "wr|/p|local", title: "local", path: "/w", isMissing: false)
+    let target = TerminalTarget(
+      id: .workroom(project: "/p", name: "local"), title: "local", path: "/w", isMissing: false)
     let s = makeSessions { _, _ in true }
     var asked = 0
     s.sessionService = PersistentSessionService(
@@ -2282,7 +2291,8 @@ final class RemotePaneCloseTests: XCTestCase {
 
   /// Value: protects=a local pane whose kill fails closes without the remote-only "still running on its host" alert; fails_when=endPersistentSession returns a local kill's result; why_new=the other cases here are all remote panes; seam=none
   func testAFailedLocalCloseReportsNothing() async throws {
-    let target = TerminalTarget(id: "wr|/p|local", title: "local", path: "/w", isMissing: false)
+    let target = TerminalTarget(
+      id: .workroom(project: "/p", name: "local"), title: "local", path: "/w", isMissing: false)
     let s = makeSessions { _, _ in true }
     // An unreachable owner makes a local kill report failure, which stays in the log.
     s.sessionService = PersistentSessionService(
@@ -2299,7 +2309,8 @@ final class RemotePaneCloseTests: XCTestCase {
 
   /// Value: protects=deleting a workroom still asks to end its LOCAL panes' persistent sessions; only remote ones are left to the host's teardown; fails_when=reap's isRemoteSession guard is inverted or skips every session; why_new=the reap test above only proves a remote pane is skipped; seam=none
   func testReapStillAsksToEndALocalPanesSession() async throws {
-    let target = TerminalTarget(id: "wr|/p|local", title: "local", path: "/w", isMissing: false)
+    let target = TerminalTarget(
+      id: .workroom(project: "/p", name: "local"), title: "local", path: "/w", isMissing: false)
     let s = makeSessions { _, _ in true }
     var asked = 0
     s.sessionService = PersistentSessionService(

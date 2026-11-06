@@ -16,17 +16,17 @@ struct DetachedSessionsButton: View {
     // the `if` below (as this used to) makes the button structurally unable to ever appear from a
     // cold state — `detached` starts empty, so the branch that would refresh it never mounts.
     Group {
-      if !sessionsStore.detached(for: target.id).isEmpty {
+      if !sessionsStore.detached(for: target.id.encoded).isEmpty {
         Button {
           showing.toggle()
         } label: {
           Image(systemName: "rectangle.stack")
-          Text("\(sessionsStore.detached(for: target.id).count)")
+          Text("\(sessionsStore.detached(for: target.id.encoded).count)")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("terminal.detachedSessions")
         .accessibilityLabel(
-          "\(sessionsStore.detached(for: target.id).count) detached background terminals"
+          "\(sessionsStore.detached(for: target.id.encoded).count) detached background terminals"
         )
         .popover(isPresented: $showing, arrowEdge: .top) {
           popover
@@ -41,7 +41,8 @@ struct DetachedSessionsButton: View {
   private var popover: some View {
     VStack(alignment: .leading, spacing: 8) {
       Text("Detached terminals").font(.headline)
-      ForEach(sessionsStore.detached(for: target.id), id: \.identifier.uuidString) { session in
+      ForEach(sessionsStore.detached(for: target.id.encoded), id: \.identifier.uuidString) {
+        session in
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           VStack(alignment: .leading, spacing: 2) {
             Text(session.value(forMetadataKey: SessionMetadataKey.title) ?? "Terminal")
@@ -64,7 +65,7 @@ struct DetachedSessionsButton: View {
 
   private func refresh() async {
     await sessionsStore.refresh(
-      workroomID: target.id, ownedSessionIDs: store.terminals.ownedSessionIDs(for: target))
+      workroomID: target.id.encoded, ownedSessionIDs: store.terminals.ownedSessionIDs(for: target))
   }
 
   private func attachToActive(_ session: SessionDescriptor) {

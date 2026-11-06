@@ -269,7 +269,7 @@ extension AppStore {
   /// "New Terminal" state (issue #55).
   func autoCloseEmptiedSplitMember(_ targetID: TerminalTarget.ID) {
     guard terminals.tabCount(forTargetID: targetID) == 0,
-      let sid = Self.sidebarID(forTargetID: targetID, in: projects)
+      let sid = Self.validatedSelection(targetID.sidebarID, in: projects)
     else { return }
     removeWorkroomSplitMember(sid)  // guards group membership → no-op for an ungrouped workroom
   }
@@ -288,7 +288,7 @@ extension AppStore {
   /// auto-close.
   func selectFallbackWorkroomAfterEmpty(_ targetID: TerminalTarget.ID) {
     guard terminals.tabCount(forTargetID: targetID) == 0,
-      let sid = Self.sidebarID(forTargetID: targetID, in: projects),
+      let sid = Self.validatedSelection(targetID.sidebarID, in: projects),
       selectedTargetID == sid
     else { return }
     selectFallbackWorkroom()
@@ -347,7 +347,7 @@ extension AppStore {
   /// in along that axis. No-op when auto-even is off, the workroom isn't in
   /// a workroom split, or the even wouldn't leave every terminal at its minimum size.
   func reEvenWorkroomSplit(holding targetID: TerminalTarget.ID, along axis: SplitOrientation?) {
-    guard let sid = Self.sidebarID(forTargetID: targetID, in: projects) else { return }
+    guard let sid = Self.validatedSelection(targetID.sidebarID, in: projects) else { return }
     let evened = workroomSplitGroups.evening(groupOf: sid, along: axis, policy: workroomSplitPolicy)
     // `workroomSplitGroups` is observed: write only a real change, so a no-op even redraws nothing.
     if evened != workroomSplitGroups { workroomSplitGroups = evened }

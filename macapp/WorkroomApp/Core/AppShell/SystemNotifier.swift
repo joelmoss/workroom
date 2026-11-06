@@ -45,7 +45,9 @@ struct SystemNotifier: SystemNotifying {
       title: n.title,
       subtitle: n.source.isEmpty ? nil : n.source,
       body: body,
-      userInfo: ["targetID": n.targetID, "tabID": n.tabID.uuidString, "notifID": n.id.uuidString])
+      userInfo: [
+        "targetID": n.targetID.encoded, "tabID": n.tabID.uuidString, "notifID": n.id.uuidString,
+      ])
   }
 
   func ensureAuthorized() async -> Bool {

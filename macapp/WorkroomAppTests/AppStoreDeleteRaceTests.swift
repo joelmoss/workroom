@@ -143,7 +143,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
   }
 
   private func targetID(_ name: String) -> TerminalTarget.ID {
-    TerminalTarget.workroomID(project: projectPath, name: name)
+    TargetID.workroom(project: projectPath, name: name)
   }
 
   /// Poll a condition on the main actor, letting queued teardown/reload work run. Bounded so a broken

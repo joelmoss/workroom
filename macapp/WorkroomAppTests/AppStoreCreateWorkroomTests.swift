@@ -347,7 +347,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       project: emptyProject, kind: nil, splitAnchor: nil, previousSelection: nil)
     store.register(run)
     run.setName("wr")
-    store.creationRunForTarget[TerminalTarget.workroomID(project: projectPath, name: "wr")] = run.id
+    store.creationRunForTarget[TargetID.workroom(project: projectPath, name: "wr")] = run.id
 
     XCTAssertEqual(
       store.orderedWorkroomTargets().map(\.sid), [.creation(project: projectPath, id: run.id)])
@@ -361,7 +361,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     run.setName(name)
     if case .setupScriptFailed = outcome { run.fail(outcome) }
     store.creationRuns[run.id] = run
-    store.creationRunForTarget[TerminalTarget.workroomID(project: projectPath, name: name)] =
+    store.creationRunForTarget[TargetID.workroom(project: projectPath, name: name)] =
       run.id
     return run
   }
@@ -523,7 +523,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
-    let wrID = TerminalTarget.workroomID(project: projectPath, name: "calm-otter")
+    let wrID = TargetID.workroom(project: projectPath, name: "calm-otter")
     XCTAssertTrue(store.creationRuns.isEmpty, "a no-setup create must clear itself when done")
     XCTAssertTrue(store.creationRunForTarget.isEmpty, "and leave no pane id behind")
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-otter"))
@@ -539,7 +539,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testASuccessfulSetupScriptNeedsNoDismiss() async throws {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["brave-fox"], hasSetup: true)
     let store = makeStore(fake)
-    let wrID = TerminalTarget.workroomID(project: projectPath, name: "brave-fox")
+    let wrID = TargetID.workroom(project: projectPath, name: "brave-fox")
 
     let task = await startAndLand(store, "brave-fox", project: emptyProject)
     let run = try XCTUnwrap(store.creationRun(forTargetID: wrID))
@@ -572,7 +572,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
-    let wrID = TerminalTarget.workroomID(project: projectPath, name: "lost-cat")
+    let wrID = TargetID.workroom(project: projectPath, name: "lost-cat")
     let run = try XCTUnwrap(store.creationRun(forTargetID: wrID), "a failed setup keeps its run")
     guard case .setupScriptFailed(let message) = run.outcome else {
       return XCTFail("expected a setup-script failure, got \(run.outcome)")
@@ -603,14 +603,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// feed it to a `startRunCommand` that refuses a creating workroom. The run would vanish.
   func testIsCreationBlockingSemantics() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
-    let wrID = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let wrID = TargetID.workroom(project: projectPath, name: "wr")
 
     XCTAssertFalse(store.isCreationBlocking(wrID), "no creation → never blocking")
 
     seedRun(store, holding: "wr")
     XCTAssertTrue(store.isCreationBlocking(wrID), "a create withholds its own target")
     XCTAssertFalse(
-      store.isCreationBlocking(TerminalTarget.workroomID(project: projectPath, name: "other")),
+      store.isCreationBlocking(TargetID.workroom(project: projectPath, name: "other")),
       "only the creation's own target is withheld")
   }
 
@@ -664,7 +664,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let proj = project(withWorkroom: "wr")
     store.projects = [proj]
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
-    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let id = TargetID.workroom(project: projectPath, name: "wr")
     let target = proj.workrooms[0].target(inProject: projectPath)
 
     let run = seedRun(store, holding: "wr", outcome: .setupScriptFailed(message: "exit 1"))
@@ -692,7 +692,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// `reload()` a no-setup create holds `creatingWorkrooms` with no `creations` entry yet.
   func testRunBlockedNeedsBothHalves() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
-    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let id = TargetID.workroom(project: projectPath, name: "wr")
 
     XCTAssertFalse(store.isRunBlocked(id), "idle → nothing blocks")
     store.creatingWorkrooms.insert(id)
@@ -712,7 +712,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// pane's drawing
   func testALandedCreateWhoseTargetStoppedResolvingStillRenders() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
-    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let id = TargetID.workroom(project: projectPath, name: "wr")
     let sid = SidebarID.workroom(project: projectPath, name: "wr")
     let run = seedRun(store, holding: "wr")
 
@@ -744,7 +744,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     }
     defer { fake.release("brave-fox") }
     let created = SidebarID.workroom(project: projectPath, name: "brave-fox")
-    let wrID = TerminalTarget.workroomID(project: projectPath, name: "brave-fox")
+    let wrID = TargetID.workroom(project: projectPath, name: "brave-fox")
     await waitUntil({ store.selectedTargetID == created }, "the new member never landed")
 
     XCTAssertEqual(store.selectedTargetID, created, "the insert focuses the new member")
@@ -769,7 +769,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()  // land the workroom in `projects` so its target resolves
 
-    let wrID = TerminalTarget.workroomID(project: projectPath, name: "tab-wr")
+    let wrID = TargetID.workroom(project: projectPath, name: "tab-wr")
     XCTAssertFalse(
       store.orderedWorkroomTargets().contains { $0.target.id == wrID },
       "no tab before creation (the workroom has no live terminal)")
@@ -789,7 +789,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
   func testIsCreatingHelper() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
-    let wrID = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let wrID = TargetID.workroom(project: projectPath, name: "wr")
     XCTAssertFalse(store.isCreating(.workroom(project: projectPath, name: "wr")))
     store.creatingWorkrooms.insert(wrID)
     XCTAssertTrue(store.isCreating(.workroom(project: projectPath, name: "wr")))
@@ -812,7 +812,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
     let sid = SidebarID.workroom(project: root, name: "wr")
-    let wrID = TerminalTarget.workroomID(project: root, name: "wr")
+    let wrID = TargetID.workroom(project: root, name: "wr")
 
     store.creatingWorkrooms.insert(wrID)  // setup in flight, BEFORE any reload/selection
     await store.reload()  // the sweep must SKIP the creating workroom
@@ -834,7 +834,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
     let sid = SidebarID.workroom(project: root, name: "wr")
-    let wrID = TerminalTarget.workroomID(project: root, name: "wr")
+    let wrID = TargetID.workroom(project: root, name: "wr")
 
     store.creatingWorkrooms.insert(wrID)
     await store.reload()
@@ -1021,7 +1021,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testASupersededCreateStillReleasesItsOwnDeletionProtection() async {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
     let store = makeStore(fake)
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     let b = await startAndLand(store, "wr-b", project: emptyProject)
@@ -1046,7 +1046,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testAStaleLandingCannotReleaseAnotherCreatesProtection() async {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
     let store = makeStore(fake)
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     let b = await startAndLand(store, "wr-b", project: emptyProject)
@@ -1080,7 +1080,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testWithholdingAndAutoRunSurviveASecondCreate() async {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
     let store = makeStore(fake)
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     store.armAutoRun(forWorkroom: idA)  // as A's own landing does when its project has auto-run on
@@ -1113,7 +1113,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let fake = GatedFakeCLI(
       projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true, failing: ["wr-a"])
     let store = makeStore(fake)
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     store.armAutoRun(forWorkroom: idA)
@@ -1142,8 +1142,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testEachCreateKeepsItsOwnSessionAndDismissal() async {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
     let store = makeStore(fake)
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
-    let idB = TerminalTarget.workroomID(project: projectPath, name: "wr-b")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
+    let idB = TargetID.workroom(project: projectPath, name: "wr-b")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     store.selectedTargetID = .workroom(project: projectPath, name: "wr-a")
@@ -1229,7 +1229,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     XCTAssertEqual(store.creationRuns.count, 1, "its pane stays, failed")
     XCTAssertEqual(
-      Array(store.creationRunForTarget.keys).filter { $0.hasPrefix("wr|") }, [],
+      Array(store.creationRunForTarget.keys).filter { $0.encoded.hasPrefix("wr|") }, [],
       "there was never a workroom target to key an entry on")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty)
     let run = store.creationRuns.values.first
@@ -1246,8 +1246,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testBothConcurrentCreatesAppearAsTabsAtOnce() async {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
     let store = makeStore(fake)
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
-    let idB = TerminalTarget.workroomID(project: projectPath, name: "wr-b")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
+    let idB = TargetID.workroom(project: projectPath, name: "wr-b")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     let b = await startAndLand(store, "wr-b", project: emptyProject)
@@ -1276,7 +1276,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     // `WorkroomApp` builds a ⌘N window.
     let other = AppStore(projectStore: store.projectStore, cli: fake)
     other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     XCTAssertTrue(store.isCreationBlocking(idA), "the creating window withholds")
@@ -1302,7 +1302,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let store = makeStore(fake)
     let other = AppStore(projectStore: store.projectStore, cli: fake)
     other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = Task { await store.createWorkroom(in: emptyProject) }
     await waitUntil({ fake.isListHeld }, "the landing's reload never started")
@@ -1332,7 +1332,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     defer { fake.release("wr-a") }
@@ -1369,7 +1369,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: false,
       gates: ["wr-a": .afterReady, "wr-b": .beforeReady])
     let store = makeStore(fake)
-    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
     let b = Task { await store.createWorkroom(in: emptyProject) }

@@ -13,7 +13,7 @@ import XCTest
 @MainActor
 final class SessionRestoreTests: XCTestCase {
   private let target = TerminalTarget(
-    id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   /// Recovery's gate when every target may reattach.
   private static let every: (TerminalTarget.ID) -> Bool = { _ in true }
@@ -48,7 +48,7 @@ final class SessionRestoreTests: XCTestCase {
       let sessionID = UUID()
       sessions.restore(
         TargetSession(
-          targetID: target.id,
+          targetID: target.id.encoded,
           tabs: [terminal("a", title: "Terminal 1")]), for: target)
       var tab = sessions.tabs(for: target).first!
       guard case .terminal(var state) = tab.content else { return XCTFail("expected terminal") }
@@ -117,7 +117,7 @@ final class SessionRestoreTests: XCTestCase {
     }
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")]),
       for: target)
     var descriptors: [SessionDescriptor] = []
@@ -149,7 +149,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1", cwd: "/definitely/not/a/real/directory")]),
       for: target)
 
@@ -163,7 +163,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
         focusedKey: "b"),
       for: target)
@@ -176,7 +176,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     let restored = sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [
           terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2"),
           terminal("c", title: "Terminal 3"),
@@ -192,7 +192,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
         splits: [split("a", "b")], focusedKey: "b"),
       for: target)
@@ -214,7 +214,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")]),
       for: target)
 
@@ -227,7 +227,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [
           TabSession(
             key: "d", kind: TabSession.diffKind,
@@ -268,7 +268,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     let restored = sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [
           terminal("a", title: "Terminal 1"), TabSession(key: "x", kind: "hologram"),
           terminal("b", title: "Terminal 2"),
@@ -285,7 +285,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.restore(
       TargetSession(
-        targetID: target.id, tabs: [terminal("a", title: "Terminal 7")], terminalCounter: 7),
+        targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 7")], terminalCounter: 7),
       for: target)
     let added = sessions.addTab(for: target)
     XCTAssertEqual(added.title, "Terminal 8")
@@ -310,7 +310,7 @@ final class SessionRestoreTests: XCTestCase {
     sessions.onEvent = { if case .focusChanged = $0 { fired += 1 } }
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
         focusedKey: "b"),
       for: target)
@@ -325,7 +325,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.addTab(for: target)
     let restored = sessions.restore(
-      TargetSession(targetID: target.id, tabs: [terminal("a", title: "Terminal 99")]),
+      TargetSession(targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 99")]),
       for: target)
     XCTAssertEqual(restored.count, 0)
     XCTAssertEqual(sessions.tabs(for: target).map(\.title), ["Terminal 1"])
@@ -334,7 +334,7 @@ final class SessionRestoreTests: XCTestCase {
   func testEmptySessionRestoresNothing() {
     let sessions = makeSessions()
     XCTAssertEqual(
-      sessions.restore(TargetSession(targetID: target.id, tabs: []), for: target).count, 0)
+      sessions.restore(TargetSession(targetID: target.id.encoded, tabs: []), for: target).count, 0)
     XCTAssertTrue(sessions.tabs(for: target).isEmpty)
   }
 
@@ -344,7 +344,7 @@ final class SessionRestoreTests: XCTestCase {
     let sessions = makeSessions()
     sessions.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")]),
       for: target)
     for tab in sessions.tabs(for: target) {
@@ -391,7 +391,7 @@ final class SessionRestoreTests: XCTestCase {
     let s = makeSessions()
     s.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [
           terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2"),
           terminal("c", title: "Terminal 3"), terminal("d", title: "Terminal 4"),
@@ -426,7 +426,7 @@ final class SessionRestoreTests: XCTestCase {
     detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
     s.restore(
       TargetSession(
-        targetID: target.id, tabs: [terminal("a", title: "Terminal 1"), detached],
+        targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 1"), detached],
         splits: [split("a", "b")], focusedKey: "a"),
       for: target)
 
@@ -447,7 +447,7 @@ final class SessionRestoreTests: XCTestCase {
     detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
     s.restore(
       TargetSession(
-        targetID: target.id,
+        targetID: target.id.encoded,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2"), detached],
         splits: [
           .split(
@@ -478,7 +478,7 @@ final class SessionRestoreTests: XCTestCase {
     detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
     s.restore(
       TargetSession(
-        targetID: target.id, tabs: [detached, terminal("b", title: "Terminal 2")],
+        targetID: target.id.encoded, tabs: [detached, terminal("b", title: "Terminal 2")],
         focusedKey: nil),
       for: target)
 
@@ -501,7 +501,7 @@ final class SessionRestoreTests: XCTestCase {
     }
     guard !tabs.isEmpty else { return nil }
     return TargetSession(
-      targetID: target.id, tabs: tabs,
+      targetID: target.id.encoded, tabs: tabs,
       splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)
@@ -531,9 +531,9 @@ final class SessionRestoreTests: XCTestCase {
     }
     // Still being created, so not reachable yet.
     store.projects = [project("creating")]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "r")
+    let id = TargetID.workroom(project: "/proj", name: "r")
     let session = TargetSession(
-      targetID: id,
+      targetID: id.encoded,
       tabs: [
         terminal("a", title: "Terminal 1"),
         TabSession(
@@ -541,12 +541,13 @@ final class SessionRestoreTests: XCTestCase {
           file: FilePayload(path: "README.md", isPreview: false, markdownPreview: false)),
       ])
     store.pendingSessionRestore = WindowSession(
-      windowKey: UUID().uuidString, targets: [session], expandedTargets: [id])
+      windowKey: UUID().uuidString, targets: [session], expandedTargets: [id.encoded])
 
     store.restorePersistedSessionIfPending(in: store.projects)
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 0, "an unreachable pane was built")
     XCTAssertEqual(store.captureWindowSession().targets, [session], "its session was not kept")
-    XCTAssertEqual(store.captureWindowSession().expandedTargets, [id], "its expansion was lost")
+    XCTAssertEqual(
+      store.captureWindowSession().expandedTargets, [id.encoded], "its expansion was lost")
     store.selectedTargetID = .workroom(project: "/proj", name: "r")
 
     store.projects = [project(nil)]
@@ -576,9 +577,10 @@ final class SessionRestoreTests: XCTestCase {
       store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
       return store
     }
-    let id = TerminalTarget.workroomID(project: "/proj", name: "h")
+    let id = TargetID.workroom(project: "/proj", name: "h")
     let saved = TargetSession(
-      targetID: id, tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")])
+      targetID: id.encoded,
+      tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")])
 
     let first = store()
     first.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
@@ -654,13 +656,13 @@ final class SessionRestoreTests: XCTestCase {
               provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
         ])
     ]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "w")
+    let id = TargetID.workroom(project: "/proj", name: "w")
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
 
     // Not answered yet: nothing is written, whatever the window shows.
     store.terminals.restore(
-      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")]), for: target)
     XCTAssertTrue(store.writeHostLayouts().isEmpty)
 
     // Answered, and the host already has exactly this: nothing is written.
@@ -711,7 +713,7 @@ final class SessionRestoreTests: XCTestCase {
       store.hostLayouts.writing[id] = nil
     }
     let elsewhere = Task<Void, Never> { try? await Task.sleep(nanoseconds: 5_000_000_000) }
-    store.hostLayouts.writing["another workroom"] = elsewhere
+    store.hostLayouts.writing[.workroom(project: "/another", name: "workroom")] = elsewhere
     await AppStore.flushHostLayouts(budget: 0.2, stores: [store])
     XCTAssertNil(store.hostLayouts.writing[id])
     XCTAssertTrue(store.hostLayouts.stale.contains(id))
@@ -731,8 +733,8 @@ final class SessionRestoreTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "u")
-    var saved = TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])
+    let id = TargetID.workroom(project: "/proj", name: "u")
+    var saved = TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")])
     saved.hostRevision = 4
     store.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
     store.restorePersistedSessionIfPending(in: store.projects)
@@ -773,8 +775,8 @@ final class SessionRestoreTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "s")
-    var saved = TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])
+    let id = TargetID.workroom(project: "/proj", name: "s")
+    var saved = TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")])
     saved.hostRevision = 4
     saved.hostLayoutStale = true
     store.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
@@ -826,11 +828,11 @@ final class SessionRestoreTests: XCTestCase {
               provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
         ])
     ]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "w")
+    let id = TargetID.workroom(project: "/proj", name: "w")
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
     store.terminals.restore(
-      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")]), for: target)
     store.hostLayouts.fetched.insert(id)
     store.hostLayouts.unanswered.insert(id)
     store.hostLayouts.revisions[id] = 3
@@ -899,10 +901,10 @@ final class SessionRestoreTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.projects = [project(host: first)]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "m")
+    let id = TargetID.workroom(project: "/proj", name: "m")
     store.pendingSessionRestore = WindowSession(
       windowKey: UUID().uuidString,
-      targets: [TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])])
+      targets: [TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")])])
     store.restorePersistedSessionIfPending(in: store.projects)
     XCTAssertTrue(store.hostLayouts.fetching.contains(id))
     store.newTerminal(in: try XCTUnwrap(store.terminalTarget(forID: id)))
@@ -915,14 +917,14 @@ final class SessionRestoreTests: XCTestCase {
     }
     poll()
     await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
-    let titles = store.captureWindowSession().targets.first { $0.targetID == id }?.tabs
+    let titles = store.captureWindowSession().targets.first { $0.targetID == id.encoded }?.tabs
       .compactMap { $0.terminal?.defaultTitle }
     XCTAssertEqual(titles?.first, "from the second host", "restored through the old host")
     XCTAssertEqual(titles?.count, 2, "the terminal asked for meanwhile was lost")
     XCTAssertFalse(store.waitingForHostLayout.contains(id))
     // And it opened on the workroom's host as it is now, not the one it was asked for under.
     let held = try XCTUnwrap(
-      store.captureWindowSession().targets.first { $0.targetID == id }?.tabs.last?.terminal?
+      store.captureWindowSession().targets.first { $0.targetID == id.encoded }?.tabs.last?.terminal?
         .sessionID.flatMap(UUID.init(uuidString:)))
     XCTAssertEqual(store.terminals.sessionService.remoteHost(of: held), .remote(second))
   }
@@ -959,11 +961,11 @@ final class SessionRestoreTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.projects = [project(host: first)]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "v")
+    let id = TargetID.workroom(project: "/proj", name: "v")
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
     store.terminals.restore(
-      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")]), for: target)
     store.hostLayouts.fetched.insert(id)
     store.hostLayouts.hosts[id] = (first, workroomID)
     store.hostLayouts.revisions[id] = 3
@@ -1009,11 +1011,11 @@ final class SessionRestoreTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.projects = [project(host: first)]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "o")
+    let id = TargetID.workroom(project: "/proj", name: "o")
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
     store.terminals.restore(
-      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")]), for: target)
     store.hostLayouts.fetched.insert(id)
     store.hostLayouts.hosts[id] = (first, workroomID)
     store.hostLayouts.revisions[id] = 3
@@ -1053,10 +1055,10 @@ final class SessionRestoreTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "l")
+    let id = TargetID.workroom(project: "/proj", name: "l")
     store.pendingSessionRestore = WindowSession(
       windowKey: UUID().uuidString,
-      targets: [TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])])
+      targets: [TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")])])
     store.restorePersistedSessionIfPending(in: store.projects)
     let restored = expectation(description: "restored")
     func poll() {
@@ -1085,12 +1087,12 @@ final class SessionRestoreTests: XCTestCase {
         GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
       }
       store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
-      let id = TerminalTarget.workroomID(project: "/proj", name: "n")
+      let id = TargetID.workroom(project: "/proj", name: "n")
       let session = UUID()
       var tab = terminal("a", title: "Terminal 1")
       tab.terminal?.sessionID = session.uuidString
       store.pendingSessionRestore = WindowSession(
-        windowKey: UUID().uuidString, targets: [TargetSession(targetID: id, tabs: [tab])])
+        windowKey: UUID().uuidString, targets: [TargetSession(targetID: id.encoded, tabs: [tab])])
       if paneFirst, let target = store.terminalTarget(forID: id) {
         store.ensureInitialTerminal(for: target)
       }
@@ -1102,7 +1104,7 @@ final class SessionRestoreTests: XCTestCase {
       }
       poll()
       await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
-      let sessions = store.captureWindowSession().targets.first { $0.targetID == id }?.tabs
+      let sessions = store.captureWindowSession().targets.first { $0.targetID == id.encoded }?.tabs
         .compactMap { $0.terminal?.sessionID }
       XCTAssertEqual(sessions, [session.uuidString], "pane first: \(paneFirst)")
     }
@@ -1140,11 +1142,11 @@ final class SessionRestoreTests: XCTestCase {
               provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
         ])
     ]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "z")
+    let id = TargetID.workroom(project: "/proj", name: "z")
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
     store.terminals.restore(
-      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")]), for: target)
     store.hostLayouts.fetched.insert(id)
     store.hostLayouts.unanswered.insert(id)
     store.hostLayouts.unansweredWrite[id] = "the seed this Mac wrote"
@@ -1185,11 +1187,11 @@ final class SessionRestoreTests: XCTestCase {
               provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
         ])
     ]
-    let id = TerminalTarget.workroomID(project: "/proj", name: "q")
+    let id = TargetID.workroom(project: "/proj", name: "q")
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
     store.terminals.restore(
-      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      TargetSession(targetID: id.encoded, tabs: [terminal("a", title: "Terminal 1")]), for: target)
     store.hostLayouts.fetched.insert(id)
     store.hostLayouts.unanswered.insert(id)
     store.hostLayouts.revisions[id] = 3
@@ -1215,7 +1217,8 @@ final class SessionRestoreTests: XCTestCase {
     }
     let sessionID = UUID()
     sessions.restore(
-      TargetSession(targetID: target.id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      TargetSession(targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 1")]),
+      for: target)
     var tab = sessions.tabs(for: target).first!
     guard case .terminal(var state) = tab.content else { return XCTFail("expected terminal") }
     state.sessionID = sessionID
@@ -1252,14 +1255,14 @@ final class SessionRestoreTests: XCTestCase {
             host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())),
         ])
     ]
-    XCTAssertTrue(store.reattachesLocally(TerminalTarget.rootID(project: here)))
+    XCTAssertTrue(store.reattachesLocally(TargetID.root(project: here)))
     XCTAssertTrue(
-      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "local")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "local")))
     XCTAssertFalse(
-      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "remote")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "remote")))
     XCTAssertFalse(
-      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "gone")))
-    XCTAssertFalse(store.reattachesLocally(TerminalTarget.rootID(project: "/no/such/project")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "gone")))
+    XCTAssertFalse(store.reattachesLocally(TargetID.root(project: "/no/such/project")))
     // The first load reads config only, so a missing directory carries no warning yet.
     store.projects[0] = Project(
       path: here, vcs: "git",
@@ -1267,6 +1270,6 @@ final class SessionRestoreTests: XCTestCase {
         Workroom(name: "moved", path: "/no/such/workroom", vcsName: "workroom/moved", warnings: [])
       ])
     XCTAssertFalse(
-      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "moved")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "moved")))
   }
 }

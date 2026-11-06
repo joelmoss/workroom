@@ -107,7 +107,7 @@ final class ModalShortcutRoutingTests: XCTestCase {
     let project = Project(path: "/p", vcs: "git", workrooms: [])
     let workroom = Workroom(name: "w", path: "/p/w", vcsName: "git", warnings: [])
     let target = TerminalTarget(
-      id: TerminalTarget.rootID(project: "/p"), title: "p", path: "/p", isMissing: false)
+      id: TargetID.root(project: "/p"), title: "p", path: "/p", isMissing: false)
 
     let mutations: [(String, (AppStore) -> Void)] = [
       ("activePicker", { $0.activePicker = .new }),

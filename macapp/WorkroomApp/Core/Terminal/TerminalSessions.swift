@@ -1817,7 +1817,7 @@ final class TerminalSessions: ObservableObject {
       target: destination, tabs: [tab], splits: [], focused: tabID, counter: 0, detached: [:],
       agent: [tabID: codingAgentManager.handOff(tabID)])
     if let view = tab.surface {
-      let project = projectPath(from: destination.id) ?? destination.path
+      let project = destination.id.projectPath ?? destination.path
       view.sessionMetadata = view.sessionMetadata.map { entry in
         switch entry.key {
         case SessionMetadataKey.workroom: (entry.key, destination.sessionWorkroomKey)
@@ -2039,7 +2039,7 @@ final class TerminalSessions: ObservableObject {
       teardown(tab)
       forgetPerTabWork(tab.id)
     }
-    await sessionService.endSessions(matchingWorkroom: id)
+    await sessionService.endSessions(matchingWorkroom: id.encoded)
     tabsByTarget[id] = nil
     orderByTarget[id] = nil
     splitsByTarget[id] = nil
@@ -2558,7 +2558,7 @@ final class TerminalSessions: ObservableObject {
     // for a workroom on this Mac, whose daemon no other Mac reads, and the workroom's own id for a
     // remote one, since `target.id` holds this Mac's project path and another Mac's differs (#255).
     let metadata: [(key: String, value: String)] = [
-      (SessionMetadataKey.project, projectPath(from: target.id) ?? target.path),
+      (SessionMetadataKey.project, target.id.projectPath ?? target.path),
       (SessionMetadataKey.workroom, target.sessionWorkroomKey),
       (SessionMetadataKey.title, title ?? "Terminal \(count)"),
     ]
@@ -3096,14 +3096,5 @@ final class TerminalSessions: ObservableObject {
       return true
     }
     return await sessionService.endSession(sessionID: sessionID)
-  }
-
-  private func projectPath(from targetID: TerminalTarget.ID) -> String? {
-    if targetID.hasPrefix("wr|") {
-      let rest = targetID.dropFirst(3)
-      if let sep = rest.lastIndex(of: "|") { return String(rest[..<sep]) }
-    }
-    if targetID.hasPrefix("root|") { return String(targetID.dropFirst(5)) }
-    return nil
   }
 }

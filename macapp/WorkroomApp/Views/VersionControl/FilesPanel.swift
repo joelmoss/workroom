@@ -52,7 +52,7 @@ struct FilesPanel: View {
   }
 
   private var activationKey: String {
-    "\(AppStore.targetIDString(for: store.inspectorTargetID) ?? "")"
+    "\(store.inspectorTargetID?.targetID?.encoded ?? "")"
       + "\u{1F}\(store.activeInspectorSection == .files)"
   }
 

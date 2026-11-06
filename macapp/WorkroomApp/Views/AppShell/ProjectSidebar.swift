@@ -742,8 +742,8 @@ struct ProjectSidebar: View {
 
   /// A project's targets: its root, then every workroom.
   private func targetIDs(of project: Project) -> [TerminalTarget.ID] {
-    [TerminalTarget.rootID(project: project.path)]
-      + project.workrooms.map { TerminalTarget.workroomID(project: project.path, name: $0.name) }
+    [TargetID.root(project: project.path)]
+      + project.workrooms.map { TargetID.workroom(project: project.path, name: $0.name) }
   }
 
   /// Focuses the terminal that has waited longest among `targetIDs` (a workroom row's, or a whole
@@ -910,10 +910,10 @@ private struct SidebarUnreadDot: View {
   private var count: Int {
     switch source {
     case .project(let project):
-      var total = notifications.count(target: TerminalTarget.rootID(project: project.path))
+      var total = notifications.count(target: TargetID.root(project: project.path))
       for workroom in project.workrooms {
         total += notifications.count(
-          target: TerminalTarget.workroomID(project: project.path, name: workroom.name))
+          target: TargetID.workroom(project: project.path, name: workroom.name))
       }
       return total
     case .target(let target): return notifications.count(target: target)

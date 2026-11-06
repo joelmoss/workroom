@@ -51,7 +51,7 @@ final class SidebarBenchmarkTests: XCTestCase {
     settle(hosting)
     XCTAssertEqual(ProjectSidebar.rowEvaluations, 0)
     store.notifications.recordNotice(
-      targetID: TerminalTarget.rootID(project: store.projects[0].path),
+      targetID: TargetID.root(project: store.projects[0].path),
       source: "fixture", title: "Needs attention", body: nil)
     settle(hosting)
     XCTAssertEqual(store.notifications.total, 1, "the notice must actually be recorded")
@@ -156,7 +156,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         (0..<500).map { index in
           WorkroomNotification(
             id: UUID(),
-            targetID: TerminalTarget.rootID(project: store.projects[index % count].path),
+            targetID: TargetID.root(project: store.projects[index % count].path),
             tabID: UUID(), source: "fixture", title: "Notification \(index)", body: nil,
             date: Date(), count: 1)
         })
@@ -210,7 +210,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         ProjectSidebar.rowEvaluations = 0
         let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
         store.notifications.recordNotice(
-          targetID: TerminalTarget.rootID(project: store.projects[0].path),
+          targetID: TargetID.root(project: store.projects[0].path),
           source: "fixture", title: "New notice \(sample)", body: nil)
         await draw(hosting)
         notificationCPU.append(

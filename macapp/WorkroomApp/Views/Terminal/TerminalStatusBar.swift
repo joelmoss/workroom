@@ -49,7 +49,7 @@ struct TerminalStatusBar: View {
     let branch = store.branchLabel(for: target) ?? state?.liveBranch
     let hasBranch = branch != nil
     let hasDiagnosis = diagnosis != nil
-    let hasDetached = !sessionsStore.detached(for: target.id).isEmpty
+    let hasDetached = !sessionsStore.detached(for: target.id.encoded).isEmpty
     let hasRun = isRunTab && runStatePresentation != nil
 
     HStack(spacing: 12) {
