@@ -1,5 +1,6 @@
 import DaemonConnection
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 

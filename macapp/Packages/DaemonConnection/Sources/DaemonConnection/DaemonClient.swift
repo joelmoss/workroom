@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import OSLog
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import WorkroomWire

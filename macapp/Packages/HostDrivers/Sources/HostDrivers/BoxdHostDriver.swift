@@ -2,7 +2,6 @@ import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import os
 
 /// The first real provider driver (#256): boxd.sh machines, driven through the `boxd` CLI and

@@ -4,7 +4,6 @@ import Foundation
 import Synchronization
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 
 /// A server the user already owns. This driver can reach it and manage marked workroom folders;
 /// it cannot create, stop or destroy a host (ADR 0056).

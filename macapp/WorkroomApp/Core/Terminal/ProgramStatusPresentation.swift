@@ -2,6 +2,7 @@ import AppKit
 import DaemonConnection
 import DesignSystem
 import SwiftUI
+import WorkroomDomain
 import WorkroomVCS
 
 /// What a pane's program status (#358) says: tooltips and VoiceOver, one wording everywhere. Pure,

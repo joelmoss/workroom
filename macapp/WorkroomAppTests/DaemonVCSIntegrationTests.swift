@@ -1,4 +1,5 @@
 import DaemonConnection
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import XCTest

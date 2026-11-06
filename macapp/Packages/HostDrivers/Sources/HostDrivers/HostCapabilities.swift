@@ -1,7 +1,6 @@
 import DaemonConnection
 import Foundation
 import WorkroomDomain
-import WorkroomVCS
 
 // What a driver can do beyond `HostDriver`, each asked of `any HostDriver` with `as? any <it>`, as
 // `DaemonPlacingDriver` and `ProvisioningHostDriver` are (ADR 0067). The app decides when to ask;

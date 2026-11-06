@@ -1,5 +1,6 @@
 import AppKit
 import Network
+import WorkroomDomain
 import WorkroomVCS
 import os
 

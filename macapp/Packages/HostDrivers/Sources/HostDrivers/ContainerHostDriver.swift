@@ -2,7 +2,6 @@ import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import WorkroomWire
 
 /// The first `HostDriver`. Its hosts are the ones the caller hands in over ssh (the ssh fixture,

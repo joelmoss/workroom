@@ -1,5 +1,6 @@
 import AppKit
 import HostDrivers
+import WorkroomDomain
 import WorkroomVCS
 import XCTest
 

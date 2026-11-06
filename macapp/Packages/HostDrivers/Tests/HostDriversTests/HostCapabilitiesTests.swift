@@ -1,6 +1,5 @@
 import Foundation
 import WorkroomDomain
-import WorkroomVCS
 import XCTest
 
 @testable import HostDrivers

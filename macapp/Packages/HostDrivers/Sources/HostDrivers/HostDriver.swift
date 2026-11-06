@@ -1,8 +1,8 @@
 import DaemonConnection
 import Darwin
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 
 /// Reaches a host, whether a provider made it or the user brought it over SSH.
 ///
@@ -224,7 +224,7 @@ public enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   case olderContainer
 
   /// What a container made by an older build says, wherever it is met: what any older host says.
-  public static let olderContainerMessage = RepositoryRoutingError.olderLayoutMessage
+  public static let olderContainerMessage = HostID.olderLayoutMessage
 
   public var errorDescription: String? {
     switch self {

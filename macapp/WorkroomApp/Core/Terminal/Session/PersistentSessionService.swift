@@ -1,6 +1,7 @@
 import DaemonConnection
 import Foundation
 import HostDrivers
+import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
 import os

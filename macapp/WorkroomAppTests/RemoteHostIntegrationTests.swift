@@ -1,6 +1,7 @@
 import DaemonConnection
 import Darwin
 import HostDrivers
+import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
 import XCTest

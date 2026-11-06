@@ -18,15 +18,12 @@ let package = Package(
     .package(path: "../DaemonConnection"),
     .package(path: "../WorkroomDomain"),
     .package(path: "../WorkroomSystem"),
-    .package(path: "../WorkroomVCS"),
     .package(path: "../WorkroomWire"),
   ],
   targets: [
     .target(
       name: "HostDrivers",
-      dependencies: [
-        "DaemonConnection", "WorkroomDomain", "WorkroomSystem", "WorkroomVCS", "WorkroomWire",
-      ]),
+      dependencies: ["DaemonConnection", "WorkroomDomain", "WorkroomSystem", "WorkroomWire"]),
     .testTarget(name: "HostDriversTests", dependencies: ["HostDrivers"]),
   ]
 )

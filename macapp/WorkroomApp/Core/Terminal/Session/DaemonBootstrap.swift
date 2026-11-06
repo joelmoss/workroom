@@ -2,6 +2,7 @@ import CryptoKit
 import DaemonConnection
 import Foundation
 import HostDrivers
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import os

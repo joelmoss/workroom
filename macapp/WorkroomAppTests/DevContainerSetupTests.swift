@@ -1,5 +1,6 @@
 import DaemonConnection
 import HostDrivers
+import WorkroomDomain
 import WorkroomVCS
 import XCTest
 

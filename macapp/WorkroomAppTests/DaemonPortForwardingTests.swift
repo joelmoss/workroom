@@ -1,5 +1,6 @@
 import DaemonConnection
 import Darwin
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import XCTest

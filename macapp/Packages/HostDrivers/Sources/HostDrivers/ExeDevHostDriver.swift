@@ -3,7 +3,6 @@ import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import os
 
 /// The second real provider driver (#259): exe.dev VMs, driven through exe.dev's ssh API

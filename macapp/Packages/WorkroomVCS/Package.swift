@@ -1,11 +1,11 @@
 // swift-tools-version: 6.0
 //
 // The VCS layer's values: history, changesets, refs and remote state, the write results, the
-// working-tree status record, host identity and routing errors, the file-service values, and the
-// local engines' interfaces (LocalVCSProviding, LocalVCSWriting). No engine, transport, routing or
-// process: the git engine, the daemon adapters, the router and the context-bound services stay in
-// the app. It depends on Foundation only and sits below the daemon connection; its tests run with plain
-// `swift test` (`make app-package-test`), with no app host.
+// working-tree status record, routing errors, the file-service values, and the local engines'
+// interfaces (LocalVCSProviding, LocalVCSWriting). No engine, transport, routing or process: the git
+// engine, the daemon adapters, the router and the context-bound services stay in the app. It
+// depends on WorkroomDomain only (for `HostID`) and sits below the daemon connection; its tests run
+// with plain `swift test` (`make app-package-test`), with no app host.
 import PackageDescription
 
 let package = Package(
@@ -14,8 +14,11 @@ let package = Package(
   products: [
     .library(name: "WorkroomVCS", targets: ["WorkroomVCS"])
   ],
+  dependencies: [
+    .package(path: "../WorkroomDomain")
+  ],
   targets: [
-    .target(name: "WorkroomVCS"),
+    .target(name: "WorkroomVCS", dependencies: ["WorkroomDomain"]),
     .testTarget(name: "WorkroomVCSTests", dependencies: ["WorkroomVCS"]),
   ]
 )

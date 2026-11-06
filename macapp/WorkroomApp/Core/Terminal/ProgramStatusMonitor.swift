@@ -1,6 +1,7 @@
 import DaemonConnection
 import Foundation
 import OSLog
+import WorkroomDomain
 import WorkroomVCS
 
 /// The tunable values of program status (#358), each with the reason for its number. The daemon's

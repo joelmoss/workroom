@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import GhosttyKit
 import SwiftUI
+import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
 import os
