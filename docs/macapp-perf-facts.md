@@ -24,25 +24,30 @@ observers, equal dictionary assignment 0, equal dictionary subscript write 1.
 What follows from it in this app:
 
 - `ProjectStore`'s project list (`projects`), `VCSStatusService`'s status collections
-  (`workroomStatuses`, `rootRefs` and the commit and write counters), `RunCommandController`'s
-  run-state collections and `WorkroomLifecycle`'s create and delete sets (`creatingWorkrooms`,
-  `creationRunForTarget`, `deletingWorkrooms`, `deletingProjects`) are computed get/set over
-  private stored properties, so even `projectStore.projects[i] = p` or
-  `vcsStatus.workroomStatuses[sid] = s` is a whole-value set and gets the dedupe. An identical
-  project list (`projects = fresh` on reload) notifies no one. Until step 2.1 of the architecture
-  cleanup, `AppStore`'s forwarding proxies gave them this; the status collections moved from
-  `ProjectStore` to `VCSStatusService` in step 2.4, and the create and delete sets to
-  `WorkroomLifecycle` in step 2.5, with that shape. Whatever owns these collections next keeps that
-  shape, or an unchanged status sweep or relabel redraws the sidebar again
+  (`workroomStatuses`, `rootRefs`, the commit and write counters and `creatingWorkrooms`),
+  `RunCommandController`'s run-state collections and `WorkroomLifecycle`'s create and delete sets
+  (`creationRunForTarget`, `deletingWorkrooms`, `deletingProjects`, and its `creatingWorkrooms`
+  over the service's) are computed get/set over private stored properties, so even
+  `projectStore.projects[i] = p` or `vcsStatus.workroomStatuses[sid] = s` is a whole-value set and
+  gets the dedupe. An identical project list (`projects = fresh` on reload) notifies no one. Until
+  step 2.1 of the architecture cleanup, `AppStore`'s forwarding proxies gave them this; the status
+  collections moved from `ProjectStore` to `VCSStatusService` in step 2.4, and the create and
+  delete sets to `WorkroomLifecycle` in step 2.5, with that shape; the creating set moved on to
+  `VCSStatusService`, whose probes read it, in the Phase 2 cleanups. Whatever owns these
+  collections next keeps that shape, or an unchanged status sweep or relabel redraws the sidebar
+  again
   (`testAnUnchangedLocalStatusMergeNotifiesNoOneButKeepsItsClocks`,
   `testARunStateWriteThatChangesNothingNotifiesNoOne`,
   `testAProjectListWriteThatChangesNothingNotifiesNoOne`,
   `testACreateOrDeleteSetWriteThatChangesNothingNotifiesNoOne`).
-- `ModalState` keeps every modal in one stored dictionary of `ActiveModal` values (step 2.2), and
-  writing into it in place always notifies. Its setters therefore skip a write that changes
-  nothing: raising the dialog already up, the error message already shown, or dismissing what isn't
-  up (`testAModalWriteThatChangesNothingNotifiesNoOne`). Any change to a modal still notifies every
-  reader of any modal, which the separate stored optionals before it did not.
+- `ModalState` keeps its modals as `ActiveModal` values (step 2.2): the command-palette picker in
+  a stored slot of its own, every other kind in one stored dictionary, and writing into either in
+  place always notifies. Its setters therefore skip a write that changes nothing: raising the
+  dialog already up, the error message already shown, or dismissing what isn't up
+  (`testAModalWriteThatChangesNothingNotifiesNoOne`). A change to any modal but the picker still
+  notifies every reader of the dictionary's modals, which the separate stored optionals before it
+  did not; the picker has its own slot because every pane leaf reads `activePicker`, so a sheet
+  going up would otherwise redraw them all.
 - A field that changes on every write defeats the dedupe for the whole value. `WorkroomStatus`'s
   clocks (`lastChecked` and the rest) compare by presence through `PresenceEquatable` for this
   reason (#503). A view that needs a clock's time to redraw would not refresh under that rule.

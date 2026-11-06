@@ -114,23 +114,6 @@ enum ActiveModal {
     case picker, auxSheet, error, workroomDeletion, workroomClose, startChoice, projectDeletion
     case workroomLabel, remoteConfirm, commit, remoteSetup, hostOptions
   }
-
-  var kind: Kind {
-    switch self {
-    case .picker: .picker
-    case .auxSheet: .auxSheet
-    case .error: .error
-    case .workroomDeletion: .workroomDeletion
-    case .workroomClose: .workroomClose
-    case .startChoice: .startChoice
-    case .projectDeletion: .projectDeletion
-    case .workroomLabel: .workroomLabel
-    case .remoteConfirm: .remoteConfirm
-    case .commit: .commit
-    case .remoteSetup: .remoteSetup
-    case .hostOptions: .hostOptions
-    }
-  }
 }
 
 /// One window's modal presentations (the `ActiveModal`s that are up), the error sheet's contents, and
@@ -140,10 +123,26 @@ enum ActiveModal {
 // `ObservableObject` only so views can take it as an `@EnvironmentObject`, as they take the store
 // and `DetachedPaneEnvironmentTests` checks detached windows inject; Observation tracks the reads.
 final class ModalState: ObservableObject {
-  /// What is up, at most one of each kind. The typed members below (`activePicker`, `pending*`,
-  /// `errorMessage`, `auxSheetPresented`) read and write it, and nothing else holds a modal, so
-  /// `hasModalPresentation` cannot leave one out.
-  private var active: [ActiveModal.Kind: ActiveModal] = [:]
+  /// What is up, at most one of each kind: the picker in a slot of its own, every other kind in
+  /// `others`. Every pane reads `activePicker`, and a write into one stored property notifies every
+  /// reader of it, so the picker's own slot keeps the panes from redrawing on every other modal's
+  /// change. The typed members below (`activePicker`, `pending*`, `errorMessage`,
+  /// `auxSheetPresented`) read and write them only through `self[kind]`, and nothing else holds a
+  /// modal, so `hasModalPresentation` cannot leave one out.
+  private var picker: ActiveModal?
+  private var others: [ActiveModal.Kind: ActiveModal] = [:]
+
+  /// The modal of `kind` that is up, in the slot that holds that kind.
+  private subscript(kind: ActiveModal.Kind) -> ActiveModal? {
+    get { kind == .picker ? picker : others[kind] }
+    set {
+      if kind == .picker {
+        picker = newValue
+      } else {
+        others[kind] = newValue
+      }
+    }
+  }
 
   /// Puts `value` up as a modal of `kind`, replacing only one of that kind, or takes that kind down.
   /// Taking down what isn't up writes nothing, so it notifies no one.
@@ -151,9 +150,9 @@ final class ModalState: ObservableObject {
     _ kind: ActiveModal.Kind, to value: Value?, as modal: (Value) -> ActiveModal
   ) {
     if let value {
-      active[kind] = modal(value)
-    } else if active[kind] != nil {
-      active[kind] = nil
+      self[kind] = modal(value)
+    } else if self[kind] != nil {
+      self[kind] = nil
     }
   }
 
@@ -162,7 +161,7 @@ final class ModalState: ObservableObject {
   /// sets the details after. Setting the message already shown changes nothing else, and notifies
   /// no reader of the message, as an equal write to a stored `String?` does not.
   var errorMessage: String? {
-    get { if case .error(let message)? = active[.error] { message } else { nil } }
+    get { if case .error(let message)? = self[.error] { message } else { nil } }
     set {
       errorDetails = nil
       errorLog = nil
@@ -215,7 +214,7 @@ final class ModalState: ObservableObject {
   /// and Open Workroom presenters are mutually exclusive — opening one replaces the other (issue #94).
   /// Raising the one already up notifies no one, as an equal write to a stored optional does not.
   var activePicker: ActivePicker? {
-    get { if case .picker(let picker)? = active[.picker] { picker } else { nil } }
+    get { if case .picker(let picker)? = self[.picker] { picker } else { nil } }
     set {
       guard newValue != activePicker else { return }
       update(.picker, to: newValue, as: ActiveModal.picker)
@@ -228,32 +227,32 @@ final class ModalState: ObservableObject {
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
   var pendingDeletion: PendingWorkroomDeletion? {
     get {
-      if case .workroomDeletion(let pending)? = active[.workroomDeletion] { pending } else { nil }
+      if case .workroomDeletion(let pending)? = self[.workroomDeletion] { pending } else { nil }
     }
     set { update(.workroomDeletion, to: newValue, as: ActiveModal.workroomDeletion) }
   }
   /// A target awaiting close confirmation (tab bar "Close"); setting it raises the close prompt.
   var pendingWorkroomClose: PendingWorkroomClose? {
-    get { if case .workroomClose(let pending)? = active[.workroomClose] { pending } else { nil } }
+    get { if case .workroomClose(let pending)? = self[.workroomClose] { pending } else { nil } }
     set { update(.workroomClose, to: newValue, as: ActiveModal.workroomClose) }
   }
   /// A create asking where it starts; setting it raises the choice.
   var pendingStartChoice: PendingStartChoice? {
-    get { if case .startChoice(let pending)? = active[.startChoice] { pending } else { nil } }
+    get { if case .startChoice(let pending)? = self[.startChoice] { pending } else { nil } }
     set { update(.startChoice, to: newValue, as: ActiveModal.startChoice) }
   }
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
   /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
   var pendingProjectDeletion: PendingProjectDeletion? {
     get {
-      if case .projectDeletion(let pending)? = active[.projectDeletion] { pending } else { nil }
+      if case .projectDeletion(let pending)? = self[.projectDeletion] { pending } else { nil }
     }
     set { update(.projectDeletion, to: newValue, as: ActiveModal.projectDeletion) }
   }
   /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
   /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
   var pendingWorkroomLabel: PendingWorkroomLabel? {
-    get { if case .workroomLabel(let pending)? = active[.workroomLabel] { pending } else { nil } }
+    get { if case .workroomLabel(let pending)? = self[.workroomLabel] { pending } else { nil } }
     set { update(.workroomLabel, to: newValue, as: ActiveModal.workroomLabel) }
   }
   /// A request for a project's settings, which `RootView` hands to Settings ▸ Projects and clears
@@ -270,7 +269,7 @@ final class ModalState: ObservableObject {
   /// A modal so the Room menu's Fetch/Push/Pull shortcuts are inert while the confirmation is up:
   /// otherwise ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
   var pendingRemoteConfirm: PendingVCSAction? {
-    get { if case .remoteConfirm(let pending)? = active[.remoteConfirm] { pending } else { nil } }
+    get { if case .remoteConfirm(let pending)? = self[.remoteConfirm] { pending } else { nil } }
     set { update(.remoteConfirm, to: newValue, as: ActiveModal.remoteConfirm) }
   }
 
@@ -285,19 +284,19 @@ final class ModalState: ObservableObject {
   /// open commit dialog, and the terminal-scoped shortcuts would still reach a surface the user can't
   /// see.
   var pendingCommit: PendingCommit? {
-    get { if case .commit(let pending)? = active[.commit] { pending } else { nil } }
+    get { if case .commit(let pending)? = self[.commit] { pending } else { nil } }
     set { update(.commit, to: newValue, as: ActiveModal.commit) }
   }
 
   /// A remote create waiting on the user's setup at its provider (drives `RemoteSetupSheet`).
   var pendingRemoteSetup: PendingRemoteSetup? {
-    get { if case .remoteSetup(let pending)? = active[.remoteSetup] { pending } else { nil } }
+    get { if case .remoteSetup(let pending)? = self[.remoteSetup] { pending } else { nil } }
     set { update(.remoteSetup, to: newValue, as: ActiveModal.remoteSetup) }
   }
 
   /// A boxd or exe.dev create waiting on its host options (drives `HostOptionsPanel`, #575).
   var pendingHostOptions: PendingHostOptions? {
-    get { if case .hostOptions(let pending)? = active[.hostOptions] { pending } else { nil } }
+    get { if case .hostOptions(let pending)? = self[.hostOptions] { pending } else { nil } }
     set { update(.hostOptions, to: newValue, as: ActiveModal.hostOptions) }
   }
 
@@ -310,10 +309,10 @@ final class ModalState: ObservableObject {
   /// a second trigger silently overwriting an open sheet's in-progress input, and none of that
   /// complexity buys anything here — all this needs is "is something up".
   var auxSheetPresented: Bool {
-    get { active[.auxSheet] != nil }
+    get { self[.auxSheet] != nil }
     set {
       guard newValue != auxSheetPresented else { return }
-      active[.auxSheet] = newValue ? .auxSheet : nil
+      self[.auxSheet] = newValue ? .auxSheet : nil
     }
   }
 
@@ -321,10 +320,11 @@ final class ModalState: ObservableObject {
   /// alert, or one of the sheets. The single source of truth for making shortcuts inert behind a
   /// dialog — read by the key monitor's routing (via `activePicker`), by RootView's menu-enablement
   /// values, and by `WorkroomTerminalsView`'s terminal-scoped ones, so all three can't drift. Every
-  /// modal is an `ActiveModal`, so a new one is counted without being listed here.
+  /// modal is an `ActiveModal` in one of the two slots `self[kind]` writes, so a new one is counted
+  /// without being listed here.
   ///
   /// Needed because a sheet does NOT make menu commands inert on its own: verified on the real build,
   /// with the Add Project sheet attached every File-menu item still read `enabled=true` and ⌘T
   /// actually created a second terminal tab behind it.
-  var hasModalPresentation: Bool { !active.isEmpty }
+  var hasModalPresentation: Bool { picker != nil || !others.isEmpty }
 }

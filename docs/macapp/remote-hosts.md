@@ -107,7 +107,8 @@ presence, a container's start, SSH's shared connection) through the capability p
 `HostDrivers`, never by casting to a concrete driver (ADR 0067). The registry also records which
 driver holds each host config names, and runs the launch's sweep (`adopt`). Connecting to a host,
 its backoff, waking and starting it, and its credential relay are `HostReachability`'s; the app has
-one of each, on `RemoteHosts.shared`, which a reload's `adopt` tells both. A background read
+one of each, on `RemoteHosts.shared`. A reload's `HostReachability.adopt` records the hosts in the
+registry and marks which are relayed. A background read
 of a boxd host asks boxd first and leaves an asleep box asleep, and nothing lets go of an idle
 connection: a box an open app holds awake is the user's to free, by deleting its workroom (#380).
 Signed out, every boxd command that needs an account opens boxd's browser sign-in and waits

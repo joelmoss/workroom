@@ -7,8 +7,9 @@ import WorkroomVCS
 
 /// The app's remote hosts (#253), one set for the whole app (`shared`): `registry`, which makes
 /// every driver and knows which one holds each host config records, and `reachability`, which
-/// connects to them. The two are made together, so that a reload's `adopt` tells both what config
-/// records. Also the folders and CLIs every driver is made with.
+/// connects to them. The two are made together, over the one registry, so that a reload's
+/// `reachability.adopt` tells both what config records. Also the folders and CLIs every driver is
+/// made with.
 final class RemoteHosts: Sendable {
   static let shared = RemoteHosts()
 
@@ -127,12 +128,6 @@ final class RemoteHosts: Sendable {
       registry: registry, connectHost: connectHost, isConnected: isConnected,
       startHost: startHost, now: now, relayHost: relayHost, connectDaemon: connectDaemon,
       presence: presence)
-  }
-
-  /// Takes on every host `projects` record (`HostDriverRegistry.adopt`), and has `reachability`
-  /// relay each relayed workroom's git credentials (#309).
-  func adopt(_ projects: [Project], sweep: Bool = true) {
-    registry.adopt(projects, sweep: sweep, relayed: reachability.recordRelayed)
   }
 
   /// Where every driver writes its hosts' files.

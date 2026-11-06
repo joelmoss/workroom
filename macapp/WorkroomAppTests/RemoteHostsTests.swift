@@ -27,7 +27,7 @@ final class RemoteHostsTests: XCTestCase {
       sweepDriver: { _, _, _, _ in [] })
     let id = UUID()
     let host = HostID.remote(id)
-    remote.adopt([
+    remote.reachability.adopt([
       Project(
         path: "/proj", vcs: "git",
         workrooms: [
@@ -622,7 +622,7 @@ final class RemoteHostsTests: XCTestCase {
           host: descriptor(pinned, "orbstack"))
       ], host: descriptor(base, nil))
 
-    remote.adopt([project])
+    remote.reachability.adopt([project])
 
     XCTAssertNil(
       try XCTUnwrap(remote.registry.existingDriver(holding: base) as? ContainerHostDriver)
@@ -792,7 +792,7 @@ final class RemoteHostsTests: XCTestCase {
             org: "acme", account: "usr_1"))
       ])
 
-    remote.adopt([project])
+    remote.reachability.adopt([project])
 
     let driver = try XCTUnwrap(remote.registry.existingDriver(holding: id) as? BoxdHostDriver)
     XCTAssertEqual(driver.configuration.org, "acme")
@@ -837,7 +837,7 @@ final class RemoteHostsTests: XCTestCase {
   func testAnExeDevWorkroomIsReachedAfterARelaunchWithoutDocker() throws {
     let remote = RemoteHosts()
     let id = UUID()
-    remote.adopt([
+    remote.reachability.adopt([
       Project(
         path: "/proj", vcs: "git",
         workrooms: [
@@ -1330,7 +1330,7 @@ final class RemoteHostsTests: XCTestCase {
         }, pendingIn: directory)
     }
 
-    make().adopt([])
+    make().reachability.adopt([])
     try await Task.sleep(for: .milliseconds(50))
     XCTAssertTrue(swept.calls.isEmpty, "a launch with nothing pending swept")
 
@@ -1338,7 +1338,7 @@ final class RemoteHostsTests: XCTestCase {
       try JSONEncoder().encode(["workroom-x"]).write(to: directory.appendingPathComponent(name))
     }
     try Data().write(to: directory.appendingPathComponent("unrelated"))
-    make().adopt([])
+    make().reachability.adopt([])
     for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertEqual(
       Set(swept.calls.compactMap(\.context)), ["docker orbstack pending", "apple nil pending"])
@@ -1346,7 +1346,7 @@ final class RemoteHostsTests: XCTestCase {
     let boxd = HostDescriptor(
       driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
       account: "usr_1")
-    make().adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: boxd)])
+    make().reachability.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: boxd)])
     for _ in 0..<500 where swept.calls.count < 4 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertTrue(
       swept.calls.dropFirst(2).allSatisfy { $0.context?.hasSuffix("pending") == true },
@@ -1357,14 +1357,14 @@ final class RemoteHostsTests: XCTestCase {
       driver: HostKind.container(.docker).driver, provisioner: RemoteWorkrooms.provisioner, id: id,
       container: Self.record(context: "orbstack"))
     let remote = make()
-    remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
+    remote.reachability.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
     for _ in 0..<500 where swept.calls.count < 6 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertTrue(
       swept.calls.dropFirst(4).allSatisfy { $0.context?.hasSuffix("pending") == false },
       "a launch that records a host swept only what was pending")
     try JSONEncoder().encode([ContainerHostDriver.containerName(id), "workroom-x"]).write(
       to: directory.appendingPathComponent("pending-containers-docker@orbstack.json"))
-    remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
+    remote.reachability.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
     let pinned = try XCTUnwrap(remote.registry.existingDriver(holding: id) as? ContainerHostDriver)
     XCTAssertEqual(pinned.pendingContainers, ["workroom-x"], "a recorded host stayed pending")
   }
@@ -1459,7 +1459,7 @@ final class RemoteHostsTests: XCTestCase {
       driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: recorded,
       account: "usr_1")
 
-    remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
+    remote.reachability.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
     for _ in 0..<500 where remote.registry.sweepsRunning > 0 {
       try await Task.sleep(for: .milliseconds(2))
     }
@@ -1498,7 +1498,7 @@ final class RemoteHostsTests: XCTestCase {
       driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
       account: "usr_1")
 
-    remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
+    remote.reachability.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
     for _ in 0..<500 where remote.registry.sweepsRunning > 0 {
       try await Task.sleep(for: .milliseconds(2))
     }
@@ -1523,7 +1523,7 @@ final class RemoteHostsTests: XCTestCase {
         return swept.calls.count == 1 ? [ContainerHostDriver.listingFailed + "daemon down"] : []
       }, pendingIn: directory)
     func reload(expecting calls: Int) async throws {
-      remote.adopt([])
+      remote.reachability.adopt([])
       // Until the sweep this reload started, if any, has ended (`finishSweep`).
       for _ in 0..<500 where swept.calls.count < calls || remote.registry.sweepsRunning > 0 {
         try await Task.sleep(for: .milliseconds(2))
@@ -1766,7 +1766,7 @@ final class RemoteHostsTests: XCTestCase {
           name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
           host: host(apple, .apple))
       ], host: host(docker, .docker))
-    remote.adopt([project])
+    remote.reachability.adopt([project])
     XCTAssertEqual(
       (remote.registry.existingDriver(holding: docker) as? ContainerHostDriver)?.provisioning?
         .dialect,

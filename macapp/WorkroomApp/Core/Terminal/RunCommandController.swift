@@ -362,6 +362,17 @@ final class RunCommandController: ObservableObject {
     restoredRuns.remove(targetID)
   }
 
+  /// Drop the target's whole run once its run tab is gone (closed or reaped): its state, its outcome
+  /// (the red run icon, issue #79), what the window knew of it, and its toast (issue #67). One
+  /// assignment clears every phase, so no stop/restart bookkeeping can be left behind to drive a
+  /// later unexpected respawn or first-press hard kill.
+  func clearRun(for targetID: TerminalTarget.ID) {
+    runStates[targetID] = nil
+    runOutcomes[targetID] = nil
+    forgetRun(for: targetID)
+    resetRunToast(for: targetID)
+  }
+
   // MARK: Run command — supervisor control (issues #7, #522)
   //
   // The run command runs under a long-lived SUPERVISOR (`workroomd run-supervisor`) as the pty child
@@ -576,5 +587,16 @@ final class RunCommandController: ObservableObject {
   /// Called from `createWorkroom`; the run fires from `ensureInitialTerminal` when the pane mounts.
   func armAutoRun(forWorkroom targetID: TerminalTarget.ID) {
     runStates[targetID] = .armed
+  }
+
+  /// Whether the workroom's auto-run is armed and has not fired yet.
+  func isAutoRunArmed(_ targetID: TerminalTarget.ID) -> Bool {
+    if case .armed = runStates[targetID] { true } else { false }
+  }
+
+  /// Disarm the workroom's auto-run before it fires, so Open Anyway on a create that failed doesn't
+  /// start the command against a half-set-up tree (issue #7). A run already started is left be.
+  func disarmAutoRun(forWorkroom targetID: TerminalTarget.ID) {
+    if isAutoRunArmed(targetID) { runStates[targetID] = nil }
   }
 }

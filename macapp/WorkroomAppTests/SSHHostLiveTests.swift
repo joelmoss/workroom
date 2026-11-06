@@ -121,7 +121,7 @@ final class SSHHostLiveTests: XCTestCase {
       let entries = records.descriptors.map { name, descriptor in
         Workroom(name: name, path: descriptor.path!, vcsName: "git", warnings: [], host: descriptor)
       }
-      hosts.adopt(
+      hosts.reachability.adopt(
         [
           Project(
             path: "/ssh-live/project-one", vcs: "git",

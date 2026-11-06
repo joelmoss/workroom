@@ -60,26 +60,20 @@ final class RunCommands: ObservableObject {
 
   // MARK: Windows
 
-  private struct Window {
-    weak var runs: RunCommandController?
-  }
-
   /// The registered windows' run controllers, in the order their windows registered.
-  @ObservationIgnored private var registered: [Window] = []
+  @ObservationIgnored private var registered = WeakList<RunCommandController>()
 
   /// Count `runs`' window in the checks that span every window. Idempotent, as window registration is.
   func register(_ runs: RunCommandController) {
-    registered.removeAll { $0.runs == nil }
-    guard !registered.contains(where: { $0.runs === runs }) else { return }
-    registered.append(Window(runs: runs))
+    registered.insert(runs)
   }
 
   /// Its window has gone.
   func unregister(_ runs: RunCommandController) {
-    registered.removeAll { $0.runs == nil || $0.runs === runs }
+    registered.remove(runs)
   }
 
-  private var windows: [RunCommandController] { registered.compactMap(\.runs) }
+  private var windows: [RunCommandController] { registered.elements }
 
   /// The other window already running `target`'s run command, if any. Derived from each window's live
   /// `runStates` (no separate map to drift): a second window's Run focuses this owner instead of
@@ -162,10 +156,8 @@ final class RunCommands: ObservableObject {
   /// The run sessions among `sessions` that are `workroom`'s.
   static func runSessions(in sessions: [SessionDescriptor], workroom: String) -> [UUID] {
     sessions.compactMap { descriptor in
-      let tags = Dictionary(
-        descriptor.metadata.map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
-      guard tags[SessionMetadataKey.workroom] == workroom,
-        tags[RunSessionKey.kind] == RunSessionKey.run
+      guard descriptor.value(forMetadataKey: SessionMetadataKey.workroom) == workroom,
+        descriptor.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run
       else { return nil }
       return descriptor.identifier.uuid
     }

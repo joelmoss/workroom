@@ -683,7 +683,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
   /// The containers this driver began running that no config record names yet (#284), one file per
   /// runtime and Docker context. A name goes in before its `run`, and out once config records its
-  /// host (`RemoteHosts.adopt`) or it is removed. So a crash before a new workroom's host was
+  /// host (`HostReachability.adopt`) or it is removed. So a crash before a new workroom's host was
   /// recorded still leaves its container named here, and a launch whose config records nothing
   /// sweeps only these (`sweep(onlyPending:)`), never a live workroom that config fails to show.
   /// ponytail: a container removed by hand stays listed, costing its runtime one listing a launch;
@@ -750,7 +750,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
   }
 
   /// How a sweep's failure starts when it could not list the containers, so swept nothing: the
-  /// runtime was down, say. `RemoteHosts.adopt` sweeps that runtime again on a later reload.
+  /// runtime was down, say. `HostReachability.adopt` sweeps it again on a later reload.
   public static let listingFailed = "listing containers: "
 
   public static func containerName(_ id: UUID) -> String {

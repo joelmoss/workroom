@@ -1551,7 +1551,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     // With nothing recorded the probe merges: `makeRealProject` is a plain directory, so a probe that
     // actually runs resolves `.notRepository` — and carries the resolver's own read stamp.
-    store.refreshLocalStatus(for: sid)
+    store.vcsStatus.refreshLocalStatus(for: sid, skippingCreatesAndCommits: true)
     await waitUntil(
       { store.vcsStatus.workroomStatuses[sid]?.failure == .notRepository },
       "the probe must merge normally")
@@ -1565,7 +1565,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     fresher.localReadAt = Date().addingTimeInterval(60)
     store.vcsStatus.workroomStatuses[sid] = fresher
 
-    store.refreshLocalStatus(for: sid)
+    store.vcsStatus.refreshLocalStatus(for: sid, skippingCreatesAndCommits: true)
     try? await Task.sleep(nanoseconds: 400_000_000)  // > the probe's own resolve time
 
     XCTAssertEqual(

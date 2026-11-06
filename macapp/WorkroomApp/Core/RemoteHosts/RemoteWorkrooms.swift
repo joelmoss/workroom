@@ -264,7 +264,7 @@ enum RemoteWorkrooms {
       let instance = try await RemoteProvisioning.place(
         SSHFolderPlacement(driver: driver, path: path, workroom: workroom), cloneURL: cloneURL,
         path: path, branch: branch(for: name), startBranch: startBranch, startCommit: startCommit,
-        header: nil, in: environment,
+        header: nil, in: environment, checkpoint: { _ in },
         finish: { _ in
           var serving = reserved
           serving.lifecycle = .serving
@@ -287,7 +287,7 @@ enum RemoteWorkrooms {
   /// Creates a remote workroom for a project (#253): a name in config, then the workroom's own
   /// host with its own clone, then the host's descriptor. The name is taken before the host is
   /// made, so the branch is named for it and a crash part-way leaves an entry the user can see and
-  /// delete; anything the crash left on a host is the sweep's (`RemoteHosts.adopt`, and
+  /// delete; anything the crash left on a host is the sweep's (`HostReachability.adopt`, and
   /// `PendingMachines` for a remote provider's machine, #373).
   ///
   /// When the create fails and undid itself, the entry is dropped. When undoing it failed too, the

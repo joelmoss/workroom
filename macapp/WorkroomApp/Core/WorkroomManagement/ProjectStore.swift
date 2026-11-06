@@ -32,6 +32,18 @@ final class ProjectStore: ObservableObject {
     set { storedProjects = newValue }
   }
   private var storedProjects: [Project] = []
+
+  /// The listed project at `path` (its `id`), if any.
+  func project(at path: String) -> Project? {
+    projects.first { $0.path == path }
+  }
+
+  /// `id`'s sidebar row while it is still listed, else nil (always nil for a create's pane and the
+  /// Quick Terminal, which have no row).
+  func sidebarID(for id: TargetID) -> SidebarID? {
+    AppStore.validatedSelection(id.sidebarID, in: projects)
+  }
+
   /// The app-wide base branch for projects that name none; nil means origin's default branch.
   var globalBaseBranch: String?
 

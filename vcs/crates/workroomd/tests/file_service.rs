@@ -343,8 +343,7 @@ fn a_listing_over_the_capture_cap_is_a_typed_failure_not_a_short_list() {
 fn a_chunked_request_marker_and_stream_zero_requests_are_handled_safely() {
     let mut client = Client::connect();
     // A VCS-style chunked request starts with 0x02, not `{`. It gets a typed answer, not silence.
-    let stream = client.next_stream;
-    client.next_stream += 1;
+    let stream = client.take_stream();
     client.send_raw(stream, vec![0x02, 0x01, b'{', b'}']);
     let reply = client.reply(stream);
     assert!(reply["error"]["Unsupported"].is_string());
@@ -371,8 +370,7 @@ fn malformed_and_foreign_version_requests_get_typed_errors_through_dispatch() {
         serde_json::to_vec(&json!({"version":1,"method":"list","root":root})).unwrap(),
         br#"{"version":1,"method":"list","backend":"git","root":"relative/path"}"#.to_vec(),
     ] {
-        let stream = client.next_stream;
-        client.next_stream += 1;
+        let stream = client.take_stream();
         client.send_raw(stream, payload.clone());
         let reply = client.reply(stream);
         assert!(

@@ -1623,7 +1623,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Changed by #284 (2026-10-08):** a sweep also runs when config records nothing, but then
     takes only containers a create left pending. Before running a container, a driver writes its
     name to `hosts/pending-containers-<runtime>[@<context>].json`. The name comes off once config
-    records the host (`RemoteHosts.adopt`), or once a rollback, a delete or a sweep removes it. A
+    records the host (`HostReachability.adopt`), or once a rollback, a delete or a sweep removes it. A
     launch sweeps every runtime and context with a name pending. With nothing recorded it removes
     only pending names, still under the two-launch rule and the cap, and no images. So a crash
     before a project's first base was recorded no longer leaves its container for good. A lost

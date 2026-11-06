@@ -99,7 +99,7 @@ extension AppStore {
   /// the render path (`TerminalStatusBar.body` → `branchLabel` → `validatedSelection`), which is
   /// what hung the app in WORKROOM-3D. A lookup never needs the `isMissing`/`title` a target carries.
   func project(forTargetID id: TerminalTarget.ID) -> Project? {
-    guard let project = projectStore.projects.first(where: { $0.path == id.projectPath }) else {
+    guard let path = id.projectPath, let project = projectStore.project(at: path) else {
       return nil
     }
     if case .workroom(_, let name) = id, !project.workrooms.contains(where: { $0.id == name }) {
@@ -713,8 +713,7 @@ extension AppStore {
     // Consume the armed intent up front so a later re-mount can't re-fire it, then let startRunCommand
     // (re-)derive the state: it becomes `.running` as a backgrounded tab #1, or a no-op if the config
     // was cleared between arming and mount.
-    let isArmed: Bool
-    if case .armed = runCommand.runStates[target.id] { isArmed = true } else { isArmed = false }
+    let isArmed = runCommand.isAutoRunArmed(target.id)
     if isArmed {
       runCommand.runStates[target.id] = nil
       // Background the auto-run (issue #67): the shell below is the focused tab the user lands on.

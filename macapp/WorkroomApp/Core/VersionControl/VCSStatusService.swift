@@ -38,10 +38,6 @@ final class VCSStatusService: ObservableObject {
 
   /// The projects whose status this is.
   @ObservationIgnored let projectStore: ProjectStore
-  /// The creates and deletes of those projects' workrooms, whose creates in flight the probes stand
-  /// clear of (`isCreating`). Set by the lifecycle made over this status; a window's store made with
-  /// this status takes that lifecycle too.
-  @ObservationIgnored weak var lifecycle: WorkroomLifecycle?
   /// The services' seeded statuses (the UI-test fixture's), read once: the process chooses its
   /// services before any window exists.
   @ObservationIgnored private let seededStatuses: (@MainActor () -> AppServices.SeededStatuses)?
@@ -57,7 +53,7 @@ final class VCSStatusService: ObservableObject {
   // MARK: Status
 
   /// Per-project resolved root branch labels, hydrated asynchronously after each load (see
-  /// `AppStore.resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
+  /// `WorkroomLifecycle.resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
   ///
   /// This and the other status collections are computed over private stored ones so that a write
   /// which changes nothing notifies no one: `@Observable` skips an equal whole-value assignment, but
@@ -103,6 +99,15 @@ final class VCSStatusService: ObservableObject {
   /// A `var` for the same reason `ghAuthCache` is: tests swap in an instance with millisecond TTLs;
   /// production never reassigns it.
   var vcsToolVersionCache = VCSToolVersionCache()
+
+  /// Target ids of workrooms whose create process is still running, which every probe stands clear
+  /// of (`isCreating`). Held here, where every lane reads it; `WorkroomLifecycle.creatingWorkrooms`,
+  /// which writes it, is this set.
+  var creatingWorkrooms: Set<TerminalTarget.ID> {
+    get { storedCreatingWorkrooms }
+    set { storedCreatingWorkrooms = newValue }
+  }
+  private var storedCreatingWorkrooms: Set<TerminalTarget.ID> = []
 
   /// Sidebar rows with a commit in flight, for the per-row button state.
   ///
@@ -154,20 +159,12 @@ final class VCSStatusService: ObservableObject {
 
   // MARK: Windows
 
-  private struct Window {
-    weak var owner: AnyObject?
-    let didMerge: @MainActor (SidebarID, WorkroomStatus) -> Void
-  }
-
   /// The windows that cache what a local status says, in the order they registered.
-  @ObservationIgnored private var windows: [Window] = []
+  @ObservationIgnored private var windows = WeakList<any VCSStatusWindow>()
 
-  /// Call `didMerge` with every local status merged while `owner` lives. Idempotent per owner.
-  func register(
-    _ owner: AnyObject, didMerge: @escaping @MainActor (SidebarID, WorkroomStatus) -> Void
-  ) {
-    windows.removeAll { $0.owner == nil || $0.owner === owner }
-    windows.append(Window(owner: owner, didMerge: didMerge))
+  /// Hand `window` every local status merged while it lives. Idempotent.
+  func register(_ window: any VCSStatusWindow) {
+    windows.insert(window)
   }
 
   // MARK: Work items
@@ -233,10 +230,10 @@ final class VCSStatusService: ObservableObject {
   func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
     switch sid {
     case .root(let path):
-      guard let p = projectStore.projects.first(where: { $0.id == path }) else { return nil }
+      guard let p = projectStore.project(at: path) else { return nil }
       return StatusWorkItem(sid: sid, path: p.path, projectRoot: p.path)
     case .workroom(let path, let name):
-      guard let p = projectStore.projects.first(where: { $0.id == path }),
+      guard let p = projectStore.project(at: path),
         let w = p.workrooms.first(where: { $0.id == name })
       else { return nil }
       // A remote workroom's item is on its host. One this app can't reach has none, which also
@@ -397,12 +394,7 @@ final class VCSStatusService: ObservableObject {
     for item in items where item.permitsGitHubAccess {
       if Task.isCancelled { return }
       do {
-        let location: RepositoryLocation
-        if let supplied = item.location {
-          location = supplied
-        } else {
-          location = try await RepositoryLocation.local(item.path)
-        }
+        let location = try await item.resolvedLocation()
         let service = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
         let key = service.context.sharedLocation ?? service.context.location
         if repositories[key] == nil { repositories[key] = await service.repository() }
@@ -464,7 +456,7 @@ final class VCSStatusService: ObservableObject {
   /// The worst-status child of a project (root + workrooms), for the collapsed project row's
   /// aggregate badge. nil when nothing needs attention (all clean / unresolved).
   func aggregateStatus(forProject projectPath: String) -> WorkroomStatus? {
-    guard let p = projectStore.projects.first(where: { $0.id == projectPath }) else { return nil }
+    guard let p = projectStore.project(at: projectPath) else { return nil }
     var sids: [SidebarID] = [.root(project: p.id)]
     sids += p.workrooms.map { SidebarID.workroom(project: p.id, name: $0.name) }
     let worst = sids.compactMap { workroomStatuses[$0] }
@@ -509,7 +501,7 @@ final class VCSStatusService: ObservableObject {
     workroomStatuses[sid] = s
     // This merge is the freshest evidence anyone has, so each window settles what it caches from a
     // status: the branch name its toolbar published, and the change kind an open diff tab captured.
-    for window in windows where window.owner != nil { window.didMerge(sid, s) }
+    for window in windows.elements { window.localStatusDidMerge(s, into: sid) }
   }
 
   func applyCIStatus(_ res: CIResolution, to sid: SidebarID, checkedAt: Date) {
@@ -586,13 +578,13 @@ final class VCSStatusService: ObservableObject {
   /// Whether `sid` is a workroom whose create/setup is still in flight (issue: create-time FSEvents
   /// storm). While a setup script writes the worktree (e.g. `npm install`), arming the recursive
   /// FSEvents watcher on it or probing its VCS status is pointless churn — the tree isn't settled and
-  /// FSEvents floods ~70 callbacks/sec under that load. The lifecycle's `creatingWorkrooms` (set as
-  /// setup begins, cleared when it finishes) is the exact signal; this is the single conversion
-  /// point from the `SidebarID`-keyed status world to the `TerminalTarget.ID`-keyed
-  /// `creatingWorkrooms` set. Roots and projects are never "creating".
+  /// FSEvents floods ~70 callbacks/sec under that load. `creatingWorkrooms` (set as setup begins,
+  /// cleared when it finishes) is the exact signal; this is the single conversion point from the
+  /// `SidebarID`-keyed status world to the `TerminalTarget.ID`-keyed `creatingWorkrooms` set. Roots
+  /// and projects are never "creating".
   func isCreating(_ sid: SidebarID) -> Bool {
     guard case .workroom(let project, let name) = sid else { return false }
-    return lifecycle?.creatingWorkrooms.contains(.workroom(project: project, name: name)) ?? false
+    return creatingWorkrooms.contains(.workroom(project: project, name: name))
   }
 
   /// Whether a commit is running for this row. Suppresses the same three lanes `isCreating` does, for
@@ -617,13 +609,6 @@ final class VCSStatusService: ObservableObject {
     return committingProjectRoots[repository, default: 0] > 0
   }
 
-  func isCommittingProject(_ projectRoot: String) -> Bool {
-    guard let location = RepositoryRouter.shared.localLocation(for: projectRoot) else {
-      return false
-    }
-    return committingProjectRoots[location, default: 0] > 0
-  }
-
   /// Whether ANY write (commit, fetch, push, or pull) is in flight against this project root, in
   /// any window. Checked by the write actions themselves BEFORE they start — the
   /// umbrella `isCommittingProject` above never was, and neither was any fetch/push/pull call
@@ -631,20 +616,31 @@ final class VCSStatusService: ObservableObject {
   /// concurrently once `RepositoryWriteGate`'s self-heal ceiling passed. A write that finds this true
   /// refuses outright (surfaced as `.locked(nil)` — "The repository was busy. Try again.") rather
   /// than queuing into the gate and racing the one already running.
-  func isWritingProject(_ projectRoot: String) -> Bool {
-    guard let location = RepositoryRouter.shared.localLocation(for: projectRoot) else {
-      return false
-    }
-    return isWritingProject(location)
-  }
-
   func isWritingProject(_ repository: RepositoryLocation) -> Bool {
     writingProjectRoots[repository, default: 0] > 0
   }
 
+  /// Mark a commit of `sid` starting against `root`: the row's button state, the read lanes'
+  /// suppression (`isCommittingProject`) and the write umbrella (`beginWrite`). Pair with
+  /// `endCommit(sid:root:)` unconditionally, as `AppStore.performCommit` does.
+  func beginCommit(sid: SidebarID, root: RepositoryLocation) {
+    committingTargets.insert(sid)
+    committingProjectRoots[root, default: 0] += 1
+    beginWrite(projectRoot: root)
+  }
+
+  /// Mark that commit finishing. Decremented, never cleared: a sibling workroom of the same project
+  /// can be committing too, and dropping the key would re-open every read lane against a write still
+  /// in progress. Needs no window, as `endWrite` does not.
+  func endCommit(sid: SidebarID, root: RepositoryLocation) {
+    Self.decrement(&committingProjectRoots, at: root)
+    endWrite(projectRoot: root)
+    committingTargets.remove(sid)
+  }
+
   /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
-  /// `defer` or an equivalent unconditional cleanup, mirroring how `committingProjectRoots` is
-  /// incremented/decremented around `AppStore.performCommit`'s own write.
+  /// `defer` or an equivalent unconditional cleanup, mirroring how `beginCommit` and `endCommit`
+  /// bracket `AppStore.performCommit`'s own write.
   func beginWrite(projectRoot: RepositoryLocation) {
     writingProjectRoots[projectRoot, default: 0] += 1
   }
@@ -659,13 +655,54 @@ final class VCSStatusService: ObservableObject {
   /// both hold this service strongly and call it after the `AppStore`/`RemoteStateModel` that started
   /// the write may be gone.
   func endWrite(projectRoot: RepositoryLocation) {
-    let remaining = (writingProjectRoots[projectRoot] ?? 1) - 1
+    Self.decrement(&writingProjectRoots, at: projectRoot)
+  }
+
+  /// One fewer in flight at `root`, its key gone at none.
+  private static func decrement(
+    _ counts: inout [RepositoryLocation: Int], at root: RepositoryLocation
+  ) {
+    let remaining = (counts[root] ?? 1) - 1
     if remaining > 0 {
-      writingProjectRoots[projectRoot] = remaining
+      counts[root] = remaining
     } else {
-      writingProjectRoots.removeValue(forKey: projectRoot)
+      counts.removeValue(forKey: root)
     }
   }
+
+  // MARK: One row's probe
+
+  /// Probe ONE row's local status now, named explicitly, whatever any window has selected, and merge
+  /// it. Undebounced, and tracked by no task handle, so a landing can't cancel a pending selection
+  /// probe; like every lane it hands its read time to `mergeLocalStatus`, where the cross-lane
+  /// ordering lives.
+  ///
+  /// Two lanes need it. The post-create refresh (issue #167): when two creates overlap, the second
+  /// owns the selection by the time the first finishes, so the selection probe would skip the
+  /// finished workroom and its dirty dot would keep its pre-setup value. It passes
+  /// `skippingCreatesAndCommits`, the two suppressions the selection path applies, as another create
+  /// or a commit may still be writing. And the post-commit refresh: the selection probe derives its
+  /// row from the live selection, so switching workrooms mid-commit would refresh the wrong one;
+  /// every post-commit refresh names the sid it captured when the sheet opened.
+  func refreshLocalStatus(for sid: SidebarID, skippingCreatesAndCommits: Bool) {
+    guard probesRepositories, let item = selectedStatusWorkItem(for: sid) else { return }
+    if skippingCreatesAndCommits, isCreating(sid) || isCommittingProject(item.sharedLocation) {
+      return
+    }
+    let working = statusResolver.working
+    Task { [weak self] in
+      let fresh = await working.resolve(item: item)
+      guard let self, self.selectedStatusWorkItem(for: sid) == item else { return }
+      self.mergeLocalStatus(fresh, into: sid)
+    }
+  }
+}
+
+/// A window that caches what a local status says (the toolbar's branch name, an open diff tab's
+/// change kind), settled by every merge whichever lane made it. A window's `AppStore` is one.
+@MainActor
+protocol VCSStatusWindow: AnyObject {
+  func localStatusDidMerge(_ status: WorkroomStatus, into sid: SidebarID)
 }
 
 /// The three resolvers a status sweep and `RepositoryGitHub` use, built over one command runner so a

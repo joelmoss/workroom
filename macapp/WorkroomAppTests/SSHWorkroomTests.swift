@@ -75,7 +75,7 @@ final class SSHWorkroomTests: XCTestCase {
       runner: ControlRunner(calls: calls))
     let id = SSHHostDriver.id(for: destination)
     let hosts = RemoteHosts(makeDriver: { _ in driver }, pendingIn: nil)
-    hosts.adopt(
+    hosts.reachability.adopt(
       [
         Project(
           path: "/ssh-wake-test", vcs: "git",

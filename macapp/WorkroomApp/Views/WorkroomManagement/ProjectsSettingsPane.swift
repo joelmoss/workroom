@@ -264,8 +264,7 @@ private struct ProjectSettingsForm: View {
     // can, as onboarding's does, since every store shares `ProjectStore.shared`.
     let store =
       WindowRegistry.shared.lastActiveStore
-      ?? AppStore(
-        projectStore: .shared, vcsStatus: .shared, runCommands: .shared, lifecycle: .shared)
+      ?? AppStore(runCommands: .shared, lifecycle: .shared)
     let path = project.path
     // One at a time, in the order made: a quick second save mustn't land before the first.
     let previous = branchSave

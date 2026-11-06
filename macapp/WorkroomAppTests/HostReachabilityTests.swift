@@ -131,7 +131,7 @@ final class HostReachabilityTests: XCTestCase {
     let remote = remoteHosts.reachability
     let id = UUID()
     let host = HostID.remote(id)
-    remoteHosts.adopt([
+    remoteHosts.reachability.adopt([
       Project(
         path: "/proj", vcs: "git",
         workrooms: [
@@ -211,7 +211,7 @@ final class HostReachabilityTests: XCTestCase {
         name: name, path: "/home/w/\(name)", vcsName: "workroom/\(name)", warnings: [], host: host)
     }
     let remote = RemoteHosts()
-    remote.adopt(
+    remote.reachability.adopt(
       [
         Project(
           path: "/proj", vcs: "git",
@@ -247,7 +247,7 @@ final class HostReachabilityTests: XCTestCase {
     let remote = remoteHosts.reachability
     let id = UUID()
     let host = HostID.remote(id)
-    remoteHosts.adopt(
+    remoteHosts.reachability.adopt(
       [
         Project(
           path: "/proj", vcs: "git",
@@ -295,7 +295,7 @@ final class HostReachabilityTests: XCTestCase {
     let remote = remoteHosts.reachability
     let id = UUID()
     let host = HostID.remote(id)
-    remoteHosts.adopt(
+    remoteHosts.reachability.adopt(
       [
         Project(
           path: "/proj", vcs: "git",
@@ -328,7 +328,7 @@ final class HostReachabilityTests: XCTestCase {
     let remote = remoteHosts.reachability
     let id = UUID()
     let host = HostID.remote(id)
-    remoteHosts.adopt(
+    remoteHosts.reachability.adopt(
       [
         Project(
           path: "/proj", vcs: "git",
@@ -573,7 +573,7 @@ final class HostReachabilityTests: XCTestCase {
       now: { clock.now }, relayHost: { try await relays.connect($0) })
     let remote = remoteHosts.reachability
     let id = UUID()
-    remoteHosts.adopt([
+    remoteHosts.reachability.adopt([
       Project(
         path: "/proj", vcs: "git",
         workrooms: [

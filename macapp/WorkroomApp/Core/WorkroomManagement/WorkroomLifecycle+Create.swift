@@ -56,8 +56,8 @@ extension WorkroomLifecycle {
   /// The create's process ended: its workroom can be deleted and probed again (issue #116).
   private func releaseCreatingWorkroom(_ id: TerminalTarget.ID, from window: any LifecycleWindow) {
     creatingWorkrooms.remove(id)
-    if let sid = window.sidebarID(for: id) {
-      window.refreshLocalStatus(for: sid)
+    if let sid = projectStore.sidebarID(for: id) {
+      vcsStatus.refreshLocalStatus(for: sid, skippingCreatesAndCommits: true)
     }
     window.scheduleSelectedStatusRefresh()
   }
@@ -71,8 +71,8 @@ extension WorkroomLifecycle {
     if let name = run.name {
       announceCreation(CreationPanePresentation.successAnnouncement(name: name))
       let id = TargetID.workroom(project: run.project.path, name: name)
-      if case .armed = window.runCommand.runStates[id],
-        let target = window.target(for: .workroom(project: run.project.path, name: name))
+      if window.runCommand.isAutoRunArmed(id),
+        let target = self.target(for: .workroom(project: run.project.path, name: name))
       {
         window.ensureInitialTerminal(for: target)
       }
@@ -238,7 +238,7 @@ extension WorkroomLifecycle {
   ) async {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
-    let project = projectStore.projects.first { $0.path == run.project.path } ?? run.project
+    let project = projectStore.project(at: run.project.path) ?? run.project
     let start = start ?? run.start
     let retry = CreationRun(
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
@@ -338,7 +338,7 @@ extension WorkroomLifecycle {
       if let id = landing.landedID {
         // The workroom exists but setup failed. Disarm the auto-run armed at the landing so Open
         // Anyway doesn't launch the command against a half-set-up tree (issue #7).
-        if case .armed = window.runCommand.runStates[id] { window.runCommand.runStates[id] = nil }
+        window.runCommand.disarmAutoRun(forWorkroom: id)
         failCreationRun(run, .setupScriptFailed(message: Self.errorText(error)))
         // Offline, the fetch and a networked setup script fail together: say both.
         if let text = warning.value { window.noticeStaleStart(of: id, text) }
@@ -443,7 +443,7 @@ extension WorkroomLifecycle {
     from window: any LifecycleWindow
   ) async {
     // As it is now, not as a menu or the picker caught it: its base branch may have changed.
-    let project = projectStore.projects.first { $0.path == project.path } ?? project
+    let project = projectStore.project(at: project.path) ?? project
     guard canCreateRemoteWorkroom(in: project) else { return }
     await runRemoteCreate(
       startCreationRun(
@@ -572,13 +572,13 @@ extension WorkroomLifecycle {
       releaseCreatingWorkroom(id, from: window)
       if let hookFailure {
         // As a failed setup script's.
-        if case .armed = window.runCommand.runStates[id] { window.runCommand.runStates[id] = nil }
+        window.runCommand.disarmAutoRun(forWorkroom: id)
         failCreationRun(run, .hookFailed(message: hookFailure))
       } else if let setupFailure {
         // As a local create's: the workroom and its host stay, for Open Anyway or Delete, and the
         // auto-run armed at the reserve is disarmed, so Open Anyway doesn't start the command
         // against a half-set-up tree (issue #7).
-        if case .armed = window.runCommand.runStates[id] { window.runCommand.runStates[id] = nil }
+        window.runCommand.disarmAutoRun(forWorkroom: id)
         failCreationRun(run, .setupScriptFailed(message: setupFailure))
       } else {
         await completeCreationRun(run, from: window)
@@ -603,7 +603,7 @@ extension WorkroomLifecycle {
       if let name = run.name {
         let id = TargetID.workroom(project: path, name: name)
         // As above.
-        if case .armed = window.runCommand.runStates[id] { window.runCommand.runStates[id] = nil }
+        window.runCommand.disarmAutoRun(forWorkroom: id)
         releaseCreatingWorkroom(id, from: window)
       }
     }
@@ -641,20 +641,22 @@ extension WorkroomLifecycle {
     // Weak, as the store was when it ran the create itself; the flow's own frames hold the window
     // while these run. Giving the pane back is lifecycle state, so it never waits on the window.
     var recorder = remoteRecorder(project: path, cli: window.services.cli)
-    let reserve = recorder.reserve
-    recorder.reserve = { [weak window] hostPath, descriptor in
-      let name = try await reserve(hostPath, descriptor)
+    // A reserved name names the run, then arms the workroom's auto-run.
+    let reserved: @Sendable (String) async -> Void = { [weak window] name in
       if let window { await self.nameCreationRun(run, name, from: window) }
       await window?.armAutoRunIfConfigured(
         TargetID.workroom(project: path, name: name), in: run.project)
+    }
+    let reserve = recorder.reserve
+    recorder.reserve = { hostPath, descriptor in
+      let name = try await reserve(hostPath, descriptor)
+      await reserved(name)
       return name
     }
     if let reserveInParent = recorder.reserveInParent {
-      recorder.reserveInParent = { [weak window] parent, descriptor in
+      recorder.reserveInParent = { parent, descriptor in
         let name = try await reserveInParent(parent, descriptor)
-        if let window { await self.nameCreationRun(run, name, from: window) }
-        await window?.armAutoRunIfConfigured(
-          TargetID.workroom(project: path, name: name), in: run.project)
+        await reserved(name)
         return name
       }
     }

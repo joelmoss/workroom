@@ -444,7 +444,7 @@ final class AppStore: ObservableObject {
       projectPath = p
       path = p
     case .workroom(let p, let name):
-      guard let project = projectStore.projects.first(where: { $0.path == p }),
+      guard let project = projectStore.project(at: p),
         let workroom = project.workrooms.first(where: { $0.name == name })
       else { return nil }
       if workroom.isRemote {
@@ -457,9 +457,7 @@ final class AppStore: ObservableObject {
       projectPath = p
       path = workroom.path
     }
-    guard let project = projectStore.projects.first(where: { $0.path == projectPath }) else {
-      return nil
-    }
+    guard let project = projectStore.project(at: projectPath) else { return nil }
     return RemoteStateModel.Target(
       sid: sid, path: path, projectRoot: project.path,
       location: RepositoryRouter.shared.localLocation(for: path))
@@ -715,10 +713,6 @@ final class AppStore: ObservableObject {
   /// location they're navigating to.
   var isNavigatingHistory = false
 
-  let resolver = BranchResolver()
-  /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
-  /// slow sweep never writes stale labels over a newer one.
-  private var branchTask: Task<Void, Never>?
   /// The selection's status probe (issue #24), cancelled and replaced per selection so a slow probe
   /// never writes stale status over a newer one. `internal` (not `private`) so the
   /// `AppStore+WorkroomStatus.swift` extension can drive it.
@@ -773,9 +767,9 @@ final class AppStore: ObservableObject {
   /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`,
   /// `VCSStatusService.shared`, `RunCommands.shared` and `WorkroomLifecycle.shared`; tests build an
   /// isolated `AppStore()` (own fresh `ProjectStore`, `VCSStatusService`, `RunCommands` and
-  /// `WorkroomLifecycle`), inject `projects`, and drive the real recording/navigation paths. A
-  /// `lifecycle` brings its own `vcsStatus`, a `vcsStatus` its own `projectStore` and the lifecycle
-  /// made over it, if any. `init` does no CLI work (only `bootstrap()`/`load()` do).
+  /// `WorkroomLifecycle`), inject `projects`, and drive the real recording/navigation paths. Owners
+  /// derive downward only: a `lifecycle` brings its own `vcsStatus`, a `vcsStatus` its own
+  /// `projectStore`. `init` does no CLI work (only `bootstrap()`/`load()` do).
   init(
     projectStore: ProjectStore? = nil, vcsStatus: VCSStatusService? = nil,
     runCommands: RunCommands? = nil, lifecycle: WorkroomLifecycle? = nil,
@@ -796,7 +790,7 @@ final class AppStore: ObservableObject {
     let status = vcsStatus ?? lifecycle?.vcsStatus ?? VCSStatusService(projectStore: store)
     precondition(status.projectStore === store, "a window's VCS status is over its own projects")
     self.vcsStatus = status
-    let lifecycle = lifecycle ?? status.lifecycle ?? WorkroomLifecycle(vcsStatus: status)
+    let lifecycle = lifecycle ?? WorkroomLifecycle(vcsStatus: status)
     precondition(lifecycle.vcsStatus === status, "a window's lifecycle is over its own VCS status")
     self.lifecycle = lifecycle
     // `commitHistory` is assigned here (not inline) for the same @MainActor reason: a test injects a
@@ -871,18 +865,10 @@ final class AppStore: ObservableObject {
       self.revealRunTerminal()
     }
     // Every local status merge, from any window's lane or the sweep, settles this window's caches.
-    self.vcsStatus.register(self) { [weak self] sid, status in
-      self?.localStatusDidMerge(status, into: sid)
-    }
+    self.vcsStatus.register(self)
     // Every create and delete, from any window, reaches this window's selection, splits, runs and
     // terminals through the lifecycle.
-    self.lifecycle.register(
-      self, apply: { [weak self] event in self?.handleLifecycleEvent(event) },
-      stopRuns: { [weak self] ids, done in
-        guard let self else { return done() }
-        self.runCommand.gracefullyStopRuns(ids, then: done)
-      },
-      reap: { [weak self] id in await self?.reapTargetLocally(id) })
+    self.lifecycle.register(self)
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
     loadInspectorState()
@@ -939,14 +925,10 @@ final class AppStore: ObservableObject {
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }
-      // If the target's run terminal was closed/reaped, drop its whole run state (issue #7). One
-      // assignment clears every phase, so no stop/restart bookkeeping can be left behind to drive a
-      // later unexpected respawn or first-press hard kill (review #1).
+      // If the target's run terminal was closed/reaped, drop its whole run state (issue #7, review
+      // #1).
       if let runTab = self.runCommand.runStates[targetID]?.tab, ids.contains(runTab) {
-        self.runCommand.runStates[targetID] = nil
-        self.runCommand.runOutcomes[targetID] = nil  // reset the red run icon (issue #79)
-        self.runCommand.forgetRun(for: targetID)
-        self.runCommand.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
+        self.runCommand.clearRun(for: targetID)
       }
       // Same idea for a closed/reaped Investigate tab (issue #146) — a second, independent cleanup
       // path from `.childExited`, since a surface doesn't raise that on every teardown.
@@ -1287,15 +1269,13 @@ final class AppStore: ObservableObject {
   func title(for sid: SidebarID?) -> String {
     switch sid {
     case .root(let path):
-      return projectStore.projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
+      return projectStore.project(at: path)?.displayName ?? defaultWindowTitle
     case .workroom(let path, let name):
-      guard let project = projectStore.projects.first(where: { $0.id == path })?.displayName
-      else { return name }
+      guard let project = projectStore.project(at: path)?.displayName else { return name }
       // Show the workroom's display label when set (issue #41); falls back to the real name.
       return "\(project) — \(displayName(forWorkroom: name, inProject: path))"
     case .creation(let path, _):
-      let project =
-        projectStore.projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
+      let project = projectStore.project(at: path)?.displayName ?? defaultWindowTitle
       return "\(project) — New workroom"
     case .project, nil:
       return defaultWindowTitle
@@ -1309,32 +1289,10 @@ final class AppStore: ObservableObject {
   }
 
   /// Resolve any `SidebarID` to its live `TerminalTarget` against the current project list (nil for
-  /// `.project` or a since-removed target). Backs `selectedTarget` and the history `isLive` check.
+  /// `.project` or a since-removed target), as the lifecycle resolves it for every window. Backs
+  /// `selectedTarget` and the history `isLive` check.
   func target(for sid: SidebarID) -> TerminalTarget? {
-    switch sid {
-    case .root(let path):
-      return projectStore.projects.first { $0.id == path }?.rootTarget
-    case .workroom(let path, let name):
-      guard let project = projectStore.projects.first(where: { $0.id == path }),
-        let workroom = project.workrooms.first(where: { $0.id == name })
-      else {
-        // A create's named pane whose workroom a reload hasn't listed (yet, or any more): its run
-        // still draws it.
-        let id = TargetID.workroom(project: path, name: name)
-        guard lifecycle.creationRunForTarget[id] != nil else { return nil }
-        return TerminalTarget(id: id, title: name, path: path, unavailability: .creating)
-      }
-      return workroom.target(inProject: path)
-    case .creation(let path, let id):
-      // R1: a stand-in for the workroom being made. Unavailable, so every local action (terminal,
-      // editor, run, status) stays off for it without a check of its own.
-      guard let run = lifecycle.creationRuns[id], run.project.path == path else { return nil }
-      return TerminalTarget(
-        id: TargetID.creation(id), title: run.project.displayName, path: path,
-        unavailability: .creating)
-    case .project:
-      return nil
-    }
+    lifecycle.target(for: sid)
   }
 
   /// Resolve a `TerminalTarget.ID` straight to its live target — the id-addressed sibling of
@@ -1463,7 +1421,7 @@ final class AppStore: ObservableObject {
   /// the setup-log dock, and menu commands that are workroom-specific.
   var selectedWorkroom: Workroom? {
     guard case .workroom(let path, let name) = selectedTargetID,
-      let project = projectStore.projects.first(where: { $0.id == path })
+      let project = projectStore.project(at: path)
     else { return nil }
     return project.workrooms.first { $0.id == name }
   }
@@ -1569,7 +1527,7 @@ final class AppStore: ObservableObject {
   // MARK: Loading
 
   /// Initial launch: render config-only (instant, no VCS calls), then refresh warnings.
-  /// Branch labels hydrate asynchronously off both passes (see `resolveBranches`).
+  /// Branch labels hydrate asynchronously off both passes (see `WorkroomLifecycle.resolveBranches`).
   /// Load this window's view of the projects. `restore` is true only for the window SwiftUI restores
   /// at launch; combined with the one-shot `consumeInitialRestore()` it means exactly one window
   /// reapplies the persisted selection and every other (incl. every ⌘N) window starts blank (#70).
@@ -1607,10 +1565,6 @@ final class AppStore: ObservableObject {
       await terminals.sessionService.prepareBackend()
       reconcileWindow(with: projectStore.projects)
     }
-  }
-
-  func reload() async {
-    await load(warnings: "fast")
   }
 
   /// Reload only if it's been a while since the last load. Driven by the app regaining
@@ -1673,7 +1627,7 @@ final class AppStore: ObservableObject {
           projectStore.globalBaseBranch =
             response.baseBranch?.isEmpty == false ? response.baseBranch : nil
           apply(response.projects, registrations: registrations)
-          resolveBranches()
+          lifecycle.resolveBranches()
           vcsStatus.refreshWorkroomStatuses()
         } else {
           reconcileWindow(with: projectStore.projects)
@@ -1881,7 +1835,7 @@ final class AppStore: ObservableObject {
     // No sweep while a delete is in flight: `fresh` leaves out hosts config still records, and a
     // delete that fails keeps them (#296).
     let deleting = !lifecycle.deletingProjects.isEmpty || !lifecycle.deletingWorkrooms.isEmpty
-    RemoteHosts.shared.adopt(fresh, sweep: !deleting)
+    RemoteHosts.shared.reachability.adopt(fresh, sweep: !deleting)
     // Older builds' base machines go, once per launch; the same in-flight-delete hold as the sweep.
     if !deleting {
       BaseRetirement.retireOnce(fresh, effects: BaseRetirement.live(cli: cli)) { [weak self] in
@@ -2010,7 +1964,7 @@ final class AppStore: ObservableObject {
   /// `id`'s sidebar row while it is still listed, else nil (always nil for a create's pane and the
   /// Quick Terminal, which have no row).
   func sidebarID(for id: TargetID) -> SidebarID? {
-    Self.validatedSelection(id.sidebarID, in: projectStore.projects)
+    projectStore.sidebarID(for: id)
   }
 
   nonisolated private static func targetExists(_ id: SidebarID, in projects: [Project]) -> Bool {
@@ -2025,58 +1979,25 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Hydrate each project's root branch label off the main path. Per project,
-  /// concurrent, cancellable: a slow/wedged repo only delays its own label, and a newer
-  /// reload cancels this sweep so it can't write stale values. A resolution that comes
-  /// back `.none` does not clobber a previously-resolved label (no flash to "root" on
-  /// refresh). Project counts are small, so the group runs uncapped.
-  private func resolveBranches() {
-    branchTask?.cancel()
-    let resolver = self.resolver
-    let snapshot = projectStore.projects.map { (id: $0.id, path: $0.path, vcs: $0.vcs) }
-    branchTask = Task { [weak self] in
-      await withTaskGroup(of: (String, RootRef).self) { group in
-        for p in snapshot {
-          group.addTask { (p.id, await resolver.resolve(path: p.path, vcs: p.vcs)) }
-        }
-        for await (id, ref) in group {
-          guard !Task.isCancelled, let self else { break }
-          // Keep the prior label.
-          if ref.kind == .none, self.vcsStatus.rootRefs[id] != nil { continue }
-          self.vcsStatus.rootRefs[id] = ref
-        }
-      }
-    }
-  }
-
   /// This window's part of a change under a project's VCS metadata dir, which the app's one watch
-  /// (`WorkroomLifecycle.updateRootBranchWatches`) hands every window before it re-resolves the
-  /// root label once.
+  /// (`WorkroomLifecycle.rootBranchDidChange`) hands every window, for a listed project with probed
+  /// repositories, before it re-resolves the root label once.
   func handleRootBranchChange(projectID: Project.ID) {
-    guard vcsStatus.probesRepositories,
-      let p = projectStore.projects.first(where: { $0.id == projectID })
-    else { return }
+    // Only a visible inspector (not merely the active section — that persists while hidden) whose
+    // target belongs to THIS project repaints.
+    guard inspectorIsVisible, inspectorTargetID?.belongsToProject(projectID) == true else { return }
     // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / ref
     // update in the project or one of its workrooms (git worktree refs land in the shared `.git`, so
-    // they surface here even though nothing lands under the workroom dir). If the inspector is
-    // *visible* (not merely the active section — that persists while hidden), showing History, and
-    // its target belongs to THIS project, repaint the log. Independent of the label: a normal commit
-    // usually leaves the branch label unchanged, so gating this on the label actually changing would
-    // skip the main case. The read is read-only, so it can't re-fire this watcher.
-    if inspectorIsVisible, historySectionShown,
-      inspectorTargetID?.belongsToProject(p.path) == true
-    {
-      commitHistory.refresh()
-    }
+    // they surface here even though nothing lands under the workroom dir). Independent of the label:
+    // a normal commit usually leaves the branch label unchanged, so gating this on the label
+    // actually changing would skip the main case. The read is read-only, so it can't re-fire this
+    // watcher.
+    if historySectionShown { commitHistory.refresh() }
     // The VCS toolbar keys on the same writes, and for exactly the same reason: a fetch lands
     // `FETCH_HEAD` + `refs/remotes/*`, a push moves a ref, a commit moves the branch tip — all inside
     // this watched dir, for the project AND every workroom of it. Forced, because the watcher has
     // already coalesced the burst and the toolbar's own TTL would otherwise swallow the update.
-    if inspectorIsVisible, remoteToolbarShown,
-      inspectorTargetID?.belongsToProject(p.path) == true
-    {
-      remoteState.refresh(force: true)
-    }
+    if remoteToolbarShown { remoteState.refresh(force: true) }
   }
 
   // MARK: Mutations
@@ -2114,7 +2035,7 @@ final class AppStore: ObservableObject {
       // open a terminal on its root, mirroring workroom creation rather than leaving
       // the user on the "Nothing selected" empty state (issue #104). A new project
       // has no workrooms, so the root is the only sensible terminal to open.
-      guard let match = projectStore.projects.first(where: { $0.path == canonical }) else {
+      guard let match = projectStore.project(at: canonical) else {
         throw NSError(
           domain: "Workroom.AppStore", code: 1,
           userInfo: [
@@ -2178,7 +2099,7 @@ final class AppStore: ObservableObject {
 
   /// What a create or delete in any window does to this one (`WorkroomLifecycle.Event`), applied
   /// the moment the lifecycle hands it over.
-  private func handleLifecycleEvent(_ event: WorkroomLifecycle.Event) {
+  func handleLifecycleEvent(_ event: WorkroomLifecycle.Event) {
     switch event {
     case .targetRemoved(let sid):
       detachTarget(sid)
@@ -2214,11 +2135,7 @@ final class AppStore: ObservableObject {
     await terminals.reap(targetID)
     // `reap` only fires `.tabsRemoved` (which clears run state) when tabs existed; a target armed
     // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
-    runCommand.runStates[targetID] = nil
-    runCommand.forgetRun(for: targetID)
-    runCommand.runOutcomes[targetID] = nil
-    // Deleted target → drop any run toast state (issue #67).
-    runCommand.resetRunToast(for: targetID)
+    runCommand.clearRun(for: targetID)
     // Drop the gone target's notifications and pull any banners it already delivered.
     services.notifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
   }
@@ -2355,7 +2272,7 @@ final class AppStore: ObservableObject {
   /// sidebar does without re-deriving the lookup.
   func workroomAndProject(for sid: SidebarID) -> (workroom: Workroom, project: Project)? {
     guard case .workroom(let path, let name) = sid,
-      let project = projectStore.projects.first(where: { $0.id == path }),
+      let project = projectStore.project(at: path),
       let workroom = project.workrooms.first(where: { $0.id == name })
     else { return nil }
     return (workroom, project)
@@ -3116,8 +3033,12 @@ final class AppStore: ObservableObject {
   }
 }
 
-/// Each window is the `LifecycleWindow` of the creates and deletes asked from it.
+/// Each window is the `LifecycleWindow` of the creates and deletes asked from it, and is handed
+/// every one's effects.
 extension AppStore: LifecycleWindow {}
+
+/// Each window settles what it caches from a status at every merge.
+extension AppStore: VCSStatusWindow {}
 
 /// The live log for one create/delete run. Lines stream in from the CLI's NDJSON
 /// stderr (see WorkroomCLI). A plain ObservableObject — all mutations happen on the

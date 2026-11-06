@@ -30,7 +30,6 @@ final class WorkroomLifecycle: ObservableObject {
 
   init(vcsStatus: VCSStatusService) {
     self.vcsStatus = vcsStatus
-    vcsStatus.lifecycle = self
   }
 
   // MARK: Creates and deletes in flight
@@ -41,12 +40,12 @@ final class WorkroomLifecycle: ObservableObject {
 
   /// Target ids of workrooms whose create process is still running: from the moment the workroom
   /// has a name until the CLI or the provisioning returns (issue #116, #483). A workroom here must
-  /// not be deleted, from any window: its setup is running against it.
+  /// not be deleted, from any window: its setup is running against it. Stored on `vcsStatus`, whose
+  /// probes stand clear of it (`VCSStatusService.isCreating`).
   var creatingWorkrooms: Set<TerminalTarget.ID> {
-    get { storedCreatingWorkrooms }
-    set { storedCreatingWorkrooms = newValue }
+    get { vcsStatus.creatingWorkrooms }
+    set { vcsStatus.creatingWorkrooms = newValue }
   }
-  private var storedCreatingWorkrooms: Set<TerminalTarget.ID> = []
 
   /// Every create's progress, running or failed, by run id (#483), so every window that shows a
   /// create shows the same checklist.
@@ -100,32 +99,17 @@ final class WorkroomLifecycle: ObservableObject {
     case rootBranchChanged(Project.ID)
   }
 
-  private struct Window {
-    weak var owner: AnyObject?
-    let apply: @MainActor (Event) -> Void
-    let stopRuns: @MainActor ([TerminalTarget.ID], @escaping () -> Void) -> Void
-    let reap: @MainActor (TerminalTarget.ID) async -> Void
-  }
-
   /// The windows, in the order they registered.
-  @ObservationIgnored private var registered: [Window] = []
+  @ObservationIgnored private var windows = WeakList<any LifecycleWindow>()
 
-  /// Hand `owner`'s window every event while it lives (`apply`), and let a delete stop its runs
-  /// (`stopRuns`, which calls its completion once they have stopped) and reap its terminals
-  /// (`reap`). Idempotent per owner.
-  func register(
-    _ owner: AnyObject, apply: @escaping @MainActor (Event) -> Void,
-    stopRuns: @escaping @MainActor ([TerminalTarget.ID], @escaping () -> Void) -> Void,
-    reap: @escaping @MainActor (TerminalTarget.ID) async -> Void
-  ) {
-    registered.removeAll { $0.owner == nil || $0.owner === owner }
-    registered.append(Window(owner: owner, apply: apply, stopRuns: stopRuns, reap: reap))
+  /// Hand `window` every event while it lives (`handleLifecycleEvent`), and let a delete stop its
+  /// runs and reap its terminals. Idempotent.
+  func register(_ window: any LifecycleWindow) {
+    windows.insert(window)
   }
-
-  private var windows: [Window] { registered.filter { $0.owner != nil } }
 
   private func send(_ event: Event) {
-    for window in windows { window.apply(event) }
+    for window in windows.elements { window.handleLifecycleEvent(event) }
   }
 
   // MARK: Runs
@@ -138,6 +122,36 @@ final class WorkroomLifecycle: ObservableObject {
   /// The run whose pane `sid` is, while it lasts.
   func creationRun(for sid: SidebarID) -> CreationRun? {
     sid.targetID.flatMap(creationRun(forTargetID:))
+  }
+
+  /// Resolve any `SidebarID` to its live `TerminalTarget` against the current project list and the
+  /// creates in flight (nil for `.project` or a since-removed target). Backs every window's
+  /// `target(for:)`.
+  func target(for sid: SidebarID) -> TerminalTarget? {
+    switch sid {
+    case .root(let path):
+      return projectStore.project(at: path)?.rootTarget
+    case .workroom(let path, let name):
+      guard let project = projectStore.project(at: path),
+        let workroom = project.workrooms.first(where: { $0.id == name })
+      else {
+        // A create's named pane whose workroom a reload hasn't listed (yet, or any more): its run
+        // still draws it.
+        let id = TargetID.workroom(project: path, name: name)
+        guard creationRunForTarget[id] != nil else { return nil }
+        return TerminalTarget(id: id, title: name, path: path, unavailability: .creating)
+      }
+      return workroom.target(inProject: path)
+    case .creation(let path, let id):
+      // R1: a stand-in for the workroom being made. Unavailable, so every local action (terminal,
+      // editor, run, status) stays off for it without a check of its own.
+      guard let run = creationRuns[id], run.project.path == path else { return nil }
+      return TerminalTarget(
+        id: TargetID.creation(id), title: run.project.displayName, path: path,
+        unavailability: .creating)
+    case .project:
+      return nil
+    }
   }
 
   /// Whether a create is still running in the project, named or not (O1).
@@ -321,11 +335,11 @@ final class WorkroomLifecycle: ObservableObject {
   /// was: a window closed mid-stop still finishes its stop (its poll holds its controller only
   /// weakly) and is still reaped in `then`, and the teardown still runs.
   func stopRuns(_ ids: [TerminalTarget.ID], then: @escaping @MainActor () async -> Void) {
-    let owners = windows.compactMap(\.owner)
+    let owners = windows.elements
     let group = DispatchGroup()
-    for window in windows {
+    for window in owners {
       group.enter()
-      window.stopRuns(ids) { group.leave() }
+      window.runCommand.gracefullyStopRuns(ids) { group.leave() }
     }
     group.notify(queue: .main) {
       Task {
@@ -337,8 +351,8 @@ final class WorkroomLifecycle: ObservableObject {
 
   /// Reaps `ids`' terminals in every window, one window after the other.
   func reap(_ ids: [TerminalTarget.ID]) async {
-    for window in windows {
-      for id in ids { await window.reap(id) }
+    for window in windows.elements {
+      for id in ids { await window.reapTargetLocally(id) }
     }
   }
 
@@ -394,12 +408,45 @@ final class WorkroomLifecycle: ObservableObject {
   /// Per-project re-resolve task (cancel-and-replace) so a burst of metadata writes resolves once.
   @ObservationIgnored private var rootBranchRefreshTasks: [Project.ID: Task<Void, Never>] = [:]
   @ObservationIgnored private let resolver = BranchResolver()
+  /// The in-flight branch-resolution sweep, cancelled and replaced by the next one (from any
+  /// window's load) so a slow sweep never writes stale labels over a newer one.
+  @ObservationIgnored private var branchTask: Task<Void, Never>?
+
+  /// Hydrate each project's root branch label off the main path, after a window's load publishes
+  /// the project list. Per project, concurrent, cancellable: a slow/wedged repo only delays its own
+  /// label, and a newer load cancels this sweep so it can't write stale values. Project counts are
+  /// small, so the group runs uncapped.
+  func resolveBranches() {
+    branchTask?.cancel()
+    let resolver = self.resolver
+    let snapshot = projectStore.projects.map { (id: $0.id, path: $0.path, vcs: $0.vcs) }
+    branchTask = Task { [weak self] in
+      await withTaskGroup(of: (String, RootRef).self) { group in
+        for p in snapshot {
+          group.addTask { (p.id, await resolver.resolve(path: p.path, vcs: p.vcs)) }
+        }
+        for await (id, ref) in group {
+          guard !Task.isCancelled, let self else { break }
+          self.storeRootRef(ref, for: id)
+        }
+      }
+    }
+  }
+
+  /// Writes a resolved root label. A resolution that comes back `.none` does not clobber a
+  /// previously-resolved label (no flash to "root" on refresh), and an unchanged one is not written,
+  /// so the store does not churn.
+  private func storeRootRef(_ ref: RootRef, for id: Project.ID) {
+    if ref.kind == .none, vcsStatus.rootRefs[id] != nil { return }
+    if vcsStatus.rootRefs[id] == ref { return }
+    vcsStatus.rootRefs[id] = ref
+  }
 
   /// Reconcile the per-project root-branch watchers with the current project list: ensure a watcher
   /// for each project (pointed at its `.git` metadata dir) and tear down watchers for projects
   /// that went away. Called from every window's `apply` so the watch set tracks the live projects.
-  /// No-op when the services seed statuses (the fixture's temp-dir paths aren't real repos — match
-  /// `AppStore.resolveBranches`, which skips them too).
+  /// No-op when the services seed statuses (the fixture's temp-dir paths aren't real repos, and
+  /// their loads skip `resolveBranches` too).
   func updateRootBranchWatches() {
     guard vcsStatus.probesRepositories else {
       for w in rootBranchWatchers.values { w.stop() }
@@ -437,55 +484,59 @@ final class WorkroomLifecycle: ObservableObject {
   /// toolbar repaint whatever the label does: a normal commit usually leaves it unchanged), then
   /// the root branch is re-resolved, writing the label only if it actually changed (so VCS-internal
   /// churn that leaves the branch unchanged doesn't invalidate the sidebar). Cancel-and-replace per
-  /// project so a write burst resolves once; `.none` never clobbers a prior label (matches
-  /// `AppStore.resolveBranches`).
+  /// project so a write burst resolves once; `.none` never clobbers a prior label, as in
+  /// `resolveBranches` (`storeRootRef`).
   func rootBranchDidChange(projectID: Project.ID) {
-    guard vcsStatus.probesRepositories,
-      let p = projectStore.projects.first(where: { $0.id == projectID })
-    else { return }
+    guard vcsStatus.probesRepositories, let p = projectStore.project(at: projectID) else { return }
     send(.rootBranchChanged(projectID))
     let resolver = self.resolver
     rootBranchRefreshTasks[projectID]?.cancel()
     rootBranchRefreshTasks[projectID] = Task { [weak self] in
       let ref = await resolver.resolve(path: p.path, vcs: p.vcs)
       guard let self, !Task.isCancelled else { return }
-      // Keep the prior label; an unchanged one is not written, so the store does not churn.
-      if ref.kind == .none, self.vcsStatus.rootRefs[projectID] != nil { return }
-      if self.vcsStatus.rootRefs[projectID] == ref { return }
-      self.vcsStatus.rootRefs[projectID] = ref
+      self.storeRootRef(ref, for: projectID)
     }
   }
 }
 
-/// The window a create or delete was asked from, as the lifecycle's flows reach it: only what they
-/// need of that one window. What every window shares (the projects, their status, the creates and
-/// deletes in flight) they read on the lifecycle itself. A window's `AppStore` is one.
+/// A window as the lifecycle reaches it: every registered window applies each `Event` and gives up
+/// its runs and terminals to a delete, and the window a create or delete was asked from is reached
+/// for only what the flows need of that one window. What every window shares (the projects, their
+/// status, the creates and deletes in flight, a target's resolution) they read on the lifecycle
+/// itself. A window's `AppStore` is one.
 @MainActor
 protocol LifecycleWindow: AnyObject, Sendable {
+  /// What a create or delete in any window does to this one, applied the moment it is handed over.
+  func handleLifecycleEvent(_ event: WorkroomLifecycle.Event)
+  /// Reaps one target's terminals and the state kept for it, once its runs have stopped.
+  func reapTargetLocally(_ targetID: TerminalTarget.ID) async
   /// Its CLI, which every create and delete runs through, its remote create services and its Bin.
   var services: AppServices { get }
   /// Where its questions, sheets and alerts go.
   var modals: ModalState { get }
   var selectedTargetID: SidebarID? { get }
   func present(_ error: Error)
-  /// Lists the projects afresh and reconciles this window with them.
-  func reload() async
   func load(warnings: String, surfaceErrors: Bool) async
   /// Opens a new create's pane before it does any work (AC 1): beside `anchor`, or as the selection.
   func openCreationPane(_ pane: SidebarID, in project: Project, beside anchor: SidebarID?)
   /// Takes a create's pane out of this window: a split collapses to its sibling, a pane on its own
   /// gives way to `previous` if that still exists.
   func closeCreationPane(_ pane: SidebarID, returningTo previous: SidebarID?)
-  /// Its runs: a new workroom's auto-run is armed and disarmed here (issue #7).
+  /// Its runs: a new workroom's auto-run is armed and disarmed here (issue #7), and a delete stops
+  /// its runs through it.
   var runCommand: RunCommandController { get }
   func armAutoRunIfConfigured(_ id: TerminalTarget.ID, in project: Project)
-  func target(for sid: SidebarID) -> TerminalTarget?
   func ensureInitialTerminal(for target: TerminalTarget)
-  func sidebarID(for id: TargetID) -> SidebarID?
-  func refreshLocalStatus(for sid: SidebarID)
   func scheduleSelectedStatusRefresh()
   func noticeStaleStart(of id: TerminalTarget.ID, _ warning: String)
   func removeWorkroomLocally(_ workroom: Workroom, in project: Project)
   @discardableResult func removeProjectLocally(_ project: Project) -> [TerminalTarget.ID]
   func reselectAfterWorkroomDetached(wasSelectedHere: Bool)
+}
+
+extension LifecycleWindow {
+  /// Lists the projects afresh and reconciles this window with them.
+  func reload() async {
+    await load(warnings: "fast", surfaceErrors: true)
+  }
 }

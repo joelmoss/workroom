@@ -5,8 +5,8 @@ import WorkroomVCS
 /// The VCS write actions the status inspector offers: PR actions and merges through `gh`, and
 /// commits with their preflight. Moved out of `AppStore+WorkroomStatus.swift` as is, so that file
 /// only reads status. Coupling points: these write into `vcsStatus.workroomStatuses`
-/// (optimistically, then from a fresh probe) and use its `selectedStatusWorkItem(for:)` and
-/// `beginWrite`/`endWrite` bookkeeping, and this window's `refreshStatus(for:)`.
+/// (optimistically, then from a fresh probe) and use its `selectedStatusWorkItem(for:)`, its
+/// `beginCommit`/`endCommit` bookkeeping and its `refreshLocalStatus(for:skippingCreatesAndCommits:)`.
 extension AppStore {
   /// Whether `sid` has anything a commit could record, and none is in flight: the Changes header's
   /// commit button and Room ▸ Commit… both ask this.
@@ -124,7 +124,8 @@ extension AppStore {
     // paths aren't real repos and a live write would only ever fail), replaces only the WRITER:
     // taking an early return here instead skipped the whole store-side lane (the in-flight marks, the
     // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
-    // `refreshStatus(for:)` already no-ops when statuses are seeded, so the rest is safe to run.
+    // `refreshLocalStatus(for:skippingCreatesAndCommits:)` already no-ops when statuses are seeded,
+    // so the rest is safe to run.
     let localWriter = services.vcsWriter
     Task { [weak self] in
       guard let self else { return }
@@ -151,9 +152,6 @@ extension AppStore {
       guard !self.vcsStatus.isWritingProject(root) else {
         return completion(.failed(.locked(nil)))
       }
-      self.vcsStatus.committingTargets.insert(sid)
-      self.vcsStatus.committingProjectRoots[root, default: 0] += 1
-      self.vcsStatus.beginWrite(projectRoot: root)
       // Captured STRONGLY, not through `self`: `committingProjectRoots`/`writingProjectRoots` live on
       // the app-wide `VCSStatusService`, and their release below must run even if THIS window's
       // `AppStore` is deallocated before the write finishes (e.g. the window is closed mid-commit). A
@@ -161,22 +159,14 @@ extension AppStore {
       // permanently, since nothing else ever decrements it, refusing every future write for this
       // project, in every window, until the app restarts.
       let vcsStatus = self.vcsStatus
+      vcsStatus.beginCommit(sid: sid, root: root)
       let result = await commit()
-      // Decremented, never cleared: a sibling workroom of the same project can be committing too, and
-      // dropping the key would re-open every read lane against a write still in progress.
-      let remainingCommits = (vcsStatus.committingProjectRoots[root] ?? 1) - 1
-      if remainingCommits > 0 {
-        vcsStatus.committingProjectRoots[root] = remainingCommits
-      } else {
-        vcsStatus.committingProjectRoots.removeValue(forKey: root)
-      }
-      vcsStatus.endWrite(projectRoot: root)
-      self.vcsStatus.committingTargets.remove(sid)
+      vcsStatus.endCommit(sid: sid, root: root)
       switch result {
       case .ok, .committedThenFailed:
         // Refresh by the CAPTURED sid: the watcher lane is suppressed while the commit runs
         // (`isCommittingProject`), so the commit's own churn never refreshes the Changes list.
-        self.refreshStatus(for: sid)
+        vcsStatus.refreshLocalStatus(for: sid, skippingCreatesAndCommits: false)
         // History gained a commit, and the ahead count and Push button both moved. Only refresh the
         // models that are still pointed at the row we committed — otherwise switching workrooms
         // mid-commit would repoint them at the wrong repo's log.

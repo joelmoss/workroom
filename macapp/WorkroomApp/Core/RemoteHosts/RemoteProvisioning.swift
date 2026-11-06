@@ -168,7 +168,7 @@ enum RemoteProvisioning {
     return try await place(
       ProvisionedHostPlacement(environment: environment), cloneURL: cloneURL, path: path,
       branch: branch, startBranch: startBranch, startCommit: startCommit, header: header,
-      in: environment, checkpoint: checkpoint)
+      in: environment, checkpoint: checkpoint, finish: { _ in })
   }
 
   /// Makes `placement`, connects to the daemon on its host, and clones and checks the workroom out
@@ -177,12 +177,15 @@ enum RemoteProvisioning {
   /// last step; either failing undoes the create like any other step. Returns the workroom serving.
   /// On a failure after the placement is made, the placement is undone; if that fails too,
   /// `Failure.rollbackIncomplete` says what is still there.
+  ///
+  /// Neither closure has a default: two defaulted closures of one shape let a trailing or misplaced
+  /// one bind to the wrong parameter (Swift's forward scan), so every caller labels both.
   static func place(
     _ placement: some Placement, cloneURL: String, path: String, branch: String,
     startBranch: String?, startCommit: String?, header: [String: String]?,
     in environment: Environment,
-    checkpoint: @Sendable (_ host: HostID) async throws -> Void = { _ in },
-    finish: @Sendable (Instance) async throws -> Void = { _ in }
+    checkpoint: @Sendable (_ host: HostID) async throws -> Void,
+    finish: @Sendable (Instance) async throws -> Void
   ) async throws -> Instance {
     let host = try await placement.make()
     var connection: DaemonVCSConnection?

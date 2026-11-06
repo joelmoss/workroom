@@ -3,38 +3,11 @@ import WorkroomDomain
 import WorkroomVCS
 
 /// The status probes that follow this window's selection (issue #24): the debounced selection
-/// refresh, the selected workroom's filesystem watch, and the probes that name one row. The status
-/// itself, the sweep and the writes in flight are the app's `VCSStatusService`; every result merges
+/// refresh and the selected workroom's filesystem watch. The status itself, the sweep, the probe that
+/// names one row and the writes in flight are the app's `VCSStatusService`; every result merges
 /// there (`mergeLocalStatus`), which is where the lanes are ordered against each other.
 extension AppStore {
   fileprivate static let selectionDebounce: TimeInterval = 0.3  // arrow-key row cycling coalesce
-
-  /// Probe ONE workroom's local status now, whatever is selected (issue #167). The post-create
-  /// refresh needs this: `scheduleSelectedStatusRefresh` below reads `selectedTargetID`, and when two
-  /// creates overlap the second owns the selection by the time the first finishes — so the finished
-  /// workroom got no probe at all, and since its own final `reload()` also skipped it (the create
-  /// guard was still set), its dirty dot kept reading its pre-setup value until the user happened to
-  /// select it. Local only: the watcher and the CI/PR probes stay selection-scoped, which is correct.
-  ///
-  /// Undebounced and untracked by `selectionStatusTask` on purpose — it fires once per create, and
-  /// sharing that task handle would let a landing cancel a pending selection probe.
-  ///
-  /// Which makes it one more unordered lane onto the same row — a setup script finishing is exactly
-  /// when the file-watcher lane is busiest — so like every other lane it hands its read time to
-  /// `mergeLocalStatus`, which is where the cross-lane ordering lives.
-  func refreshLocalStatus(for sid: SidebarID) {
-    let vcsStatus = vcsStatus
-    if !vcsStatus.probesRepositories { return }
-    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
-    // Same two suppressions the selection path applies — another create/commit may still be writing.
-    if vcsStatus.isCreating(sid) || vcsStatus.isCommittingProject(item.sharedLocation) { return }
-    let working = vcsStatus.statusResolver.working
-    Task { [weak self] in
-      let fresh = await working.resolve(item: item)
-      guard self != nil, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.mergeLocalStatus(fresh, into: sid)
-    }
-  }
 
   /// Freshen the selected workroom, debounced so arrow-key cycling
   /// through rows doesn't fork a probe per row. Cancels the prior pending refresh.
@@ -69,13 +42,8 @@ extension AppStore {
       guard item.permitsGitHubAccess else { return }
       let github: RepositoryGitHub
       do {
-        let location: RepositoryLocation
-        if let supplied = item.location {
-          location = supplied
-        } else {
-          location = try await RepositoryLocation.local(item.path)
-        }
-        github = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
+        github = try await RepositoryRouter.shared.gitHub(
+          for: try await item.resolvedLocation(), resolver: resolver)
       } catch { return }
       // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
       await vcsStatus.refreshGitHubCLI(resolver: resolver)
@@ -167,26 +135,6 @@ extension AppStore {
   }
 
   // MARK: - Live filesystem watch (selected workroom)
-
-  /// Re-probe ONE row's local status, named explicitly.
-  ///
-  /// `scheduleSelectedStatusRefresh` cannot serve a commit: it derives its target from the LIVE
-  /// `selectedTargetID`, so switching workrooms while a commit is in flight would commit A and
-  /// refresh B — leaving the row that actually changed stale and re-probing one that didn't. Every
-  /// post-commit refresh therefore names the sid it captured when the sheet opened.
-  func refreshStatus(for sid: SidebarID) {
-    let vcsStatus = vcsStatus
-    guard vcsStatus.probesRepositories, let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
-      return
-    }
-    let working = vcsStatus.statusResolver.working
-    Task { [weak self] in
-      let fresh = await working.resolve(item: item)
-      guard self != nil, vcsStatus.targetExists(sid) else { return }
-      guard vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.mergeLocalStatus(fresh, into: sid)
-    }
-  }
 
   /// Point the filesystem watcher at the selected workroom's directory, or stop it when nothing
   /// statusable is selected — or when the selection's create is still in flight (don't watch a tree a

@@ -135,7 +135,13 @@ final class HostReachability: @unchecked Sendable {
     lock.withLock { relayPending[id] = now() }
   }
 
-  /// Host config records workroom host `id` as relayed (`HostDriverRegistry.adopt`). A newly
+  /// Takes on every host `projects` record (`HostDriverRegistry.adopt`), and relays each relayed
+  /// workroom's git credentials (#309).
+  func adopt(_ projects: [Project], sweep: Bool = true) {
+    registry.adopt(projects, sweep: sweep, relayed: recordRelayed)
+  }
+
+  /// Host config records workroom host `id` as relayed (`adopt`). A newly
   /// relayed host can be connected already (its create opened the connection before it was
   /// recorded), so the next connection check installs its relay; one a connect installs it on
   /// clears this.

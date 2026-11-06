@@ -158,7 +158,7 @@ extension WorkroomLifecycle {
     let path = project.path
     // As it is now, after the failure's reload, not as it was when the delete began.
     let deleteAgain = { [weak window] (skipTeardown: Bool) in
-      guard let window, let project = self.projectStore.projects.first(where: { $0.path == path }),
+      guard let window, let project = self.projectStore.project(at: path),
         let workroom = project.workrooms.first(where: { $0.name == name })
       else { return }
       self.deleteWorkroom(workroom, in: project, skipTeardown: skipTeardown, from: window)
@@ -269,7 +269,7 @@ extension WorkroomLifecycle {
     // the user just typed the project name to confirm, so a no-op would read as a broken button.
     // O1 (#483): any running create, named or not. Before it has a name, nothing else says so.
     let creatingHere = creatingWorkrooms.contains {
-      window.sidebarID(for: $0)?.belongsToProject(project.path) == true
+      projectStore.sidebarID(for: $0)?.belongsToProject(project.path) == true
     }
     guard !hasRunningCreation(inProject: project.path), !creatingHere else {
       window.modals.errorTitle = "Can't delete \(project.displayName)"
@@ -427,8 +427,7 @@ extension WorkroomLifecycle {
     modals.errorAction = ErrorAction(label: "Delete Without Teardowns") {
       [weak window] in
       // As it is now: a remote workroom taken down before the failure is gone from it (C4).
-      guard let window, let project = self.projectStore.projects.first(where: { $0.path == path })
-      else { return }
+      guard let window, let project = self.projectStore.project(at: path) else { return }
       self.deleteProject(project, scope: scope, skipTeardown: true, from: window)
     }
   }

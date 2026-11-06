@@ -63,8 +63,7 @@ extension AppStore {
   /// single read path, falling back to the real `name` when the workroom isn't in `projects` yet
   /// (a mid-reload race) — mirroring `windowTitle`'s own fallback.
   func displayName(forWorkroom name: String, inProject path: String) -> String {
-    projectStore.projects.first { $0.id == path }?.workrooms.first { $0.id == name }?.displayName
-      ?? name
+    projectStore.project(at: path)?.workrooms.first { $0.id == name }?.displayName ?? name
   }
 
   /// Set (or, for a blank value, remove) a workroom's display label (issue #41). Normalises at the

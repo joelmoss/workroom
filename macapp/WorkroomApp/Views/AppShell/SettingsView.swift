@@ -80,9 +80,7 @@ struct SettingsView: View {
 
   /// The open project's name in Projects, else the pane's.
   private var title: String {
-    if let path = location.project,
-      let project = ProjectStore.shared.projects.first(where: { $0.path == path })
-    {
+    if let path = location.project, let project = ProjectStore.shared.project(at: path) {
       return project.displayName
     }
     return selection.label

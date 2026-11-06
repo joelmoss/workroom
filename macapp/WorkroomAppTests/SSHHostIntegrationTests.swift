@@ -390,7 +390,7 @@ final class SSHHostIntegrationTests: XCTestCase {
       Workroom(
         name: name, path: paths[index], vcsName: "git", warnings: [], host: descriptors[index])
     }
-    hosts.adopt(
+    hosts.reachability.adopt(
       [
         Project(path: "/fixture-project-one", vcs: "git", workrooms: Array(entries.prefix(2))),
         Project(path: "/fixture-project-two", vcs: "git", workrooms: Array(entries.suffix(1))),
@@ -688,7 +688,7 @@ final class SSHHostIntegrationTests: XCTestCase {
           host: host, driver: driver, socket: driver.daemonSocket,
           daemon: { _ in fixture.daemon }, resources: nil)
       }, pendingIn: nil)
-    hosts.adopt(
+    hosts.reachability.adopt(
       [
         Project(
           path: "/fixture-created", vcs: "git",

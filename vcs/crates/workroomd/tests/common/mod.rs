@@ -211,22 +211,13 @@ pub fn control(socket: &Path, frame: wr_protocol::frame::Frame) -> wr_protocol::
     use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
     use wr_protocol::frame::FrameDecoder;
 
-    let mut stream = UnixStream::connect(socket).expect("connect");
+    let stream = UnixStream::connect(socket).expect("connect");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
-    stream
-        .write_all(&Hello::current("test").encode())
-        .expect("greet");
-    let mut greeting = Vec::new();
-    let mut byte = [0u8; 1];
-    while Hello::decode(&greeting)
-        .expect("a daemon greeting")
-        .is_none()
-    {
-        stream.read_exact(&mut byte).expect("greeting byte");
-        greeting.push(byte[0]);
-    }
+    let mut client = RpcClient::over(stream.try_clone().expect("clone"), stream);
+    client.handshake();
+    let mut stream = client.writer;
     stream
         .write_all(&Envelope::new(Service::Control, 1, frame.encode()).encode())
         .expect("send");
