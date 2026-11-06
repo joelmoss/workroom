@@ -218,8 +218,9 @@ SwiftUI app. The core loop:
    overlays `PATH`, drains stdout/stderr concurrently, streams NDJSON logs, and decodes the JSON
    envelope), then update the store on success.
 6. **State** splits into app-wide owners — `ProjectStore` (the one project list), `VCSStatusService`
-   (branch and VCS/CI status, and the sweep) and `RunCommands` (run config) — and a per-window
-   `AppStore` (selection, terminals, splits), so multiple windows share projects but keep
+   (branch and VCS/CI status, and the sweep), `RunCommands` (run config) and `WorkroomLifecycle`
+   (the create and delete flows, what is in flight, and what they do to every window) — and a
+   per-window `AppStore` (selection, terminals, splits), so multiple windows share projects but keep
    independent layouts. `WindowRegistry` tracks open windows.
 7. **Preferences** live in `DefaultsKeys` (via the `Defaults` library); **auto-update** is Sparkle
    (`Updater`); **themes** load from bundled CSS theme families.

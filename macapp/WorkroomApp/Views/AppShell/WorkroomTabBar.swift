@@ -388,6 +388,7 @@ private struct WorkroomTabChip: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var vcsStatus: VCSStatusService
+  @EnvironmentObject var lifecycle: WorkroomLifecycle
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -453,7 +454,7 @@ private struct WorkroomTabChip: View {
       .contextMenu {
         workroomContextMenu(
           store: store, sid: sid, target: target,
-          closeName: store.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel)
+          closeName: lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel)
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel(

@@ -103,6 +103,10 @@ final class RunCommands: ObservableObject {
 
   // MARK: Quit
 
+  /// Set by a quit that stops dev servers, before it saves: their run tabs are left out of every
+  /// window's layout, here and on hosts, so they don't come back (#522, owner).
+  @ObservationIgnored var quitStopsRuns = false
+
   /// Whether any window's run command (not an Investigate tab) is going: what quitting may keep
   /// running or stop (#522).
   var hasAnyLiveRun: Bool { windows.contains(where: \.hasLiveRun) }

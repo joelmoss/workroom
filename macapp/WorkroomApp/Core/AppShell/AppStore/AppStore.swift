@@ -3,14 +3,14 @@ import Combine
 import DaemonConnection
 import Defaults
 import Foundation
-import OSLog
 import SwiftUI
 import WorkroomDomain
 import WorkroomVCS
 
 /// One window's state and actions. Production builds one store per window (issue #70); the
-/// project data every window shares lives in `ProjectStore.shared`, and its VCS status in
-/// `VCSStatusService.shared`. All CLI work is awaited (it runs off the main thread inside
+/// project data every window shares lives in `ProjectStore.shared`, its VCS status in
+/// `VCSStatusService.shared`, and its workrooms' creates and deletes in `WorkroomLifecycle.shared`.
+/// All CLI work is awaited (it runs off the main thread inside
 /// WorkroomCLI), keeping the UI responsive.
 @MainActor
 @Observable
@@ -21,13 +21,15 @@ import WorkroomVCS
 // store through Observation.
 final class AppStore: ObservableObject {
   /// Shared, app-wide project data (issue #70). Holds the project list and what is identical across
-  /// windows about it. Views take it from the environment and the store's code reads it here. The
-  /// create and delete sets still proxy through to it, and Observation tracks those reads through it,
-  /// so views/menus observing this store still re-render when the shared data changes.
+  /// windows about it. Views take it from the environment and the store's code reads it here.
   let projectStore: ProjectStore
   /// The app's VCS status: every workroom's status, the sweep, and the writes in flight. Views take
   /// it from the environment and the store's code reads it here.
   let vcsStatus: VCSStatusService
+  /// The app's workroom creates and deletes: every create's run, what is being created or deleted,
+  /// and what either does to every window (ADR 0068). Views take it from the environment and the
+  /// store's code reads it here.
+  let lifecycle: WorkroomLifecycle
   /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
   /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
   /// forgotten. It fires far more often than the session changes (every live title, every activity
@@ -570,7 +572,7 @@ final class AppStore: ObservableObject {
   /// `PersistentSessionService` has logged the failure either way. Not for a workroom that is gone
   /// or going, which the notice would tell the user to delete.
   func reportRemoteCloseFailure(target: TerminalTarget.ID, title: String) {
-    guard modals.errorMessage == nil, !deletingWorkrooms.contains(target),
+    guard modals.errorMessage == nil, !lifecycle.deletingWorkrooms.contains(target),
       sidebarID(for: target) != nil
     else { return }
     modals.errorMessage =
@@ -579,36 +581,9 @@ final class AppStore: ObservableObject {
   }
 
   var isLoading = false
-  /// Target ids of workrooms whose create is still in flight (issue #116) — must not be deleted while
-  /// their setup runs. Shared across windows (see `ProjectStore`).
-  var creatingWorkrooms: Set<TerminalTarget.ID> {
-    get { projectStore.creatingWorkrooms }
-    set { projectStore.creatingWorkrooms = newValue }
-  }
-  /// Every create's progress (#483), shared across windows (see `ProjectStore`).
-  var creationRuns: [UUID: CreationRun] {
-    get { projectStore.creationRuns }
-    set { projectStore.creationRuns = newValue }
-  }
   /// The step whose log is open in each run's pane in this window (#483, design D9), by run id. Here
   /// rather than in the pane's own state, which goes when the pane's id becomes the workroom's.
   var expandedCreationLogs: [UUID: String] = [:]
-  /// The run each pane belongs to (#483), shared across windows (see `ProjectStore`).
-  var creationRunForTarget: [TerminalTarget.ID: UUID] {
-    get { projectStore.creationRunForTarget }
-    set { projectStore.creationRunForTarget = newValue }
-  }
-  /// Target ids of workrooms with an in-flight optimistic deletion — filtered out of every reload so a
-  /// stale `list` can't resurrect them (the create/delete race). Shared across windows.
-  var deletingWorkrooms: Set<TerminalTarget.ID> {
-    get { projectStore.deletingWorkrooms }
-    set { projectStore.deletingWorkrooms = newValue }
-  }
-  /// Paths of projects with an in-flight Delete Project, filtered out of every reload (#287).
-  var deletingProjects: Set<String> {
-    get { projectStore.deletingProjects }
-    set { projectStore.deletingProjects = newValue }
-  }
 
   let terminals: TerminalSessions
   /// In-memory notification spine driving the badges + inspector (issue #10); views observe it
@@ -758,20 +733,6 @@ final class AppStore: ObservableObject {
   /// The watcher's local-refresh task — cancel-and-replace so the latest filesystem change wins and
   /// at most one probe from THIS lane is in flight.
   var watchRefreshTask: Task<Void, Never>?
-  /// Live root branch labels: one filesystem watcher per project, pointed at its VCS
-  /// metadata dir (`.git`). A branch switch in the root terminal updates
-  /// the sidebar label immediately, instead of waiting for the throttled on-focus reload. Keyed per
-  /// project (unlike the single `workroomFileWatcher`) because root labels are global, not
-  /// selection-scoped. The watch is naturally quiet — working-tree edits don't touch `.git`,
-  /// only VCS operations do — and resolution is read-only + deduped, so it can't loop or churn.
-  ///
-  /// LOCAL projects only, by design. For a remote clone a worktree's refs live in the same clone as
-  /// the workroom, so this watch collapses into the workroom watch above and there is nothing separate
-  /// to port: the local and remote watch layouts differ on purpose (#211). Every project here is a
-  /// local one today, so the routing needs no host check yet.
-  private var rootBranchWatchers: [Project.ID: HostFileWatcher] = [:]
-  /// Per-project re-resolve task (cancel-and-replace) so a burst of metadata writes resolves once.
-  private var rootBranchRefreshTasks: [Project.ID: Task<Void, Never>] = [:]
   /// When the project list was last loaded — used to throttle the on-focus refresh.
   private var lastLoadAt: Date = .distantPast
   private var pendingLoads = 0
@@ -796,8 +757,6 @@ final class AppStore: ObservableObject {
   /// The remote workrooms waiting on their host for their layout (`hostLayouts.fetching`),
   /// published so their empty pane says so rather than offer a terminal that opens only later.
   var waitingForHostLayout: Set<TerminalTarget.ID> = []
-  /// Set once `endOrphanedSessionsOnce` has run: it is per process, not per window.
-  static var sweptOrphanedSessions = false
   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
   /// never be taken twice.
   var didClaimSession = false
@@ -812,13 +771,14 @@ final class AppStore: ObservableObject {
   #endif
 
   /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`,
-  /// `VCSStatusService.shared` and `RunCommands.shared`; tests build an isolated `AppStore()` (own
-  /// fresh `ProjectStore`, `VCSStatusService` and `RunCommands`), inject `projects`, and drive the
-  /// real recording/navigation paths. A `vcsStatus` brings its own `projectStore`. `init` does no CLI
-  /// work (only `bootstrap()`/`load()` do).
+  /// `VCSStatusService.shared`, `RunCommands.shared` and `WorkroomLifecycle.shared`; tests build an
+  /// isolated `AppStore()` (own fresh `ProjectStore`, `VCSStatusService`, `RunCommands` and
+  /// `WorkroomLifecycle`), inject `projects`, and drive the real recording/navigation paths. A
+  /// `lifecycle` brings its own `vcsStatus`, a `vcsStatus` its own `projectStore` and the lifecycle
+  /// made over it, if any. `init` does no CLI work (only `bootstrap()`/`load()` do).
   init(
     projectStore: ProjectStore? = nil, vcsStatus: VCSStatusService? = nil,
-    runCommands: RunCommands? = nil,
+    runCommands: RunCommands? = nil, lifecycle: WorkroomLifecycle? = nil,
     cli: WorkroomCLIProtocol? = nil, commitHistory: HistoryModel? = nil,
     remoteState: RemoteStateModel? = nil, notifications: NotificationCenterStore? = nil
   ) {
@@ -830,11 +790,15 @@ final class AppStore: ObservableObject {
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
     // The notification list follows the same rule.
     self.notifications = notifications ?? NotificationCenterStore()
-    let store = projectStore ?? vcsStatus?.projectStore ?? ProjectStore()
+    let store =
+      projectStore ?? vcsStatus?.projectStore ?? lifecycle?.projectStore ?? ProjectStore()
     self.projectStore = store
-    let status = vcsStatus ?? VCSStatusService(projectStore: store)
+    let status = vcsStatus ?? lifecycle?.vcsStatus ?? VCSStatusService(projectStore: store)
     precondition(status.projectStore === store, "a window's VCS status is over its own projects")
     self.vcsStatus = status
+    let lifecycle = lifecycle ?? status.lifecycle ?? WorkroomLifecycle(vcsStatus: status)
+    precondition(lifecycle.vcsStatus === status, "a window's lifecycle is over its own VCS status")
+    self.lifecycle = lifecycle
     // `commitHistory` is assigned here (not inline) for the same @MainActor reason: a test injects a
     // stub to observe the live-refresh triggers; otherwise it reads through the services' reader.
     self.commitHistory = commitHistory ?? HistoryModel(resolve: services.vcsReader)
@@ -910,6 +874,15 @@ final class AppStore: ObservableObject {
     self.vcsStatus.register(self) { [weak self] sid, status in
       self?.localStatusDidMerge(status, into: sid)
     }
+    // Every create and delete, from any window, reaches this window's selection, splits, runs and
+    // terminals through the lifecycle.
+    self.lifecycle.register(
+      self, apply: { [weak self] event in self?.handleLifecycleEvent(event) },
+      stopRuns: { [weak self] ids, done in
+        guard let self else { return done() }
+        self.runCommand.gracefullyStopRuns(ids, then: done)
+      },
+      reap: { [weak self] id in await self?.reapTargetLocally(id) })
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
     loadInspectorState()
@@ -1348,14 +1321,14 @@ final class AppStore: ObservableObject {
         // A create's named pane whose workroom a reload hasn't listed (yet, or any more): its run
         // still draws it.
         let id = TargetID.workroom(project: path, name: name)
-        guard creationRunForTarget[id] != nil else { return nil }
+        guard lifecycle.creationRunForTarget[id] != nil else { return nil }
         return TerminalTarget(id: id, title: name, path: path, unavailability: .creating)
       }
       return workroom.target(inProject: path)
     case .creation(let path, let id):
       // R1: a stand-in for the workroom being made. Unavailable, so every local action (terminal,
       // editor, run, status) stays off for it without a check of its own.
-      guard let run = creationRuns[id], run.project.path == path else { return nil }
+      guard let run = lifecycle.creationRuns[id], run.project.path == path else { return nil }
       return TerminalTarget(
         id: TargetID.creation(id), title: run.project.displayName, path: path,
         unavailability: .creating)
@@ -1512,7 +1485,7 @@ final class AppStore: ObservableObject {
     // Include every in-progress creation's target (issue #116): its terminal is withheld during a
     // setup script, so it isn't yet "active" (no terminal), but its chip must still show through setup.
     var active = terminals.activeTargetIDs
-    active.formUnion(creationRunForTarget.keys)
+    active.formUnion(lifecycle.creationRunForTarget.keys)
     // A run's two ids resolve to one pane until the reload that publishes its name: one chip.
     var seen = Set<SidebarID>()
     return Self.orderedActiveTargets(
@@ -1521,7 +1494,8 @@ final class AppStore: ObservableObject {
     .compactMap { tid in
       // A create before its name lands (#483) has no workroom yet: its chip is its `.creation` pane.
       guard
-        let sid = sidebarID(for: tid) ?? creationRun(forTargetID: tid).map(paneID(of:)),
+        let sid = sidebarID(for: tid)
+          ?? lifecycle.creationRun(forTargetID: tid).map(lifecycle.paneID(of:)),
         let target = target(for: sid), seen.insert(sid).inserted
       else { return nil }
       return (sid, target)
@@ -1624,7 +1598,7 @@ final class AppStore: ObservableObject {
       pendingRestoreSelection = nil
     }
     if projectStore.projects.isEmpty {
-      await Self.claimProvisionedOnce(cli)
+      await lifecycle.claimProvisionedOnce(cli)
       await load(warnings: "none")
       await load(warnings: "fast")
     } else {
@@ -1639,36 +1613,6 @@ final class AppStore: ObservableObject {
     await load(warnings: "fast")
   }
 
-  private static var claimingProvisioned: Task<Void, Never>?
-  private static let configLogger = Logger(
-    subsystem: "com.developwithstyle.workroom", category: "config")
-
-  /// Once per launch, before a Dev build first lists its projects: takes what it made out of the
-  /// config Release and Nightly share, into its own (`WorkroomCLI.configPath`), so they stop
-  /// showing its remote workrooms and stop refusing creates over its bases. Never in a test
-  /// process, which would move the developer's real entries. A failure is logged and tried again
-  /// at the next launch: the move is idempotent.
-  static func claimProvisionedOnce(
-    _ cli: any WorkroomCLIProtocol, bundleID: String? = Bundle.main.bundleIdentifier,
-    isTestProcess: Bool = AppEnvironment.current.isTestProcess
-  ) async {
-    guard !isTestProcess, let bundleID, WorkroomCLI.configPath(bundleID: bundleID) != nil
-    else { return }
-    let task =
-      claimingProvisioned
-      ?? Task {
-        do {
-          try await cli.claimProvisioned(
-            from: WorkroomCLI.sharedConfigPath, provisioner: bundleID)
-        } catch {
-          configLogger.error(
-            "claiming this build's remote entries: \(error.localizedDescription, privacy: .public)")
-        }
-      }
-    claimingProvisioned = task
-    await task.value
-  }
-
   /// Reload only if it's been a while since the last load. Driven by the app regaining
   /// focus, so alt-tabbing back doesn't fork a git process per project every time.
   func reloadIfStale(minInterval: TimeInterval = 4) async {
@@ -1679,7 +1623,7 @@ final class AppStore: ObservableObject {
     await load(warnings: "fast", surfaceErrors: false)
   }
 
-  private func load(warnings: String, surfaceErrors: Bool = true) async {
+  func load(warnings: String, surfaceErrors: Bool = true) async {
     // In UI-test fixture mode every load resolves to the same fake projects — never shell out to
     // the CLI (so an on-focus `reloadIfStale` can't replace the fixture with the real config).
     #if DEBUG
@@ -1760,14 +1704,14 @@ final class AppStore: ObservableObject {
       projectStore.projects = fixtures
       // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
       if let pulled = UITestFixture.imagePull, let project = fixtures.first,
-        !creationRuns.values.contains(where: { $0.project.path == project.path })
+        !lifecycle.creationRuns.values.contains(where: { $0.project.path == project.path })
       {
         let run = CreationRun(
           project: project, kind: .container(.docker), splitAnchor: nil, previousSelection: nil)
         run.begin("repository")
         run.begin("image")
         run.pullFraction = pulled
-        register(run)
+        lifecycle.register(run)
       }
       // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
       // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
@@ -1877,9 +1821,9 @@ final class AppStore: ObservableObject {
                 run.append("Running setup script…", to: "script")
               }
               run.setName(workroom.name)
-              creationRuns[run.id] = run
-              creationRunForTarget[target.id] = run.id
-              creatingWorkrooms.insert(target.id)
+              lifecycle.creationRuns[run.id] = run
+              lifecycle.creationRunForTarget[target.id] = run.id
+              lifecycle.creatingWorkrooms.insert(target.id)
             }
             // Second-group scenario: a window holds SEVERAL split groups, so seed a second one from two
             // more workrooms (needs `-WorkroomUITestWorkroomCount 3`). Both groups persist; the visible
@@ -1936,9 +1880,10 @@ final class AppStore: ObservableObject {
     // Before publishing, so a remote workroom's panes find its host when they mount (#253).
     // No sweep while a delete is in flight: `fresh` leaves out hosts config still records, and a
     // delete that fails keeps them (#296).
-    RemoteHosts.shared.adopt(fresh, sweep: deletingProjects.isEmpty && deletingWorkrooms.isEmpty)
+    let deleting = !lifecycle.deletingProjects.isEmpty || !lifecycle.deletingWorkrooms.isEmpty
+    RemoteHosts.shared.adopt(fresh, sweep: !deleting)
     // Older builds' base machines go, once per launch; the same in-flight-delete hold as the sweep.
-    if deletingProjects.isEmpty && deletingWorkrooms.isEmpty {
+    if !deleting {
       BaseRetirement.retireOnce(fresh, effects: BaseRetirement.live(cli: cli)) { [weak self] in
         Task { await self?.reload() }
       }
@@ -2011,8 +1956,8 @@ final class AppStore: ObservableObject {
     {
       modals.pendingWorkroomLabel = nil
     }
-    // Keep the live root-branch watchers in sync with the project set (start new, drop departed).
-    updateRootBranchWatches()
+    // Keep the app's root-branch watchers in sync with the project set (start new, drop departed).
+    lifecycle.updateRootBranchWatches()
     // Rehydrate this window's panes (issue #46). LAST, and race-free by construction rather than by
     // timing: a pane only mounts once `selectedTargetID` is non-nil AND SwiftUI has rendered, neither
     // of which can happen inside this synchronous main-actor body. By the time
@@ -2022,24 +1967,13 @@ final class AppStore: ObservableObject {
     endOrphanedSessionsOnce(in: fresh)
   }
 
-  /// Runs the remote-host sweep a reload held back while a delete was in flight (#296), once the
-  /// last tombstone lifts. It reads config afresh rather than trusting `projects`, which can still
-  /// hide a failed sibling delete's hosts when that delete's own reload failed. A failed delete's
-  /// reload does this itself, and `apply` holds the sweep again if another delete has begun.
-  private func runHeldHostSweep() async {
-    guard deletingProjects.isEmpty, deletingWorkrooms.isEmpty,
-      RemoteHosts.shared.sweepHeld
-    else { return }
-    await load(warnings: "fast", surfaceErrors: false)
-  }
-
   /// Remove projects and workrooms with an in-flight deletion from the accepted listing. The same
   /// accepted path set filters the already-normalized routing entries before projects are
   /// published.
   private func applyingDeletionTombstones(_ projects: [Project]) -> [Project] {
-    let deletingProjects = deletingProjects
+    let deletingProjects = lifecycle.deletingProjects
     let projects = projects.filter { !deletingProjects.contains($0.path) }
-    let tombstoned = deletingWorkrooms
+    let tombstoned = lifecycle.deletingWorkrooms
     guard !tombstoned.isEmpty else { return projects }
     return projects.map { project in
       let kept = project.workrooms.filter {
@@ -2115,60 +2049,20 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Reconcile the per-project root-branch watchers with the current project list: ensure a watcher
-  /// for each project (pointed at its `.git` metadata dir) and tear down watchers for projects
-  /// that went away. Called from `apply` so the watch set tracks the live projects. No-op when the
-  /// services seed statuses (the fixture's temp-dir paths aren't real repos — match
-  /// `resolveBranches`, which skips them too).
-  func updateRootBranchWatches() {
-    guard vcsStatus.probesRepositories else {
-      for w in rootBranchWatchers.values { w.stop() }
-      rootBranchWatchers.removeAll()
-      for t in rootBranchRefreshTasks.values { t.cancel() }
-      rootBranchRefreshTasks.removeAll()
-      return
-    }
-    let live = Set(projectStore.projects.map(\.id))
-    for id in rootBranchWatchers.keys where !live.contains(id) {
-      rootBranchWatchers[id]?.stop()
-      rootBranchWatchers[id] = nil
-      rootBranchRefreshTasks[id]?.cancel()
-      rootBranchRefreshTasks[id] = nil
-    }
-    for p in projectStore.projects {
-      guard let dir = Self.vcsMetadataDir(path: p.path, vcs: p.vcs) else { continue }
-      let id = p.id
-      let watcher =
-        rootBranchWatchers[id]
-        ?? HostFileWatcher { [weak self] _, _ in self?.handleRootBranchChange(projectID: id) }
-      rootBranchWatchers[id] = watcher
-      watcher.start(path: dir)
-    }
-  }
-
-  /// The VCS metadata directory whose changes signal a root branch move: `.git` for git. Watching
-  /// this — not the project root — keeps the watch quiet (working-tree edits don't touch it; only VCS
-  /// operations do). nil for an unknown vcs. `nonisolated` (pure) so it's directly unit-testable.
-  nonisolated static func vcsMetadataDir(path: String, vcs: String) -> String? {
-    vcs == "git" ? (path as NSString).appendingPathComponent(".git") : nil
-  }
-
-  /// Re-resolve one project's root branch after a change under its VCS metadata dir, writing
-  /// the label only if it actually changed (so VCS-internal churn that leaves the branch unchanged
-  /// doesn't invalidate the sidebar). Cancel-and-replace per project so a write burst resolves once;
-  /// `.none` never clobbers a prior label (matches `resolveBranches`).
+  /// This window's part of a change under a project's VCS metadata dir, which the app's one watch
+  /// (`WorkroomLifecycle.updateRootBranchWatches`) hands every window before it re-resolves the
+  /// root label once.
   func handleRootBranchChange(projectID: Project.ID) {
     guard vcsStatus.probesRepositories,
       let p = projectStore.projects.first(where: { $0.id == projectID })
     else { return }
     // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / ref
     // update in the project or one of its workrooms (git worktree refs land in the shared `.git`, so
-    // they surface here even though nothing lands under the workroom dir). If the inspector is *visible* (not merely the active section — that
-    // persists while hidden), showing History, and its target belongs to THIS project, repaint the
-    // log. Deliberately BEFORE the label-resolve task below and independent of it: a normal commit
-    // usually leaves the branch label unchanged, so gating this on the label actually
-    // changing (the `unchanged → return` at the end) would skip the main case. The read is
-    // read-only, so it can't re-fire this watcher.
+    // they surface here even though nothing lands under the workroom dir). If the inspector is
+    // *visible* (not merely the active section — that persists while hidden), showing History, and
+    // its target belongs to THIS project, repaint the log. Independent of the label: a normal commit
+    // usually leaves the branch label unchanged, so gating this on the label actually changing would
+    // skip the main case. The read is read-only, so it can't re-fire this watcher.
     if inspectorIsVisible, historySectionShown,
       inspectorTargetID?.belongsToProject(p.path) == true
     {
@@ -2182,16 +2076,6 @@ final class AppStore: ObservableObject {
       inspectorTargetID?.belongsToProject(p.path) == true
     {
       remoteState.refresh(force: true)
-    }
-    let resolver = self.resolver
-    rootBranchRefreshTasks[projectID]?.cancel()
-    rootBranchRefreshTasks[projectID] = Task { [weak self] in
-      let ref = await resolver.resolve(path: p.path, vcs: p.vcs)
-      guard let self, !Task.isCancelled else { return }
-      // Keep the prior label; an unchanged one is not written, so the store does not churn.
-      if ref.kind == .none, self.vcsStatus.rootRefs[projectID] != nil { return }
-      if self.vcsStatus.rootRefs[projectID] == ref { return }
-      self.vcsStatus.rootRefs[projectID] = ref
     }
   }
 
@@ -2247,104 +2131,78 @@ final class AppStore: ObservableObject {
     }
   }
 
-  // Workroom creation's stored state. Its code is in `AppStore+WorkroomCreation.swift`.
+  // MARK: Creates and deletes
 
-  /// How long a finished create's checklist stays on screen before the workroom's own UI replaces
-  /// it, when it closes automatically (design D13). Tests shorten it.
-  var creationSuccessHold: Duration = .milliseconds(1500)
+  // The flows are the lifecycle's (`WorkroomLifecycle+Create`, `WorkroomLifecycle+Delete`). This
+  // window is the `LifecycleWindow` of the ones it asks for, and applies what every create and
+  // delete does to it (`handleLifecycleEvent`).
 
-  /// Whether a finished create's checklist closes by itself, else it waits for Done. Tests replace it.
-  var closesFinishedCreations: () -> Bool = { Defaults[.closeCreationPaneWhenDone] }
-
-  /// Removes the workroom from the sidebar immediately, then runs its teardown (script +
-  /// workspace removal) in the background. On success the optimistic removal already
-  /// matches reality; on failure we reload (so it reappears if it still exists) and
-  /// surface the error.
-  /// `skipTeardown` runs no teardown script: Delete Anyway, after the script failed.
-  func deleteWorkroom(_ workroom: Workroom, in project: Project, skipTeardown: Bool = false) {
-    let sid = SidebarID.workroom(project: project.path, name: workroom.name)
-    let targetID = TargetID.workroom(project: project.path, name: workroom.name)
-    // Don't delete a workroom whose create is still in flight (issue #116) — its setup script is
-    // running against the worktree, so tearing it down now would race the script. The delete
-    // affordances are disabled while creating; this is the chokepoint that guarantees it.
-    guard !isCreatingWorkroom(workroom, in: project) else { return }
-    // A remote workroom's delete takes its host down (#253): what that needs is checked before the
-    // optimistic removal below forgets its label.
-    var remote: RemoteProvisioning.Environment?
-    if let host = workroom.host {
-      do {
-        remote = try RemoteHosts.shared.environment(toDelete: [host])?.environment(for: host)
-      } catch {
-        present(error)
-        modals.errorTitle = "Can't delete \(workroom.displayName)"
-        return
-      }
+  /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
+  /// through the CLI, which owns it so `workroom create` in a terminal agrees.
+  /// Returns the CLI's error when it refused, which this window shows unless `presentingError` is
+  /// false (Settings ▸ Projects shows it by the field).
+  @discardableResult
+  func setBaseBranch(
+    _ branch: String?, forProject projectPath: String, presentingError: Bool = true
+  ) async -> String? {
+    let trimmed = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+    var refused: String?
+    do {
+      try await cli.setBaseBranch(
+        project: projectPath, branch: trimmed?.isEmpty == false ? trimmed : nil)
+    } catch {
+      refused = WorkroomLifecycle.errorText(error)
+      if presentingError { present(error) }
     }
-    // Was the deleted workroom the one selected in *this* window? Captured before `detachTarget`
-    // mutates selection, so the issue #80 fallback below can re-point only when the delete left us
-    // with nothing selected (a solo selected workroom — a split member yields to its survivor).
-    let wasSelectedHere = selectedTargetID == sid
-    // Optimistic shared-model removal, visible in every window: drop it from the project list and its
-    // shared VCS/CI status now (snappy UI). Terminals stay alive for the graceful stop; the reap +
-    // VCS teardown follow once the process exits, so a dev server isn't orphaned against a deleted dir.
-    // Tombstone it first so a concurrent reload's stale `list` snapshot can't resurrect it (the
-    // create/delete race) — `apply` filters tombstoned workrooms until the teardown completes.
-    deletingWorkrooms.insert(targetID)
-    removeWorkroomLocally(workroom, in: project)
-    vcsStatus.workroomStatuses[sid] = nil
-    // Clear the deleted workroom from EVERY window's split + selection (issue #70, OV #7) — another
-    // window may have had it open/selected; "stale-id self-heal" only fixes model lookup, not live
-    // surfaces or processes.
-    let stores = affectedStores
-    for store in stores { store.detachTarget(sid) }
-    // If deleting the selected workroom left this window with no selection (the solo case — a split
-    // member already yielded to its survivor, so selection is non-nil and we skip), land on the
-    // rightmost remaining tab rather than the bare launch state — the same fallback closing the last
-    // panel uses (issue #80). `displayedWorkroomTargets` already excludes the just-removed workroom.
-    reselectAfterWorkroomDetached(wasSelectedHere: wasSelectedHere)
-    // Ctrl-C the run command and reap the surfaces in every window that held this workroom, then run
-    // the VCS teardown once — no dev server in any window left running against the deleted directory
-    // (issue #7/#70). No live run command anywhere → immediate.
-    stopRunsAcrossWindows([targetID], stores: stores) { [weak self] in
-      Task {
-        for store in stores { await store.reapTargetLocally(targetID) }
-        self?.startWorkroomTeardown(
-          workroom, in: project, remote: remote, skipTeardown: skipTeardown)
-      }
+    await reload()
+    return refused
+  }
+
+  func openCreationPane(_ pane: SidebarID, in project: Project, beside anchor: SidebarID?) {
+    selectedProjectID = project.id
+    let landedInSplit =
+      anchor.map {
+        insertWorkroomSplit(
+          pane, beside: $0, edge: .right, destinationRect: workroomPaneRect(for: $0))
+      } ?? false
+    if !landedInSplit { selectedTargetID = pane }
+  }
+
+  func closeCreationPane(_ pane: SidebarID, returningTo previous: SidebarID?) {
+    if workroomSplit(containing: pane) != nil {
+      removeWorkroomSplitMember(pane)
+    } else if selectedTargetID == pane {
+      selectedTargetID = previous.flatMap { target(for: $0) == nil ? nil : $0 }
     }
   }
 
-  /// Self plus every other window's store, de-duplicated by identity (issue #70). In tests no windows
-  /// are registered, so this is just `[self]` and single-window behaviour is unchanged.
-  var affectedStores: [AppStore] {
-    var seen: Set<ObjectIdentifier> = [ObjectIdentifier(self)]
-    return [self]
-      + WindowRegistry.shared.allStores.filter { seen.insert(ObjectIdentifier($0)).inserted }
+  /// What a create or delete in any window does to this one (`WorkroomLifecycle.Event`), applied
+  /// the moment the lifecycle hands it over.
+  private func handleLifecycleEvent(_ event: WorkroomLifecycle.Event) {
+    switch event {
+    case .targetRemoved(let sid):
+      detachTarget(sid)
+    case .paneReplaced(let old, let new):
+      replacePane(old, with: new)
+    case .rootBranchChanged(let projectID):
+      handleRootBranchChange(projectID: projectID)
+    }
   }
 
   /// Per-window: drop a target from this window's split, then clear selection if it pointed there
-  /// (issue #70). Used by the delete flows to clean up every window that held the target.
+  /// (issue #70). A create's pane takes the step whose log this window had open with it. Every
+  /// window applies it when the lifecycle removes a target (`.targetRemoved`).
   func detachTarget(_ sid: SidebarID) {
+    if case .creation(_, let id) = sid { expandedCreationLogs[id] = nil }
     removeWorkroomSplitMember(sid)
     if selectedTargetID == sid { selectedTargetID = nil }
-    // Drop its create's run too (issue #167, #483). Its process has already ended — Delete Workroom
-    // on a failed setup script is how the run's own pane offers this — and nothing else would remove
-    // it, leaving `isCreationBlocking` true for that project+name, so a regenerated same-name
-    // workroom would mount withheld, under a stale checklist.
-    if let tid = sid.targetID { discardCreationRun(forTargetID: tid) }
   }
 
-  /// Gracefully stop `ids`' run commands across the given windows, then run `then` once all have
-  /// stopped (issue #7/#70) — so the VCS teardown never deletes a directory a dev server still holds.
-  private func stopRunsAcrossWindows(
-    _ ids: [TerminalTarget.ID], stores: [AppStore], then: @escaping () -> Void
-  ) {
-    let group = DispatchGroup()
-    for store in stores {
-      group.enter()
-      store.runCommand.gracefullyStopRuns(ids) { group.leave() }
-    }
-    group.notify(queue: .main, execute: then)
+  /// Puts `new` wherever `old` is in this window: the selection, or its split member. Every window
+  /// applies it when the lifecycle swaps a create's pane (`.paneReplaced`).
+  func replacePane(_ old: SidebarID, with new: SidebarID) {
+    if selectedTargetID == old { withHistorySuppressed { selectedTargetID = new } }
+    workroomSplits = workroomSplits.map { $0.contains(old) ? $0.replacingLeaf(old, with: new) : $0 }
   }
 
   /// Reaps a single terminal target's in-app surface and clears all the per-target state
@@ -2365,60 +2223,6 @@ final class AppStore: ObservableObject {
     services.notifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
   }
 
-  /// Run the VCS teardown (worktree/workspace removal) in the background, surfacing any failure with
-  /// its captured output in an alert. Split out of `deleteWorkroom` so the run command can stop first
-  /// (issue #7) — the worktree must not be deleted while its dev server still holds the directory.
-  private func startWorkroomTeardown(
-    _ workroom: Workroom, in project: Project, remote: RemoteProvisioning.Environment?,
-    skipTeardown: Bool
-  ) {
-    let targetID = TargetID.workroom(project: project.path, name: workroom.name)
-    Task {
-      let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
-      do {
-        if let host = workroom.host {
-          try await RemoteWorkrooms.delete(
-            workroom.name, host: host, environment: remote,
-            recorder: remoteRecorder(project: project.path),
-            teardown: Self.remoteTeardown(
-              of: workroom, in: project, log: log, skip: skipTeardown, cli: cli))
-        } else {
-          try await cli.delete(
-            name: workroom.name, project: project.path, skipTeardown: skipTeardown
-          ) { text in
-            DispatchQueue.main.async { log.append(text) }
-          }
-        }
-        // Teardown persisted (the workroom is gone from config). Reload BEFORE lifting the
-        // tombstone: a read issued before config dropped the workroom could otherwise publish it
-        // once the tombstone is gone (#295). This newer read supersedes it. Quiet: a failed `list`
-        // must not report a delete that succeeded as an error.
-        await load(warnings: "fast", surfaceErrors: false)
-        deletingWorkrooms.remove(targetID)
-        await runHeldHostSweep()
-      } catch {
-        // Teardown failed → the workroom still exists. Clear the tombstone BEFORE reloading so the
-        // reload's `apply` doesn't filter it out — it must reappear in the sidebar.
-        deletingWorkrooms.remove(targetID)
-        await reload()
-        presentTeardownFailure(workroom, in: project, error: error, log: log)
-      }
-    }
-  }
-
-  /// A remote workroom's teardown script, run on its host before the host goes, its output into
-  /// `log`: the checkout's copy, else the project root's.
-  nonisolated static func remoteTeardown(
-    of workroom: Workroom, in project: Project, log: ScriptLogSession?, skip: Bool,
-    cli: any WorkroomCLIProtocol
-  ) -> RemoteWorkrooms.Teardown {
-    RemoteWorkrooms.Teardown(
-      path: workroom.path,
-      rootScript: URL(fileURLWithPath: project.path + "/scripts/workroom_teardown"), skip: skip,
-      judge: judge(.teardown, in: project.path, cli: cli),
-      onLine: { line in DispatchQueue.main.async { log?.append(line) } })
-  }
-
   /// Drops a workroom from the in-memory project list so the sidebar updates instantly. `internal`
   /// so the label-cleanup it performs is a unit-test seam (mirrors `removeProjectLocally`).
   func removeWorkroomLocally(_ workroom: Workroom, in project: Project) {
@@ -2431,252 +2235,6 @@ final class AppStore: ObservableObject {
     // Same reasoning as the label: a per-workroom cache keyed by `SidebarID` with no other pruning,
     // so without this it outlives the workroom and a same-named recreate inherits its branch name.
     setResolvedBranchName(nil, for: .workroom(project: project.path, name: workroom.name))
-  }
-
-  /// Teardown failed (it ran in the background): the error sheet says why (which script, and that it
-  /// exited non-zero), with what the script printed in a scrolling box beneath.
-  private func presentTeardownFailure(
-    _ workroom: Workroom, in project: Project, error: Error, log: ScriptLogSession
-  ) {
-    present(error)
-    modals.errorTitle = "Teardown of ‘\(workroom.name)’ failed"
-    modals.errorLog = Self.scriptOutput(log)
-    if workroom.isSSH {
-      modals.errorDetails =
-        (modals.errorDetails ?? "") + "\nDelete Anyway removes this workroom from Workroom. "
-        + "The folder \(workroom.path) on \(workroom.host?.sshDestination ?? "its SSH host") may remain."
-    } else {
-      guard Self.isTeardownFailure(error) else { return }
-    }
-    let name = workroom.name
-    let path = project.path
-    // As it is now, after the failure's reload, not as it was when the delete began.
-    let deleteAgain = { [weak self] (skipTeardown: Bool) in
-      guard let self, let project = self.projectStore.projects.first(where: { $0.path == path }),
-        let workroom = project.workrooms.first(where: { $0.name == name })
-      else { return }
-      self.deleteWorkroom(workroom, in: project, skipTeardown: skipTeardown)
-    }
-    let deleteAnyway = ErrorAction(label: "Delete Anyway") { deleteAgain(true) }
-    modals.errorAction = deleteAnyway
-    guard let script = Self.untrustedTeardown(error) else { return }
-    // The CLI's own message tells a terminal what to type: say why the delete stopped, in the app's
-    // terms. A new message drops what was set after it, so the rest goes back after.
-    let details = modals.errorDetails
-    modals.errorMessage = Self.teardownApprovalMessage(
-      script, workroom: workroom.displayName, project: project)
-    modals.errorDetails = details
-    modals.errorAction = deleteAnyway
-    // The script never ran, so it printed nothing: its text is what to read before approving it.
-    modals.errorTitle = "Approve the teardown script?"
-    modals.errorLog = script.visibleText
-    modals.errorScriptName = script.name
-    let cli = self.cli
-    modals.errorApproval = ErrorAction(label: "Approve") { [weak self] in
-      Task {
-        do {
-          try await cli.trustScript(script.name, text: script.approvalBytes, project: path)
-          deleteAgain(false)
-        } catch {
-          self?.present(error)
-          self?.modals.errorTitle = "Couldn't approve the teardown script"
-        }
-      }
-    }
-  }
-
-  /// Why a delete stopped on a teardown script this Mac has not approved (#363), which workroom of
-  /// which project, and the ways on, as the creation pane words its setup script.
-  nonisolated static func teardownApprovalMessage(
-    _ script: ScriptTrust, workroom: String, project: Project
-  ) -> String {
-    "Deleting ‘\(workroom)’ in \(project.displayName) runs scripts/\(script.name) "
-      + "\(script.originLabel) first, and it is new, or changed since it was approved on this Mac. "
-      + "Read it, then approve it to run it and delete the workroom, or delete without running it."
-  }
-
-  /// The teardown script a delete refused, when this Mac has not approved it (#363).
-  nonisolated static func untrustedTeardown(_ error: Error) -> ScriptTrust? {
-    if case RemoteWorkrooms.Failure.teardownScriptNotTrusted(let script) = error { return script }
-    return WorkroomCLIError.untrustedScript(error)
-  }
-
-  /// Whether a delete failed in its teardown script, so Delete Anyway (no script) can get it
-  /// through: the script failed or couldn't start, ran out of time, its host couldn't be reached,
-  /// or this Mac has not approved it. A failure elsewhere (git, config) would fail the same way
-  /// without the script.
-  nonisolated static func isTeardownFailure(_ error: Error) -> Bool {
-    // ScriptNotTrusted without its script: one Workroom won't read (a device, over 1 MiB).
-    if case WorkroomCLIError.cli(let kind, _) = error {
-      return kind == "TeardownScriptFailed" || kind == "ScriptNotTrusted"
-    }
-    if case WorkroomCLIError.timedOut = error { return true }
-    if case RemoteWorkrooms.Failure.teardownScriptFailed = error { return true }
-    return untrustedTeardown(error) != nil
-  }
-
-  /// A run's captured script output, or nil when it printed nothing.
-  private static func scriptOutput(_ log: ScriptLogSession?) -> String? {
-    let output = (log?.lines.map(\.text).joined(separator: "\n") ?? "").trimmingCharacters(
-      in: .whitespacesAndNewlines)
-    return output.isEmpty ? nil : output
-  }
-
-  /// Removes a project from the sidebar immediately, then runs the chosen `scope` in the
-  /// background. Mirrors `deleteWorkroom`: optimistic removal + scoped selection/split/status
-  /// cleanup, then graceful run-stop → in-app reap → CLI.
-  ///
-  /// - `.configOnly`: drop from config only; nothing on disk is touched.
-  /// - `.workrooms`: also hard-delete every workroom's worktree dir (branches kept) — unchanged.
-  /// - `.fromDisk`: the CLI runs teardowns + drops config and returns the directories
-  ///   (project root + workrooms); the app then moves them to the **Bin** (issue #108).
-  ///
-  /// Failure handling differs by phase: if the CLI throws (teardown/guard failure, or a
-  /// config-only/workrooms delete failure) the config was NOT changed, so we `reload()` (the
-  /// project reappears if it still exists) and surface the error. For `.fromDisk`, once the CLI
-  /// returns the config is already dropped — a subsequent Trash failure leaves the project removed
-  /// and is reported on its own (we do NOT restore it), listing the dirs left behind.
-  /// `skipTeardown` runs no workroom's teardown script: Delete Anyway, after one failed.
-  func deleteProject(_ project: Project, scope: DeleteProjectScope, skipTeardown: Bool = false) {
-    // Refuse while anything is being created in this project (issue #167). `deleteWorkroom` has
-    // guarded its own target since issue #116, but nothing guarded the PROJECT — so a project could
-    // be torn down (`--from-disk` trashes the project root itself) while a setup script was writing a
-    // worktree underneath it, and the in-flight landing would then resume and record creation state
-    // for a project that no longer exists. Unlike `deleteWorkroom`'s silent `return`, this one speaks:
-    // the user just typed the project name to confirm, so a no-op would read as a broken button.
-    // O1 (#483): any running create, named or not. Before it has a name, nothing else says so.
-    let creatingHere = creatingWorkrooms.contains {
-      Self.projectPath(of: sidebarID(for: $0)) == project.path
-    }
-    guard !hasRunningCreation(inProject: project.path), !creatingHere else {
-      modals.errorTitle = "Can't delete \(project.displayName)"
-      modals.errorMessage =
-        "A workroom is still being created in this project. Wait for it to finish, then try again."
-      return
-    }
-    // Another window's confirm dialog can outlive the first delete (#287).
-    guard !deletingProjects.contains(project.path) else {
-      modals.errorTitle = "Can't delete \(project.displayName)"
-      modals.errorMessage = "\(project.displayName) is already being deleted."
-      return
-    }
-    // Every scope takes the project's remote workrooms and its base down (#253), even config-only:
-    // with its record dropped, a box would be left to the next launch's sweep.
-    // What that needs is checked here, before the local cleanup below kills this project's shells
-    // and forgets its labels.
-    let remoteWorkrooms = project.workrooms.filter(\.isRemote)
-    // An older build's bases that launch has not retired yet (its provider signed out, say).
-    let bases = BaseRetirement.bases(of: project.host)
-    let remote: RemoteHosts.Deletion?
-    do {
-      remote = try RemoteHosts.shared.environment(
-        toDelete: remoteWorkrooms.compactMap(\.host) + bases)
-    } catch {
-      present(error)
-      modals.errorTitle = "Can't delete \(project.displayName)"
-      return
-    }
-    // Tombstone it so a reload while the teardown runs can't republish it (#287), the project-level
-    // twin of `deleteWorkroom`'s. Lifted once config has dropped it, or before the failure reload.
-    deletingProjects.insert(project.path)
-    let targetIDs = removeProjectLocally(project)
-    let stores = affectedStores
-    // Clear the project's targets (root + each workroom) from every OTHER window's split + selection
-    // too — `removeProjectLocally` only cleaned up this window (issue #70, OV #7).
-    let sids =
-      [SidebarID.root(project: project.path)]
-      + project.workrooms.map { SidebarID.workroom(project: project.path, name: $0.name) }
-    for store in stores where store !== self {
-      for sid in sids { store.detachTarget(sid) }
-    }
-
-    // ALWAYS stop runs in every window BEFORE any disk teardown so no dev server holds a deleted dir
-    // (issue #7/#70), then reap each target in every window, then run the CLI teardown once.
-    stopRunsAcrossWindows(targetIDs, stores: stores) { [weak self] in
-      guard let self else { return }
-      Task {
-        for store in stores { for id in targetIDs { await store.reapTargetLocally(id) } }
-        // Every scope destroys remote workrooms' machines, each after its teardown, so any delete
-        // with one keeps a log; config-only runs no local teardown.
-        let log =
-          scope == .configOnly && remoteWorkrooms.isEmpty
-          ? nil : ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown")
-        do {
-          // The CLI refuses a project with remote entries in every mode, and `--from-disk` would
-          // hand a remote path to the Bin, so they go first: the workrooms, then the base, since
-          // config keeps a project with a base when its last workroom is removed.
-          let recorder = self.remoteRecorder(project: project.path)
-          for workroom in remoteWorkrooms {
-            guard let host = workroom.host else { continue }
-            try await RemoteWorkrooms.delete(
-              workroom.name, host: host, environment: remote?.environment(for: host),
-              recorder: recorder,
-              teardown: Self.remoteTeardown(
-                of: workroom, in: project, log: log, skip: skipTeardown, cli: self.cli))
-          }
-          // Each base on its own runtime and context (#309). Config keeps the ones still to go, so
-          // a failure part-way leaves what is live recorded for the next delete.
-          let cli = self.cli
-          var effects = BaseRetirement.live(cli: cli)
-          effects.destroy = { base in
-            guard let id = base.id, let environment = remote?.environment(for: base) else {
-              throw RemoteWorkrooms.Failure.signedOut
-            }
-            try await RemoteProvisioning.tearDown(host: .remote(id), in: environment)
-          }
-          _ = try await BaseRetirement.retireBases(of: project, effects: effects)
-          // What that leaves can't be told apart (no id) or is another build's and not live (a live
-          // one was refused above): the record goes with the project.
-          if bases.contains(where: { $0.id == nil || !RemoteWorkrooms.ownsHost($0) }) {
-            try await cli.setHost(project: project.path, workroom: nil, descriptor: nil)
-          }
-          let trashPaths = try await self.cli.deleteProject(
-            project.path,
-            withWorkrooms: scope == .workrooms,
-            fromDisk: scope == .fromDisk, skipTeardown: skipTeardown
-          ) { text in DispatchQueue.main.async { log?.append(text) } }
-          if scope == .fromDisk {
-            // CLI already ran teardowns + dropped config; move the returned dirs to the Bin.
-            // Before the reload below suspends, so nothing can re-register them in between.
-            let failed = self.trashToBin(trashPaths)
-            if !failed.isEmpty { self.presentTrashFailure(project, failedPaths: failed) }
-          }
-          // Reload BEFORE lifting the tombstone: a read issued before config dropped the project
-          // could otherwise publish it once the tombstone is gone. This newer read supersedes it.
-          // Quiet: a failed `list` must not report a delete that succeeded as an error.
-          await self.load(warnings: "fast", surfaceErrors: false)
-          self.deletingProjects.remove(project.path)
-          await self.runHeldHostSweep()
-        } catch {
-          // Before the reload, so the project (still in config) reappears.
-          self.deletingProjects.remove(project.path)
-          await self.reload()
-          self.presentDeleteProjectFailure(project, scope: scope, error: error, log: log)
-        }
-      }
-    }
-  }
-
-  /// Moves each path to the Bin via the injected `services.trasher`, returning the URLs that could NOT be
-  /// moved so the caller can tell the user exactly what was left behind. The project is already
-  /// out of config by this point (the CLI dropped it), so a partial failure does not restore it.
-  /// Internal (not private) so the from-disk trash orchestration is unit-testable with a fake.
-  func trashToBin(_ urls: [URL]) -> [URL] {
-    var failed: [URL] = []
-    for url in urls {
-      do { try services.trasher.trash(url) } catch { failed.append(url) }
-    }
-    return failed
-  }
-
-  /// A from-disk delete dropped the project from config but some directories could not be moved to
-  /// the Bin. Report which ones so the user can move them manually (they are not lost).
-  func presentTrashFailure(_ project: Project, failedPaths: [URL]) {
-    let list = failedPaths.map(\.path).joined(separator: "\n")
-    modals.errorTitle = "Some files of ‘\(project.displayName)’ could not be moved to the Bin"
-    modals.errorMessage =
-      "‘\(project.displayName)’ was removed from Workroom, but these could not be moved to the "
-      + "Bin — move them manually:\n\(list)"
   }
 
   /// Optimistic, synchronous removal of a project from every piece of in-memory state — the
@@ -2702,12 +2260,11 @@ final class AppStore: ObservableObject {
       vcsStatus.workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
       setResolvedBranchName(nil, for: .workroom(project: project.path, name: w.name))
     }
-    // Drop the project's create runs as well — `deleteProject` calls `detachTarget` only on the
-    // OTHER windows, so this is where they go here (issue #167, same reasoning as the labels below:
-    // a same-named recreate must not inherit stale state). Only ended runs can be here: a running
-    // one refuses the delete.
-    for run in creationRuns.values where run.project.path == project.path {
-      discardCreationRun(run)
+    // Drop the project's create runs as well, named or not, in every window (issue #167, same
+    // reasoning as the labels below: a same-named recreate must not inherit stale state). Only ended
+    // runs can be here: a running one refuses the delete.
+    for run in lifecycle.creationRuns.values where run.project.path == project.path {
+      lifecycle.discardCreationRun(run)
     }
     // Drop every label belonging to this project's workrooms (issue #41) — prune-on-load is the
     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
@@ -2727,39 +2284,6 @@ final class AppStore: ObservableObject {
     return targetIDs
   }
 
-  /// Project deletion failed in the background: the error sheet says why, with any captured cascade
-  /// teardown output in a scrolling box beneath. `log` is nil for a config-only delete (no teardown
-  /// ran), which shows the error alone.
-  private func presentDeleteProjectFailure(
-    _ project: Project, scope: DeleteProjectScope, error: Error, log: ScriptLogSession?
-  ) {
-    present(error)
-    modals.errorTitle = "Delete of ‘\(project.displayName)’ failed"
-    modals.errorLog = Self.scriptOutput(log)
-    let ssh = project.workrooms.filter(\.isSSH)
-    guard Self.isTeardownFailure(error) || !ssh.isEmpty else { return }
-    if !ssh.isEmpty {
-      modals.errorDetails =
-        (modals.errorDetails ?? "") + "\nFolders that can't be removed will stay on their hosts:\n"
-        + ssh.map { "\($0.path) on \($0.host?.sshDestination ?? "its SSH host")" }.joined(
-          separator: "\n")
-    }
-    let path = project.path
-    // Says what it does: every remaining workroom's teardown is skipped, not only the one that
-    // failed, as the CLI's `delete-project --skip-teardown` does.
-    modals.errorAction = ErrorAction(label: "Delete Without Teardowns") {
-      [weak self] in
-      // As it is now: a remote workroom taken down before the failure is gone from it (C4).
-      guard let self, let project = self.projectStore.projects.first(where: { $0.path == path })
-      else { return }
-      self.deleteProject(project, scope: scope, skipTeardown: true)
-    }
-  }
-
-  func errorText(_ error: Error) -> String {
-    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-  }
-
   // MARK: Menu-command convenience
 
   /// Open a new terminal tab in the selected target — root or workroom (⌘T).
@@ -2769,7 +2293,7 @@ final class AppStore: ObservableObject {
     // File menu item disables itself on the same predicate (`RootView.terminalInteractionAvailable`),
     // but that is a display rule — this is the chokepoint every caller routes through, the way
     // `startRunCommand` guards the run path rather than trusting its buttons.
-    guard !isCreationBlocking(target.id) else { return }
+    guard !lifecycle.isCreationBlocking(target.id) else { return }
     newTerminal(in: target)
   }
 
@@ -3476,8 +3000,8 @@ final class AppStore: ObservableObject {
     _ action: VCSRemoteAction, on sid: SidebarID, location: RepositoryLocation?
   ) {
     // A FETCH refreshes nothing here. It moves remote refs and touches neither our working copy nor our
-    // CI runs, and `rootBranchWatchers` already watches `refs/remotes` and re-reads on its own. This used
-    // to run a forced app-wide sweep for every action including the AUTOMATIC fetch, and `force` is the
+    // CI runs, and the lifecycle's root-branch watch already watches `refs/remotes` and re-reads on
+    // its own. This used to run a forced app-wide sweep for every action including the AUTOMATIC fetch, and `force` is the
     // one argument that bypasses the CI TTL (`guard !force else { return true }`), so it admitted every
     // workroom whose local read merely succeeded: one background fetch fanned out into a local probe per
     // workroom of every project plus a `gh` probe and a GitHub round trip each, two at a time.
@@ -3525,7 +3049,8 @@ final class AppStore: ObservableObject {
       let branch = ref.kind == .none ? nil : RootPresentation.make(ref).label
       return WorkroomLabel(project: project, branch: branch)
     case .creation(_, let id):
-      return WorkroomLabel(project: project, workroom: creationRuns[id]?.name ?? "New workroom")
+      return WorkroomLabel(
+        project: project, workroom: lifecycle.creationRuns[id]?.name ?? "New workroom")
     case .project:
       return WorkroomLabel(project: project)
     }
@@ -3579,7 +3104,7 @@ final class AppStore: ObservableObject {
 
   func present(_ error: Error) {
     modals.errorTitle = nil  // generic title
-    modals.errorMessage = errorText(error)
+    modals.errorMessage = WorkroomLifecycle.errorText(error)
     modals.errorDetails = Self.errorDetails(error)
   }
 
@@ -3590,6 +3115,9 @@ final class AppStore: ObservableObject {
     return "\(String(reflecting: error))\n\(ns.domain) \(ns.code)"
   }
 }
+
+/// Each window is the `LifecycleWindow` of the creates and deletes asked from it.
+extension AppStore: LifecycleWindow {}
 
 /// The live log for one create/delete run. Lines stream in from the CLI's NDJSON
 /// stderr (see WorkroomCLI). A plain ObservableObject — all mutations happen on the

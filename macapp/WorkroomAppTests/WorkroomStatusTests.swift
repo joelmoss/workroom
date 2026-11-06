@@ -254,17 +254,18 @@ final class WorkroomStatusTests: XCTestCase {
       ])
     store.projectStore.projects = [project]
 
-    store.deleteWorkroom(remote, in: project)
+    store.lifecycle.deleteWorkroom(remote, in: project, from: store)
     XCTAssertEqual(store.projectStore.projects, [project])
     XCTAssertEqual(store.modals.errorTitle, "Can't delete remote")
     XCTAssertTrue(store.modals.errorMessage?.contains("another Workroom build") == true)
 
     store.modals.errorTitle = nil
     store.modals.errorMessage = nil
-    store.deleteProject(project, scope: .configOnly)
+    store.lifecycle.deleteProject(project, scope: .configOnly, from: store)
     XCTAssertEqual(store.projectStore.projects, [project])
     XCTAssertEqual(store.modals.errorTitle, "Can't delete p")
-    XCTAssertTrue(store.deletingProjects.isEmpty, "a refused delete must not tombstone (#287)")
+    XCTAssertTrue(
+      store.lifecycle.deletingProjects.isEmpty, "a refused delete must not tombstone (#287)")
   }
 
   /// A workroom that turns remote is no longer swept, so a reload must drop its last local status

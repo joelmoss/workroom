@@ -117,7 +117,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     store.watchRefreshTask?.cancel()
     store.workroomFileWatcher.stop()
     store.projectStore.projects = []
-    store.updateRootBranchWatches()
+    store.lifecycle.updateRootBranchWatches()
     await store.vcsStatus.statusSweepTask?.value
     await store.selectionStatusTask?.value
     await store.watchRefreshTask?.value

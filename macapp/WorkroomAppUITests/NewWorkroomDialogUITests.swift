@@ -8,7 +8,7 @@ import XCTest
 /// Scope note (no silent cap): this asserts the menu→dialog→filter path. It deliberately does NOT
 /// drive the actual pick→create, because creation calls the real `workroom` CLI against the
 /// fixture's temp dirs — non-hermetic and flaky in a UI test. The create+open wiring is covered by
-/// `ProjectPickerModelTests` (the selection logic) plus the already-tested `AppStore.createWorkroom`.
+/// `ProjectPickerModelTests` (the selection logic) plus the already-tested `WorkroomLifecycle.createWorkroom`.
 ///
 /// Run with `make app-uitest` on a real GUI login session (XCUITest can't drive a headless run), so
 /// this is excluded from the `make app-test` unit gate.

@@ -35,6 +35,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "AppStore": ".environmentObject(store)",
     "ModalState": "store.modals",
     "RunCommandController": "store.runCommand",
+    "WorkroomLifecycle": "store.lifecycle",
     "NotificationCenterStore": "store.notifications",
     "TerminalSessions": ".environmentObject(sessions)",
     "TerminalCodingAgentManager": "sessions.codingAgentManager",

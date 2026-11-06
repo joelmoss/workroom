@@ -435,7 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           setting: Defaults[.quitWithRunningServers],
           hasLiveRuns: RunCommands.shared.hasAnyLiveRun,
           isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: false)
-        AppStore.quitStopsRuns = action == .stop
+        RunCommands.shared.quitStopsRuns = action == .stop
         let group = DispatchGroup()
         group.enter()
         Task {
@@ -618,7 +618,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // Remote workrooms' layouts go to their hosts first, for at most a second (#255, D14), so the
     // session written next marks only what did not get there as stale.
     // Runs this quit stops don't come back, so their tabs are left out of what is saved (#522).
-    AppStore.quitStopsRuns = stoppingRuns
+    RunCommands.shared.quitStopsRuns = stoppingRuns
     let group = DispatchGroup()
     group.enter()
     Task {

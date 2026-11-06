@@ -32,16 +32,16 @@ final class WorkroomFileWatcherTests: XCTestCase {
     XCTAssertTrue(FileTreeModel.isRelevantChange(["/repo/.jj/x"], overflow: true))
   }
 
-  // MARK: - VCS metadata dir (AppStore.vcsMetadataDir — root-branch watch target, #3)
+  // MARK: - VCS metadata dir (WorkroomLifecycle.vcsMetadataDir — root-branch watch target, #3)
 
   func testVCSMetadataDir() {
     // git maps to the metadata dir whose changes signal a branch move.
-    XCTAssertEqual(AppStore.vcsMetadataDir(path: "/repo", vcs: "git"), "/repo/.git")
+    XCTAssertEqual(WorkroomLifecycle.vcsMetadataDir(path: "/repo", vcs: "git"), "/repo/.git")
     // Trailing slash is normalized by appendingPathComponent (no double slash).
-    XCTAssertEqual(AppStore.vcsMetadataDir(path: "/repo/", vcs: "git"), "/repo/.git")
+    XCTAssertEqual(WorkroomLifecycle.vcsMetadataDir(path: "/repo/", vcs: "git"), "/repo/.git")
     // Unknown vcs ⇒ no watch target — including a stale "jj" from an old config.
-    XCTAssertNil(AppStore.vcsMetadataDir(path: "/repo", vcs: "hg"))
-    XCTAssertNil(AppStore.vcsMetadataDir(path: "/repo", vcs: "jj"))
+    XCTAssertNil(WorkroomLifecycle.vcsMetadataDir(path: "/repo", vcs: "hg"))
+    XCTAssertNil(WorkroomLifecycle.vcsMetadataDir(path: "/repo", vcs: "jj"))
   }
 
   // MARK: - WorkroomFileWatcher (real FSEvents)

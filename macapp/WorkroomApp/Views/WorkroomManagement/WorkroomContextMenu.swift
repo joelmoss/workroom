@@ -5,7 +5,7 @@ import WorkroomDomain
 @MainActor
 @ViewBuilder
 func runCommandMenuItems(store: AppStore, target: TerminalTarget) -> some View {
-  let available = target.opensTerminals && !store.isRunBlocked(target.id)
+  let available = target.opensTerminals && !store.lifecycle.isRunBlocked(target.id)
   let configured =
     store.project(forTargetID: target.id).map {
       store.runCommands.hasRunCommand(forProject: $0.path)
@@ -343,5 +343,5 @@ func deleteWorkroomMenuItem(store: AppStore, workroom: Workroom, project: Projec
     Label("Delete Workroom…", systemImage: "trash")
   }
   // Can't delete a workroom while its setup is still running against the worktree (issue #116).
-  .disabled(store.isCreatingWorkroom(workroom, in: project))
+  .disabled(store.lifecycle.isCreatingWorkroom(workroom, in: project))
 }

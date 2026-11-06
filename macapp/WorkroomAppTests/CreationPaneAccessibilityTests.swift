@@ -20,7 +20,7 @@ final class CreationPaneAccessibilityTests: XCTestCase {
     let run = CreationRun(project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
     run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
     run.begin("worktree")
-    store.register(run)
+    store.lifecycle.register(run)
     let sid = SidebarID.creation(project: project.path, id: run.id)
 
     // SwiftUI builds its accessibility nodes only for an assistive client; this attribute, which
@@ -36,6 +36,7 @@ final class CreationPaneAccessibilityTests: XCTestCase {
     .environmentObject(store.modals)
     .environmentObject(store.runCommand)
     .environmentObject(store.runCommands)
+    .environmentObject(store.lifecycle)
     .environmentObject(store.terminals.codingAgentManager)
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)

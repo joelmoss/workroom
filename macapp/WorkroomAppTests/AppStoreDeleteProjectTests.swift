@@ -198,7 +198,7 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     store.services.trasher = fake
     let urls = [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b/c")]
 
-    let failed = store.trashToBin(urls)
+    let failed = store.lifecycle.trashToBin(urls, from: store)
 
     XCTAssertEqual(fake.trashed, urls, "every path must be sent to the Bin, in order")
     XCTAssertTrue(failed.isEmpty, "no failures expected")
@@ -212,7 +212,7 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     store.services.trasher = fake
     let urls = [URL(fileURLWithPath: "/ok"), bad, URL(fileURLWithPath: "/ok2")]
 
-    let failed = store.trashToBin(urls)
+    let failed = store.lifecycle.trashToBin(urls, from: store)
 
     XCTAssertEqual(fake.trashed, urls, "all paths attempted even after a failure")
     XCTAssertEqual(failed, [bad], "only the failing path is reported back")
@@ -222,7 +222,8 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     let store = makeStore([])
     let p = project("/Users/me/dev/app", workrooms: [])
 
-    store.presentTrashFailure(p, failedPaths: [URL(fileURLWithPath: "/Users/me/dev/app")])
+    store.lifecycle.presentTrashFailure(
+      p, failedPaths: [URL(fileURLWithPath: "/Users/me/dev/app")], in: store.modals)
 
     XCTAssertEqual(store.modals.errorTitle, "Some files of ‘app’ could not be moved to the Bin")
     let message = store.modals.errorMessage ?? ""

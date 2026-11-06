@@ -70,8 +70,8 @@ final class DeleteMountsNoPaneTests: XCTestCase {
       splitAnchor: nil, previousSelection: nil)
     run.setName("gone")
     run.fail(.setupScriptFailed(message: "exit 1"))
-    store.creationRuns[run.id] = run
-    store.creationRunForTarget[goneID] = run.id
+    store.lifecycle.creationRuns[run.id] = run
+    store.lifecycle.creationRunForTarget[goneID] = run.id
     store.selectedTargetID = .workroom(project: projectPath, name: "gone")
 
     let hosting = NSHostingView(
@@ -105,7 +105,8 @@ final class DeleteMountsNoPaneTests: XCTestCase {
         workrooms: fixture.project.workrooms.filter { $0.name != "gone" })
     ]
 
-    fixture.store.deleteWorkroom(fixture.project.workrooms[0], in: fixture.project)
+    fixture.store.lifecycle.deleteWorkroom(
+      fixture.project.workrooms[0], in: fixture.project, from: fixture.store)
     await settle()
 
     XCTAssertFalse(fixture.opened().contains(goneID), "opened: \(fixture.opened())")
@@ -118,7 +119,8 @@ final class DeleteMountsNoPaneTests: XCTestCase {
     defer { fixture.window.close() }
     fixture.cli.projectsToList = []
 
-    fixture.store.deleteProject(fixture.project, scope: .configOnly)
+    fixture.store.lifecycle.deleteProject(
+      fixture.project, scope: .configOnly, from: fixture.store)
     await settle()
 
     XCTAssertFalse(fixture.opened().contains(goneID), "opened: \(fixture.opened())")

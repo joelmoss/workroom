@@ -21,6 +21,7 @@ struct ProjectSidebar: View {
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var vcsStatus: VCSStatusService
+  @EnvironmentObject var lifecycle: WorkroomLifecycle
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -169,7 +170,7 @@ struct ProjectSidebar: View {
           }
           // A create with no workroom row yet (R5): before its name lands, or after a failed remote
           // create dropped its record.
-          ForEach(store.provisionalCreationRows(inProject: project.path)) { row in
+          ForEach(lifecycle.provisionalCreationRows(inProject: project.path)) { row in
             provisionalCreationRow(row)
               .listRowInsets(childRowInsets)
               .listRowSeparator(.hidden)
@@ -221,7 +222,7 @@ struct ProjectSidebar: View {
   /// context menu's New Workroom.
   @ViewBuilder
   private func newWorkroomPlaces(in project: Project) -> some View {
-    if let blocked = store.createBlockedReason(in: project) {
+    if let blocked = lifecycle.createBlockedReason(in: project) {
       // Said once for every entry, rather than after each.
       Text(blocked.prefix(1).uppercased() + blocked.dropFirst())
       Divider()
@@ -260,18 +261,18 @@ struct ProjectSidebar: View {
       reason.map { "\(place.displayName) can't be used: \($0)" }
         ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
     )
-    .disabled(reason != nil || !store.canCreateRemoteWorkroom(in: project))
+    .disabled(reason != nil || !lifecycle.canCreateRemoteWorkroom(in: project))
   }
 
   /// New Workroom on this Mac. Creates in one project may overlap, each in its own pane (#483).
   private func newLocalWorkroomButton(_ label: some View, in project: Project) -> some View {
     Button {
-      Task { await store.createWorkroom(in: project) }
+      Task { await lifecycle.createWorkroom(in: project, from: store) }
     } label: {
       label
     }
     .help("A workroom of \(project.displayName) on this Mac")
-    .disabled(store.createBlockedReason(in: project) != nil)
+    .disabled(lifecycle.createBlockedReason(in: project) != nil)
   }
 
   /// New Workroom at `place` (#309, #356): a local container, or a boxd machine, cloned from the
@@ -287,7 +288,7 @@ struct ProjectSidebar: View {
     // once, above the entries.
     let reason = RemoteWorkrooms.unavailability(of: place)
     return Button {
-      Task { await store.createRemoteWorkroom(in: project, place: place) }
+      Task { await lifecycle.createRemoteWorkroom(in: project, place: place, from: store) }
     } label: {
       Text(title ?? reason.map { "\(place.displayName) — \($0)" } ?? place.displayName)
     }
@@ -295,7 +296,7 @@ struct ProjectSidebar: View {
       reason.map { "\(place.displayName) can't be used: \($0)" }
         ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
     )
-    .disabled(reason != nil || !store.canCreateRemoteWorkroom(in: project))
+    .disabled(reason != nil || !lifecycle.canCreateRemoteWorkroom(in: project))
   }
 
   @ViewBuilder
@@ -498,7 +499,7 @@ struct ProjectSidebar: View {
     let targetID = target.id
     // A remote workroom still being made: its row opens its creation pane (#483), but has nothing to
     // drag, label or delete yet.
-    let pending = workroom.host != nil && store.isCreatingWorkroom(workroom, in: project)
+    let pending = workroom.host != nil && lifecycle.isCreatingWorkroom(workroom, in: project)
     let waiting = terminals.blockedTerminalCount(forTargetID: targetID)
     let failed =
       terminals.isProgressFailed(forTargetID: targetID)
@@ -525,7 +526,7 @@ struct ProjectSidebar: View {
       // lines up with the root row's, which has no slot.
       ZStack(alignment: .trailing) {
         // A create's progress, for every kind, while its run lasts (#483).
-        if let run = store.creationRun(for: id) {
+        if let run = lifecycle.creationRun(for: id) {
           CreateStepCircle(run: run)
         } else if waiting == 0, failed || terminals.isRunning(forTargetID: targetID),
           !hovered
@@ -535,7 +536,7 @@ struct ProjectSidebar: View {
         // Hidden while the workroom's setup is still running — it can't be deleted mid-setup (#116).
         DeleteRowButton(
           name: workroom.displayName,
-          visible: hovered && !store.isCreatingWorkroom(workroom, in: project)
+          visible: hovered && !lifecycle.isCreatingWorkroom(workroom, in: project)
         ) {
           store.modals.pendingDeletion = PendingWorkroomDeletion(
             workroom: workroom, project: project)
@@ -590,7 +591,8 @@ struct ProjectSidebar: View {
   /// A create's provisional row (R5, design D18): "New workroom · <destination>", with its step
   /// circle. Selecting it shows the create's pane in this window. It has no menu: there is nothing
   /// to label, open or delete yet.
-  private func provisionalCreationRow(_ row: AppStore.ProvisionalCreationRow) -> some View {
+  private func provisionalCreationRow(_ row: WorkroomLifecycle.ProvisionalCreationRow) -> some View
+  {
     HStack(spacing: 6) {
       Image(systemName: "cube")
         .font(.system(size: 10))
@@ -598,7 +600,7 @@ struct ProjectSidebar: View {
         .frame(width: caretWidth, height: 18, alignment: .center)
       Text(row.label).font(.callout).lineLimit(1).truncationMode(.tail)
       Spacer()
-      if let run = store.creationRun(for: row.id) { CreateStepCircle(run: run) }
+      if let run = lifecycle.creationRun(for: row.id) { CreateStepCircle(run: run) }
     }
     .frame(height: rowHeight)
     .contentShape(Rectangle())
@@ -1008,7 +1010,7 @@ private struct CreateStepCircle: View {
   private let theme = ThemeService.shared
 
   var body: some View {
-    let step = AppStore.CreateStep(run)
+    let step = WorkroomLifecycle.CreateStep(run)
     if run.outcome == .succeeded {
       EmptyView()
     } else if step.failed {

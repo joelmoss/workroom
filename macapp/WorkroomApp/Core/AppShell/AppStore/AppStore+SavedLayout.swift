@@ -27,10 +27,6 @@ extension AppStore {
         ? nil : expandedTerminalTargets.sorted().map(\.encoded))
   }
 
-  /// Set by a quit that stops dev servers, before it saves: their run tabs are left out of the
-  /// layout, here and on hosts, so they don't come back (#522, owner).
-  static var quitStopsRuns = false
-
   private static let sessionLogger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "session")
 
@@ -55,7 +51,7 @@ extension AppStore {
         + "\(SessionLimits.maxTargetsPerWindow) of \(active.count)"
       Self.sessionLogger.notice("\(message, privacy: .public)")
     }
-    let stoppedAtQuit = Self.quitStopsRuns ? runCommand.liveRunTabs : []
+    let stoppedAtQuit = runCommands.quitStopsRuns ? runCommand.liveRunTabs : []
     return active.prefix(SessionLimits.maxTargetsPerWindow).compactMap { targetID in
       if let saved = held[targetID] { return saved }
       guard let captured = terminals.sessionCapture(forTargetID: targetID) else { return nil }
@@ -222,7 +218,8 @@ extension AppStore {
     }
   }
 
-  /// Once per process, on the first full project listing: end the background sessions of
+  /// Once per app (`WorkroomLifecycle.sweptOrphanedSessions`), on the first full project listing:
+  /// end the background sessions of
   /// workrooms that no longer exist (`PersistentSessionService.endOrphanedSessions`). "Exists"
   /// is the same resolver the restore above drops targets by, so a session is ended exactly when
   /// its workroom's panes would not come back. A remote workroom that is not reachable yet still
@@ -235,8 +232,8 @@ extension AppStore {
   func endOrphanedSessionsOnce(
     in projects: [Project], isTestProcess: Bool = AppEnvironment.current.isTestProcess
   ) {
-    guard !Self.sweptOrphanedSessions, !isTestProcess, !projects.isEmpty else { return }
-    Self.sweptOrphanedSessions = true
+    guard !lifecycle.sweptOrphanedSessions, !isTestProcess, !projects.isEmpty else { return }
+    lifecycle.sweptOrphanedSessions = true
     // Resolved against the project list as it is when the sessions are judged, not the listing
     // that triggered the sweep: a workroom added in between must not lose its first session.
     Task {

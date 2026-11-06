@@ -250,7 +250,7 @@ private struct WorkroomPaneLeaf: View {
       // *which* member this is and offers the way back out of the group. A create's pane is bare
       // (#483): its checklist names it, and it has no ✕ or menu to close it by while it runs. The
       // bar is a sibling above the content, so the content keeps its one structural slot.
-      if store.creationRun(forTargetID: target.id) == nil {
+      if store.lifecycle.creationRun(forTargetID: target.id) == nil {
         titleBar
       }
       // One unconditional slot. The "Directory not found" state and the withheld-during-setup state
@@ -381,7 +381,7 @@ private struct WorkroomPaneLeaf: View {
       hasEditor: !ExternalEditor.installed.isEmpty, multi: multi,
       // The same predicate `startRunCommand` guards on, so the button and the action can't disagree
       // about whether a run could start (issue #171).
-      isCreating: store.isRunBlocked(target.id))
+      isCreating: store.lifecycle.isRunBlocked(target.id))
   }
 
   /// The project name — the chip's primary label format (`AppStore.projectPath` last component),

@@ -12,8 +12,8 @@ extension AppStore {
   }
 
   /// The progress of the create whose pane `sid` is, or nil when it has none: what its sidebar row
-  /// shows (`AppStore.CreateStep(run)` in `ProjectSidebar`).
-  func createStep(for sid: SidebarID) -> CreateStep? {
-    creationRun(for: sid).map(CreateStep.init)
+  /// shows (`WorkroomLifecycle.CreateStep(run)` in `ProjectSidebar`).
+  func createStep(for sid: SidebarID) -> WorkroomLifecycle.CreateStep? {
+    lifecycle.creationRun(for: sid).map(WorkroomLifecycle.CreateStep.init)
   }
 }

@@ -1736,7 +1736,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     remote host to the Bin. The sheet warns that every option destroys them.
   - **A reload can't bring a deleting project back (#287).** Tearing down a project's boxes can
     take minutes, so the project's path goes into `deletingProjects` (the project-level twin of
-    `deletingWorkrooms`, in the shared `ProjectStore`) once the checks pass, and every reload drops
+    `deletingWorkrooms`, in the shared `WorkroomLifecycle`) once the checks pass, and every reload drops
     it. While it is there a second delete, a local create and a remote create in that project are
     refused. On success the app reloads before it lifts the tombstone, so a read begun before
     config dropped the project can't publish it; on failure it lifts the tombstone first, so the

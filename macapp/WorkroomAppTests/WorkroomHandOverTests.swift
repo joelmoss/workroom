@@ -605,8 +605,8 @@ final class WorkroomHandOverTests: XCTestCase {
     let destination = makeStore()
     let t = target(origin)
     let tab = origin.terminals.addTab(for: t)
-    origin.creationRunForTarget[t.id] = UUID()
-    defer { origin.creationRunForTarget[t.id] = nil }
+    origin.lifecycle.creationRunForTarget[t.id] = UUID()
+    defer { origin.lifecycle.creationRunForTarget[t.id] = nil }
 
     XCTAssertFalse(origin.canMoveWorkroom(sid))
     origin.moveWorkroom(sid, to: destination)
@@ -1001,7 +1001,7 @@ final class WorkroomHandOverTests: XCTestCase {
   func testAWorkroomBeingCreatedIsListedDisabledForAQuickTerminalPane() {
     let (quick, pane, window) = makeQuickTerminalMove()
     _ = window.terminals.addTab(for: target(window, otherSid))
-    window.creationRunForTarget[target(window, otherSid).id] = UUID()
+    window.lifecycle.creationRunForTarget[target(window, otherSid).id] = UUID()
 
     let choices = quick.quickTerminalPaneWorkroomChoices(
       pane.id, of: QuickTerminalController.target(), windows: [window]

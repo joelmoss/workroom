@@ -6,11 +6,15 @@ Read [host states](../remote-host-states.md) before performing an action on a ho
 ## Creating a workroom (#483)
 
 Every create, local, container or remote, and from any door (sidebar, context menu, File ▸ New
-Workroom…), is a `CreationRun` (`Core/WorkroomManagement/CreationRun.swift`) in `ProjectStore.creationRuns`, shared by
-every window. Its pane opens on the click, before any work: beside the split anchor, or as the
+Workroom…), is a `CreationRun` (`Core/WorkroomManagement/CreationRun.swift`) in the app's one
+`WorkroomLifecycle` (`creationRuns`, ADR 0068), shared by every window. Its pane opens on the
+click, before any work, in the window it was started from: beside the split anchor, or as the
 selection, as a `.creation(project:id:)` target that becomes the workroom's
-`.workroom(project:name:)` in place once it has a name (`creationRunForTarget` records it before
-the reload that publishes it, so no window mounts a terminal there early). While a run lasts, its
+`.workroom(project:name:)` in place, in every window, once it has a name (`creationRunForTarget`
+records it before the reload that publishes it, so no window mounts a terminal there early). The
+lifecycle hands each window what a create or delete does to the panes it shows as a synchronous
+`WorkroomLifecycle.Event`. The flows are the lifecycle's (`WorkroomLifecycle+Create`), and the
+window that started a create, its `LifecycleWindow`, shows its questions and sheets. While a run lasts, its
 pane draws `Views/WorkroomManagement/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
 `removeWorkroomSplitMember` refuses a running one. The pane lists the kind's plan of steps
 (`CreationRun.plan(for:)`; a local create leaves out the setup script's row when the project has no
@@ -26,8 +30,8 @@ beside the shell the terminal opens on. On failure the run stays for its footer 
 delete guard, is released when the create's process ends, not when the run goes. Creates in one
 project may overlap; only a project being deleted blocks one. A provider's setup sheet holds the run
 on its `account` step and Create Workroom carries the same run on (`RemoteSetupWait`). VoiceOver
-hears three moments only, from the store: the sheet, a failure and a success
-(`AppStore.announceCreation`). `-WorkroomUITestScriptedCreate 1` plays a local create in fixture
+hears three moments only, once for the app: the sheet, a failure and a success
+(`WorkroomLifecycle.announceCreation`). `-WorkroomUITestScriptedCreate 1` plays a local create in fixture
 mode (`ScriptedCreateCLI`), for UI tests.
 
 ## Git credentials on a host

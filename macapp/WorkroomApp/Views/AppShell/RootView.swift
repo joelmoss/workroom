@@ -9,6 +9,7 @@ struct RootView: View {
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var runCommands: RunCommands
   @EnvironmentObject var projectStore: ProjectStore
+  @EnvironmentObject var lifecycle: WorkroomLifecycle
   @EnvironmentObject var notifications: NotificationCenterStore
   @ObservedObject private var programStatusAlerts = ProgramStatusAlerts.shared
   // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
@@ -56,7 +57,7 @@ struct RootView: View {
   /// its neighbours stay disabled over a create that has no terminal to act on.
   private var terminalInteractionAvailable: Bool {
     guard let target = store.selectedTarget, target.opensTerminals else { return false }
-    return !store.isCreationBlocking(target.id)
+    return !lifecycle.isCreationBlocking(target.id)
   }
 
   var body: some View {
@@ -98,6 +99,7 @@ struct RootView: View {
     .environmentObject(runCommands)
     .environmentObject(store.projectStore)
     .environmentObject(store.vcsStatus)
+    .environmentObject(lifecycle)
     .environmentObject(notifications)
     .environmentObject(terminals)
     .environmentObject(updater)
@@ -267,7 +269,7 @@ struct RootView: View {
       ) {
         Button("Delete", role: .destructive) {
           if let target = modals.pendingDeletion {
-            store.deleteWorkroom(target.workroom, in: target.project)
+            lifecycle.deleteWorkroom(target.workroom, in: target.project, from: store)
           }
           modals.pendingDeletion = nil
         }
@@ -335,7 +337,7 @@ struct RootView: View {
               }),
           onDelete: { scope in
             modals.pendingProjectDeletion = nil
-            store.deleteProject(pending.project, scope: scope)
+            lifecycle.deleteProject(pending.project, scope: scope, from: store)
           },
           onCancel: { modals.pendingProjectDeletion = nil })
       }
@@ -378,7 +380,7 @@ struct RootView: View {
       .sheet(
         item: Binding(
           get: { modals.pendingRemoteSetup },
-          set: { if $0 == nil { store.resolveRemoteSetup(carryOn: false) } })
+          set: { if $0 == nil { lifecycle.resolveRemoteSetup(carryOn: false, in: store.modals) } })
       ) { pending in
         remoteSetupSheet(pending)
       }
@@ -388,8 +390,8 @@ struct RootView: View {
   /// it, in their own panes (#483, R2); Cancel ends them.
   @ViewBuilder
   private func remoteSetupSheet(_ pending: PendingRemoteSetup) -> some View {
-    let create = { store.resolveRemoteSetup(carryOn: true) }
-    let cancel = { store.resolveRemoteSetup(carryOn: false) }
+    let create = { lifecycle.resolveRemoteSetup(carryOn: true, in: store.modals) }
+    let cancel = { lifecycle.resolveRemoteSetup(carryOn: false, in: store.modals) }
     if let setup = pending.setup as? ExeDevSetup {
       ExeDevSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     } else if let setup = pending.setup as? BoxdSetup {

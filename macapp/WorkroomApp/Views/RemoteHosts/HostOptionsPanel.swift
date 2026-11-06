@@ -24,7 +24,7 @@ struct HostOptionsPanel: View {
         Form {
           HostOptionsSection(
             provider: provider, options: $options,
-            inherited: store.hostOptionResolution(
+            inherited: store.services.remoteCreate.hostOptionResolution(
               for: pending.place, in: pending.project, create: nil),
             catalog: catalog,
             title: "\(provider.displayName) Host for \(pending.project.displayName)")
@@ -63,9 +63,9 @@ struct HostOptionsPanel: View {
     }
     store.modals.pendingHostOptions = nil
     Task {
-      await store.createRemoteWorkroom(
+      await store.lifecycle.createRemoteWorkroom(
         in: pending.project, place: pending.place, splitAnchor: pending.splitAnchor,
-        hostOptions: options.isEmpty ? nil : options)
+        hostOptions: options.isEmpty ? nil : options, from: store)
     }
   }
 }

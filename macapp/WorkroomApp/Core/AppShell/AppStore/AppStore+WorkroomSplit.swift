@@ -246,7 +246,8 @@ extension AppStore {
   /// workroom-level `TerminalSessions.extractFromSplit`.
   func removeWorkroomSplitMember(_ sid: SidebarID) {
     // A running create's pane can't be closed (#483, AC 2); a run that has ended is dropped first.
-    guard let group = workroomSplit(containing: sid), creationRun(for: sid)?.isRunning != true
+    guard let group = workroomSplit(containing: sid),
+      lifecycle.creationRun(for: sid)?.isRunning != true
     else { return }
     let wasFocused = selectedTargetID == sid
     // Non-nil for a group (≥2 leaves, so removing one always leaves a subtree); its first leaf is the

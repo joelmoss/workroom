@@ -236,11 +236,11 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let run = CreationRun(
       project: projects(["anchor"])[0], kind: nil, splitAnchor: anchor,
       previousSelection: anchor)
-    store.register(run)
+    store.lifecycle.register(run)
     store.insertWorkroomSplit(.creation(project: path, id: run.id), beside: anchor, edge: .right)
     let landing = Task {
-      await store.landOnCreatedWorkroom(
-        name: "created", run: run, setup: true, landing: CreationLandingBox())
+      await store.lifecycle.landOnCreatedWorkroom(
+        name: "created", run: run, setup: true, landing: CreationLandingBox(), from: store)
       finished.fulfill()
     }
     await fulfillment(of: [started[0]], timeout: 5)

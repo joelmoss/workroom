@@ -172,8 +172,9 @@ final class OrphanedSessionTests: XCTestCase {
   func testATestLaunchNeverSweeps() {
     let projects = UITestFixture.projects()
     XCTAssertFalse(projects.isEmpty, "the empty-listing guard would make this pass vacuously")
-    let before = AppStore.sweptOrphanedSessions
-    AppStore().endOrphanedSessionsOnce(in: projects, isTestProcess: true)
-    XCTAssertEqual(AppStore.sweptOrphanedSessions, before)
+    let store = AppStore()
+    let before = store.lifecycle.sweptOrphanedSessions
+    store.endOrphanedSessionsOnce(in: projects, isTestProcess: true)
+    XCTAssertEqual(store.lifecycle.sweptOrphanedSessions, before)
   }
 }

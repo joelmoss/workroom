@@ -121,7 +121,7 @@ extension AppStore {
   /// A remote or container workroom whose panes open here runs too (#522): its run runs on its
   /// host, so the gate is whether a pane can open, not whether its path is on this Mac.
   func canRunCommand(for target: TerminalTarget, inProject projectPath: String) -> Bool {
-    target.opensTerminals && !isRunBlocked(target.id)
+    target.opensTerminals && !lifecycle.isRunBlocked(target.id)
       && runCommands.hasRunCommand(forProject: projectPath)
   }
 
@@ -297,7 +297,7 @@ extension AppStore {
     // against half-installed dependencies is the exact failure issue #7's disarm exists to prevent. Guarded HERE because it's the one place the pane header, the sidebar rows
     // and the ⌘R menu item all route through; each of those hides or disables itself on `isRunBlocked`
     // too, so the button and the action agree, but this guard is what makes that safe to rely on.
-    guard !isRunBlocked(target.id) else { return }
+    guard !lifecycle.isRunBlocked(target.id) else { return }
     let config = runCommands.runConfig(forProject: project.path)
     guard config.hasCommand else { return }
     if let existing = runCommand.runStates[target.id]?.tab {
@@ -675,6 +675,14 @@ extension AppStore {
       }
     }
     runCommand.forgetRun(for: target.id)
+  }
+
+  /// Arm auto-run so the workroom's first terminal runs the project command as tab #1 (issue #7).
+  /// It fires when the pane mounts, which is once the create is over. A remote create arms it at
+  /// the same point, once its workroom has a name (#522): its run runs on its host.
+  func armAutoRunIfConfigured(_ id: TerminalTarget.ID, in project: Project) {
+    let cfg = runCommands.runConfig(forProject: project.path)
+    if cfg.autoRun, cfg.hasCommand { runCommand.armAutoRun(forWorkroom: id) }
   }
 
   /// Ensure a target's terminal pane lands the user in a live terminal when it first appears (called by

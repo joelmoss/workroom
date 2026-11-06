@@ -6,7 +6,7 @@ import WorkroomSystem
 /// How a container create turns a repository's dev container into a container (#308): the image,
 /// the folders, the environments and the lifecycle commands, from its devcontainer.json
 /// (`DevContainerConfig`), its features' contributions, and the image itself. Pure, so the create
-/// (`AppStore+WorkroomCreation`) only fetches, builds and runs.
+/// (`WorkroomLifecycle+Create`) only fetches, builds and runs.
 enum DevContainerSetup {
   /// The image a project with no devcontainer.json, or one going on the default, is made from (eng
   /// review D8): the devcontainers project's plain Ubuntu (26.04; user `vscode` with passwordless

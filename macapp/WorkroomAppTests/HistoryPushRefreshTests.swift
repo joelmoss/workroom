@@ -14,7 +14,7 @@ import XCTest
 /// **Scope, stated honestly.** It invokes `AppStore.handleRootBranchChange` directly, which is the
 /// callback the per-project `WorkroomFileWatcher` fires. So it proves the refresh path recomputes push
 /// state; it does NOT prove FSEvents delivers the event (that the watcher points at the right directory
-/// is `WorkroomFileWatcherTests`' and `AppStore.vcsMetadataDir`'s business — a push from a workroom
+/// is `WorkroomFileWatcherTests`' and `WorkroomLifecycle.vcsMetadataDir`'s business — a push from a workroom
 /// writes `refs/remotes/*` into the project's shared `.git`, which is what's watched).
 @MainActor
 final class HistoryPushRefreshTests: XCTestCase {

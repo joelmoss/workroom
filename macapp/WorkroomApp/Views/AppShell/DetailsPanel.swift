@@ -78,7 +78,7 @@ struct DetailsPanel: View {
       DevContainerNote(
         recorded: digest, project: project.path,
         ref: RemoteWorkrooms.splitBase(
-          store.effectiveBaseBranch(for: project) ?? "HEAD", remotes: ["origin"]
+          store.projectStore.effectiveBaseBranch(for: project) ?? "HEAD", remotes: ["origin"]
         ).branch)
     }
   }

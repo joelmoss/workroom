@@ -173,9 +173,9 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertEqual(workroomNames(store), ["a", "b"])
 
     // Delete `a`. Its teardown is gated (never released here), so `a` stays tombstoned throughout.
-    store.deleteWorkroom(a, in: project([a, b]))
+    store.lifecycle.deleteWorkroom(a, in: project([a, b]), from: store)
     XCTAssertEqual(workroomNames(store), ["b"], "optimistic removal drops it immediately")
-    XCTAssertTrue(store.deletingWorkrooms.contains(targetID("a")))
+    XCTAssertTrue(store.lifecycle.deletingWorkrooms.contains(targetID("a")))
 
     // A concurrent flow (another create/delete/refresh) reloads while `a`'s teardown is still in
     // flight — and its `list` snapshot is STALE, still listing `a` (config not yet updated).
@@ -187,7 +187,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     // Let the teardown finish; the tombstone lifts and a now-fresh list stays clean.
     fake.allowDelete = true
-    await waitUntil({ store.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
+    await waitUntil(
+      { store.lifecycle.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
     fake.listResult = [project([b])]
     await store.reload()
     XCTAssertEqual(workroomNames(store), ["b"])
@@ -211,14 +212,15 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = AppStore(projectStore: shared, cli: fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a, b]))
+    store.lifecycle.deleteWorkroom(a, in: project([a, b]), from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     let stale = Task { await store.reload() }  // `list` still has `a`
     await waitUntil({ gate.calls == 2 }, "stale read should reach publication")
 
     fake.listResult = [project([b])]  // config drops `a`
     fake.allowDelete = true
-    await waitUntil({ store.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
+    await waitUntil(
+      { store.lifecycle.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
     gate.open = true
     await stale.value
     XCTAssertEqual(
@@ -238,12 +240,13 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a, b]))
+    store.lifecycle.deleteWorkroom(a, in: project([a, b]), from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.listFails = true
     fake.allowDelete = true
     // The tombstone lifts only after the success path's load returns.
-    await waitUntil({ store.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
+    await waitUntil(
+      { store.lifecycle.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
     XCTAssertNil(store.modals.errorMessage, "a delete that succeeded must not report an error")
     XCTAssertEqual(workroomNames(store), ["b"], "the workroom stays gone")
   }
@@ -259,7 +262,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a, b]))
+    store.lifecycle.deleteWorkroom(a, in: project([a, b]), from: store)
     XCTAssertEqual(workroomNames(store), ["b"], "optimistic removal")
     await waitUntil({ fake.deleteStarted }, "teardown should start")
 
@@ -267,7 +270,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     fake.allowDelete = true
     await waitUntil(
       { self.workroomNames(store) == ["a", "b"] }, "failed teardown restores the workroom")
-    XCTAssertFalse(store.deletingWorkrooms.contains(targetID("a")), "tombstone cleared on failure")
+    XCTAssertFalse(
+      store.lifecycle.deletingWorkrooms.contains(targetID("a")), "tombstone cleared on failure")
   }
 
   /// A failed teardown keeps the CLI's reason as the message and shows the script's output apart,
@@ -284,7 +288,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a]))
+    store.lifecycle.deleteWorkroom(a, in: project([a]), from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.allowDelete = true
     await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")
@@ -303,7 +307,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a]))
+    store.lifecycle.deleteWorkroom(a, in: project([a]), from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.allowDelete = true
     await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")
@@ -330,7 +334,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a]))
+    store.lifecycle.deleteWorkroom(a, in: project([a]), from: store)
     fake.allowDelete = true
     await waitUntil({ store.modals.errorAction != nil }, "no Delete Anyway was offered")
     XCTAssertEqual(store.modals.errorAction?.label, "Delete Anyway")
@@ -361,7 +365,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a]))
+    store.lifecycle.deleteWorkroom(a, in: project([a]), from: store)
     fake.allowDelete = true
     await waitUntil({ store.modals.errorApproval != nil }, "no Approve was offered")
     XCTAssertEqual(store.modals.errorApproval?.label, "Approve")
@@ -400,7 +404,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteWorkroom(a, in: project([a]))
+    store.lifecycle.deleteWorkroom(a, in: project([a]), from: store)
     fake.allowDelete = true
     await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")
     XCTAssertNil(store.modals.errorAction)
@@ -438,7 +442,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertEqual(store.notifications.count(target: aTarget), 1)
     XCTAssertEqual(store.notifications.count(target: bTarget), 1)
 
-    store.deleteWorkroom(a, in: project([a, b]))
+    store.lifecycle.deleteWorkroom(a, in: project([a, b]), from: store)
     await waitUntil(
       { store.notifications.count(target: aTarget) == 0 },
       "deleting a workroom should withdraw its pending notifications")
@@ -458,11 +462,12 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.creatingWorkrooms.insert(targetID("a"))
-    store.deleteWorkroom(a, in: project([a]))
+    store.lifecycle.creatingWorkrooms.insert(targetID("a"))
+    store.lifecycle.deleteWorkroom(a, in: project([a]), from: store)
 
     XCTAssertEqual(workroomNames(store), ["a"], "delete is blocked while the setup is in progress")
-    XCTAssertFalse(store.deletingWorkrooms.contains(targetID("a")), "no teardown was started")
+    XCTAssertFalse(
+      store.lifecycle.deletingWorkrooms.contains(targetID("a")), "no teardown was started")
   }
 
   // MARK: - Delete Project tombstone (#287)
@@ -476,7 +481,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteProject(project([a]), scope: .configOnly)
+    store.lifecycle.deleteProject(project([a]), scope: .configOnly, from: store)
     XCTAssertTrue(store.projectStore.projects.isEmpty, "optimistic removal")
     await waitUntil({ fake.deleteStarted }, "teardown should start")
 
@@ -484,36 +489,37 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertTrue(
       store.projectStore.projects.isEmpty, "a stale reload must NOT bring the project back")
 
-    store.deleteProject(project([a]), scope: .configOnly)
+    store.lifecycle.deleteProject(project([a]), scope: .configOnly, from: store)
     XCTAssertEqual(
       store.modals.errorMessage, "\(project([a]).displayName) is already being deleted.")
 
     fake.allowDelete = true
-    await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+    await waitUntil(
+      { store.lifecycle.deletingProjects.isEmpty }, "tombstone should clear after teardown")
     fake.listResult = []
     await store.reload()
     XCTAssertTrue(
       store.projectStore.projects.isEmpty, "a fresh list after the teardown keeps it gone")
   }
 
-  /// The tombstone lives in the shared `ProjectStore`, so another window's reload can't republish
-  /// the project and its stale confirm dialog can't start a second delete.
+  /// The tombstone lives in the shared `WorkroomLifecycle`, so another window's reload can't
+  /// republish the project and its stale confirm dialog can't start a second delete.
   func testDeletingProjectTombstoneIsSharedAcrossWindows() async {
     let a = workroom("a")
     let fake = DeleteRaceFakeCLI()
     fake.listResult = [project([a])]
-    let shared = ProjectStore()
-    let windowA = AppStore(projectStore: shared, cli: fake)
-    let windowB = AppStore(projectStore: shared, cli: fake)
+    let shared = WorkroomLifecycle(vcsStatus: VCSStatusService(projectStore: ProjectStore()))
+    let windowA = AppStore(lifecycle: shared, cli: fake)
+    let windowB = AppStore(lifecycle: shared, cli: fake)
     await windowA.reload()
 
-    windowA.deleteProject(project([a]), scope: .configOnly)
+    windowA.lifecycle.deleteProject(project([a]), scope: .configOnly, from: windowA)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
 
     await windowB.reload()  // stale: `list` still has the project
     XCTAssertTrue(
       windowB.projectStore.projects.isEmpty, "another window's reload must not republish it")
-    windowB.deleteProject(project([a]), scope: .configOnly)
+    windowB.lifecycle.deleteProject(project([a]), scope: .configOnly, from: windowB)
     XCTAssertEqual(
       windowB.modals.errorMessage, "\(project([a]).displayName) is already being deleted.")
 
@@ -538,14 +544,15 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = AppStore(projectStore: shared, cli: fake)
     await store.reload()
 
-    store.deleteProject(project([a]), scope: .configOnly)
+    store.lifecycle.deleteProject(project([a]), scope: .configOnly, from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     let stale = Task { await store.reload() }  // `list` still has the project
     await waitUntil({ gate.calls == 2 }, "stale read should reach publication")
 
     fake.listResult = []  // config drops the project
     fake.allowDelete = true
-    await waitUntil({ shared.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+    await waitUntil(
+      { store.lifecycle.deletingProjects.isEmpty }, "tombstone should clear after teardown")
     gate.open = true
     await stale.value
     XCTAssertTrue(
@@ -560,15 +567,16 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteProject(project([a]), scope: .configOnly)
+    store.lifecycle.deleteProject(project([a]), scope: .configOnly, from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
-    await store.createWorkroom(in: project([a]))
+    await store.lifecycle.createWorkroom(in: project([a]), from: store)
     XCTAssertEqual(store.modals.errorMessage, "\(project([a]).displayName) is being deleted.")
-    XCTAssertTrue(store.creationRuns.isEmpty, "no create was started")
-    XCTAssertFalse(store.canCreateRemoteWorkroom(in: project([a])), "nor a remote one")
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty, "no create was started")
+    XCTAssertFalse(store.lifecycle.canCreateRemoteWorkroom(in: project([a])), "nor a remote one")
 
     fake.allowDelete = true
-    await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+    await waitUntil(
+      { store.lifecycle.deletingProjects.isEmpty }, "tombstone should clear after teardown")
   }
 
   /// `--from-disk` moves the returned directories to the Bin while the project is still tombstoned
@@ -581,17 +589,18 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     let trasher = OrderTrasher()
     trasher.observe = { [unowned store] in
-      (store.deletingProjects.contains(self.projectPath), fake.listCalls)
+      (store.lifecycle.deletingProjects.contains(self.projectPath), fake.listCalls)
     }
     store.services.trasher = trasher
     await store.reload()
 
-    store.deleteProject(project([a]), scope: .fromDisk)
+    store.lifecycle.deleteProject(project([a]), scope: .fromDisk, from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     let readsBefore = fake.listCalls
     fake.listResult = []
     fake.allowDelete = true
-    await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+    await waitUntil(
+      { store.lifecycle.deletingProjects.isEmpty }, "tombstone should clear after teardown")
 
     XCTAssertEqual(trasher.seen.count, 1)
     XCTAssertEqual(trasher.seen.first?.tombstoned, true, "trashed while still tombstoned")
@@ -608,11 +617,11 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteProject(project([a]), scope: .configOnly)
+    store.lifecycle.deleteProject(project([a]), scope: .configOnly, from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.allowDelete = true
     await waitUntil({ self.workroomNames(store) == ["a"] }, "failed delete restores the project")
-    XCTAssertTrue(store.deletingProjects.isEmpty, "tombstone cleared on failure")
+    XCTAssertTrue(store.lifecycle.deletingProjects.isEmpty, "tombstone cleared on failure")
     XCTAssertNotNil(store.modals.errorTitle, "the failure is surfaced")
   }
 
@@ -630,7 +639,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let store = makeStore(fake)
     await store.reload()
 
-    store.deleteProject(project([a]), scope: .workrooms)
+    store.lifecycle.deleteProject(project([a]), scope: .workrooms, from: store)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.allowDelete = true
     await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")

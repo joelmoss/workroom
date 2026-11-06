@@ -36,8 +36,12 @@ final class VCSStatusService: ObservableObject {
   static let localConcurrency = 5
   static let ciConcurrency = 2
 
-  /// The projects whose status this is, and their creates in flight.
+  /// The projects whose status this is.
   @ObservationIgnored let projectStore: ProjectStore
+  /// The creates and deletes of those projects' workrooms, whose creates in flight the probes stand
+  /// clear of (`isCreating`). Set by the lifecycle made over this status; a window's store made with
+  /// this status takes that lifecycle too.
+  @ObservationIgnored weak var lifecycle: WorkroomLifecycle?
   /// The services' seeded statuses (the UI-test fixture's), read once: the process chooses its
   /// services before any window exists.
   @ObservationIgnored private let seededStatuses: (@MainActor () -> AppServices.SeededStatuses)?
@@ -582,13 +586,13 @@ final class VCSStatusService: ObservableObject {
   /// Whether `sid` is a workroom whose create/setup is still in flight (issue: create-time FSEvents
   /// storm). While a setup script writes the worktree (e.g. `npm install`), arming the recursive
   /// FSEvents watcher on it or probing its VCS status is pointless churn — the tree isn't settled and
-  /// FSEvents floods ~70 callbacks/sec under that load. `creatingWorkrooms` (set as setup begins,
-  /// cleared when it finishes) is the exact signal; this is the single conversion point from the
-  /// `SidebarID`-keyed status world to the `TerminalTarget.ID`-keyed `creatingWorkrooms` set. Roots
-  /// and projects are never "creating".
+  /// FSEvents floods ~70 callbacks/sec under that load. The lifecycle's `creatingWorkrooms` (set as
+  /// setup begins, cleared when it finishes) is the exact signal; this is the single conversion
+  /// point from the `SidebarID`-keyed status world to the `TerminalTarget.ID`-keyed
+  /// `creatingWorkrooms` set. Roots and projects are never "creating".
   func isCreating(_ sid: SidebarID) -> Bool {
     guard case .workroom(let project, let name) = sid else { return false }
-    return projectStore.creatingWorkrooms.contains(.workroom(project: project, name: name))
+    return lifecycle?.creatingWorkrooms.contains(.workroom(project: project, name: name)) ?? false
   }
 
   /// Whether a commit is running for this row. Suppresses the same three lanes `isCreating` does, for

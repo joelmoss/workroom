@@ -771,10 +771,10 @@ final class RunCommandTests: XCTestCase {
     // A workroom whose setup script is still writing its worktree: `startRunCommand` refuses it
     // (issue #167), so offering the button was offering a silent no-op (issue #171). The pane header
     // reads `creatingWorkrooms` directly, since its Run isn't gated on a configured command.
-    store.creatingWorkrooms.insert(present.id)
+    store.lifecycle.creatingWorkrooms.insert(present.id)
     XCTAssertFalse(
       store.canRunCommand(for: present, inProject: "/a"), "mid-create → no run controls")
-    store.creatingWorkrooms.remove(present.id)
+    store.lifecycle.creatingWorkrooms.remove(present.id)
     XCTAssertTrue(store.canRunCommand(for: present, inProject: "/a"), "and back when it lifts")
   }
 
@@ -1827,8 +1827,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(view.hasLiveProcess)
 
     XCTAssertTrue(store.runCommand.hasLiveRun, "quit asks about it")
-    AppStore.quitStopsRuns = true
-    defer { AppStore.quitStopsRuns = false }
+    store.runCommands.quitStopsRuns = true
     XCTAssertFalse(
       store.captureWindowSession().targets.contains {
         $0.tabs.contains { $0.terminal?.run == true }
@@ -1912,8 +1911,7 @@ final class RunCommandTests: XCTestCase {
       Set(savedRunTabs()), [live.id.encoded, parked.id.encoded],
       "both are saved while Workroom runs")
 
-    AppStore.quitStopsRuns = true
-    defer { AppStore.quitStopsRuns = false }
+    store.runCommands.quitStopsRuns = true
     XCTAssertEqual(savedRunTabs(), [parked.id.encoded], "the run the quit stops is left out")
   }
 

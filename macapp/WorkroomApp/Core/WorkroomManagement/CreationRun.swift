@@ -125,7 +125,7 @@ struct CreationStep: Identifiable, Equatable {
 enum CreationOutcome: Equatable {
   case running
   /// Done: the finished checklist stays until Done, or with "Close automatically when done" on, for
-  /// `AppStore.creationSuccessHold`.
+  /// `WorkroomLifecycle.creationSuccessHold`.
   case succeeded
   /// Cancel on the provider setup sheet: the run goes at once.
   case cancelled
@@ -166,7 +166,7 @@ enum CreationStart: String, Equatable {
 /// One create's progress (#483): the plan of steps it shows from the first frame, each step's state,
 /// timing and log, the workroom's name once it has one, and how it ended. Fed by the CLI's step
 /// events for a local create and by `ProvisioningProgress` for a remote one. Lives in
-/// `ProjectStore.creationRuns`, so every window shows the same checklist.
+/// `WorkroomLifecycle.creationRuns`, so every window shows the same checklist.
 @MainActor
 final class CreationRun: ObservableObject, Identifiable {
   let id: UUID

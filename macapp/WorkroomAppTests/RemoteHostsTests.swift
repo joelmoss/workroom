@@ -701,11 +701,12 @@ final class RemoteHostsTests: XCTestCase {
   func testARemoteCreateIsOffOnlyWhileItsProjectIsDeleted() {
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
-    store.creationRuns[UUID()] = CreationRun(
+    store.lifecycle.creationRuns[UUID()] = CreationRun(
       project: project, kind: .boxd, splitAnchor: nil, previousSelection: nil)
-    XCTAssertTrue(store.canCreateRemoteWorkroom(in: project), "a running create doesn't block")
-    store.deletingProjects.insert("/proj")
-    XCTAssertFalse(store.canCreateRemoteWorkroom(in: project))
+    XCTAssertTrue(
+      store.lifecycle.canCreateRemoteWorkroom(in: project), "a running create doesn't block")
+    store.lifecycle.deletingProjects.insert("/proj")
+    XCTAssertFalse(store.lifecycle.canCreateRemoteWorkroom(in: project))
   }
 
   /// A workroom in a container wears the network glyph on its tab and pane in place of the cube, and
@@ -824,12 +825,13 @@ final class RemoteHostsTests: XCTestCase {
   func testACreateBlockedProjectSaysWhy() {
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
-    XCTAssertNil(store.createBlockedReason(in: project))
-    store.creationRuns[UUID()] = CreationRun(
+    XCTAssertNil(store.lifecycle.createBlockedReason(in: project))
+    store.lifecycle.creationRuns[UUID()] = CreationRun(
       project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
-    XCTAssertNil(store.createBlockedReason(in: project), "a create in flight blocks nothing")
-    store.deletingProjects.insert("/proj")
-    XCTAssertEqual(store.createBlockedReason(in: project), "the project is being deleted")
+    XCTAssertNil(
+      store.lifecycle.createBlockedReason(in: project), "a create in flight blocks nothing")
+    store.lifecycle.deletingProjects.insert("/proj")
+    XCTAssertEqual(store.lifecycle.createBlockedReason(in: project), "the project is being deleted")
   }
 
   /// No watcher refreshes a remote tree, so coming back to it reads it again; the same local path
@@ -2369,7 +2371,7 @@ final class RemoteHostsTests: XCTestCase {
     let run = CreationRun(
       project: Project(path: "/proj", vcs: "git", workrooms: []), kind: .boxd, splitAnchor: nil,
       previousSelection: nil)
-    store.register(run)
+    store.lifecycle.register(run)
     let pane = SidebarID.creation(project: "/proj", id: run.id)
     run.begin("repository")
     run.begin("machine")

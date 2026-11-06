@@ -21,21 +21,21 @@ struct PendingRemoteSetup: Identifiable {
   var id: String { place.displayName }
 }
 
-/// The creates waiting on one provider's setup (R2, #483), in `ProjectStore.remoteSetupWaits`. A
-/// create that finds setup missing while one is waiting for the same provider joins it rather than
+/// The creates waiting on one provider's setup (R2, #483), in `WorkroomLifecycle.remoteSetupWaits`.
+/// A create that finds setup missing while one is waiting for the same provider joins it rather than
 /// raising a second sheet. Each waiting create resumes with true on Create Workroom, false on Cancel.
 @MainActor
 final class RemoteSetupWait {
   let place: HostKind
   let setup: any RemoteSetup
-  /// The window the first create started in, which shows the sheet.
-  weak var window: AppStore?
+  /// The modals of the window the first create started in, which shows the sheet.
+  weak var modals: ModalState?
   var waiting: [CheckedContinuation<Bool, Never>] = []
 
-  init(place: HostKind, setup: any RemoteSetup, window: AppStore) {
+  init(place: HostKind, setup: any RemoteSetup, modals: ModalState) {
     self.place = place
     self.setup = setup
-    self.window = window
+    self.modals = modals
   }
 }
 

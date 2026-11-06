@@ -67,9 +67,10 @@ struct NewWorkroomDialog: View {
     let anchor = placeAnchor ?? (split ? store.selectedTargetID : nil)
     Task {
       if let remote = place.remote {
-        await store.createRemoteWorkroom(in: project, place: remote, splitAnchor: anchor)
+        await store.lifecycle.createRemoteWorkroom(
+          in: project, place: remote, splitAnchor: anchor, from: store)
       } else {
-        await store.createWorkroom(in: project, splitAnchor: anchor)
+        await store.lifecycle.createWorkroom(in: project, splitAnchor: anchor, from: store)
       }
     }
   }
@@ -78,10 +79,10 @@ struct NewWorkroomDialog: View {
   /// New Workroom menu.
   private func isUsable(_ place: WorkroomPlace, in project: Project) -> Bool {
     switch place {
-    case .thisMac: store.createBlockedReason(in: project) == nil
+    case .thisMac: store.lifecycle.createBlockedReason(in: project) == nil
     case .remote(let remote):
       RemoteWorkrooms.unavailability(of: remote) == nil
-        && store.canCreateRemoteWorkroom(in: project)
+        && store.lifecycle.canCreateRemoteWorkroom(in: project)
     }
   }
 
@@ -99,7 +100,7 @@ struct NewWorkroomDialog: View {
   /// container one saying why it can't be used.
   private func placesList(_ project: Project) -> some View {
     VStack(alignment: .leading, spacing: 2) {
-      if let blocked = store.createBlockedReason(in: project) {
+      if let blocked = store.lifecycle.createBlockedReason(in: project) {
         Text(blocked.prefix(1).uppercased() + blocked.dropFirst())
           .font(.footnote)
           .foregroundStyle(theme.tokens.fgMuted)

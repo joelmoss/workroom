@@ -162,7 +162,7 @@ extension AppStore {
     _ sid: SidebarID?
   ) -> (sid: SidebarID, target: TerminalTarget)? {
     guard let sid, let target = target(for: sid), target.remoteHost == nil,
-      !target.isRemoteWorkroom, target.opensTerminals, !isCreationBlocking(target.id)
+      !target.isRemoteWorkroom, target.opensTerminals, !lifecycle.isCreationBlocking(target.id)
     else { return nil }
     return (sid, target)
   }
@@ -279,7 +279,8 @@ extension AppStore {
   func canMoveWorkroom(_ sid: SidebarID) -> Bool {
     guard let target = target(for: sid) else { return false }
     // Not while its host is still asked for its layout: that answer restores into this window.
-    return terminals.tabCount(forTargetID: target.id) > 0 && !isCreationBlocking(target.id)
+    return terminals.tabCount(forTargetID: target.id) > 0
+      && !lifecycle.isCreationBlocking(target.id)
       && !hostLayouts.fetching.contains(target.id)
       && orderedWorkroomTargets().contains { $0.sid != sid }
   }

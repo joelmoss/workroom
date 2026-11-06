@@ -143,7 +143,7 @@ final class AppStoreCloseTabsTests: XCTestCase {
     XCTAssertNil(store.modals.errorTitle, "a workroom no longer listed")
 
     let (going, goingTitle) = failed("going")
-    store.deletingWorkrooms.insert(going)
+    store.lifecycle.deletingWorkrooms.insert(going)
     store.terminals.onEvent?(.remoteCloseFailed(going, title: goingTitle))
     XCTAssertNil(store.modals.errorTitle, "a workroom being deleted")
   }

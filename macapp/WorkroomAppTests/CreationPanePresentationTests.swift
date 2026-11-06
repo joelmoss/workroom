@@ -304,7 +304,7 @@ final class CreationPanePresentationTests: XCTestCase {
     let run = CreationRun(
       project: Project(path: "/proj", vcs: "git", workrooms: []), kind: .boxd, splitAnchor: nil,
       previousSelection: nil)
-    store.register(run)
+    store.lifecycle.register(run)
     let pane = SidebarID.creation(project: "/proj", id: run.id)
     run.begin("repository")
     XCTAssertEqual(store.createStep(for: pane)?.failed, false)

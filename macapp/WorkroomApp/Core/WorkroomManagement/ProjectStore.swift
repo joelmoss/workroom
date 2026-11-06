@@ -3,15 +3,14 @@ import WorkroomDomain
 import WorkroomVCS
 
 /// Shared, app-wide project data: the project list plus what is identical across windows about it —
-/// its creates and deletes in flight and the saved session. Extracted from `AppStore` (issue #70) so
-/// that multiple per-window `AppStore`s can share one project list while each keeps its own
-/// selection, terminals, splits, history, and run state.
+/// the saved session. Extracted from `AppStore` (issue #70) so that multiple per-window `AppStore`s
+/// can share one project list while each keeps its own selection, terminals, splits, history, and
+/// run state.
 ///
-/// Views take it from the environment and the store reaches it as `projectStore`. `AppStore` still
-/// forwards the create and delete sets, which Observation tracks through it. Each project's run
-/// config is the app's `RunCommands`', and its VCS status the app's `VCSStatusService`'. List
-/// requests are ordered here across windows; each `AppStore` reconciles its own window after an
-/// accepted read.
+/// Views take it from the environment and the store reaches it as `projectStore`. Each project's
+/// run config is the app's `RunCommands`', its VCS status the app's `VCSStatusService`', and its
+/// workrooms' creates and deletes in flight the app's `WorkroomLifecycle`'. List requests are
+/// ordered here across windows; each `AppStore` reconciles its own window after an accepted read.
 @MainActor
 @Observable
 // `ObservableObject` only so views can take it as an `@EnvironmentObject`, as they take the store;
@@ -35,6 +34,12 @@ final class ProjectStore: ObservableObject {
   private var storedProjects: [Project] = []
   /// The app-wide base branch for projects that name none; nil means origin's default branch.
   var globalBaseBranch: String?
+
+  /// The base branch `project`'s new workrooms start from: its own, else the app-wide one, else nil
+  /// for origin's default branch. The CLI applies the same rule to a local create.
+  func effectiveBaseBranch(for project: Project) -> String? {
+    project.baseBranch ?? globalBaseBranch
+  }
 
   /// A read is stamped when issued, across all windows (#170). Superseded callers await
   /// the newest read too. Success publishes its result; failure leaves the project list unchanged.
@@ -75,36 +80,6 @@ final class ProjectStore: ObservableObject {
     publishedLoadGeneration = load.generation
     return true
   }
-
-  /// Target ids of workrooms whose create process is still running — from the moment the workroom
-  /// has a name until the CLI or the provisioning returns (issue #116, #483). A workroom here must not
-  /// be deleted: its setup is running against it. Shared across windows so a delete from ANY window
-  /// is blocked, not just the creating one.
-  var creatingWorkrooms: Set<TerminalTarget.ID> = []
-
-  /// Every create's progress, running or failed, by run id (#483). Shared, so every window that
-  /// shows a create shows the same checklist.
-  var creationRuns: [UUID: CreationRun] = [:]
-
-  /// The run each pane belongs to: its provisional `TargetID.creation`, then its workroom's
-  /// own id once it has a name. A target here keeps its terminal withheld in every window until the
-  /// run ends (issue #167), which is why the named id goes in before the reload that publishes it.
-  var creationRunForTarget: [TerminalTarget.ID: UUID] = [:]
-
-  /// Creates waiting on a provider's setup, one entry per provider, in the order they began waiting
-  /// (R2, #483). Only the first has its sheet up, one sheet at a time across every window.
-  var remoteSetupWaits: [RemoteSetupWait] = []
-
-  /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
-  /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of
-  /// every incoming CLI `list`, so a stale snapshot taken before the teardown persisted can't
-  /// resurrect a just-deleted workroom (the create/delete reload race). Cleared when teardown ends.
-  var deletingWorkrooms: Set<TerminalTarget.ID> = []
-
-  /// Paths of projects with an in-flight Delete Project — the project-level counterpart of
-  /// `deletingWorkrooms` (#287). Tearing down a project's remote hosts can take minutes, and a
-  /// reload in that window would otherwise republish it with half-destroyed workrooms.
-  var deletingProjects: Set<String> = []
 
   /// Whether the persisted last-session selection is still up for grabs (issue #70). The first
   /// window to launch with `restore == true` consumes it and restores the saved selection; every

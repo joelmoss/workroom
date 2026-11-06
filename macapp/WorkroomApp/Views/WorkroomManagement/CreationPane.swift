@@ -47,8 +47,10 @@ struct CreationPane: View {
         // From the first frame, so "Close automatically when done" can be changed while the create
         // runs; gone once it fails or stops to ask, where the notice says what to do instead.
         if run.isRunning || isDone {
-          CreationDoneFooter(inset: narrow ? 16 : 32, isDone: isDone) { store.finishCreation(run) }
-            .transition(.move(edge: .bottom))
+          CreationDoneFooter(inset: narrow ? 16 : 32, isDone: isDone) {
+            store.lifecycle.finishCreation(run)
+          }
+          .transition(.move(edge: .bottom))
         }
       }
       .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: run.outcome)
@@ -210,7 +212,7 @@ struct CreationPane: View {
   private func answer(_ action: (P.Footer) -> P.Action?) -> KeyPress.Result {
     // Return and Escape both answer Done.
     if isDone {
-      store.finishCreation(run)
+      store.lifecycle.finishCreation(run)
       return .handled
     }
     guard let footer = P.footer(for: run), let chosen = action(footer) else {
@@ -221,14 +223,17 @@ struct CreationPane: View {
   }
 
   private func perform(_ action: P.Action) {
+    let lifecycle = store.lifecycle
     switch action {
-    case .tryAgain: Task { await store.retryCreation(run) }
-    case .reviewScript: store.presentSetupApproval(run)
-    case .chooseStart: store.presentStartChoice(run)
-    case .defaultImage: Task { await store.retryCreation(run, skipsDevContainer: true) }
-    case .providerDefaults: Task { await store.retryCreation(run, hostOptions: .providerDefaults) }
-    case .close, .cancel: store.closeCreation(run)
-    case .openAnyway: store.openCreatedWorkroomAnyway(run)
+    case .tryAgain: Task { await lifecycle.retryCreation(run, from: store) }
+    case .reviewScript: lifecycle.presentSetupApproval(run, in: store)
+    case .chooseStart: lifecycle.presentStartChoice(run, in: store.modals)
+    case .defaultImage:
+      Task { await lifecycle.retryCreation(run, skipsDevContainer: true, from: store) }
+    case .providerDefaults:
+      Task { await lifecycle.retryCreation(run, hostOptions: .providerDefaults, from: store) }
+    case .close, .cancel: lifecycle.closeCreation(run, from: store)
+    case .openAnyway: lifecycle.openCreatedWorkroomAnyway(run)
     case .deleteWorkroom: deleteWorkroom()
     }
   }
@@ -487,12 +492,12 @@ struct StartChoicePresenter: ViewModifier {
         ForEach(CreationPanePresentation.startChoices(for: pending.work), id: \.start) { choice in
           Button(choice.title) {
             store.modals.pendingStartChoice = nil
-            Task { await store.chooseStart(choice.start, for: pending.run) }
+            Task { await store.lifecycle.chooseStart(choice.start, for: pending.run, from: store) }
           }
         }
         Button("Cancel Creation", role: .cancel) {
           store.modals.pendingStartChoice = nil
-          store.cancelStartChoice(pending.run)
+          store.lifecycle.cancelStartChoice(pending.run, from: store)
         }
       }
     } message: {

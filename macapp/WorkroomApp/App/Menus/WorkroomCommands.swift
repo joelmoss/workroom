@@ -150,7 +150,9 @@ struct WorkroomCommands: Commands {
   }
   private var canLabel: Bool? { selectedPair != nil }
   private var canDelete: Bool? {
-    selectedPair.map { store?.isCreatingWorkroom($0.workroom, in: $0.project) == false }
+    selectedPair.map {
+      store?.lifecycle.isCreatingWorkroom($0.workroom, in: $0.project) == false
+    }
   }
 
   /// The Room menu's heading: the selected workroom as `InspectorWorkroomHeader` names it.

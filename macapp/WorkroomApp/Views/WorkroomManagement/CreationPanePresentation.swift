@@ -149,7 +149,7 @@ enum CreationPanePresentation {
   }
 
   /// The setup script approval sheet's message (#363): why the create stopped, for which project,
-  /// and the ways on. Worded as the teardown's (`AppStore.teardownApprovalMessage`).
+  /// and the ways on. Worded as the teardown's (`WorkroomLifecycle.teardownApprovalMessage`).
   @MainActor static func setupApprovalMessage(for run: CreationRun, script: ScriptTrust) -> String {
     if script.isDevContainer {
       return "Creating a workroom in \(run.project.displayName) uses \(script.displayFile) "

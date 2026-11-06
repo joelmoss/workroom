@@ -83,6 +83,31 @@ final class MultiWindowTests: XCTestCase {
     XCTAssertTrue(notified, "a write that changes the list still notifies")
   }
 
+  /// Value: protects=a create or delete set write that changes nothing (a create's release after
+  /// a failed remote create already released it, a tombstone lifted twice) redraws nothing that
+  /// reads the sets, as when `AppStore` forwarded them; fails_when=a set is a plain stored property
+  /// on the lifecycle; why_new=the sets moved owner without a guard; seam=none.
+  func testACreateOrDeleteSetWriteThatChangesNothingNotifiesNoOne() {
+    let lifecycle = WorkroomLifecycle(vcsStatus: VCSStatusService(projectStore: ProjectStore()))
+    let id = TargetID.workroom(project: "/p", name: "w")
+    var notified = false
+    withObservationTracking {
+      _ = lifecycle.creatingWorkrooms
+      _ = lifecycle.creationRunForTarget
+      _ = lifecycle.deletingWorkrooms
+      _ = lifecycle.deletingProjects
+    } onChange: {
+      notified = true
+    }
+    lifecycle.creatingWorkrooms.remove(id)
+    lifecycle.creationRunForTarget[id] = nil
+    lifecycle.deletingWorkrooms.remove(id)
+    lifecycle.deletingProjects.remove("/p")
+    XCTAssertFalse(notified, "a write that changed nothing must not redraw")
+    lifecycle.creatingWorkrooms.insert(id)
+    XCTAssertTrue(notified, "a write that changes a set still notifies")
+  }
+
   // MARK: Blank new windows
 
   func testInitialRestoreIsOneShot() {
@@ -243,12 +268,10 @@ final class MultiWindowTests: XCTestCase {
     super.tearDown()
   }
 
-  /// Two windows over one project list, each registered as the app registers a window.
+  /// Two windows over one lifecycle and project list, each registered as the app registers a window.
   private func twoWindows(cli: WorkroomCLIProtocol) -> (AppStore, AppStore) {
-    let shared = ProjectStore()
-    let windows = (
-      AppStore(projectStore: shared, cli: cli), AppStore(projectStore: shared, cli: cli)
-    )
+    let shared = WorkroomLifecycle(vcsStatus: VCSStatusService(projectStore: ProjectStore()))
+    let windows = (AppStore(lifecycle: shared, cli: cli), AppStore(lifecycle: shared, cli: cli))
     for store in [windows.0, windows.1] {
       store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
       let window = NSWindow()
@@ -267,7 +290,8 @@ final class MultiWindowTests: XCTestCase {
   /// Value: protects=a workroom deleted in one window leaves no trace in another that showed it:
   /// out of its split, off its selection, its run state gone; fails_when=the delete reaches only the
   /// window it was made in; why_new=no test had two windows for a delete, and in tests a store's
-  /// siblings were only itself; seam=WindowRegistry.shared; no_claim=the teardown's own steps.
+  /// siblings were only itself; seam=one WorkroomLifecycle for both windows;
+  /// no_claim=the teardown's own steps.
   func testADeleteInOneWindowClearsItFromTheOther() async {
     let path = "/private/var/tmp/wr-two-window-delete"
     let main = Workroom(name: "main", path: "\(path)/.workrooms/main", vcsName: "git", warnings: [])
@@ -285,20 +309,81 @@ final class MultiWindowTests: XCTestCase {
     b.selectedTargetID = doomedSid
     b.runCommand.armAutoRun(forWorkroom: doomedID)
 
-    a.deleteWorkroom(doomed, in: before)
+    a.lifecycle.deleteWorkroom(doomed, in: before, from: a)
 
     XCTAssertNil(b.workroomSplit(containing: doomedSid), "the other window's split lost it")
     XCTAssertEqual(b.selectedTargetID, mainSid, "the other window lands on what it split with")
-    for _ in 0..<200 where !a.deletingWorkrooms.isEmpty {
+    for _ in 0..<200 where !a.lifecycle.deletingWorkrooms.isEmpty {
       try? await Task.sleep(nanoseconds: 2_000_000)
     }
-    XCTAssertTrue(a.deletingWorkrooms.isEmpty, "the teardown finished")
+    XCTAssertTrue(a.lifecycle.deletingWorkrooms.isEmpty, "the teardown finished")
     XCTAssertNil(b.runCommand.runStates[doomedID], "the other window's run state went with it")
+  }
+
+  /// Value: protects=a delete whose dev server is still stopping in another window finishes when
+  /// that window closes before the server exits: the other window's terminals are reaped and the
+  /// teardown runs; fails_when=the delete holds the other window's store only weakly, so its stop's
+  /// poll stops with it and the tombstone stays until relaunch (the workroom hidden, its worktree
+  /// or paid machine left); why_new=no test closed a window mid-delete; seam=one WorkroomLifecycle
+  /// for both windows, liveProcessOverrideForTesting; no_claim=how long the stop waits.
+  func testADeleteFinishesWhenAWindowStoppingItsRunClosesMidStop() async {
+    let path = "/private/var/tmp/wr-two-window-delete-closing"
+    let main = Workroom(name: "main", path: "\(path)/.workrooms/main", vcsName: "git", warnings: [])
+    let doomed = Workroom(
+      name: "doomed", path: "\(path)/.workrooms/doomed", vcsName: "git", warnings: [])
+    let before = Project(path: path, vcs: "git", workrooms: [main, doomed])
+    let fake = FakeWorkroomCLI(
+      canonical: path, projects: [Project(path: path, vcs: "git", workrooms: [main])])
+    let a: AppStore
+    // Only the window holds its store (`RootWindow`'s `@StateObject`): no other strong local.
+    var b: AppStore?
+    do {
+      let windows = twoWindows(cli: fake)
+      (a, b) = (windows.0, windows.1)
+    }
+    a.projectStore.projects = [before]
+    let doomedID = TargetID.workroom(project: path, name: "doomed")
+    guard let server = b.flatMap({ runDevServer(in: $0, at: doomedID, inProject: path) }),
+      let terminals = b?.terminals
+    else { return XCTFail("the other window runs the workroom's dev server") }
+    server.liveProcessOverrideForTesting = true
+    weak var closed = b
+
+    a.lifecycle.deleteWorkroom(doomed, in: before, from: a)
+    // The other window closes while its dev server is still stopping.
+    if let registered = registeredWindows.last {
+      WindowRegistry.shared.unregister(window: registered)
+    }
+    b = nil
+    server.liveProcessOverrideForTesting = false
+
+    for _ in 0..<500 where !a.lifecycle.deletingWorkrooms.isEmpty {
+      try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+    XCTAssertTrue(a.lifecycle.deletingWorkrooms.isEmpty, "the teardown ran")
+    XCTAssertEqual(terminals.tabCount(forTargetID: doomedID), 0, "the closed window was reaped")
+    XCTAssertNil(closed, "and the delete let go of its store")
+  }
+
+  /// Starts `id`'s dev server in `window` and returns its terminal, its process standing in.
+  private func runDevServer(
+    in window: AppStore, at id: TerminalTarget.ID, inProject project: String
+  ) -> GhosttySurfaceView? {
+    guard let sid = id.sidebarID, let target = window.target(for: sid) else { return nil }
+    window.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    window.runCommand.signalSupervisorForTesting = { _, _ in .delivered }
+    window.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: false), forProject: project)
+    window.startRunCommand(for: target)
+    return window.runCommand.runTabID(for: id).flatMap { window.terminals.tab($0, for: target) }?
+      .surface
   }
 
   /// Value: protects=a create started in one window becomes its workroom in another that shows its
   /// pane, in the selection and in a split, once it has a name; fails_when=only the window it was
-  /// started in swaps the pane; why_new=as above; seam=WindowRegistry.shared;
+  /// started in swaps the pane; why_new=as above; seam=one WorkroomLifecycle for both windows;
   /// no_claim=the create's checklist.
   func testACreateInOneWindowNamesItsPaneInTheOther() async {
     let path = "/private/var/tmp/wr-two-window-create"
@@ -306,15 +391,15 @@ final class MultiWindowTests: XCTestCase {
       projectPath: path, names: ["fresh"], hasSetup: false, gate: .beforeReady,
       existing: ["main"])
     let (a, b) = twoWindows(cli: fake)
-    a.creationSuccessHold = .zero
-    a.closesFinishedCreations = { false }
+    a.lifecycle.creationSuccessHold = .zero
+    a.lifecycle.closesFinishedCreations = { false }
     await a.reload()
     guard let project = a.projectStore.projects.first else {
       return XCTFail("the fake lists its project")
     }
     let mainSid = SidebarID.workroom(project: path, name: "main")
 
-    let create = Task { await a.createWorkroom(in: project) }
+    let create = Task { await a.lifecycle.createWorkroom(in: project, from: a) }
     var pane: SidebarID?
     for _ in 0..<200 {
       if case .creation = a.selectedTargetID { pane = a.selectedTargetID }

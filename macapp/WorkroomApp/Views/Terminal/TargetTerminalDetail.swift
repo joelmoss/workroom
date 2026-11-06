@@ -22,10 +22,11 @@ struct TargetTerminalDetail: View {
   /// `WorkroomTerminalsView` (see `PaneTreeView.workroomIsSplit`).
   var workroomIsSplit: Bool = false
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject private var lifecycle: WorkroomLifecycle
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    let run = store.creationRun(forTargetID: target.id)
+    let run = lifecycle.creationRun(forTargetID: target.id)
     ZStack {
       // A create's run covers its pane in every window, its terminal withheld, until the run ends
       // (`isCreationBlocking`, issue #167, #483). It wins over `.creating`'s unavailability below.

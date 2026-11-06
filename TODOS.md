@@ -67,7 +67,7 @@ with `BaseRetirement`.
 
 **What:** A test that a config-only project delete with a remote workroom runs that workroom's
 teardown before its machine is destroyed (R2), and keeps a log for it. The behaviour is built
-(`AppStore.deleteProject`'s loop over `remoteWorkrooms`, `remoteTeardown(of:in:log:skip:)`), and
+(`WorkroomLifecycle.deleteProject`'s loop over `remoteWorkrooms`, `remoteTeardown(of:in:log:skip:)`), and
 `RemoteTeardownTests` pins `RemoteWorkrooms.delete`'s side, but nothing pins that the app's
 config-only path reaches it.
 
@@ -75,9 +75,9 @@ config-only path reaches it.
 teardowns everywhere; for a remote workroom that destroys the host without its teardown, which can
 leave the script's external resources running.
 
-**How to start:** `AppStore.deleteProject` builds each workroom's `RemoteWorkrooms.Teardown` with
-`remoteTeardown(of:in:log:skip:)`, whose `run` is always the live `RemoteWorkrooms.runScript`, and
-takes its hosts' environment from `RemoteHosts.Deletion`. Give `AppStore` a seam for the teardown's
+**How to start:** `WorkroomLifecycle.deleteProject` builds each workroom's `RemoteWorkrooms.Teardown`
+with `remoteTeardown(of:in:log:skip:)`, whose `run` is always the live `RemoteWorkrooms.runScript`, and
+takes its hosts' environment from `RemoteHosts.Deletion`. Give the lifecycle a seam for the teardown's
 `run` (and a fake `Deletion`), then assert the teardown runs and the log exists for `.configOnly`.
 
 **Effort:** S
@@ -403,10 +403,10 @@ to the bundled daemon (on for Nightly and Dev only, commit 26b9d881) is on for s
 **What:** share one OS watcher per canonical root across subscriptions and connections, fanning events
 into per-subscription coalescers.
 
-**Why:** #211 creates one `notify` watcher per subscription. `AppStore` is per window, so N windows on
-the same workroom, plus one `.git` watch per project per window, duplicate identical recursive
-watches. Cheap on macOS FSEvents; on Linux inotify needs one watch per directory per watcher and
-duplicates multiply toward `fs.inotify.max_user_watches`.
+**Why:** #211 creates one `notify` watcher per subscription, so subscriptions to the same tree, from
+N windows on the same workroom or from several connections, duplicate identical recursive watches.
+Cheap on macOS FSEvents; on Linux inotify needs one watch per directory per watcher and duplicates
+multiply toward `fs.inotify.max_user_watches`.
 
 **Pros:** correct on both platforms with one OS watch per tree. **Cons:** a cross-connection registry
 (refcounts, canonical-path keys, start/stop races) in the daemon that owns terminals, and a

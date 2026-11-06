@@ -28,8 +28,8 @@ final class CreationFlowTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.creationSuccessHold = .zero
-    store.closesFinishedCreations = { true }
+    store.lifecycle.creationSuccessHold = .zero
+    store.lifecycle.closesFinishedCreations = { true }
     return store
   }
 
@@ -58,7 +58,9 @@ final class CreationFlowTests: XCTestCase {
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
 
-    let task = Task { await store.createWorkroom(in: emptyProject, splitAnchor: anchor) }
+    let task = Task {
+      await store.lifecycle.createWorkroom(in: emptyProject, splitAnchor: anchor, from: store)
+    }
     await waitUntil({ fake.assignedCount == 1 }, "the create never reached the CLI")
     guard case .creation(_, let id)? = store.workroomSplits.first?.tabIDs.last else {
       fake.release("wr")
@@ -81,19 +83,20 @@ final class CreationFlowTests: XCTestCase {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: false)
     fake.release("wr")
     let store = makeStore(fake)
-    store.creationSuccessHold = .seconds(1)
+    store.lifecycle.creationSuccessHold = .seconds(1)
     let id = TargetID.workroom(project: projectPath, name: "wr")
 
-    let task = Task { await store.createWorkroom(in: emptyProject) }
+    let task = Task { await store.lifecycle.createWorkroom(in: emptyProject, from: store) }
     await waitUntil(
-      { store.creationRuns.values.first?.outcome == .succeeded }, "the create never finished")
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    XCTAssertTrue(store.isCreationBlocking(id), "the checklist still covers the pane")
+      { store.lifecycle.creationRuns.values.first?.outcome == .succeeded },
+      "the create never finished")
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    XCTAssertTrue(store.lifecycle.isCreationBlocking(id), "the checklist still covers the pane")
     XCTAssertTrue(run.steps.allSatisfy(\.state.isComplete), "every row ended")
 
     await task.value
-    XCTAssertTrue(store.creationRuns.isEmpty, "after the hold the run goes")
-    XCTAssertFalse(store.isCreationBlocking(id), "and the terminal mounts")
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty, "after the hold the run goes")
+    XCTAssertFalse(store.lifecycle.isCreationBlocking(id), "and the terminal mounts")
   }
 
   /// Value: protects=a finished create's checklist stays, terminal withheld, until Done when it
@@ -103,17 +106,17 @@ final class CreationFlowTests: XCTestCase {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: false)
     fake.release("wr")
     let store = makeStore(fake)
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
     let id = TargetID.workroom(project: projectPath, name: "wr")
 
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first, "the run waits for Done")
     XCTAssertEqual(run.outcome, .succeeded)
-    XCTAssertTrue(store.isCreationBlocking(id), "the checklist still covers the pane")
+    XCTAssertTrue(store.lifecycle.isCreationBlocking(id), "the checklist still covers the pane")
 
-    store.finishCreation(run)
-    XCTAssertTrue(store.creationRuns.isEmpty)
-    XCTAssertFalse(store.isCreationBlocking(id), "Done mounts the terminal")
+    store.lifecycle.finishCreation(run)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty)
+    XCTAssertFalse(store.lifecycle.isCreationBlocking(id), "Done mounts the terminal")
   }
 
   /// Value: protects=unticking "Close automatically when done" during the hold keeps the finished
@@ -123,15 +126,15 @@ final class CreationFlowTests: XCTestCase {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: false)
     fake.release("wr")
     let store = makeStore(fake)
-    store.creationSuccessHold = .milliseconds(50)
+    store.lifecycle.creationSuccessHold = .milliseconds(50)
     var answers = [true, false]
-    store.closesFinishedCreations = { answers.isEmpty ? false : answers.removeFirst() }
+    store.lifecycle.closesFinishedCreations = { answers.isEmpty ? false : answers.removeFirst() }
 
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first, "the run waits for Done")
     XCTAssertEqual(run.outcome, .succeeded)
-    store.finishCreation(run)
-    XCTAssertTrue(store.creationRuns.isEmpty)
+    store.lifecycle.finishCreation(run)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty)
   }
 
   /// Value: protects=a local create in a project with scripts/workroom_setup lists the setup row from
@@ -149,11 +152,12 @@ final class CreationFlowTests: XCTestCase {
     let store = makeStore(fake)
 
     let task = Task {
-      await store.createWorkroom(in: Project(path: path, vcs: "git", workrooms: []))
+      await store.lifecycle.createWorkroom(
+        in: Project(path: path, vcs: "git", workrooms: []), from: store)
     }
     await waitUntil({ fake.assignedCount == 1 }, "the create never reached the CLI")
     XCTAssertEqual(
-      store.creationRuns.values.first?.steps.map(\.id), ["fetch", "worktree", "script"])
+      store.lifecycle.creationRuns.values.first?.steps.map(\.id), ["fetch", "worktree", "script"])
     fake.release("wr")
     await task.value
   }
@@ -170,9 +174,9 @@ final class CreationFlowTests: XCTestCase {
       RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
     defer { store.runCommands.setRunConfig(.empty, forProject: projectPath) }
 
-    await store.createWorkroom(in: emptyProject)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
 
-    XCTAssertFalse(store.isCreationBlocking(id), "nothing withholds the terminal")
+    XCTAssertFalse(store.lifecycle.isCreationBlocking(id), "nothing withholds the terminal")
     guard case .running = store.runCommand.runStates[id] else {
       return XCTFail("the armed auto-run must have started")
     }
@@ -189,23 +193,24 @@ final class CreationFlowTests: XCTestCase {
     let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr"], hasSetup: true)
     fake.release("wr")
     let store = makeStore(fake)
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
     let id = TargetID.workroom(project: projectPath, name: "wr")
     store.runCommands.setRunConfig(
       RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
     defer { store.runCommands.setRunConfig(.empty, forProject: projectPath) }
 
-    await store.createWorkroom(in: emptyProject)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first, "the checklist waits for Done")
-    XCTAssertTrue(store.isCreationBlocking(id), "the checklist still covers the pane")
-    XCTAssertFalse(store.isRunBlocked(id), "a made workroom can run")
+    let run = try XCTUnwrap(
+      store.lifecycle.creationRuns.values.first, "the checklist waits for Done")
+    XCTAssertTrue(store.lifecycle.isCreationBlocking(id), "the checklist still covers the pane")
+    XCTAssertFalse(store.lifecycle.isRunBlocked(id), "a made workroom can run")
     guard case .running = store.runCommand.runStates[id] else {
       return XCTFail("the armed auto-run must start without waiting for Done")
     }
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the run, then the shell")
 
-    store.finishCreation(run)
+    store.lifecycle.finishCreation(run)
     let target = try XCTUnwrap(store.target(for: .workroom(project: projectPath, name: "wr")))
     store.ensureInitialTerminal(for: target)  // as the pane mounting after Done does
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "Done adds no second run or shell")
@@ -274,9 +279,9 @@ final class CreationFlowTests: XCTestCase {
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
 
-    await store.createWorkroom(in: emptyProject, splitAnchor: anchor)
+    await store.lifecycle.createWorkroom(in: emptyProject, splitAnchor: anchor, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     let pane = SidebarID.creation(project: projectPath, id: run.id)
     XCTAssertEqual(run.outcome, .failedBeforeWorkroom(message: "git worktree add failed"))
     XCTAssertEqual(run.steps[1].state, .failed)
@@ -284,12 +289,12 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertNil(store.modals.errorMessage, "the pane says it, not an error sheet")
     XCTAssertEqual(store.workroomSplits.first?.tabIDs, [anchor, pane], "the pane stays put")
 
-    await store.retryCreation(run)
+    await store.lifecycle.retryCreation(run, from: store)
 
     XCTAssertEqual(
       store.workroomSplits.first?.tabIDs, [anchor, .workroom(project: projectPath, name: "wr")],
       "Try Again ran in the same pane")
-    XCTAssertTrue(store.creationRuns.isEmpty)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty)
   }
 
   /// Value: protects=AC 2, a running create's pane can't be taken out of its split (its pane has no
@@ -306,7 +311,9 @@ final class CreationFlowTests: XCTestCase {
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
 
-    let task = Task { await store.createWorkroom(in: emptyProject, splitAnchor: anchor) }
+    let task = Task {
+      await store.lifecycle.createWorkroom(in: emptyProject, splitAnchor: anchor, from: store)
+    }
     await waitUntil({ fake.assignedCount == 1 }, "the create never reached the CLI")
     guard let pane = store.workroomSplits.first?.tabIDs.last else {
       fake.release("wr")
@@ -325,16 +332,14 @@ final class CreationFlowTests: XCTestCase {
   /// no_claim=that VoiceOver speaks them (the poster is replaced)
   func testAFailureAndASuccessAreAnnounced() async throws {
     var heard: [String] = []
-    let post = AppStore.announceCreation
-    AppStore.announceCreation = { heard.append($0) }
-    defer { AppStore.announceCreation = post }
     let store = makeStore(WorktreeFailsOnceCLI(projectPath: projectPath))
+    store.lifecycle.announceCreation = { heard.append($0) }
     store.projectStore.projects = [project(["anchor"])]
 
-    await store.createWorkroom(in: emptyProject)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
     XCTAssertEqual(heard, ["Couldn't create the workroom: Create worktree failed"])
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await store.retryCreation(run)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    await store.lifecycle.retryCreation(run, from: store)
     XCTAssertEqual(heard.last, "wr is ready")
     XCTAssertEqual(heard.count, 2)
   }
@@ -444,7 +449,8 @@ final class CreationFlowTests: XCTestCase {
       }
       onEvent(
         CreateEvents.step(
-          "script", "skipped", skipSetup ? AppStore.setupSkippedReason : "No setup script"))
+          "script", "skipped", skipSetup ? WorkroomLifecycle.setupSkippedReason : "No setup script")
+      )
       return CreateResponse(name: "wr", path: path, vcs: "git", project: project)
     }
     func trustScript(_ name: String, text: Data, project: String) async throws {
@@ -466,14 +472,14 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath, localWork: UntrustedSetupCLI.work)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    await store.createWorkroom(in: emptyProject)
-    let first = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let first = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(first.outcome, .localWorkFound(UntrustedSetupCLI.work))
 
-    await store.chooseStart(.origin, for: first)
-    let second = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.chooseStart(.origin, for: first, from: store)
+    let second = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(second.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
-    await store.approveSetupScript(second)
+    await store.lifecycle.approveSetupScript(second, from: store)
 
     await waitUntil(
       { store.projectStore.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
@@ -488,9 +494,9 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await store.skipSetupScript(run)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    await store.lifecycle.skipSetupScript(run, from: store)
     XCTAssertEqual(fake.pins, [nil, UntrustedSetupCLI.asked])
   }
 
@@ -500,9 +506,9 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await store.retryCreation(run)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    await store.lifecycle.retryCreation(run, from: store)
     XCTAssertEqual(fake.pins, [nil, nil], "Try Again must fetch afresh")
   }
 
@@ -515,14 +521,16 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath, fetchWarning: warning)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    store.closesFinishedCreations = { false }  // the finished checklist stays, to read its rows
-    await store.createWorkroom(in: emptyProject)
-    let first = try XCTUnwrap(store.creationRuns.values.first)
-    await store.approveSetupScript(first)
+    // The finished checklist stays, to read its rows.
+    store.lifecycle.closesFinishedCreations = { false }
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let first = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    await store.lifecycle.approveSetupScript(first, from: store)
 
     await waitUntil(
-      { store.creationRuns.values.first?.outcome == .succeeded }, "the answered create finished")
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+      { store.lifecycle.creationRuns.values.first?.outcome == .succeeded },
+      "the answered create finished")
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.steps.first { $0.id == "fetch" }?.state, .warning(warning))
     XCTAssertEqual(store.notifications.items.map(\.body), [warning])
   }
@@ -537,14 +545,15 @@ final class CreationFlowTests: XCTestCase {
         "Could not fetch origin. The workroom starts from origin/main, which may be out of date.")
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    store.closesFinishedCreations = { false }  // the finished run stays, to read its outcome
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    // The finished run stays, to read its outcome.
+    store.lifecycle.closesFinishedCreations = { false }
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(
       run.outcome, .scriptNotTrusted(UntrustedSetupCLI.script), "stale: no start question")
-    await store.approveSetupScript(run)
+    await store.lifecycle.approveSetupScript(run, from: store)
 
-    let answered = try XCTUnwrap(store.creationRuns.values.first)
+    let answered = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertNotEqual(
       answered.outcome, .localWorkFound(UntrustedSetupCLI.work), "Approve asked a new question")
     XCTAssertEqual(fake.starts, [.ask, .origin], "the answer starts where the stale try did")
@@ -560,10 +569,12 @@ final class CreationFlowTests: XCTestCase {
         "Could not fetch origin. The workroom starts from origin/main, which may be out of date.")
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    store.closesFinishedCreations = { false }  // the answered run stays, to try again
-    await store.createWorkroom(in: emptyProject)
-    await store.approveSetupScript(try XCTUnwrap(store.creationRuns.values.first))
-    await store.retryCreation(try XCTUnwrap(store.creationRuns.values.first))
+    store.lifecycle.closesFinishedCreations = { false }  // the answered run stays, to try again
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    await store.lifecycle.approveSetupScript(
+      try XCTUnwrap(store.lifecycle.creationRuns.values.first), from: store)
+    await store.lifecycle.retryCreation(
+      try XCTUnwrap(store.lifecycle.creationRuns.values.first), from: store)
     XCTAssertEqual(fake.starts, [.ask, .origin, .ask])
   }
 
@@ -574,13 +585,13 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath, unusablePin: true)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await store.approveSetupScript(run)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    await store.lifecycle.approveSetupScript(run, from: store)
 
     await waitUntil(
       {
-        store.creationRuns.values.first?.outcome == .succeeded
+        store.lifecycle.creationRuns.values.first?.outcome == .succeeded
           || store.projectStore.projects.first?.workrooms.contains { $0.name == "wr" } == true
       },
       "the Try Again created the workroom")
@@ -598,15 +609,16 @@ final class CreationFlowTests: XCTestCase {
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
 
-    await store.createWorkroom(in: emptyProject)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
     XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .waitingForUser)
     XCTAssertEqual(run.steps.first { $0.id == "worktree" }?.state, .pending)
     let footer = try XCTUnwrap(CreationPanePresentation.footer(for: run.outcome))
     XCTAssertEqual([footer.primary, footer.secondary], [.reviewScript, .cancel])
-    XCTAssertFalse(AppStore.CreateStep(run).failed, "a create waiting on Approve isn't a failure")
+    XCTAssertFalse(
+      WorkroomLifecycle.CreateStep(run).failed, "a create waiting on Approve isn't a failure")
     // The approval sheet, as the teardown's: the script to read, with what the terminal or the text
     // would act on or hide shown, so the script can't mask itself.
     XCTAssertEqual(store.modals.errorTitle, "Approve the setup script?")
@@ -641,8 +653,9 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    store.closesFinishedCreations = { false }  // the finished checklist stays, to read its rows
-    await store.createWorkroom(in: emptyProject)
+    // The finished checklist stays, to read its rows.
+    store.lifecycle.closesFinishedCreations = { false }
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
     let skip = try XCTUnwrap(
       store.modals.errorAction, "the sheet offers no Continue Without Script")
     store.modals.clearError()
@@ -653,16 +666,16 @@ final class CreationFlowTests: XCTestCase {
     await waitUntil(
       {
         store.projectStore.projects.first?.workrooms.contains { $0.name == "wr" } == true
-          && store.creationRuns.values.first?.outcome == .succeeded
+          && store.lifecycle.creationRuns.values.first?.outcome == .succeeded
       },
       "the create didn't run again without the script")
     XCTAssertEqual(fake.approved, [], "skipping approved the script")
-    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    let retry = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(retry.outcome, .succeeded)
     XCTAssertTrue(retry.skipsSetup)
     XCTAssertEqual(
       retry.steps.first { $0.id == "script" }?.state,
-      .skipped(reason: AppStore.setupSkippedReason))
+      .skipped(reason: WorkroomLifecycle.setupSkippedReason))
   }
 
   /// Value: protects=Try Again after Continue Without Script doesn't ask again for the script the
@@ -673,15 +686,15 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    store.closesFinishedCreations = { false }
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    await store.skipSetupScript(run)
-    let skipped = try XCTUnwrap(store.creationRuns.values.first)
+    store.lifecycle.closesFinishedCreations = { false }
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    await store.lifecycle.skipSetupScript(run, from: store)
+    let skipped = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
 
-    await store.retryCreation(skipped)
+    await store.lifecycle.retryCreation(skipped, from: store)
 
-    let again = try XCTUnwrap(store.creationRuns.values.first)
+    let again = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertNotIdentical(again, skipped, "Try Again made no new run")
     XCTAssertEqual(again.outcome, .succeeded, "Try Again stopped on the script again")
     XCTAssertTrue(again.skipsSetup)
@@ -712,19 +725,19 @@ final class CreationFlowTests: XCTestCase {
       return .passed
     }
     store.services.remoteCreate = services
-    store.closesFinishedCreations = { false }
-    await store.createRemoteWorkroom(in: project, place: .boxd)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    store.lifecycle.closesFinishedCreations = { false }
+    await store.lifecycle.createRemoteWorkroom(in: project, place: .boxd, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
 
-    await store.skipSetupScript(run)
+    await store.lifecycle.skipSetupScript(run, from: store)
 
     XCTAssertEqual(checks.count, 2, "the retry never asked the check")
-    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    let retry = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(retry.outcome, .succeeded)
     XCTAssertEqual(scripts.count, 0, "the setup script ran")
     XCTAssertEqual(
       retry.steps.first { $0.id == "script" }?.state,
-      .skipped(reason: AppStore.setupSkippedReason))
+      .skipped(reason: WorkroomLifecycle.setupSkippedReason))
     XCTAssertFalse(
       store.notifications.items.contains { $0.body?.contains("pushed") ?? false },
       "a local-work notice came from nowhere")
@@ -740,16 +753,16 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(projectPath: projectPath, localWork: UntrustedSetupCLI.work)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
 
-    await store.createWorkroom(in: emptyProject)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(fake.starts, [.ask])
     XCTAssertEqual(run.outcome, .localWorkFound(UntrustedSetupCLI.work))
     XCTAssertEqual(run.steps.first { $0.id == "worktree" }?.state, .waitingForUser)
     XCTAssertFalse(
-      AppStore.CreateStep(run).failed, "a create asking where to start isn't a failure")
+      WorkroomLifecycle.CreateStep(run).failed, "a create asking where to start isn't a failure")
     let footer = try XCTUnwrap(CreationPanePresentation.footer(for: run.outcome))
     XCTAssertEqual([footer.primary, footer.secondary], [.chooseStart, .cancel])
     let pending = try XCTUnwrap(store.modals.pendingStartChoice, "no start choice was raised")
@@ -776,15 +789,15 @@ final class CreationFlowTests: XCTestCase {
       ).contains(note), "the choice doesn't say the local branch is behind")
 
     store.modals.pendingStartChoice = nil
-    await store.chooseStart(.localWithChanges, for: run)
+    await store.lifecycle.chooseStart(.localWithChanges, for: run, from: store)
 
     // It then stops on the setup script, keeping the start for Approve's create.
-    let waiting = try XCTUnwrap(store.creationRuns[run.id])
+    let waiting = try XCTUnwrap(store.lifecycle.creationRuns[run.id])
     XCTAssertEqual(waiting.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
     XCTAssertEqual(waiting.start, .localWithChanges)
-    await store.approveSetupScript(waiting)
+    await store.lifecycle.approveSetupScript(waiting, from: store)
     XCTAssertEqual(fake.starts, [.ask, .localWithChanges, .localWithChanges])
-    let created = try XCTUnwrap(store.creationRuns[run.id])
+    let created = try XCTUnwrap(store.lifecycle.creationRuns[run.id])
     XCTAssertEqual(created.outcome, .succeeded)
     XCTAssertEqual(created.steps.first { $0.id == "changes" }?.state, .done)
   }
@@ -810,20 +823,21 @@ final class CreationFlowTests: XCTestCase {
       projectPath: projectPath, untrusted: false, localWork: UntrustedSetupCLI.work)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
 
-    await store.retryCreation(run)  // asks again, as a new run
-    let retry = try XCTUnwrap(store.creationRuns[run.id])
+    await store.lifecycle.retryCreation(run, from: store)  // asks again, as a new run
+    let retry = try XCTUnwrap(store.lifecycle.creationRuns[run.id])
     let pane = try XCTUnwrap(store.selectedTargetID)
-    await store.chooseStart(.local, for: run)
-    store.cancelStartChoice(run)
-    XCTAssertTrue(store.creationRuns[run.id] === retry, "a stale choice acted on the new create")
+    await store.lifecycle.chooseStart(.local, for: run, from: store)
+    store.lifecycle.cancelStartChoice(run, from: store)
+    XCTAssertTrue(
+      store.lifecycle.creationRuns[run.id] === retry, "a stale choice acted on the new create")
     XCTAssertEqual(store.selectedTargetID, pane)
     XCTAssertEqual(fake.starts, [.ask, .ask])
 
-    store.cancelStartChoice(retry)
-    XCTAssertTrue(store.creationRuns.isEmpty, "Cancel Creation left the create")
+    store.lifecycle.cancelStartChoice(retry, from: store)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty, "Cancel Creation left the create")
   }
 
   /// Value: protects=a remote create says what local work it leaves out, after it lands, since a
@@ -838,11 +852,11 @@ final class CreationFlowTests: XCTestCase {
       TrustStatus(trusted: true, scripts: [], localWork: UntrustedSetupCLI.work)
     }
     store.services.remoteCreate = services
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.outcome, .succeeded)
     XCTAssertNil(store.modals.pendingStartChoice)
     let notice = try XCTUnwrap(store.notifications.items.first?.body)
@@ -860,25 +874,26 @@ final class CreationFlowTests: XCTestCase {
   func testCancelCreationOnTheSetupSheetEndsTheCreate() async throws {
     let store = makeStore(UntrustedSetupCLI(projectPath: projectPath))
     store.projectStore.projects = [project(["anchor"])]
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     let staleCancel = try XCTUnwrap(store.modals.errorCancel)
 
     // Review Script… shows it again; a run replaced since leaves the first sheet's Cancel stale.
-    await store.retryCreation(run)
-    let retry = try XCTUnwrap(store.creationRuns[run.id])
+    await store.lifecycle.retryCreation(run, from: store)
+    let retry = try XCTUnwrap(store.lifecycle.creationRuns[run.id])
     XCTAssertFalse(retry === run)
     let pane = try XCTUnwrap(store.selectedTargetID)
     staleCancel.run()
-    XCTAssertTrue(store.creationRuns[run.id] === retry, "a stale sheet cancelled the new create")
+    XCTAssertTrue(
+      store.lifecycle.creationRuns[run.id] === retry, "a stale sheet cancelled the new create")
     XCTAssertEqual(store.selectedTargetID, pane, "a stale sheet took the new create's pane away")
 
     store.modals.clearError()
-    store.presentSetupApproval(retry)
+    store.lifecycle.presentSetupApproval(retry, in: store)
     let cancel = try XCTUnwrap(store.modals.errorCancel, "Review Script… showed no sheet")
     store.modals.clearError()
     cancel.run()
-    XCTAssertTrue(store.creationRuns.isEmpty, "Cancel Creation left the create")
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty, "Cancel Creation left the create")
   }
 
   /// Value: protects=a double-click on Try Again starts one create, not two (for a remote create, a
@@ -887,11 +902,11 @@ final class CreationFlowTests: XCTestCase {
     let fake = WorktreeFailsOnceCLI(projectPath: projectPath)
     let store = makeStore(fake)
     store.projectStore.projects = [project(["anchor"])]
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
 
-    let first = Task { await store.retryCreation(run) }
-    let second = Task { await store.retryCreation(run) }
+    let first = Task { await store.lifecycle.retryCreation(run, from: store) }
+    let second = Task { await store.lifecycle.retryCreation(run, from: store) }
     await first.value
     await second.value
 
@@ -906,14 +921,14 @@ final class CreationFlowTests: XCTestCase {
     store.projectStore.projects = [project(["anchor"])]
     store.selectedTargetID = .root(project: projectPath)
 
-    await store.createWorkroom(in: emptyProject)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.createWorkroom(in: emptyProject, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(store.selectedTargetID, .creation(project: projectPath, id: run.id))
 
-    store.closeCreation(run)
+    store.lifecycle.closeCreation(run, from: store)
     XCTAssertEqual(store.selectedTargetID, .root(project: projectPath))
-    XCTAssertTrue(store.creationRuns.isEmpty)
-    XCTAssertTrue(store.creationRunForTarget.isEmpty)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty)
+    XCTAssertTrue(store.lifecycle.creationRunForTarget.isEmpty)
   }
 
   /// Value: protects=O1, Delete Project is refused while a create runs, before it has a name;
@@ -925,13 +940,13 @@ final class CreationFlowTests: XCTestCase {
     let store = makeStore(fake)
     store.projectStore.projects = [emptyProject]
 
-    let task = Task { await store.createWorkroom(in: emptyProject) }
+    let task = Task { await store.lifecycle.createWorkroom(in: emptyProject, from: store) }
     await waitUntil({ fake.assignedCount == 1 }, "the create never reached the CLI")
-    store.deleteProject(emptyProject, scope: .configOnly)
+    store.lifecycle.deleteProject(emptyProject, scope: .configOnly, from: store)
     XCTAssertEqual(
       store.modals.errorMessage,
       "A workroom is still being created in this project. Wait for it to finish, then try again.")
-    XCTAssertTrue(store.deletingProjects.isEmpty, "nothing was deleted")
+    XCTAssertTrue(store.lifecycle.deletingProjects.isEmpty, "nothing was deleted")
 
     fake.release("wr")
     await task.value
@@ -947,12 +962,12 @@ final class CreationFlowTests: XCTestCase {
     let store = makeStore(fake)
     store.projectStore.projects = [emptyProject]
 
-    let a = Task { await store.createWorkroom(in: emptyProject) }
+    let a = Task { await store.lifecycle.createWorkroom(in: emptyProject, from: store) }
     await waitUntil({ fake.assignedCount == 1 }, "A never reached the CLI")
-    let b = Task { await store.createWorkroom(in: emptyProject) }
+    let b = Task { await store.lifecycle.createWorkroom(in: emptyProject, from: store) }
     await waitUntil({ fake.assignedCount == 2 }, "B never reached the CLI")
 
-    let rows = store.provisionalCreationRows(inProject: projectPath)
+    let rows = store.lifecycle.provisionalCreationRows(inProject: projectPath)
     XCTAssertEqual(rows.map(\.label), ["New workroom · This Mac", "New workroom · This Mac 2"])
 
     store.selectedTargetID = .root(project: projectPath)
@@ -962,14 +977,14 @@ final class CreationFlowTests: XCTestCase {
     fake.release("wr-a")
     await a.value
     XCTAssertEqual(
-      store.provisionalCreationRows(inProject: projectPath).map(\.id), [rows[1].id],
+      store.lifecycle.provisionalCreationRows(inProject: projectPath).map(\.id), [rows[1].id],
       "A's row gave way")
     XCTAssertTrue(
       store.projectStore.projects.first?.workrooms.contains { $0.name == "wr-a" } ?? false)
 
     fake.release("wr-b")
     await b.value
-    XCTAssertTrue(store.provisionalCreationRows(inProject: projectPath).isEmpty)
+    XCTAssertTrue(store.lifecycle.provisionalCreationRows(inProject: projectPath).isEmpty)
   }
 
   // MARK: - Remote
@@ -1153,23 +1168,24 @@ final class CreationFlowTests: XCTestCase {
     }
     store.services.remoteCreate = services
 
-    await store.createRemoteWorkroom(
-      in: emptyProject, place: .exeDev, hostOptions: HostOptions(image: .value("ubuntu:24.04")))
-    var run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .exeDev, hostOptions: HostOptions(image: .value("ubuntu:24.04")),
+      from: store)
+    var run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(asked.all.last, ResolvedHostOptions(image: "ubuntu:24.04", cpu: 2))
     XCTAssertTrue(run.offersProviderDefaults, "\(run.steps.map { ($0.id, $0.state) })")
 
     levels.settings = HostOptions(cpu: .value(4))
-    await store.retryCreation(run)
-    run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.retryCreation(run, from: store)
+    run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(asked.all.last, ResolvedHostOptions(image: "ubuntu:24.04", cpu: 4))
 
-    await store.retryCreation(run, hostOptions: .providerDefaults)
-    run = try XCTUnwrap(store.creationRuns.values.first)
+    await store.lifecycle.retryCreation(run, hostOptions: .providerDefaults, from: store)
+    run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(asked.all.last, ResolvedHostOptions())
     XCTAssertFalse(run.offersProviderDefaults, "offered again with nothing left to drop")
 
-    await store.retryCreation(run)
+    await store.lifecycle.retryCreation(run, from: store)
     XCTAssertEqual(asked.all.last, ResolvedHostOptions())
     XCTAssertEqual(levels.settings, HostOptions(cpu: .value(4)), "Settings were changed")
   }
@@ -1186,7 +1202,7 @@ final class CreationFlowTests: XCTestCase {
     }
     services.hostOptionLevels = { _, _ in (project: nil, settings: HostOptions(cpu: .value(8))) }
     store.services.remoteCreate = services
-    await store.createRemoteWorkroom(in: emptyProject, place: .ssh)
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .ssh, from: store)
     XCTAssertEqual(asked.all, [nil])
   }
 
@@ -1202,9 +1218,9 @@ final class CreationFlowTests: XCTestCase {
     }
     store.services.remoteCreate = services
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.outcome, .scriptNotTrusted(UntrustedSetupCLI.script))
     XCTAssertEqual(hosts.count, 0, "a machine was asked for")
     XCTAssertEqual(run.steps.first { $0.id == "repository" }?.state, .done)
@@ -1230,9 +1246,10 @@ final class CreationFlowTests: XCTestCase {
     }
     store.services.remoteCreate = services
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .container(.docker), from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.outcome, .scriptNotTrusted(Self.devContainer))
     XCTAssertEqual(hosts.count, 0, "a container was asked for")
     XCTAssertEqual(store.modals.errorTitle, "Approve the dev container?")
@@ -1243,7 +1260,7 @@ final class CreationFlowTests: XCTestCase {
         + "is made.")
 
     store.modals.clearError()
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
     XCTAssertEqual(asked.all, [true, false], "only a container create judges the file")
   }
 
@@ -1265,9 +1282,10 @@ final class CreationFlowTests: XCTestCase {
       return TrustStatus(trusted: approved, scripts: devcontainer ? [config] : [])
     }
     store.services.remoteCreate = services
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .container(.docker), from: store)
     XCTAssertEqual(hosts.count, 0)
     let approve = try XCTUnwrap(store.modals.errorApproval)
     store.modals.clearError()
@@ -1291,13 +1309,14 @@ final class CreationFlowTests: XCTestCase {
       return TrustStatus(trusted: false, scripts: devcontainer ? [Self.devContainer] : [])
     }
     store.services.remoteCreate = services
-    store.closesFinishedCreations = { false }
-    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    store.lifecycle.closesFinishedCreations = { false }
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .container(.docker), from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
 
-    await store.skipSetupScript(run)
+    await store.lifecycle.skipSetupScript(run, from: store)
 
-    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    let retry = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertTrue(retry.skipsDevContainer)
     XCTAssertFalse(retry.skipsSetup, "the setup script is still judged")
     XCTAssertEqual(asked.all, [true, false])
@@ -1321,11 +1340,12 @@ final class CreationFlowTests: XCTestCase {
       TrustStatus(trusted: true, scripts: devcontainer ? [compose] : [])
     }
     store.services.remoteCreate = services
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .container(.docker), from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.outcome, .composeRefused(file: ".devcontainer/devcontainer.json"))
     XCTAssertEqual(hosts.count, 0, "a container was asked for")
     XCTAssertEqual(run.steps.first { $0.id == "config" }?.state, .waitingForUser)
@@ -1333,7 +1353,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(footer.primary, .defaultImage)
     XCTAssertEqual(footer.secondary, .cancel)
 
-    await store.retryCreation(run, skipsDevContainer: true)
+    await store.lifecycle.retryCreation(run, skipsDevContainer: true, from: store)
     XCTAssertEqual(hosts.count, 1, "the default image's create didn't go ahead")
   }
 
@@ -1384,13 +1404,14 @@ final class CreationFlowTests: XCTestCase {
       return .passed
     }
     store.services.remoteCreate = services
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
     store.runCommands.setRunConfig(
       RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .container(.docker), from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     guard case .hookFailed(let message) = run.outcome else {
       return XCTFail("not a lifecycle command's failure: \(run.outcome)")
     }
@@ -1401,7 +1422,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertNil(
       store.runCommand.runStates[TargetID.workroom(project: projectPath, name: name)],
       "Open Anyway must not start the run against a half-set-up container")
-    XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
+    XCTAssertTrue(store.lifecycle.creatingWorkrooms.isEmpty, "and Delete is allowed")
   }
 
   /// Value: protects=the wording of a devcontainer.json's sheet and confirmation, which isn't a
@@ -1428,9 +1449,9 @@ final class CreationFlowTests: XCTestCase {
       driver: FakeDriver(), daemon: daemon,
       grantRepository: { _ in throw HostDriverError.provisioning("o/r is not shared") })
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.steps.first { $0.id == "repository" }?.state, .failed)
     XCTAssertEqual(run.steps.first { $0.id == "account" }?.state, .done)
   }
@@ -1447,9 +1468,9 @@ final class CreationFlowTests: XCTestCase {
     let store = remoteStore(cli)
     store.services.remoteCreate = services(driver: driver, daemon: daemon)
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     guard case .remoteFailed(let message, leftBehind: false) = run.outcome else {
       return XCTFail("expected a rolled-back failure, got \(run.outcome)")
     }
@@ -1467,7 +1488,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertTrue(cli.calls.contains("delete calm-river"), "and its record forgotten")
     XCTAssertFalse(
       store.projectStore.projects.first?.workrooms.contains { $0.name == "calm-river" } ?? true)
-    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+    XCTAssertTrue(store.lifecycle.creatingWorkrooms.isEmpty)
   }
 
   /// Value: protects=O2 in a split, the rolled-back pane stays beside its anchor; fails_when=the
@@ -1480,9 +1501,10 @@ final class CreationFlowTests: XCTestCase {
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd, splitAnchor: anchor)
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .boxd, splitAnchor: anchor, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(
       store.workroomSplits.first?.tabIDs, [anchor, .creation(project: projectPath, id: run.id)])
   }
@@ -1496,16 +1518,16 @@ final class CreationFlowTests: XCTestCase {
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
     store.services.remoteCreate = services(driver: FakeDriver(destroyFails: true), daemon: daemon)
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     guard case .remoteFailed(_, leftBehind: true) = run.outcome else {
       return XCTFail("expected a left-behind failure, got \(run.outcome)")
     }
     let id = TargetID.workroom(project: projectPath, name: "calm-river")
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-river"))
-    XCTAssertTrue(store.isCreationBlocking(id), "its pane still shows the failed run")
-    XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
+    XCTAssertTrue(store.lifecycle.isCreationBlocking(id), "its pane still shows the failed run")
+    XCTAssertTrue(store.lifecycle.creatingWorkrooms.isEmpty, "and Delete is allowed")
   }
 
   /// Value: protects=a remote create's steps, landing and end: repository, account, connect,
@@ -1519,12 +1541,12 @@ final class CreationFlowTests: XCTestCase {
     store.services.remoteCreate = services(driver: FakeDriver(), daemon: daemon)
     // The run waits for Done: a create against the fake daemon ends within one poll of the
     // run's start, so watching `creationRuns` for it mid-flight is a race.
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
     store.runCommands.setRunConfig(
       RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
-    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
+    await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first, "the run waits for Done")
 
     XCTAssertEqual(run.outcome, .succeeded)
     XCTAssertNotNil(
@@ -1536,9 +1558,9 @@ final class CreationFlowTests: XCTestCase {
         .done, .done, .skipped(reason: nil), .skipped(reason: nil), .done, .done, .done,
       ])
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-river"))
-    store.finishCreation(run)
-    XCTAssertTrue(store.creationRuns.isEmpty)
-    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+    store.lifecycle.finishCreation(run)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty)
+    XCTAssertTrue(store.lifecycle.creatingWorkrooms.isEmpty)
   }
 
   /// What a fake script service was asked, and whether the workroom was still undeletable then.
@@ -1575,17 +1597,17 @@ final class CreationFlowTests: XCTestCase {
     var services = services(driver: FakeDriver(), daemon: daemon)
     services.script = { [weak store] request in
       call.request = request
-      call.undeletable = !(store?.creatingWorkrooms.isEmpty ?? true)
+      call.undeletable = !(store?.lifecycle.creatingWorkrooms.isEmpty ?? true)
       request.onStart()
       request.onLine("installing")
       return .passed
     }
     store.services.remoteCreate = services
     // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
 
-    await store.createRemoteWorkroom(in: project, place: .boxd)
-    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
+    await store.lifecycle.createRemoteWorkroom(in: project, place: .boxd, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first, "the run waits for Done")
 
     XCTAssertEqual(run.outcome, .succeeded)
     let row = try XCTUnwrap(run.steps.first { $0.id == "script" })
@@ -1597,7 +1619,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(request.workroom, "calm-river")
     XCTAssertEqual(request.rootScript?.path, project.path + "/scripts/workroom_setup")
     XCTAssertTrue(call.undeletable, "the script ran after the workroom could be deleted")
-    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+    XCTAssertTrue(store.lifecycle.creatingWorkrooms.isEmpty)
   }
 
   /// Value: protects=Continue Without Script on a remote create: past the check that stopped it,
@@ -1620,18 +1642,18 @@ final class CreationFlowTests: XCTestCase {
       return .passed
     }
     store.services.remoteCreate = services
-    store.closesFinishedCreations = { false }
-    await store.createRemoteWorkroom(in: project, place: .boxd)
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    store.lifecycle.closesFinishedCreations = { false }
+    await store.lifecycle.createRemoteWorkroom(in: project, place: .boxd, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
 
-    await store.skipSetupScript(run)
+    await store.lifecycle.skipSetupScript(run, from: store)
 
-    let retry = try XCTUnwrap(store.creationRuns.values.first)
+    let retry = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(retry.outcome, .succeeded)
     XCTAssertEqual(scripts.count, 0, "the setup script ran")
     XCTAssertEqual(
       retry.steps.first { $0.id == "script" }?.state,
-      .skipped(reason: AppStore.setupSkippedReason))
+      .skipped(reason: WorkroomLifecycle.setupSkippedReason))
   }
 
   /// Value: protects=a remote setup that fails ends the create as a local one does
@@ -1658,14 +1680,14 @@ final class CreationFlowTests: XCTestCase {
     store.runCommands.setRunConfig(
       RunConfig(command: "bin/dev", autoRun: true), forProject: project.path)
 
-    await store.createRemoteWorkroom(in: project, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: project, place: .boxd, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.outcome, .setupScriptFailed(message: why))
     XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .failed)
     XCTAssertEqual(driver.destroys, 0, "the machine was taken down")
     XCTAssertFalse(cli.calls.contains("delete calm-river"), "the record was forgotten")
-    XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
+    XCTAssertTrue(store.lifecycle.creatingWorkrooms.isEmpty, "and Delete is allowed")
     XCTAssertNil(
       store.runCommand.runStates[TargetID.workroom(project: project.path, name: "calm-river")],
       "Open Anyway must not start the run against a half-set-up tree (issue #7)")
@@ -1686,9 +1708,9 @@ final class CreationFlowTests: XCTestCase {
     services.script = { _ in .failed("setup script failed: couldn't reach the host") }
     store.services.remoteCreate = services
 
-    await store.createRemoteWorkroom(in: project, place: .boxd)
+    await store.lifecycle.createRemoteWorkroom(in: project, place: .boxd, from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.steps.first { $0.id == "checkout" }?.state, .done)
     XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .failed)
   }
@@ -1712,10 +1734,10 @@ final class CreationFlowTests: XCTestCase {
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     store.services.remoteCreate = services(driver: driver, daemon: daemon)
     // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.
-    store.closesFinishedCreations = { false }
+    store.lifecycle.closesFinishedCreations = { false }
 
-    await store.createRemoteWorkroom(in: project, place: .boxd)
-    let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
+    await store.lifecycle.createRemoteWorkroom(in: project, place: .boxd, from: store)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first, "the run waits for Done")
 
     XCTAssertEqual(run.outcome, .succeeded)
     XCTAssertEqual(run.steps.suffix(2).map(\.id), ["checkout", "include"])
@@ -1738,13 +1760,15 @@ final class CreationFlowTests: XCTestCase {
     store.services.remoteCreate = services(
       driver: FakeDriver(), daemon: daemon, setup: FakeSetup(), plans: plans)
 
-    let task = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
+    let task = Task {
+      await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
+    }
     await waitUntil({ store.modals.pendingRemoteSetup != nil }, "the setup sheet never came up")
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(store.selectedTargetID, .creation(project: projectPath, id: run.id))
     XCTAssertEqual(run.steps[1].state, .waitingForUser)
 
-    store.resolveRemoteSetup(carryOn: true)
+    store.lifecycle.resolveRemoteSetup(carryOn: true, in: store.modals)
     await task.value
 
     XCTAssertEqual(plans.count, 1, "the repository was checked once")
@@ -1762,14 +1786,16 @@ final class CreationFlowTests: XCTestCase {
     store.services.remoteCreate = services(
       driver: FakeDriver(), daemon: nil, setup: FakeSetup(), hosts: hosts)
 
-    let task = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
+    let task = Task {
+      await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
+    }
     await waitUntil({ store.modals.pendingRemoteSetup != nil }, "the setup sheet never came up")
-    let run = try XCTUnwrap(store.creationRuns.values.first)
-    store.resolveRemoteSetup(carryOn: false)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
+    store.lifecycle.resolveRemoteSetup(carryOn: false, in: store.modals)
     await task.value
 
     XCTAssertEqual(run.outcome, .cancelled)
-    XCTAssertTrue(store.creationRuns.isEmpty)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty)
     XCTAssertEqual(store.selectedTargetID, .root(project: projectPath))
     XCTAssertEqual(hosts.count, 0, "nothing was made")
   }
@@ -1779,31 +1805,33 @@ final class CreationFlowTests: XCTestCase {
   /// never shown, or its creates are stranded; no_claim=the sheets' drawing
   func testTwoProvidersSetupSheetsQueueOneAfterTheOther() async throws {
     var heard: [String] = []
-    let post = AppStore.announceCreation
-    AppStore.announceCreation = { heard.append($0) }
-    defer { AppStore.announceCreation = post }
     let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
+    store.lifecycle.announceCreation = { heard.append($0) }
     store.services.remoteCreate = services(driver: FakeDriver(), daemon: nil, setup: FakeSetup())
 
-    let boxd = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
+    let boxd = Task {
+      await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
+    }
     await waitUntil({ store.modals.pendingRemoteSetup != nil }, "boxd's sheet never came up")
-    let exeDev = Task { await store.createRemoteWorkroom(in: emptyProject, place: .exeDev) }
+    let exeDev = Task {
+      await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .exeDev, from: store)
+    }
     await waitUntil(
-      { store.projectStore.remoteSetupWaits.count == 2 }, "exe.dev's create never queued")
+      { store.lifecycle.remoteSetupWaits.count == 2 }, "exe.dev's create never queued")
     XCTAssertEqual(store.modals.pendingRemoteSetup?.place, .boxd, "the first sheet stays up")
 
-    store.resolveRemoteSetup(carryOn: false)
+    store.lifecycle.resolveRemoteSetup(carryOn: false, in: store.modals)
     await boxd.value
     XCTAssertEqual(
       store.modals.pendingRemoteSetup?.place, .exeDev, "the next provider's sheet follows")
-    let waiting = try XCTUnwrap(store.creationRuns.values.first)
+    let waiting = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(waiting.kind, .exeDev)
     XCTAssertEqual(waiting.steps[1].state, .waitingForUser)
 
-    store.resolveRemoteSetup(carryOn: false)
+    store.lifecycle.resolveRemoteSetup(carryOn: false, in: store.modals)
     await exeDev.value
     XCTAssertNil(store.modals.pendingRemoteSetup)
-    XCTAssertTrue(store.creationRuns.isEmpty)
+    XCTAssertTrue(store.lifecycle.creationRuns.isEmpty)
     XCTAssertEqual(heard, ["boxd needs setting up", "exe.dev needs setting up"])
   }
 
@@ -1848,9 +1876,10 @@ final class CreationFlowTests: XCTestCase {
       let store = remoteStore(RemoteFakeCLI(projectPath: projectPath))
       store.services.remoteCreate = services(driver: driver, daemon: daemon)
 
-      await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+      await store.lifecycle.createRemoteWorkroom(
+        in: emptyProject, place: .container(.docker), from: store)
 
-      let run = try XCTUnwrap(store.creationRuns.values.first)
+      let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
       let image = try XCTUnwrap(run.steps.first { $0.id == "image" })
       XCTAssertEqual(
         image.state, present ? .skipped(reason: "Image already downloaded") : .done,
@@ -1878,9 +1907,10 @@ final class CreationFlowTests: XCTestCase {
     store.services.remoteCreate = services(
       driver: driver, daemon: daemon, gitHubToken: { throw RemoteWorkrooms.Failure.signedOut })
 
-    await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
+    await store.lifecycle.createRemoteWorkroom(
+      in: emptyProject, place: .container(.docker), from: store)
 
-    let run = try XCTUnwrap(store.creationRuns.values.first)
+    let run = try XCTUnwrap(store.lifecycle.creationRuns.values.first)
     XCTAssertEqual(run.steps.first { $0.id == "repository" }?.state, .failed)
     XCTAssertEqual(run.steps.first { $0.id == "image" }?.state, .skipped(reason: nil), "no pull")
     XCTAssertEqual(run.steps.first { $0.id == "machine" }?.state, .skipped(reason: nil))
@@ -1896,26 +1926,30 @@ final class CreationFlowTests: XCTestCase {
       store.services.remoteCreate = services(
         driver: FakeDriver(), daemon: nil, setup: FakeSetup(), hosts: hosts)
 
-      let a = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
+      let a = Task {
+        await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
+      }
       await waitUntil({ store.modals.pendingRemoteSetup != nil }, "the setup sheet never came up")
       let sheet = store.modals.pendingRemoteSetup?.id
-      let b = Task { await store.createRemoteWorkroom(in: emptyProject, place: .boxd) }
+      let b = Task {
+        await store.lifecycle.createRemoteWorkroom(in: emptyProject, place: .boxd, from: store)
+      }
       await waitUntil(
-        { store.projectStore.remoteSetupWaits.first?.waiting.count == 2 },
+        { store.lifecycle.remoteSetupWaits.first?.waiting.count == 2 },
         "the second create never joined the sheet")
-      XCTAssertEqual(store.projectStore.remoteSetupWaits.count, 1, "one sheet")
+      XCTAssertEqual(store.lifecycle.remoteSetupWaits.count, 1, "one sheet")
       XCTAssertEqual(store.modals.pendingRemoteSetup?.id, sheet)
 
-      store.resolveRemoteSetup(carryOn: carryOn)
+      store.lifecycle.resolveRemoteSetup(carryOn: carryOn, in: store.modals)
       await a.value
       await b.value
 
       if carryOn {
         XCTAssertEqual(hosts.count, 2, "both carried on")
-        XCTAssertEqual(store.creationRuns.count, 2, "each to its own (failed) end")
+        XCTAssertEqual(store.lifecycle.creationRuns.count, 2, "each to its own (failed) end")
       } else {
         XCTAssertEqual(hosts.count, 0)
-        XCTAssertTrue(store.creationRuns.isEmpty, "both ended")
+        XCTAssertTrue(store.lifecycle.creationRuns.isEmpty, "both ended")
       }
     }
   }
