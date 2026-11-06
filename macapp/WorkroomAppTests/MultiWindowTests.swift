@@ -230,6 +230,115 @@ final class MultiWindowTests: XCTestCase {
     XCTAssertNil(WindowRegistry.cyclePlan(ordered: [String](), forward: true))
   }
 
+  // MARK: Create and delete across windows
+
+  /// Windows registered on `WindowRegistry.shared` by the create/delete tests below, as the app
+  /// registers its windows. Unwound in `tearDown`, so a failed assertion can't leak a registration
+  /// into a later test.
+  private var registeredWindows: [NSWindow] = []
+
+  override func tearDown() {
+    for window in registeredWindows { WindowRegistry.shared.unregister(window: window) }
+    registeredWindows = []
+    super.tearDown()
+  }
+
+  /// Two windows over one project list, each registered as the app registers a window.
+  private func twoWindows(cli: WorkroomCLIProtocol) -> (AppStore, AppStore) {
+    let shared = ProjectStore()
+    let windows = (
+      AppStore(projectStore: shared, cli: cli), AppStore(projectStore: shared, cli: cli)
+    )
+    for store in [windows.0, windows.1] {
+      store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+      let window = NSWindow()
+      WindowRegistry.shared.register(window: window, store: store)
+      registeredWindows.append(window)
+    }
+    return windows
+  }
+
+  /// A two-leaf workroom split of `first` and `second`.
+  private func split(_ first: SidebarID, _ second: SidebarID) -> PaneLayout<SidebarID> {
+    .split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(first), second: .leaf(second))
+  }
+
+  /// Value: protects=a workroom deleted in one window leaves no trace in another that showed it:
+  /// out of its split, off its selection, its run state gone; fails_when=the delete reaches only the
+  /// window it was made in; why_new=no test had two windows for a delete, and in tests a store's
+  /// siblings were only itself; seam=WindowRegistry.shared; no_claim=the teardown's own steps.
+  func testADeleteInOneWindowClearsItFromTheOther() async {
+    let path = "/private/var/tmp/wr-two-window-delete"
+    let main = Workroom(name: "main", path: "\(path)/.workrooms/main", vcsName: "git", warnings: [])
+    let doomed = Workroom(
+      name: "doomed", path: "\(path)/.workrooms/doomed", vcsName: "git", warnings: [])
+    let before = Project(path: path, vcs: "git", workrooms: [main, doomed])
+    let fake = FakeWorkroomCLI(
+      canonical: path, projects: [Project(path: path, vcs: "git", workrooms: [main])])
+    let (a, b) = twoWindows(cli: fake)
+    a.projectStore.projects = [before]
+    let mainSid = SidebarID.workroom(project: path, name: "main")
+    let doomedSid = SidebarID.workroom(project: path, name: "doomed")
+    let doomedID = TargetID.workroom(project: path, name: "doomed")
+    b.workroomSplits = [split(mainSid, doomedSid)]
+    b.selectedTargetID = doomedSid
+    b.runCommand.armAutoRun(forWorkroom: doomedID)
+
+    a.deleteWorkroom(doomed, in: before)
+
+    XCTAssertNil(b.workroomSplit(containing: doomedSid), "the other window's split lost it")
+    XCTAssertEqual(b.selectedTargetID, mainSid, "the other window lands on what it split with")
+    for _ in 0..<200 where !a.deletingWorkrooms.isEmpty {
+      try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+    XCTAssertTrue(a.deletingWorkrooms.isEmpty, "the teardown finished")
+    XCTAssertNil(b.runCommand.runStates[doomedID], "the other window's run state went with it")
+  }
+
+  /// Value: protects=a create started in one window becomes its workroom in another that shows its
+  /// pane, in the selection and in a split, once it has a name; fails_when=only the window it was
+  /// started in swaps the pane; why_new=as above; seam=WindowRegistry.shared;
+  /// no_claim=the create's checklist.
+  func testACreateInOneWindowNamesItsPaneInTheOther() async {
+    let path = "/private/var/tmp/wr-two-window-create"
+    let fake = GatedFakeCLI(
+      projectPath: path, names: ["fresh"], hasSetup: false, gate: .beforeReady,
+      existing: ["main"])
+    let (a, b) = twoWindows(cli: fake)
+    a.creationSuccessHold = .zero
+    a.closesFinishedCreations = { false }
+    await a.reload()
+    guard let project = a.projectStore.projects.first else {
+      return XCTFail("the fake lists its project")
+    }
+    let mainSid = SidebarID.workroom(project: path, name: "main")
+
+    let create = Task { await a.createWorkroom(in: project) }
+    var pane: SidebarID?
+    for _ in 0..<200 {
+      if case .creation = a.selectedTargetID { pane = a.selectedTargetID }
+      if pane != nil { break }
+      await Task.yield()
+    }
+    guard let pane else {
+      create.cancel()
+      return XCTFail("the create's pane opens in the window it was started in")
+    }
+    b.workroomSplits = [split(mainSid, pane)]
+    b.selectedTargetID = pane
+
+    fake.release("fresh")
+    await create.value
+
+    let fresh = SidebarID.workroom(project: path, name: "fresh")
+    XCTAssertEqual(a.selectedTargetID, fresh, "the window it was started in shows the workroom")
+    XCTAssertEqual(b.selectedTargetID, fresh, "so does the other window's selection")
+    XCTAssertEqual(
+      b.workroomSplit(containing: fresh)?.tabIDs, [mainSid, fresh],
+      "and its split holds the workroom where the pane was")
+  }
+
   // MARK: Window-close guard (A3)
 
   func testCloseGuardAllowsCloseWithoutRunCommand() {
