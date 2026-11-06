@@ -2,12 +2,15 @@ import CryptoKit
 import DaemonConnection
 import Foundation
 import Synchronization
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 
 /// A server the user already owns. This driver can reach it and manage marked workroom folders;
 /// it cannot create, stop or destroy a host (ADR 0056).
-public final class SSHHostDriver: HostTerminalDriver, Sendable {
+public final class SSHHostDriver: FolderPlacingDriver, ReconnectingHostDriver, HostRecording,
+  Sendable
+{
   public struct Configuration: Sendable {
     public var destination: String
     public var home: String
@@ -39,8 +42,6 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
     public let lines: String
     public let knownHostsFile: URL
   }
-
-  public enum FolderState: Sendable, Equatable { case present, gone }
 
   public enum Failure: Error, LocalizedError, Equatable {
     case unknownHostKey
@@ -139,6 +140,18 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
       )
     }
     adoptedHome.withLock { $0 = home }
+  }
+
+  /// The destination and the home the host checks found, which a relaunch reaches it by.
+  public func record(_ host: HostID, in descriptor: inout HostDescriptor) {
+    descriptor.sshDestination = destination
+    descriptor.sshHome = home
+  }
+
+  /// The recorded home, as `adopt(home:)` checks it.
+  public func adopt(_ descriptor: HostDescriptor) throws {
+    guard let home = descriptor.sshHome else { return }
+    try adopt(home: home)
   }
 
   /// Read-only checks run before reserving a workroom or making anything on the server.
@@ -370,7 +383,7 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
 
   /// Checked before teardown as well as before removal, so a vanished or unverified folder never
   /// runs a script that could create it again or act on a different checkout.
-  public func folderState(path: String, workroom: UUID) async throws -> FolderState {
+  public func folderState(path: String, workroom: UUID) async throws -> WorkroomFolderState {
     let (path, marker) = try folderArguments(path: path, workroom: workroom)
     let script = Self.folderGuard(path: path, marker: marker, home: home)
     let result = try await command("sh -c " + PosixShell.quoted(script), timeout: 20)

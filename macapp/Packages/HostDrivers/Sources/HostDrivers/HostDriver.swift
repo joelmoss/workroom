@@ -29,6 +29,9 @@ public protocol HostDriver: Sendable {
   /// is the stream, its stdin a socket of its own that `communicate` closes for EOF (#305).
   /// `openStream` runs the same carrier with the relay as the command, as a `.connection`.
   func exec(_ command: String, on host: HostID) async throws -> HostStream
+  /// `exec` over a login of its own, for a command that must outlive the exchange's login, as the
+  /// daemon's start must: a driver whose exchanges share one connection (SSH) opens another.
+  func execIndependently(_ command: String, on host: HostID) async throws -> HostStream
 }
 
 /// A driver that owns the hosts it creates. An SSH host is the user's server and deliberately
@@ -90,6 +93,10 @@ extension HostDriver {
   /// doesn't say otherwise.
   public var daemonSocket: String { DaemonInstall.defaultSocket }
   public var startsDaemon: Bool { false }
+  /// Every exchange has a login of its own unless the driver shares one.
+  public func execIndependently(_ command: String, on host: HostID) async throws -> HostStream {
+    try await exec(command, on: host)
+  }
 }
 
 /// What a provider driver runs on a new host to set it up.
@@ -140,6 +147,9 @@ public protocol HostTerminalDriver: HostDriver {
   /// pane's exit status is `login`'s, always 0 (#392). `.finished` on a host with no attach of its
   /// own.
   func lastAttach(of session: UUID, on host: HostID) -> LastAttach
+  /// Whether a pane's link to these hosts leaves this Mac, so a network change can break it: not
+  /// a container's, which is loopback.
+  var linkCrossesNetwork: Bool { get }
 }
 
 /// A driver that puts the daemon on some of its hosts itself, from outside the host (#308): a
@@ -170,6 +180,8 @@ public enum LastAttach: Equatable, Sendable {
 }
 
 extension HostTerminalDriver {
+  public var linkCrossesNetwork: Bool { true }
+
   /// An attach that says nothing about its session.
   public func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool

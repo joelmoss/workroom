@@ -131,6 +131,25 @@ final class SSHHostDriverTests: XCTestCase {
     XCTAssertFalse(pane.contains("ControlMaster=auto"))
   }
 
+  /// Value: protects=the daemon's start, over a login of its own that outlives the exchange;
+  /// fails_when=SSH's `execIndependently` stops matching the requirement, which then falls back
+  /// to the protocol default (`exec`, over the shared master) without a compile error;
+  /// why_new=the requirement is defaulted, so nothing else notices; seam=`ssh -G`, which prints
+  /// the configuration it resolved and exits without connecting; no_claim=the master's lifetime.
+  func testIndependentExecThroughTheProtocolDoesNotShareTheMaster() async throws {
+    let driver = SSHHostDriver(
+      configuration: .init(
+        destination: "myserver", home: "/home/joel", sshAgent: nil, sshOptions: ["-G"]),
+      directory: URL(fileURLWithPath: "/private/tmp/ssh-logs"), runner: Recording())
+    try driver.adopt(home: "/home/joel")
+    let host: any HostDriver = driver
+    let shared = try await host.exec("true", on: driver.hostID).communicate(nil, timeout: 10)
+    let independent = try await host.execIndependently("true", on: driver.hostID)
+      .communicate(nil, timeout: 10)
+    XCTAssertTrue(shared.output.contains("controlmaster auto"), shared.output)
+    XCTAssertTrue(independent.output.contains("controlmaster false"), independent.output)
+  }
+
   func testPrivateMastersAreScopedToTheAppDirectoryAndDestination() throws {
     let first = try driver(runner: Recording())
     let same = try driver(runner: Recording())

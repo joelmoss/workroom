@@ -546,7 +546,7 @@ final class PersistentSessionService {
   /// Whether a remote session's ssh leaves this Mac, so a network change can break it: not a
   /// container's, which is loopback.
   func remoteLinkCrossesNetwork(_ sessionID: UUID) -> Bool {
-    remoteSessions[sessionID].map { !($0.driver is ContainerHostDriver) } ?? false
+    remoteSessions[sessionID]?.driver.linkCrossesNetwork ?? false
   }
 
   /// Drops a remote session's registration without asking its host anything: for a pane whose

@@ -97,8 +97,8 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
-  /// The drivers made so far.
-  private var made: [DriverKey: any HostTerminalDriver] = [:]
+  /// Where every driver is made (ADR 0067).
+  let registry: HostDriverRegistry
   /// The driver each host config records it in, whether or not that driver has been made.
   private var keys: [UUID: DriverKey] = [:]
   /// Workroom hosts whose git credentials come through the Mac's relay (#309).
@@ -133,12 +133,11 @@ final class RemoteHosts: @unchecked Sendable {
   private let connectDaemon:
     (@Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
-  /// What boxd says of a boxd host (`BoxdHostDriver.presence`); nil in the app.
-  private let presenceSeam: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)?
+  /// What a host's provider says of it (`HostPresenceReporting`); nil in the app.
+  private let presenceSeam: (@Sendable (HostID) async -> HostPresence?)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
-  /// `adopt`'s seams, nil in the app: making a key's driver, and sweeping one.
-  private let makeDriver: (@Sendable (DriverKey) throws -> any HostTerminalDriver)?
+  /// `adopt`'s seam, nil in the app: sweeping a container runtime's driver.
   private let sweepDriver:
     (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>, Bool) async -> [String])?
   /// Where `adopt` looks for the runtimes with containers pending
@@ -151,6 +150,7 @@ final class RemoteHosts: @unchecked Sendable {
     startHost: (@Sendable (HostID) async throws -> Void)? = nil,
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     makeDriver: (@Sendable (DriverKey) throws -> any HostTerminalDriver)? = nil,
+    makeContainerDriver: (@Sendable (DriverKey) throws -> ContainerHostDriver)? = nil,
     sweepDriver: (
       @Sendable (ContainerHostDriver, Set<UUID>, Set<String>, Bool) async -> [String]
     )? =
@@ -160,9 +160,10 @@ final class RemoteHosts: @unchecked Sendable {
       @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection
     )? =
       nil,
-    presence: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)? = nil,
+    presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
     pendingIn: URL? = RemoteHosts.pendingIn
   ) {
+    registry = HostDriverRegistry(makeDriver: makeDriver, makeContainerDriver: makeContainerDriver)
     self.pendingIn = pendingIn
     self.presenceSeam = presence
     self.connectHost = connectHost
@@ -171,7 +172,6 @@ final class RemoteHosts: @unchecked Sendable {
     self.isConnected = isConnected
     self.startHost = startHost
     self.now = now
-    self.makeDriver = makeDriver
     self.sweepDriver = sweepDriver
   }
 
@@ -186,52 +186,18 @@ final class RemoteHosts: @unchecked Sendable {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
 
-  /// The driver for `key`, made on first use. A container driver needs that runtime's CLI and this
-  /// Mac's ssh key; a boxd driver reaches its hosts through the ssh details the boxd CLI wrote, so
-  /// making one never fails (#356). The default key is Docker naming no context, as every driver
-  /// did before #309. Each driver writes its hosts' ssh files under their own IDs, so they share
-  /// one directory.
+  /// The driver for `key` (`HostDriverRegistry.driver`). The default key is Docker naming no
+  /// context, as every driver did before #309.
   func driver(_ key: DriverKey = DriverKey()) throws -> any HostTerminalDriver {
-    try lock.withLock {
-      if let made = made[key] { return made }
-      let hosts = Self.hosts
-      let driver: any HostTerminalDriver
-      if let makeDriver {
-        driver = try makeDriver(key)
-      } else if case .boxd(let org, let account) = key {
-        let cli = Self.boxdExecutable()
-        driver = BoxdHostDriver(
-          configuration: Self.boxdConfiguration(
-            cli: cli ?? Self.boxdCandidates[0], org: org, account: account),
-          directory: hosts)
-        // Not kept while the CLI is missing, so installing it later takes without a relaunch.
-        guard cli != nil else { return driver }
-      } else if case .exeDev(let account) = key {
-        driver = ExeDevHostDriver(configuration: .init(account: account), directory: hosts)
-      } else if case .ssh(let destination) = key {
-        driver = SSHHostDriver(
-          configuration: .init(
-            destination: destination, home: "", stateDirectoryName: Self.sshStateDirectoryName),
-          directory: hosts)
-      } else {
-        driver = ContainerHostDriver(
-          hosts: [:], directory: hosts, provisioning: try Self.provisioning(key))
-      }
-      made[key] = driver
-      return driver
-    }
+    try registry.driver(key)
   }
 
-  /// `key`'s driver, which must be a container runtime's: adopting, sweeping, starting and naming
-  /// contexts are theirs alone.
-  private func containerDriver(_ key: DriverKey = DriverKey()) throws -> ContainerHostDriver {
-    guard let driver = try driver(key) as? ContainerHostDriver else {
-      throw HostDriverError.invalidConfiguration("\(key) is not a container runtime")
-    }
-    return driver
+  /// `key`'s driver, which must be a container runtime's (`HostDriverRegistry.container`).
+  func containerDriver(_ key: DriverKey = DriverKey()) throws -> ContainerHostDriver {
+    try registry.container(key)
   }
 
-  /// Where every container driver writes its hosts' files.
+  /// Where every driver writes its hosts' files.
   static var hosts: URL { directory.appendingPathComponent("hosts", isDirectory: true) }
 
   static var sshStateDirectoryName: String {
@@ -282,9 +248,7 @@ final class RemoteHosts: @unchecked Sendable {
   func existingDriver(holding id: UUID) -> (any HostTerminalDriver)? {
     let key = lock.withLock { keys[id] }
     if let key, key.isRemoteProvider { return try? driver(key) }
-    return lock.withLock {
-      made.values.first { ($0 as? ContainerHostDriver)?.record(of: .remote(id)) != nil }
-    }
+    return registry.container(holding: id)
   }
 
   /// Takes on every host `projects` record, each into the driver for its Docker context, so their
@@ -304,8 +268,8 @@ final class RemoteHosts: @unchecked Sendable {
       DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
     }
     for descriptor in recorded where descriptor.kind == .ssh {
-      guard let key = DriverKey(descriptor), let home = descriptor.sshHome else { continue }
-      do { try (driver(key) as? SSHHostDriver)?.adopt(home: home) } catch {
+      guard let key = DriverKey(descriptor), descriptor.sshHome != nil else { continue }
+      do { try (driver(key) as? any HostRecording)?.adopt(descriptor) } catch {
         Self.logger.error("SSH host record: \(error.localizedDescription, privacy: .public)")
       }
     }
@@ -324,7 +288,7 @@ final class RemoteHosts: @unchecked Sendable {
           relayPending[id] = relayPending[id] ?? now() - Self.retryAfter
         }
       }
-      return Set(made.keys)
+      return registry.madeKeys
     }
     // A runtime with a container a create began, which a crash may have left before config
     // recorded it (#284).
@@ -360,12 +324,7 @@ final class RemoteHosts: @unchecked Sendable {
       // Every recorded host, not only this key's: two contexts can name one daemon.
       driver.forgetPending(recorded.compactMap(\.id).map(ContainerHostDriver.containerName))
       for descriptor in recorded where !descriptor.isDestroyed && DriverKey(descriptor) == key {
-        guard let id = descriptor.id, let record = descriptor.container,
-          driver.record(of: .remote(id)) == nil
-        else { continue }
-        do { try driver.adopt(id, record) } catch {
-          Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
-        }
+        adoptLogged(descriptor, into: driver)
       }
     }
     let machineKeys = Set(machines.compactMap(\.key))
@@ -432,16 +391,12 @@ final class RemoteHosts: @unchecked Sendable {
       // The org and account boxd is signed in to now, which a new base is made in. Throws, naming
       // `boxd auth login`, when nobody is signed in.
       guard let cli = Self.boxdExecutable() else { throw RemoteWorkrooms.Failure.boxdNotInstalled }
-      let account = try await BoxdHostDriver(
-        configuration: Self.boxdConfiguration(cli: cli), directory: Self.directory
-      ).signedIn()
+      let account = try await HostDriverRegistry.boxd(cli: cli).signedIn()
       return .boxd(org: account.activeOrg, account: try account.requiredUserID())
     case .exeDev:
       // The account exe.dev knows the user's key as, which a new base is made in. Throws, naming
       // the fix, when the user's ssh can't sign in to exe.dev.
-      return .exeDev(
-        account: try await ExeDevHostDriver(configuration: .init(), directory: Self.hosts)
-          .signedIn())
+      return .exeDev(account: try await HostDriverRegistry.exeDev().signedIn())
     }
   }
 
@@ -464,9 +419,9 @@ final class RemoteHosts: @unchecked Sendable {
       driver: driver, daemonSocket: driver.daemonSocket,
       gitHubToken: key.isRemoteProvider ? nil : CredentialRelay.gitHubToken,
       credentialHint: key.kind.credentialHint,
-      grantRepository: (driver as? ExeDevHostDriver).map { exeDev in
+      grantRepository: (driver as? any RepositoryGranting).map { granting in
         { @Sendable (repository: GitHubRepository) async throws in
-          try await exeDev.grantGitHub(
+          try await granting.grantGitHub(
             host: repository.host, owner: repository.owner, name: repository.name)
         }
       })
@@ -483,23 +438,23 @@ final class RemoteHosts: @unchecked Sendable {
     var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
       let key = try Self.deletionKey(host)
-      if case .ssh = key, let home = host.sshHome,
-        let ssh = try driver(key) as? SSHHostDriver
-      {
-        try ssh.adopt(home: home)
-      }
+      if case .ssh = key { try (driver(key) as? any HostRecording)?.adopt(host) }
       if environments[key] == nil { environments[key] = try environment(key).1 }
       // Taking a box down needs it on its driver, whatever a reload adopted: one that has not
       // adopted it yet would read the box as unknown. A boxd driver needs nothing adopted.
       guard key.runtime != nil else { continue }
-      let driver = try containerDriver(key)
-      guard let id = host.id, let record = host.container, driver.record(of: .remote(id)) == nil
-      else { continue }
-      do { try driver.adopt(id, record) } catch {
-        Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
-      }
+      adoptLogged(host, into: try containerDriver(key))
     }
     return environments.isEmpty ? nil : Deletion(environments: environments)
+  }
+
+  /// `descriptor`'s host taken on by `driver`, unless it holds it already; a record it can't take
+  /// is logged.
+  private func adoptLogged(_ descriptor: HostDescriptor, into driver: ContainerHostDriver) {
+    do { try driver.adopt(descriptor) } catch {
+      let id = descriptor.id?.uuidString ?? "?"
+      Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
+    }
   }
 
   /// The driver a host to take down is in. A descriptor that names no driver predates the field
@@ -640,12 +595,12 @@ final class RemoteHosts: @unchecked Sendable {
     // selecting the workroom, or something the user did (`wake`), wakes it. When boxd can't say,
     // the read leaves it be too. One boxd says is gone is reported as such, not as asleep.
     if !opened, !wake, !selected {
-      switch try await boxdPresence(host) {
+      switch await presence(host) {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
         lock.withLock { failedAt[host] = (now(), false) }
         throw RepositoryRoutingError.gone(host)
-      case .awake, nil: break  // nil: not a boxd host
+      case .awake, nil: break  // nil: a host that doesn't sleep (not boxd's)
       }
     }
     do {
@@ -659,7 +614,7 @@ final class RemoteHosts: @unchecked Sendable {
         lock.withLock({ activated.contains(host) })
         ? try startHost ?? { [driver = try heldDriver(host)] in
           // A boxd box needs no start: the connect's ssh login wakes it.
-          try await (driver as? ContainerHostDriver)?.startIfStopped($0)
+          try await (driver as? any StartableHostDriver)?.startIfStopped($0)
         }
         : nil
       let task = lock.withLock { () -> Task<Void, Error> in
@@ -703,7 +658,7 @@ final class RemoteHosts: @unchecked Sendable {
   /// D12); its panes wait for it in the container, and a second connect meanwhile finds it under
   /// way there. How it went is logged, never thrown: the connect itself worked.
   private func runPostStart(on host: HostID) async {
-    guard let driver = try? heldDriver(host) as? ContainerHostDriver else { return }
+    guard let driver = try? heldDriver(host) as? any StartableHostDriver else { return }
     do {
       guard let (status, said) = try await driver.runPostStartIfNeeded(on: host) else { return }
       Self.logger.notice(
@@ -733,22 +688,24 @@ final class RemoteHosts: @unchecked Sendable {
     lock.withLock { selectedHosts[window] = host }
   }
 
-  /// What boxd says of `host` (awake, asleep, or gone), or nil only when it isn't a boxd host. A
-  /// boxd that can't say is taken as asleep, logged, so a background read leaves the box be. boxd
-  /// is asked at most once a `retryAfter` about a box it called asleep.
+  /// What `host`'s provider says of it (awake, asleep, or gone), or nil only when its driver
+  /// doesn't report presence (`HostPresenceReporting`: boxd). A provider that can't say is taken as
+  /// asleep, logged, so a background read leaves the box be. It is asked at most once a
+  /// `retryAfter` about a box it called asleep.
   // ponytail: one `machine get` per host per window; one `machine list` per sweep is the upgrade
   // if many boxd workrooms make it slow.
-  private func boxdPresence(_ host: HostID) async throws -> BoxdHostDriver.Presence? {
-    guard case .remote(let id) = host, let key = lock.withLock({ keys[id] }), case .boxd = key
+  private func presence(_ host: HostID) async -> HostPresence? {
+    guard case .remote(let id) = host,
+      let reporting = existingDriver(holding: id) as? any HostPresenceReporting
     else { return nil }
     if let slept = lock.withLock({ asleepAt[host] }), now() - slept < Self.retryAfter {
       return .asleep
     }
-    let presence: BoxdHostDriver.Presence?
+    let presence: HostPresence?
     if let presenceSeam {
       presence = await presenceSeam(host)
     } else {
-      presence = await (try driver(key) as? BoxdHostDriver)?.presence(host) ?? nil
+      presence = await reporting.presence(host)
     }
     lock.withLock { asleepAt[host] = presence == .asleep || presence == nil ? now() : nil }
     // boxd could not say (no CLI, a timeout, output it did not expect, the read cancelled): a
@@ -778,9 +735,9 @@ final class RemoteHosts: @unchecked Sendable {
           let answered = await HostConnectionManager.shared.dropUnlessAnswering(
             host, within: Self.answerDeadline)
           if !answered, case .remote(let id) = host,
-            let ssh = self.existingDriver(holding: id) as? SSHHostDriver
+            let reconnecting = self.existingDriver(holding: id) as? any ReconnectingHostDriver
           {
-            await ssh.invalidateConnection()
+            await reconnecting.invalidateConnection()
           }
           return (host, answered)
         }
@@ -887,29 +844,6 @@ final class RemoteHosts: @unchecked Sendable {
     guard runtime == .apple else { return (cpus, memory) }
     let gigabytes = min(max(Int(physicalMemory / 4 / 1_073_741_824), 2), 8)
     return (cpus ?? max(2, cores / 2), memory ?? "\(gigabytes)G")
-  }
-
-  private static func provisioning(_ target: DriverKey) throws -> ContainerHostDriver.Provisioning {
-    guard let runtimeKind = target.runtime else {
-      throw HostDriverError.invalidConfiguration("\(target) is not a container runtime")
-    }
-    let resources = resources(for: runtimeKind)
-    guard let runtime = executable(for: runtimeKind) else {
-      throw runtimeKind == .docker
-        ? RemoteWorkrooms.Failure.noDocker : RemoteWorkrooms.Failure.noAppleContainer
-    }
-    return ContainerHostDriver.Provisioning(
-      runtime: URL(fileURLWithPath: runtime), image: RemoteWorkrooms.defaultImage,
-      user: RemoteWorkrooms.user, daemonSocket: RemoteWorkrooms.daemonSocket,
-      // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
-      labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: target.context,
-      dialect: runtimeKind, cpus: resources.cpus,
-      memory: resources.memory,
-      // A container's entrypoint (#308): the daemon this build bundles for its architecture,
-      // mounted on Apple's runtime from a folder of this build's own.
-      daemon: { PersistentSessionPaths.linuxDaemonURL(architecture: $0) },
-      daemonFolder: RemoteHosts.directory.appendingPathComponent(
-        "container-daemon", isDirectory: true))
   }
 }
 

@@ -95,29 +95,27 @@ final class HostOptionsCatalog: ObservableObject {
   }
 
   private func read(_ provider: HostKind) async -> Reading {
+    // The shared driver for whoever is signed in now: a create's key also names the account,
+    // which would cost a sign-in read before every read here.
+    let key: RemoteHosts.DriverKey
+    switch provider {
+    case .boxd:
+      guard RemoteHosts.boxdExecutable() != nil else {
+        return .failed("boxd isn't installed yet. Creating a boxd workroom sets it up.")
+      }
+      key = .boxd(org: nil, account: nil)
+    case .exeDev:
+      key = .exeDev(account: nil)
+    case .container, .ssh:
+      return .failed("\(provider.displayName) hosts take no host options.")
+    }
     do {
-      switch provider {
-      case .boxd:
-        guard RemoteHosts.boxdExecutable() != nil else {
-          return .failed("boxd isn't installed yet. Creating a boxd workroom sets it up.")
-        }
-        // The shared driver for whoever is signed in now: a create's key also names the account,
-        // which would cost a sign-in read before every read here.
-        guard
-          let driver = try RemoteHosts.shared.driver(.boxd(org: nil, account: nil))
-            as? BoxdHostDriver
-        else { return .failed("boxd couldn't be reached.") }
-        // Read together. Only the size's own labels need it: the snapshots' failure is the one said.
-        async let size = try? driver.defaultSize()
-        async let names = driver.snapshotNames()
-        return .boxd(snapshots: try await names, size: await size)
-      case .exeDev:
-        guard
-          let driver = try RemoteHosts.shared.driver(.exeDev(account: nil)) as? ExeDevHostDriver
-        else { return .failed("exe.dev couldn't be reached.") }
-        return .exeDev(try await driver.planLimits())
-      case .container, .ssh:
-        return .failed("\(provider.displayName) hosts take no host options.")
+      guard let reading = try RemoteHosts.shared.driver(key) as? any HostOptionsReading else {
+        return .failed("\(provider.displayName) couldn't be reached.")
+      }
+      switch try await reading.readHostOptions() {
+      case .boxd(let snapshots, let size): return .boxd(snapshots: snapshots, size: size)
+      case .exeDev(let limits): return .exeDev(limits)
       }
     } catch {
       // Usually a provider not set up yet (story 40): options can still be saved before signing up.

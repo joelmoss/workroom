@@ -62,19 +62,16 @@ enum RemoteProvisioning {
         }
     }
 
-    /// Makes the workroom's host with `options` when `driver` is boxd's or exe.dev's (#575). A
-    /// boxd host made from a snapshot also has whatever is at the clone's path removed first: a
-    /// snapshot of a used workroom of the same project still holds its checkout.
+    /// Makes the workroom's host with `options` when `driver` takes them (boxd, exe.dev; #575). A
+    /// host made from an image that can hold a used workroom's checkout (a boxd snapshot) also has
+    /// whatever is at the clone's path removed first.
     mutating func made(with options: ResolvedHostOptions, by driver: any HostDriver) {
-      if let boxd = driver as? BoxdHostDriver {
-        makeHost = { try await boxd.create(options: options) }
-        if options.image != nil {
-          clearCheckout = { host, path, url in
-            try await boxd.clearCheckout(at: path, of: url, on: host)
-          }
+      guard let optioned = driver as? any OptionedProvisioningDriver else { return }
+      makeHost = { try await optioned.create(options: options) }
+      if options.image != nil, let clearing = driver as? any CheckoutClearingDriver {
+        clearCheckout = { host, path, url in
+          try await clearing.clearCheckout(at: path, of: url, on: host)
         }
-      } else if let exeDev = driver as? ExeDevHostDriver {
-        makeHost = { try await exeDev.create(options: options) }
       }
     }
 

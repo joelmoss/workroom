@@ -3144,16 +3144,17 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// A remote pane always has a session: without one the pane would be a plain shell on this Mac
-  /// that reads as the remote workroom's. With no driver to reach the host (no Docker), the
-  /// session is still registered against a driver that knows no host, so the pane says why
-  /// rather than opening that shell (`PersistentSessionService.attachCommand`).
+  /// that reads as the remote workroom's. With no driver to reach the host, the session is still
+  /// registered against one that holds no host, so the pane says why rather than opening that
+  /// shell (`PersistentSessionService.attachCommand`). A boxd, exe.dev or SSH host whose panes open
+  /// here always has its driver: the reload adopts its key before its panes mount, and
+  /// `existingDriver` makes the driver. Only a container whose runtime isn't on this Mac, or a
+  /// record naming no driver this build knows, has none.
   private func registerRemote(
     _ session: UUID, on host: UUID, workingDirectory: String,
     metadata: [(key: String, value: String)], runCommand: String? = nil
   ) {
-    let driver =
-      RemoteHosts.shared.existingDriver(holding: host)
-      ?? ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory)
+    let driver = RemoteHosts.shared.existingDriver(holding: host) ?? HostDriverRegistry.unreachable
     sessionService.registerRemoteSession(
       session, on: .remote(host), via: driver, workingDirectory: workingDirectory,
       metadata: metadata, runCommand: runCommand)

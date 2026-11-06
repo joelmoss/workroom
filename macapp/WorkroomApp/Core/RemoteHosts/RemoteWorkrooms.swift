@@ -253,8 +253,8 @@ enum RemoteWorkrooms {
     var descriptor = HostDescriptor(
       state: HostLifecycle.creating.state, driver: HostKind.ssh.driver, provisioner: provisioner,
       id: SSHHostDriver.id(for: driver.destination), workroomID: workroom,
-      repository: "\(repository.owner)/\(repository.name)", cloneURL: cloneURL,
-      sshDestination: driver.destination, sshHome: driver.home)
+      repository: "\(repository.owner)/\(repository.name)", cloneURL: cloneURL)
+    driver.record(driver.hostID, in: &descriptor)
     let name = try await reserve(parent, descriptor)
     let path = parent + "/" + name
     descriptor.path = path
@@ -431,7 +431,7 @@ enum RemoteWorkrooms {
       workroomID: workroomID, org: key.org, account: key.account)
     if case .remote(let id) = host {
       descriptor.id = id
-      descriptor.container = (driver as? ContainerHostDriver)?.record(of: .remote(id))
+      (driver as? any HostRecording)?.record(host, in: &descriptor)
     }
     return descriptor
   }
@@ -443,8 +443,8 @@ enum RemoteWorkrooms {
   ) -> HostDescriptor {
     var descriptor = HostDescriptor(
       driver: key.kind.driver, provisioner: provisioner,
-      container: (driver as? ContainerHostDriver)?.record(of: host),
       credentials: credentials ? "relay" : nil, org: key.org, account: key.account)
+    (driver as? any HostRecording)?.record(host, in: &descriptor)
     if case .remote(let id) = host { descriptor.id = id }
     return descriptor
   }
@@ -609,12 +609,12 @@ enum RemoteWorkrooms {
     _ = try checkDeletable([host])
     guard let id = host.id, let workroom = host.workroomID,
       let path = teardown?.path ?? host.path,
-      let environment, let driver = environment.driver as? SSHHostDriver
+      let environment, let driver = environment.driver as? any FolderPlacingDriver
     else {
       throw HostDriverError.invalidConfiguration("The SSH workroom's folder record is incomplete")
     }
     let box = HostID.remote(id)
-    let state: SSHHostDriver.FolderState?
+    let state: WorkroomFolderState?
     do {
       // The guard precedes teardown too: its root fallback must never recreate a gone folder.
       state = try await driver.folderState(path: path, workroom: workroom)

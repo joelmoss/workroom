@@ -62,10 +62,8 @@ final class BoxdSetup: RemoteSetup {
     /// boxd itself, found where `RemoteHosts` finds it for a create.
     static var live: Actions {
       let driver: @MainActor @Sendable () -> BoxdHostDriver = {
-        BoxdHostDriver(
-          configuration: RemoteHosts.boxdConfiguration(
-            cli: RemoteHosts.boxdExecutable() ?? RemoteHosts.boxdCandidates[0]),
-          directory: RemoteHosts.directory)
+        HostDriverRegistry.boxd(
+          cli: RemoteHosts.boxdExecutable() ?? RemoteHosts.boxdCandidates[0])
       }
       return Actions(
         isInstalled: { RemoteHosts.boxdExecutable() != nil },

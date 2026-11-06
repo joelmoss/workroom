@@ -31,7 +31,8 @@ import os
 ///
 /// exe.dev has no stop, start or idle timer, and its VMs were never put to sleep while idle
 /// (spike), so nothing here reads presence or keeps a box awake.
-public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable
+public final class ExeDevHostDriver: HostTerminalDriver, OptionedProvisioningDriver,
+  RepositoryGranting, HostOptionsReading, @unchecked Sendable
 {
   public struct Configuration: Sendable {
     /// What every VM this driver makes is named after.
@@ -427,6 +428,9 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
       throw HostDriverError.provisioning(failure.localizedDescription)
     }
   }
+
+  /// The plan's limits, which the option fields offer sizes within.
+  public func readHostOptions() async throws -> HostOptionsFacts { .exeDev(try await planLimits()) }
 
   /// How long a read for the host option fields waits: ssh's own handshake allows 20 s.
   public static let readTimeout: TimeInterval = 20

@@ -634,7 +634,7 @@ extension AppStore {
         host = RemoteCreateHost(
           key: .ssh(destination: driver.destination), driver: driver,
           environment: .init(driver: driver, daemonSocket: driver.daemonSocket),
-          sshParent: sshSetup.parent)
+          ssh: (driver, sshSetup.parent))
       } else {
         // Resolved at each try, so a Try Again reads the project and Settings afresh.
         run.madeWith =
@@ -766,7 +766,7 @@ extension AppStore {
       let token = try await gitHubToken()
       environment.gitHubToken = { token }
     }
-    let container = host.driver as? ContainerHostDriver
+    let container = host.container
     let runtime = host.key.runtime ?? .docker
     let defaultImage = RemoteWorkrooms.defaultImage
     return try await ProvisioningProgress.$reportStep.withValue(stepped) {
@@ -797,7 +797,7 @@ extension AppStore {
             }
             environment.makeHost = { try await container.create(spec: made.spec) }
           }
-          if let ssh = host.driver as? SSHHostDriver, let parent = host.sshParent {
+          if let (ssh, parent) = host.ssh {
             let cloneURL = RemoteWorkrooms.cloneURL(
               for: plan.repository, origin: plan.origin ?? plan.cloneURL, onSSHHost: true)
             let created = try await RemoteWorkrooms.createSSH(
@@ -1009,7 +1009,11 @@ struct RemoteCreateHost {
   let key: RemoteHosts.DriverKey
   let driver: any HostTerminalDriver
   let environment: RemoteProvisioning.Environment
-  var sshParent: String? = nil
+  /// A container runtime's driver, for a container create: it builds or pulls the devcontainer's
+  /// image and makes the container from it (#308).
+  var container: ContainerHostDriver? = nil
+  /// An SSH create's checked host and the parent folder its workroom's folder goes in (ADR 0056).
+  var ssh: (driver: SSHHostDriver, parent: String)? = nil
 }
 
 /// What a remote create reaches beyond the app (#483): GitHub and the project's git, the provider's
@@ -1047,8 +1051,7 @@ struct RemoteCreateServices {
       setupNeeded: { place -> (any RemoteSetup)? in
         switch place {
         case .exeDev:
-          return await ExeDevSetup.needed(
-            driver: ExeDevHostDriver(configuration: .init(), directory: RemoteHosts.hosts))
+          return await ExeDevSetup.needed(driver: HostDriverRegistry.exeDev())
         case .boxd:
           return await BoxdSetup.needed()
         case .container:
@@ -1061,7 +1064,9 @@ struct RemoteCreateServices {
         let key = try await RemoteHosts.shared.key(for: place)
         var (driver, environment) = try RemoteHosts.shared.environment(key)
         if let options { environment.made(with: options, by: driver) }
-        return RemoteCreateHost(key: key, driver: driver, environment: environment)
+        return RemoteCreateHost(
+          key: key, driver: driver, environment: environment,
+          container: key.runtime == nil ? nil : try RemoteHosts.shared.containerDriver(key))
       },
       hostOptionLevels: { project, provider in
         (

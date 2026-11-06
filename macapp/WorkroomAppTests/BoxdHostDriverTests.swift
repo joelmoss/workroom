@@ -421,7 +421,7 @@ final class BoxdHostDriverTests: XCTestCase {
   /// Asleep is boxd's own status: suspended (`standby`) or hibernated, never a guess.
   func testAsleepIsBoxdsStandbyOrHibernated() async throws {
     for (status, presence) in [
-      ("standby", BoxdHostDriver.Presence.asleep), ("hibernated", .asleep), ("running", .awake),
+      ("standby", HostPresence.asleep), ("hibernated", .asleep), ("running", .awake),
       ("stopped", .awake),
     ] {
       let cli = StubCLI(["machine get": Self.ok(#"{"status":"\#(status)"}"#)])

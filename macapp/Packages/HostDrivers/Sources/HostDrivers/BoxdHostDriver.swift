@@ -26,7 +26,9 @@ import os
 ///
 /// Everything the daemon keeps is on the machine's home disk (`daemonSocket`), so a machine that is
 /// stopped and started keeps its binary and its screens.
-public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
+public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDriver,
+  HostPresenceReporting, CheckoutClearingDriver, HostOptionsReading, @unchecked Sendable
+{
   public struct Configuration: Sendable {
     /// The `boxd` CLI, signed in.
     public var cli: URL
@@ -356,7 +358,7 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
   /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
   /// as asleep: the read can't tell, and connecting would wake a box the user may be paying for,
   /// so a background read leaves it alone; opening the workroom still connects.
-  public func presence(_ host: HostID) async -> Presence? {
+  public func presence(_ host: HostID) async -> HostPresence? {
     guard case .remote(let id) = host else { return nil }
     do {
       let output = try await cli(
@@ -370,9 +372,6 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
       return failure.answered ? .asleep : nil
     } catch { return nil }
   }
-
-  /// What boxd says of a machine, for a background read (#356).
-  public enum Presence: Equatable, Sendable { case awake, asleep, gone }
 
   /// How long a status read (`presence`) waits for the CLI: a status sweep and a
   /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
@@ -454,6 +453,14 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
     } catch let failure as CLIFailure {
       throw HostDriverError.provisioning(failure.localizedDescription)
     }
+  }
+
+  /// The snapshots and the default size, read together. Only the size's own labels need it, so
+  /// the snapshots' failure is the one said.
+  public func readHostOptions() async throws -> HostOptionsFacts {
+    async let size = try? defaultSize()
+    async let names = snapshotNames()
+    return .boxd(snapshots: try await names, size: await size)
   }
 
   /// The statuses a connection would wake from: suspended and hibernated.

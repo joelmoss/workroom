@@ -1096,7 +1096,9 @@ final class CreationFlowTests: XCTestCase {
             grantRepository: grantRepository,
             connect: { host in try await DaemonVCSConnection.connect(host: host, socketPath: socket)
             }
-          ))
+          ),
+          // A container create is given its runtime's driver, as the live `host` service does.
+          container: driver as? ContainerHostDriver)
       })
   }
 

@@ -90,9 +90,12 @@ another is active (#356). Machines are named
 snapshot an older build's derive may have left under that name. Bases older builds recorded stay
 until a follow-up retires them (`TODOS.md`); Delete Project still takes them down. `BoxdIntegrationTests`
 make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`
-and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356): `RemoteHosts`
-holds any driver by `DriverKey` (a host's `HostKind`, ADR 0066, with who its driver acts for: a
-Docker context, a boxd org and account, an exe.dev account or an SSH destination), a background read
+and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356):
+`HostDriverRegistry`, the only place the app makes a driver, holds any driver by `DriverKey` (a
+host's `HostKind`, ADR 0066, with who its driver acts for: a Docker context, a boxd org and
+account, an exe.dev account or an SSH destination). The app reaches what one provider does (boxd's
+presence, a container's start, SSH's shared connection) through the capability protocols in
+`HostDrivers`, never by casting to a concrete driver (ADR 0067). A background read
 of a boxd host asks boxd first and leaves an asleep box asleep, and nothing lets go of an idle
 connection: a box an open app holds awake is the user's to free, by deleting its workroom (#380).
 Signed out, every boxd command that needs an account opens boxd's browser sign-in and waits

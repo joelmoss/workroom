@@ -121,7 +121,7 @@ final class RemoteHostsTests: XCTestCase {
   func testAContainerMadeBeforeExecSaysToRecreateTheWorkroom() async throws {
     let (runtime, log) = try stubRuntime()
     let remote = RemoteHosts(
-      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) },
       sweepDriver: { _, _, _, _ in [] })
     let id = UUID()
     let host = HostID.remote(id)
@@ -272,8 +272,7 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a forgotten pane still holds the box")
     sessions.forgetRemoteSession(session)
     sessions.registerRemoteSession(
-      session, on: host, via: ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory),
-      workingDirectory: "/home/boxd/r")
+      session, on: host, via: HostDriverRegistry.unreachable, workingDirectory: "/home/boxd/r")
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: UUID()))
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that can't reach its host holds it")
     sessions.forgetRemoteSession(session)
@@ -436,12 +435,12 @@ final class RemoteHostsTests: XCTestCase {
 
   private final class Asleep: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: BoxdHostDriver.Presence?
+    private var value: HostPresence?
     private var count = 0
     var calls: Int { lock.withLock { count } }
     func set(_ asleep: Bool?) { lock.withLock { value = asleep.map { $0 ? .asleep : .awake } } }
     func setGone() { lock.withLock { value = .gone } }
-    func answer() -> BoxdHostDriver.Presence? {
+    func answer() -> HostPresence? {
       lock.withLock {
         count += 1
         return value
@@ -1103,12 +1102,13 @@ final class RemoteHostsTests: XCTestCase {
   func testANewWorkroomWantsTheCurrentDockerContext() async throws {
     for (current, expected) in [("orbstack", "orbstack"), ("default", nil)] as [(String, String?)] {
       let (runtime, log) = try stubRuntime(output: current + "\n")
-      let remote = RemoteHosts(makeDriver: { Self.driver(runtime: runtime, context: $0.context) })
+      let remote = RemoteHosts(
+        makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) })
       let key = try await remote.key(for: .docker)
       XCTAssertEqual(key, RemoteHosts.DriverKey(runtime: .docker, context: expected), current)
       XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), "context show\n")
     }
-    let remote = RemoteHosts(makeDriver: { _ in
+    let remote = RemoteHosts(makeContainerDriver: { _ in
       XCTFail("Apple's key asked a runtime")
       throw RemoteWorkrooms.Failure.noDocker
     })
@@ -1162,7 +1162,7 @@ final class RemoteHostsTests: XCTestCase {
     let (runtime, _) = try stubRuntime()
     let swept = Swept()
     let remote = RemoteHosts(
-      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) },
       sweepDriver: { driver, known, _, _ in
         swept.add(driver.provisioning?.context, known)
         return []
@@ -1874,7 +1874,7 @@ final class RemoteHostsTests: XCTestCase {
     let swept = Swept()
     let make = {
       RemoteHosts(
-        makeDriver: {
+        makeContainerDriver: {
           Self.driver(
             runtime: runtime, context: $0.context,
             dialect: $0.runtime == .apple ? .apple : .docker, directory: directory)
@@ -2070,7 +2070,7 @@ final class RemoteHostsTests: XCTestCase {
     let (runtime, _) = try stubRuntime()
     let swept = Swept()
     let remote = RemoteHosts(
-      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) },
       sweepDriver: { driver, known, _, _ in
         swept.add(driver.provisioning?.context, known)
         return swept.calls.count == 1 ? [ContainerHostDriver.listingFailed + "daemon down"] : []
@@ -2302,7 +2302,7 @@ final class RemoteHostsTests: XCTestCase {
   func testHostsAreAdoptedIntoTheirRuntimesDrivers() throws {
     let (runtime, _) = try stubRuntime()
     let remote = RemoteHosts(
-      makeDriver: { key in
+      makeContainerDriver: { key in
         Self.driver(
           runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker)
       }, sweepDriver: { _, _, _, _ in [] })

@@ -43,11 +43,7 @@ final class SSHHostSetup: ObservableObject, RemoteSetup {
     task = Task {
       defer { if generation == id { checking = false } }
       do {
-        let candidate = SSHHostDriver(
-          configuration: .init(
-            destination: destination, home: "",
-            stateDirectoryName: RemoteHosts.sshStateDirectoryName),
-          directory: RemoteHosts.hosts)
+        let candidate = HostDriverRegistry.ssh(destination: destination)
         self.candidate = candidate
         do {
           _ = try await candidate.checkHost()

@@ -12,7 +12,7 @@ import WorkroomWire
 /// `workroomd` as its entrypoint, reached through the runtime's own `exec` (#308), and `destroy`
 /// removes it. Nothing here persists.
 public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriver,
-  DaemonPlacingDriver,
+  DaemonPlacingDriver, StartableHostDriver, HostRecording,
   @unchecked Sendable
 {
   /// How the driver makes containers of its own: a container runtime's CLI (`docker`, or Apple's
@@ -432,6 +432,19 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
         container: Self.containerName(id), image: record.image, volumes: record.volumes ?? [])
       destroyed.remove(id)
     }
+  }
+
+  /// `record(of:)` as the descriptor's container record.
+  public func record(_ host: HostID, in descriptor: inout HostDescriptor) {
+    descriptor.container = record(of: host)
+  }
+
+  /// The descriptor's container record, unless this driver holds that host already.
+  public func adopt(_ descriptor: HostDescriptor) throws {
+    guard let id = descriptor.id, let record = descriptor.container,
+      self.record(of: .remote(id)) == nil
+    else { return }
+    try adopt(id, record)
   }
 
   /// Removes the containers and images carrying this driver's labels that are not `known` hosts'
@@ -1294,4 +1307,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     return SSHTransport.lastAttach(
       of: session, in: directory.appendingPathComponent(id.uuidString))
   }
+
+  /// A container's link is loopback.
+  public var linkCrossesNetwork: Bool { false }
 }
