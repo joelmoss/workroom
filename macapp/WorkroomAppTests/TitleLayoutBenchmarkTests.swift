@@ -40,6 +40,7 @@ final class TitleLayoutBenchmarkTests: XCTestCase {
     let hosting = NSHostingView(
       rootView: WorkroomTerminalsView(target: target, sessions: store.terminals)
         .environmentObject(store)
+        .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .environmentObject(store.terminals.codingAgentManager)

@@ -164,7 +164,7 @@ extension AppStore {
     if let name = run.name {
       Self.announceCreation(CreationPanePresentation.successAnnouncement(name: name))
       let id = TargetID.workroom(project: run.project.path, name: name)
-      if case .armed = runStates[id],
+      if case .armed = runCommand.runStates[id],
         let target = target(for: .workroom(project: run.project.path, name: name))
       {
         ensureInitialTerminal(for: target)
@@ -428,7 +428,7 @@ extension AppStore {
       if let id = landing.landedID {
         // The workroom exists but setup failed. Disarm the auto-run armed at the landing so Open
         // Anyway doesn't launch the command against a half-set-up tree (issue #7).
-        if case .armed = runStates[id] { runStates[id] = nil }
+        if case .armed = runCommand.runStates[id] { runCommand.runStates[id] = nil }
         failCreationRun(run, .setupScriptFailed(message: errorText(error)))
         // Offline, the fetch and a networked setup script fail together: say both.
         if let text = warning.value { noticeStaleStart(of: id, text) }
@@ -467,7 +467,7 @@ extension AppStore {
   /// the same point, once its workroom has a name (#522): its run runs on its host.
   func armAutoRunIfConfigured(_ id: TerminalTarget.ID, in project: Project) {
     let cfg = runConfig(forProject: project.path)
-    if cfg.autoRun, cfg.hasCommand { armAutoRun(forWorkroom: id) }
+    if cfg.autoRun, cfg.hasCommand { runCommand.armAutoRun(forWorkroom: id) }
   }
 
   /// Waits until every block already queued on the main queue has run: the CLI's events hop there.
@@ -675,13 +675,14 @@ extension AppStore {
       }
       releaseCreatingWorkroom(id)
       if let hookFailure {
-        if case .armed = runStates[id] { runStates[id] = nil }  // as a failed setup script's
+        // As a failed setup script's.
+        if case .armed = runCommand.runStates[id] { runCommand.runStates[id] = nil }
         failCreationRun(run, .hookFailed(message: hookFailure))
       } else if let setupFailure {
         // As a local create's: the workroom and its host stay, for Open Anyway or Delete, and the
         // auto-run armed at the reserve is disarmed, so Open Anyway doesn't start the command
         // against a half-set-up tree (issue #7).
-        if case .armed = runStates[id] { runStates[id] = nil }
+        if case .armed = runCommand.runStates[id] { runCommand.runStates[id] = nil }
         failCreationRun(run, .setupScriptFailed(message: setupFailure))
       } else {
         await completeCreationRun(run)
@@ -704,7 +705,7 @@ extension AppStore {
       failCreationRun(run, .remoteFailed(message: errorText(error), leftBehind: leftBehind))
       if let name = run.name {
         let id = TargetID.workroom(project: path, name: name)
-        if case .armed = runStates[id] { runStates[id] = nil }  // as above
+        if case .armed = runCommand.runStates[id] { runCommand.runStates[id] = nil }  // as above
         releaseCreatingWorkroom(id)
       }
     }

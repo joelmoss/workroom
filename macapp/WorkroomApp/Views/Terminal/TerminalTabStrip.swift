@@ -24,6 +24,7 @@ struct TerminalTabStrip: View {
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -155,11 +156,11 @@ struct TerminalTabStrip: View {
         // carries one — running, stopping, failed, or stopped/exited.
         // Process-based, distinct from the OSC-9;4 RunningUnderline below.
         let runState: TerminalTabChip.RunState? =
-          store.runTabID(for: target.id) == tab.id
-          ? (store.runStates[target.id]?.isStopping == true
+          runCommand.runTabID(for: target.id) == tab.id
+          ? (runCommand.runStates[target.id]?.isStopping == true
             ? .stopping
-            : (store.isRunCommandRunning(for: target.id)
-              ? .running : (store.runFailed(for: target.id) ? .failed : .stopped)))
+            : (runCommand.isRunCommandRunning(for: target.id)
+              ? .running : (runCommand.runFailed(for: target.id) ? .failed : .stopped)))
           : nil
         // Dragged chip tracks the cursor; the rest shift to open the gap.
         let offsetX =
@@ -1042,7 +1043,7 @@ extension View {
     tab: TerminalTab, target: TerminalTarget, store: AppStore, sessions: TerminalSessions
   ) -> some View {
     self.contextMenu {
-      if store.runTabID(for: target.id) == tab.id {
+      if store.runCommand.runTabID(for: target.id) == tab.id {
         runCommandMenuItems(store: store, target: target)
         Divider()
       }

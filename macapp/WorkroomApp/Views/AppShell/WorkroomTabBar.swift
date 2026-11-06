@@ -385,6 +385,7 @@ private struct WorkroomTabChip: View {
   let showLeadingSeparator: Bool
 
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -430,8 +431,8 @@ private struct WorkroomTabChip: View {
   }
 
   private var hasActivity: Bool { notifications.count(target: target.id) > 0 }
-  private var hasRunTab: Bool { store.runTabID(for: target.id) != nil }
-  private var runRunning: Bool { store.isRunCommandRunning(for: target.id) }
+  private var hasRunTab: Bool { runCommand.runTabID(for: target.id) != nil }
+  private var runRunning: Bool { runCommand.isRunCommandRunning(for: target.id) }
 
   // The chip is deliberately built in three stages — `contentRow` (the icons + title), `pill` (its
   // fills, outline and margin) and `body` (the tooltip, menu and a11y) — rather than one long
@@ -526,7 +527,7 @@ private struct WorkroomTabChip: View {
             .foregroundStyle(theme.tokens.success)
             .help("Run command running")
             .accessibilityLabel("run running")
-        } else if store.runFailed(for: target.id) {
+        } else if runCommand.runFailed(for: target.id) {
           Image(systemName: "xmark.octagon.fill")
             .font(.system(size: 10))
             .foregroundStyle(theme.tokens.failure)

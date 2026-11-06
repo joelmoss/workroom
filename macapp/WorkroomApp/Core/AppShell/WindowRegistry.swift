@@ -427,7 +427,7 @@ final class WindowRegistry: ObservableObject {
   /// `runStates` (no separate map to drift): a second window's Run focuses this owner instead of
   /// forking a duplicate dev server on the same port (issue #70 / issue #7).
   func runOwner(for target: TerminalTarget.ID, excluding: AppStore) -> AppStore? {
-    allStores.first { $0 !== excluding && ($0.runStates[target]?.isRunning ?? false) }
+    allStores.first { $0 !== excluding && ($0.runCommand.runStates[target]?.isRunning ?? false) }
   }
 
   /// Whether any window has a live Investigate session (issue #146) for any of `targetIDs` — used
@@ -439,7 +439,7 @@ final class WindowRegistry: ObservableObject {
   func hasLiveInvestigateSession(for targetIDs: [TerminalTarget.ID]) -> Bool {
     let ids = Set(targetIDs)
     return allStores.contains { store in
-      store.investigateTabs.contains { tabID, targetID in
+      store.runCommand.investigateTabs.contains { tabID, targetID in
         ids.contains(targetID)
           && store.terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess == true
       }
@@ -450,13 +450,13 @@ final class WindowRegistry: ObservableObject {
 
   /// Whether any window's run command (not an Investigate tab) is going: what quitting may keep
   /// running or stop (#522).
-  var hasAnyLiveRun: Bool { allStores.contains(where: \.hasLiveRun) }
+  var hasAnyLiveRun: Bool { allStores.contains(where: \.runCommand.hasLiveRun) }
 
   /// Ctrl-C every window's live run commands and let them exit before the process dies, so dev
   /// servers release their ports/pidfiles instead of being orphaned by the OS hangup (issue #7).
   /// Calls `completion` once all windows have stopped (or each one's timeout elapses).
   func gracefullyStopAllWindows(timeout: TimeInterval, completion: @escaping () -> Void) {
-    let live = allStores.filter(\.stopsRunsBeforeClosing)
+    let live = allStores.filter(\.runCommand.stopsRunsBeforeClosing)
     guard !live.isEmpty else {
       completion()
       return
@@ -464,7 +464,7 @@ final class WindowRegistry: ObservableObject {
     let group = DispatchGroup()
     for store in live {
       group.enter()
-      store.gracefullyStopAllRunCommands(timeout: timeout) { group.leave() }
+      store.runCommand.gracefullyStopAllRunCommands(timeout: timeout) { group.leave() }
     }
     group.notify(queue: .main) { completion() }
   }
@@ -487,7 +487,9 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
     MainActor.assumeIsolated {
       // During an app quit, `applicationShouldTerminate` already prompts + stops every window, so
       // don't prompt again here (de-dup, OV #10). No live run command → nothing to stop, close now.
-      guard let store, !WindowRegistry.shared.isTerminating, store.stopsRunsBeforeClosing else {
+      guard let store, !WindowRegistry.shared.isTerminating,
+        store.runCommand.stopsRunsBeforeClosing
+      else {
         return true
       }
       if Defaults[.confirmOnQuit] {
@@ -500,7 +502,7 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
       }
       // Stop the run command(s), then close — return false now so the surfaces stay alive for the
       // graceful Ctrl-C + wait and are never freed mid-IO (the no-mass-free rule).
-      store.gracefullyStopAllRunCommands(timeout: 5) { sender.close() }
+      store.runCommand.gracefullyStopAllRunCommands(timeout: 5) { sender.close() }
       return false
     }
   }

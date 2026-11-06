@@ -200,15 +200,17 @@ final class WorkroomHandOverTests: XCTestCase {
     let t = target(origin)
     _ = origin.terminals.addTab(for: t)
     let run = origin.terminals.addRunTab(for: t, command: "sleep 1000", cwd: "/p/a", focus: false)
-    origin.runStates[t.id] = .running(tab: run.id, interrupted: false)
+    origin.runCommand.runStates[t.id] = .running(tab: run.id, interrupted: false)
 
     origin.moveWorkroom(sid, to: destination)
 
-    XCTAssertNil(origin.runStates[t.id])
-    XCTAssertEqual(destination.runStates[t.id], .running(tab: run.id, interrupted: false))
+    XCTAssertNil(origin.runCommand.runStates[t.id])
+    XCTAssertEqual(
+      destination.runCommand.runStates[t.id], .running(tab: run.id, interrupted: false))
     run.surface?.onEvent?(.childExited(0))
     XCTAssertEqual(
-      destination.runStates[t.id], .stopped(tab: run.id), "the exit was the destination's to hear")
+      destination.runCommand.runStates[t.id], .stopped(tab: run.id),
+      "the exit was the destination's to hear")
   }
 
   /// Value: protects=a window's own run, replaced by the running run moved in over it (Q12) and
@@ -220,9 +222,9 @@ final class WorkroomHandOverTests: XCTestCase {
     let destination = makeStore()
     let t = target(origin)
     let moved = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    origin.runStates[t.id] = .running(tab: moved.id, interrupted: false)
+    origin.runCommand.runStates[t.id] = .running(tab: moved.id, interrupted: false)
     let replaced = destination.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    destination.runStates[t.id] = .running(tab: replaced.id, interrupted: false)
+    destination.runCommand.runStates[t.id] = .running(tab: replaced.id, interrupted: false)
     // Its supervisor is still up, so its close waits for it to exit.
     replaced.surface?.liveProcessOverrideForTesting = true
 
@@ -231,8 +233,9 @@ final class WorkroomHandOverTests: XCTestCase {
     replaced.surface?.liveProcessOverrideForTesting = false
     replaced.surface?.onEvent?(.childExited(0))
 
-    XCTAssertEqual(destination.runStates[t.id], .running(tab: moved.id, interrupted: false))
-    XCTAssertNil(destination.runOutcomes[t.id], "the moved run has not ended")
+    XCTAssertEqual(
+      destination.runCommand.runStates[t.id], .running(tab: moved.id, interrupted: false))
+    XCTAssertNil(destination.runCommand.runOutcomes[t.id], "the moved run has not ended")
   }
 
   /// A run's state comes with its session's program status to whichever window holds its tab
@@ -244,15 +247,15 @@ final class WorkroomHandOverTests: XCTestCase {
     let t = target(origin)
     let run = origin.terminals.addRunTab(
       for: t, command: "sleep 1000", cwd: "/p/a", focus: false, runSession: true)
-    origin.runStates[t.id] = .running(tab: run.id, interrupted: false)
+    origin.runCommand.runStates[t.id] = .running(tab: run.id, interrupted: false)
 
     origin.moveWorkroom(sid, to: destination)
     origin.terminals.onEvent?(.runStatus(t.id, run.id, "stopped"))
-    XCTAssertNil(origin.runStates[t.id])
+    XCTAssertNil(origin.runCommand.runStates[t.id])
     destination.terminals.onEvent?(.runStatus(t.id, run.id, "stopped"))
 
-    XCTAssertEqual(destination.runStates[t.id], .stopped(tab: run.id))
-    XCTAssertEqual(destination.runOutcomes[t.id], .stoppedByUser)
+    XCTAssertEqual(destination.runCommand.runStates[t.id], .stopped(tab: run.id))
+    XCTAssertEqual(destination.runCommand.runOutcomes[t.id], .stoppedByUser)
   }
 
   /// Of two run tabs for one workroom, the running one stays and a stopped one closes (Q12).
@@ -261,13 +264,14 @@ final class WorkroomHandOverTests: XCTestCase {
     let destination = makeStore()
     let t = target(origin)
     let running = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    origin.runStates[t.id] = .running(tab: running.id, interrupted: false)
+    origin.runCommand.runStates[t.id] = .running(tab: running.id, interrupted: false)
     let stopped = destination.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    destination.runStates[t.id] = .stopped(tab: stopped.id)
+    destination.runCommand.runStates[t.id] = .stopped(tab: stopped.id)
 
     origin.moveWorkroom(sid, to: destination)
 
-    XCTAssertEqual(destination.runStates[t.id], .running(tab: running.id, interrupted: false))
+    XCTAssertEqual(
+      destination.runCommand.runStates[t.id], .running(tab: running.id, interrupted: false))
     XCTAssertNil(destination.terminals.tab(stopped.id, for: t), "the stopped run tab closed")
   }
 
@@ -276,13 +280,14 @@ final class WorkroomHandOverTests: XCTestCase {
     let destination = makeStore()
     let t = target(origin)
     let stopped = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    origin.runStates[t.id] = .stopped(tab: stopped.id)
+    origin.runCommand.runStates[t.id] = .stopped(tab: stopped.id)
     let running = destination.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    destination.runStates[t.id] = .running(tab: running.id, interrupted: false)
+    destination.runCommand.runStates[t.id] = .running(tab: running.id, interrupted: false)
 
     origin.moveWorkroom(sid, to: destination)
 
-    XCTAssertEqual(destination.runStates[t.id], .running(tab: running.id, interrupted: false))
+    XCTAssertEqual(
+      destination.runCommand.runStates[t.id], .running(tab: running.id, interrupted: false))
     XCTAssertNil(destination.terminals.tab(stopped.id, for: t))
   }
 
@@ -294,19 +299,19 @@ final class WorkroomHandOverTests: XCTestCase {
     let origin = makeOrigin()
     let destination = makeStore()
     var delays: [TimeInterval] = []
-    destination.scheduleRunToastDismiss = { delay, _ in
+    destination.runCommand.scheduleRunToastDismiss = { delay, _ in
       delays.append(delay)
       return DispatchWorkItem {}
     }
     let t = target(origin)
     let run = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    origin.runStates[t.id] = .running(tab: run.id, interrupted: false)
-    origin.runToastDismissWork[t.id] = DispatchWorkItem {}
+    origin.runCommand.runStates[t.id] = .running(tab: run.id, interrupted: false)
+    origin.runCommand.runToastDismissWork[t.id] = DispatchWorkItem {}
 
     origin.moveWorkroom(sid, to: destination)
 
     XCTAssertEqual(delays.count, 1, "the destination starts the running toast's auto-hide")
-    XCTAssertNotNil(destination.runToastDismissWork[t.id])
+    XCTAssertNotNil(destination.runCommand.runToastDismissWork[t.id])
   }
 
   // MARK: What else moves
@@ -737,22 +742,23 @@ final class WorkroomHandOverTests: XCTestCase {
     let t = target(origin)
     _ = origin.terminals.addTab(for: t)
     let probe = origin.terminals.addTab(for: t)
-    origin.investigateTabs[probe.id] = t.id
-    origin.dismissedRunToasts.insert(t.id)
-    origin.runningToastAutoHidden.insert(t.id)
+    origin.runCommand.investigateTabs[probe.id] = t.id
+    origin.runCommand.dismissedRunToasts.insert(t.id)
+    origin.runCommand.runningToastAutoHidden.insert(t.id)
     let run = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
-    origin.runStates[t.id] = .running(tab: run.id, interrupted: false)
+    origin.runCommand.runStates[t.id] = .running(tab: run.id, interrupted: false)
 
     origin.moveWorkroom(sid, to: destination)
 
-    XCTAssertFalse(origin.dismissedRunToasts.contains(t.id))
-    XCTAssertFalse(origin.runningToastAutoHidden.contains(t.id))
-    XCTAssertNil(origin.investigateTabs[probe.id])
-    XCTAssertEqual(destination.investigateTabs[probe.id], t.id)
-    XCTAssertTrue(destination.dismissedRunToasts.contains(t.id))
-    XCTAssertTrue(destination.runningToastAutoHidden.contains(t.id))
+    XCTAssertFalse(origin.runCommand.dismissedRunToasts.contains(t.id))
+    XCTAssertFalse(origin.runCommand.runningToastAutoHidden.contains(t.id))
+    XCTAssertNil(origin.runCommand.investigateTabs[probe.id])
+    XCTAssertEqual(destination.runCommand.investigateTabs[probe.id], t.id)
+    XCTAssertTrue(destination.runCommand.dismissedRunToasts.contains(t.id))
+    XCTAssertTrue(destination.runCommand.runningToastAutoHidden.contains(t.id))
     probe.surface?.onEvent?(.childExited(0))
-    XCTAssertNil(destination.investigateTabs[probe.id], "its exit is the destination's to hear")
+    XCTAssertNil(
+      destination.runCommand.investigateTabs[probe.id], "its exit is the destination's to hear")
   }
 
   // MARK: Remote host layout
@@ -1097,17 +1103,17 @@ final class WorkroomHandOverTests: XCTestCase {
   /// why_new=found in /ship review of PR #577; seam=none; no_claim=the delete prompt's rendering.
   func testAMovedInvestigateTabStaysAnInvestigateSession() async {
     let (quick, pane, window) = makeQuickTerminalMove()
-    quick.investigateTabs[pane.id] = QuickTerminalController.targetID
+    quick.runCommand.investigateTabs[pane.id] = QuickTerminalController.targetID
 
     await quick.moveQuickTerminalPane(
       pane.id, of: QuickTerminalController.target(), to: window, into: sid)
 
-    XCTAssertNil(quick.investigateTabs[pane.id])
+    XCTAssertNil(quick.runCommand.investigateTabs[pane.id])
     XCTAssertEqual(
-      window.investigateTabs[pane.id], target(window).id,
+      window.runCommand.investigateTabs[pane.id], target(window).id,
       "what WindowRegistry.hasLiveInvestigateSession reads before a delete")
     pane.surface?.onEvent?(.childExited(0))
-    XCTAssertNil(window.investigateTabs[pane.id], "its exit ends it there")
+    XCTAssertNil(window.runCommand.investigateTabs[pane.id], "its exit ends it there")
   }
 
   /// Value: protects=a moved pane's notifications follow it, so opening one finds the pane in its

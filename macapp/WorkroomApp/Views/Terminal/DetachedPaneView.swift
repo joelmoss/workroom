@@ -65,11 +65,13 @@ extension View {
   /// `@EnvironmentObject` traps when it is missing, and the miss is invisible until the exact view
   /// that wants it renders. It cost a crash when the pane's status bar reached for
   /// `claudeUsageBridge` and `codingAgentUsage`, which are scene-level in `WorkroomApp` and so were absent
-  /// here. If a pane ever grows a dependency on `updater` or `whatsNew` (today purely `RootView`
-  /// chrome, and the only two of the app's eight environment objects left out), add it here.
+  /// here. If a pane ever grows a dependency on `updater`, `whatsNew` or `remoteState` (today purely
+  /// `RootView` chrome, and the only three of the app's ten environment objects left out), add it
+  /// here.
   func detachedPaneEnvironment(store: AppStore, sessions: TerminalSessions) -> some View {
     self
       .environmentObject(store)
+      .environmentObject(store.runCommand)
       .environmentObject(store.notifications)
       .environmentObject(sessions)
       .environmentObject(sessions.codingAgentManager)

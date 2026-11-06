@@ -5,6 +5,7 @@ import WorkroomDomain
 
 struct RootView: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
   @ObservedObject private var programStatusAlerts = ProgramStatusAlerts.shared
   // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
@@ -89,6 +90,7 @@ struct RootView: View {
     // behind the traffic lights uniformly (an opaque fill here didn't match the titlebar strip behind
     // the lights). WindowBackgroundThemer sets the window bg to the panel token.
     .environmentObject(store)
+    .environmentObject(runCommand)
     .environmentObject(notifications)
     .environmentObject(terminals)
     .environmentObject(updater)
@@ -529,7 +531,7 @@ struct RootView: View {
           vcsCanFetch: remoteState.canFetch && vcsToolsUsable && !store.hasModalPresentation,
           vcsCanPush: remoteState.canPush && vcsToolsUsable && !store.hasModalPresentation,
           vcsCanPull: remoteState.canPull && vcsToolsUsable && !store.hasModalPresentation,
-          hasRunTerminal: store.hasAnyRunTerminal && !store.hasModalPresentation,
+          hasRunTerminal: runCommand.hasAnyRunTerminal && !store.hasModalPresentation,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
           multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
             && !store.hasModalPresentation,
@@ -575,7 +577,7 @@ struct RootView: View {
   /// Whether the selected target's run command is currently running.
   private var selectedRunCommandActive: Bool {
     guard let target = store.selectedTarget else { return false }
-    return store.isRunCommandRunning(for: target.id)
+    return runCommand.isRunCommandRunning(for: target.id)
   }
 
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to

@@ -269,7 +269,7 @@ extension TabSession {
   /// A tab whose command runs in its own process (an Investigate tab) returns nil: its process dies
   /// with the app. A run tab is kept (#522): its run session outlives the app, and restoring it
   /// reattaches to the run rather than starting it, so it is marked `run` and saved with its
-  /// session. Identified by the surface, not by `AppStore.runStates`, so a tab whose run
+  /// session. Identified by the surface, not by `RunCommandController.runStates`, so a tab whose run
   /// bookkeeping has already moved on is still saved as what it is.
   @MainActor init?(key: String, tab: TerminalTab) {
     switch tab.content {

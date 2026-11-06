@@ -10,7 +10,7 @@ func runCommandMenuItems(store: AppStore, target: TerminalTarget) -> some View {
     store.project(forTargetID: target.id).map {
       store.hasRunCommand(forProject: $0.path)
     } ?? false
-  let running = store.isRunCommandRunning(for: target.id)
+  let running = store.runCommand.isRunCommandRunning(for: target.id)
   Button {
     store.runOrFocusRunCommand(for: target)
   } label: {
@@ -24,7 +24,7 @@ func runCommandMenuItems(store: AppStore, target: TerminalTarget) -> some View {
   }
   .disabled(!available || !running)
   Button {
-    store.stopRunCommand(for: target)
+    store.runCommand.stopRunCommand(for: target)
   } label: {
     Label("Stop", systemImage: "stop.fill")
   }

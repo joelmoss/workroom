@@ -49,6 +49,7 @@ final class NoProjectsChromeTests: XCTestCase {
       ActivityBar()
     }
     .environmentObject(store)
+    .environmentObject(store.runCommand)
     .environmentObject(store.notifications)
     .environmentObject(store.terminals)
     let hosting = NSHostingView(rootView: root)

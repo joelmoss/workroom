@@ -30,6 +30,7 @@ final class SidebarBenchmarkTests: XCTestCase {
     let hosting = NSHostingView(
       rootView: ProjectSidebar()
         .environmentObject(store)
+        .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700))
@@ -91,6 +92,7 @@ final class SidebarBenchmarkTests: XCTestCase {
     let hosting = NSHostingView(
       rootView: ProjectSidebar()
         .environmentObject(store)
+        .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700))
@@ -162,6 +164,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         })
       let root = ProjectSidebar()
         .environmentObject(store)
+        .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700)

@@ -131,6 +131,7 @@ struct RunControls: View {
   /// The owning project's path — used to look up the configured command (`hasRunCommand`).
   let projectPath: String
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
 
   /// Gap between Restart and Stop. Tighter than the 6pt the header puts between its controls, because
   /// these two are one pair rather than two neighbours — the same reason "Open in…" tucks its chevron
@@ -154,7 +155,7 @@ struct RunControls: View {
     // of many workrooms each offering a settings shortcut would be noise.) A remote or container
     // workroom whose panes open here shows it too: its run runs on its host (#522).
     if target.opensTerminals {
-      let running = store.isRunCommandRunning(for: target.id)
+      let running = runCommand.isRunCommandRunning(for: target.id)
       // Stop deliberately TRAILS Restart (it used to lead), and the idle Run is trailing-aligned in the
       // reserved box, so Stop lands exactly where Run was: the primary toggle keeps its position under
       // the cursor across a press, and Restart appears in the space that was already reserved for it
@@ -172,7 +173,7 @@ struct RunControls: View {
           .accessibilityIdentifier("runCommand.restart")
 
           Button {
-            store.stopRunCommand(for: target)
+            runCommand.stopRunCommand(for: target)
           } label: {
             Image(systemName: "stop.fill")
           }

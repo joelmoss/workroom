@@ -172,7 +172,7 @@ final class CreationFlowTests: XCTestCase {
     await store.createWorkroom(in: emptyProject)
 
     XCTAssertFalse(store.isCreationBlocking(id), "nothing withholds the terminal")
-    guard case .running = store.runStates[id] else {
+    guard case .running = store.runCommand.runStates[id] else {
       return XCTFail("the armed auto-run must have started")
     }
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the run, then the shell")
@@ -198,7 +198,7 @@ final class CreationFlowTests: XCTestCase {
     let run = try XCTUnwrap(store.creationRuns.values.first, "the checklist waits for Done")
     XCTAssertTrue(store.isCreationBlocking(id), "the checklist still covers the pane")
     XCTAssertFalse(store.isRunBlocked(id), "a made workroom can run")
-    guard case .running = store.runStates[id] else {
+    guard case .running = store.runCommand.runStates[id] else {
       return XCTFail("the armed auto-run must start without waiting for Done")
     }
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the run, then the shell")
@@ -1391,7 +1391,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(scripts.count, 0, "the setup script ran on a half-set-up container")
     let name = try XCTUnwrap(run.name)
     XCTAssertNil(
-      store.runStates[TargetID.workroom(project: projectPath, name: name)],
+      store.runCommand.runStates[TargetID.workroom(project: projectPath, name: name)],
       "Open Anyway must not start the run against a half-set-up container")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
   }
@@ -1518,7 +1518,7 @@ final class CreationFlowTests: XCTestCase {
 
     XCTAssertEqual(run.outcome, .succeeded)
     XCTAssertNotNil(
-      store.runStates[TargetID.workroom(project: projectPath, name: "calm-river")],
+      store.runCommand.runStates[TargetID.workroom(project: projectPath, name: "calm-river")],
       "auto-run was armed for the workroom's first terminal, and runs on its host (#522)")
     XCTAssertEqual(
       run.steps.map(\.state),
@@ -1656,7 +1656,7 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertFalse(cli.calls.contains("delete calm-river"), "the record was forgotten")
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and Delete is allowed")
     XCTAssertNil(
-      store.runStates[TargetID.workroom(project: project.path, name: "calm-river")],
+      store.runCommand.runStates[TargetID.workroom(project: project.path, name: "calm-river")],
       "Open Anyway must not start the run against a half-set-up tree (issue #7)")
   }
 

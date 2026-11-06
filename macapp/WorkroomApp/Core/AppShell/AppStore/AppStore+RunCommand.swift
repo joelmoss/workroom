@@ -19,9 +19,9 @@ extension AppStore {
   /// run state with a tab, the user hasn't dismissed it, and its run tab isn't currently on screen
   /// (you don't need a toast for what you're looking at — split-aware via `visibleTabIDs`).
   var runToastItems: [RunToastItem] {
-    runStates.compactMap { targetID, state -> RunToastItem? in
+    runCommand.runStates.compactMap { targetID, state -> RunToastItem? in
       guard let tabID = state.tab else { return nil }  // .armed has no tab → no toast
-      guard !dismissedRunToasts.contains(targetID) else { return nil }
+      guard !runCommand.dismissedRunToasts.contains(targetID) else { return nil }
       // Map state → toast status. A user-initiated stop (Stop/Restart/Ctrl-C → `.stoppedByUser`, or
       // a stop with no recorded outcome) shows NO toast at all (issue #79): the toast only ever marks
       // a self-exit (success or failure) or a failed start.
@@ -32,7 +32,7 @@ extension AppStore {
       case .running(_, false): status = .running
       case .restarting: status = .restarting
       case .stopped:
-        switch runOutcomes[targetID] {
+        switch runCommand.runOutcomes[targetID] {
         case .exited(let code): status = code == 0 ? .exited : .failed(code: code)
         case .failedToStart: status = .failedToStart
         case .stoppedByUser, .none: return nil  // user-initiated stop/restart/Ctrl-C → no toast
@@ -46,11 +46,11 @@ extension AppStore {
       // this it would show forever — sidebar/tab-bar indicators keep conveying "still running").
       // Terminal statuses (a success or failure exit) ALWAYS show — even for a background workroom,
       // so you learn it finished/crashed (issue #79: "show a success/failure toast"); they linger
-      // then auto-dismiss, independent of `runningToastAutoHidden`.
+      // then auto-dismiss, independent of `runCommand.runningToastAutoHidden`.
       if !status.isTerminal {
         guard let target = selectedTarget, target.id == targetID,
           !terminals.visibleTabIDs(for: target).contains(tabID),
-          !runningToastAutoHidden.contains(targetID)
+          !runCommand.runningToastAutoHidden.contains(targetID)
         else { return nil }
       }
       let command =
@@ -67,7 +67,7 @@ extension AppStore {
   /// "Open terminal" on the run toast: jump to the run terminal. The toast then hides because its tab
   /// is on screen (visibility rule) — NOT dismissed, so it reappears if you navigate away.
   func openRunToast(for targetID: TerminalTarget.ID) {
-    guard let tabID = runStates[targetID]?.tab else { return }
+    guard let tabID = runCommand.runStates[targetID]?.tab else { return }
     openTerminal(targetID: targetID, tabID: tabID)
   }
 
@@ -208,49 +208,51 @@ extension AppStore {
   /// Apply one status line from the supervisor to `RunState`/`RunOutcome` (issues #7, #522): the
   /// AUTHORITATIVE run state, as the run session's daemon publishes it (`TerminalSessions` raises
   /// `.runStatus`). A line repeated changes nothing. The first line of a run reattached from a saved
-  /// session (`restoredRuns`) is how the run is now, not something the user just did: a running
+  /// session (`runCommand.restoredRuns`) is how the run is now, not something the user just did: a running
   /// one shows no "Running" toast (Q13), and a failure never starts an agent to diagnose it (Q7).
   func applyRunStatus(_ line: String, for target: TerminalTarget) {
-    guard let tab = runStates[target.id]?.tab, lastRunStatus[target.id] != line else { return }
-    lastRunStatus[target.id] = line
-    let restored = restoredRuns.remove(target.id) != nil
+    guard let tab = runCommand.runStates[target.id]?.tab,
+      runCommand.lastRunStatus[target.id] != line
+    else { return }
+    runCommand.lastRunStatus[target.id] = line
+    let restored = runCommand.restoredRuns.remove(target.id) != nil
     let parts = line.split(separator: " ")
     switch parts.first.map(String.init) ?? "" {
     case "starting", "running":
       // A first/delayed running report cannot acknowledge a Stop that is already in flight.
-      let stopping = runStates[target.id]?.isStopping == true
-      runStates[target.id] = .running(tab: tab, interrupted: stopping)
-      runOutcomes[target.id] = nil
+      let stopping = runCommand.runStates[target.id]?.isStopping == true
+      runCommand.runStates[target.id] = .running(tab: tab, interrupted: stopping)
+      runCommand.runOutcomes[target.id] = nil
       runCommand.setRunStoppedAwaitingClose(false, tab: tab, target: target.id)
       guard !restored else {
-        runningToastAutoHidden.insert(target.id)
+        runCommand.runningToastAutoHidden.insert(target.id)
         return
       }
       // Every fresh "running" edge (initial start, or a restart completing) re-arms the live toast,
       // even if a prior run already auto-hid it.
-      runningToastAutoHidden.remove(target.id)
+      runCommand.runningToastAutoHidden.remove(target.id)
       runCommand.scheduleRunningToastAutoHide(for: target.id)
     case "stopping":
       break  // keep the in-flight state (running(interrupted) for a stop, restarting for a restart)
     case "stopped":
-      runStates[target.id] = .stopped(tab: tab)
-      runOutcomes[target.id] = .stoppedByUser
+      runCommand.runStates[target.id] = .stopped(tab: tab)
+      runCommand.runOutcomes[target.id] = .stoppedByUser
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       runCommand.setRunStoppedAwaitingClose(true, tab: tab, target: target.id)
     case "exited", "failed":
       let code = parts.count > 1 ? (Int32(parts[1]) ?? 0) : 0
-      runStates[target.id] = .stopped(tab: tab)
+      runCommand.runStates[target.id] = .stopped(tab: tab)
       runCommand.setRunStoppedAwaitingClose(true, tab: tab, target: target.id)
       // 130 = SIGINT (typed Ctrl-C / our group stop), 143 = SIGTERM (quit): user-initiated, not a crash.
       if code == 0 {
-        runOutcomes[target.id] = .exited(code: 0)
+        runCommand.runOutcomes[target.id] = .exited(code: 0)
       } else if code == 130 || code == 143 {
-        runOutcomes[target.id] = .stoppedByUser
+        runCommand.runOutcomes[target.id] = .stoppedByUser
       } else {
-        runOutcomes[target.id] = .exited(code: code)
+        runCommand.runOutcomes[target.id] = .exited(code: code)
       }
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
-      if RunCommandController.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
+      if RunCommandController.runOutcomeIsBannerWorthy(runCommand.runOutcomes[target.id]) {
         postRunFailureBannerIfBackgrounded(
           targetID: target.id, tabID: tab, title: "Run failed", body: "exited with code \(code)")
         if !restored { diagnoseRunFailure(target: target, tab: tab, exitCode: code) }
@@ -264,15 +266,16 @@ extension AppStore {
   /// than started, so it is recorded as the run and waits for its daemon to say how the run is. If
   /// its host's daemon has already said, that is applied now.
   func adoptRestoredRun(tab tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
-    guard let target = terminalTarget(forID: targetID), runStates[targetID]?.tab == nil else {
+    guard let target = terminalTarget(forID: targetID), runCommand.runStates[targetID]?.tab == nil
+    else {
       return
     }
-    runStates[targetID] = .running(tab: tabID, interrupted: false)
-    runOutcomes[targetID] = nil
-    lastRunStatus[targetID] = nil
-    restoredRuns.insert(targetID)
+    runCommand.runStates[targetID] = .running(tab: tabID, interrupted: false)
+    runCommand.runOutcomes[targetID] = nil
+    runCommand.lastRunStatus[targetID] = nil
+    runCommand.restoredRuns.insert(targetID)
     // Reattached, not started: no "Running" toast (Q13), now or when its state arrives.
-    runningToastAutoHidden.insert(targetID)
+    runCommand.runningToastAutoHidden.insert(targetID)
     terminals.reportRunStatus(tab: tabID, target: target)
   }
 
@@ -284,19 +287,21 @@ extension AppStore {
   /// session's end never reaches `markRunExited`. Any other run that was going ends through its
   /// tab's own process, which says how, so nothing is done here.
   func runSessionGone(tab tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
-    guard runStates[targetID]?.tab == tabID else { return }
+    guard runCommand.runStates[targetID]?.tab == tabID else { return }
     let view = terminals.view(forTab: tabID, inTarget: targetID)
     let notice: String
-    if restoredRuns.remove(targetID) != nil {
+    if runCommand.restoredRuns.remove(targetID) != nil {
       notice = Self.runEndedWhileClosed
-    } else if runStates[targetID]?.isRunning == true, view?.isReattachingAfterLinkLoss == true {
+    } else if runCommand.runStates[targetID]?.isRunning == true,
+      view?.isReattachingAfterLinkLoss == true
+    {
       notice = Self.runEndedWhileReconnecting
     } else {
       return
     }
-    runStates[targetID] = .stopped(tab: tabID)
-    runOutcomes[targetID] = .stoppedByUser
-    runningToastAutoHidden.insert(targetID)
+    runCommand.runStates[targetID] = .stopped(tab: tabID)
+    runCommand.runOutcomes[targetID] = .stoppedByUser
+    runCommand.runningToastAutoHidden.insert(targetID)
     view?.showPaneNotice(notice)
   }
 
@@ -311,7 +316,7 @@ extension AppStore {
   /// A stop, restart or quit its daemon could not confirm (R9): the run may or may not have been
   /// told, so nothing is started in its place, and its pane says what happened.
   func runSignalUnconfirmed(targetID: TerminalTarget.ID, reason: String) {
-    guard let tab = runStates[targetID]?.tab else { return }
+    guard let tab = runCommand.runStates[targetID]?.tab else { return }
     terminals.view(forTab: tab, inTarget: targetID)?.showPaneNotice(
       "Workroom couldn't reach this run's supervisor, so it may still be running. \(reason)")
   }
@@ -371,7 +376,7 @@ extension AppStore {
     guard !isRunBlocked(target.id) else { return }
     let config = runConfig(forProject: project.path)
     guard config.hasCommand else { return }
-    if let existing = runStates[target.id]?.tab {
+    if let existing = runCommand.runStates[target.id]?.tab {
       // issue #67: a plain start never steals focus — only the auto-run-only-tab case passes focus.
       if focus { terminals.focus(existing, for: target) }
       return
@@ -382,12 +387,12 @@ extension AppStore {
     }
     // A remote workroom's run is one per workroom on its host, whichever Mac started it (D7): ask
     // the host first, and show a run that is already going rather than start a second server.
-    guard pendingRunStarts.insert(target.id).inserted else { return }
+    guard runCommand.pendingRunStarts.insert(target.id).inserted else { return }
     Task { @MainActor [weak self] in
       let runs = await Self.liveRunSessions(on: .remote(host), workroom: target.sessionWorkroomKey)
       guard let self else { return }
-      self.pendingRunStarts.remove(target.id)
-      guard self.runStates[target.id]?.tab == nil else { return }
+      self.runCommand.pendingRunStarts.remove(target.id)
+      guard self.runCommand.runStates[target.id]?.tab == nil else { return }
       if await HostConnectionManager.shared.runsRunSessions(on: .remote(host)) == false {
         self.present(RunUnavailable.olderHostDaemon)
         return
@@ -440,28 +445,29 @@ extension AppStore {
     if let session {
       tab = terminals.addRestoredRunTab(
         for: target, command: command, sessionID: session, focus: focus)
-      restoredRuns.insert(target.id)
-      runningToastAutoHidden.insert(target.id)
+      runCommand.restoredRuns.insert(target.id)
+      runCommand.runningToastAutoHidden.insert(target.id)
     } else {
       tab = terminals.addRunTab(
         for: target, command: command, cwd: target.path, focus: focus, runSession: true)
-      resetRunToast(for: target.id)  // a new run always gets a fresh toast (clear dismiss + timer)
+      // A new run always gets a fresh toast (clear dismiss + timer).
+      runCommand.resetRunToast(for: target.id)
     }
-    runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
-    lastRunStatus[target.id] = nil
+    runCommand.runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
+    runCommand.lastRunStatus[target.id] = nil
     // Background start spawns the surface off-window (`addRunTab(focus:false)`); if that failed, or
     // no daemon could take the run (D5), nothing runs: say so rather than show a lying "running"
     // toast. (Foreground starts spawn on mount, so the surface is legitimately nil here — the exit
     // of the pane's notice says it then, through `markRunExited`.)
     if !focus, tab.surface?.didSpawnFail == true || tab.surface?.refusedRun == true {
-      runOutcomes[target.id] = .failedToStart
-      runStates[target.id] = .stopped(tab: tab.id)
+      runCommand.runOutcomes[target.id] = .failedToStart
+      runCommand.runStates[target.id] = .stopped(tab: tab.id)
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       postRunFailureBannerIfBackgrounded(
         targetID: target.id, tabID: tab.id, title: "Run failed to start", body: command)
       return
     }
-    runStates[target.id] = .running(tab: tab.id, interrupted: false)
+    runCommand.runStates[target.id] = .running(tab: tab.id, interrupted: false)
     if session != nil { terminals.reportRunStatus(tab: tab.id, target: target) }
   }
 
@@ -472,8 +478,8 @@ extension AppStore {
   /// run's own tab is what keeps a window's replaced run, still stopping, from ending the run that
   /// moved in over it (#444 Q12). An Investigate tab's exit ends its session (#146).
   func tabProcessExited(tab tabID: TerminalTab.ID, of target: TerminalTarget, exitCode: UInt32) {
-    investigateTabs.removeValue(forKey: tabID)
-    guard runStates[target.id]?.tab == tabID else { return }
+    runCommand.investigateTabs.removeValue(forKey: tabID)
+    guard runCommand.runStates[target.id]?.tab == tabID else { return }
     markRunExited(for: target, exitCode: exitCode)
   }
 
@@ -482,7 +488,7 @@ extension AppStore {
   /// takes the surface rather than a pre-computed `cwd: String` so both call sites share one cwd
   /// derivation instead of each re-deriving `?? target.path` themselves (the same drift shape issue
   /// #146 fixed for the command). The one caller of `addRunTab` for Investigate (issue #146) —
-  /// tracks the tab in `investigateTabs` so it isn't invisible to quit/close teardown.
+  /// tracks the tab in `runCommand.investigateTabs` so it isn't invisible to quit/close teardown.
   @discardableResult
   func startInvestigate(
     bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?,
@@ -493,7 +499,7 @@ extension AppStore {
       setting: codingAgentSetting, claudeMissing: bannerState.claudeMissing)
     let command = CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: agent)
     let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
-    investigateTabs[tab.id] = target.id
+    runCommand.investigateTabs[tab.id] = target.id
     return tab
   }
 
@@ -515,7 +521,7 @@ extension AppStore {
     // fresh `.running`/`.stopped` result. Without this, entering from `.running`/`.restarting` with
     // the command cleared left the toast/sidebar dot reporting "running" against a pid that no
     // longer exists.
-    runStates[target.id] = .stopped(tab: oldTab)
+    runCommand.runStates[target.id] = .stopped(tab: oldTab)
     guard hasRunCommand(forProject: project.path) else {
       // #127 follow-up: the command was cleared while a stopped-but-open run pane sat waiting for
       // this restart. Mirror the `.armed`/`.none` branch's warning instead of silently closing the
@@ -535,26 +541,26 @@ extension AppStore {
     let tab = terminals.respawnRunTab(
       replacing: oldTab, for: target, command: command, cwd: target.path, focus: wasFocused,
       runSession: true)
-    runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
-    resetRunToast(for: target.id)  // restart re-arms the toast + cancels a stale timer
-    lastRunStatus[target.id] = nil
+    runCommand.runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
+    runCommand.resetRunToast(for: target.id)  // restart re-arms the toast + cancels a stale timer
+    runCommand.lastRunStatus[target.id] = nil
     if !wasFocused, tab.surface?.didSpawnFail == true || tab.surface?.refusedRun == true {
-      runOutcomes[target.id] = .failedToStart
-      runStates[target.id] = .stopped(tab: tab.id)
+      runCommand.runOutcomes[target.id] = .failedToStart
+      runCommand.runStates[target.id] = .stopped(tab: tab.id)
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       postRunFailureBannerIfBackgrounded(
         targetID: target.id, tabID: tab.id, title: "Run failed to start", body: command)
       return
     }
-    runStates[target.id] = .running(tab: tab.id, interrupted: false)
+    runCommand.runStates[target.id] = .running(tab: tab.id, interrupted: false)
   }
 
   /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or
   /// re-run a stopped-but-open tab). Acts on the given target (not the selection). Issue #67: a start
   /// runs in the background and does NOT navigate to the target — the run toast is the feedback.
   func toggleRunCommand(for target: TerminalTarget) {
-    if isRunCommandRunning(for: target.id) {
-      stopRunCommand(for: target)
+    if runCommand.isRunCommandRunning(for: target.id) {
+      runCommand.stopRunCommand(for: target)
     } else {
       // Issue #67: starting from the sidebar no longer navigates to the workroom — the run goes to the
       // background and the toast is the feedback. Open it from the toast / ⌘R / Room ▸ Go to Run
@@ -626,7 +632,7 @@ extension AppStore {
   func runOrFocusRunCommand(for target: TerminalTarget) {
     guard target.opensTerminals else { return }
     focusTargetPane(target)
-    switch runStates[target.id] {
+    switch runCommand.runStates[target.id] {
     case .running(_, true):
       // Stop-then-Run (issue #7): the user stopped it (a Ctrl-C is in flight, the server is draining)
       // and is now asking for it again. Don't just focus a dying server — restart it, which waits out
@@ -643,7 +649,7 @@ extension AppStore {
       // port (which the app's own pid/process-group lifecycle would then fight over).
       if let owner = WindowRegistry.shared.runOwner(for: target.id, excluding: self) {
         // Same reason as the notification route: the run terminal may be a detached pane (#172).
-        owner.window(forTab: owner.runStates[target.id]?.tab)?.makeKeyAndOrderFront(nil)
+        owner.window(forTab: owner.runCommand.runStates[target.id]?.tab)?.makeKeyAndOrderFront(nil)
         owner.revealRunTerminal()
       } else if let project = project(forTargetID: target.id),
         !hasRunCommand(forProject: project.path)
@@ -666,15 +672,15 @@ extension AppStore {
   /// ⇧⌘R / Stop menu: stop the selected target's run command if it's running. No-op otherwise.
   func stopSelectedRunCommand() {
     guard !isEditingTextField, let target = selectedTarget,
-      isRunCommandRunning(for: target.id)
+      runCommand.isRunCommandRunning(for: target.id)
     else { return }
-    stopRunCommand(for: target)
+    runCommand.stopRunCommand(for: target)
   }
 
   /// ⌥⌘R / Restart menu: restart the selected target's run command if it's running. No-op otherwise.
   func restartSelectedRunCommand() {
     guard !isEditingTextField, let target = selectedTarget,
-      isRunCommandRunning(for: target.id)
+      runCommand.isRunCommandRunning(for: target.id)
     else { return }
     restartRunCommand(for: target)
   }
@@ -684,9 +690,9 @@ extension AppStore {
   /// starts a command (issue #7).
   func revealRunTerminal() {
     let targetID =
-      selectedTarget.flatMap { runStates[$0.id]?.tab != nil ? $0.id : nil }
-      ?? runStates.first { $0.value.tab != nil }?.key
-    guard let targetID, let runTab = runStates[targetID]?.tab,
+      selectedTarget.flatMap { runCommand.runStates[$0.id]?.tab != nil ? $0.id : nil }
+      ?? runCommand.runStates.first { $0.value.tab != nil }?.key
+    guard let targetID, let runTab = runCommand.runStates[targetID]?.tab,
       let sid = sidebarID(for: targetID),
       let target = target(for: sid)
     else { return }
@@ -705,21 +711,24 @@ extension AppStore {
   /// shows "Restarting…" at once, a fresh run session replaces it only when its daemon holds no
   /// such session (`.gone`), and an unconfirmed restart starts nothing (R9) and says so.
   func restartRunCommand(for target: TerminalTarget) {
-    switch runStates[target.id] {
+    switch runCommand.runStates[target.id] {
     case .running(let tab, _), .restarting(let tab), .stopped(let tab):
-      let before = runStates[target.id]
-      runStates[target.id] = .restarting(tab: tab)  // status: stopping → running
-      runningToastAutoHidden.remove(target.id)  // show "Restarting…" even if prior run auto-hid
+      let before = runCommand.runStates[target.id]
+      runCommand.runStates[target.id] = .restarting(tab: tab)  // status: stopping → running
+      // Show "Restarting…" even if the prior run auto-hid.
+      runCommand.runningToastAutoHidden.remove(target.id)
       runCommand.signalSupervisor(.restart, for: target.id) { [weak self] outcome in
-        guard let self, self.runStates[target.id]?.tab == tab else { return }
+        guard let self, self.runCommand.runStates[target.id]?.tab == tab else { return }
         switch outcome {
         case .delivered:
           // Its next status is a fresh run's: let the same line apply again.
-          self.lastRunStatus[target.id] = nil
+          self.runCommand.lastRunStatus[target.id] = nil
         case .gone:
           self.respawnRunCommand(replacing: tab, for: target)  // supervisor gone → fresh session
         case .unknown(let reason):
-          if case .restarting = self.runStates[target.id] { self.runStates[target.id] = before }
+          if case .restarting = self.runCommand.runStates[target.id] {
+            self.runCommand.runStates[target.id] = before
+          }
           self.runSignalUnconfirmed(targetID: target.id, reason: reason)
         }
       }
@@ -737,34 +746,34 @@ extension AppStore {
   /// Not a run's end when the pane is about to attach again: a remote pane whose link dropped
   /// reattaches (`GhosttySurfaceView.reconnectIfTheLinkDropped`) and its run carries on.
   private func markRunExited(for target: TerminalTarget, exitCode: UInt32) {
-    guard let tab = runStates[target.id]?.tab else { return }
+    guard let tab = runCommand.runStates[target.id]?.tab else { return }
     let view = terminals.view(forTab: tab, inTarget: target.id)
     guard view?.pendingReconnect == nil else { return }
-    restoredRuns.remove(target.id)
+    runCommand.restoredRuns.remove(target.id)
     if view?.refusedRun == true {
       // No daemon took the run (D5): the pane said why, and nothing ran.
-      runStates[target.id] = .stopped(tab: tab)
-      runOutcomes[target.id] = .failedToStart
+      runCommand.runStates[target.id] = .stopped(tab: tab)
+      runCommand.runOutcomes[target.id] = .failedToStart
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       return
     }
     // The run's last status, which may have come in after the last one applied.
-    if runOutcomes[target.id] == nil, let sessionID = view?.persistentSessionID,
+    if runCommand.runOutcomes[target.id] == nil, let sessionID = view?.persistentSessionID,
       let line = terminals.programStatus.run(for: sessionID)
     {
       applyRunStatus(line, for: target)
     }
-    runStates[target.id] = .stopped(tab: tab)
-    if runOutcomes[target.id] == nil {
-      runOutcomes[target.id] = .exited(code: Int32(truncatingIfNeeded: exitCode))
+    runCommand.runStates[target.id] = .stopped(tab: tab)
+    if runCommand.runOutcomes[target.id] == nil {
+      runCommand.runOutcomes[target.id] = .exited(code: Int32(truncatingIfNeeded: exitCode))
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
-      if RunCommandController.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
+      if RunCommandController.runOutcomeIsBannerWorthy(runCommand.runOutcomes[target.id]) {
         postRunFailureBannerIfBackgrounded(
           targetID: target.id, tabID: tab, title: "Run failed",
           body: "exited with code \(exitCode)")
       }
     }
-    forgetRun(for: target.id)
+    runCommand.forgetRun(for: target.id)
   }
 
   /// Ensure a target's terminal pane lands the user in a live terminal when it first appears (called by
@@ -796,9 +805,9 @@ extension AppStore {
     // (re-)derive the state: it becomes `.running` as a backgrounded tab #1, or a no-op if the config
     // was cleared between arming and mount.
     let isArmed: Bool
-    if case .armed = runStates[target.id] { isArmed = true } else { isArmed = false }
+    if case .armed = runCommand.runStates[target.id] { isArmed = true } else { isArmed = false }
     if isArmed {
-      runStates[target.id] = nil
+      runCommand.runStates[target.id] = nil
       // Background the auto-run (issue #67): the shell below is the focused tab the user lands on.
       startRunCommand(for: target, focus: false)
     }

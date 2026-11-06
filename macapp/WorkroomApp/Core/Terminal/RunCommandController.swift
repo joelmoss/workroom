@@ -24,7 +24,9 @@ enum RunSessionKey {
 /// with the session's program status, and stop, restart and quit are signals the daemon sends it.
 @MainActor
 @Observable
-final class RunCommandController {
+// `ObservableObject` only so views can take it as an `@EnvironmentObject`, as they take the store
+// and `DetachedPaneEnvironmentTests` checks detached windows inject; Observation tracks the reads.
+final class RunCommandController: ObservableObject {
   /// The lifecycle of a target's run command (issue #7), one value per target. A single state machine
   /// replaces the former parallel sets/maps — every transition is explicit, so the stale-bookkeeping
   /// family of bugs (an orphaned "pending restart" respawning a later run; a "Ctrl-C already sent"
@@ -101,7 +103,17 @@ final class RunCommandController {
   /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
   /// `TerminalSessions` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
-  var runStates: [TerminalTarget.ID: RunState] = [:]
+  ///
+  /// This and the other run-state collections are computed over private stored ones so that a write
+  /// which changes nothing notifies no one: `@Observable` skips an equal whole-value assignment, but
+  /// an in-place write (`runStates[id] = nil`, `insert(_:)`) to a stored property always notifies.
+  /// The setter makes every write the first kind. Outside callers got that from `AppStore`'s
+  /// forwarding proxies; the controller's own in-place writes always notified, and now dedupe too.
+  var runStates: [TerminalTarget.ID: RunState] {
+    get { storedRunStates }
+    set { storedRunStates = newValue }
+  }
+  private var storedRunStates: [TerminalTarget.ID: RunState] = [:]
 
   /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
   /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
@@ -127,21 +139,37 @@ final class RunCommandController {
   ///   alert — now fires for a     — unaffected in practice: only
   ///   live Investigate session    `runStates` feeds the actual
   ///                                gracefully-stop loop
-  var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
+  var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] {
+    get { storedInvestigateTabs }
+    set { storedInvestigateTabs = newValue }
+  }
+  private var storedInvestigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
 
   /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
   /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
-  var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
+  var runOutcomes: [TerminalTarget.ID: RunOutcome] {
+    get { storedRunOutcomes }
+    set { storedRunOutcomes = newValue }
+  }
+  private var storedRunOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
 
   /// Targets whose run toast was explicitly dismissed (✕) or auto-dismissed after a terminal state.
   /// Cleared when a fresh run starts. Open-terminal does NOT add here — it lets the visibility rule
   /// hide the toast while the run is on screen, so it reappears when you navigate away.
-  var dismissedRunToasts: Set<TerminalTarget.ID> = []
+  var dismissedRunToasts: Set<TerminalTarget.ID> {
+    get { storedDismissedRunToasts }
+    set { storedDismissedRunToasts = newValue }
+  }
+  private var storedDismissedRunToasts: Set<TerminalTarget.ID> = []
   /// Targets whose LIVE (running/restarting) toast auto-hid after lingering a while — separate from
   /// `dismissedRunToasts` so a run that quietly auto-hid its "still running" toast can still surface
   /// a later terminal (exited/failed) toast; only gates the non-terminal branch of `runToastItems`.
   /// Cleared on a fresh "running" edge (start or restart), so the toast reappears each time.
-  var runningToastAutoHidden: Set<TerminalTarget.ID> = []
+  var runningToastAutoHidden: Set<TerminalTarget.ID> {
+    get { storedRunningToastAutoHidden }
+    set { storedRunningToastAutoHidden = newValue }
+  }
+  private var storedRunningToastAutoHidden: Set<TerminalTarget.ID> = []
   /// Pending auto-dismiss/auto-hide timers, one per target, cancelled on restart so a stale timer
   /// can't dismiss the next run's toast (review: timer cancellation on restart).
   var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
@@ -160,17 +188,29 @@ final class RunCommandController {
 
   /// Last status line applied per target, so a repeated report changes nothing (and doesn't re-fire
   /// the auto-dismiss timer). Cleared in `forgetRun`.
-  var lastRunStatus: [TerminalTarget.ID: String] = [:]
+  var lastRunStatus: [TerminalTarget.ID: String] {
+    get { storedLastRunStatus }
+    set { storedLastRunStatus = newValue }
+  }
+  private var storedLastRunStatus: [TerminalTarget.ID: String] = [:]
 
   /// Runs reattached from a saved session (#522) that have not reported yet. Their first status is
   /// how the run is NOW, not a change the user caused: a running one gets no "Running" toast
   /// (Q13), and a failure it reports (it crashed while the app was closed) never starts an agent
   /// to diagnose it (Q7). Gone before it reports means it ended while the app was closed (Q8).
-  var restoredRuns: Set<TerminalTarget.ID> = []
+  var restoredRuns: Set<TerminalTarget.ID> {
+    get { storedRestoredRuns }
+    set { storedRestoredRuns = newValue }
+  }
+  private var storedRestoredRuns: Set<TerminalTarget.ID> = []
 
   /// Remote starts asking their host for a run already going (D7), so a second press while it
   /// answers starts nothing more.
-  var pendingRunStarts: Set<TerminalTarget.ID> = []
+  var pendingRunStarts: Set<TerminalTarget.ID> {
+    get { storedPendingRunStarts }
+    set { storedPendingRunStarts = newValue }
+  }
+  private var storedPendingRunStarts: Set<TerminalTarget.ID> = []
 
   // MARK: Hand-over between windows (#444)
 
@@ -459,6 +499,10 @@ final class RunCommandController {
         terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess ?? false
       }
   }
+
+  /// Whether closing this window, or a quit that stops runs, must stop something first: a live
+  /// run or Investigate process, or a run whose pane was never mounted (#522).
+  var stopsRunsBeforeClosing: Bool { hasLiveRunCommand || hasLiveRun }
 
   /// Tell each target's SUPERVISOR to quit (TERM — it stops the child gracefully, waits for it,
   /// SIGKILLs on a 6s timeout, then exits, which ends its session), and run `then` once every run

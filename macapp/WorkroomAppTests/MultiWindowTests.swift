@@ -210,7 +210,7 @@ final class MultiWindowTests: XCTestCase {
   func testCloseGuardAllowsCloseWithoutRunCommand() {
     let store = AppStore(projectStore: ProjectStore())
     let guardDelegate = WindowCloseGuard(store: store, forwarding: nil)
-    XCTAssertFalse(store.hasLiveRunCommand, "no run command in a fresh store")
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand, "no run command in a fresh store")
     XCTAssertTrue(
       guardDelegate.windowShouldClose(NSWindow()),
       "with no live run command the window closes immediately — no confirm, no stop")

@@ -48,7 +48,7 @@ final class RunCommandTests: XCTestCase {
       self?.captured.append(command)
       return GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.signalSupervisorForTesting = { [weak self] sig, id in
+    store.runCommand.signalSupervisorForTesting = { [weak self] sig, id in
       self?.signals.append((id, sig))
       return .delivered
     }
@@ -66,7 +66,7 @@ final class RunCommandTests: XCTestCase {
       self?.captured.append(command)
       return GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.signalSupervisorForTesting = { [weak self] sig, id in
+    store.runCommand.signalSupervisorForTesting = { [weak self] sig, id in
       self?.signals.append((id, sig))
       return .gone
     }
@@ -88,7 +88,9 @@ final class RunCommandTests: XCTestCase {
 
   /// The run terminal's surface view (so a test can simulate supervisor exit via `handleChildExited`).
   private func runView(_ store: AppStore, _ target: TerminalTarget) -> GhosttySurfaceView? {
-    store.runTabID(for: target.id).flatMap { store.terminals.tab($0, for: target)?.surface }
+    store.runCommand.runTabID(for: target.id).flatMap {
+      store.terminals.tab($0, for: target)?.surface
+    }
   }
 
   // MARK: Storage
@@ -125,8 +127,8 @@ final class RunCommandTests: XCTestCase {
 
     store.startRunCommand(for: t)
 
-    XCTAssertNotNil(store.runTabID(for: t.id))
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertNotNil(store.runCommand.runTabID(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
     XCTAssertEqual(captured.last, "echo hi")
     XCTAssertEqual(runView(store, t)?.isRunSession, true)
   }
@@ -144,8 +146,8 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    XCTAssertNil(store.runTabID(for: t.id))
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertNil(store.runCommand.runTabID(for: t.id))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   /// Issue #127: ⌘R/toolbar Run on a target with no run command configured must not silently
@@ -159,8 +161,9 @@ final class RunCommandTests: XCTestCase {
 
     store.runOrFocusRunCommand()
 
-    XCTAssertNil(store.runTabID(for: t.id), "must not start anything without a configured command")
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertNil(
+      store.runCommand.runTabID(for: t.id), "must not start anything without a configured command")
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
     let pending = try! XCTUnwrap(store.pendingProjectSettings)
     XCTAssertEqual(pending.project.path, "/a")
     XCTAssertTrue(pending.showsRunWarning)
@@ -188,7 +191,7 @@ final class RunCommandTests: XCTestCase {
 
     store.runOrFocusRunCommand()
 
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   /// Value: protects=a run command saved in Settings ▸ Projects (or any window) re-renders every
@@ -234,7 +237,7 @@ final class RunCommandTests: XCTestCase {
     selectingStore.runOrFocusRunCommand()
 
     XCTAssertNil(
-      selectingStore.runTabID(for: selectingTarget.id),
+      selectingStore.runCommand.runTabID(for: selectingTarget.id),
       "must not start a duplicate run — the owner window already runs it (issue #70)")
     XCTAssertNil(
       selectingStore.pendingProjectSettings,
@@ -256,9 +259,10 @@ final class RunCommandTests: XCTestCase {
     store.runOrFocusRunCommand(for: pressed)
 
     XCTAssertTrue(
-      store.isRunCommandRunning(for: pressed.id), "the pressed workroom should be running")
+      store.runCommand.isRunCommandRunning(for: pressed.id),
+      "the pressed workroom should be running")
     XCTAssertNil(
-      store.runTabID(for: selected.id),
+      store.runCommand.runTabID(for: selected.id),
       "the SELECTED workroom must be untouched — that was the bug this overload fixes")
   }
 
@@ -288,7 +292,7 @@ final class RunCommandTests: XCTestCase {
     store.runOrFocusRunCommand(for: t)
 
     XCTAssertTrue(
-      store.isRunCommandRunning(for: t.id),
+      store.runCommand.isRunCommandRunning(for: t.id),
       "a button press carries its own target and must not depend on the selection")
   }
 
@@ -302,7 +306,7 @@ final class RunCommandTests: XCTestCase {
 
     store.runOrFocusRunCommand(for: missing)
 
-    XCTAssertNil(store.runTabID(for: missing.id))
+    XCTAssertNil(store.runCommand.runTabID(for: missing.id))
   }
 
   /// The single-owner-across-windows hop keys on the PASSED target. Same scenario as
@@ -327,7 +331,7 @@ final class RunCommandTests: XCTestCase {
     pressingStore.runOrFocusRunCommand(for: pressed)
 
     XCTAssertNil(
-      pressingStore.runTabID(for: pressed.id),
+      pressingStore.runCommand.runTabID(for: pressed.id),
       "the other window already runs THIS workroom — no duplicate (issue #70)")
   }
 
@@ -345,9 +349,9 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let first = store.runTabID(for: t.id)
+    let first = store.runCommand.runTabID(for: t.id)
     store.startRunCommand(for: t)  // already exists → no-op (issue #67: no re-focus)
-    XCTAssertEqual(store.runTabID(for: t.id), first)
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), first)
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1)
   }
 
@@ -358,12 +362,12 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tabID = store.runTabID(for: t.id)
+    let tabID = store.runCommand.runTabID(for: t.id)
 
     store.applyRunStatus("exited 0", for: t)
 
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
-    XCTAssertEqual(store.runTabID(for: t.id), tabID, "pane should stay open after exit")
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), tabID, "pane should stay open after exit")
   }
 
   func testRunOrFocusReRunsAStoppedTab() {
@@ -375,14 +379,14 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
     store.startRunCommand(for: t)
-    let first = store.runTabID(for: t.id)
+    let first = store.runCommand.runTabID(for: t.id)
     store.applyRunStatus("exited 0", for: t)  // now stopped-but-open
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
 
     store.runOrFocusRunCommand()  // ensure-running: stopped → re-run (OV-B)
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
     XCTAssertNotEqual(
-      store.runTabID(for: t.id), first, "re-run spawns a fresh tab (dead supervisor)")
+      store.runCommand.runTabID(for: t.id), first, "re-run spawns a fresh tab (dead supervisor)")
   }
 
   /// A stopped run-tab whose command is cleared:
@@ -397,9 +401,9 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
     store.startRunCommand(for: t)
-    let tabID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tabID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.applyRunStatus("exited 0", for: t)  // now stopped-but-open
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
 
     store.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")  // cleared
     store.runOrFocusRunCommand()  // ⌘R again — dead supervisor → respawnRunCommand's guard
@@ -409,7 +413,7 @@ final class RunCommandTests: XCTestCase {
       "clearing the command must surface the same warning sheet as the no-command case")
     XCTAssertEqual(store.pendingProjectSettings?.showsRunWarning, true)
     XCTAssertEqual(
-      store.runTabID(for: t.id), tabID,
+      store.runCommand.runTabID(for: t.id), tabID,
       "the stopped pane must stay open — the fix is to warn, not to silently destroy it")
   }
 
@@ -426,13 +430,14 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
     store.startRunCommand(for: t)
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))  // still .running — no exit reported yet
+    // Still .running — no exit reported yet.
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
 
     store.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")  // cleared
     store.restartRunCommand(for: t)  // dead supervisor → respawnRunCommand's no-command guard
 
     XCTAssertFalse(
-      store.isRunCommandRunning(for: t.id),
+      store.runCommand.isRunCommandRunning(for: t.id),
       "a confirmed-dead supervisor must not leave the state reporting .running")
     XCTAssertEqual(store.pendingProjectSettings?.project.path, "/a")
   }
@@ -442,16 +447,16 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tabID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tabID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
     store.terminals.closeTab(tabID, for: t)
 
-    XCTAssertNil(store.runTabID(for: t.id))
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertNil(store.runCommand.runTabID(for: t.id))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   /// Value: protects="press any key to close" on a stopped run tab and on an Investigate tab;
-  /// fails_when=the surface's `.closeRequested` stops reaching `AppStore.closingRunTab` and the
+  /// fails_when=the surface's `.closeRequested` stops reaching `RunCommandController.closingRunTab` and the
   /// close; why_new=no test raised `.closeRequested` before or after the one-sink refactor;
   /// seam=the event the surface's keyDown raises, sent without a live libghostty surface;
   /// no_claim=keyDown itself, or the graceful stop of a run that is still live.
@@ -460,14 +465,14 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let run = try XCTUnwrap(store.runTabID(for: t.id))
+    let run = try XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.applyRunStatus("exited 0", for: t)
     XCTAssertEqual(runView(store, t)?.runStoppedAwaitingClose, true, "at the close prompt")
 
     runView(store, t)?.onEvent?(.closeRequested)
 
     XCTAssertNil(store.terminals.tab(run, for: t))
-    XCTAssertNil(store.runTabID(for: t.id))
+    XCTAssertNil(store.runCommand.runTabID(for: t.id))
 
     let investigate = store.startInvestigate(
       bannerState: investigateBanner(t), target: t, surface: nil)
@@ -476,7 +481,7 @@ final class RunCommandTests: XCTestCase {
     investigate.surface?.onEvent?(.closeRequested)
 
     XCTAssertNil(store.terminals.tab(investigate.id, for: t))
-    XCTAssertNil(store.investigateTabs[investigate.id])
+    XCTAssertNil(store.runCommand.investigateTabs[investigate.id])
   }
 
   func testGracefulRestartReplacesTabAfterExit() {
@@ -486,18 +491,18 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let first = try! XCTUnwrap(store.runTabID(for: t.id))
+    let first = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
     store.restartRunCommand(for: t)  // running → SIGUSR1 → .restarting (same tab)
     XCTAssertTrue(signals.contains { $0.1 == .restart }, "restart must send SIGUSR1")
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
     XCTAssertEqual(
-      store.runTabID(for: t.id), first, "tab stays put — supervisor handles the restart")
+      store.runCommand.runTabID(for: t.id), first, "tab stays put — supervisor handles the restart")
 
     store.applyRunStatus("running 1", for: t)  // supervisor relaunched the child
 
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
-    XCTAssertEqual(store.runTabID(for: t.id), first, "same tab throughout the restart")
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), first, "same tab throughout the restart")
   }
 
   /// Put the run tab in a split (run tab + one sibling), then restart it. The split must survive
@@ -508,7 +513,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
 
     store.startRunCommand(for: t)
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     let sibling = store.terminals.addTab(for: t).id  // a second pane to split against
     // Split: [sibling, run].
     store.terminals.moveTabIntoSplit(runID, ontoEdge: .right, of: sibling, for: t)
@@ -519,10 +524,10 @@ final class RunCommandTests: XCTestCase {
 
     store.applyRunStatus("running 1", for: t)  // child relaunched by supervisor
 
-    XCTAssertEqual(store.runTabID(for: t.id), runID, "same run tab — no surface respawn")
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), runID, "same run tab — no surface respawn")
     let split = try! XCTUnwrap(store.terminals.split(for: t), "split must survive the restart")
     XCTAssertEqual(split.tabIDs, [sibling, runID], "split layout unchanged")
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   /// The stopped-but-open re-run path (⌘R on an exited run tab): with a dead supervisor the app
@@ -535,19 +540,19 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
     store.startRunCommand(for: t)
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     let sibling = store.terminals.addTab(for: t).id
     store.terminals.moveTabIntoSplit(runID, ontoEdge: .left, of: sibling, for: t)  // [run, sibling]
     store.applyRunStatus("exited 0", for: t)  // run tab now stopped-but-open
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
 
     store.runOrFocusRunCommand()  // stopped → re-run in place (dead supervisor → respawn)
 
-    let newRun = try! XCTUnwrap(store.runTabID(for: t.id))
+    let newRun = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     XCTAssertNotEqual(newRun, runID, "re-run spawns a fresh tab")
     let split = try! XCTUnwrap(store.terminals.split(for: t), "split must survive the re-run")
     XCTAssertEqual(split.tabIDs, [newRun, sibling], "new run tab takes the old one's slot")
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   func testArmedAutoRunBackgroundsRunAndOpensShell() {
@@ -558,16 +563,18 @@ final class RunCommandTests: XCTestCase {
     // Armed auto-run + the always-on "open a terminal in new workrooms": the run starts as a
     // BACKGROUNDED tab #1 (running, not focused) and a plain shell opens as the focused tab #2 the user
     // lands on (issue #67 / Arch #5).
-    store.armAutoRun(forWorkroom: t.id)
+    store.runCommand.armAutoRun(forWorkroom: t.id)
     store.ensureInitialTerminal(for: t)  // the terminal pane mounting
 
-    XCTAssertNotNil(store.runTabID(for: t.id), "armed auto-run should start the command on mount")
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "run still starts, just in the background")
+    XCTAssertNotNil(
+      store.runCommand.runTabID(for: t.id), "armed auto-run should start the command on mount")
+    XCTAssertTrue(
+      store.runCommand.isRunCommandRunning(for: t.id), "run still starts, just in the background")
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 2, "run tab + shell tab")
     let active = store.terminals.activeTab(for: t)?.id
     XCTAssertNotNil(active)
     XCTAssertNotEqual(
-      active, store.runTabID(for: t.id), "the shell is focused, the run is backgrounded")
+      active, store.runCommand.runTabID(for: t.id), "the shell is focused, the run is backgrounded")
   }
 
   func testInitialTerminalOpensShellWhenNotArmed() {
@@ -580,8 +587,8 @@ final class RunCommandTests: XCTestCase {
     // land the user in a terminal. A configured-but-not-auto run command must not start here.
     store.ensureInitialTerminal(for: t)
 
-    XCTAssertNil(store.runTabID(for: t.id), "no auto-run → no run tab")
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertNil(store.runCommand.runTabID(for: t.id), "no auto-run → no run tab")
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "one shell terminal opened")
   }
 
@@ -600,12 +607,12 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
 
     await store.terminals.reap(t.id)
 
-    XCTAssertNil(store.runTabID(for: t.id))
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertNil(store.runCommand.runTabID(for: t.id))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   /// Regression: closing the run tab mid-restart (before the supervisor completes the child restart)
@@ -617,14 +624,14 @@ final class RunCommandTests: XCTestCase {
 
     store.startRunCommand(for: t)
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting
-    let firstTab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let firstTab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
     store.terminals.closeTab(firstTab, for: t)  // user ⌘W before the supervisor restarts
-    XCTAssertNil(store.runTabID(for: t.id))
+    XCTAssertNil(store.runCommand.runTabID(for: t.id))
 
     // A fresh run; its natural exit must NOT trigger a respawn (no stale pendingRestart).
     store.startRunCommand(for: t)
-    let freshTab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let freshTab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.applyRunStatus("exited 0", for: t)
 
     // Pump the main queue so any (buggy) deferred respawn would have run before we assert.
@@ -632,8 +639,8 @@ final class RunCommandTests: XCTestCase {
     DispatchQueue.main.async { pumped.fulfill() }
     wait(for: [pumped], timeout: 1)
 
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id), "exited run stays stopped")
-    XCTAssertEqual(store.runTabID(for: t.id), freshTab, "must not respawn a new tab")
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id), "exited run stays stopped")
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), freshTab, "must not respawn a new tab")
   }
 
   /// Stop is one press: SIGUSR2 to the supervisor, which then SIGINTs the child and waits for it to
@@ -643,21 +650,23 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
-    store.stopRunCommand(for: t)  // SIGUSR2 → .running(interrupted), pane stays
+    store.runCommand.stopRunCommand(for: t)  // SIGUSR2 → .running(interrupted), pane stays
     XCTAssertTrue(signals.contains { $0.1 == .stop }, "stop must send SIGUSR2")
-    XCTAssertEqual(store.runTabID(for: t.id), tab, "stop keeps the pane open")
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), tab, "stop keeps the pane open")
     XCTAssertTrue(
-      store.isRunCommandRunning(for: t.id), "still running until supervisor confirms stop")
-    XCTAssertEqual(store.runStates[t.id]?.isStopping, true, "Stop gives immediate feedback")
+      store.runCommand.isRunCommandRunning(for: t.id),
+      "still running until supervisor confirms stop")
+    XCTAssertEqual(
+      store.runCommand.runStates[t.id]?.isStopping, true, "Stop gives immediate feedback")
 
     // Supervisor confirms the stop via the status file.
     store.applyRunStatus("stopped", for: t)
     XCTAssertEqual(
-      store.runTabID(for: t.id), tab, "pane stays open after stop (wait_after_command)")
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
-    XCTAssertEqual(store.runStates[t.id]?.isStopping, false)
+      store.runCommand.runTabID(for: t.id), tab, "pane stays open after stop (wait_after_command)")
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(store.runCommand.runStates[t.id]?.isStopping, false)
   }
 
   func testDelayedRunningReportsKeepStopPendingUntilRestart() {
@@ -665,18 +674,19 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    store.stopRunCommand(for: t)
+    store.runCommand.stopRunCommand(for: t)
 
     for report in ["starting", "running 123"] {
       store.applyRunStatus(report, for: t)
-      XCTAssertEqual(store.runStates[t.id]?.isStopping, true, report)
+      XCTAssertEqual(store.runCommand.runStates[t.id]?.isStopping, true, report)
     }
 
     store.restartRunCommand(for: t)
-    XCTAssertEqual(store.runStates[t.id]?.isStopping, false)
+    XCTAssertEqual(store.runCommand.runStates[t.id]?.isStopping, false)
     store.applyRunStatus("running 456", for: t)
     XCTAssertEqual(
-      store.runStates[t.id], .running(tab: store.runTabID(for: t.id)!, interrupted: false))
+      store.runCommand.runStates[t.id],
+      .running(tab: store.runCommand.runTabID(for: t.id)!, interrupted: false))
   }
 
   /// Regression (#3): a Stop pressed right after a Restart must send SIGUSR2 (graceful),
@@ -686,18 +696,18 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting
     XCTAssertTrue(signals.contains { $0.1 == .restart }, "restart must send SIGUSR1")
 
     signals.removeAll()
-    store.stopRunCommand(for: t)  // Stop after Restart → SIGUSR2, pane stays
+    store.runCommand.stopRunCommand(for: t)  // Stop after Restart → SIGUSR2, pane stays
     XCTAssertTrue(signals.contains { $0.1 == .stop }, "stop after restart must send SIGUSR2")
-    XCTAssertEqual(store.runTabID(for: t.id), tab, "pane must stay open on stop")
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), tab, "pane must stay open on stop")
 
     store.applyRunStatus("stopped", for: t)
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   /// The gate the **sidebar** row buttons use: a present target whose project has a command — not a
@@ -775,7 +785,7 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     let view = try! XCTUnwrap(runView(store, t))
     view.liveProcessOverrideForTesting = true  // a dev server still running
 
@@ -783,12 +793,14 @@ final class RunCommandTests: XCTestCase {
     // already pinned the confirm off for this store.)
     store.requestCloseTerminalTab(tab, for: t)
     XCTAssertEqual(
-      store.runTabID(for: t.id), tab, "close must wait while the process is alive")
+      store.runCommand.runTabID(for: t.id), tab, "close must wait while the process is alive")
     XCTAssertTrue(signals.contains { $0.1 == .quit }, "close must send SIGTERM to supervisor")
 
     view.liveProcessOverrideForTesting = false  // process exits
-    waitUntil("tab closes once the process has exited") { store.runTabID(for: t.id) == nil }
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    waitUntil("tab closes once the process has exited") {
+      store.runCommand.runTabID(for: t.id) == nil
+    }
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
   }
 
   /// A stopped run's pane keeps a live process (the parked supervisor, or the relay holding a gone
@@ -799,15 +811,16 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     try! XCTUnwrap(runView(store, t)).liveProcessOverrideForTesting = true
     store.applyRunStatus("exited 1", for: t)
 
-    XCTAssertFalse(store.hasLiveRun, "a stopped run is no dev server to keep or stop at quit")
-    XCTAssertFalse(store.hasLiveRunCommand)
+    XCTAssertFalse(
+      store.runCommand.hasLiveRun, "a stopped run is no dev server to keep or stop at quit")
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand)
     signals.removeAll()
     store.requestCloseTerminalTab(tab, for: t)
-    XCTAssertNil(store.runTabID(for: t.id), "closing a stopped run tab must not wait")
+    XCTAssertNil(store.runCommand.runTabID(for: t.id), "closing a stopped run tab must not wait")
     XCTAssertFalse(signals.contains { $0.1 == .quit })
   }
 
@@ -822,13 +835,13 @@ final class RunCommandTests: XCTestCase {
     let v2 = try! XCTUnwrap(runView(store, t2))
     v1.liveProcessOverrideForTesting = true
     v2.liveProcessOverrideForTesting = true
-    XCTAssertTrue(store.hasLiveRunCommand)
+    XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
     var completed = false
     // A deliberately unreachable timeout: this test is about the wait ENDING because both processes
     // exited, so the fallback firing on a slow machine would be a false pass on the last assertion —
     // and a false failure on the two "still waiting" ones. The timeout path has its own test below.
-    store.gracefullyStopAllRunCommands(timeout: 300) { completed = true }
+    store.runCommand.gracefullyStopAllRunCommands(timeout: 300) { completed = true }
     XCTAssertFalse(completed, "waits while processes are alive")
     // SIGTERM must be sent to both supervisors.
     XCTAssertTrue(
@@ -847,10 +860,10 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     store.startRunCommand(for: target(store, "/a", "main"))  // no override → no live PTY
-    XCTAssertFalse(store.hasLiveRunCommand)
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand)
 
     var completed = false
-    store.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
+    store.runCommand.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
     XCTAssertTrue(completed, "no live process → completes synchronously")
   }
 
@@ -863,7 +876,7 @@ final class RunCommandTests: XCTestCase {
     v.liveProcessOverrideForTesting = true  // a wedged server that never exits
 
     var completed = false
-    store.gracefullyStopAllRunCommands(timeout: 0.2) { completed = true }
+    store.runCommand.gracefullyStopAllRunCommands(timeout: 0.2) { completed = true }
     XCTAssertFalse(completed)
     waitUntil("a wedged process still proceeds after the timeout (SIGHUP fallback)") { completed }
   }
@@ -886,7 +899,7 @@ final class RunCommandTests: XCTestCase {
       bannerState: bannerState, target: t, surface: nil, codingAgentSetting: "auto")
 
     XCTAssertEqual(captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState))
-    XCTAssertEqual(store.investigateTabs[tab.id], t.id)
+    XCTAssertEqual(store.runCommand.investigateTabs[tab.id], t.id)
   }
 
   /// The "Investigate with" setting picks the agent the Investigate tab runs.
@@ -922,28 +935,28 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
     let bannerState = investigateBanner(t)
-    XCTAssertFalse(store.hasLiveRunCommand)
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand)
 
     let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     let surface1 = try! XCTUnwrap(tab1.surface)
     surface1.liveProcessOverrideForTesting = true
-    XCTAssertTrue(store.hasLiveRunCommand)
+    XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
     // Cleanup path 1: the process exits (`.childExited`) — independent of the tab closing.
     surface1.handleChildExited(exitCode: 0)
-    XCTAssertNil(store.investigateTabs[tab1.id])
-    XCTAssertFalse(store.hasLiveRunCommand)
+    XCTAssertNil(store.runCommand.investigateTabs[tab1.id])
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand)
 
     // Cleanup path 2: the tab is closed/reaped (`.tabsRemoved`) — independent of `.childExited`
     // ever firing (it isn't guaranteed to, per libghostty exit-reporting flakiness).
     let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     let surface2 = try! XCTUnwrap(tab2.surface)
     surface2.liveProcessOverrideForTesting = true
-    XCTAssertTrue(store.hasLiveRunCommand)
+    XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
     store.terminals.closeTab(tab2.id, for: t)
-    XCTAssertNil(store.investigateTabs[tab2.id])
-    XCTAssertFalse(store.hasLiveRunCommand)
+    XCTAssertNil(store.runCommand.investigateTabs[tab2.id])
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand)
   }
 
   func testGracefullyStopAllCompletesImmediatelyWithOnlyInvestigateTabLive() {
@@ -952,12 +965,12 @@ final class RunCommandTests: XCTestCase {
     let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
     let surface = try! XCTUnwrap(tab.surface)
     surface.liveProcessOverrideForTesting = true
-    XCTAssertTrue(store.hasLiveRunCommand)
+    XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
     // `runStates` is empty — an Investigate-only session has no supervisor to SIGTERM, so this must
     // resolve immediately rather than wait on a `runStates` entry that will never appear (issue #146).
     var completed = false
-    store.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
+    store.runCommand.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
     XCTAssertTrue(completed, "no runStates entries to iterate → completes synchronously")
   }
 
@@ -990,12 +1003,12 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
     try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
-    XCTAssertTrue(store.hasLiveRunCommand)
+    XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
     await store.reapTargetLocally(t.id)
 
-    XCTAssertNil(store.investigateTabs[tab.id])
-    XCTAssertFalse(store.hasLiveRunCommand)
+    XCTAssertNil(store.runCommand.investigateTabs[tab.id])
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand)
   }
 
   /// `investigateTabs` allows many tabs per target (unlike the one-slot-per-target `runStates`) —
@@ -1011,10 +1024,11 @@ final class RunCommandTests: XCTestCase {
     try! XCTUnwrap(tab2.surface).liveProcessOverrideForTesting = true
 
     XCTAssertTrue(
-      store.hasLiveRunCommand, "a second live Investigate tab on the same target must still count")
+      store.runCommand.hasLiveRunCommand,
+      "a second live Investigate tab on the same target must still count")
 
     store.terminals.closeTab(tab2.id, for: t)
-    XCTAssertFalse(store.hasLiveRunCommand, "closing the only live tab drops liveness")
+    XCTAssertFalse(store.runCommand.hasLiveRunCommand, "closing the only live tab drops liveness")
   }
 
   // Note: a direct `WindowCloseGuard.windowShouldClose` test for the "defer, then gracefully stop"
@@ -1039,10 +1053,10 @@ final class RunCommandTests: XCTestCase {
 
     store.startRunCommand(for: t)  // issue #67: starts in the background
 
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
     XCTAssertEqual(
       store.terminals.activeTab(for: t)?.id, shell, "a background start must not steal focus")
-    XCTAssertNotEqual(store.terminals.activeTab(for: t)?.id, store.runTabID(for: t.id))
+    XCTAssertNotEqual(store.terminals.activeTab(for: t)?.id, store.runCommand.runTabID(for: t.id))
   }
 
   func testToggleStartDoesNotNavigate() {
@@ -1053,7 +1067,7 @@ final class RunCommandTests: XCTestCase {
 
     store.toggleRunCommand(for: t)  // sidebar ▶ → start
 
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
     XCTAssertNil(store.selectedTargetID, "issue #67: starting from the sidebar must not navigate")
   }
 
@@ -1065,7 +1079,7 @@ final class RunCommandTests: XCTestCase {
 
     store.applyRunStatus("exited 0", for: t)
 
-    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 0))
+    XCTAssertEqual(store.runCommand.runOutcomes[t.id], .exited(code: 0))
   }
 
   func testNonZeroExitMapsToFailedOutcome() {
@@ -1077,7 +1091,7 @@ final class RunCommandTests: XCTestCase {
     store.applyRunStatus("exited 137", for: t)
 
     XCTAssertEqual(
-      store.runOutcomes[t.id], .exited(code: 137), "a non-zero exit is recorded as such")
+      store.runCommand.runOutcomes[t.id], .exited(code: 137), "a non-zero exit is recorded as such")
   }
 
   /// The supervisor ends an outcome with its launch number (#522), so a restart that fails the
@@ -1088,13 +1102,13 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     store.applyRunStatus("exited 127 1", for: t)
-    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 127))
+    XCTAssertEqual(store.runCommand.runOutcomes[t.id], .exited(code: 127))
 
     store.restartRunCommand(for: t)
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "restarting")
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id), "restarting")
     store.applyRunStatus("exited 127 2", for: t)
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id), "the restart's failure ends it")
-    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 127))
+    XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id), "the restart's failure ends it")
+    XCTAssertEqual(store.runCommand.runOutcomes[t.id], .exited(code: 127))
   }
 
   func testUserStopThenExitMapsToStopped() {
@@ -1103,10 +1117,11 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
 
-    store.stopRunCommand(for: t)  // SIGUSR2 → .running(interrupted: true)
+    store.runCommand.stopRunCommand(for: t)  // SIGUSR2 → .running(interrupted: true)
     store.applyRunStatus("stopped", for: t)  // supervisor confirms the stop
 
-    XCTAssertEqual(store.runOutcomes[t.id], .stoppedByUser, "a user Stop is not a failure")
+    XCTAssertEqual(
+      store.runCommand.runOutcomes[t.id], .stoppedByUser, "a user Stop is not a failure")
   }
 
   func testRunToastShownWhenBackgroundedHiddenWhenViewing() {
@@ -1121,7 +1136,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.runToastItems.first?.status, .running)
 
     // Open the run terminal → it becomes the visible tab → the toast hides (not dismissed).
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.terminals.focus(runID, for: t)
     XCTAssertTrue(store.runToastItems.isEmpty, "no toast for the run you're looking at")
   }
@@ -1135,7 +1150,7 @@ final class RunCommandTests: XCTestCase {
     store.startRunCommand(for: t)
     XCTAssertEqual(store.runToastItems.first?.status, .running)
 
-    store.stopRunCommand(for: t)
+    store.runCommand.stopRunCommand(for: t)
     XCTAssertEqual(store.runToastItems.first?.status, .stopping)
     XCTAssertEqual(store.runToastItems.first?.status.isTerminal, false)
 
@@ -1178,10 +1193,10 @@ final class RunCommandTests: XCTestCase {
     store.startRunCommand(for: t)
     XCTAssertFalse(store.runToastItems.isEmpty)
 
-    store.dismissRunToast(for: t.id)
+    store.runCommand.dismissRunToast(for: t.id)
 
     XCTAssertTrue(store.runToastItems.isEmpty, "✕ dismisses the toast")
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "but the run keeps running")
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id), "but the run keeps running")
   }
 
   func testRunOrFocusFocusesAnAlreadyRunningBackgroundRun() {
@@ -1196,7 +1211,7 @@ final class RunCommandTests: XCTestCase {
     store.runOrFocusRunCommand()  // ⌘R while running → "show me the run"
 
     XCTAssertEqual(
-      store.terminals.activeTab(for: t)?.id, store.runTabID(for: t.id),
+      store.terminals.activeTab(for: t)?.id, store.runCommand.runTabID(for: t.id),
       "⌘R on a running background run focuses it")
   }
 
@@ -1210,9 +1225,10 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
-    store.stopRunCommand(for: t)  // SIGUSR2 → .running(interrupted: true), stop in flight
+    // SIGUSR2 → .running(interrupted: true), stop in flight.
+    store.runCommand.stopRunCommand(for: t)
     signals.removeAll()
 
     store.runOrFocusRunCommand()  // ⌘R during the stop → must restart, not swallow
@@ -1220,7 +1236,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(
       signals.contains { $0.1 == .restart },
       "⌘R during a stop must restart (SIGUSR1), not silently focus a dying run")
-    XCTAssertEqual(store.runTabID(for: t.id), tab, "restart keeps the same run tab")
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), tab, "restart keeps the same run tab")
   }
 
   func testRestartPreservesFocusWhenRunTabWasFocused() {
@@ -1230,7 +1246,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.terminals.focus(runID, for: t)  // user opened the run terminal
 
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting (same tab)
@@ -1238,7 +1254,7 @@ final class RunCommandTests: XCTestCase {
 
     store.applyRunStatus("running 1", for: t)  // supervisor relaunched the child
 
-    XCTAssertEqual(store.runTabID(for: t.id), runID, "same tab throughout the restart")
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), runID, "same tab throughout the restart")
     XCTAssertEqual(
       store.terminals.activeTab(for: t)?.id, runID,
       "restart keeps the run focused when it was focused (codex correction)")
@@ -1252,7 +1268,7 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     let shell = store.terminals.addTab(for: t).id  // focused
     store.startRunCommand(for: t)  // background
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     XCTAssertEqual(store.terminals.activeTab(for: t)?.id, shell)
 
     store.restartRunCommand(for: t)  // SIGUSR1 → .restarting (same tab, no focus change)
@@ -1260,7 +1276,7 @@ final class RunCommandTests: XCTestCase {
 
     store.applyRunStatus("running 1", for: t)  // child relaunched by supervisor
 
-    XCTAssertEqual(store.runTabID(for: t.id), runID, "same tab throughout the restart")
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), runID, "same tab throughout the restart")
     XCTAssertEqual(
       store.terminals.activeTab(for: t)?.id, shell,
       "a background restart stays backgrounded — focus stays on the shell")
@@ -1272,7 +1288,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)  // background
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     let sibling = store.terminals.addTab(for: t).id
     // Split [sibling, run] — both panes visible at once.
     store.terminals.moveTabIntoSplit(runID, ontoEdge: .right, of: sibling, for: t)
@@ -1296,8 +1312,9 @@ final class RunCommandTests: XCTestCase {
 
     store.startRunCommand(for: t)  // background; spawn "fails"
 
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id), "a failed spawn is not 'running'")
-    XCTAssertEqual(store.runOutcomes[t.id], .failedToStart)
+    XCTAssertFalse(
+      store.runCommand.isRunCommandRunning(for: t.id), "a failed spawn is not 'running'")
+    XCTAssertEqual(store.runCommand.runOutcomes[t.id], .failedToStart)
     XCTAssertEqual(
       store.runToastItems.first?.status, .failedToStart, "the toast surfaces the failure, not a lie"
     )
@@ -1308,7 +1325,7 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     var pending: [DispatchWorkItem] = []
-    store.scheduleRunToastDismiss = { _, body in
+    store.runCommand.scheduleRunToastDismiss = { _, body in
       let work = DispatchWorkItem(block: body)
       pending.append(work)
       return work
@@ -1331,7 +1348,7 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     var pending: [DispatchWorkItem] = []
-    store.scheduleRunToastDismiss = { _, body in
+    store.runCommand.scheduleRunToastDismiss = { _, body in
       let work = DispatchWorkItem(block: body)
       pending.append(work)
       return work
@@ -1343,7 +1360,7 @@ final class RunCommandTests: XCTestCase {
     store.restartRunCommand(for: t)  // .stopped + dead supervisor → respawn → resetRunToast
 
     XCTAssertTrue(pending[0].isCancelled, "restart cancels the stale auto-dismiss timer")
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "and the fresh run is running")
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id), "and the fresh run is running")
   }
 
   func testRunningToastAutoHidesAfterLinger() {
@@ -1353,7 +1370,7 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)  // focused shell → the run is backgrounded + toasted
     var pending: [DispatchWorkItem] = []
-    store.scheduleRunToastDismiss = { _, body in
+    store.runCommand.scheduleRunToastDismiss = { _, body in
       let work = DispatchWorkItem(block: body)
       pending.append(work)
       return work
@@ -1368,9 +1385,9 @@ final class RunCommandTests: XCTestCase {
     pending[0].perform()  // the running linger elapses
 
     XCTAssertTrue(store.runToastItems.isEmpty, "the live toast auto-hides after the linger")
-    XCTAssertTrue(store.runningToastAutoHidden.contains(t.id))
+    XCTAssertTrue(store.runCommand.runningToastAutoHidden.contains(t.id))
     XCTAssertFalse(
-      store.dismissedRunToasts.contains(t.id), "auto-hide isn't a permanent dismissal")
+      store.runCommand.dismissedRunToasts.contains(t.id), "auto-hide isn't a permanent dismissal")
   }
 
   func testRunningToastAutoHideDoesNotSuppressLaterTerminalToast() {
@@ -1382,7 +1399,7 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)
     var pending: [DispatchWorkItem] = []
-    store.scheduleRunToastDismiss = { _, body in
+    store.runCommand.scheduleRunToastDismiss = { _, body in
       let work = DispatchWorkItem(block: body)
       pending.append(work)
       return work
@@ -1406,7 +1423,7 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)
     var pending: [DispatchWorkItem] = []
-    store.scheduleRunToastDismiss = { _, body in
+    store.runCommand.scheduleRunToastDismiss = { _, body in
       let work = DispatchWorkItem(block: body)
       pending.append(work)
       return work
@@ -1419,7 +1436,8 @@ final class RunCommandTests: XCTestCase {
     store.restartRunCommand(for: t)  // alive supervisor → SIGUSR1 → .restarting, re-arms the toast
 
     XCTAssertFalse(
-      store.runningToastAutoHidden.contains(t.id), "restarting clears the stale auto-hide flag")
+      store.runCommand.runningToastAutoHidden.contains(t.id),
+      "restarting clears the stale auto-hide flag")
     XCTAssertEqual(store.runToastItems.first?.status, .restarting)
 
     store.applyRunStatus("running", for: t)  // restart completes
@@ -1444,15 +1462,16 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)  // focused shell → the run is backgrounded + toasted
     store.startRunCommand(for: t)
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     XCTAssertFalse(store.runToastItems.isEmpty)
 
     // What a card tap fires (see ToastStack): open the run terminal AND dismiss the toast.
     store.openRunToast(for: t.id)
-    store.dismissRunToast(for: t.id)
+    store.runCommand.dismissRunToast(for: t.id)
 
     XCTAssertEqual(store.terminals.activeTab(for: t)?.id, runID, "the tap opens the run terminal")
-    XCTAssertTrue(store.dismissedRunToasts.contains(t.id), "the tap dismisses the toast for good")
+    XCTAssertTrue(
+      store.runCommand.dismissedRunToasts.contains(t.id), "the tap dismisses the toast for good")
     XCTAssertTrue(store.runToastItems.isEmpty)
   }
 
@@ -1472,11 +1491,12 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
-    XCTAssertFalse(store.runFailed(for: t.id), "no run yet → not failed")
+    XCTAssertFalse(store.runCommand.runFailed(for: t.id), "no run yet → not failed")
     store.startRunCommand(for: t)
-    XCTAssertFalse(store.runFailed(for: t.id), "running → not failed")
+    XCTAssertFalse(store.runCommand.runFailed(for: t.id), "running → not failed")
     store.applyRunStatus("exited 1", for: t)
-    XCTAssertTrue(store.runFailed(for: t.id), "a non-zero self-exit → failed (drives the red icon)")
+    XCTAssertTrue(
+      store.runCommand.runFailed(for: t.id), "a non-zero self-exit → failed (drives the red icon)")
   }
 
   func testCleanExitIsNotFailed() {
@@ -1485,7 +1505,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     store.applyRunStatus("exited 0", for: t)
-    XCTAssertFalse(store.runFailed(for: t.id), "a clean exit shows no red icon")
+    XCTAssertFalse(store.runCommand.runFailed(for: t.id), "a clean exit shows no red icon")
   }
 
   func testFailureToastShowsEvenWhenViewingRunTab() {
@@ -1495,7 +1515,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.terminals.focus(runID, for: t)  // viewing the run tab
     XCTAssertTrue(store.runToastItems.isEmpty, "no LIVE toast for the tab you're watching")
 
@@ -1511,7 +1531,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.terminals.focus(runID, for: t)
 
     store.applyRunStatus("exited 0", for: t)
@@ -1526,12 +1546,12 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
 
-    store.stopRunCommand(for: t)  // SIGUSR2 → interrupted
+    store.runCommand.stopRunCommand(for: t)  // SIGUSR2 → interrupted
     store.applyRunStatus("stopped", for: t)  // supervisor confirms
 
-    XCTAssertEqual(store.runOutcomes[t.id], .stoppedByUser)
+    XCTAssertEqual(store.runCommand.runOutcomes[t.id], .stoppedByUser)
     XCTAssertTrue(store.runToastItems.isEmpty, "a user-initiated stop shows no toast (#79)")
-    XCTAssertFalse(store.runFailed(for: t.id), "and no red icon")
+    XCTAssertFalse(store.runCommand.runFailed(for: t.id), "and no red icon")
   }
 
   func testRestartShowsNoTerminalToast() {
@@ -1552,14 +1572,14 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     store.applyRunStatus("exited 1", for: t)
-    XCTAssertTrue(store.runFailed(for: t.id))
+    XCTAssertTrue(store.runCommand.runFailed(for: t.id))
 
     store.terminals.closeTab(runID, for: t)
 
-    XCTAssertNil(store.runOutcomes[t.id], "closing the run tab clears the outcome (#79)")
-    XCTAssertFalse(store.runFailed(for: t.id), "so the red icon resets")
+    XCTAssertNil(store.runCommand.runOutcomes[t.id], "closing the run tab clears the outcome (#79)")
+    XCTAssertFalse(store.runCommand.runFailed(for: t.id), "so the red icon resets")
   }
 
   // MARK: Phantom respawn after teardown (issue #7)
@@ -1590,18 +1610,39 @@ final class RunCommandTests: XCTestCase {
     )
   }
 
-  /// The run state lives on `RunCommandController` and the store forwards it. The toolbar's Run/Stop
-  /// toggle reads it through the store, so a write must still invalidate that read.
+  /// The run state lives on `RunCommandController`, which the toolbar's Run/Stop toggle reads, so a
+  /// write must invalidate that read.
   func testAReadThroughTheStoreIsInvalidatedByARunStateWrite() {
     let store = makeStore([])
     var invalidated = false
     withObservationTracking {
-      _ = store.isRunCommandRunning(for: .root(project: "t"))
+      _ = store.runCommand.isRunCommandRunning(for: .root(project: "t"))
     } onChange: {
       invalidated = true
     }
-    store.armAutoRun(forWorkroom: .root(project: "t"))
+    store.runCommand.armAutoRun(forWorkroom: .root(project: "t"))
     XCTAssertTrue(invalidated, "a forwarded read must track RunCommandController")
+  }
+
+  /// A run-state write that changes nothing notifies no one, so the sidebar, tab bar and toolbar
+  /// reading it do not redraw. An in-place write to a stored `@Observable` property notifies even
+  /// when the value is equal; the controller's setters make it a whole-value write, which does not.
+  func testARunStateWriteThatChangesNothingNotifiesNoOne() {
+    let store = makeStore([])
+    let id = TerminalTarget.ID.root(project: "t")
+    store.runCommand.runningToastAutoHidden.insert(id)
+    var notified = false
+    withObservationTracking {
+      _ = store.runCommand.runStates
+      _ = store.runCommand.runningToastAutoHidden
+    } onChange: {
+      notified = true
+    }
+    store.runCommand.runStates[id] = nil
+    store.runCommand.runningToastAutoHidden.insert(id)
+    XCTAssertFalse(notified, "a write that changed nothing must not redraw")
+    store.runCommand.runStates[id] = .armed
+    XCTAssertTrue(notified, "a write that changes the state still notifies")
   }
 
   // MARK: Run sessions (#522)
@@ -1625,7 +1666,7 @@ final class RunCommandTests: XCTestCase {
     _ = store.terminals.addTab(for: t)  // a focused shell, so the run is in the background
     // The control: a run started here does show its Running toast in this same setup.
     store.startRunCommand(for: t)
-    let started = try! XCTUnwrap(store.runTabID(for: t.id))
+    let started = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     XCTAssertEqual(store.runToastItems.map(\.status), [.running], "the control must show a toast")
     store.terminals.closeTab(started, for: t)
 
@@ -1633,9 +1674,9 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(store.runToastItems.isEmpty, "nor before its daemon has said how it is")
     store.terminals.onEvent?(.runStatus(t.id, tab.id, "running 4123"))
 
-    XCTAssertEqual(store.runStates[t.id], .running(tab: tab.id, interrupted: false))
+    XCTAssertEqual(store.runCommand.runStates[t.id], .running(tab: tab.id, interrupted: false))
     XCTAssertTrue(store.runToastItems.isEmpty, "a reattach is not a start: no Running toast")
-    XCTAssertFalse(store.restoredRuns.contains(t.id))
+    XCTAssertFalse(store.runCommand.restoredRuns.contains(t.id))
   }
 
   /// A run that failed while the app was closed comes back with its outcome (Q7).
@@ -1647,9 +1688,9 @@ final class RunCommandTests: XCTestCase {
 
     store.terminals.onEvent?(.runStatus(t.id, tab.id, "exited 1"))
 
-    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab.id))
-    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 1))
-    XCTAssertTrue(store.runFailed(for: t.id))
+    XCTAssertEqual(store.runCommand.runStates[t.id], .stopped(tab: tab.id))
+    XCTAssertEqual(store.runCommand.runOutcomes[t.id], .exited(code: 1))
+    XCTAssertTrue(store.runCommand.runFailed(for: t.id))
   }
 
   /// A reattached run whose session is gone (a reboot, a daemon that died) stays as a stopped Run
@@ -1662,7 +1703,7 @@ final class RunCommandTests: XCTestCase {
 
     store.terminals.onEvent?(.runSessionGone(t.id, tab.id))
 
-    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab.id))
+    XCTAssertEqual(store.runCommand.runStates[t.id], .stopped(tab: tab.id))
     XCTAssertTrue(store.runToastItems.isEmpty)
     XCTAssertTrue(signals.isEmpty, "nothing was started or signalled")
   }
@@ -1674,11 +1715,11 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
     store.terminals.onEvent?(.runSessionGone(t.id, tab))
 
-    XCTAssertEqual(store.runStates[t.id], .running(tab: tab, interrupted: false))
+    XCTAssertEqual(store.runCommand.runStates[t.id], .running(tab: tab, interrupted: false))
   }
 
   /// A remote run that was going whose session ended while its link was down (its host
@@ -1689,13 +1730,13 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     try! XCTUnwrap(runView(store, t)).reattachingOverrideForTesting = true
 
     store.terminals.onEvent?(.runSessionGone(t.id, tab))
 
-    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab))
-    XCTAssertEqual(store.runOutcomes[t.id], .stoppedByUser, "an end it didn't fail by")
+    XCTAssertEqual(store.runCommand.runStates[t.id], .stopped(tab: tab))
+    XCTAssertEqual(store.runCommand.runOutcomes[t.id], .stoppedByUser, "an end it didn't fail by")
     XCTAssertTrue(signals.isEmpty, "nothing was started or signalled")
   }
 
@@ -1705,13 +1746,13 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
-    store.signalSupervisorForTesting = { _, _ in .unknown("no answer") }
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
+    store.runCommand.signalSupervisorForTesting = { _, _ in .unknown("no answer") }
 
-    store.stopRunCommand(for: t)
+    store.runCommand.stopRunCommand(for: t)
 
-    XCTAssertEqual(store.runStates[t.id], .running(tab: tab, interrupted: true))
-    XCTAssertEqual(store.runTabID(for: t.id), tab, "nothing replaced the run")
+    XCTAssertEqual(store.runCommand.runStates[t.id], .running(tab: tab, interrupted: true))
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), tab, "nothing replaced the run")
   }
 
   /// Closing a window stops its runs first, a run whose pane was never mounted too: closed with it
@@ -1721,13 +1762,13 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
-    XCTAssertFalse(store.stopsRunsBeforeClosing, "nothing to stop")
+    XCTAssertFalse(store.runCommand.stopsRunsBeforeClosing, "nothing to stop")
     store.startRunCommand(for: t)
     let view = try! XCTUnwrap(runView(store, t))
     view.awaitsMountOverrideForTesting = true
     view.persistentSessionID = view.persistentSessionID ?? UUID()
 
-    XCTAssertTrue(store.stopsRunsBeforeClosing)
+    XCTAssertTrue(store.runCommand.stopsRunsBeforeClosing)
   }
 
   /// A run restored in a remote workroom not opened since launch has no process in this app, but
@@ -1738,13 +1779,13 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     let view = try! XCTUnwrap(runView(store, t))
     view.awaitsMountOverrideForTesting = true  // never mounted, so no live process
     view.persistentSessionID = view.persistentSessionID ?? UUID()
     XCTAssertFalse(view.hasLiveProcess)
 
-    XCTAssertTrue(store.hasLiveRun, "quit asks about it")
+    XCTAssertTrue(store.runCommand.hasLiveRun, "quit asks about it")
     AppStore.quitStopsRuns = true
     defer { AppStore.quitStopsRuns = false }
     XCTAssertFalse(
@@ -1753,10 +1794,10 @@ final class RunCommandTests: XCTestCase {
       },
       "its tab is left out")
     var completed = false
-    store.gracefullyStopAllRunCommands(timeout: 300) { completed = true }
+    store.runCommand.gracefullyStopAllRunCommands(timeout: 300) { completed = true }
     XCTAssertTrue(signals.contains { $0.0 == t.id && $0.1 == .quit }, "its supervisor is told")
     waitUntil("the stop ends once its daemon has answered") { completed }
-    XCTAssertEqual(store.runTabID(for: t.id), tab)
+    XCTAssertEqual(store.runCommand.runTabID(for: t.id), tab)
   }
 
   /// A restart whose daemon holds no such session starts a fresh one; one it cannot confirm starts
@@ -1766,16 +1807,17 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let first = try! XCTUnwrap(store.runTabID(for: t.id))
+    let first = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
 
-    store.signalSupervisorForTesting = { _, _ in .unknown("no answer") }
+    store.runCommand.signalSupervisorForTesting = { _, _ in .unknown("no answer") }
     store.restartRunCommand(for: t)
-    XCTAssertEqual(store.runTabID(for: t.id), first, "an unconfirmed restart replaces nothing")
-    XCTAssertEqual(store.runStates[t.id], .running(tab: first, interrupted: false))
+    XCTAssertEqual(
+      store.runCommand.runTabID(for: t.id), first, "an unconfirmed restart replaces nothing")
+    XCTAssertEqual(store.runCommand.runStates[t.id], .running(tab: first, interrupted: false))
 
-    store.signalSupervisorForTesting = { _, _ in .gone }
+    store.runCommand.signalSupervisorForTesting = { _, _ in .gone }
     store.restartRunCommand(for: t)
-    let second = try! XCTUnwrap(store.runTabID(for: t.id))
+    let second = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     XCTAssertNotEqual(second, first, "a gone supervisor's run starts again in a fresh session")
   }
 
@@ -1785,12 +1827,12 @@ final class RunCommandTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
-    store.signalSupervisorForTesting = { _, _ in .gone }
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
+    store.runCommand.signalSupervisorForTesting = { _, _ in .gone }
 
-    store.stopRunCommand(for: t)
+    store.runCommand.stopRunCommand(for: t)
 
-    XCTAssertEqual(store.runStates[t.id], .stopped(tab: tab))
+    XCTAssertEqual(store.runCommand.runStates[t.id], .stopped(tab: tab))
   }
 
   /// A run tab is saved, as a run, so it comes back; an Investigate tab, whose agent dies with
@@ -1851,8 +1893,8 @@ final class RunCommandTests: XCTestCase {
 
     store.terminals.restore(saved, for: t)
 
-    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
-    XCTAssertTrue(store.restoredRuns.contains(t.id))
+    let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
+    XCTAssertTrue(store.runCommand.restoredRuns.contains(t.id))
     XCTAssertEqual(store.terminals.view(forTab: tab, inTarget: t.id)?.isRunSession, true)
     XCTAssertEqual(captured.last, "bin/dev", "a run session of the project's command")
   }

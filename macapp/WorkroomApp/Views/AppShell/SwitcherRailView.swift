@@ -107,7 +107,7 @@ extension SwitcherCard {
       stableSubtitle = label?.branch ?? label?.project ?? ""
       liveSubtitle = slot.store.flatMap { Self.vcsTail(for: slot.sid, in: $0) }
       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
-      isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
+      isRunning = slot.store?.runCommand.isRunCommandRunning(for: slot.target.id) ?? false
       isFailed = false
       if let terminals = slot.store?.terminals {
         waiting = terminals.blockedTerminalCount(forTargetID: slot.target.id)

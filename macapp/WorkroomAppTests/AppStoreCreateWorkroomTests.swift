@@ -670,14 +670,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let run = seedRun(store, holding: "wr", outcome: .setupScriptFailed(message: "exit 1"))
     XCTAssertTrue(
       store.creatingWorkrooms.isEmpty, "precondition: the create's process already ended")
-    store.armAutoRun(forWorkroom: id)
+    store.runCommand.armAutoRun(forWorkroom: id)
 
     XCTAssertTrue(store.isRunBlocked(id), "the run still owns this pane")
     XCTAssertFalse(
       store.canRunCommand(for: target, inProject: projectPath),
       "so no Run affordance may be offered")
     store.startRunCommand(for: target)
-    XCTAssertNil(store.runTabID(for: id), "and the chokepoint refuses it even if one is")
+    XCTAssertNil(store.runCommand.runTabID(for: id), "and the chokepoint refuses it even if one is")
 
     // Open Anyway mounts the pane, and the auto-run is still armed to do its job.
     store.openCreatedWorkroomAnyway(run)
@@ -1083,7 +1083,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
-    store.armAutoRun(forWorkroom: idA)  // as A's own landing does when its project has auto-run on
+    // As A's own landing does when its project has auto-run on.
+    store.runCommand.armAutoRun(forWorkroom: idA)
     let b = await startAndLand(store, "wr-b", project: emptyProject)
     // Release on EVERY exit: the `guard case .armed` below returns early on failure, and an
     // unreleased gate parks both `createWorkroom` tasks on their continuations for the life of the
@@ -1095,7 +1096,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     XCTAssertTrue(
       store.isCreationBlocking(idA), "A's terminal stays withheld while A's setup script runs")
-    guard case .armed = store.runStates[idA] else {
+    guard case .armed = store.runCommand.runStates[idA] else {
       return XCTFail("A's auto-run must stay armed until A's own pane mounts")
     }
 
@@ -1116,13 +1117,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
-    store.armAutoRun(forWorkroom: idA)
+    store.runCommand.armAutoRun(forWorkroom: idA)
     let b = await startAndLand(store, "wr-b", project: emptyProject)
 
     fake.release("wr-a")
     await a.value
 
-    XCTAssertNil(store.runStates[idA], "a failed setup must disarm its own auto-run (issue #7)")
+    XCTAssertNil(
+      store.runCommand.runStates[idA], "a failed setup must disarm its own auto-run (issue #7)")
     guard case .setupScriptFailed(let message) = store.creationRun(forTargetID: idA)?.outcome else {
       fake.release("wr-b")
       await b.value
@@ -1343,7 +1345,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     // one domain shared with every parallel test worker, and `RunCommandTests` wipes it wholesale.
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: projectPath)
     store.startRunCommand(for: target)
-    XCTAssertNil(store.runStates[idA]?.tab, "no run terminal may open against a half-built tree")
+    XCTAssertNil(
+      store.runCommand.runStates[idA]?.tab, "no run terminal may open against a half-built tree")
 
     fake.release("wr-a")
     await a.value
@@ -1352,7 +1355,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     // failed on a guard rather than on a missing command.
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: projectPath)
     store.startRunCommand(for: target)
-    XCTAssertNotNil(store.runStates[idA]?.tab, "once the create is fully over, Run works normally")
+    XCTAssertNotNil(
+      store.runCommand.runStates[idA]?.tab, "once the create is fully over, Run works normally")
     store.setRunConfig(.empty, forProject: projectPath)
   }
 

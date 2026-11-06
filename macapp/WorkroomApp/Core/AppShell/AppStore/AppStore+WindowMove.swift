@@ -253,13 +253,13 @@ extension AppStore {
     notifications.repoint(
       tab: tabID, to: into.id, in: ObjectIdentifier(destination))
     // Read before the hand-off, whose `.tabsRemoved` forgets it here.
-    let investigating = investigateTabs[tabID] != nil
+    let investigating = runCommand.investigateTabs[tabID] != nil
     guard let handOff = terminals.handOffTab(tabID, from: target, to: into) else { return }
     destination.terminals.adopt(handOff)
     if investigating {
       // Still an Investigate session there, so deleting its workroom asks first (#146), and its
       // exit, which the destination's sessions now raise, ends it there.
-      destination.investigateTabs[tabID] = into.id
+      destination.runCommand.investigateTabs[tabID] = into.id
     }
     // A split member's pane: that member becomes the focused workroom, so the pane has the keys.
     destination.selectedTargetID = sid
@@ -343,13 +343,15 @@ extension AppStore {
     let id = target.id
     var run = handOff.run
     var closing: TerminalTab.ID?
-    if let own = runStates[id]?.tab, let moved = run.state?.tab {
+    if let own = runCommand.runStates[id]?.tab, let moved = run.state?.tab {
       if run.state?.isRunning == true {
         // Only one window runs a workroom's command (#70), so this one's is stopped, though its
         // supervisor may still be up and its stop then waits on it. Its exit must not land on the
         // run taken in meanwhile, which would mark the moved run ended and kill its session: it
         // does not, as an exit ends a run only from the run's own tab (`tabProcessExited`).
-        closingRunTab(own, for: id) { [weak self] in self?.terminals.closeTab(own, for: target) }
+        runCommand.closingRunTab(own, for: id) { [weak self] in
+          self?.terminals.closeTab(own, for: target)
+        }
       } else {
         closing = moved
         run = RunCommandController.HandOff(investigateTabs: run.investigateTabs)

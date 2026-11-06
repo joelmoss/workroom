@@ -29,6 +29,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   /// that is the direction that matters, because the alternative is a crash in the field.
   private let supplier: [String: String] = [
     "AppStore": ".environmentObject(store)",
+    "RunCommandController": "store.runCommand",
     "NotificationCenterStore": "store.notifications",
     "TerminalSessions": ".environmentObject(sessions)",
     "TerminalCodingAgentManager": "sessions.codingAgentManager",

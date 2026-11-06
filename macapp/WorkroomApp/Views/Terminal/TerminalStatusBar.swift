@@ -20,6 +20,7 @@ struct TerminalStatusBar: View {
   /// cwd, run state or diagnosis, only the branch.
   let state: TerminalState?
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
   /// button can know whether it's actually showing anything.
@@ -36,7 +37,7 @@ struct TerminalStatusBar: View {
   /// Whether `cwd` is a path on a remote pane's host (#239), which names nothing on this Mac.
   private var cwdIsOnHost: Bool { state?.hostCwd != nil }
 
-  private var isRunTab: Bool { state != nil && store.runTabID(for: target.id) == tabID }
+  private var isRunTab: Bool { state != nil && runCommand.runTabID(for: target.id) == tabID }
 
   private var diagnosis: CodingAgentBannerState? {
     state == nil ? nil : codingAgentManager.banners[tabID]
@@ -119,7 +120,7 @@ struct TerminalStatusBar: View {
   }
 
   private var runStatePresentation: RunPresentation? {
-    guard let state = store.runStates[target.id] else { return nil }
+    guard let state = runCommand.runStates[target.id] else { return nil }
     switch state {
     case .armed:
       return nil
@@ -133,7 +134,7 @@ struct TerminalStatusBar: View {
       return RunPresentation(
         icon: "arrow.clockwise", text: "Restarting…", color: AnyShapeStyle(theme.tokens.warning))
     case .stopped:
-      switch store.runOutcomes[target.id] {
+      switch runCommand.runOutcomes[target.id] {
       case .exited(let code) where code != 0:
         return RunPresentation(
           icon: "xmark.octagon.fill", text: "Failed (exit \(code))",

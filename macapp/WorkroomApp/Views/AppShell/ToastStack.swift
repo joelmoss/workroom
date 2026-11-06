@@ -11,6 +11,7 @@ import SwiftUI
 /// is pruned so it can't outlive what it represents.
 struct ToastStack: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
   // Observed because `store.runToastItems` hides a run's toast while its tab is on screen, read from
   // `terminals`, which the store's Observation tracking cannot see.
@@ -58,11 +59,11 @@ struct ToastStack: View {
             // Tap anywhere on the card → open the run terminal AND dismiss the toast (it won't
             // reappear; you're now looking at the run). Mirrors the notification toast's tap.
             store.openRunToast(for: item.targetID)
-            store.dismissRunToast(for: item.targetID)
+            runCommand.dismissRunToast(for: item.targetID)
           },
           onDismiss: {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-              store.dismissRunToast(for: item.targetID)
+              runCommand.dismissRunToast(for: item.targetID)
             }
           }
         )

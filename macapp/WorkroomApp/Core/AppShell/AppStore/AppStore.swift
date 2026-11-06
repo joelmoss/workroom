@@ -1101,15 +1101,15 @@ final class AppStore: ObservableObject {
       // If the target's run terminal was closed/reaped, drop its whole run state (issue #7). One
       // assignment clears every phase, so no stop/restart bookkeeping can be left behind to drive a
       // later unexpected respawn or first-press hard kill (review #1).
-      if let runTab = self.runStates[targetID]?.tab, ids.contains(runTab) {
-        self.runStates[targetID] = nil
-        self.runOutcomes[targetID] = nil  // reset the red run icon (issue #79)
-        self.forgetRun(for: targetID)
-        self.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
+      if let runTab = self.runCommand.runStates[targetID]?.tab, ids.contains(runTab) {
+        self.runCommand.runStates[targetID] = nil
+        self.runCommand.runOutcomes[targetID] = nil  // reset the red run icon (issue #79)
+        self.runCommand.forgetRun(for: targetID)
+        self.runCommand.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
       }
       // Same idea for a closed/reaped Investigate tab (issue #146) — a second, independent cleanup
       // path from `.childExited`, since a surface doesn't raise that on every teardown.
-      for id in ids { self.investigateTabs.removeValue(forKey: id) }
+      for id in ids { self.runCommand.investigateTabs.removeValue(forKey: id) }
       // Closing the last terminal in a co-displayed split pane leaves an empty pane whose only
       // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
       // workroom from the split (issue #55). No-op for a solo workroom or a non-member.
@@ -1158,7 +1158,7 @@ final class AppStore: ObservableObject {
     case .runTabRestored(let targetID, let tabID):
       adoptRestoredRun(tab: tabID, targetID: targetID)
     case .runStatus(let targetID, let tabID, let line):
-      guard self.runStates[targetID]?.tab == tabID,
+      guard self.runCommand.runStates[targetID]?.tab == tabID,
         let target = self.terminalTarget(forID: targetID)
       else { return }
       applyRunStatus(line, for: target)
@@ -1171,7 +1171,7 @@ final class AppStore: ObservableObject {
     // the supervisor up mid-drain ("A server is already running" next start; issue #7). Any other
     // run-command tab (an Investigate tab) closes at once.
     case .closeRequested(let target, let tabID):
-      closingRunTab(tabID, for: target.id) { [weak self] in
+      runCommand.closingRunTab(tabID, for: target.id) { [weak self] in
         self?.terminals.closeTab(tabID, for: target)
       }
     }
@@ -1712,95 +1712,12 @@ final class AppStore: ObservableObject {
   // MARK: Run command (issue #7)
 
   /// The run command's state and its process mechanics (issue #7). Starting a run and applying its
-  /// status stay in `AppStore+RunCommand.swift`, since they read the store. The members below forward
-  /// to it, so views and tests read run state through the store as before.
+  /// status stay in `AppStore+RunCommand.swift`, since they read the store. Views reach it through
+  /// the environment and everything else as `runCommand`; the store does not forward its members.
   let runCommand: RunCommandController
   typealias RunState = RunCommandController.RunState
   typealias RunOutcome = RunCommandController.RunOutcome
   typealias RunToastItem = RunCommandController.RunToastItem
-
-  var runStates: [TerminalTarget.ID: RunState] {
-    get { runCommand.runStates }
-    set { runCommand.runStates = newValue }
-  }
-  var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] {
-    get { runCommand.investigateTabs }
-    set { runCommand.investigateTabs = newValue }
-  }
-  var runOutcomes: [TerminalTarget.ID: RunOutcome] {
-    get { runCommand.runOutcomes }
-    set { runCommand.runOutcomes = newValue }
-  }
-  var dismissedRunToasts: Set<TerminalTarget.ID> {
-    get { runCommand.dismissedRunToasts }
-    set { runCommand.dismissedRunToasts = newValue }
-  }
-  var runningToastAutoHidden: Set<TerminalTarget.ID> {
-    get { runCommand.runningToastAutoHidden }
-    set { runCommand.runningToastAutoHidden = newValue }
-  }
-  var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] {
-    get { runCommand.runToastDismissWork }
-    set { runCommand.runToastDismissWork = newValue }
-  }
-  var scheduleRunToastDismiss: (TimeInterval, @escaping () -> Void) -> DispatchWorkItem {
-    get { runCommand.scheduleRunToastDismiss }
-    set { runCommand.scheduleRunToastDismiss = newValue }
-  }
-  var signalSupervisorForTesting: ((RunSignal, TerminalTarget.ID) -> RunSignalOutcome)? {
-    get { runCommand.signalSupervisorForTesting }
-    set { runCommand.signalSupervisorForTesting = newValue }
-  }
-  var restoredRuns: Set<TerminalTarget.ID> {
-    get { runCommand.restoredRuns }
-    set { runCommand.restoredRuns = newValue }
-  }
-  var pendingRunStarts: Set<TerminalTarget.ID> {
-    get { runCommand.pendingRunStarts }
-    set { runCommand.pendingRunStarts = newValue }
-  }
-  var lastRunStatus: [TerminalTarget.ID: String] {
-    get { runCommand.lastRunStatus }
-    set { runCommand.lastRunStatus = newValue }
-  }
-
-  func runFailed(for targetID: TerminalTarget.ID) -> Bool { runCommand.runFailed(for: targetID) }
-  func isRunCommandRunning(for targetID: TerminalTarget.ID) -> Bool {
-    runCommand.isRunCommandRunning(for: targetID)
-  }
-  func runTabID(for targetID: TerminalTarget.ID) -> TerminalTab.ID? {
-    runCommand.runTabID(for: targetID)
-  }
-  var hasAnyRunTerminal: Bool { runCommand.hasAnyRunTerminal }
-  var hasLiveRunCommand: Bool { runCommand.hasLiveRunCommand }
-  var hasLiveRun: Bool { runCommand.hasLiveRun }
-  /// Whether closing this window, or a quit that stops runs, must stop something first: a live
-  /// run or Investigate process, or a run whose pane was never mounted (#522).
-  var stopsRunsBeforeClosing: Bool { hasLiveRunCommand || hasLiveRun }
-  func dismissRunToast(for targetID: TerminalTarget.ID) {
-    runCommand.dismissRunToast(for: targetID)
-  }
-  func resetRunToast(for targetID: TerminalTarget.ID) { runCommand.resetRunToast(for: targetID) }
-  func forgetRun(for targetID: TerminalTarget.ID) {
-    runCommand.forgetRun(for: targetID)
-  }
-  func stopRunCommand(for target: TerminalTarget) { runCommand.stopRunCommand(for: target) }
-  func armAutoRun(forWorkroom targetID: TerminalTarget.ID) {
-    runCommand.armAutoRun(forWorkroom: targetID)
-  }
-  func gracefullyStopRuns(
-    _ targetIDs: [TerminalTarget.ID], timeout: TimeInterval = 6, then: @escaping () -> Void
-  ) {
-    runCommand.gracefullyStopRuns(targetIDs, timeout: timeout, then: then)
-  }
-  func closingRunTab(
-    _ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID, then proceed: @escaping () -> Void
-  ) {
-    runCommand.closingRunTab(tabID, for: targetID, then: proceed)
-  }
-  func gracefullyStopAllRunCommands(timeout: TimeInterval = 6, completion: @escaping () -> Void) {
-    runCommand.gracefullyStopAllRunCommands(timeout: timeout, completion: completion)
-  }
 
   // MARK: Loading
 
@@ -2547,7 +2464,7 @@ final class AppStore: ObservableObject {
     let group = DispatchGroup()
     for store in stores {
       group.enter()
-      store.gracefullyStopRuns(ids) { group.leave() }
+      store.runCommand.gracefullyStopRuns(ids) { group.leave() }
     }
     group.notify(queue: .main, execute: then)
   }
@@ -2561,10 +2478,11 @@ final class AppStore: ObservableObject {
     await terminals.reap(targetID)
     // `reap` only fires `.tabsRemoved` (which clears run state) when tabs existed; a target armed
     // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
-    runStates[targetID] = nil
-    forgetRun(for: targetID)
-    runOutcomes[targetID] = nil
-    resetRunToast(for: targetID)  // deleted target → drop any run toast state (issue #67)
+    runCommand.runStates[targetID] = nil
+    runCommand.forgetRun(for: targetID)
+    runCommand.runOutcomes[targetID] = nil
+    // Deleted target → drop any run toast state (issue #67).
+    runCommand.resetRunToast(for: targetID)
     // Drop the gone target's notifications and pull any banners it already delivered.
     services.notifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
   }
@@ -3135,7 +3053,7 @@ final class AppStore: ObservableObject {
           continue
         }
       #endif
-      closingRunTab(id, for: target.id) { [weak self] in
+      runCommand.closingRunTab(id, for: target.id) { [weak self] in
         self?.terminals.closeTab(id, for: target)
       }
     }

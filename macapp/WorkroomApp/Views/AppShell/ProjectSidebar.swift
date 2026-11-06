@@ -18,6 +18,7 @@ struct ProjectSidebar: View {
     static var didRenderHover: ((SidebarID, Binding<Bool>) -> Void)?
   #endif
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -447,7 +448,7 @@ struct ProjectSidebar: View {
       }
       // Only an active run gets a control on the project root: click it to stop the command.
       if store.canRunCommand(for: target, inProject: project.path),
-        store.isRunCommandRunning(for: target.id)
+        runCommand.isRunCommandRunning(for: target.id)
       {
         RowRunButton(target: target)
       }
@@ -541,7 +542,7 @@ struct ProjectSidebar: View {
       needsYouButton(for: targetID, identifier: "sidebar.workroom.\(workroom.name).needsYou")
       // The run's stop control is only present while its command is running, as on the root row.
       if store.canRunCommand(for: target, inProject: project.path),
-        store.isRunCommandRunning(for: targetID)
+        runCommand.isRunCommandRunning(for: targetID)
       {
         RowRunButton(target: target)
           .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
@@ -712,7 +713,7 @@ struct ProjectSidebar: View {
         .accessibilityIdentifier("sidebar.terminal.\(title)")
     }
     .contextMenu {
-      if store.runTabID(for: target.id) == tab.id {
+      if runCommand.runTabID(for: target.id) == tab.id {
         runCommandMenuItems(store: store, target: target)
         Divider()
       }
@@ -1054,16 +1055,17 @@ private struct CreateRowButton<Places: View>: View {
 }
 
 /// Per-row run/stop toggle for a root or workroom whose project has a run command (issue #7). Reads
-/// the run state off the store (green = running) and toggles start/stop on click — without selecting
+/// the run state off `RunCommandController` (green = running) and toggles start/stop on click — without selecting
 /// the row. Running hovers red (the stop action); stopped hovers green (the start action).
 private struct RowRunButton: View {
   let target: TerminalTarget
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
   @State private var hovering = false
 
   var body: some View {
-    let running = store.isRunCommandRunning(for: target.id)
-    let stopping = store.runStates[target.id]?.isStopping == true
+    let running = runCommand.isRunCommandRunning(for: target.id)
+    let stopping = runCommand.runStates[target.id]?.isStopping == true
     // The action's color: red to stop (like delete), green to start. Drives the hover icon tint AND
     // the rounded hover background, matching the row's other buttons (new-workroom / delete).
     let tokens = ThemeService.shared.tokens

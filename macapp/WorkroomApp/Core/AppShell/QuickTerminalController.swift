@@ -365,6 +365,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       rootView: QuickTerminalContent(sessions: sessions)
         .environment(\.isQuickTerminal, true)
         .environmentObject(store)
+        .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
         .environmentObject(sessions)
         .environmentObject(sessions.codingAgentManager)

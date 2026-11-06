@@ -336,7 +336,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     store.terminals.programStatus = monitor
-    store.signalSupervisorForTesting = { _, _ in .delivered }
+    store.runCommand.signalSupervisorForTesting = { _, _ in .delivered }
     store.projects = [
       Project(
         path: "/a", vcs: "git",
@@ -346,7 +346,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
     store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let target = try XCTUnwrap(store.target(for: .workroom(project: "/a", name: "main")))
     store.startRunCommand(for: target)
-    let tab = try XCTUnwrap(store.runTabID(for: target.id))
+    let tab = try XCTUnwrap(store.runCommand.runTabID(for: target.id))
     let run = try XCTUnwrap(store.terminals.sessionID(forTab: tab, inTarget: target.id))
     await until(
       {
@@ -358,8 +358,8 @@ final class ProgramStatusMonitorTests: XCTestCase {
       .status(
         boot: "b", session: run, revision: 2, reporting: false, records: [], run: "exited 3 1"))
 
-    await until(store.runStates[target.id] == .stopped(tab: tab))
-    XCTAssertEqual(store.runOutcomes[target.id], .exited(code: 3))
+    await until(store.runCommand.runStates[target.id] == .stopped(tab: tab))
+    XCTAssertEqual(store.runCommand.runOutcomes[target.id], .exited(code: 3))
   }
 
   func testARemoteRunStopsWithoutClosingItsTerminal() async throws {
@@ -381,14 +381,14 @@ final class ProgramStatusMonitorTests: XCTestCase {
         return monitor.hosts[host] == .live
       }())
     await until(monitor.run(for: session) == "running 42")
-    store.stopRunCommand(for: target)
+    store.runCommand.stopRunCommand(for: target)
     connection.push(
       .status(
         boot: "b", session: session, revision: 2, reporting: false, records: [], run: "stopped 1"))
     await until(monitor.run(for: session) == "stopped 1")
-    await until(!store.isRunCommandRunning(for: target.id))
+    await until(!store.runCommand.isRunCommandRunning(for: target.id))
     XCTAssertNotNil(store.terminals.tab(tab.id, for: target), "stopping keeps the run terminal")
-    XCTAssertEqual(store.runOutcomes[target.id], .stoppedByUser)
+    XCTAssertEqual(store.runCommand.runOutcomes[target.id], .stoppedByUser)
   }
 
   func testALocalSnapshotCannotEndARemoteRunAwaitingItsHostsSnapshot() async throws {
@@ -410,8 +410,9 @@ final class ProgramStatusMonitorTests: XCTestCase {
         return monitor.hosts[.local] == .live
       }())
     XCTAssertFalse(monitor.hasSnapshot(of: host))
-    XCTAssertTrue(store.isRunCommandRunning(for: target.id))
-    XCTAssertNil(store.runOutcomes[target.id], "this Mac cannot say a remote run has ended")
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: target.id))
+    XCTAssertNil(
+      store.runCommand.runOutcomes[target.id], "this Mac cannot say a remote run has ended")
   }
 
   private func restoredRemoteRun(monitor: ProgramStatusMonitor) throws
@@ -425,7 +426,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     store.terminals.programStatus = monitor
-    store.signalSupervisorForTesting = { _, _ in .delivered }
+    store.runCommand.signalSupervisorForTesting = { _, _ in .delivered }
     store.projects = [
       Project(
         path: "/a", vcs: "git",
