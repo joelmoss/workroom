@@ -6,8 +6,7 @@ import XCTest
 /// config.json's `driver` and `state`, the `WORKROOM_HOST` scripts read, and the keys Settings
 /// saves host options under.
 final class HostKindTests: XCTestCase {
-  private static let every: [HostKind] =
-    ContainerRuntime.allCases.map(HostKind.container) + HostKind.remoteProviders
+  private static let every = HostKind.all
 
   /// Value: protects=a recorded host keeps its driver across builds; fails_when=a kind's `driver`
   /// string or its parse drifts, so config.json's hosts read as unknown and stop opening;

@@ -5,8 +5,8 @@
 //! with the copies drifting: wr-vcs-git's reads only killed the group, so a `setsid` escaper
 //! outlived them. The pieces are here once:
 //!
-//! - the process tree, recorded before anything is signalled ([`descendants`], [`snapshot`],
-//!   [`Descendant`]), and the identity-checked kill of what was recorded ([`kill_recorded`]);
+//! - the process tree, recorded before anything is signalled ([`descendants`], [`Descendant`]),
+//!   and the identity-checked kill of what was recorded ([`kill_recorded`]);
 //! - [`end_tree`], the group-then-recorded-tree ending for a child that leads its own group
 //!   (workroomd's exec service and `run-script`, and wr-vcs-git's reads);
 //! - two bounded drains, one blocking for a reader the caller may detach ([`drain_capped`]) and one
@@ -43,7 +43,7 @@ pub use tree::{Descendant, descendants, session_members};
 /// special-case init the way this call site must not — `pid` is always a freshly spawned child's
 /// own pid, but a SIGKILL aimed at init's whole descendant tree is the worst outcome a bug here
 /// could have.
-pub fn snapshot(pid: i32) -> Vec<Descendant> {
+fn snapshot(pid: i32) -> Vec<Descendant> {
     if pid <= 1 {
         return Vec::new();
     }
@@ -71,14 +71,14 @@ pub fn kill_recorded(descendants: &[Descendant]) {
 /// cannot be caught, so this is generous for the normal case; it exists for the abnormal one, where
 /// the leader is unkillable (uninterruptible I/O) and the alternative is blocking the caller's
 /// thread — for the exec service, one of the 32 shared `ACTIVE` permits — forever.
-pub const REAP_GRACE: Duration = Duration::from_secs(2);
+const REAP_GRACE: Duration = Duration::from_secs(2);
 
 /// How often [`end_tree`] looks at whether the child has exited.
 const POLL: Duration = Duration::from_millis(10);
 
 /// Ends the process group `child` leads and every descendant recorded before the first signal:
 /// `first_signal` to the group, the whole of `grace`, then SIGKILL to what was recorded and to the
-/// group, and a reap bounded by [`REAP_GRACE`]. Returns the child's status, or `None` when it could
+/// group, and a reap bounded by `REAP_GRACE` (two seconds). Returns the child's status, or `None` when it could
 /// not be reaped in that time, which the caller reports rather than waits on.
 ///
 /// `child` must lead its own process group (`process_group(0)`) and must not have been reaped yet:

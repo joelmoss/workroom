@@ -16,7 +16,7 @@
 //! what the rule already protects.
 
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::daemon::rpc::SharedWriter;
+use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::Transport;
 use crate::terminal::pty::Size;
 use crate::terminal::session::{RunSignalError, SessionId, SessionSpec, SessionStore};
@@ -418,16 +418,7 @@ pub fn handle_connection<T: Transport>(
     // replies, and the reader holds the lock for one write at a time.
     let writer: SharedWriter = Arc::new(Mutex::new(Box::new(writer)));
 
-    // A poisoned writer is the connection gone (the lock order on `SessionStore`).
-    let send = |bytes: &[u8]| -> bool {
-        match writer.lock() {
-            Ok(mut writer) => writer
-                .write_all(bytes)
-                .and_then(|()| writer.flush())
-                .is_ok(),
-            Err(_) => false,
-        }
-    };
+    let send = |bytes: &[u8]| rpc::write(&writer, bytes);
 
     let local = Hello::current(BUILD);
     if !send(&local.encode()) {
@@ -959,11 +950,7 @@ fn kill_off_the_reader(
     let spawned = std::thread::Builder::new().spawn(move || {
         let _in_flight = in_flight;
         store.kill(id);
-        let bytes = acknowledged().encode();
-        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
-        if let Ok(mut writer) = shared.lock() {
-            let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
-        }
+        rpc::write(&shared, &acknowledged().encode());
     });
     if spawned.is_ok() {
         return None;

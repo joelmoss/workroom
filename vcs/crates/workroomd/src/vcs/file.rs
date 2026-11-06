@@ -358,7 +358,7 @@ fn list(request: &Request) -> Result<Value, FileError> {
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
-    let captured = exec::run_exec_with(&root, executable, &args, LIST_TIMEOUT, None, &env)?;
+    let captured = exec::run_exec(&root, executable, &args, LIST_TIMEOUT, None, &env)?;
     if captured.stdout_truncated {
         return Err(FileError::ListingTruncated(
             "listing exceeds the 4 MiB capture cap".into(),

@@ -97,8 +97,11 @@ extension AppStore {
   /// the render path (`TerminalStatusBar.body` → `branchLabel` → `validatedSelection`), which is
   /// what hung the app in WORKROOM-3D. A lookup never needs the `isMissing`/`title` a target carries.
   func project(forTargetID id: TerminalTarget.ID) -> Project? {
-    guard Self.validatedSelection(id.sidebarID, in: projects) != nil else { return nil }
-    return projects.first { $0.path == id.projectPath }
+    guard let project = projects.first(where: { $0.path == id.projectPath }) else { return nil }
+    if case .workroom(_, let name) = id, !project.workrooms.contains(where: { $0.id == name }) {
+      return nil
+    }
+    return project
   }
 
   /// The run config for a project path (empty if none set). Single read path for the toolbar, menu,
@@ -172,7 +175,7 @@ extension AppStore {
   /// and the project root's `RootRef` — so it adds no new VCS calls. Nil until those resolve, or when
   /// no branch is resolvable (the status bar then just omits the segment).
   func branchLabel(for target: TerminalTarget) -> String? {
-    guard let sid = Self.validatedSelection(target.id.sidebarID, in: projects) else { return nil }
+    guard let sid = sidebarID(for: target.id) else { return nil }
     return branchName(for: sid)
   }
 
@@ -583,7 +586,7 @@ extension AppStore {
   /// `target` already *is* the selection.
   private func focusTargetPane(_ target: TerminalTarget) {
     guard selectedTarget?.id != target.id,
-      let sid = Self.validatedSelection(target.id.sidebarID, in: projects)
+      let sid = sidebarID(for: target.id)
     else { return }
     focusWorkroomMember(sid)
   }
@@ -684,7 +687,7 @@ extension AppStore {
       selectedTarget.flatMap { runStates[$0.id]?.tab != nil ? $0.id : nil }
       ?? runStates.first { $0.value.tab != nil }?.key
     guard let targetID, let runTab = runStates[targetID]?.tab,
-      let sid = Self.validatedSelection(targetID.sidebarID, in: projects),
+      let sid = sidebarID(for: targetID),
       let target = target(for: sid)
     else { return }
     selectedTargetID = sid
@@ -781,7 +784,7 @@ extension AppStore {
   func ensureInitialTerminal(for target: TerminalTarget) {
     // A delete drops the target first, and a failed create's pane still runs this as it leaves: the
     // terminal would be freed moments later, mid-attach, which is the #547 freeze.
-    guard Self.validatedSelection(target.id.sidebarID, in: projects) != nil else { return }
+    guard sidebarID(for: target.id) != nil else { return }
     // A remote workroom whose host keeps its layout waits for it rather than open a fresh pane
     // (#255, D4): `applyHostLayout` comes back here once the host has answered, or not in time.
     if fetchHostLayoutIfNeeded(for: target) {

@@ -26,7 +26,6 @@
 //! no program's record has, so an app that predates it shows a plain finished or failed mark.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -34,7 +33,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::daemon::rpc::SharedWriter;
+use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::Closer;
 use crate::terminal::session::{SessionId, SessionStore};
 use crate::util::{lock_or_recover, recover};
@@ -868,13 +867,10 @@ impl Sink {
         payload.push(1);
         payload.extend_from_slice(event);
         debug_assert!(payload.len() <= MAX_ENVELOPE_PAYLOAD);
-        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
-        let written = self.writer.lock().is_ok_and(|mut writer| {
-            writer
-                .write_all(&Envelope::new(Service::ProgramStatus, 0, payload).encode())
-                .and_then(|()| writer.flush())
-                .is_ok()
-        });
+        let written = rpc::write(
+            &self.writer,
+            &Envelope::new(Service::ProgramStatus, 0, payload).encode(),
+        );
         if !written {
             (self.closer)();
         }

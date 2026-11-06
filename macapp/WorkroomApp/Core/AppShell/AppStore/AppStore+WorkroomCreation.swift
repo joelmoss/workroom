@@ -149,7 +149,7 @@ extension AppStore {
   /// The create's process ended: its workroom can be deleted and probed again (issue #116).
   private func releaseCreatingWorkroom(_ id: TerminalTarget.ID) {
     creatingWorkrooms.remove(id)
-    if let sid = Self.validatedSelection(id.sidebarID, in: projects) {
+    if let sid = sidebarID(for: id) {
       refreshLocalStatus(for: sid)
     }
     scheduleSelectedStatusRefresh()
@@ -1073,7 +1073,7 @@ struct RemoteCreateServices {
       hostOptionLevels: { project, provider in
         (
           project: Defaults[.projectHostOptions][project: project.path, provider: provider],
-          settings: provider.hostOptionsKey.flatMap { Defaults[.hostOptions][$0] }
+          settings: Defaults[.hostOptions][provider: provider]
         )
       },
       script: { request in await RemoteWorkrooms.runScript(request) },

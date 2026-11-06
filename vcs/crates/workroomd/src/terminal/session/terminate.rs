@@ -221,10 +221,7 @@ pub(super) fn sweep_run_session(id: SessionId, sid: i32) {
             while Instant::now() < deadline && members.iter().any(|m| m.is_running()) {
                 std::thread::sleep(Duration::from_millis(50));
             }
-            for member in members.iter().filter(|m| m.is_running()) {
-                // SAFETY: as above; `is_running` compared start times, so a reused pid is skipped.
-                unsafe { libc::kill(member.pid, libc::SIGKILL) };
-            }
+            wr_exec::kill_recorded(&members);
         });
     if let Err(e) = spawned {
         crate::note!("could not sweep run session {}: {e}", id.to_hyphenated());

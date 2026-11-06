@@ -165,7 +165,7 @@
 //! entries: a forward whose connect is failing holds its slot until its thread has said so and
 //! gone, and one whose client half-closed holds it until its reader is gone too.
 
-use crate::daemon::rpc::SharedWriter;
+use crate::daemon::rpc::{self, SharedWriter};
 use crate::util::lock_or_recover;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -385,14 +385,10 @@ fn send(writer: &SharedWriter, stream: u32, opcode: u8, body: &[u8]) -> bool {
     let mut payload = Vec::with_capacity(1 + body.len());
     payload.push(opcode);
     payload.extend_from_slice(body);
-    // A poisoned writer is the connection gone (the lock order on `SessionStore`).
-    let Ok(mut writer) = writer.lock() else {
-        return false;
-    };
-    writer
-        .write_all(&Envelope::new(Service::Forward, stream, payload).encode())
-        .and_then(|()| writer.flush())
-        .is_ok()
+    rpc::write(
+        writer,
+        &Envelope::new(Service::Forward, stream, payload).encode(),
+    )
 }
 
 fn send_reply(writer: &SharedWriter, stream: u32, value: &Value) -> bool {

@@ -228,13 +228,11 @@ struct WorkroomTabBar: View {
     }
     .background(alignment: .leading) {
       // One bracket per group: `displayedWorkroomTargets` keeps each group's members contiguous, so
-      // every group is one block. Hidden during a drag.
-      if !drag.isDragging {
+      // every group is one block. Hidden during a drag, and skipped when nothing is grouped.
+      if !drag.isDragging, !groupOf.isEmpty {
         TabStripSplitBrackets(
-          runs: TabStripSplitRun.rects(
-            ids: tabs.map(\.sid), width: { drag.widths[$0] ?? 0 }, groupOf: groupOf,
-            spacing: tabSpacing),
-          identifierPrefix: "workroom.tab.splitBracket")
+          ids: tabs.map(\.sid), width: { drag.widths[$0] ?? 0 }, groupOf: groupOf,
+          spacing: tabSpacing, identifierPrefix: "workroom.tab.splitBracket")
       }
     }
     // The row's own space and its view, so a drop from another window maps a screen point onto

@@ -381,3 +381,15 @@ extension Dictionary where Key == String, Value == [String: HostOptions] {
     }
   }
 }
+
+/// `Defaults[.hostOptions]`'s one read and write (#575): the options every workroom of one provider
+/// is created with. Setting empty options, or nil, removes them.
+extension Dictionary where Key == String, Value == HostOptions {
+  subscript(provider provider: HostKind) -> HostOptions? {
+    get { provider.hostOptionsKey.flatMap { self[$0] } }
+    set {
+      guard let key = provider.hostOptionsKey else { return }
+      self[key] = newValue?.isEmpty == false ? newValue : nil
+    }
+  }
+}

@@ -293,13 +293,12 @@ struct TerminalTabStrip: View {
       }
     }
     .background(alignment: .leading) {
-      // Hidden during a drag (group-aware strip drag is Phase 2).
-      if !drag.isDragging {
+      // Hidden during a drag (group-aware strip drag is Phase 2). With nothing grouped it would
+      // draw nothing, so it is skipped before it maps the tabs or reads their widths.
+      if !drag.isDragging, !groupOf.isEmpty {
         TabStripSplitBrackets(
-          runs: TabStripSplitRun.rects(
-            ids: tabs.map(\.id), width: { measuredWidths.values[$0] ?? 0 }, groupOf: groupOf,
-            spacing: tabSpacing),
-          identifierPrefix: "terminal.tab.splitBracket")
+          ids: tabs.map(\.id), width: { measuredWidths.values[$0] ?? 0 }, groupOf: groupOf,
+          spacing: tabSpacing, identifierPrefix: "terminal.tab.splitBracket")
       }
     }
     .onPreferenceChange(TabWidthKey.self) { widths in

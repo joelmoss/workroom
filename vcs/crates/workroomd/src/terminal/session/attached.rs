@@ -1,6 +1,5 @@
 //! Attached clients: attaching, the size owner, and delivering output to each client.
 
-use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,7 +8,7 @@ use super::reader::READ_CHUNK;
 use super::{
     Attached, Client, NEXT_TOKEN, SessionError, SessionId, SessionInfo, SessionStore, Target, Wake,
 };
-use crate::daemon::rpc::SharedWriter;
+use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::WRITE_TIMEOUT;
 use crate::terminal::images;
 use crate::terminal::input::InputClassifier;
@@ -53,7 +52,7 @@ impl SessionStore {
             if !replay.is_empty() {
                 // First, in case this surface was left in a transfer cut off midway.
                 replay.splice(0..0, images::ABORT.iter().copied());
-                if let Ok(mut writer) = writer.lock() {
+                let held = rpc::with_writer(&writer, |writer| {
                     // CHUNKED, because `replay()` can be up to ~4 MiB (`REPAINT_MAX_BYTES`) and
                     // `Frame::encode` PANICS above the 1 MiB cap rather than truncating.
                     //
@@ -141,9 +140,10 @@ impl SessionStore {
                         );
                         let _ = writer.write_all(&reset).and_then(|()| writer.flush());
                     }
-                } else {
-                    // The writer's lock is poisoned, which is the connection gone (the lock order on
-                    // `SessionStore`): nothing was painted, so do not register.
+                });
+                if held.is_none() {
+                    // The connection is gone (`rpc::with_writer`): nothing was painted, so do not
+                    // register.
                     painted = false;
                 }
             }
@@ -322,14 +322,7 @@ pub(super) fn deliver(
     target: &Target,
     bytes: &[u8],
 ) -> Option<Size> {
-    // A poisoned writer is the connection gone (the lock order on `SessionStore`).
-    let delivered = match target.writer.lock() {
-        Ok(mut writer) => writer
-            .write_all(bytes)
-            .and_then(|()| writer.flush())
-            .is_ok(),
-        Err(_) => false,
-    };
+    let delivered = rpc::write(&target.writer, bytes);
     if delivered {
         return None;
     }

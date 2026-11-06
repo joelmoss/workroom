@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 
 fn paths(names: &[&str]) -> Vec<PathBuf> {
     names.iter().map(PathBuf::from).collect()

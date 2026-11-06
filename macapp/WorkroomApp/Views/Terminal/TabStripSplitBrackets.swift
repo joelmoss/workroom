@@ -23,6 +23,15 @@ struct TabStripSplitBrackets: View {
   /// Bracket `i`'s accessibility identifier is `"\(identifierPrefix).\(i)"`.
   let identifierPrefix: String
 
+  /// The brackets of the strip whose chips are `ids` in display order (`TabStripSplitRun.rects`).
+  init<ID: Hashable>(
+    ids: [ID], width: (ID) -> CGFloat, groupOf: [ID: Int], spacing: CGFloat,
+    identifierPrefix: String
+  ) {
+    runs = TabStripSplitRun.rects(ids: ids, width: width, groupOf: groupOf, spacing: spacing)
+    self.identifierPrefix = identifierPrefix
+  }
+
   var body: some View {
     ZStack(alignment: .leading) {
       ForEach(Array(runs.enumerated()), id: \.offset) { index, run in

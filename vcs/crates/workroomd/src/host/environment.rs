@@ -8,7 +8,6 @@
 //! home, and keeps it (ADR 0063). A run session's shell is chosen by the same rule
 //! (`probe_invocation`).
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -188,21 +187,11 @@ pub fn probe(
         return Err("spawnFailed");
     };
     let pid = child.id() as i32;
-    let mut stdout = child.stdout.take().expect("piped stdout");
+    let stdout = child.stdout.take().expect("piped stdout");
     let output = Arc::new(Mutex::new(Vec::new()));
     let reader = {
         let output = Arc::clone(&output);
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 8192];
-            while let Ok(read) = stdout.read(&mut chunk) {
-                if read == 0 {
-                    break;
-                }
-                let mut kept = lock_or_recover(&output);
-                let room = MAX_PROBE_BYTES.saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..read.min(room)]);
-            }
-        })
+        std::thread::spawn(move || wr_exec::drain_capped(stdout, MAX_PROBE_BYTES, &output))
     };
     let start = Instant::now();
     let status = loop {

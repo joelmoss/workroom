@@ -11,8 +11,8 @@ import os
 enum SurfaceEvent {
   /// A desktop notification the program raised, for the notification spine.
   case activity(TerminalActivity)
-  /// ⌘-click on a word `resolveCmdHoverFile` said is a file.
-  case cmdClickFile(String)
+  /// ⌘-click on a word `resolveCmdHoverFile` said is a file, with the surface's last known cwd.
+  case cmdClickFile(String, cwd: String?)
   /// The latest title (OSC 0/2, via shell integration): the running command while busy, the
   /// working directory when idle (issue #2).
   case titleChanged(String)
@@ -1789,7 +1789,7 @@ final class GhosttySurfaceView: NSView {
     if event.modifierFlags.contains(.command), !hasOSC8LinkUnderCursor,
       let word = readWordUnderMouse(), resolveCmdHoverFile?(word) == true
     {
-      onEvent?(.cmdClickFile(word))
+      onEvent?(.cmdClickFile(word, cwd: lastKnownCwd))
       suppressNextMouseUp = true
       return
     }

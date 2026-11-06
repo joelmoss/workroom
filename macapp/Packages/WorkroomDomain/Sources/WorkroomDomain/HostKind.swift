@@ -29,18 +29,16 @@ public enum HostKind: Hashable, Sendable {
   /// The remote providers, in the order the New Workroom menu and picker list them (#259).
   public static let remoteProviders: [HostKind] = [.boxd, .exeDev, .ssh]
 
+  /// The remote providers that take host options, in Settings' order (#575).
+  public static let optionedProviders = remoteProviders.filter(\.takesHostOptions)
+
+  /// Every kind: the container runtimes, then the remote providers.
+  public static let all = ContainerRuntime.allCases.map(HostKind.container) + remoteProviders
+
   /// The kind a host descriptor's `driver` names, or nil for one this build doesn't know.
   public init?(driver: String) {
-    if let runtime = ContainerRuntime(rawValue: driver) {
-      self = .container(runtime)
-      return
-    }
-    switch driver {
-    case "boxd": self = .boxd
-    case "exedev": self = .exeDev
-    case "ssh": self = .ssh
-    default: return nil
-    }
+    guard let kind = Self.all.first(where: { $0.driver == driver }) else { return nil }
+    self = kind
   }
 
   /// The host descriptor's `driver` for this kind, a stored contract in config.json.
@@ -170,14 +168,11 @@ public enum HostLifecycle: Hashable, Sendable {
   case destroyed
   case unknown(String)
 
+  private static let known: [HostLifecycle] = [.serving, .creating, .failed, .destroyed]
+
   public init(state: String?) {
-    switch state {
-    case nil: self = .serving
-    case "creating"?: self = .creating
-    case "failed"?: self = .failed
-    case "destroyed"?: self = .destroyed
-    case let other?: self = .unknown(other)
-    }
+    // `.serving`'s state is nil, so only a string this build doesn't know reaches the fallback.
+    self = Self.known.first { $0.state == state } ?? .unknown(state ?? "")
   }
 
   /// The descriptor's `state` for this lifecycle: nil while serving.

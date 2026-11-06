@@ -453,7 +453,7 @@ private struct RemoteHostsSettingsPane: View {
 
   var body: some View {
     Form {
-      ForEach(HostKind.remoteProviders.filter(\.takesHostOptions), id: \.self) { provider in
+      ForEach(HostKind.optionedProviders, id: \.self) { provider in
         HostOptionsSection(
           provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
       }
@@ -463,10 +463,9 @@ private struct RemoteHostsSettingsPane: View {
   }
 
   private func binding(_ provider: HostKind) -> Binding<HostOptions> {
-    let key = provider.hostOptionsKey
-    return Binding(
-      get: { key.flatMap { hostOptions[$0] } ?? HostOptions() },
-      set: { options in key.map { hostOptions[$0] = options.isEmpty ? nil : options } })
+    Binding(
+      get: { hostOptions[provider: provider] ?? HostOptions() },
+      set: { hostOptions[provider: provider] = $0 })
   }
 }
 

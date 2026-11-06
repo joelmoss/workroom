@@ -55,25 +55,12 @@ pub(crate) struct Captured {
     pub(crate) signaled: bool,
 }
 
-/// Test shorthand for `run_exec_with`.
-#[cfg(test)]
-pub(crate) fn run_exec(
-    dir: &Path,
-    executable: &str,
-    args: &[String],
-    timeout: Duration,
-    stdin: Option<&[u8]>,
-    env: &[(&str, &str)],
-) -> model::Result<Captured> {
-    run_exec_with(dir, executable, args, timeout, stdin, env)
-}
-
 /// Run `executable` to completion, capturing everything a `StatusCommandRunning` conformer needs
 /// to classify the outcome exactly as the native path would. Mirrors `StatusCommandRunner.run`'s
 /// SIGTERM-then-grace-then-SIGKILL shape (`CLIVCSWriter.commitTimeout`'s doc: "Killing a commit is
 /// categorically more dangerous than killing a fetch" — an immediate SIGKILL denies a `post-commit`
 /// hook the chance to exit cleanly and can leave `index.lock` behind).
-pub(crate) fn run_exec_with(
+pub(crate) fn run_exec(
     dir: &Path,
     executable: &str,
     args: &[String],

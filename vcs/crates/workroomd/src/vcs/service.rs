@@ -5,7 +5,7 @@ use crate::daemon::rpc::{
     EXEC_REPLY_RESERVE, MAX_RESPONSE, PartialRequests, Permit, SharedWriter, escaped_len,
     reassemble, send,
 };
-use crate::exec::{absolute, io, relative, run_exec_with};
+use crate::exec::{absolute, io, relative, run_exec};
 use crate::host::environment::{host_environment, host_login_environment, host_read_environment};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -77,7 +77,7 @@ enum Backend {
 /// One untouched classifier is necessary for criterion 2 ("typed failures... match pre-daemon
 /// behavior exactly") and was not sufficient: a review found it reached OPPOSITE verdicts because
 /// the two paths fed it different input. Identical output needs three things, all now true —
-/// the child sees the same environment (`env_clear` in `exec::run_exec_with`), a missing tool exits
+/// the child sees the same environment (`env_clear` in `exec::run_exec`), a missing tool exits
 /// 127 rather than failing to spawn (`/usr/bin/env`), and a transport failure is not reported as
 /// "never ran" (`DaemonCommandRunner.outcomeUnknown`). An outcome-unknown result is its own
 /// `VCSRemoteFailure`/`VCSCommitFailure` case, and its recovery follows idempotence
@@ -85,7 +85,7 @@ enum Backend {
 /// a lost fetch or rebase abort offers itself, and a lost commit offers no action at all.
 ///
 /// **The child's environment is the request's `env`, wholesale** (`env_clear` in
-/// `exec::run_exec_with`), never this daemon's own. workroomd is "negotiated with, never replaced",
+/// `exec::run_exec`), never this daemon's own. workroomd is "negotiated with, never replaced",
 /// so its inherited environment is a snapshot of whichever app launch first spawned it; a
 /// daemon-routed commit was picking up that snapshot's `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME` and
 /// authoring under a stale identity. A key allowlist could not fix it — what git reads for identity,
@@ -346,7 +346,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     };
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let stdin = stdin.as_deref().map(latin1_bytes).transpose()?;
-    let captured = run_exec_with(
+    let captured = run_exec(
         &dir,
         executable.as_str(),
         &args,

@@ -68,13 +68,14 @@ final class HostDriverRegistry: @unchecked Sendable {
 
   private func containerLocked(_ key: DriverKey) throws -> ContainerHostDriver {
     if let made = containers[key] { return made }
-    guard key.runtime != nil else {
+    guard let runtime = key.runtime else {
       throw HostDriverError.invalidConfiguration("\(key) is not a container runtime")
     }
     let driver =
       try makeContainerDriver?(key)
       ?? ContainerHostDriver(
-        hosts: [:], directory: RemoteHosts.hosts, provisioning: try Self.provisioning(key))
+        hosts: [:], directory: RemoteHosts.hosts,
+        provisioning: try Self.provisioning(key, runtime: runtime))
     containers[key] = driver
     return driver
   }
@@ -114,10 +115,9 @@ final class HostDriverRegistry: @unchecked Sendable {
   /// What a remote pane is registered against when no driver holds its host.
   static let unreachable: any HostTerminalDriver = UnreachableHostDriver()
 
-  private static func provisioning(_ target: DriverKey) throws -> ContainerHostDriver.Provisioning {
-    guard let runtimeKind = target.runtime else {
-      throw HostDriverError.invalidConfiguration("\(target) is not a container runtime")
-    }
+  private static func provisioning(_ target: DriverKey, runtime runtimeKind: ContainerRuntime)
+    throws -> ContainerHostDriver.Provisioning
+  {
     let resources = RemoteHosts.resources(for: runtimeKind)
     guard let runtime = RemoteHosts.executable(for: runtimeKind) else {
       throw runtimeKind == .docker

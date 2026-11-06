@@ -224,10 +224,9 @@ extension AppStore {
     } else if let session {
       terminals.restore(session, for: target)
       refreshSelectionHasTabs()
+      let encoded = targetID.encoded
       if hostHasIt,
-        let shown = captureWindowSession().targets.first(where: {
-          $0.targetID == targetID.encoded
-        })
+        let shown = captureWindowSession().targets.first(where: { $0.targetID == encoded })
       {
         hostLayouts.written[targetID] = try? HostLayout.encode(shown, key: key)
       }

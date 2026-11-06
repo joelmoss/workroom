@@ -2591,9 +2591,7 @@ final class TerminalSessions: ObservableObject {
   /// (issue #444): a moved surface left wired to the window it came from would report its title,
   /// focus and exits to that window, or to nothing once it closes.
   private func wire(_ view: GhosttySurfaceView, tab tabID: TerminalTab.ID, target: TerminalTarget) {
-    view.onEvent = { [weak self, weak view] event in
-      self?.handle(event, from: view, tab: tabID, target: target)
-    }
+    view.onEvent = { [weak self] event in self?.handle(event, tab: tabID, target: target) }
     // Off hides the right-click menu's "Move to New Window" where panes can't move.
     view.offersWindowToggle = allowsDetach
     view.moveToWorkroomChoices = moveToWorkroomChoices.map { choices in { choices(tabID, target) } }
@@ -2610,11 +2608,8 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
-  /// One surface event from tab `tabID`'s `view`, handled inline as it is raised (ADR 0021).
-  private func handle(
-    _ event: SurfaceEvent, from view: GhosttySurfaceView?, tab tabID: TerminalTab.ID,
-    target: TerminalTarget
-  ) {
+  /// One surface event from tab `tabID`'s surface, handled inline as it is raised (ADR 0021).
+  private func handle(_ event: SurfaceEvent, tab tabID: TerminalTab.ID, target: TerminalTarget) {
     let targetID = target.id
     switch event {
     case .activity(let activity):
@@ -2637,8 +2632,8 @@ final class TerminalSessions: ObservableObject {
     // and route up to the workroom selection so a click into a co-displayed split pane targets that
     // workroom (issue #23 follow-up).
     case .focused:
-      guard let focusTarget = self.target(forID: targetID) else { return }
-      focus(tabID, for: focusTarget)
+      guard tabsByTarget[targetID] != nil else { return }
+      focus(tabID, for: target)
       onEvent?(.surfaceFocused(targetID))
     case .effectiveFocusChanged(let focused):
       programStatusFocusChanged(focused, tab: tabID, target: targetID)
@@ -2649,11 +2644,11 @@ final class TerminalSessions: ObservableObject {
       onEvent?(.childExited(target, tabID, exitCode: exitCode))
     case .closeRequested:
       onEvent?(.closeRequested(target, tabID))
-    case .cmdClickFile(let word):
+    case .cmdClickFile(let word, let cwd):
       if target.remoteHost != nil {
         openRemoteFile(word, tab: tabID, target: target)
       } else {
-        TerminalLinkOpener.handleCmdClickFile(word, cwd: view?.lastKnownCwd ?? target.path)
+        TerminalLinkOpener.handleCmdClickFile(word, cwd: cwd ?? target.path)
       }
     }
   }
@@ -2938,13 +2933,6 @@ final class TerminalSessions: ObservableObject {
       }
     }
     return nil
-  }
-
-  /// Reconstruct a minimal `TerminalTarget` from its id for a surface's `.focused` (whose handling
-  /// goes by ids). `focus` keys off the id alone, so a minimal target is sufficient.
-  private func target(forID id: TerminalTarget.ID) -> TerminalTarget? {
-    guard tabsByTarget[id] != nil else { return nil }
-    return TerminalTarget(id: id, title: "", path: "", isMissing: false)
   }
 
   /// Tear down a tab's surface (clears callbacks before freeing, so no in-flight libghostty callback

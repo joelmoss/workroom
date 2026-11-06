@@ -58,10 +58,8 @@ extension AppStore {
         RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription
       return
     }
-    #if DEBUG
-      // Fixture mode has no `gh`: the optimistic update below *is* the result.
-      if AppEnvironment.current.isFixture { return applyOptimistic(sid) }
-    #endif
+    // Seeded statuses have no `gh` behind them: the optimistic update below *is* the result.
+    guard probesRepositories else { return applyOptimistic(sid) }
     let github: RepositoryGitHub
     do {
       guard let location = item.location else {
@@ -195,9 +193,7 @@ extension AppStore {
   func stagedContentAtRisk(
     on sid: SidebarID, files: [ChangedFile], completion: @escaping (Result<[String], Error>) -> Void
   ) {
-    #if DEBUG
-      if AppEnvironment.current.isFixture { return completion(.success([])) }
-    #endif
+    guard probesRepositories else { return completion(.success([])) }
     guard let item = selectedStatusWorkItem(for: sid) else {
       return completion(.failure(RepositoryRoutingError.registrationRequired))
     }

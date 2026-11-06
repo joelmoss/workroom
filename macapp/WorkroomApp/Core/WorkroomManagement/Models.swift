@@ -169,7 +169,7 @@ extension Workroom {
   }
 
   /// Whether its host is a Docker or Apple container on this Mac, not a remote provider's machine.
-  var isContainer: Bool { host.flatMap(RemoteHosts.DriverKey.init)?.runtime != nil }
+  var isContainer: Bool { host?.kind?.isRemoteProvider == false }
   var isSSH: Bool { host?.kind == .ssh }
 
   /// Only a serving host is reachable: one creating, failed, destroyed or in a state this build
@@ -189,6 +189,11 @@ extension Workroom {
 }
 
 extension Project {
+  /// Its targets' ids: the root, then every workroom. Ids only, so nothing is `stat`ed.
+  var targetIDs: [TerminalTarget.ID] {
+    [.root(project: path)] + workrooms.map { .workroom(project: path, name: $0.name) }
+  }
+
   /// The always-present project-root target. The project directory can disappear like a
   /// workroom directory, so `isMissing` is checked against the filesystem.
   var rootTarget: TerminalTarget {
@@ -248,7 +253,7 @@ extension HostDescriptor {
     case .container(.apple):
       return "Apple container on this Mac"
     case .boxd, .exeDev, nil:
-      let provider = RemoteHosts.DriverKey(self)?.kind.displayName ?? driver
+      let provider = kind?.displayName ?? driver
       return provider.map { "Remote workroom on \($0)" } ?? "Remote workroom"
     }
   }

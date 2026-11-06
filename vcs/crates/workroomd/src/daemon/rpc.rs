@@ -17,6 +17,28 @@ use wr_vcs_model::VcsError;
 /// a different kind of stream entirely.
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+/// `bytes` written whole and flushed; `false` when the write fails or the connection is gone.
+pub(crate) fn write(writer: &SharedWriter, bytes: &[u8]) -> bool {
+    with_writer(writer, |out| {
+        out.write_all(bytes).and_then(|()| out.flush()).is_ok()
+    })
+    .unwrap_or(false)
+}
+
+/// `f` with the connection's writer held, or `None` when the connection is gone.
+///
+/// A poisoned writer IS the connection gone, the one lock in the daemon `util::lock_or_recover`
+/// does not recover: a panic while it was held can leave part of an envelope on the stream, and a
+/// frame written after it would be misread by the peer's decoder (the lock order on
+/// `SessionStore`).
+pub(crate) fn with_writer<R>(
+    writer: &SharedWriter,
+    f: impl FnOnce(&mut (dyn Write + Send)) -> R,
+) -> Option<R> {
+    let mut guard = writer.lock().ok()?;
+    Some(f(&mut **guard))
+}
+
 pub(crate) const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 
 /// Headroom left for everything in an exec reply that is not the two captured streams: the keys,
@@ -186,15 +208,7 @@ pub(crate) fn send_with(
     for (index, chunk) in chunks.enumerate() {
         let mut payload = vec![u8::from(index + 1 == count)];
         payload.extend_from_slice(chunk);
-        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
-        let Ok(mut writer) = writer.lock() else {
-            return;
-        };
-        if writer
-            .write_all(&Envelope::new(service, stream, payload).encode())
-            .and_then(|()| writer.flush())
-            .is_err()
-        {
+        if !write(writer, &Envelope::new(service, stream, payload).encode()) {
             return;
         }
     }

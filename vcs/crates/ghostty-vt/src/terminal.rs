@@ -10,6 +10,12 @@ use crate::sys::*;
 
 const OK: GhosttyResult = GhosttyResult_GHOSTTY_SUCCESS;
 
+/// `ghostty_mode_new`, which is a `static inline` in modes.h, so bindgen does not emit it.
+/// modes.h: `(value & 0x7FFF) | ((uint16_t)ansi << 15)`.
+pub const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
+    (value & 0x7FFF) | ((ansi as u16) << 15)
+}
+
 /// What a terminal reports while it parses output. Every method does nothing unless implemented.
 ///
 /// They are called only from inside [`Terminal::write`] and [`Terminal::write_until`], which take

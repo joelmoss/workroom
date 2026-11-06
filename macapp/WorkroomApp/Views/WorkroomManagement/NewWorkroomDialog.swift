@@ -348,8 +348,7 @@ enum WorkroomPlace: Hashable {
   case remote(HostKind)
 
   static var all: [WorkroomPlace] {
-    [.thisMac] + ContainerRuntime.allCases.map { .remote(.container($0)) }
-      + HostKind.remoteProviders.map { .remote($0) }
+    [.thisMac] + HostKind.all.map { .remote($0) }
   }
 
   /// The kind of host this is, or nil for this Mac.

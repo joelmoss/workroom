@@ -326,7 +326,7 @@ struct ProjectSidebar: View {
       // A collapsed project still says a terminal waits on you (#358), in a slot reserved while
       // collapsed so the dots beside it never move when one starts or stops waiting.
       if !isExpanded(project.path) {
-        let ids = targetIDs(of: project)
+        let ids = project.targetIDs
         let waiting = ids.reduce(0) { $0 + terminals.blockedTerminalCount(forTargetID: $1) }
         ZStack {
           if waiting > 0 {
@@ -369,10 +369,10 @@ struct ProjectSidebar: View {
     .accessibilityIdentifier("sidebar.project.\(project.displayName)")
     .accessibilityActions {
       if !isExpanded(project.path),
-        targetIDs(of: project).contains(where: { terminals.needsAttention(forTargetID: $0) })
+        project.targetIDs.contains(where: { terminals.needsAttention(forTargetID: $0) })
       {
         Button(ProgramStatusPresentation.showWaitingAction) {
-          showWaiting(in: targetIDs(of: project))
+          showWaiting(in: project.targetIDs)
         }
       }
     }
@@ -739,12 +739,6 @@ struct ProjectSidebar: View {
   }
 
   // MARK: Program status (#358)
-
-  /// A project's targets: its root, then every workroom.
-  private func targetIDs(of project: Project) -> [TerminalTarget.ID] {
-    [TargetID.root(project: project.path)]
-      + project.workrooms.map { TargetID.workroom(project: project.path, name: $0.name) }
-  }
 
   /// Focuses the terminal that has waited longest among `targetIDs` (a workroom row's, or a whole
   /// collapsed project's). Only ⇧⌘M looks further.

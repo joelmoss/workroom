@@ -11,25 +11,24 @@ struct DetachedSessionsButton: View {
   @State private var showing = false
 
   var body: some View {
+    let detached = sessionsStore.detached(for: target.id.encoded)
     // The refresh task must run UNCONDITIONALLY, not just when `detached` is already non-empty:
     // it's the only thing that ever populates `detached` in the first place. Nesting it inside
     // the `if` below (as this used to) makes the button structurally unable to ever appear from a
     // cold state — `detached` starts empty, so the branch that would refresh it never mounts.
     Group {
-      if !sessionsStore.detached(for: target.id.encoded).isEmpty {
+      if !detached.isEmpty {
         Button {
           showing.toggle()
         } label: {
           Image(systemName: "rectangle.stack")
-          Text("\(sessionsStore.detached(for: target.id.encoded).count)")
+          Text("\(detached.count)")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("terminal.detachedSessions")
-        .accessibilityLabel(
-          "\(sessionsStore.detached(for: target.id.encoded).count) detached background terminals"
-        )
+        .accessibilityLabel("\(detached.count) detached background terminals")
         .popover(isPresented: $showing, arrowEdge: .top) {
-          popover
+          popover(detached)
             .frame(minWidth: 280, maxWidth: 360)
             .padding(12)
         }
@@ -38,11 +37,10 @@ struct DetachedSessionsButton: View {
     .task(id: target.id) { await refresh() }
   }
 
-  private var popover: some View {
+  private func popover(_ detached: [SessionDescriptor]) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       Text("Detached terminals").font(.headline)
-      ForEach(sessionsStore.detached(for: target.id.encoded), id: \.identifier.uuidString) {
-        session in
+      ForEach(detached, id: \.identifier.uuidString) { session in
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           VStack(alignment: .leading, spacing: 2) {
             Text(session.value(forMetadataKey: SessionMetadataKey.title) ?? "Terminal")

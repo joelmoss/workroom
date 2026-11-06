@@ -660,7 +660,7 @@ final class AppStore: ObservableObject {
   /// or going, which the notice would tell the user to delete.
   func reportRemoteCloseFailure(target: TerminalTarget.ID, title: String) {
     guard errorMessage == nil, !deletingWorkrooms.contains(target),
-      Self.validatedSelection(target.sidebarID, in: projects) != nil
+      sidebarID(for: target) != nil
     else { return }
     errorMessage =
       "Its host didn't confirm the terminal stopped, so whatever was running in it may still be running there. Workroom tries again when it next connects to the host, and deleting the workroom stops it."
@@ -970,9 +970,9 @@ final class AppStore: ObservableObject {
   init(
     projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil,
     commitHistory: HistoryModel? = nil, remoteState: RemoteStateModel? = nil,
-    notifications: NotificationCenterStore? = nil, services: AppServices? = nil
+    notifications: NotificationCenterStore? = nil
   ) {
-    var services = services ?? .current
+    var services = AppServices.current
     if let cli { services.cli = cli }
     self.services = services
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
@@ -1384,7 +1384,7 @@ final class AppStore: ObservableObject {
   /// member of some OTHER group is equally off screen, and its stale claim must not select it either.
   private func focusWorkroomMemberFromSurface(_ targetID: TerminalTarget.ID) {
     guard let group = visibleWorkroomSplit, isWorkroomSplitVisible,
-      let sid = Self.validatedSelection(targetID.sidebarID, in: projects), group.contains(sid),
+      let sid = sidebarID(for: targetID), group.contains(sid),
       selectedTargetID != sid
     else { return }
     withHistorySuppressed {
@@ -1497,7 +1497,7 @@ final class AppStore: ObservableObject {
   /// Resolve a `TerminalTarget.ID` straight to its live target — the id-addressed sibling of
   /// `target(for:)`, for the seams that carry a target id rather than a `SidebarID`.
   func terminalTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
-    Self.validatedSelection(targetID.sidebarID, in: projects).flatMap { target(for: $0) }
+    sidebarID(for: targetID).flatMap { target(for: $0) }
   }
 
   /// The window that actually shows `tabID` — its own window when it is detached (issue #172), else
@@ -1580,8 +1580,7 @@ final class AppStore: ObservableObject {
   /// origin, so that is the common case, and without this the pane simply appears to vanish.
   func dockPane(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     terminals.dockPane(tabID, for: target)
-    if let sid = Self.validatedSelection(target.id.sidebarID, in: projects), selectedTargetID != sid
-    {
+    if let sid = sidebarID(for: target.id), selectedTargetID != sid {
       selectedTargetID = sid
       selectedProjectID = Self.projectPath(of: sid)
     }
@@ -1652,8 +1651,7 @@ final class AppStore: ObservableObject {
     .compactMap { tid in
       // A create before its name lands (#483) has no workroom yet: its chip is its `.creation` pane.
       guard
-        let sid = Self.validatedSelection(tid.sidebarID, in: projects)
-          ?? creationRun(forTargetID: tid).map(paneID(of:)),
+        let sid = sidebarID(for: tid) ?? creationRun(forTargetID: tid).map(paneID(of:)),
         let target = target(for: sid), seen.insert(sid).inserted
       else { return nil }
       return (sid, target)
@@ -2283,6 +2281,12 @@ final class AppStore: ObservableObject {
     return targetExists(current, in: projects) ? current : nil
   }
 
+  /// `id`'s sidebar row while it is still listed, else nil (always nil for a create's pane and the
+  /// Quick Terminal, which have no row).
+  func sidebarID(for id: TargetID) -> SidebarID? {
+    Self.validatedSelection(id.sidebarID, in: projects)
+  }
+
   nonisolated private static func targetExists(_ id: SidebarID, in projects: [Project]) -> Bool {
     switch id {
     case .root(let path):
@@ -2746,7 +2750,7 @@ final class AppStore: ObservableObject {
     // the user just typed the project name to confirm, so a no-op would read as a broken button.
     // O1 (#483): any running create, named or not. Before it has a name, nothing else says so.
     let creatingHere = creatingWorkrooms.contains {
-      Self.projectPath(of: Self.validatedSelection($0.sidebarID, in: projects)) == project.path
+      Self.projectPath(of: sidebarID(for: $0)) == project.path
     }
     guard !hasRunningCreation(inProject: project.path), !creatingHere else {
       errorTitle = "Can't delete \(project.displayName)"
@@ -2888,9 +2892,7 @@ final class AppStore: ObservableObject {
   /// from repopulating these entries.
   @discardableResult
   func removeProjectLocally(_ project: Project) -> [TerminalTarget.ID] {
-    let targetIDs =
-      [TargetID.root(project: project.path)]
-      + project.workrooms.map { TargetID.workroom(project: project.path, name: $0.name) }
+    let targetIDs = project.targetIDs
 
     projects.removeAll { $0.id == project.id }
     if selectedProjectID == project.id { selectedProjectID = nil }
@@ -3507,7 +3509,7 @@ final class AppStore: ObservableObject {
   /// workroom's project, since "london" under "Terminal 7 in london needs you" said it twice.
   private func placeSource(targetID: TerminalTarget.ID) -> String {
     if targetID == QuickTerminalController.targetID { return "Quick Terminal" }
-    let origin = Self.validatedSelection(targetID.sidebarID, in: projects).map { label(for: $0) }
+    let origin = sidebarID(for: targetID).map { label(for: $0) }
     return origin?.workroom == nil ? "" : origin?.project ?? ""
   }
 
@@ -3515,7 +3517,7 @@ final class AppStore: ObservableObject {
   /// waiting list name it. Just the terminal's name when its target is not a known project's.
   func terminalPlace(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> String {
     let name = terminals.defaultTitle(ofTab: tabID, inTarget: targetID) ?? "A terminal"
-    guard let sid = Self.validatedSelection(targetID.sidebarID, in: projects) else { return name }
+    guard let sid = sidebarID(for: targetID) else { return name }
     let label = label(for: sid)
     let place = label.workroom ?? label.project
     return place.isEmpty ? name : "\(name) in \(place)"
@@ -3620,7 +3622,7 @@ final class AppStore: ObservableObject {
       notifications.dismiss(notifID: notifID, orTab: tabID)
       return
     }
-    guard let sid = Self.validatedSelection(targetID.sidebarID, in: projects) else {
+    guard let sid = sidebarID(for: targetID) else {
       // Its workroom is gone: the row would open nothing, so it goes too (#573).
       if let notifID { notifications.dismiss(notifID: notifID) }
       if let tabID { services.notifier.withdraw(tabIDs: [tabID]) }

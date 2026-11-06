@@ -38,14 +38,13 @@
 //! detection is the transport's write timeout: a write that makes no progress fails, and that failure
 //! is what triggers the close.
 
-use crate::daemon::rpc::SharedWriter;
+use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::Closer;
 use crate::util::lock_or_recover;
 use crate::vcs::file::FileError;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -256,14 +255,10 @@ impl Sink {
         let mut payload = vec![1u8];
         payload.extend(serde_json::to_vec(&value).expect("JSON value serializes"));
         debug_assert!(payload.len() < MAX_ENVELOPE_PAYLOAD);
-        // A poisoned writer is the connection gone (the lock order on `SessionStore`).
-        let written = match self.writer.lock() {
-            Ok(mut writer) => writer
-                .write_all(&Envelope::new(Service::File, 0, payload).encode())
-                .and_then(|()| writer.flush())
-                .is_ok(),
-            Err(_) => false,
-        };
+        let written = rpc::write(
+            &self.writer,
+            &Envelope::new(Service::File, 0, payload).encode(),
+        );
         if !written {
             (self.closer)();
         }

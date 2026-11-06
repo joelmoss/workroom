@@ -212,12 +212,11 @@ private struct ProjectSettingsForm: View {
             + "branch. Write upstream/main for another remote's branch. Remote workrooms need a "
             + "branch on origin. Leave it empty to use the app default in General.")
       }
-      ForEach(HostKind.remoteProviders.filter(\.takesHostOptions), id: \.self) { provider in
+      ForEach(HostKind.optionedProviders, id: \.self) { provider in
         HostOptionsSection(
           provider: provider, options: hostOptionsBinding(provider),
           inherited: HostOptions.resolve(
-            for: provider, create: nil, project: nil,
-            settings: provider.hostOptionsKey.flatMap { hostOptions[$0] }),
+            for: provider, create: nil, project: nil, settings: hostOptions[provider: provider]),
           catalog: catalog)
       }
     }

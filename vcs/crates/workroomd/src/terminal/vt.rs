@@ -112,12 +112,6 @@ const TAIL_GUESSES: u32 = 4;
 /// a full plain history holds at 200 columns.
 const TAIL_GROWTH: u32 = 8;
 
-/// `ghostty_mode_new` is a `static inline` in modes.h, so bindgen does not emit it.
-/// modes.h: `(value & 0x7FFF) | ((uint16_t)ansi << 15)`.
-const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
-    (value & 0x7FFF) | ((ansi as u16) << 15)
-}
-
 /// The last OSC 9;4 a session reported, as (state, percent); percent is -1 when omitted.
 pub type Progress = Option<(GhosttyTerminalProgressState, i8)>;
 
@@ -640,6 +634,7 @@ impl ShadowTerminal {
     /// mode changes what a CUP means.
     pub fn placement(&self, image: u32, force: bool) -> Placement {
         let wrapping = self
+            .terminal
             .get_bool(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP)
             .unwrap_or(false);
         if !force && (wrapping || self.mode(modes::ORIGIN) == Some(true)) {
@@ -703,10 +698,6 @@ impl ShadowTerminal {
             .is_some_and(|usage| usage.compression_supported)
     }
 
-    fn get_bool(&self, data: GhosttyTerminalData) -> Option<bool> {
-        self.terminal.get_bool(data)
-    }
-
     /// A count or position, widened to `u32` (`ghostty_vt::Terminal::get_u32`). A kind with no
     /// known width is refused.
     fn get_u32(&self, data: GhosttyTerminalData) -> Option<u32> {
@@ -719,11 +710,7 @@ impl ShadowTerminal {
 
     /// How many bytes `replay` ends with for the parser continuation.
     pub fn continuation_len(&self) -> usize {
-        self.continuation().len()
-    }
-
-    fn continuation(&self) -> Vec<u8> {
-        self.terminal.continuation()
+        self.terminal.continuation().len()
     }
 
     /// A selection from the `rows_back`th history row from the bottom to the active area's last
@@ -1005,7 +992,7 @@ impl ShadowTerminal {
         }
         // Last: the continuation leaves the client's parser mid-sequence, exactly as the
         // producer's is, so the bytes that arrive next complete it instead of printing as text.
-        out.extend_from_slice(&self.continuation());
+        out.extend_from_slice(&self.terminal.continuation());
         out
     }
 
@@ -1123,7 +1110,8 @@ fn screen_switch_at(bytes: &[u8]) -> Option<usize> {
 
 /// Modes worth naming, for tests and for anything that needs to reason about what survived.
 pub mod modes {
-    use super::{GhosttyMode, mode_new};
+    use super::GhosttyMode;
+    use ghostty_vt::mode_new;
     #[cfg(test)]
     pub const APP_CURSOR_KEYS: GhosttyMode = mode_new(1, false);
     #[cfg(test)]

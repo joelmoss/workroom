@@ -66,10 +66,7 @@ extension AppStore {
   /// `pruneWorkroomSplitToLiveLeaves()` running in `apply(_:)`. A lone surviving leaf is "no split".
   func visibleWorkroomLayout(for selected: SidebarID) -> PaneLayout<SidebarID> {
     if let split = workroomSplit(containing: selected) {
-      var pruned = split
-      for sid in split.tabIDs where target(for: sid) == nil {
-        pruned = pruned.removingLeaf(sid) ?? pruned
-      }
+      let pruned = liveLeavesOnly(split)
       if pruned.contains(selected), pruned.tabIDs.count >= 2 {
         return pruned
       }
@@ -268,8 +265,7 @@ extension AppStore {
   /// handled by `pruneWorkroomSplitToLiveLeaves`, and a solo (non-split) workroom keeps its empty
   /// "New Terminal" state (issue #55).
   func autoCloseEmptiedSplitMember(_ targetID: TerminalTarget.ID) {
-    guard terminals.tabCount(forTargetID: targetID) == 0,
-      let sid = Self.validatedSelection(targetID.sidebarID, in: projects)
+    guard terminals.tabCount(forTargetID: targetID) == 0, let sid = sidebarID(for: targetID)
     else { return }
     removeWorkroomSplitMember(sid)  // guards group membership → no-op for an ungrouped workroom
   }
@@ -288,7 +284,7 @@ extension AppStore {
   /// auto-close.
   func selectFallbackWorkroomAfterEmpty(_ targetID: TerminalTarget.ID) {
     guard terminals.tabCount(forTargetID: targetID) == 0,
-      let sid = Self.validatedSelection(targetID.sidebarID, in: projects),
+      let sid = sidebarID(for: targetID),
       selectedTargetID == sid
     else { return }
     selectFallbackWorkroom()
@@ -347,7 +343,9 @@ extension AppStore {
   /// in along that axis. No-op when auto-even is off, the workroom isn't in
   /// a workroom split, or the even wouldn't leave every terminal at its minimum size.
   func reEvenWorkroomSplit(holding targetID: TerminalTarget.ID, along axis: SplitOrientation?) {
-    guard let sid = Self.validatedSelection(targetID.sidebarID, in: projects) else { return }
+    // The policy reads the window and the setting: build it only for a workroom in a split.
+    guard let sid = sidebarID(for: targetID), workroomSplitGroups.group(containing: sid) != nil
+    else { return }
     let evened = workroomSplitGroups.evening(groupOf: sid, along: axis, policy: workroomSplitPolicy)
     // `workroomSplitGroups` is observed: write only a real change, so a no-op even redraws nothing.
     if evened != workroomSplitGroups { workroomSplitGroups = evened }
@@ -365,7 +363,7 @@ extension AppStore {
   private var workroomSplitPolicy: PaneSplitPolicy<SidebarID> {
     PaneSplitPolicy(
       space: workroomPaneSpace, autoEven: autoEvenSplits(), leafSlots: workroomLeafSlots,
-      live: { [self] group in liveLeavesOnly(group) })
+      live: liveLeavesOnly)
   }
 
   /// `group` with every leaf whose workroom no longer resolves dropped — what the renderer shows.
@@ -388,6 +386,7 @@ extension AppStore {
   /// contributes no "survivor" at all yet is exactly where the user should stay. Preference order:
   /// the former group's first live leaf, then any dissolved group's survivor.
   func pruneWorkroomSplitToLiveLeaves(formerSelection: SidebarID? = nil) {
+    guard !workroomSplitGroups.isEmpty else { return }
     let policy = workroomSplitPolicy
     let formerGroup = formerSelection.flatMap { sid in
       workroomSplits.firstIndex { $0.contains(sid) }

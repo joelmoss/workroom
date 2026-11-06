@@ -168,7 +168,7 @@ fn exec_reports_a_vanished_directory_as_an_error_not_127() {
 ///
 /// ENVIRONMENT: needs a real process table. Under a sandbox that hides other processes, `pgrep`
 /// returns nothing, the snapshot comes back empty and this fails in a way indistinguishable from
-/// the bug — measured, not guessed. If it fails, check `wr_exec::snapshot()` sees anything at all
+/// the bug — measured, not guessed. If it fails, check `wr_exec::descendants` sees anything at all
 /// before believing the kill path is broken.
 #[test]
 fn exec_kills_a_descendant_that_escaped_the_process_group() {

@@ -241,7 +241,7 @@ extension AppStore {
     // that triggered the sweep: a workroom added in between must not lose its first session.
     Task {
       await PersistentSessionService.shared.endOrphanedSessions {
-        Self.validatedSelection(TargetID(encoded: $0)?.sidebarID, in: self.projects) != nil
+        TargetID(encoded: $0).flatMap { self.sidebarID(for: $0) } != nil
       }
     }
   }
