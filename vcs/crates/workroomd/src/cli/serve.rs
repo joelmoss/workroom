@@ -151,7 +151,7 @@ pub fn run_serve(
     if let Some(dir) = screens {
         match crate::terminal::screens::Screens::open(&dir) {
             Ok(screens) => {
-                daemon.sessions.keep_screens(screens);
+                daemon.sessions.hooks().screens.keep(screens);
                 // Each workroom's layout (#255), on the same disk as the screens.
                 let layouts = crate::host::layout::dir_beside(&dir);
                 match crate::host::layout::Layouts::open(&layouts) {
@@ -169,7 +169,7 @@ pub fn run_serve(
         }
     }
     // Every daemon, with screens or without: the same thread compresses every shadow's history
-    // (#463). After `keep_screens`, so a daemon with screens writes them from its first tick.
+    // (#463). After `KeptScreens::keep`, so a daemon with screens writes them from its first tick.
     crate::terminal::screens::spawn(daemon.sessions.clone());
     // In both cases: the program handed off, or one that idled out or crashed, left its refusals
     // here, and an attach still on its way to it must not start a session it was told to end.
@@ -178,7 +178,9 @@ pub fn run_serve(
         .keep_refusals(crate::terminal::session::refusals_path(&socket));
     daemon
         .sessions
-        .keep_runs(crate::terminal::run::dir_beside(&socket));
+        .hooks()
+        .runs
+        .keep(crate::terminal::run::dir_beside(&socket));
     crate::terminal::run::spawn_watcher(daemon.sessions.clone());
     handoff::install(handoff::Context {
         socket: socket.clone(),
@@ -218,7 +220,7 @@ fn adopt(
     // The same store of program status, so the app keeps what it knows (#358). A table from
     // before version 3 has none, and the fresh boot tells the app it starts over.
     if let Some(boot) = table.boot {
-        daemon.sessions.program_status().set_boot(boot);
+        daemon.sessions.hooks().program_status.set_boot(boot);
     }
     for session in table.sessions {
         let pty = crate::terminal::pty::Pty::adopt(session.master, session.pid);

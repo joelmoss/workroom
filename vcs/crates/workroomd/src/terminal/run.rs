@@ -8,9 +8,64 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::terminal::session::{SessionId, SessionStore};
+use crate::util::Wake;
+
+/// The runs watcher's side of a session store, which the store reaches through its hooks
+/// (`session::Hooks`): where run sessions keep their status files, when this store serves a socket
+/// (`keep`), and what the watcher sleeps on. A store without a directory refuses run sessions.
+#[derive(Default)]
+pub struct Runs {
+    dir: OnceLock<PathBuf>,
+    /// Raised when a run session is created, signalled or ended: what the watcher sleeps on while
+    /// no run session has a status left to publish.
+    wake: Wake,
+}
+
+impl Runs {
+    /// Keeps run sessions' status files in `dir`, made private to this user if it is new. A
+    /// directory that cannot be made leaves the store refusing run sessions.
+    pub fn keep(&self, dir: PathBuf) {
+        use std::os::unix::fs::DirBuilderExt;
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                crate::note!("not keeping run sessions in {}: {e}", dir.display());
+                return;
+            }
+        }
+        let _ = self.dir.set(dir);
+    }
+
+    /// Where run session `id` keeps its status, or None when this store keeps no run sessions.
+    pub fn status_path(&self, id: SessionId) -> Option<PathBuf> {
+        self.dir.get().map(|dir| status_file(dir, id))
+    }
+
+    /// The directory `keep` was given.
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.get().map(PathBuf::as_path)
+    }
+
+    /// How often a run session has been created, signalled or ended so far. Read before looking
+    /// at the runs, so `wait_for_wake` cannot miss one in between.
+    pub(crate) fn wake(&self) -> u64 {
+        self.wake.seen()
+    }
+
+    /// Blocks until a run session is created, signalled or ended after `wake` returned `seen`.
+    pub(crate) fn wait_for_wake(&self, seen: u64) {
+        self.wake.wait_past(seen);
+    }
+
+    pub(crate) fn raise(&self) {
+        self.wake.raise();
+    }
+}
 
 /// How often the watcher reads each run session's status file: the app polled it this often when
 /// it read the file itself, and a stop or a crash should show at once. A run's file is one short
@@ -56,7 +111,7 @@ pub fn is_run(metadata: &[(String, String)]) -> bool {
 /// Publishes each run session's status as its supervisor writes it, and removes a status file once
 /// its session has gone. A store that keeps no run sessions starts nothing.
 pub fn spawn_watcher(sessions: SessionStore) {
-    let Some(dir) = sessions.runs_dir().map(Path::to_path_buf) else {
+    let Some(dir) = sessions.hooks().runs.dir().map(Path::to_path_buf) else {
         return;
     };
     // Before the first tick, after any hand-off adopted its sessions: a file whose session is not
@@ -67,13 +122,13 @@ pub fn spawn_watcher(sessions: SessionStore) {
         .spawn(move || {
             let mut published = HashMap::new();
             let mut grace = Grace {
-                counted: sessions.runs_wake(),
+                counted: sessions.hooks().runs.wake(),
                 until: Instant::now(),
             };
             loop {
                 // Counted before the tick looks, so a run created or signalled between the look
                 // and the wait still wakes it.
-                let seen = sessions.runs_wake();
+                let seen = sessions.hooks().runs.wake();
                 grace.count(seen, Instant::now());
                 let running = tick(&sessions, &dir, &mut published);
                 if running || grace.polling(Instant::now()) {
@@ -82,7 +137,7 @@ pub fn spawn_watcher(sessions: SessionStore) {
                     // Every run has finished, or there is none: sleep until one is created or
                     // signalled, rather than read finished runs' files seven times a second (an
                     // idle daemon's whole cost with a stopped run tab open, 2026-10-23).
-                    sessions.wait_for_runs_wake(seen);
+                    sessions.hooks().runs.wait_for_wake(seen);
                 }
             }
         });

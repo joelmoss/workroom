@@ -66,8 +66,11 @@ fn a_record_over_the_bound_is_not_loaded() {
 fn a_new_session_supersedes_its_ids_record() {
     let dir = scratch("supersede");
     let sessions = SessionStore::new();
-    sessions.keep_screens(Screens::open(&dir).expect("open"));
-    let screens = sessions.screens().expect("screens");
+    sessions
+        .hooks()
+        .screens
+        .keep(Screens::open(&dir).expect("open"));
+    let screens = sessions.hooks().screens.get().expect("screens");
     screens
         .save(ID, 80, 24, b"an earlier session")
         .expect("save");
@@ -175,8 +178,11 @@ fn open_keeps_only_the_newest_records() {
 fn killing_a_session_removes_its_record() {
     let dir = scratch("kill");
     let sessions = SessionStore::new();
-    sessions.keep_screens(Screens::open(&dir).expect("open"));
-    let screens = sessions.screens().expect("screens");
+    sessions
+        .hooks()
+        .screens
+        .keep(Screens::open(&dir).expect("open"));
+    let screens = sessions.hooks().screens.get().expect("screens");
     screens.save(ID, 80, 24, b"one").expect("save");
     screens
         .save(SessionId([8u8; 16]), 80, 24, b"two")
@@ -245,8 +251,8 @@ fn a_session_that_ends_while_the_daemon_runs_loses_its_record_on_the_next_tick()
     let dir = scratch("endedwhilerunning");
     let screens = Screens::open(&dir).expect("open");
     let sessions = SessionStore::new();
-    sessions.keep_screens(screens);
-    let live = sessions.screens().expect("screens");
+    sessions.hooks().screens.keep(screens);
+    let live = sessions.hooks().screens.get().expect("screens");
     live.save(ID, 80, 24, b"was-on-screen").expect("save");
 
     // `written` simulates an earlier tick having written this id's record; `sessions` holds no
@@ -274,7 +280,7 @@ fn a_restored_pane_is_never_told_the_session_was_busy() {
     let dir = scratch("restorenotbusy");
     let screens = Screens::open(&dir).expect("open");
     let sessions = SessionStore::new();
-    sessions.keep_screens(screens);
+    sessions.hooks().screens.keep(screens);
     let args = vec![
         OsString::from("-c"),
         OsString::from("printf 'WORKING\\033]9;4;3\\033\\\\'; sleep 5"),
@@ -304,7 +310,7 @@ fn a_restored_pane_is_never_told_the_session_was_busy() {
         "fixture: the session never became busy"
     );
     flush(&sessions, &mut HashSet::new(), &mut HashSet::new());
-    let live = sessions.screens().expect("screens");
+    let live = sessions.hooks().screens.get().expect("screens");
 
     let painted = live.render(ID, 80, 24).expect("render");
     assert!(
@@ -336,7 +342,7 @@ fn a_failing_write_is_retried_and_clears_once_it_succeeds() {
     // No write permission left on the directory, so `save`'s temporary file cannot be created.
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).expect("chmod");
     let sessions = SessionStore::new();
-    sessions.keep_screens(screens);
+    sessions.hooks().screens.keep(screens);
 
     let args = vec![
         OsString::from("-c"),
@@ -368,7 +374,13 @@ fn a_failing_write_is_retried_and_clears_once_it_succeeds() {
     assert!(failing.contains(&ID), "a failed write was not tracked");
     assert!(!written.contains(&ID));
     assert!(
-        sessions.screens().expect("screens").load(ID).is_none(),
+        sessions
+            .hooks()
+            .screens
+            .get()
+            .expect("screens")
+            .load(ID)
+            .is_none(),
         "a failed write still left a record"
     );
 
@@ -399,7 +411,10 @@ fn a_tick_compresses_every_shadow_with_records_or_without() {
         let dir = scratch(&format!("compress-{keep}"));
         let sessions = SessionStore::new();
         if keep {
-            sessions.keep_screens(Screens::open(&dir).expect("open"));
+            sessions
+                .hooks()
+                .screens
+                .keep(Screens::open(&dir).expect("open"));
         }
         let args = [OsString::from("-c"), OsString::from("sleep 10")];
         sessions

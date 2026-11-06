@@ -103,9 +103,7 @@ impl SessionStore {
                 return false;
             }
         }
-        if let Some(screens) = self.screens.get() {
-            screens.remove(id);
-        }
+        self.hooks.killed(id);
         crate::daemon::serve::wake_idle();
         true
     }
@@ -123,12 +121,9 @@ impl SessionStore {
             let ending = session.as_ref().map(|_| self.mark_ending(vec![id]));
             (session, ending)
         };
-        // Killing is how the app says its user closed the pane, and that ends a record too: of a
-        // session that ended with its host, or of this one. After the session leaves the map, so
-        // the screens thread cannot take it as live and write the record back.
-        if let Some(screens) = self.screens.get() {
-            screens.remove(id);
-        }
+        // The record of a session that ended with its host, or of this one. After the session
+        // leaves the map, so the screens thread cannot take it as live and write the record back.
+        self.hooks.killed(id);
         match session {
             Some(session) => {
                 crate::note!(
@@ -139,7 +134,7 @@ impl SessionStore {
                 terminate(&[&session.pty]);
                 // What a run left outside its supervisor's tree: see `sweep_run_session`.
                 if crate::terminal::run::is_run(&session.metadata) {
-                    self.runs_wake.raise(); // its status file goes on the watcher's next pass
+                    self.hooks.run_killed();
                     sweep_run_session(id, session.pty.child_pid());
                 }
                 true
@@ -168,9 +163,7 @@ impl SessionStore {
             let marked = self.mark_ending(ending.iter().map(|s| s.id).collect());
             (ending, marked)
         };
-        if let Some(screens) = self.screens.get() {
-            screens.remove_all();
-        }
+        self.hooks.killed_all();
         crate::daemon::serve::wake_idle();
         if !ending.is_empty() {
             let ids: Vec<String> = ending.iter().map(|s| s.id.to_hyphenated()).collect();
@@ -187,7 +180,7 @@ impl SessionStore {
             sweep_run_session(session.id, session.pty.child_pid());
         }
         if runs {
-            self.runs_wake.raise(); // their status files go on the watcher's next pass
+            self.hooks.run_killed();
         }
         ending.len()
     }

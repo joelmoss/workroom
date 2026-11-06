@@ -445,7 +445,7 @@ pub fn handle_connection<T: Transport>(
         ),
         forwards: crate::host::forward::Forwards::new(),
         program_status: crate::terminal::program_status::Connection::new(
-            Arc::clone(sessions.program_status()),
+            Arc::clone(&sessions.hooks().program_status),
             Arc::clone(&writer),
             closer,
         ),

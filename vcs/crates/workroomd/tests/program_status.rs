@@ -391,7 +391,7 @@ sleep 5"#,
         let mut client = Client::connect(&store);
         let reply = client.request(json!({"version": 1, "method": "subscribe"}));
         assert_eq!(reply["result"]["available"], true);
-        let boot = store.program_status().boot().to_hyphenated();
+        let boot = store.hooks().program_status.boot().to_hyphenated();
         let first = client.event();
         let second = client.event();
         let complete = client.event();
@@ -463,7 +463,7 @@ sleep 5"#,
             let ended = events.last().unwrap();
             assert_eq!(
                 ended,
-                &json!({"event": "ended", "boot": store.program_status().boot().to_hyphenated(),
+                &json!({"event": "ended", "boot": store.hooks().program_status.boot().to_hyphenated(),
                     "session": session.to_hyphenated()}),
                 "when it {end}"
             );
@@ -540,8 +540,9 @@ sleep 5"#,
 
         let after = SessionStore::new();
         after
-            .program_status()
-            .set_boot(before.program_status().boot());
+            .hooks()
+            .program_status
+            .set_boot(before.hooks().program_status.boot());
         let args = [OsString::from("-c"), OsString::from("sleep 5")];
         let pty =
             workroomd::testing::Pty::spawn(OsStr::new("/bin/sh"), None, &args, &[], None, 80, 24)
@@ -631,7 +632,7 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             released: Arc::clone(&released),
         })));
         let mut connection = workroomd::testing::Connection::new(
-            Arc::clone(store.program_status()),
+            Arc::clone(&store.hooks().program_status),
             writer,
             Arc::new(|| {}),
         );

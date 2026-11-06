@@ -341,21 +341,21 @@ fn creates_and_lists_a_session() {
     store.kill_all();
 }
 
-/// The runs watcher sleeps on `wait_for_runs_wake` while the map holds no run session; a run
+/// The runs watcher sleeps on `Runs::wait_for_wake` while the map holds no run session; a run
 /// session's creation wakes it, a shell's does not.
 #[test]
 fn a_run_session_wakes_the_runs_watcher_and_a_shell_does_not() {
     let store = SessionStore::new();
-    let seen = store.runs_wake();
+    let seen = store.hooks().runs.wake();
     let args = [OsString::from("-c"), OsString::from("sleep 2")];
     let e = env();
     store.create(spec(id(93), &args, &e)).expect("a shell");
-    assert_eq!(store.runs_wake(), seen, "a shell is not a run");
+    assert_eq!(store.hooks().runs.wake(), seen, "a shell is not a run");
 
     let (done, woke) = std::sync::mpsc::channel();
     let waiting = store.clone();
     std::thread::spawn(move || {
-        waiting.wait_for_runs_wake(seen);
+        waiting.hooks().runs.wait_for_wake(seen);
         let _ = done.send(());
     });
     assert!(
@@ -379,12 +379,12 @@ fn a_run_session_wakes_the_runs_watcher_and_a_shell_does_not() {
 
     // A signal to a finished run is what makes its supervisor write a new status: the watcher
     // asleep on the old one must hear of it, or a restarted run tab keeps showing "exited".
-    let before = store.runs_wake();
+    let before = store.hooks().runs.wake();
     store
         .signal_run(id(94), wr_protocol::frame::RunSignal::Stop)
         .expect("signal the run");
     assert_ne!(
-        store.runs_wake(),
+        store.hooks().runs.wake(),
         before,
         "a signal did not wake the watcher"
     );
@@ -398,9 +398,9 @@ fn a_run_session_wakes_the_runs_watcher_and_a_shell_does_not() {
             ..spec(id(99), &brief, &e)
         })
         .expect("a run that ends");
-    let before = store.runs_wake();
+    let before = store.hooks().runs.wake();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while store.runs_wake() == before {
+    while store.hooks().runs.wake() == before {
         assert!(
             Instant::now() < deadline,
             "a run ending did not wake the watcher"
@@ -414,10 +414,10 @@ fn a_run_session_wakes_the_runs_watcher_and_a_shell_does_not() {
             ..spec(id(100), &long, &e)
         })
         .expect("a run to kill");
-    let before = store.runs_wake();
+    let before = store.hooks().runs.wake();
     assert!(store.kill(id(100)), "fixture: the run was there to kill");
     assert_ne!(
-        store.runs_wake(),
+        store.hooks().runs.wake(),
         before,
         "killing a run did not wake the watcher"
     );
@@ -428,21 +428,21 @@ fn a_run_session_wakes_the_runs_watcher_and_a_shell_does_not() {
             ..spec(id(101), &long, &e)
         })
         .expect("a run for kill_all");
-    let before = store.runs_wake();
+    let before = store.hooks().runs.wake();
     store.kill_all();
     assert_ne!(
-        store.runs_wake(),
+        store.hooks().runs.wake(),
         before,
         "killing every run did not wake the watcher"
     );
 }
 
-/// The screens thread sleeps on `wait_for_screens_work` until a session prints, is resized or
+/// The screens thread sleeps on `KeptScreens::wait_for_work` until a session prints, is resized or
 /// ends; a session that has nothing to say does not wake it.
 #[test]
 fn output_wakes_the_screens_thread_and_silence_does_not() {
     let store = SessionStore::new();
-    let seen = store.screens_work();
+    let seen = store.hooks().screens.work();
     let e = env();
     let quiet = [OsString::from("-c"), OsString::from("sleep 10")];
     store
@@ -452,7 +452,7 @@ fn output_wakes_the_screens_thread_and_silence_does_not() {
     let (done, woke) = std::sync::mpsc::channel();
     let waiting = store.clone();
     std::thread::spawn(move || {
-        waiting.wait_for_screens_work(seen);
+        waiting.hooks().screens.wait_for_work(seen);
         let _ = done.send(());
     });
     assert!(
@@ -475,9 +475,9 @@ fn output_wakes_the_screens_thread_and_silence_does_not() {
     store
         .create(spec(id(97), &brief, &e))
         .expect("a session that ends");
-    let before = store.screens_work();
+    let before = store.hooks().screens.work();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while store.screens_work() == before {
+    while store.hooks().screens.work() == before {
         assert!(
             Instant::now() < deadline,
             "a session ending did not wake the screens thread"
@@ -502,10 +502,10 @@ fn an_attach_and_a_skipped_record_wake_the_screens_thread() {
         .expect("a quiet session");
     let (_first, _) = attach_capture(&store, id(98));
     // The first client took the size; the second claims none, so only the repaint is left.
-    let before = store.screens_work();
+    let before = store.hooks().screens.work();
     let (_second, _) = attach_capture(&store, id(98));
     assert_ne!(
-        store.screens_work(),
+        store.hooks().screens.work(),
         before,
         "an attach that claimed no size did not wake the screens thread"
     );
@@ -513,13 +513,13 @@ fn an_attach_and_a_skipped_record_wake_the_screens_thread() {
     let (_, _, attached) = store.parts(id(98)).expect("the session");
     let mut held = attached.lock().expect("attachment");
     held.changed = true;
-    let before = store.screens_work();
+    let before = store.hooks().screens.work();
     assert!(
         store.changed_screens().is_empty(),
         "fixture: a held attachment's record was taken"
     );
     assert_ne!(
-        store.screens_work(),
+        store.hooks().screens.work(),
         before,
         "a record skipped on a held attachment did not wake the screens thread"
     );
@@ -1662,7 +1662,7 @@ fn a_resize_alone_makes_the_screen_changed() {
 
     let (pty, shadow, attached) = store.parts(id(13)).expect("parts");
     let size = Some(Size::cells(100, 30));
-    apply_size(&pty, &shadow, &attached, size, &Wake::default());
+    apply_size(&pty, &shadow, &attached, size, &Hooks::default());
     let taken: Vec<(SessionId, u16, u16)> = store
         .changed_screens()
         .into_iter()
@@ -2454,7 +2454,7 @@ fn an_unpaintable_client_is_not_attached() {
         .write(b"something to repaint\r\n");
 
     let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Broken)));
-    let before = store.screens_work();
+    let before = store.hooks().screens.work();
     let result = store.attach(id(73), writer, 1, Size::cells(80, 24));
 
     assert!(
@@ -2463,7 +2463,7 @@ fn an_unpaintable_client_is_not_attached() {
     );
     // The failed repaint still read, and so re-inflated, the shadow's history.
     assert_ne!(
-        store.screens_work(),
+        store.hooks().screens.work(),
         before,
         "a failed repaint did not wake the screens thread to compress again"
     );

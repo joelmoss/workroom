@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::reader::READ_CHUNK;
 use super::{
-    Attached, Client, NEXT_TOKEN, SessionError, SessionId, SessionInfo, SessionStore, Target, Wake,
+    Attached, Client, Hooks, NEXT_TOKEN, SessionError, SessionId, SessionInfo, SessionStore, Target,
 };
 use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::WRITE_TIMEOUT;
@@ -175,13 +175,13 @@ impl SessionStore {
         // The repaint read the shadow, which re-inflates its compressed history: the screens
         // thread compresses it again on its next pass, even when this client claimed no size or
         // its connection dropped mid-repaint.
-        self.screens_work.raise();
+        self.hooks.screen_changed();
         // Checked after the lock is released, so the early `return None` above leaves nothing
         // registered and nothing half-owned.
         if !painted {
             return Err(SessionError::RepaintFailed(id.to_hyphenated()));
         }
-        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
+        apply_size(&pty, &shadow, &attached, size, &self.hooks);
 
         let sessions = lock_or_recover(&self.sessions);
         let session = sessions
@@ -217,7 +217,7 @@ impl SessionStore {
                 _ => None,
             }
         };
-        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
+        apply_size(&pty, &shadow, &attached, size, &self.hooks);
     }
 
     /// A client's window changed size.
@@ -242,7 +242,7 @@ impl SessionStore {
                 None => attached.claim(token),
             }
         };
-        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
+        apply_size(&pty, &shadow, &attached, size, &self.hooks);
     }
 
     /// Input from a client: claims the size if it is the USER acting, then goes to the pty.
@@ -264,7 +264,7 @@ impl SessionStore {
                 None
             }
         };
-        apply_size(&pty, &shadow, &attached, size, &self.screens_work);
+        apply_size(&pty, &shadow, &attached, size, &self.hooks);
         let _ = pty.write_all(bytes);
     }
 
@@ -352,7 +352,7 @@ pub(super) fn apply_size(
     shadow: &Mutex<Shadow>,
     attached: &Mutex<Attached>,
     size: Option<Size>,
-    work: &Wake,
+    hooks: &Hooks,
 ) {
     let Some(size) = size else {
         return;
@@ -362,7 +362,7 @@ pub(super) fn apply_size(
     lock_or_recover(shadow).resize(size);
     // A resize reflows the screen even when the program prints nothing after it.
     held.changed = true;
-    work.raise();
+    hooks.screen_changed();
 }
 
 /// What a client attaching to a live session is shown: its screen, busy only while the program
@@ -380,7 +380,7 @@ pub(super) fn send_images(
     pty: &Pty,
     shadow: &Mutex<Shadow>,
     attached: &Arc<Mutex<Attached>>,
-    work: &Wake,
+    hooks: &Hooks,
 ) {
     let mut more = false;
     let sends = {
@@ -411,7 +411,7 @@ pub(super) fn send_images(
     for (target, bytes) in sends {
         let frame = Frame::new(FrameKind::Output, bytes);
         let size = deliver(attached, &target, &terminal_envelope(target.stream, frame));
-        apply_size(pty, shadow, attached, size, work);
+        apply_size(pty, shadow, attached, size, hooks);
     }
     if more {
         pty.wake_reader();

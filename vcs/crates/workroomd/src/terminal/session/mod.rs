@@ -22,20 +22,21 @@ use std::time::{Duration, Instant};
 use crate::daemon::rpc::SharedWriter;
 use crate::terminal::images::Transfer;
 use crate::terminal::input::InputClassifier;
-use crate::terminal::program_status::{Hub, Store};
+use crate::terminal::program_status::Store;
 use crate::terminal::pty::{Pty, PtyError, Size};
-use crate::terminal::screens::Screens;
 use crate::terminal::shadow::Shadow;
-use crate::util::{lock_or_recover, recover};
+use crate::util::lock_or_recover;
 
 mod attached;
 mod freeze;
+mod hooks;
 mod reader;
 mod refusals;
 mod store;
 mod terminate;
 
 pub(crate) use freeze::{HANDOFF_FORMAT_DEADLINE, HANDOFF_IMAGE_DEADLINE};
+pub use hooks::Hooks;
 pub use reader::READ_CHUNK;
 pub use refusals::refusals_path;
 pub use terminate::KILL_EXIT_WAIT;
@@ -332,11 +333,11 @@ pub struct TakenScreen {
 /// TERMINATING               read: `kill`, `kill_all`, `end_if_absent` and a reader's end, through
 /// │                         their SIGHUP grace; write: a hand-off's freeze (`frozen_formatting`)
 /// ├─ ending                 a second kill waiting for the first, and `Ending` as it drops
-/// ├─ runs_wake              a reader's end raising it
+/// ├─ Runs.wake              a reader's end raising it (`Hooks::ended`)
 /// └─ sessions               the store map
 ///    ├─ refused             `create_then` checks it; `refuse` takes it alone
 ///    ├─ ending              `mark_ending` as sessions leave the map, `is_ending`
-///    ├─ runs_wake           `signal_run`
+///    ├─ Runs.wake           `signal_run` (`Hooks::run_signalled`)
 ///    └─ attached            per session: `list` (`Session::info`), the end of `attach`, the freeze
 ///       ├─ shadow           per session: `attach`'s repaint, `apply_size`, `send_images`, a read
 ///       │  ├─ Hub.boot      a status event built under it (a read, `change_program_status`)
@@ -344,8 +345,12 @@ pub struct TakenScreen {
 ///       ├─ Transfer         a read stopping a client's transfer
 ///       ├─ encoders         the image encoders' sender: `attach` starting a transfer
 ///       ├─ writer           a connection's writer: `attach`'s repaint
-///       └─ screens_work     raised on output and on a resize
+///       └─ KeptScreens.work raised on output and on a resize (`Hooks::screen_changed`)
 /// ```
+///
+/// `Runs.wake` and `KeptScreens.work` are `util::Wake`s, the observers' own (`Hooks`): the store
+/// reaches them only through a hook, called directly on the thread at that point, so each is taken
+/// exactly where it was when the store held them.
 ///
 /// Taken alone, under nothing and with nothing under them: `Hub.subscribers` and each
 /// `Subscriber.queue` as a publish takes them (`Hub::publish` copies the list first, and publishes
@@ -365,9 +370,9 @@ pub struct TakenScreen {
 #[derive(Clone, Default)]
 pub struct SessionStore {
     sessions: Arc<Mutex<HashMap<SessionId, Session>>>,
-    /// Where each session's screen is kept for after a reboot, when the daemon was asked to keep
-    /// them (`serve --screens`). See `crate::terminal::screens`.
-    screens: Arc<OnceLock<Screens>>,
+    /// What observes the sessions: kept screens, run sessions and program status. The store calls
+    /// them at each point in a session's life (`Hooks`) and holds none of their state itself.
+    hooks: Arc<Hooks>,
     /// Kills still running on threads of their own (`serve`'s Kill), whose sessions have already
     /// left the map. See `is_killing`.
     kills_in_flight: Arc<AtomicUsize>,
@@ -383,44 +388,6 @@ pub struct SessionStore {
     /// Where `refused` is kept for the next program to serve this socket, when this one serves
     /// one (`keep_refusals`).
     refusals: Arc<OnceLock<PathBuf>>,
-    /// Publishes each session's program status to subscribed connections (#358).
-    program_status: Arc<Hub>,
-    /// Where run sessions keep their status files (`crate::terminal::run`), when this store serves
-    /// a socket (`keep_runs`). A store without one refuses run sessions.
-    runs: Arc<OnceLock<PathBuf>>,
-    /// Raised when a run session is created or signalled: what the runs watcher
-    /// (`crate::terminal::run`) sleeps on while no run session has a status left to publish.
-    runs_wake: Arc<Wake>,
-    /// Raised when a screen may have changed or a session has gone (output, a resize,
-    /// `mark_changed`, the reader's end): what the screens thread (`crate::terminal::screens`)
-    /// sleeps on instead of ticking every two seconds of an idle daemon.
-    screens_work: Arc<Wake>,
-}
-
-/// A counted signal. `wait_past` a count read by `seen` returns once `raise` has moved it, so a
-/// raise between the read and the wait is never missed.
-#[derive(Default)]
-struct Wake {
-    count: Mutex<u64>,
-    raised: Condvar,
-}
-
-impl Wake {
-    fn seen(&self) -> u64 {
-        *lock_or_recover(&self.count)
-    }
-
-    fn raise(&self) {
-        *lock_or_recover(&self.count) += 1;
-        self.raised.notify_all();
-    }
-
-    fn wait_past(&self, seen: u64) {
-        let mut count = lock_or_recover(&self.count);
-        while *count == seen {
-            count = recover(self.raised.wait(count));
-        }
-    }
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.

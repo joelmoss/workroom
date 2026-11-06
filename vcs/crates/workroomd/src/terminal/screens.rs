@@ -35,10 +35,51 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::terminal::session::{SessionId, SessionStore};
 use crate::terminal::shadow::Shadow;
+use crate::util::Wake;
+
+/// The screens thread's side of a session store, which the store reaches through its hooks
+/// (`session::Hooks`): where each session's screen is kept for after a reboot, when the daemon
+/// was asked to keep them (`serve --screens`), and what the thread sleeps on.
+#[derive(Default)]
+pub struct KeptScreens {
+    screens: OnceLock<Screens>,
+    /// Raised when a screen may have changed or a session has gone (output, a resize,
+    /// `mark_changed`, the reader's end): what the screens thread sleeps on instead of ticking
+    /// every two seconds of an idle daemon.
+    work: Wake,
+}
+
+impl KeptScreens {
+    /// Keeps each session's screen in `screens` from now on (`spawn` does the writing). Once per
+    /// store.
+    pub fn keep(&self, screens: Screens) {
+        let _ = self.screens.set(screens);
+    }
+
+    pub fn get(&self) -> Option<&Screens> {
+        self.screens.get()
+    }
+
+    /// How often a screen may have changed or a session gone so far. Read before a pass over the
+    /// sessions, so `wait_for_work` cannot miss a change made during it.
+    pub(crate) fn work(&self) -> u64 {
+        self.work.seen()
+    }
+
+    /// Blocks until a screen may have changed or a session has gone after `work` returned `seen`.
+    pub(crate) fn wait_for_work(&self, seen: u64) {
+        self.work.wait_past(seen);
+    }
+
+    pub(crate) fn raise(&self) {
+        self.work.raise();
+    }
+}
 
 const MAGIC: &[u8; 8] = b"WRSCREEN";
 const VERSION: u8 = 1;
@@ -242,9 +283,9 @@ fn decode(bytes: &[u8]) -> Option<(u16, u16, &[u8])> {
         .then_some((columns, rows, screen))
 }
 
-/// Keeps every session's record current, when the store has records
-/// (`SessionStore::keep_screens`), and every shadow's history compressed, for the life of the
-/// daemon. Called once by every daemon, after `keep_screens` if it keeps any.
+/// Keeps every session's record current, when the store has records (`KeptScreens::keep`), and
+/// every shadow's history compressed, for the life of the daemon. Called once by every daemon,
+/// after `keep` if it keeps any.
 ///
 /// Writes at once, then every `INTERVAL`: the sessions a hand-off carried in get their records
 /// straight away, not a tick after `open` may have pruned them.
@@ -265,14 +306,14 @@ pub fn spawn(sessions: SessionStore) {
             let mut failing = HashSet::new();
             loop {
                 // Read before the pass looks, so a change made during it still wakes the thread.
-                let seen = sessions.screens_work();
+                let seen = sessions.hooks().screens.work();
                 let pending = tick(&sessions, &mut written, &mut failing);
                 // With nothing to come back for, sleep until a screen may have changed or a
                 // session has gone, rather than tick every INTERVAL of an idle daemon (half of
                 // its remaining wakeups, 2026-10-23). The INTERVAL after the wake batches a busy
                 // session's output as the fixed tick did.
                 if !pending {
-                    sessions.wait_for_screens_work(seen);
+                    sessions.hooks().screens.wait_for_work(seen);
                 }
                 std::thread::sleep(INTERVAL);
             }
@@ -307,7 +348,7 @@ fn flush(
     written: &mut HashSet<SessionId>,
     failing: &mut HashSet<SessionId>,
 ) {
-    let Some(screens) = sessions.screens() else {
+    let Some(screens) = sessions.hooks().screens.get() else {
         return;
     };
     let mut saved = Vec::new();

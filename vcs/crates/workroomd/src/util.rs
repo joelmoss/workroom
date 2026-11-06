@@ -2,7 +2,33 @@
 
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
+use std::sync::{Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
+
+/// A counted signal. `wait_past` a count read by `seen` returns once `raise` has moved it, so a
+/// raise between the read and the wait is never missed.
+#[derive(Default)]
+pub(crate) struct Wake {
+    count: Mutex<u64>,
+    raised: Condvar,
+}
+
+impl Wake {
+    pub(crate) fn seen(&self) -> u64 {
+        *lock_or_recover(&self.count)
+    }
+
+    pub(crate) fn raise(&self) {
+        *lock_or_recover(&self.count) += 1;
+        self.raised.notify_all();
+    }
+
+    pub(crate) fn wait_past(&self, seen: u64) {
+        let mut count = lock_or_recover(&self.count);
+        while *count == seen {
+            count = recover(self.raised.wait(count));
+        }
+    }
+}
 
 /// Locks `mutex`, recovering it if a panic poisoned it (owner decision D5): the daemon holds live
 /// shells, and a panic under a lock must not stop a session draining, or fail every later caller of

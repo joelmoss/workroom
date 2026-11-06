@@ -8,9 +8,8 @@ use std::time::Instant;
 
 use super::attached::{apply_size, deliver, send_images, targets, terminal_envelope};
 use super::terminate::{sweep_run_session, terminate};
-use super::{Attached, Session, SessionId, SessionStore, TERMINATING, exit_code};
+use super::{Attached, Hooks, Session, SessionId, SessionStore, TERMINATING, exit_code};
 use crate::terminal::images;
-use crate::terminal::program_status::{Hub, Store};
 use crate::terminal::pty::Pty;
 use crate::terminal::shadow::Shadow;
 use crate::util::{lock_or_recover, recover};
@@ -93,44 +92,16 @@ fn remove_if_held(store: &mut HashMap<SessionId, Session>, id: SessionId, number
     held
 }
 
-/// Applies `change` to the session's program status under its shadow lock, and publishes the
-/// result, with the lock released, if it changed anything.
-pub(super) fn change_program_status(
-    id: SessionId,
-    shadow: &Mutex<Shadow>,
-    hub: &Hub,
-    change: impl FnOnce(&mut Store),
-) {
-    let published = {
-        let mut shadow = lock_or_recover(shadow);
-        shadow.status().and_then(|status| {
-            change(status);
-            let blocked = status.commit()?;
-            Some((status.event(hub.boot(), id), blocked))
-        })
-    };
-    if let Some((event, blocked)) = published {
-        hub.publish(id, event, blocked);
-    }
-}
-
-/// The session's program has exited: its running records go, and every subscriber is told so,
-/// then that the session has ended.
-fn end_program_status(id: SessionId, shadow: &Mutex<Shadow>, hub: &Hub) {
-    change_program_status(id, shadow, hub, Store::drop_on_exit);
-    hub.ended(id);
-}
-
 /// Writes a probe's answer to the pty, non-blocking: a program that is not reading its input (a
 /// paste it has not taken yet) must not stall every client's output. What does not fit is dropped,
 /// never retried out of order, so with the input queue nearly full a prefix of the answer can land
 /// (logged); the queue is only that full when the program is not reading.
 ///
 /// Accepted limit: an answer can land between two writes of a large paste, inside it.
-fn answer_program(pty: &Pty, answer: &[u8], id: SessionId, hub: &Hub) {
+fn answer_program(pty: &Pty, answer: &[u8], id: SessionId, hooks: &Hooks) {
     let written = pty.write(answer);
     if !matches!(written, Ok(n) if n == answer.len()) {
-        hub.reply_dropped();
+        hooks.reply_dropped();
         crate::note!(
             "session {}: a program status answer was dropped ({written:?})",
             id.to_hyphenated()
@@ -146,11 +117,10 @@ pub(super) fn read_session(
     attached: Arc<Mutex<Attached>>,
     sessions: SessionStore,
 ) {
-    // The store's shared parts the reader uses: the map, the status publisher and the screens
-    // thread's wake.
+    // The store's shared parts the reader uses: the map, and the hooks it calls at output and at
+    // its end, here on this thread (see `Hooks`).
     let store = Arc::clone(&sessions.sessions);
-    let hub = Arc::clone(&sessions.program_status);
-    let work = Arc::clone(&sessions.screens_work);
+    let hooks = Arc::clone(&sessions.hooks);
     let mut buffer = [0u8; READ_CHUNK];
     // A run session ends when its supervisor does, even while something it left behind holds the
     // pty open. On Linux a master reads EIO only once every holder of the slave has closed it, so
@@ -229,12 +199,12 @@ pub(super) fn read_session(
                         answer = replies;
                         published = changed.and_then(|blocked| {
                             let status = shadow.status()?;
-                            Some((status.event(hub.boot(), id), blocked))
+                            Some((status.event(hooks.boot(), id), blocked))
                         });
                         shadow.take_disturbed()
                     };
                     held.changed = true;
-                    work.raise();
+                    hooks.screen_changed();
                     held.clients
                         .iter_mut()
                         .map(|client| {
@@ -260,10 +230,10 @@ pub(super) fn read_session(
         // Before the output goes to any client: a program sends its probe followed by a `CSI c`
         // the client answers, and reads the two answers in that order (#358, Step 0).
         if !answer.is_empty() {
-            answer_program(&pty, &answer, id, &hub);
+            answer_program(&pty, &answer, id, &hooks);
         }
         if let Some((event, blocked)) = published {
-            hub.publish(id, event, blocked);
+            hooks.status_changed(id, event, blocked);
         }
 
         // "The child is gone" looks different on each platform: reading a pty master whose child
@@ -298,7 +268,7 @@ pub(super) fn read_session(
                 std::thread::sleep(Duration::from_millis(5));
                 // A quiet master can read this way for as long as its shell says nothing, which
                 // is when a transfer has the stream to itself.
-                send_images(&pty, &shadow, &attached, &work);
+                send_images(&pty, &shadow, &attached, &hooks);
                 continue;
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
@@ -315,12 +285,9 @@ pub(super) fn read_session(
                 )
             };
             if held {
-                work.raise(); // the record of a session that ended goes on the next pass
+                hooks.ended(run);
             }
             if held && run {
-                // The runs watcher may be asleep on this run's last status; its file goes on the
-                // next pass, which it must be woken for.
-                sessions.runs_wake.raise();
                 sweep_run_session(id, pty.child_pid());
             }
             // Under `TERMINATING`, so a hand-off cannot replace this program between the removal and
@@ -342,7 +309,7 @@ pub(super) fn read_session(
             }
             drop(terminating);
             if !replaced {
-                end_program_status(id, &shadow, &hub);
+                hooks.program_ended(id, &shadow);
             }
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
@@ -368,7 +335,7 @@ pub(super) fn read_session(
                     let bytes =
                         terminal_envelope(target.stream, Frame::new(FrameKind::Output, output));
                     let size = deliver(&attached, target, &bytes);
-                    apply_size(&pty, &shadow, &attached, size, &work);
+                    apply_size(&pty, &shadow, &attached, size, &hooks);
                 }
             }
             // `Interrupted` is not a failure — a signal arriving mid-read is ordinary, and the
@@ -411,13 +378,13 @@ pub(super) fn read_session(
                     remove_if_held(&mut store, id, number);
                     store.contains_key(&id)
                 };
-                work.raise();
+                hooks.screen_changed();
                 if !replaced {
-                    end_program_status(id, &shadow, &hub);
+                    hooks.program_ended(id, &shadow);
                 }
                 return;
             }
         }
-        send_images(&pty, &shadow, &attached, &work);
+        send_images(&pty, &shadow, &attached, &hooks);
     }
 }

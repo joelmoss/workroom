@@ -465,7 +465,7 @@ pub fn hand_off(
                 replace(
                     context,
                     binary,
-                    sessions.program_status().boot(),
+                    sessions.hooks().program_status.boot(),
                     frozen,
                     before_exec,
                 )

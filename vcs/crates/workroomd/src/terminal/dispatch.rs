@@ -112,7 +112,9 @@ pub(crate) fn dispatch(
                 // `SessionStore::attach` chunks a repaint: `Frame::encode` panics above the frame
                 // cap.
                 let ended = sessions
-                    .screens()
+                    .hooks()
+                    .screens
+                    .get()
                     .and_then(|screens| screens.render(id, request.columns, request.rows));
                 if let Some(screen) = ended {
                     let attached = Frame::control(FrameKind::Attached).encode();
@@ -329,7 +331,7 @@ fn run_invocation(
     if command.is_empty() {
         return Err(format!("run session {} has no command", id.to_hyphenated()));
     }
-    let Some(status) = sessions.run_status_path(id) else {
+    let Some(status) = sessions.hooks().runs.status_path(id) else {
         return Err("this daemon keeps no run sessions: it serves no socket".to_string());
     };
     // A file left by an earlier session under this id must not be read as this one's.

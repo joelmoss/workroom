@@ -1,71 +1,25 @@
-//! The session map's lifecycle: creating sessions, run sessions, kept screens and program status.
+//! The session map's lifecycle: creating sessions, and what the screens thread, the runs watcher
+//! and program status read of them.
 
-use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::reader::{change_program_status, read_session};
+use super::reader::read_session;
 use super::refusals::wall_now;
 use super::{
-    Attached, CREATED_KEY, NEXT_SESSION, RunSignalError, Session, SessionError, SessionId,
+    Attached, CREATED_KEY, Hooks, NEXT_SESSION, RunSignalError, Session, SessionError, SessionId,
     SessionInfo, SessionParts, SessionSpec, SessionStore, TakenScreen, until,
 };
-use crate::terminal::program_status::{Hub, Store};
+use crate::terminal::program_status::Store;
 use crate::terminal::pty::Pty;
-use crate::terminal::screens::Screens;
 use crate::terminal::shadow::Shadow;
 use crate::util::{lock_or_recover, try_recover};
 
 impl SessionStore {
-    /// Keeps run sessions' status files in `dir` (`crate::terminal::run`), made private to this
-    /// user if it is new. A directory that cannot be made leaves the store refusing run sessions.
-    pub fn keep_runs(&self, dir: PathBuf) {
-        use std::os::unix::fs::DirBuilderExt;
-        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => {
-                crate::note!("not keeping run sessions in {}: {e}", dir.display());
-                return;
-            }
-        }
-        let _ = self.runs.set(dir);
-    }
-
-    /// Where run session `id` keeps its status, or None when this store keeps no run sessions.
-    pub fn run_status_path(&self, id: SessionId) -> Option<PathBuf> {
-        self.runs
-            .get()
-            .map(|dir| crate::terminal::run::status_file(dir, id))
-    }
-
-    /// The directory `keep_runs` was given.
-    pub fn runs_dir(&self) -> Option<&Path> {
-        self.runs.get().map(PathBuf::as_path)
-    }
-
-    /// How often a run session has been created or signalled so far. Read before looking at the
-    /// runs, so `wait_for_runs_wake` cannot miss one created or signalled in between.
-    pub(crate) fn runs_wake(&self) -> u64 {
-        self.runs_wake.seen()
-    }
-
-    /// Blocks until a run session is created or signalled after `runs_wake` returned `seen`.
-    pub(crate) fn wait_for_runs_wake(&self, seen: u64) {
-        self.runs_wake.wait_past(seen);
-    }
-
-    /// How often a screen may have changed or a session gone so far. Read before a pass over the
-    /// sessions, so `wait_for_screens_work` cannot miss a change made during it.
-    pub(crate) fn screens_work(&self) -> u64 {
-        self.screens_work.seen()
-    }
-
-    /// Blocks until a screen may have changed or a session has gone after `screens_work` returned
-    /// `seen`.
-    pub(crate) fn wait_for_screens_work(&self, seen: u64) {
-        self.screens_work.wait_past(seen);
+    /// What observes this store's sessions: its kept screens, run sessions and program status.
+    pub fn hooks(&self) -> &Hooks {
+        &self.hooks
     }
 
     /// The live run sessions.
@@ -102,8 +56,7 @@ impl SessionStore {
         if unsafe { libc::kill(session.pty.child_pid(), number) } != 0 {
             return Err(RunSignalError::Failed(std::io::Error::last_os_error()));
         }
-        // The supervisor is about to write a new status; the watcher may be asleep on a finished one.
-        self.runs_wake.raise();
+        self.hooks.run_signalled();
         Ok(())
     }
 
@@ -187,16 +140,11 @@ impl SessionStore {
             columns,
             rows,
         )?;
-        // The new session supersedes whatever record its id had: otherwise a shell that exits
-        // before its first record would leave the old one to be shown as its last screen. Only
-        // once it exists, so a create that loses a race or fails to spawn leaves the record
-        // alone, and before it enters the map, so the screens thread cannot write its record
-        // first and have it removed here. The directory is synced after the store lock is
-        // released, so no other session waits on the disk.
-        let superseded = self
-            .screens
-            .get()
-            .is_some_and(|screens| screens.remove_unsynced(spec.id));
+        // Only once the session exists, so a create that loses a race or fails to spawn leaves
+        // its id's record alone, and before it enters the map, so the screens thread cannot write
+        // its record first and have it removed here. The directory is synced after the store lock
+        // is released (`Hooks::created`), so no other session waits on the disk.
+        let superseded = self.hooks.creating(spec.id);
         let mut metadata = spec.metadata.to_vec();
         metadata.push((CREATED_KEY.to_string(), wall_now().as_millis().to_string()));
         let is_run = crate::terminal::run::is_run(&metadata);
@@ -219,17 +167,12 @@ impl SessionStore {
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
-        if is_run {
-            self.runs_wake.raise();
-        }
         crate::note!(
             "session {} started: shell pid {}",
             spec.id.to_hyphenated(),
             pty.child_pid()
         );
-        if superseded && let Some(screens) = self.screens.get() {
-            let _ = screens.sync();
-        }
+        self.hooks.created(is_run, superseded);
         // `std::thread::spawn` panics when the OS cannot create a thread. Reachable here on the
         // connection's own dispatch thread (this runs inside `handle_connection`), so the panic
         // would unwind past `Server::serve`'s `connections.fetch_sub` exactly as an unhandled
@@ -301,16 +244,6 @@ impl SessionStore {
         lock_or_recover(&self.sessions).is_empty()
     }
 
-    /// Keeps each session's screen in `screens` from now on (`crate::terminal::screens::spawn`
-    /// does the writing). Once per store.
-    pub fn keep_screens(&self, screens: Screens) {
-        let _ = self.screens.set(screens);
-    }
-
-    pub fn screens(&self) -> Option<&Screens> {
-        self.screens.get()
-    }
-
     /// `(id, columns, rows, record)` for each session whose screen changed since it was last
     /// taken. Read under the session's attachment lock, as `frozen` reads a screen, so the size is
     /// the one the screen was drawn at.
@@ -350,7 +283,7 @@ impl SessionStore {
                 let Some(mut held) = until(deadline, || try_recover(attached.try_lock())) else {
                     // Left changed for the next pass, which the screens thread must come back for:
                     // a session that has gone quiet raises nothing more.
-                    self.screens_work.raise();
+                    self.hooks.screen_changed();
                     return None;
                 };
                 if !std::mem::take(&mut held.changed) {
@@ -391,7 +324,7 @@ impl SessionStore {
     pub fn mark_changed(&self, id: SessionId) {
         if let Some((_, _, attached)) = self.parts(id) {
             lock_or_recover(&attached).changed = true;
-            self.screens_work.raise();
+            self.hooks.screen_changed();
         }
     }
 
@@ -441,7 +374,7 @@ impl SessionStore {
                 .collect()
         };
         for (id, pty, shadow, interactive) in sessions {
-            change_program_status(id, &shadow, &self.program_status, |status| {
+            self.hooks.change_program_status(id, &shadow, |status| {
                 if !status.has_unprobed_request() {
                     return;
                 }
@@ -458,11 +391,6 @@ impl SessionStore {
         pending
     }
 
-    /// The publisher of this store's program status (#358), whose boot names the store.
-    pub fn program_status(&self) -> &Arc<Hub> {
-        &self.program_status
-    }
-
     /// Every live session's `status` event, in id order, for a new subscriber's snapshot. Each is
     /// read under its own shadow lock, never the store's.
     pub fn program_status_events(&self) -> Vec<(SessionId, Vec<u8>)> {
@@ -473,7 +401,7 @@ impl SessionStore {
                 .map(|session| (session.id, Arc::clone(&session.shadow)))
                 .collect()
         };
-        let boot = self.program_status.boot();
+        let boot = self.hooks.boot();
         let mut events: Vec<(SessionId, Vec<u8>)> = shadows
             .into_iter()
             .map(|(id, shadow)| {
@@ -495,7 +423,7 @@ impl SessionStore {
         let Some((_, shadow, _)) = self.parts(id) else {
             return false;
         };
-        change_program_status(id, &shadow, &self.program_status, change);
+        self.hooks.change_program_status(id, &shadow, change);
         true
     }
 }

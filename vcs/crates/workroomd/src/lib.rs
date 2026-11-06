@@ -8,7 +8,8 @@
 //! See docs/designs/remote-workrooms.md. Where each service lives:
 //!
 //! - Terminal: `terminal` (`terminal::session` is the store; `terminal::dispatch` handles its
-//!   frames, whose payloads are `wr_protocol::terminal`'s)
+//!   frames, whose payloads are `wr_protocol::terminal`'s). Kept screens, run sessions and
+//!   program status observe the store through `terminal::session::Hooks`.
 //! - Control: `terminal::dispatch`, beside Terminal's frames; a hand-off is `daemon::handoff`
 //!
 //! `daemon::serve` accepts connections and hands each envelope to its service.
