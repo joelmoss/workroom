@@ -25,12 +25,13 @@ final class SidebarBenchmarkTests: XCTestCase {
     }
     store.collapsedProjects = []
     let id = SidebarID.root(project: store.projects[0].path)
-    store.workroomStatuses[id] = WorkroomStatus(dirty: false)
+    store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: false)
     ProjectSidebar.rowEvaluations = 0
     let hosting = NSHostingView(
       rootView: ProjectSidebar()
         .environmentObject(store)
         .environmentObject(store.runCommand)
+        .environmentObject(store.projectStore)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700))
@@ -93,6 +94,7 @@ final class SidebarBenchmarkTests: XCTestCase {
       rootView: ProjectSidebar()
         .environmentObject(store)
         .environmentObject(store.runCommand)
+        .environmentObject(store.projectStore)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700))
@@ -165,6 +167,7 @@ final class SidebarBenchmarkTests: XCTestCase {
       let root = ProjectSidebar()
         .environmentObject(store)
         .environmentObject(store.runCommand)
+        .environmentObject(store.projectStore)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals)
         .frame(width: 300, height: 700)

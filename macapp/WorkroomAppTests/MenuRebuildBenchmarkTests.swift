@@ -100,7 +100,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     store.selectedTargetID = selected
     store.selectionStatusTask?.cancel()
     store.refreshSelectionHasTabs()
-    store.workroomStatuses[selected] = WorkroomStatus(dirty: false)
+    store.projectStore.workroomStatuses[selected] = WorkroomStatus(dirty: false)
     XCTAssertEqual(store.inspectorTargetID, selected)
 
     let flags = Flags()
@@ -155,7 +155,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     let pr = PullRequestInfo(
       number: 12, title: "A change", state: .open, isDraft: true,
       url: "https://github.com/example/repo/pull/12", reviewDecision: nil, reviewers: [])
-    store.workroomStatuses[selected] = WorkroomStatus(dirty: true, pr: pr)
+    store.projectStore.workroomStatuses[selected] = WorkroomStatus(dirty: true, pr: pr)
     await flush(hosting)
     var room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room["Go to Pull Request"], true)
@@ -174,7 +174,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     await flush(hosting)
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room[PRAction.markReady.label], true)
-    store.workroomStatuses[selected] = WorkroomStatus(dirty: false)
+    store.projectStore.workroomStatuses[selected] = WorkroomStatus(dirty: false)
     await flush(hosting)
     XCTAssertEqual(commitEnabledWhileOpen(window), false)
     await flush(hosting)

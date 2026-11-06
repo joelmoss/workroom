@@ -603,7 +603,7 @@ final class AppStoreContentNavigationTests: XCTestCase {
 
     var status = WorkroomStatus()
     status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
-    store.workroomStatuses[a] = status
+    store.projectStore.workroomStatuses[a] = status
 
     store.navigateBack()
 

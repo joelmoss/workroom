@@ -91,6 +91,7 @@ struct RootView: View {
     // the lights). WindowBackgroundThemer sets the window bg to the panel token.
     .environmentObject(store)
     .environmentObject(runCommand)
+    .environmentObject(store.projectStore)
     .environmentObject(notifications)
     .environmentObject(terminals)
     .environmentObject(updater)
@@ -365,6 +366,7 @@ struct RootView: View {
       .sheet(item: $store.pendingCommit) { pending in
         CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
           .environmentObject(store)
+          .environmentObject(store.projectStore)
       }
       // A first create at a remote provider, held until the user's account there is ready.
       // A sheet dismissed any other way than its buttons cancels, so no create waits for good.

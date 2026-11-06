@@ -101,7 +101,7 @@ extension AppStore {
       // timer does.
       if isCommittingProject(item.sharedLocation) { return false }
       guard !force else { return true }
-      guard let checked = workroomStatuses[item.sid]?.lastChecked else { return true }
+      guard let checked = projectStore.workroomStatuses[item.sid]?.lastChecked else { return true }
       return now.timeIntervalSince(checked) >= localTTL
     }
     // `.utility` so this background sweep yields CPU to a mounting terminal surface + its login shell.
@@ -115,9 +115,10 @@ extension AppStore {
       // rather than spawn a `gh` per dirty workroom only to have each fail.
       await self.refreshGitHubCLI(resolver: resolver, force: force)
       if Task.isCancelled { return }
-      guard self.githubCLIStatus == .available else { return }
+      guard self.projectStore.githubCLIStatus == .available else { return }
       let ciItems = self.statusWorkItems().filter { item in
-        guard let s = self.workroomStatuses[item.sid], s.dirty != nil, s.failure == nil else {
+        guard let s = self.projectStore.workroomStatuses[item.sid], s.dirty != nil, s.failure == nil
+        else {
           return false
         }
         guard !force else { return true }
@@ -148,9 +149,10 @@ extension AppStore {
   /// probe told us nothing and there was no prior verdict), so leave the mirror alone in both cases.
   func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
     if !probesRepositories { return }
-    guard let status = await ghAuthCache.status(force: force, resolver: resolver) else { return }
+    guard let status = await projectStore.ghAuthCache.status(force: force, resolver: resolver)
+    else { return }
     if Task.isCancelled { return }
-    githubCLIStatus = status
+    projectStore.githubCLIStatus = status
   }
 
   /// Probe ONE workroom's local status now, whatever is selected (issue #167). The post-create
@@ -220,7 +222,7 @@ extension AppStore {
       // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
       await self.refreshGitHubCLI(resolver: resolver)
       if Task.isCancelled { return }
-      guard self.githubCLIStatus == .available else { return }
+      guard self.projectStore.githubCLIStatus == .available else { return }
       // CI and the PR list are independent — run them concurrently. Apply CI the moment it lands so
       // the sidebar/tab glyph never waits on the PR probe.
       async let ciRes = github.ciSnapshot(branch: fresh.branchForCI)
@@ -251,7 +253,7 @@ extension AppStore {
     guard let p = projects.first(where: { $0.id == projectPath }) else { return nil }
     var sids: [SidebarID] = [.root(project: p.id)]
     sids += p.workrooms.map { SidebarID.workroom(project: p.id, name: $0.name) }
-    let worst = sids.compactMap { workroomStatuses[$0] }
+    let worst = sids.compactMap { projectStore.workroomStatuses[$0] }
       .max(by: { $0.aggregateWeight < $1.aggregateWeight })
     guard let worst, worst.aggregateWeight > 0 else { return nil }
     return worst
@@ -267,15 +269,16 @@ extension AppStore {
   func seedStatuses() {
     guard let seeded = services.seededStatuses, let project = projects.first else { return }
     let seed = seeded()
-    workroomStatuses[.root(project: project.path)] = seed.root
+    projectStore.workroomStatuses[.root(project: project.path)] = seed.root
     if let workroom = project.workrooms.first {
-      workroomStatuses[.workroom(project: project.path, name: workroom.name)] = seed.workroom
+      projectStore.workroomStatuses[.workroom(project: project.path, name: workroom.name)] =
+        seed.workroom
     }
     // Seed here — not only at load — because this runs again on the manual Refresh button, and
     // `refreshGitHubCLI` no-ops when statuses are seeded, so a re-seed is the only thing that can
     // restate the value. Left alone when there is none, so the optimistic `.available` default
     // stands and every existing fixture test still sees no warning.
-    if let gitHubCLI = seed.gitHubCLI { githubCLIStatus = gitHubCLI }
+    if let gitHubCLI = seed.gitHubCLI { projectStore.githubCLIStatus = gitHubCLI }
   }
 
   // MARK: - Internals
@@ -378,7 +381,7 @@ extension AppStore {
         services.append((item, service))
       } catch { continue }
     }
-    let branches = workroomStatuses.mapValues(\.branchForCI)
+    let branches = projectStore.workroomStatuses.mapValues(\.branchForCI)
     await withTaskGroup(of: (StatusWorkItem, CIStatusSnapshot).self) { group in
       var index = 0
       func enqueue() {
@@ -421,12 +424,12 @@ extension AppStore {
   /// comparison subtly wrong.
   func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID) {
     guard targetExists(sid) else { return }  // deleted mid-sweep → don't write a ghost entry
-    if let readAt = fresh.localReadAt, let prior = workroomStatuses[sid]?.localReadAt,
+    if let readAt = fresh.localReadAt, let prior = projectStore.workroomStatuses[sid]?.localReadAt,
       prior > readAt
     {
       return
     }
-    var s = workroomStatuses[sid] ?? .unresolved
+    var s = projectStore.workroomStatuses[sid] ?? .unresolved
     s.dirty = fresh.dirty
     s.conflicted = fresh.conflicted
     s.changedFiles = fresh.changedFiles
@@ -436,7 +439,7 @@ extension AppStore {
     s.failure = fresh.failure
     s.localReadAt = fresh.localReadAt
     s.lastChecked = Date()
-    workroomStatuses[sid] = s
+    projectStore.workroomStatuses[sid] = s
     // This sweep is the freshest evidence anyone has for these two, so it settles both of the caches
     // that would otherwise go on asserting a record-time answer: the branch name the toolbar
     // published, and the change kind an open diff tab captured when it opened.
@@ -463,7 +466,7 @@ extension AppStore {
   }
 
   private func applyCIStatus(_ res: CIResolution, to sid: SidebarID, checkedAt: Date) {
-    guard var s = workroomStatuses[sid] else { return }
+    guard var s = projectStore.workroomStatuses[sid] else { return }
     switch res {
     case .state(let x):
       s.ci = x
@@ -478,13 +481,13 @@ extension AppStore {
       // but cheap; true exponential backoff is a future refinement.
       if s.ciCheckedAt != nil { s.ciCheckedAt = checkedAt }
     }
-    workroomStatuses[sid] = s
+    projectStore.workroomStatuses[sid] = s
   }
 
   // Internal (not `private`) so `@testable` can drive the checks lifecycle (clear-on-PR-change /
   // clear-on-no-PR, issue #75) directly.
   func applyPRStatus(_ res: PRResolution, to sid: SidebarID) {
-    guard var s = workroomStatuses[sid] else { return }
+    guard var s = projectStore.workroomStatuses[sid] else { return }
     switch res {
     case .info(let pr):
       // Checks are keyed to a PR's identity (issue #75). If the PR changed (different number), the
@@ -508,7 +511,7 @@ extension AppStore {
       // but only if we've probed before — a first-ever blip leaves it nil so the next sweep retries.
       if s.prCheckedAt != nil { s.prCheckedAt = Date() }
     }
-    workroomStatuses[sid] = s
+    projectStore.workroomStatuses[sid] = s
   }
 
   /// Apply a PR-checks probe result (issue #75). `.list` (including `[]` for "loaded, no checks")
@@ -519,7 +522,7 @@ extension AppStore {
   /// (not `private`) so `@testable` reaches it. The clear-on-no-PR / clear-on-PR-change paths live in
   /// `applyPRStatus` — `resolveChecks` never runs without a PR.
   func applyChecksStatus(_ res: ChecksResolution, to sid: SidebarID) {
-    guard var s = workroomStatuses[sid] else { return }
+    guard var s = projectStore.workroomStatuses[sid] else { return }
     switch res {
     case .list(let checks):
       s.checks = checks
@@ -530,7 +533,7 @@ extension AppStore {
     case .keepPrior:
       if s.checksCheckedAt != nil { s.checksCheckedAt = Date() }
     }
-    workroomStatuses[sid] = s
+    projectStore.workroomStatuses[sid] = s
   }
 
   // MARK: - Live filesystem watch (selected workroom)
@@ -557,7 +560,7 @@ extension AppStore {
   /// It also stops the panel rendering a half-staged tree: `git commit` moves the index and refs as it
   /// goes, and `GitProvider.workingStatus` collapses index and worktree deltas into one row, so a
   /// probe landing mid-commit shows a state that never really existed.
-  func isCommitting(_ sid: SidebarID) -> Bool { committingTargets.contains(sid) }
+  func isCommitting(_ sid: SidebarID) -> Bool { projectStore.committingTargets.contains(sid) }
 
   /// Whether ANY workroom of this project has a commit in flight.
   ///
@@ -566,14 +569,14 @@ extension AppStore {
   /// Suppression is what keeps these lanes off a repo mid-write; reads are not gated.
   func isCommittingProject(_ repository: RepositoryLocation?) -> Bool {
     guard let repository else { return false }
-    return committingProjectRoots[repository, default: 0] > 0
+    return projectStore.committingProjectRoots[repository, default: 0] > 0
   }
 
   func isCommittingProject(_ projectRoot: String) -> Bool {
     guard let location = RepositoryRouter.shared.localLocation(for: projectRoot) else {
       return false
     }
-    return committingProjectRoots[location, default: 0] > 0
+    return projectStore.committingProjectRoots[location, default: 0] > 0
   }
 
   /// Whether ANY write (commit, fetch, push, or pull) is in flight against this project root, in
@@ -591,14 +594,14 @@ extension AppStore {
   }
 
   func isWritingProject(_ repository: RepositoryLocation) -> Bool {
-    writingProjectRoots[repository, default: 0] > 0
+    projectStore.writingProjectRoots[repository, default: 0] > 0
   }
 
   /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
   /// `defer` or an equivalent unconditional cleanup, mirroring how `committingProjectRoots` is
   /// incremented/decremented around `performCommit`'s own write below.
   func beginWrite(projectRoot: RepositoryLocation) {
-    writingProjectRoots[projectRoot, default: 0] += 1
+    projectStore.writingProjectRoots[projectRoot, default: 0] += 1
   }
 
   /// Mark a write finishing against `projectRoot`. Decremented rather than cleared, matching

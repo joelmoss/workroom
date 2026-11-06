@@ -9,11 +9,15 @@ import WorkroomVCS
 /// multiple per-window `AppStore`s can share one project list while each keeps its own selection,
 /// terminals, splits, history, and run state.
 ///
-/// `AppStore` proxies these properties; Observation tracks them through it. List requests are
-/// ordered here across windows; each `AppStore` reconciles its own window after an accepted read.
+/// Views take it from the environment and the store reaches it as `projectStore`. `AppStore` still
+/// forwards the project list, the run config and the create and delete sets, which Observation
+/// tracks through it. List requests are ordered here across windows; each `AppStore` reconciles its
+/// own window after an accepted read.
 @MainActor
 @Observable
-final class ProjectStore {
+// `ObservableObject` only so views can take it as an `@EnvironmentObject`, as they take the store;
+// Observation tracks the reads.
+final class ProjectStore: ObservableObject {
   /// The shared instance used in production (every window's `AppStore` points at it). Tests
   /// construct an isolated `AppStore()`, which gets its own fresh `ProjectStore`, so they never
   /// pollute this singleton or each other.
@@ -84,16 +88,34 @@ final class ProjectStore {
     return true
   }
 
-  /// Per-project resolved root branch labels, hydrated asynchronously after each load.
-  var rootRefs: [Project.ID: RootRef] = [:]
+  /// Per-project resolved root branch labels, hydrated asynchronously after each load (see
+  /// `AppStore.resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
+  ///
+  /// This and the other status collections are computed over private stored ones so that a write
+  /// which changes nothing notifies no one: `@Observable` skips an equal whole-value assignment, but
+  /// an in-place write (`workroomStatuses[sid] = s`, `insert(_:)`) to a stored property always
+  /// notifies. The setter makes every write the first kind, as `AppStore`'s forwarding proxies once
+  /// did; a status sweep that finds nothing new must not redraw the sidebar.
+  var rootRefs: [Project.ID: RootRef] {
+    get { storedRootRefs }
+    set { storedRootRefs = newValue }
+  }
+  private var storedRootRefs: [Project.ID: RootRef] = [:]
 
   /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes panel
   /// (issue #24), keyed by `SidebarID`. Resolved app-side, best-effort/"last checked". Shared so two
   /// windows showing the same workroom report a consistent badge and don't double the probes.
-  var workroomStatuses: [SidebarID: WorkroomStatus] = [:]
+  /// Deliberately NOT persisted. Hydrated after each load, on selection, and on focus; see
+  /// `AppStore+WorkroomStatus.swift`.
+  var workroomStatuses: [SidebarID: WorkroomStatus] {
+    get { storedWorkroomStatuses }
+    set { storedWorkroomStatuses = newValue }
+  }
+  private var storedWorkroomStatuses: [SidebarID: WorkroomStatus] = [:]
 
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
-  /// no warning flashes before the first check.
+  /// no warning flashes before the first check; refreshed by `AppStore.refreshGitHubCLI`. Drives
+  /// the Pull Request section's warning and gates the `gh` probes when not available.
   var githubCLIStatus: GitHubCLIStatus = .available
 
   /// Owns the `gh auth status` probe: its freshness clock AND its single-flight, so N windows share
@@ -140,7 +162,11 @@ final class ProjectStore {
   /// `RepositoryWriteGate` and the `index.lock` contention it exists to prevent are per PROCESS. Held on
   /// the window's own store, a second window's 15s sweep, FSEvents lane and Refresh button all saw an
   /// empty set and kept probing a repo mid-write.
-  var committingTargets: Set<SidebarID> = []
+  var committingTargets: Set<SidebarID> {
+    get { storedCommittingTargets }
+    set { storedCommittingTargets = newValue }
+  }
+  private var storedCommittingTargets: Set<SidebarID> = []
 
   /// How many commits are in flight against each project root, which is what the read lanes actually
   /// have to stand clear of.
@@ -150,7 +176,11 @@ final class ProjectStore {
   /// workroom B of the same project, which a per-row check waved straight through. Counted rather than
   /// a `Set` because the app's premise is N parallel workrooms, so two of one project can legitimately
   /// commit at once and the first to finish must not clear the other's suppression.
-  var committingProjectRoots: [RepositoryLocation: Int] = [:]
+  var committingProjectRoots: [RepositoryLocation: Int] {
+    get { storedCommittingProjectRoots }
+    set { storedCommittingProjectRoots = newValue }
+  }
+  private var storedCommittingProjectRoots: [RepositoryLocation: Int] = [:]
 
   /// How many writes (commit, fetch, push, or pull) are in flight against each project root,
   /// across every window. Checked by the write ACTIONS THEMSELVES before starting — not just
@@ -161,7 +191,11 @@ final class ProjectStore {
   /// concurrently on the shared `.git`). Distinct from `committingProjectRoots`, which exists for
   /// a different reason (suppressing READ lanes during a commit specifically) and keeps its own
   /// narrower role unchanged; this counter is the umbrella that all four write kinds share.
-  var writingProjectRoots: [RepositoryLocation: Int] = [:]
+  var writingProjectRoots: [RepositoryLocation: Int] {
+    get { storedWritingProjectRoots }
+    set { storedWritingProjectRoots = newValue }
+  }
+  private var storedWritingProjectRoots: [RepositoryLocation: Int] = [:]
 
   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of

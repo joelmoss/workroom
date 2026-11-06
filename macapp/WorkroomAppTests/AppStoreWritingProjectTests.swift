@@ -126,7 +126,7 @@ final class AppStoreWritingProjectTests: XCTestCase {
     }
     guard case .failed = result else { return XCTFail("unregistered write succeeded") }
     XCTAssertFalse(store.isCommitting(sid))
-    XCTAssertTrue(store.writingProjectRoots.isEmpty)
+    XCTAssertTrue(store.projectStore.writingProjectRoots.isEmpty)
   }
 }
 
@@ -159,24 +159,24 @@ extension AppStoreWritingProjectTests {
 
     XCTAssertFalse(store.canCommit(nil), "nothing inspected")
     XCTAssertFalse(store.canCommit(wr), "no status read yet")
-    store.workroomStatuses[wr] = WorkroomStatus(dirty: false)
+    store.projectStore.workroomStatuses[wr] = WorkroomStatus(dirty: false)
     XCTAssertFalse(store.canCommit(wr), "clean")
-    store.workroomStatuses[wr] = .unresolved
+    store.projectStore.workroomStatuses[wr] = .unresolved
     XCTAssertFalse(store.canCommit(wr), "unknown")
-    store.workroomStatuses[.project("/proj")] = WorkroomStatus(dirty: true)
+    store.projectStore.workroomStatuses[.project("/proj")] = WorkroomStatus(dirty: true)
     XCTAssertFalse(store.canCommit(.project("/proj")), "a group header has no status to commit")
 
-    store.workroomStatuses[wr] = WorkroomStatus(dirty: true)
-    store.workroomStatuses[root] = WorkroomStatus(dirty: true)
+    store.projectStore.workroomStatuses[wr] = WorkroomStatus(dirty: true)
+    store.projectStore.workroomStatuses[root] = WorkroomStatus(dirty: true)
     XCTAssertTrue(store.canCommit(wr))
     XCTAssertTrue(store.canCommit(root))
 
-    store.committingTargets.insert(wr)
+    store.projectStore.committingTargets.insert(wr)
     XCTAssertFalse(store.canCommit(wr), "a commit is already in flight")
     store.requestCommit(wr)
     XCTAssertNil(store.pendingCommit)
 
-    store.committingTargets.remove(wr)
+    store.projectStore.committingTargets.remove(wr)
     store.requestCommit(nil)
     XCTAssertNil(store.pendingCommit)
     store.requestCommit(wr)

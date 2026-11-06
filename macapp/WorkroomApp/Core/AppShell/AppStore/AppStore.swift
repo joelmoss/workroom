@@ -21,8 +21,9 @@ import WorkroomVCS
 final class AppStore: ObservableObject {
   /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
   /// it that is identical across windows (root labels, VCS/CI status cache, GitHub-CLI status, busy
-  /// set). The properties below proxy through to it, and Observation tracks the reads through it,
-  /// so views/menus observing this store still re-render when the shared data changes.
+  /// set). Views take it from the environment and the store's code reads it here. The project list
+  /// and the create and delete sets still proxy through to it, and Observation tracks those reads
+  /// through it, so views/menus observing this store still re-render when the shared data changes.
   let projectStore: ProjectStore
   /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
   /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
@@ -333,33 +334,6 @@ final class AppStore: ObservableObject {
   var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
-  /// Per-project resolved root branch labels, hydrated asynchronously after each
-  /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
-  var rootRefs: [Project.ID: RootRef] {
-    get { projectStore.rootRefs }
-    set { projectStore.rootRefs = newValue }
-  }
-  /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes
-  /// detail panel (issue #24), keyed by `SidebarID`. Resolved app-side (see
-  /// `WorkroomStatusResolver`), best-effort/"last checked" — NOT real-time. Ephemeral:
-  /// deliberately NOT persisted (operational state, unlike the sidebar prefs above). Hydrated
-  /// after each load, on selection, and on focus; see `AppStore+WorkroomStatus.swift`.
-  var workroomStatuses: [SidebarID: WorkroomStatus] {
-    get { projectStore.workroomStatuses }
-    set { projectStore.workroomStatuses = newValue }
-  }
-  /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
-  /// no warning flashes before the first check; refreshed by `refreshGitHubCLI()` and read by the
-  /// Pull Request inspector section. Drives a warning + gates the `gh` probes when not available.
-  var githubCLIStatus: GitHubCLIStatus {
-    get { projectStore.githubCLIStatus }
-    set { projectStore.githubCLIStatus = newValue }
-  }
-  /// Owns the `gh auth status` verdict's freshness and single-flight (see `GitHubAuthCache`). The
-  /// timestamp that used to live here is gone: two owners for one truth is how the staleness gate and
-  /// the write drifted apart in the first place.
-  var ghAuthCache: GitHubAuthCache { projectStore.ghAuthCache }
-  var vcsToolVersionCache: VCSToolVersionCache { projectStore.vcsToolVersionCache }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   var prActionInFlight = false
 
@@ -367,27 +341,6 @@ final class AppStore: ObservableObject {
   var pendingCommit: PendingCommit? {
     get { modals.pendingCommit }
     set { modals.pendingCommit = newValue }
-  }
-
-  /// Rows with a commit in flight. A `Set` rather than a `Bool` because the app's premise is N
-  /// parallel workrooms: a single flag would let a commit in one disable the button in another.
-  /// Read by `isCommitting`. Lives on the shared `ProjectStore` — see its doc for why per-window
-  /// was wrong.
-  var committingTargets: Set<SidebarID> {
-    get { projectStore.committingTargets }
-    set { projectStore.committingTargets = newValue }
-  }
-
-  /// In-flight commit counts per project root, which is the granularity the status lanes must respect.
-  var committingProjectRoots: [RepositoryLocation: Int] {
-    get { projectStore.committingProjectRoots }
-    set { projectStore.committingProjectRoots = newValue }
-  }
-
-  /// In-flight write (commit/fetch/push/pull) counts per project root — see `ProjectStore`'s doc.
-  var writingProjectRoots: [RepositoryLocation: Int] {
-    get { projectStore.writingProjectRoots }
-    set { projectStore.writingProjectRoots = newValue }
   }
 
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
@@ -840,7 +793,7 @@ final class AppStore: ObservableObject {
     guard let target = remoteState.target else { return }
     // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
     // will stash and reapply, which is worth saying before it happens.
-    if action == .pull, workroomStatuses[target.sid]?.dirty == true {
+    if action == .pull, projectStore.workroomStatuses[target.sid]?.dirty == true {
       pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
       return
     }
@@ -873,7 +826,7 @@ final class AppStore: ObservableObject {
       if AppEnvironment.current.isFixture { return }
     #endif
     guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-    let cache = vcsToolVersionCache
+    let cache = projectStore.vcsToolVersionCache
     Task { [weak self] in
       let report = await cache.report()
       self?.vcsToolReport = report
@@ -2088,11 +2041,13 @@ final class AppStore: ObservableObject {
     }
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))
-    rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
+    projectStore.rootRefs = projectStore.rootRefs.filter { liveIDs.contains($0.key) }
     // Keyed on what the sweep probes, not on the sidebar: a workroom that turned remote is no longer
     // refreshed, so its last local status would otherwise tint it and its project's badge forever.
     let probed = Set(statusWorkItems().map(\.sid))
-    workroomStatuses = workroomStatuses.filter { probed.contains($0.key) }
+    projectStore.workroomStatuses = projectStore.workroomStatuses.filter {
+      probed.contains($0.key)
+    }
     reconcileWindow(with: fresh)
   }
 
@@ -2232,8 +2187,9 @@ final class AppStore: ObservableObject {
         }
         for await (id, ref) in group {
           guard !Task.isCancelled, let self else { break }
-          if ref.kind == .none, self.rootRefs[id] != nil { continue }  // keep prior label
-          self.rootRefs[id] = ref
+          // Keep the prior label.
+          if ref.kind == .none, self.projectStore.rootRefs[id] != nil { continue }
+          self.projectStore.rootRefs[id] = ref
         }
       }
     }
@@ -2311,9 +2267,10 @@ final class AppStore: ObservableObject {
     rootBranchRefreshTasks[projectID] = Task { [weak self] in
       let ref = await resolver.resolve(path: p.path, vcs: p.vcs)
       guard let self, !Task.isCancelled else { return }
-      if ref.kind == .none, self.rootRefs[projectID] != nil { return }  // keep prior label
-      if self.rootRefs[projectID] == ref { return }  // unchanged — don't churn the @Published store
-      self.rootRefs[projectID] = ref
+      // Keep the prior label; an unchanged one is not written, so the store does not churn.
+      if ref.kind == .none, self.projectStore.rootRefs[projectID] != nil { return }
+      if self.projectStore.rootRefs[projectID] == ref { return }
+      self.projectStore.rootRefs[projectID] = ref
     }
   }
 
@@ -2413,7 +2370,7 @@ final class AppStore: ObservableObject {
     // create/delete race) — `apply` filters tombstoned workrooms until the teardown completes.
     deletingWorkrooms.insert(targetID)
     removeWorkroomLocally(workroom, in: project)
-    workroomStatuses[sid] = nil
+    projectStore.workroomStatuses[sid] = nil
     // Clear the deleted workroom from EVERY window's split + selection (issue #70, OV #7) — another
     // window may have had it open/selected; "stale-id self-heal" only fixes model lookup, not live
     // surfaces or processes.
@@ -2817,11 +2774,11 @@ final class AppStore: ObservableObject {
     // Clear selection if it pointed anywhere inside this project (its root or any workroom).
     if let sel = selectedTargetID, sel.belongsToProject(project.path) { selectedTargetID = nil }
     removeWorkroomSplitMember(.root(project: project.path))
-    workroomStatuses[.root(project: project.path)] = nil
+    projectStore.workroomStatuses[.root(project: project.path)] = nil
     setResolvedBranchName(nil, for: .root(project: project.path))
     for w in project.workrooms {
       removeWorkroomSplitMember(.workroom(project: project.path, name: w.name))
-      workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
+      projectStore.workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
       setResolvedBranchName(nil, for: .workroom(project: project.path, name: w.name))
     }
     // Drop the project's create runs as well — `deleteProject` calls `detachTarget` only on the
@@ -3613,7 +3570,7 @@ final class AppStore: ObservableObject {
       await refresh?.value
       guard let self else { return }
       self.remoteState.noteConflictState(
-        self.workroomStatuses[sid]?.conflicted == true, for: sid, location: location)
+        self.projectStore.workroomStatuses[sid]?.conflicted == true, for: sid, location: location)
     }
   }
 
@@ -3640,7 +3597,7 @@ final class AppStore: ObservableObject {
       return WorkroomLabel(
         project: project, workroom: displayName(forWorkroom: name, inProject: path))
     case .root(let path):
-      let ref = rootRefs[path] ?? .unresolved
+      let ref = projectStore.rootRefs[path] ?? .unresolved
       let branch = ref.kind == .none ? nil : RootPresentation.make(ref).label
       return WorkroomLabel(project: project, branch: branch)
     case .creation(_, let id):

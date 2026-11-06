@@ -62,7 +62,7 @@ final class PullRequestPanelCopyTests: XCTestCase {
   /// that is why a default fixture launch warns about nothing (the reported bug's shape).
   @MainActor
   func testTheDefaultStatusRaisesNoWarning() {
-    XCTAssertEqual(AppStore().githubCLIStatus, .available)
+    XCTAssertEqual(AppStore().projectStore.githubCLIStatus, .available)
     XCTAssertNil(UITestFixture.ghStatus, "no -WorkroomUITestGHStatus argument, so nothing seeded")
   }
 }

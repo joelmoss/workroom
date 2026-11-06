@@ -133,13 +133,10 @@ extension AppStore {
     target.opensTerminals && !isRunBlocked(target.id) && hasRunCommand(forProject: projectPath)
   }
 
-  /// The app-wide base branch for projects that name none; nil means origin's default branch.
-  var globalBaseBranch: String? { projectStore.globalBaseBranch }
-
   /// The base branch `project`'s new workrooms start from: its own, else the app-wide one, else nil
   /// for origin's default branch. The CLI applies the same rule to a local create.
   func effectiveBaseBranch(for project: Project) -> String? {
-    project.baseBranch ?? globalBaseBranch
+    project.baseBranch ?? projectStore.globalBaseBranch
   }
 
   /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
@@ -196,10 +193,10 @@ extension AppStore {
   /// 3. The project root's `RootRef`, resolved by `BranchResolver`.
   func branchName(for sid: SidebarID) -> String? {
     if let resolved = resolvedBranchNames[sid], !resolved.isEmpty { return resolved }
-    let status = workroomStatuses[sid]
+    let status = projectStore.workroomStatuses[sid]
     if let branch = status?.branchForCI, !branch.isEmpty { return branch }
     if case .root(let project) = sid {
-      let label = RootPresentation.make(rootRefs[project] ?? .unresolved).label
+      let label = RootPresentation.make(projectStore.rootRefs[project] ?? .unresolved).label
       return label.isEmpty ? nil : label
     }
     return nil

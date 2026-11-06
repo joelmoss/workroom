@@ -23,10 +23,16 @@ observers, equal dictionary assignment 0, equal dictionary subscript write 1.
 
 What follows from it in this app:
 
-- `AppStore.projects` and `AppStore.workroomStatuses` are computed get/set proxies to
-  `ProjectStore`'s stored properties, so even `store.workroomStatuses[sid] = s` is a whole-value
-  set and gets the dedupe. An identical project list (`projects = fresh` on reload) already
-  notifies no one.
+- `AppStore.projects` is a computed get/set proxy to `ProjectStore`'s stored property, so even
+  `store.projects[i] = p` is a whole-value set and gets the dedupe. An identical project list
+  (`projects = fresh` on reload) already notifies no one.
+- `ProjectStore`'s status collections (`workroomStatuses`, `rootRefs` and the commit and write
+  counters) and `RunCommandController`'s run-state collections are computed get/set over private
+  stored properties for the same reason, so `projectStore.workroomStatuses[sid] = s` gets the
+  dedupe too. Until step 2.1 of the architecture cleanup, `AppStore`'s forwarding proxies gave
+  it to them. Whatever owns these collections next keeps that shape, or an unchanged status
+  sweep redraws the sidebar again (`testAnUnchangedLocalStatusMergeNotifiesNoOneButKeepsItsClocks`,
+  `testARunStateWriteThatChangesNothingNotifiesNoOne`).
 - A field that changes on every write defeats the dedupe for the whole value. `WorkroomStatus`'s
   clocks (`lastChecked` and the rest) compare by presence through `PresenceEquatable` for this
   reason (#503). A view that needs a clock's time to redraw would not refresh under that rule.

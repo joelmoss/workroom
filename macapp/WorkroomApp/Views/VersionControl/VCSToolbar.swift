@@ -79,6 +79,7 @@ struct VCSToolbar: View {
   @ObservedObject var model: RemoteStateModel
 
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   /// `ThemeService.shared` isn't observed by SwiftUI, so a theme switch would otherwise leave the
   /// hairlines stale. Same pattern as `ActivityBar`.
   @State private var themeTick = 0
@@ -108,7 +109,7 @@ struct VCSToolbar: View {
 
   /// Whether our own pull left conflicts that are still unresolved.
   ///
-  /// The live half is read from the store rather than the model because the model has no view of
+  /// The live half is read from the project store rather than the model because the model has no view of
   /// working status — `noteConflictState` is pushed into it once, after the sweep that follows a pull,
   /// and is never revised. Reading `workroomStatuses` here means resolving the conflicts in a terminal
   /// clears the message on the next sweep, instead of it lingering until the next action.
@@ -116,7 +117,7 @@ struct VCSToolbar: View {
     guard let sid = model.target?.sid else { return false }
     return VCSSyncPresenter.pullConflicted(
       lastPullConflicted: model.lastPullConflicted,
-      statusConflicted: store.workroomStatuses[sid]?.conflicted == true)
+      statusConflicted: projectStore.workroomStatuses[sid]?.conflicted == true)
   }
 
   var body: some View {

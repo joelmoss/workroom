@@ -391,7 +391,7 @@ extension RepositoryRoutingTests {
     let prior = PullRequestInfo(
       number: 1, title: "t", state: .open, isDraft: false,
       url: "u", reviewDecision: nil, reviewers: [])
-    store.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: prior)
+    store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: prior)
     let runner = HostCountingRunner()
     store.statusResolver = WorkroomStatusResolver(runner: runner)
     for host in [UUID(), UUID()] {
@@ -400,7 +400,7 @@ extension RepositoryRoutingTests {
         sid: sid, path: path, projectRoot: path,
         location: remote)
       store.performPRAction(.convertToDraft, number: 1, on: item)
-      XCTAssertEqual(store.workroomStatuses[sid]?.pr, prior)
+      XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr, prior)
       XCTAssertFalse(store.prActionInFlight)
       XCTAssertEqual(
         store.errorMessage, RepositoryRoutingError.unavailable(remote.host).localizedDescription)

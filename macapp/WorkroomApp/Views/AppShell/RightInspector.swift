@@ -13,6 +13,7 @@ import WorkroomVCS
 /// sidebar, issue #118.)
 struct RightInspector: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.openURL) private var openURL
   /// A PR action awaiting confirmation (close), surfaced via a confirmation dialog.
@@ -183,12 +184,15 @@ struct RightInspector: View {
     case .changes:
       return AnyView(
         ChangesPanel(sessions: store.terminals)
-          .environmentObject(store).environmentObject(notifications))
+          .environmentObject(store).environmentObject(projectStore)
+          .environmentObject(notifications))
     case .files:
       return AnyView(
         FilesPanel(model: store.fileTree).environmentObject(store).environmentObject(notifications))
     case .pullRequest:
-      return AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications))
+      return AnyView(
+        PullRequestPanel().environmentObject(store).environmentObject(projectStore)
+          .environmentObject(notifications))
     case .history:
       // `sessions:` is injected, not read from the store inside the panel, because the panel must
       // OBSERVE it (that is what replaced every row observing it — see `HistoryPanel`'s type doc).
@@ -214,7 +218,7 @@ struct RightInspector: View {
   /// in-panel status row's open-in-browser affordance, so the header always carries the link. Tinted
   /// by PR state (open/draft/merged/closed), but red when the PR's checks are failing.
   @ViewBuilder private var prNumberLink: some View {
-    if store.githubCLIStatus == .available, let status = selectedStatus, let pr = status.pr {
+    if projectStore.githubCLIStatus == .available, let status = selectedStatus, let pr = status.pr {
       let badge = PRPresentation.badge(pr)
       // Failing checks only recolor an *open* PR — a merged (purple) / closed (red) badge shouldn't
       // be repainted by stale check history.
@@ -240,7 +244,7 @@ struct RightInspector: View {
   /// through a confirmation dialog). Shown whenever there's a PR, so a merged/closed PR with no
   /// remaining actions can still be opened in the browser.
   @ViewBuilder private var prActionsMenu: some View {
-    if store.githubCLIStatus == .available, let pr = selectedStatus?.pr,
+    if projectStore.githubCLIStatus == .available, let pr = selectedStatus?.pr,
       let sid = store.selectedTargetID
     {
       let actions = PRAction.available(for: pr)
@@ -291,7 +295,7 @@ struct RightInspector: View {
   private var selectedStatus: WorkroomStatus? {
     guard let sid = store.inspectorTargetID else { return nil }
     if case .project = sid { return nil }
-    return store.workroomStatuses[sid]
+    return projectStore.workroomStatuses[sid]
   }
 
   /// Changes header indicator: how many files changed (a capsule count) and the working-tree line counts

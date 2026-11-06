@@ -138,14 +138,14 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     ] {
       store.selectedTargetID = sid
       await store.selectionStatusTask?.value
-      XCTAssertEqual(store.workroomStatuses[sid]?.ci, .passing)
-      XCTAssertEqual(store.workroomStatuses[sid]?.pr?.number, 9)
+      XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.ci, .passing)
+      XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr?.number, 9)
       if let firstCheckedAt {
         XCTAssertEqual(
-          store.workroomStatuses[sid]?.ciCheckedAt, firstCheckedAt,
+          store.projectStore.workroomStatuses[sid]?.ciCheckedAt, firstCheckedAt,
           "selecting a row must not extend the original CI result's five-minute lifetime")
       } else {
-        firstCheckedAt = store.workroomStatuses[sid]?.ciCheckedAt
+        firstCheckedAt = store.projectStore.workroomStatuses[sid]?.ciCheckedAt
       }
     }
     XCTAssertEqual(
@@ -173,7 +173,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
       "phase": "launch_first_10_seconds", "commands": recorder.counts,
       "nonzero_exits": recorder.failures,
       "listing_generations": store.projectStore.latestLoad?.generation ?? 0,
-      "resolved_items": store.workroomStatuses.count,
+      "resolved_items": store.projectStore.workroomStatuses.count,
     ])
     recorder.reset()
     await store.reloadIfStale()
@@ -188,7 +188,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
         "nonzero_exits": recorder.failures,
       ])
       XCTAssertEqual(
-        store.selectedTargetID.flatMap { store.workroomStatuses[$0]?.pr?.number }, 9)
+        store.selectedTargetID.flatMap { store.projectStore.workroomStatuses[$0]?.pr?.number }, 9)
     }
     try BenchmarkFixtures.write(
       ["configuration": "Debug", "items": 21, "gh": "local subprocess fixture", "phases": phases],
@@ -248,13 +248,15 @@ final class StatusSweepBenchmarkTests: XCTestCase {
       store.handleWorkroomFileChange([path])
       await store.watchRefreshTask?.value
     }
-    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, false, "Git ignores the generated output")
+    XCTAssertEqual(
+      store.projectStore.workroomStatuses[sid]?.dirty, false, "Git ignores the generated output")
     let visible = fixture.project.workrooms[0].path + "/source.txt"
     try "visible edit\n".write(toFile: visible, atomically: true, encoding: .utf8)
     store.handleWorkroomFileChange([visible])
     await store.watchRefreshTask?.value
     XCTAssertEqual(
-      store.workroomStatuses[sid]?.dirty, true, "the native refresh must still detect real edits")
+      store.projectStore.workroomStatuses[sid]?.dirty, true,
+      "the native refresh must still detect real edits")
     XCTAssertTrue(
       fixture.recorder.counts.isEmpty,
       "local filesystem refreshes must stay on the native read path and never query GitHub")

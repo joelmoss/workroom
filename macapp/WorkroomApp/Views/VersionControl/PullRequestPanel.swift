@@ -7,18 +7,19 @@ import WorkroomVCS
 /// workroom's branch — its full (wrapping) title, review decision, per-reviewer rows, and CI
 /// checks. The PR's state + number + open-in-browser link live in the section header's number badge
 /// (see `RightInspector.prNumberLink`, issue #77), not here. Reads
-/// `store.selectedTargetID` + `store.workroomStatuses[sid].pr`, which a slow `gh pr list` probe
+/// `store.selectedTargetID` + `projectStore.workroomStatuses[sid].pr`, which a slow `gh pr list` probe
 /// fills on selection (like CI). Covers the same edge states as the Changes panel: nothing
 /// selected, a project (non-target), still-probing, and no PR for the branch.
 struct PullRequestPanel: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   @Environment(\.openURL) private var openURL
 
   var body: some View {
     Group {
-      if store.githubCLIStatus != .available {
+      if projectStore.githubCLIStatus != .available {
         // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
-        ghWarning(store.githubCLIStatus)
+        ghWarning(projectStore.githubCLIStatus)
       } else if let sid = store.inspectorTargetID, sid.isStatusable {
         content(for: sid)
       } else {
@@ -111,7 +112,7 @@ struct PullRequestPanel: View {
 
   @ViewBuilder
   private func content(for sid: SidebarID) -> some View {
-    let status = store.workroomStatuses[sid]
+    let status = projectStore.workroomStatuses[sid]
     if status?.prCheckedAt == nil {
       inspectorMessage("Checking\u{2026}")
     } else if let status {

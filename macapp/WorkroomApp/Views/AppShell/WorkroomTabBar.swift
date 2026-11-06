@@ -386,6 +386,7 @@ private struct WorkroomTabChip: View {
 
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -419,7 +420,7 @@ private struct WorkroomTabChip: View {
   /// A root's branch (nil for a workroom), reusing the sidebar's root presentation.
   private var branchLabel: String? {
     guard case .root(let project) = sid else { return nil }
-    return RootPresentation.make(store.rootRefs[project] ?? .unresolved).label
+    return RootPresentation.make(projectStore.rootRefs[project] ?? .unresolved).label
   }
 
   /// The full, untruncated rendered title — what the (possibly capped) title HStack shows. Feeds the
@@ -472,7 +473,9 @@ private struct WorkroomTabChip: View {
       // Its tint carries the VCS dirty signal (orange) in place of a separate status dot.
       Image(systemName: isRoot ? "house" : target.workroomGlyph)
         .font(.system(size: 10))
-        .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[sid] ?? .unresolved))
+        .foregroundStyle(
+          VCSStatusPresentation.iconTint(projectStore.workroomStatuses[sid] ?? .unresolved)
+        )
         .help(isRoot ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
@@ -622,7 +625,8 @@ private struct WorkroomTabChip: View {
   private func accessibilityLabel(hasActivity: Bool, running: Bool) -> String {
     var parts = [workroomName.map { "\(primaryLabel), workroom \($0)" } ?? primaryLabel]
     if let branchLabel { parts.append("on \(branchLabel)") }
-    let vcs = VCSStatusPresentation.accessibilityLabel(store.workroomStatuses[sid] ?? .unresolved)
+    let vcs = VCSStatusPresentation.accessibilityLabel(
+      projectStore.workroomStatuses[sid] ?? .unresolved)
     if !vcs.isEmpty { parts.append(vcs) }
     if let reason = target.terminalUnavailability { parts.append(reason.title.lowercased()) }
     if running { parts.append("running") }

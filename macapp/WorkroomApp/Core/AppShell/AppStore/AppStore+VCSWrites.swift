@@ -11,7 +11,8 @@ extension AppStore {
   /// Whether `sid` has anything a commit could record, and none is in flight: the Changes header's
   /// commit button and Room ▸ Commit… both ask this.
   func canCommit(_ sid: SidebarID?) -> Bool {
-    guard let sid, sid.isStatusable, let status = workroomStatuses[sid], !isCommitting(sid)
+    guard let sid, sid.isStatusable, let status = projectStore.workroomStatuses[sid],
+      !isCommitting(sid)
     else { return false }
     return !(status.isClean || status.isUnknown)
   }
@@ -75,7 +76,7 @@ extension AppStore {
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
     // "the click did nothing". Keep the prior PR to restore if `gh` fails.
-    let priorPR = workroomStatuses[sid]?.pr
+    let priorPR = projectStore.workroomStatuses[sid]?.pr
     applyOptimistic(sid)
     prActionInFlight = true
     Task { [weak self] in
@@ -88,9 +89,9 @@ extension AppStore {
         self.scheduleSelectedStatusRefresh()
       } else {
         // The command failed — undo the optimistic flip so the UI doesn't lie, then surface stderr.
-        if var s = self.workroomStatuses[sid] {
+        if var s = self.projectStore.workroomStatuses[sid] {
           s.pr = priorPR
-          self.workroomStatuses[sid] = s
+          self.projectStore.workroomStatuses[sid] = s
         }
         self.errorTitle = errorTitle
         let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -146,8 +147,8 @@ extension AppStore {
       guard !isWritingProject(root) else {
         return completion(.failed(.locked(nil)))
       }
-      committingTargets.insert(sid)
-      committingProjectRoots[root, default: 0] += 1
+      self.projectStore.committingTargets.insert(sid)
+      self.projectStore.committingProjectRoots[root, default: 0] += 1
       beginWrite(projectRoot: root)
       // Captured STRONGLY, not through `self`: `committingProjectRoots`/`writingProjectRoots` live on
       // this shared, cross-window store, and their release below must run even if THIS window's
@@ -166,7 +167,7 @@ extension AppStore {
         projectStore.committingProjectRoots.removeValue(forKey: root)
       }
       Self.releaseWrite(projectRoot: root, in: projectStore)
-      self.committingTargets.remove(sid)
+      self.projectStore.committingTargets.remove(sid)
       switch result {
       case .ok, .committedThenFailed:
         // Refresh by the CAPTURED sid: the watcher lane is suppressed while the commit runs
@@ -234,7 +235,7 @@ extension AppStore {
   /// immediately on click, before the command returns. The real path restores the prior PR if `gh`
   /// fails and re-probes on success; fixture mode keeps this as the final result.
   private func applyOptimisticPRAction(_ action: PRAction, on sid: SidebarID) {
-    guard var s = workroomStatuses[sid], let pr = s.pr else { return }
+    guard var s = projectStore.workroomStatuses[sid], let pr = s.pr else { return }
     let state: PullRequestInfo.State
     let draft: Bool
     switch action {
@@ -257,7 +258,7 @@ extension AppStore {
       number: pr.number, title: pr.title, state: state, isDraft: draft, url: pr.url,
       reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
       mergeable: pr.mergeable, mergeState: pr.mergeState)
-    workroomStatuses[sid] = s
+    projectStore.workroomStatuses[sid] = s
   }
 
   /// Merge the selected workroom's PR (issue #88) with `method`: shell to `gh pr merge`, refresh on
@@ -277,11 +278,11 @@ extension AppStore {
   /// disappears the instant the user confirms. `mergeable` is cleared so `canMerge` is false too.
   /// The real path restores the prior PR if `gh` fails and re-probes on success.
   private func applyOptimisticMerge(on sid: SidebarID) {
-    guard var s = workroomStatuses[sid], let pr = s.pr else { return }
+    guard var s = projectStore.workroomStatuses[sid], let pr = s.pr else { return }
     s.pr = PullRequestInfo(
       number: pr.number, title: pr.title, state: .merged, isDraft: false, url: pr.url,
       reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
       mergeable: false, mergeState: pr.mergeState)
-    workroomStatuses[sid] = s
+    projectStore.workroomStatuses[sid] = s
   }
 }

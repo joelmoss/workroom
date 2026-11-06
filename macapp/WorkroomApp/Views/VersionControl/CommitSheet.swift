@@ -22,6 +22,7 @@ struct CommitSheet: View {
   let onDismiss: () -> Void
 
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   private let theme = ThemeService.shared
 
   @State private var summary = ""
@@ -76,7 +77,7 @@ struct CommitSheet: View {
   /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
   private static let renderCap = 200
 
-  private var status: WorkroomStatus? { store.workroomStatuses[pending.sid] }
+  private var status: WorkroomStatus? { projectStore.workroomStatuses[pending.sid] }
 
   /// Every changed file.
   private var files: [ChangedFile] { status?.changedFiles ?? [] }

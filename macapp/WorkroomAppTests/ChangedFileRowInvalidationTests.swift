@@ -51,8 +51,9 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     store.selectionStatusTask?.cancel()
     // `lastChecked` is load-bearing, not decoration: `ChangesPanel.content(for:)` renders "Checking…"
     // (and therefore NO rows) while it is nil, which would make every assertion here vacuously true.
-    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
-      dirty: true, changedFiles: changedFiles, lastChecked: Date())
+    store.projectStore.workroomStatuses[.workroom(project: projectPath, name: workroomName)] =
+      WorkroomStatus(
+        dirty: true, changedFiles: changedFiles, lastChecked: Date())
     return store
   }
 
@@ -63,6 +64,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
   private func host(_ store: AppStore) -> (NSWindow, NSView) {
     let root = ChangesPanel(sessions: store.terminals)
       .environmentObject(store)
+      .environmentObject(store.projectStore)
       .environmentObject(store.notifications)
       .frame(width: 320, height: 420)
     let hosting = NSHostingView(rootView: root)
@@ -135,7 +137,8 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     // Still listed after the burst: a status that emptied the panel before or during it would turn
     // "0 rebuilds" into "there were no rows".
     XCTAssertNotNil(
-      store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.changedFiles,
+      store.projectStore.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?
+        .changedFiles,
       "the fixture's changed files must still be listed through the pulse burst")
 
     XCTAssertEqual(

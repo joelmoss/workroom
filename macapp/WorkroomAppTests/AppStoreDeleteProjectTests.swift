@@ -67,14 +67,15 @@ final class AppStoreDeleteProjectTests: XCTestCase {
   func testRemoveProjectLocallyDropsStatuses() {
     let p = project("/a", workrooms: ["feat"])
     let store = makeStore([p])
-    store.workroomStatuses[.root(project: "/a")] = .unresolved
-    store.workroomStatuses[.workroom(project: "/a", name: "feat")] = .unresolved
+    store.projectStore.workroomStatuses[.root(project: "/a")] = .unresolved
+    store.projectStore.workroomStatuses[.workroom(project: "/a", name: "feat")] = .unresolved
 
     store.removeProjectLocally(p)
 
-    XCTAssertNil(store.workroomStatuses[.root(project: "/a")], "root status must drop")
+    XCTAssertNil(store.projectStore.workroomStatuses[.root(project: "/a")], "root status must drop")
     XCTAssertNil(
-      store.workroomStatuses[.workroom(project: "/a", name: "feat")], "workroom status must drop")
+      store.projectStore.workroomStatuses[.workroom(project: "/a", name: "feat")],
+      "workroom status must drop")
   }
 
   /// A pending workroom-label sheet targeting the deleted project must clear (issue #41's pending

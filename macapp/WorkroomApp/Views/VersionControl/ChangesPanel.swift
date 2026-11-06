@@ -215,11 +215,12 @@ struct ChangedFileRow: View, Equatable {
 }
 
 /// The Changes section body: the selected workroom's branch, sync state, working-tree changes
-/// (relative to HEAD), and CI. Reads `store.selectedTargetID` + `store.workroomStatuses`.
+/// (relative to HEAD), and CI. Reads `store.selectedTargetID` + `projectStore.workroomStatuses`.
 /// Covers the empty/edge states the design review enumerated: nothing selected, a project
 /// (non-target), missing directory, still-loading, unknown (probe failed), and clean.
 struct ChangesPanel: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   /// Observed HERE so the rows don't have to be. `TerminalSessions` republishes per terminal
   /// title/activity write, and while each `ChangedFileRow` observed it directly, every one of those
   /// publishes rebuilt all `renderCap` rows — the same defect that produced the WORKROOM-2B App Hang
@@ -244,7 +245,7 @@ struct ChangesPanel: View {
   @ViewBuilder
   private func content(for sid: SidebarID) -> some View {
     let target = store.target(for: sid)
-    let status = store.workroomStatuses[sid]
+    let status = projectStore.workroomStatuses[sid]
     // `terminalUnavailability`: a remote workroom this app reaches has its changes read on its host.
     if let reason = target?.terminalUnavailability {
       inspectorMessage("\(reason.title).")
