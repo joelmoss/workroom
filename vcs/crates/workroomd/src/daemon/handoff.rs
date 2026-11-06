@@ -182,7 +182,7 @@ const _: () = assert!(
         + REPORT_GRACE.as_millis()
         < APP_TIMEOUT.as_millis()
 );
-/// How much of a refusal reaches the requester (`serve.rs` truncates to it). The reason can quote
+/// How much of a refusal reaches the requester (`terminal::dispatch` truncates to it). The reason can quote
 /// the requester's path and the check's stderr, and a frame over the protocol's cap is a panic in
 /// `encode`, not a truncation.
 pub(crate) const MAX_REASON: usize = 4096;

@@ -73,7 +73,7 @@ pub(super) fn child_gone(pid: i32, status: &mut i32) -> bool {
 /// How much output travels in one frame.
 ///
 /// The pty reader's buffer, and also the chunk size of a repaint: `attach`'s, and the one
-/// `serve::dispatch` sends a restored pane from a record. All of them must stay under the
+/// `terminal::dispatch` sends a restored pane from a record. All of them must stay under the
 /// protocol's 1 MiB frame cap, which `Frame::encode` enforces with a panic rather than a
 /// truncation. Sharing one constant means those paths cannot drift apart.
 pub const READ_CHUNK: usize = 8192;

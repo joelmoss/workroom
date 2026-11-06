@@ -1,7 +1,8 @@
-//! The Terminal service and what shares its sessions' state: the session store, ptys and the
-//! shells and processes in them, input, the shadow screen, images, kept screens, run sessions and
-//! program status.
+//! The Terminal service and what shares its sessions' state: its frames (`dispatch`), the session
+//! store, ptys and the shells and processes in them, input, the shadow screen, images, kept
+//! screens, run sessions and program status.
 
+pub(crate) mod dispatch;
 pub(crate) mod images;
 pub(crate) mod input;
 pub(crate) mod process;

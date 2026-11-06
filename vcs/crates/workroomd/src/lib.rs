@@ -7,8 +7,11 @@
 //!
 //! See docs/designs/remote-workrooms.md. Where each service lives:
 //!
-//! - Terminal: `terminal` (`terminal::session` is the store; `daemon::serve` handles its frames)
-//! - Control: `daemon::serve`, beside Terminal's frames; a hand-off is `daemon::handoff`
+//! - Terminal: `terminal` (`terminal::session` is the store; `terminal::dispatch` handles its
+//!   frames, whose payloads are `wr_protocol::terminal`'s)
+//! - Control: `terminal::dispatch`, beside Terminal's frames; a hand-off is `daemon::handoff`
+//!
+//! `daemon::serve` accepts connections and hands each envelope to its service.
 //! - VCS: `vcs::service`
 //! - File: `vcs::file`, with `vcs::watch`
 //! - Forward: `host::forward`

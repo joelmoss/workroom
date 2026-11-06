@@ -741,7 +741,7 @@ final class HelperSessionSubstitutionTests: XCTestCase {
   ///
   /// This test used to assert that a daemon-owned session is NOT re-checked — "the daemon refuses an
   /// id it does not hold, so there is no substitution to prevent". That premise was false:
-  /// `serve.rs` creates on first attach guarded only by `sessions.contains(id)`, exactly as the
+  /// `terminal/dispatch.rs` creates on first attach guarded only by `sessions.contains(id)`, as the
   /// helper does. Checking only the retired backend closed the hole on the one being drained and
   /// left it open on the one that owns every new session — and, once the drain finishes, on the
   /// only one left. The daemon is now asked in the attach itself

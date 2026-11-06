@@ -242,9 +242,9 @@ pub struct Session {
     /// This session's number, from `NEXT_SESSION`.
     number: u64,
     /// Which workroom the session belongs to, its first title, and when it was created, as the
-    /// client that created it said (`serve::session_metadata`), plus `created` from here. Only the
-    /// `workroom` key ever changes after creation, by a `Retag` frame (`SessionStore::set_workroom`):
-    /// the app's own layout is what follows a renamed tab (#255).
+    /// client that created it said (`dispatch::session_metadata`), plus `created` from here. Only
+    /// the `workroom` key ever changes after creation, by a `Retag` frame
+    /// (`SessionStore::set_workroom`): the app's own layout is what follows a renamed tab (#255).
     metadata: Vec<(String, String)>,
     /// `SessionSpec::interactive`.
     interactive: bool,

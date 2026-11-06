@@ -596,7 +596,7 @@ fn a_kill_without_a_session_id_is_refused() {
 
 /// The record dispatch chunks with `crate::session::READ_CHUNK`, precisely because `Frame::encode`
 /// PANICS above the protocol's frame cap rather than truncating (see the comment on that call
-/// site in `serve.rs`). A record wide enough that its repaint needs more than one 8 KiB frame must
+/// site in `terminal/dispatch.rs`). A record wide enough that its repaint needs more than one 8 KiB frame must
 /// still arrive whole, not merely not panic.
 #[test]
 fn a_restored_pane_with_a_screen_over_one_frame_still_gets_it_whole() {

@@ -1,8 +1,9 @@
 import DaemonConnection
 import XCTest
 
-/// Pins the `Retag` frame against the daemon's reading of it (`serve.rs`, `FrameKind::Retag`): the
-/// literals are the daemon's numbers, not a round trip through this encoder.
+/// Pins the `Retag` frame against the daemon's reading of it (`terminal/dispatch.rs`,
+/// `FrameKind::Retag`): the literals are the daemon's numbers, not a round trip through this
+/// encoder.
 final class SessionRetagTests: XCTestCase {
   private let session = UUID(uuidString: "5A1E0F7E-0D6C-4C9F-9C3E-2B7F1D0A8E11")!
 
