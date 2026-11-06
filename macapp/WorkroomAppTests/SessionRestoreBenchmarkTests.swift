@@ -146,7 +146,14 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
       if count > 1, let hiddenView = views.last {
         XCTAssertNil(hiddenView.window)
         var notifications: [TerminalActivity] = []
-        hiddenView.onActivity = { notifications.append($0) }
+        let wired = hiddenView.onEvent
+        hiddenView.onEvent = { event in
+          if case .activity(let activity) = event {
+            notifications.append(activity)
+          } else {
+            wired?(event)
+          }
+        }
         // The engine rate-limits desktop notifications globally. Each owned sample emits one.
         try await Task.sleep(for: .milliseconds(1_100))
         hiddenView.sendText("notify\r")

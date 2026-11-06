@@ -61,13 +61,14 @@ final class QuickTerminalSessionsTests: XCTestCase {
   func testAQuickTerminalPaneNeverMovesToAWindow() {
     let sessions = makeSessions()
     let tab = sessions.addTab(for: target)
-    XCTAssertNil(tab.surface?.onToggleWindow, "no Move to New Window in its right-click menu")
+    XCTAssertEqual(
+      tab.surface?.offersWindowToggle, false, "no Move to New Window in its right-click menu")
     sessions.detachPane(tab.id, for: target, at: .zero)
     XCTAssertTrue(sessions.detachedTabIDs.isEmpty, "a drag out of the window leaves it put")
 
     let workroom = makeSessions(quickTerminal: false)
-    XCTAssertNotNil(
-      workroom.addTab(for: target).surface?.onToggleWindow, "workroom panes still can")
+    XCTAssertEqual(
+      workroom.addTab(for: target).surface?.offersWindowToggle, true, "workroom panes still can")
   }
 
   func testEachPaneReadsItsOwnFoldersBranch() async throws {

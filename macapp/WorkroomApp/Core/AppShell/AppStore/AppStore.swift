@@ -1098,7 +1098,7 @@ final class AppStore: ObservableObject {
         self.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
       }
       // Same idea for a closed/reaped Investigate tab (issue #146) — a second, independent cleanup
-      // path from `onChildExited`, since that callback isn't guaranteed to fire on every teardown.
+      // path from `.childExited`, since a surface doesn't raise that on every teardown.
       for id in ids { self.investigateTabs.removeValue(forKey: id) }
       // Closing the last terminal in a co-displayed split pane leaves an empty pane whose only
       // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
@@ -1154,6 +1154,16 @@ final class AppStore: ObservableObject {
       applyRunStatus(line, for: target)
     case .runSessionGone(let targetID, let tabID):
       runSessionGone(tab: tabID, targetID: targetID)
+    case .childExited(let target, let tabID, let exitCode):
+      tabProcessExited(tab: tabID, of: target, exitCode: exitCode)
+    // A run tab's "press any key to close" MUST go through the graceful stop (quit the supervisor
+    // and wait for it to exit) BEFORE the tab closes: closing ends the run session, whose kill hangs
+    // the supervisor up mid-drain ("A server is already running" next start; issue #7). Any other
+    // run-command tab (an Investigate tab) closes at once.
+    case .closeRequested(let target, let tabID):
+      closingRunTab(tabID, for: target.id) { [weak self] in
+        self?.terminals.closeTab(tabID, for: target)
+      }
     }
   }
 
@@ -2006,14 +2016,14 @@ final class AppStore: ObservableObject {
           let target = workroom.target(inProject: project.path)
           terminals.ensureTab(for: target)
           if let title = UITestFixture.usageCodingAgentTitle {
-            terminals.tabs(for: target).first?.surface?.onTitleChange?(title)
+            terminals.tabs(for: target).first?.surface?.handleTitleChange(title)
           }
           // Oversized tab title for the pane title bar's truncation tests (issue #150). Same route as
           // the agent title above — a shell-set title latches as `liveTitle`, which is what
           // `TerminalTab.title` (and so the chip and the pane bar) reads first.
           if UITestFixture.longTabTitle {
             terminals.tabs(for: target).first?.surface?
-              .onTitleChange?(UITestFixture.longTabTitleValue)
+              .handleTitleChange(UITestFixture.longTabTitleValue)
           }
           // Two-tab scenario (drag/reorder XCUITest, issue #23): also open a terminal for the second
           // workroom so the workroom tab bar shows two chips to reorder.

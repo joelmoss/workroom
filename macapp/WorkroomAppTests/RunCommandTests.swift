@@ -450,6 +450,35 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
   }
 
+  /// Value: protects="press any key to close" on a stopped run tab and on an Investigate tab;
+  /// fails_when=the surface's `.closeRequested` stops reaching `AppStore.closingRunTab` and the
+  /// close; why_new=no test raised `.closeRequested` before or after the one-sink refactor;
+  /// seam=the event the surface's keyDown raises, sent without a live libghostty surface;
+  /// no_claim=keyDown itself, or the graceful stop of a run that is still live.
+  func testAKeyAtTheClosePromptClosesAStoppedRunTabAndAnInvestigateTab() throws {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let run = try XCTUnwrap(store.runTabID(for: t.id))
+    store.applyRunStatus("exited 0", for: t)
+    XCTAssertEqual(runView(store, t)?.runStoppedAwaitingClose, true, "at the close prompt")
+
+    runView(store, t)?.onEvent?(.closeRequested)
+
+    XCTAssertNil(store.terminals.tab(run, for: t))
+    XCTAssertNil(store.runTabID(for: t.id))
+
+    let investigate = store.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: nil)
+    XCTAssertNotNil(store.terminals.tab(investigate.id, for: t))
+
+    investigate.surface?.onEvent?(.closeRequested)
+
+    XCTAssertNil(store.terminals.tab(investigate.id, for: t))
+    XCTAssertNil(store.investigateTabs[investigate.id])
+  }
+
   func testGracefulRestartReplacesTabAfterExit() {
     // Under the supervisor model, restart signals SIGUSR1 and the SAME tab stays —  no surface
     // free/respawn. Drive completion with `applyRunStatus("running 1")`.
@@ -898,12 +927,12 @@ final class RunCommandTests: XCTestCase {
     surface1.liveProcessOverrideForTesting = true
     XCTAssertTrue(store.hasLiveRunCommand)
 
-    // Cleanup path 1: the process exits (`onChildExited`) — independent of the tab closing.
+    // Cleanup path 1: the process exits (`.childExited`) — independent of the tab closing.
     surface1.handleChildExited(exitCode: 0)
     XCTAssertNil(store.investigateTabs[tab1.id])
     XCTAssertFalse(store.hasLiveRunCommand)
 
-    // Cleanup path 2: the tab is closed/reaped (`.tabsRemoved`) — independent of `onChildExited`
+    // Cleanup path 2: the tab is closed/reaped (`.tabsRemoved`) — independent of `.childExited`
     // ever firing (it isn't guaranteed to, per libghostty exit-reporting flakiness).
     let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     let surface2 = try! XCTUnwrap(tab2.surface)

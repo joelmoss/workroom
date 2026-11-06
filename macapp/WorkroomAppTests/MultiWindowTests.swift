@@ -116,9 +116,9 @@ final class MultiWindowTests: XCTestCase {
     let codex = first.terminals.tabs(for: target)[0].surface!
     let claude = second.terminals.tabs(for: target)[0].surface!
     codex.foregroundProcessNameForTesting = "codex"
-    codex.onTitleChange?("Codex")
+    codex.handleTitleChange("Codex")
     claude.foregroundProcessNameForTesting = "claude"
-    claude.onTitleChange?("Claude")
+    claude.handleTitleChange("Claude")
     for _ in 0..<20 where registry.activeCodingAgentBackends != [.codex, .claude] {
       await Task.yield()
     }

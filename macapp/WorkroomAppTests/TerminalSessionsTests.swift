@@ -276,13 +276,13 @@ final class TerminalSessionsTests: XCTestCase {
     // Claude is identified from the PTY foreground process even when its first visible OSC title is
     // already provider-owned rather than the shell's command line.
     view.foregroundProcessNameForTesting = "claude"
-    view.onTitleChange?("✳ Claude Code")
+    view.handleTitleChange("✳ Claude Code")
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
     XCTAssertEqual(s.tabs(for: target).first?.title, "✳ Claude Code")
     XCTAssertEqual(activeCodingAgent(in: s), .claude)
 
     // Later title repaints while waiting or working must not hide quota.
-    view.onTitleChange?("✻ Planning…")
+    view.handleTitleChange("✻ Planning…")
     XCTAssertEqual(s.tabs(for: target).first?.title, "✻ Planning…")
     XCTAssertEqual(activeCodingAgent(in: s), .claude)
 
@@ -348,7 +348,7 @@ final class TerminalSessionsTests: XCTestCase {
     let view = s.tabs(for: target).first!.surface!
     view.handlePwd("/var/data/dev/workroom/macapp/WorkroomApp")  // ≥4 deep → zsh truncates
 
-    view.onTitleChange?("…/workroom/macapp/WorkroomApp")
+    view.handleTitleChange("…/workroom/macapp/WorkroomApp")
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")  // not shown as the tab name
     XCTAssertFalse(s.isRunning(forTargetID: target.id))  // and never marks the tab busy
   }
@@ -380,11 +380,11 @@ final class TerminalSessionsTests: XCTestCase {
     let view = s.tabs(for: target).first!.surface!
 
     // A running command takes over from the default…
-    view.onTitleChange?("npm run dev")
+    view.handleTitleChange("npm run dev")
     XCTAssertEqual(s.tabs(for: target).first?.title, "npm run dev")
 
     // …a later command wins…
-    view.onTitleChange?("vim README.md")
+    view.handleTitleChange("vim README.md")
     XCTAssertEqual(s.tabs(for: target).first?.title, "vim README.md")
 
     // …and finishing the command falls back to the default "Terminal N".
@@ -403,8 +403,8 @@ final class TerminalSessionsTests: XCTestCase {
     var publishes = 0
     let watching = s.objectWillChange.sink { _ in publishes += 1 }
     // Titles no registry recognises: a newly recognised tool or agent republishes, by design.
-    view.onTitleChange?("⠋ thinking")
-    view.onTitleChange?("⠙ thinking")
+    view.handleTitleChange("⠋ thinking")
+    view.handleTitleChange("⠙ thinking")
     XCTAssertEqual(s.tabs(for: target).first?.title, "⠙ thinking", "the title still shows")
     XCTAssertEqual(publishes, 0, "a title alone republished the tab map")
     watching.cancel()
@@ -416,15 +416,15 @@ final class TerminalSessionsTests: XCTestCase {
     sessions.addTab(for: target)
     let first = sessions.tabs(for: target)[0].surface!
     first.foregroundProcessNameForTesting = "codex"
-    first.onTitleChange?("Codex")
+    first.handleTitleChange("Codex")
     sessions.addTab(for: target)
     let second = sessions.tabs(for: target)[1].surface!
     second.foregroundProcessNameForTesting = "codex"
-    second.onTitleChange?("Codex")
+    second.handleTitleChange("Codex")
     sessions.addTab(for: other)
     let claude = sessions.tabs(for: other)[0].surface!
     claude.foregroundProcessNameForTesting = "claude"
-    claude.onTitleChange?("Claude")
+    claude.handleTitleChange("Claude")
     sessions.addTab(for: other)  // The focused tab is an ordinary shell.
     XCTAssertEqual(sessions.activeCodingAgentBackends, [.codex, .claude])
 
@@ -442,10 +442,10 @@ final class TerminalSessionsTests: XCTestCase {
     let view = s.tabs(for: target).first!.surface!
 
     view.foregroundProcessNameForTesting = "codex"
-    view.onTitleChange?("Implement the requested changes")
+    view.handleTitleChange("Implement the requested changes")
     XCTAssertEqual(activeCodingAgent(in: s), .codex)
 
-    view.onTitleChange?("Reviewing files")
+    view.handleTitleChange("Reviewing files")
     XCTAssertEqual(activeCodingAgent(in: s), .codex)
 
     view.handleCommandFinished(rawExitCode: 0)
@@ -461,11 +461,11 @@ final class TerminalSessionsTests: XCTestCase {
     let view = s.tabs(for: target).first!.surface!
 
     view.foregroundProcessNameForTesting = "git"
-    view.onTitleChange?("git status")
+    view.handleTitleChange("git status")
     XCTAssertEqual(s.tabs(for: target).first?.recognizedTool?.id, "git")
 
     // A later, unrelated title repaint must not clear or re-derive the latch (first-wins).
-    view.onTitleChange?("vim README.md")
+    view.handleTitleChange("vim README.md")
     XCTAssertEqual(
       s.tabs(for: target).first?.recognizedTool?.id, "git",
       "the icon swaps between commands, not mid-repaint")
@@ -485,12 +485,12 @@ final class TerminalSessionsTests: XCTestCase {
     let view = s.tabs(for: target).first!.surface!
 
     view.foregroundProcessNameForTesting = "some-random-tool"
-    view.onTitleChange?("some-random-tool --flag")
-    view.onTitleChange?("some-random-tool --flag")  // repaint of the same command: no re-count
+    view.handleTitleChange("some-random-tool --flag")
+    view.handleTitleChange("some-random-tool --flag")  // repaint of the same command: no re-count
     XCTAssertEqual(recorded, ["some-random-tool"])
 
     view.foregroundProcessNameForTesting = "git"
-    view.onTitleChange?("git status")
+    view.handleTitleChange("git status")
     XCTAssertEqual(recorded, ["some-random-tool"], "a recognized command is never tallied")
   }
 
@@ -501,15 +501,15 @@ final class TerminalSessionsTests: XCTestCase {
     view.handlePwd("/var/data/proj")  // cwd outside $HOME, so its `~` form is itself
 
     // The directory title the shell sets at the prompt is ignored → default stays.
-    view.onTitleChange?("/var/data/proj")
+    view.handleTitleChange("/var/data/proj")
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
 
     // The command shows…
-    view.onTitleChange?("sleep 5")
+    view.handleTitleChange("sleep 5")
     XCTAssertEqual(s.tabs(for: target).first?.title, "sleep 5")
 
     // …and a directory title fired *during* the command doesn't clobber it.
-    view.onTitleChange?("/var/data/proj")
+    view.handleTitleChange("/var/data/proj")
     XCTAssertEqual(s.tabs(for: target).first?.title, "sleep 5")
   }
 
@@ -517,7 +517,7 @@ final class TerminalSessionsTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     s.addTab(for: target)
-    s.tabs(for: target)[1].surface!.onTitleChange?("vim")
+    s.tabs(for: target)[1].surface!.handleTitleChange("vim")
     XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "vim"])
   }
 
@@ -1923,7 +1923,7 @@ final class RemotePaneFooterTests: XCTestCase {
     // are not; a remote pane always has one.
     view.persistentSessionID = session
 
-    view.onTitleChange?("~")
+    view.handleTitleChange("~")
     try await waitFor { state(in: s)?.hostCwd == "/home/w" }
     XCTAssertEqual(state(in: s)?.hostCwd, "/home/w", "the first prompt asks")
     XCTAssertEqual(connection.asked, [session])
@@ -1937,8 +1937,8 @@ final class RemotePaneFooterTests: XCTestCase {
 
     // A TUI repainting its title, such as an agent's spinner, does not ask per frame.
     let asked = connection.asked.count
-    view.onTitleChange?("✻ Working")
-    view.onTitleChange?("✳ Working")
+    view.handleTitleChange("✻ Working")
+    view.handleTitleChange("✳ Working")
     try await Task.sleep(for: .milliseconds(50))
     XCTAssertEqual(connection.asked.count, asked)
 
@@ -1968,7 +1968,7 @@ final class RemotePaneFooterTests: XCTestCase {
     // are not; a remote pane always has one.
     view.persistentSessionID = session
 
-    view.onTitleChange?("~")
+    view.handleTitleChange("~")
     try await Task.sleep(for: .milliseconds(100))
     XCTAssertNil(state(in: s)?.hostCwd, "nothing to ask before the host connects")
 
@@ -2001,7 +2001,7 @@ final class RemotePaneFooterTests: XCTestCase {
     s.addTab(for: remote, sessionID: session)
     let view = try XCTUnwrap(s.tabs(for: remote).first?.surface)
     view.persistentSessionID = session
-    view.onTitleChange?("~")
+    view.handleTitleChange("~")
     func hostCwd() -> String? {
       guard case .terminal(let state)? = s.tabs(for: remote).first?.content else { return nil }
       return state.hostCwd
@@ -2009,7 +2009,7 @@ final class RemotePaneFooterTests: XCTestCase {
     try await waitFor { hostCwd() == "/home/w/lib" }
     XCTAssertEqual(hostCwd(), "/home/w/lib")
 
-    view.onCmdClickFile?("user.rb")
+    view.onEvent?(.cmdClickFile("user.rb"))
     func opened() -> String? {
       for tab in s.tabs(for: remote) {
         if case .file(let file) = tab.content { return file.path }
@@ -2036,7 +2036,7 @@ final class RemotePaneFooterTests: XCTestCase {
     try XCTUnwrap(tabs.last?.surface).persistentSessionID = session
     for tab in tabs {
       let view = try XCTUnwrap(tab.surface)
-      view.onTitleChange?("~")
+      view.handleTitleChange("~")
       view.handleCommandFinished(rawExitCode: 0)
     }
     try await Task.sleep(for: .milliseconds(100))

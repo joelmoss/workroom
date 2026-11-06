@@ -74,7 +74,7 @@ final class SessionRestoreTests: XCTestCase {
 
       // A provider title may arrive before discovery completes; keep it and recover recognition.
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) {
-        tab.surface?.onTitleChange?("✻ Planning…")
+        tab.surface?.handleTitleChange("✻ Planning…")
         return [descriptor]
       }
       XCTAssertEqual(sessions.activeCodingAgentBackends, expected)

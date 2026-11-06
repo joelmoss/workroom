@@ -257,11 +257,9 @@ extension AppStore {
     guard let handOff = terminals.handOffTab(tabID, from: target, to: into) else { return }
     destination.terminals.adopt(handOff)
     if investigating {
-      // Still an Investigate session there, so deleting its workroom asks first (#146).
+      // Still an Investigate session there, so deleting its workroom asks first (#146), and its
+      // exit, which the destination's sessions now raise, ends it there.
       destination.investigateTabs[tabID] = into.id
-      tab.surface?.onChildExited = { [weak destination] _ in
-        destination?.investigateTabs.removeValue(forKey: tabID)
-      }
     }
     // A split member's pane: that member becomes the focused workroom, so the pane has the keys.
     destination.selectedTargetID = sid
@@ -349,8 +347,8 @@ extension AppStore {
       if run.state?.isRunning == true {
         // Only one window runs a workroom's command (#70), so this one's is stopped, though its
         // supervisor may still be up and its stop then waits on it. Its exit must not land on the
-        // run taken in meanwhile: that would mark the moved run ended and kill its session.
-        terminals.tab(own, for: target)?.surface?.onChildExited = nil
+        // run taken in meanwhile, which would mark the moved run ended and kill its session: it
+        // does not, as an exit ends a run only from the run's own tab (`tabProcessExited`).
         closingRunTab(own, for: id) { [weak self] in self?.terminals.closeTab(own, for: target) }
       } else {
         closing = moved
@@ -370,9 +368,8 @@ extension AppStore {
       // after it displays, including hidden panes that will not mount with the focused tab.
       scheduleSessionRecoveryAfterDisplay()
     }
+    // Its run's exit and close reach this window through the sessions that adopted its tabs.
     runCommand.adopt(run, for: id)
-    // Only for a run that came with it: one this window already ran has its own poll going.
-    if run.state != nil || !run.investigateTabs.isEmpty { resumeAdoptedRun(for: target) }
     if let closing { terminals.closeTab(closing, for: target) }
     placeWorkroomTab(id, at: index, wasAt: wasAt)
     selectedTargetID = handOff.sid

@@ -657,7 +657,9 @@ final class ProgramStatusPaneTests: XCTestCase {
     window.makeFirstResponder(view)
     XCTAssertTrue(view.isEffectivelyFocused)
     var changes: [Bool] = []
-    view.onEffectiveFocusChange = { changes.append($0) }
+    view.onEvent = { event in
+      if case .effectiveFocusChanged(let focused) = event { changes.append(focused) }
+    }
     view.removeFromSuperview()
     XCTAssertFalse(view.isEffectivelyFocused)
     XCTAssertEqual(changes, [false])
@@ -685,7 +687,7 @@ final class ProgramStatusPaneTests: XCTestCase {
       try? await Task.sleep(for: .milliseconds(10))
     }
 
-    view.onEffectiveFocusChange?(true)
+    view.onEvent?(.effectiveFocusChanged(true))
     for _ in 0..<200 where connection.requests.isEmpty {
       try? await Task.sleep(for: .milliseconds(10))
     }

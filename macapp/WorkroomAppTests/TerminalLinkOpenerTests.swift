@@ -754,7 +754,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     }
     let tab = sessions.addTab(for: target)
     let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
-    view.onCmdClickFile?("lib/user.rb:1")
+    view.onEvent?(.cmdClickFile("lib/user.rb:1"))
     func opened() -> FileDescriptor? {
       for tab in sessions.tabs(for: target) {
         if case .file(let file) = tab.content { return file }
@@ -892,7 +892,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(view.resolveCmdHoverFile?("hello"), false)
     try await Task.sleep(for: .milliseconds(100))
     XCTAssertEqual(asked.count, 0, "a hover asked the host")
-    view.onCmdClickFile?("a.rb")
+    view.onEvent?(.cmdClickFile("a.rb"))
     for _ in 0..<200 where asked.count == 0 { try await Task.sleep(for: .milliseconds(5)) }
     XCTAssertEqual(asked.count, 1, "the click did not ask the host")
   }
@@ -929,15 +929,15 @@ final class TerminalLinkOpenerTests: XCTestCase {
       }
       return nil
     }
-    view.onCmdClickFile?("slow.rb")
-    view.onCmdClickFile?("fast.rb")
+    view.onEvent?(.cmdClickFile("slow.rb"))
+    view.onEvent?(.cmdClickFile("fast.rb"))
     try await Task.sleep(for: .milliseconds(800))
     XCTAssertEqual(opened(), "fast.rb", "a slower, older click retargeted the preview")
 
     // The pane that asked closes while the host is still answering, with another pane still
     // open in the workroom: nothing opens there.
     let other = sessions.addTab(for: target)
-    view.onCmdClickFile?("slow.rb")
+    view.onEvent?(.cmdClickFile("slow.rb"))
     sessions.closeTab(tab.id, for: target)
     try await Task.sleep(for: .milliseconds(800))
     XCTAssertNotEqual(opened(), "slow.rb", "a closed pane's click opened a preview")

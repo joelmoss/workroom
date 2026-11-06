@@ -30,7 +30,7 @@ enum TerminalPanelMetrics {
 /// `isFocusedPane` drives that — the host passes `true` for exactly the focused leaf. Mount no longer
 /// force-focuses unconditionally (that would let the last-mounted pane steal focus); focus is applied
 /// from `isFocusedPane` on update. A pane the user clicks becomes first responder via the surface's own
-/// `mouseDown`, which feeds the selection back through `onFocused`.
+/// `mouseDown`, which feeds the selection back through its `.focused` event.
 struct TerminalContainerView: NSViewRepresentable {
   let view: GhosttySurfaceView
   /// Whether this pane should hold keyboard focus. Solo callers leave it `true`; the split renderer
@@ -110,7 +110,7 @@ struct TerminalContainerView: NSViewRepresentable {
   /// **diff** pane is pure SwiftUI — it claims no AppKit responder — so without this the terminal
   /// stays the window's first responder while the diff is logically focused. A later click on the
   /// terminal then calls `makeFirstResponder(self)` on a view that's *already* first responder, which
-  /// AppKit short-circuits: `becomeFirstResponder` (hence `onFocused`) never fires and the click can't
+  /// AppKit short-circuits: `becomeFirstResponder` (hence `.focused`) never fires and the click can't
   /// refocus the terminal. Terminal→terminal doesn't need this (the new pane claiming first responder
   /// resigns the old one), so the guard makes this a no-op there.
   private func applyFocus(in container: NSView) {

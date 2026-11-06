@@ -285,8 +285,8 @@ extension AppStore {
   }
 
   /// A run tab came back from a saved session (#522): it is the target's run, reattached rather
-  /// than started, so it is wired as a run and waits for its daemon to say how the run is. If its
-  /// host's daemon has already said, that is applied now.
+  /// than started, so it is recorded as the run and waits for its daemon to say how the run is. If
+  /// its host's daemon has already said, that is applied now.
   func adoptRestoredRun(tab tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
     guard let target = terminalTarget(forID: targetID), runStates[targetID]?.tab == nil else {
       return
@@ -297,7 +297,6 @@ extension AppStore {
     restoredRuns.insert(targetID)
     // Reattached, not started: no "Running" toast (Q13), now or when its state arrives.
     runningToastAutoHidden.insert(targetID)
-    if let tab = terminals.tab(tabID, for: target) { wireRun(tab, for: target) }
     terminals.reportRunStatus(tab: tabID, target: target)
   }
 
@@ -487,18 +486,19 @@ extension AppStore {
       return
     }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
-    wireRun(tab, for: target)
     if session != nil { terminals.reportRunStatus(tab: tab.id, target: target) }
   }
 
-  /// A run tab's own process ending, and its close, report to this window's run: the process is
-  /// the session's attach, so its exit means the run session is over (a quit, a kill), not a
-  /// user-command stop, which the run's status reports.
-  private func wireRun(_ tab: TerminalTab, for target: TerminalTarget) {
-    tab.surface?.onChildExited = { [weak self] code in
-      self?.markRunExited(for: target, exitCode: code)
-    }
-    wireRunClose(tab.id, for: target)
+  /// A tab's own process exited (`TerminalSessions.Event.childExited`), raised by the sessions that
+  /// hold the tab now, so a tab that moved here from another window (#444) reports here. For the
+  /// target's run tab the process is its session's attach, so its exit means the run session is
+  /// over (a quit, a kill), not a user-command stop, which the run's status reports. Matching the
+  /// run's own tab is what keeps a window's replaced run, still stopping, from ending the run that
+  /// moved in over it (#444 Q12). An Investigate tab's exit ends its session (#146).
+  func tabProcessExited(tab tabID: TerminalTab.ID, of target: TerminalTarget, exitCode: UInt32) {
+    investigateTabs.removeValue(forKey: tabID)
+    guard runStates[target.id]?.tab == tabID else { return }
+    markRunExited(for: target, exitCode: exitCode)
   }
 
   /// Start an interactive Investigate session (issue #49) seeded with the failure captured in
@@ -518,38 +518,7 @@ extension AppStore {
     let command = CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: agent)
     let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
     investigateTabs[tab.id] = target.id
-    let tabID = tab.id
-    tab.surface?.onChildExited = { [weak self] _ in
-      self?.investigateTabs.removeValue(forKey: tabID)
-    }
     return tab
-  }
-
-  /// A run that came here with its workroom from another window (#444): its surface's exit and close
-  /// now report to this window. Its status reaches whichever window holds its tab
-  /// (`TerminalSessions.applyRunStatus`), so it follows the tab here by itself.
-  func resumeAdoptedRun(for target: TerminalTarget) {
-    for (tabID, targetID) in investigateTabs where targetID == target.id {
-      terminals.tab(tabID, for: target)?.surface?.onChildExited = { [weak self] _ in
-        self?.investigateTabs.removeValue(forKey: tabID)
-      }
-    }
-    guard let tabID = runStates[target.id]?.tab, let tab = terminals.tab(tabID, for: target)
-    else { return }
-    wireRun(tab, for: target)
-  }
-
-  /// The "press any key to close" / wait_after_command close for a run tab MUST go through the graceful
-  /// stop (quit the supervisor + wait for it to fully exit) BEFORE the tab closes — closing ends the
-  /// run session, whose kill hangs the supervisor up mid-drain ("A server is already running" next
-  /// start; issue #7).
-  private func wireRunClose(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    terminals.tab(tabID, for: target)?.surface?.onCloseRequested = { [weak self] in
-      guard let self else { return }
-      self.closingRunTab(tabID, for: target.id) { [weak self] in
-        self?.terminals.closeTab(tabID, for: target)
-      }
-    }
   }
 
   /// Respawn the run command in place of `oldTab` (issue #40): the replacement takes the old run tab's
@@ -602,7 +571,6 @@ extension AppStore {
       return
     }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
-    wireRun(tab, for: target)
   }
 
   /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or

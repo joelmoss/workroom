@@ -605,6 +605,15 @@ final class TerminalSessions: ObservableObject {
     /// A run tab's session is not on its daemon any more (#522): the host's snapshot did not name
     /// it, or the daemon said it ended.
     case runSessionGone(TerminalTarget.ID, TerminalTab.ID)
+    /// A tab's own process exited (its surface's `.childExited`). For a run tab that ends the run,
+    /// for an Investigate tab its session (#146); `AppStore` ignores any other tab's. Raised by the
+    /// sessions that hold the tab now, so a tab moved to another window (#444) reports there. Given
+    /// the whole target the tab was made or adopted for, since the run's handling needs it and a
+    /// workroom being deleted is no longer in the project list to be looked up by its id.
+    case childExited(TerminalTarget, TerminalTab.ID, exitCode: UInt32)
+    /// A key at a run-command tab's "Process exited. Press any key to close" prompt (issue #7): close
+    /// it, without a confirm. The run command's goes through its graceful stop first.
+    case closeRequested(TerminalTarget, TerminalTab.ID)
     /// The number of panes this target shows across `axis` (nil: both ways) changed, by a split
     /// edit or by focus moving between a split and a solo tab, and the operation that did it has
     /// finished. A workroom split it sits in re-evens to match.
@@ -1439,8 +1448,8 @@ final class TerminalSessions: ObservableObject {
   /// Open the dedicated "run command" terminal (issue #7): a solo tab that launches `command` in
   /// `cwd`, titled "Run" until the program reports its own title, focused like any new tab — through
   /// `setFocused`, so focus observers fire (it is NOT a direct dict write; see the focus-chokepoint
-  /// note on `setFocused`). The caller (`AppStore`) owns the run-state and wires `onChildExited`;
-  /// this just creates and shows the tab. Also the mechanism behind an interactive Investigate
+  /// note on `setFocused`). The caller (`AppStore`) owns the run-state and hears the tab's exit as
+  /// `.childExited`; this just creates and shows the tab. Also the mechanism behind an interactive Investigate
   /// session (issue #49) — `AppStore.startInvestigate` is that caller for Investigate, tracking the
   /// tab in `investigateTabs` rather than `runStates` (issue #146): a single-slot-per-target dev-server
   /// run and a freely-multiple interactive agent session are different enough lifecycles to warrant
@@ -1512,7 +1521,7 @@ final class TerminalSessions: ObservableObject {
   /// exact slot: its position in the split (same neighbour, orientation, ratio) and its place in the
   /// strip order, instead of the split collapsing and the replacement reappearing as a solo pane
   /// outside it. With no split (the run tab was solo) this is just close-then-append, like a plain
-  /// `addRunTab`. Returns the new tab so the caller wires run-state + `onChildExited`, as `addRunTab` does.
+  /// `addRunTab`. Returns the new tab so the caller records its run-state, as `addRunTab` does.
   @discardableResult
   func respawnRunTab(
     replacing oldID: TerminalTab.ID, for target: TerminalTarget, command: String, cwd: String,
@@ -1562,7 +1571,7 @@ final class TerminalSessions: ObservableObject {
   /// Build a run tab (issue #7) without placing it: the surface launches `command` in `cwd`, titled
   /// "Run" until the program reports its own title. "Process exited. Press any key to close"
   /// (wait_after_command) → close this tab on the keypress, without the confirm (the process has
-  /// already exited). Only run tabs wire `onCloseRequested`. Shared by `addRunTab` (append + focus) and
+  /// already exited). Only run-command surfaces raise `.closeRequested`. Shared by `addRunTab` (append + focus) and
   /// `respawnRunTab` (in-place restart, issue #40).
   private func makeRunTab(
     for target: TerminalTarget, command: String, cwd: String, runSession: Bool,
@@ -2010,7 +2019,7 @@ final class TerminalSessions: ObservableObject {
     // `tabsByTarget`), which a detached tab does. Letting the write through makes `contentLayout`
     // render `.leaf(detached)` back in this window, and `TerminalContainerView.mount` then re-homes
     // the libghostty view out of the detached window — which goes blank. At least six paths reach
-    // here: the surface's own `mouseDown` → `onFocused` → `select`, `ActivateOnPress` on a content
+    // here: the surface's own `mouseDown` → `.focused` → `select`, `ActivateOnPress` on a content
     // pane, navigation history back/forward, notification routing via `ownerOf(tabID:)`, ⌃Tab's pane
     // switcher, and Files/Changes re-focusing an existing preview tab. Guarding the write-point
     // covers all of them at once; raising the pane's own window is the useful thing to do instead.
@@ -2695,71 +2704,75 @@ final class TerminalSessions: ObservableObject {
     return tab
   }
 
-  /// Point every callback of `view` at this window's sessions. A surface's callbacks name the
-  /// sessions that own its tab, so this runs once when a tab is made and again when another window
-  /// hands the tab over (issue #444): a moved surface left wired to the window it came from would
-  /// report its title, focus and exits to that window, or to nothing once it closes.
+  /// Point `view`'s events and queries at this window's sessions. They name the sessions that own
+  /// its tab, so this runs once when a tab is made and again when another window hands the tab over
+  /// (issue #444): a moved surface left wired to the window it came from would report its title,
+  /// focus and exits to that window, or to nothing once it closes.
   private func wire(_ view: GhosttySurfaceView, tab tabID: TerminalTab.ID, target: TerminalTarget) {
-    let targetID = target.id
-    // A run tab's own "press any key to close" closes the tab (`AppStore` overrides it for the run
-    // command, whose stop must be graceful).
-    if view.isRunCommandSurface {
-      view.onCloseRequested = { [weak self] in
-        guard let self, let target = self.target(forID: targetID) else { return }
-        self.closeTab(tabID, for: target)
-      }
+    view.onEvent = { [weak self, weak view] event in
+      self?.handle(event, from: view, tab: tabID, target: target)
     }
-    // Nil hides the right-click menu's "Move to New Window" where panes can't move.
-    view.onToggleWindow =
-      allowsDetach
-      ? { [weak self] in self?.onEvent?(.paneWindowToggleRequested(targetID, tabID)) } : nil
+    // Off hides the right-click menu's "Move to New Window" where panes can't move.
+    view.offersWindowToggle = allowsDetach
     view.moveToWorkroomChoices = moveToWorkroomChoices.map { choices in { choices(tabID, target) } }
-    view.onActivity = { [weak self] activity in
-      self?.onEvent?(.activity(targetID, tabID, activity))
-    }
-    view.onTitleChange = { [weak self] title in
-      self?.updateTitle(title, forTab: tabID, target: targetID)
-      // The first title is the first prompt, which `command_finished` never marks.
-      if self?.hostCwdQueries[tabID] == nil {
-        self?.refreshHostCwd(forTab: tabID, target: targetID)
-      }
-    }
-    view.onCwdChange = { [weak self] cwd in
-      self?.updateCwd(cwd, forTab: tabID, target: targetID)
-    }
-    view.onCommandFinished = { [weak self] exitCode in
-      // Exit code feeds the inline-agent manager (issue #49); the title-clear path (issue #2)
-      // ignores it.
-      self?.handleCommandFinished(forTab: tabID, target: targetID, exitCode: exitCode)
-    }
-    view.onProgressReport = { [weak self] active, failed in
-      self?.updateProgress(active, failed: failed, forTab: tabID, target: targetID)
-    }
-    // A pane became first responder (click / programmatic focus): make it the selection (issue #3),
-    // and route up to the workroom selection so a click into a co-displayed split pane targets that
-    // workroom (issue #23 follow-up).
-    view.onFocused = { [weak self] in
-      guard let self, let target = self.target(forID: targetID) else { return }
-      self.focus(tabID, for: target)
-      self.onEvent?(.surfaceFocused(targetID))
-    }
-    view.onEffectiveFocusChange = { [weak self] focused in
-      self?.programStatusFocusChanged(focused, tab: tabID, target: targetID)
-    }
-
     if target.remoteHost != nil {
       wireRemoteLinks(view, tab: tabID, target: target)
       return
     }
     let projectPath = target.path
-    view.onCmdClickFile = { [weak view] word in
-      TerminalLinkOpener.handleCmdClickFile(word, cwd: view?.lastKnownCwd ?? projectPath)
-    }
     view.resolveCmdHoverFile = { [weak view] word in
       TerminalLinkOpener.resolvesToFile(word, cwd: view?.lastKnownCwd ?? projectPath)
     }
     view.onOpenURL = { [weak view] url in
       TerminalLinkOpener.handleOpenURL(url, cwd: view?.lastKnownCwd ?? projectPath)
+    }
+  }
+
+  /// One surface event from tab `tabID`'s `view`, handled inline as it is raised (ADR 0021).
+  private func handle(
+    _ event: SurfaceEvent, from view: GhosttySurfaceView?, tab tabID: TerminalTab.ID,
+    target: TerminalTarget
+  ) {
+    let targetID = target.id
+    switch event {
+    case .activity(let activity):
+      onEvent?(.activity(targetID, tabID, activity))
+    case .titleChanged(let title):
+      updateTitle(title, forTab: tabID, target: targetID)
+      // The first title is the first prompt, which `command_finished` never marks.
+      if hostCwdQueries[tabID] == nil {
+        refreshHostCwd(forTab: tabID, target: targetID)
+      }
+    case .cwdChanged(let cwd):
+      updateCwd(cwd, forTab: tabID, target: targetID)
+    case .commandFinished(let exitCode):
+      // Exit code feeds the inline-agent manager (issue #49); the title-clear path (issue #2)
+      // ignores it.
+      handleCommandFinished(forTab: tabID, target: targetID, exitCode: exitCode)
+    case .progressReport(let active, let failed):
+      updateProgress(active, failed: failed, forTab: tabID, target: targetID)
+    // A pane became first responder (click / programmatic focus): make it the selection (issue #3),
+    // and route up to the workroom selection so a click into a co-displayed split pane targets that
+    // workroom (issue #23 follow-up).
+    case .focused:
+      guard let focusTarget = self.target(forID: targetID) else { return }
+      focus(tabID, for: focusTarget)
+      onEvent?(.surfaceFocused(targetID))
+    case .effectiveFocusChanged(let focused):
+      programStatusFocusChanged(focused, tab: tabID, target: targetID)
+    case .windowToggleRequested:
+      guard allowsDetach else { return }
+      onEvent?(.paneWindowToggleRequested(targetID, tabID))
+    case .childExited(let exitCode):
+      onEvent?(.childExited(target, tabID, exitCode: exitCode))
+    case .closeRequested:
+      onEvent?(.closeRequested(target, tabID))
+    case .cmdClickFile(let word):
+      if target.remoteHost != nil {
+        openRemoteFile(word, tab: tabID, target: target)
+      } else {
+        TerminalLinkOpener.handleCmdClickFile(word, cwd: view?.lastKnownCwd ?? target.path)
+      }
     }
   }
 
@@ -2928,7 +2941,8 @@ final class TerminalSessions: ObservableObject {
   /// ⌘-click in a remote pane resolves on the HOST (C7): against the shell's directory there, as
   /// its daemon reports it (`hostCwd`), and through the host's file service. The file opens in the
   /// in-app viewer, since no editor on this Mac can open a file on another machine. Web URLs still
-  /// go to this Mac's browser.
+  /// go to this Mac's browser. The click itself arrives as `.cmdClickFile`, which `handle` sends to
+  /// `openRemoteFile`.
   ///
   /// The ⌘-hover cursor is also the ⌘-click's gate (`GhosttySurfaceView.mouseDown`), and it is
   /// synchronous, so it can't ask the host. It decides from the word alone
@@ -2938,9 +2952,6 @@ final class TerminalSessions: ObservableObject {
   private func wireRemoteLinks(
     _ view: GhosttySurfaceView, tab tabID: TerminalTab.ID, target: TerminalTarget
   ) {
-    view.onCmdClickFile = { [weak self] word in
-      self?.openRemoteFile(word, tab: tabID, target: target)
-    }
     view.resolveCmdHoverFile = { [weak self] word in
       TerminalLinkOpener.looksLikeRemotePath(
         word, cwd: self?.hostCwd(of: tabID, in: target.id), root: target.path)
@@ -3047,8 +3058,8 @@ final class TerminalSessions: ObservableObject {
     return nil
   }
 
-  /// Reconstruct a minimal `TerminalTarget` from its id for the `onFocused` callback (which only
-  /// carries ids). `focus` keys off the id alone, so a minimal target is sufficient.
+  /// Reconstruct a minimal `TerminalTarget` from its id for a surface's `.focused` (whose handling
+  /// goes by ids). `focus` keys off the id alone, so a minimal target is sufficient.
   private func target(forID id: TerminalTarget.ID) -> TerminalTarget? {
     guard tabsByTarget[id] != nil else { return nil }
     return TerminalTarget(id: id, title: "", path: "", isMissing: false)

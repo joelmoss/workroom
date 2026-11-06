@@ -79,7 +79,7 @@ final class GhosttyRuntimeAdapter {
       let note = action.action.desktop_notification
       let title = note.title.map { String(cString: $0) } ?? ""
       let body = note.body.map { String(cString: $0) }
-      view.onActivity?(Self.terminalActivity(title: title, body: body))
+      view.onEvent?(.activity(Self.terminalActivity(title: title, body: body)))
       return true
 
     case GHOSTTY_ACTION_OPEN_URL:
@@ -109,8 +109,8 @@ final class GhosttyRuntimeAdapter {
     case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
       // The surface's child process exited. The run terminal (issue #7) uses this to flip run-state
       // back to "Run" while keeping the pane open (`wait_after_command`). We RETURN FALSE so
-      // libghostty's default still applies for ordinary tabs (which don't wire `onChildExited`) —
-      // their behaviour is unchanged. Only run tabs observe it.
+      // libghostty's default still applies for ordinary tabs (whose exit `AppStore` ignores) —
+      // their behaviour is unchanged. Only run and Investigate tabs act on it.
       guard let view = surfaceView(from: target) else { return false }
       view.handleChildExited(exitCode: action.action.child_exited.exit_code)
       return false

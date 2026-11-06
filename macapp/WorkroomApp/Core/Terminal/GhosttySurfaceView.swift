@@ -6,6 +6,36 @@ import WorkroomVCS
 import WorkroomWire
 import os
 
+/// What a surface tells its owner, `TerminalSessions`, through `GhosttySurfaceView.onEvent`: the
+/// same single-sink rule as `TerminalSessions.Event` (ADR 0021), one layer down.
+enum SurfaceEvent {
+  /// A desktop notification the program raised, for the notification spine.
+  case activity(TerminalActivity)
+  /// ⌘-click on a word `resolveCmdHoverFile` said is a file.
+  case cmdClickFile(String)
+  /// The latest title (OSC 0/2, via shell integration): the running command while busy, the
+  /// working directory when idle (issue #2).
+  case titleChanged(String)
+  /// The shell's cwd changed (`GHOSTTY_ACTION_PWD`, issue #49).
+  case cwdChanged(String)
+  /// The shell returned to its prompt (OSC 133 D), with the command's exit code, or nil when the
+  /// shell didn't report one (issues #2, #49).
+  case commandFinished(Int32?)
+  /// OSC 9;4 progress: `active` while the program says it is working; `failed` is the ERROR state,
+  /// which is still working (issue #28).
+  case progressReport(active: Bool, failed: Bool)
+  /// The child process exited (`GHOSTTY_ACTION_SHOW_CHILD_EXITED`). The pane stays open.
+  case childExited(UInt32)
+  /// A key at a run-command pane's "Process exited. Press any key to close" prompt (issue #7).
+  case closeRequested
+  /// The pane became first responder (issue #3).
+  case focused
+  /// The pane gained or lost effective focus: first responder in the key window (#358).
+  case effectiveFocusChanged(Bool)
+  /// The right-click menu's "Move to New Window" / "Move Back to Main Window" (#444).
+  case windowToggleRequested
+}
+
 /// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty
 /// given our `nsview`), drives a local PTY, and bridges macOS keyboard/IME/mouse into libghostty.
 /// This is the libghostty replacement for SwiftTerm's `LocalProcessTerminalView`.
@@ -110,59 +140,35 @@ final class GhosttySurfaceView: NSView {
   /// `true` in the app: a real terminal spawns its surface exactly as before.
   private let spawnsSurface: Bool
 
-  // Callbacks set by the host (TerminalSessions / TerminalContainerView). Value-type captures only.
-  var onActivity: ((TerminalActivity) -> Void)?
+  /// Everything this surface tells its owner, set once by `TerminalSessions.wire` (again when
+  /// another window adopts the tab, #444) and cleared by `tearDown`. A plain synchronous call at the
+  /// moment each thing happens, in the order it happens, never deferred through a `Task`, queue or
+  /// stream (ADR 0021): titles, cwd and progress arrive on every frame, and the owner's handling of
+  /// one must finish before the next. Nil for a surface no sessions own (the exe.dev setup sheet's).
+  var onEvent: ((SurfaceEvent) -> Void)?
+
+  // Queries the owner answers: each needs a value back at once, so they are not events.
+  /// Open a link libghostty reports (OSC 8 or a detected URL); false lets libghostty open it itself.
   var onOpenURL: ((URL) -> Bool)?
-  var onCmdClickFile: ((String) -> Void)?
+  /// Whether ⌘ over this word shows the hand cursor, which is also the ⌘-click's gate (`mouseDown`).
   var resolveCmdHoverFile: ((String) -> Bool)?
+  /// The right-click menu's "Move to Workroom" for a Quick Terminal pane, asked as the menu opens.
+  var moveToWorkroomChoices: (() -> [PaneWorkroomGroup])?
+
   /// Whether the context menu offers New Terminal, the splits and Close Terminal, which act on the
   /// store's focused pane: off for a terminal that is no workroom's, as in the exe.dev setup sheet.
   var offersPaneCommands = true
-  /// The surface's latest title (OSC 0/2, via shell integration): the running command while busy,
-  /// the working directory when idle. Forwarded to the tab strip (issue #2).
-  var onTitleChange: ((String) -> Void)?
-  /// The shell's cwd changed (`GHOSTTY_ACTION_PWD`). The host relays it into the tab's observable
-  /// state so the detail-panel status bar can show the live cwd (issue #49).
-  var onCwdChange: ((String) -> Void)?
-  /// The shell returned to its prompt (OSC 133 D / `GHOSTTY_ACTION_COMMAND_FINISHED`) — the tab
-  /// strip uses this to drop the finished command's title back to the default (issue #2). The
-  /// argument is the command's resolved exit code (issue #49), or `nil` when the shell didn't
-  /// report one; the title-clear path ignores it.
-  var onCommandFinished: ((Int32?) -> Void)?
-  /// OSC 9;4 progress (`GHOSTTY_ACTION_PROGRESS_REPORT`): `true` while the running program reports it's
-  /// working, `false` when idle/done (the REMOVE state). The host drives the sidebar/underline spinner
-  /// solely from this (issue #28 follow-up). `failed` is the ERROR state, which is still working. The
-  /// adapter calls `handleProgressReport(_:failed:)`, which forwards here and arms a safety timer; this
-  /// closure just relays the values to the host.
-  var onProgressReport: ((_ active: Bool, _ failed: Bool) -> Void)?
-  /// The surface's child process exited (`GHOSTTY_ACTION_SHOW_CHILD_EXITED`). The run terminal uses
-  /// this to flip run-state back to "Run" while the pane stays open (`wait_after_command`). Only run
-  /// tabs wire this; ordinary tabs leave it nil so a shell `exit` is a no-op here (issue #7).
-  /// Value-type capture only.
-  var onChildExited: ((UInt32) -> Void)?
-  /// Close this surface's tab. Fired from `keyDown` when the run command's process has exited and the
-  /// pane is sitting at libghostty's "Process exited. Press any key to close" prompt
-  /// (`wait_after_command`) — libghostty shows that prompt but emits no close action in this
-  /// embedding, so we close it ourselves on the next key. Only run tabs wire this (the host closes
-  /// them without a confirm, since the process is gone); ordinary tabs leave it nil and keep
-  /// forwarding keys / staying in place after the shell exits (issue #7).
-  var onCloseRequested: (() -> Void)?
+  /// Whether the right-click menu offers "Move to New Window" / "Move Back to Main Window" for THIS
+  /// pane (#444), raised as `.windowToggleRequested` rather than sent to the key window's store,
+  /// which the other menu commands use: a pane in its own window has no store of its own to be
+  /// found by. Off where panes can't move (the Quick Terminal).
+  var offersWindowToggle = false
   /// True while this run surface is stopped but kept open under the supervisor (issue #7): the
   /// supervisor process is still alive (so `processHasExited` is false), but the user's command has
   /// exited and the supervisor printed "Process exited. Press any key to close the terminal.". A key
-  /// then closes the tab via `onCloseRequested`, matching libghostty's native wait_after_command UX.
+  /// then raises `.closeRequested`, matching libghostty's native wait_after_command UX.
   /// The host flips this true on a stop/exit and false on a (re)start.
   var runStoppedAwaitingClose = false
-  /// This pane became first responder (mouse click or programmatic focus) — the host makes it the
-  /// selection (issue #3, splits). `becomeFirstResponder` is the single chokepoint for every focus
-  /// path, so one hook covers them all. Value-type captures only.
-  var onFocused: (() -> Void)?
-  /// The right-click menu's "Move to New Window" / "Move Back to Main Window" for THIS pane (#444).
-  /// A closure rather than the key window's store, which the other menu commands use: a pane in its
-  /// own window has no store of its own to be found by.
-  var onToggleWindow: (() -> Void)?
-  /// The right-click menu's "Move to Workroom" for a Quick Terminal pane, asked as the menu opens.
-  var moveToWorkroomChoices: (() -> [PaneWorkroomGroup])?
 
   /// Scrollback find (⌘F): the observable bridge between this surface and its SwiftUI find bar.
   /// libghostty owns the search itself; this carries the needle out and the match counts back (see
@@ -441,16 +447,11 @@ final class GhosttySurfaceView: NSView {
     pendingReconnect?.cancel()
     pendingReconnect = nil
     setHandCursor(false)
-    onActivity = nil
+    onEvent = nil
     onOpenURL = nil
-    onCmdClickFile = nil
     resolveCmdHoverFile = nil
-    onFocused = nil
-    onToggleWindow = nil
     moveToWorkroomChoices = nil
-    onEffectiveFocusChange = nil
-    onChildExited = nil
-    onCloseRequested = nil
+    offersWindowToggle = false
     progressActive = false
     progressTimeoutTimer?.invalidate()
     progressTimeoutTimer = nil
@@ -687,7 +688,7 @@ final class GhosttySurfaceView: NSView {
       // one the user is looking at, and its program's alerts would be held back (#358).
       if isEffectivelyFocused {
         isEffectivelyFocused = false
-        onEffectiveFocusChange?(false)
+        onEvent?(.effectiveFocusChanged(false))
       }
       return
     }
@@ -783,7 +784,7 @@ final class GhosttySurfaceView: NSView {
     let ok = super.becomeFirstResponder()
     if ok {
       setSurfaceFocused(true)
-      onFocused?()
+      onEvent?(.focused)
     }
     return ok
   }
@@ -802,16 +803,16 @@ final class GhosttySurfaceView: NSView {
   /// always re-synced rather than skipped by a stale match.
   private var lastSetFocus: Bool?
 
-  /// Fired when this pane gains or loses effective focus: first responder in the key window,
-  /// whatever moved it there (#358). Program status reads the user as having seen a pane only then.
-  var onEffectiveFocusChange: ((Bool) -> Void)?
+  /// Whether this pane has effective focus: first responder in the key window, whatever moved it
+  /// there (#358). Each change raises `.effectiveFocusChanged`; program status reads the user as
+  /// having seen a pane only then.
   private(set) var isEffectivelyFocused = false
 
   private func setSurfaceFocused(_ focused: Bool) {
     let effective = focused && (window?.isKeyWindow ?? false)
     if effective != isEffectivelyFocused {
       isEffectivelyFocused = effective
-      onEffectiveFocusChange?(effective)
+      onEvent?(.effectiveFocusChanged(effective))
     }
     guard let surface else { return }
     guard focused != lastSetFocus else { return }
@@ -841,9 +842,9 @@ final class GhosttySurfaceView: NSView {
 
   /// Re-sync libghostty's per-surface focus flag to AppKit first-responder state. `createSurface`
   /// calls this at the end to cover the case where `becomeFirstResponder` fired before the surface
-  /// existed (its `setSurfaceFocused` no-oped). Only `becomeFirstResponder` fired `onFocused` back
+  /// existed (its `setSurfaceFocused` no-oped). Only `becomeFirstResponder` raised `.focused` back
   /// then — the AppStore logical focus is already correct — so this re-syncs the ghostty flag ONLY
-  /// and deliberately does not re-fire `onFocused`. No-op when the view isn't first responder, so it
+  /// and deliberately does not raise `.focused` again. No-op when the view isn't first responder, so it
   /// can never create the inverse desync (ghostty focused while AppKit isn't).
   func adoptFocusIfFirstResponder() {
     guard holdsFirstResponder else { return }
@@ -1023,7 +1024,7 @@ final class GhosttySurfaceView: NSView {
   func handlePwd(_ pwd: String) {
     guard lastKnownCwd != pwd else { return }
     lastKnownCwd = pwd
-    onCwdChange?(pwd)
+    onEvent?(.cwdChanged(pwd))
   }
 
   // MARK: Progress (OSC 9;4)
@@ -1042,7 +1043,7 @@ final class GhosttySurfaceView: NSView {
       progressTimeoutTimer?.invalidate()
       progressTimeoutTimer = nil
     }
-    onProgressReport?(active, active && failed)
+    onEvent?(.progressReport(active: active, failed: active && failed))
   }
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SET_TITLE` (OSC 0/2). Forwards to the host
@@ -1052,7 +1053,7 @@ final class GhosttySurfaceView: NSView {
   /// still letting a genuinely silent program time out (issue #38). The title NEVER starts the busy
   /// state on its own — it only extends one already set by OSC 9;4 (issue #28).
   func handleTitleChange(_ title: String) {
-    onTitleChange?(title)
+    onEvent?(.titleChanged(title))
     if progressActive { armProgressTimeout() }
   }
 
@@ -1086,7 +1087,7 @@ final class GhosttySurfaceView: NSView {
     // A dead ssh no longer counts as attached, whether or not it reconnects (#356).
     detachFromHost()
     reconnectIfTheLinkDropped()
-    onChildExited?(exitCode)
+    onEvent?(.childExited(exitCode))
   }
 
   /// Whether the surface's child process has already exited (`wait_after_command` keeps such a pane
@@ -1150,7 +1151,7 @@ final class GhosttySurfaceView: NSView {
       MainActor.assumeIsolated {
         self?.progressTimeoutTimer = nil
         self?.progressActive = false
-        self?.onProgressReport?(false, false)
+        self?.onEvent?(.progressReport(active: false, failed: false))
       }
     }
   }
@@ -1178,7 +1179,7 @@ final class GhosttySurfaceView: NSView {
   /// Relay `GHOSTTY_ACTION_COMMAND_FINISHED` to the host, resolving the raw `Int16` exit code from
   /// the action payload (`-1` → "shell didn't report"; see `TerminalCapture.resolveExitCode`).
   func handleCommandFinished(rawExitCode: Int16) {
-    onCommandFinished?(TerminalCapture.resolveExitCode(commandFinished: rawExitCode))
+    onEvent?(.commandFinished(TerminalCapture.resolveExitCode(commandFinished: rawExitCode)))
   }
 
   /// Read the rendered text of the active screen — the prompt, the command, and its output — for the
@@ -1401,10 +1402,10 @@ final class GhosttySurfaceView: NSView {
     }
     // "Process exited. Press any key to close" (run command at its `wait_after_command` prompt):
     // libghostty shows the prompt but never emits a close action here, so close the tab ourselves on
-    // the next key. Only run tabs wire `onCloseRequested`; ordinary tabs fall through and forward
-    // keys as usual (a finished login shell just keeps its pane) (issue #7).
-    if let onCloseRequested, processHasExited || runStoppedAwaitingClose {
-      onCloseRequested()
+    // the next key. Only a run-command pane its sessions own does; ordinary tabs fall through and
+    // forward keys as usual (a finished login shell just keeps its pane) (issue #7).
+    if isRunCommandSurface, let onEvent, processHasExited || runStoppedAwaitingClose {
+      onEvent(.closeRequested)
       return
     }
     let action: ghostty_input_action_e =
@@ -1788,7 +1789,7 @@ final class GhosttySurfaceView: NSView {
     if event.modifierFlags.contains(.command), !hasOSC8LinkUnderCursor,
       let word = readWordUnderMouse(), resolveCmdHoverFile?(word) == true
     {
-      onCmdClickFile?(word)
+      onEvent?(.cmdClickFile(word))
       suppressNextMouseUp = true
       return
     }
@@ -2021,7 +2022,7 @@ final class GhosttySurfaceView: NSView {
     menu.addItem(contextItem("Split Down", #selector(contextSplitDown), "d", [.command, .shift]))
     menu.addItem(contextItem("Split Up", #selector(contextSplitUp)))
     menu.addItem(.separator())
-    if onToggleWindow != nil {
+    if offersWindowToggle {
       menu.addItem(
         contextItem(
           window is DetachedPaneWindow ? "Move Back to Main Window" : "Move to New Window",
@@ -2097,7 +2098,7 @@ final class GhosttySurfaceView: NSView {
     DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedUp() }
   }
   @objc private func contextToggleWindow() {
-    DispatchQueue.main.async { [weak self] in self?.onToggleWindow?() }
+    DispatchQueue.main.async { [weak self] in self?.onEvent?(.windowToggleRequested) }
   }
 
   @objc func paste(_ sender: Any?) {
