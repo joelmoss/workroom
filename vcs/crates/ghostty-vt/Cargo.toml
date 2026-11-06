@@ -1,0 +1,23 @@
+# libghostty-vt for workroomd's shadow terminal (ADR 0010): the bindgen bindings (`sys`), a safe
+# wrapper over them (`Terminal`), and the build that links the library. Every `unsafe` the shadow
+# needs is here, so the shadow's policy (`workroomd`'s `terminal/vt.rs`) holds none.
+#
+# Everything sits behind `link`, OFF by default: it pulls a pinned Zig toolchain, a Ghostty checkout
+# and libclang (for bindgen) into the build. Without it this crate compiles to nothing, which is
+# what `cargo clippy --workspace` and a plain `cargo build` see. workroomd's `terminal-state` turns
+# it on; `vcs/scripts/build-ghostty-vt.sh` supplies the library and is invoked by build.rs.
+[package]
+name = "ghostty-vt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+link = ["dep:bindgen"]
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }

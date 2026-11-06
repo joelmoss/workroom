@@ -110,15 +110,7 @@ fn a_repaint_keeps_the_clients_theme() {
     producer.write(b"hello\r\n");
     let mut client = ShadowTerminal::new(80, 24).expect("client");
     let theme = [GhosttyColorRgb { r: 1, g: 2, b: 3 }; 256];
-    // SAFETY: COLOR_PALETTE reads a `GhosttyColorRgb[256]`, and `theme` is a live one.
-    let rc = unsafe {
-        ghostty_terminal_set(
-            client.inner,
-            GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_PALETTE,
-            theme.as_ptr().cast(),
-        )
-    };
-    assert_eq!(rc, OK);
+    assert!(client.terminal.set_palette(&theme));
 
     client.write(&producer.replay());
     assert_eq!(colours(&client)[1], [1, 2, 3]);
@@ -1125,16 +1117,18 @@ fn widths_are_what_libghostty_writes() {
     // Every kind the table claims, so a kind added to it is checked without being listed
     // here. terminal.h's kinds run from 0 to 39 today.
     let kinds: Vec<_> = (0..256)
-        .filter_map(|kind| ShadowTerminal::width_of(kind).map(|width| (kind, width)))
+        .filter_map(|kind| ghostty_vt::width_of(kind).map(|width| (kind, width)))
         .collect();
     assert!(!kinds.is_empty(), "width_of claims no kinds");
     for (kind, width) in kinds {
         // Words, not bytes, so the buffer is aligned for the widest type written into it.
         let mut words = [u64::from_ne_bytes([SENTINEL; 8]); 2];
-        // SAFETY: `inner` is live, and only kinds the table claims are read. 16 aligned bytes
+        // SAFETY: the handle is live, and only kinds the table claims are read. 16 aligned bytes
         // hold all of them, and a table entry off by up to 8 bytes is what this test reports.
-        let rc = unsafe { ghostty_terminal_get(terminal.inner, kind, words.as_mut_ptr().cast()) };
-        assert_eq!(rc, OK, "kind {kind}");
+        let rc = unsafe {
+            ghostty_terminal_get(terminal.terminal.raw(), kind, words.as_mut_ptr().cast())
+        };
+        assert_eq!(rc, GhosttyResult_GHOSTTY_SUCCESS, "kind {kind}");
         // Every value here is small, so no byte the library writes equals the sentinel.
         let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_ne_bytes()).collect();
         let written = bytes

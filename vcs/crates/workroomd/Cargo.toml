@@ -40,6 +40,8 @@ wr-vcs-model = { path = "../wr-vcs-model" }
 # Kitty images: the decoder libghostty-vt needs to store a PNG, and what a reattach re-sends them
 # as (#551). Pure Rust, and only with terminal-state.
 png = { version = "0.18", optional = true }
+# libghostty-vt's bindings, safe wrapper and build, only with terminal-state.
+ghostty-vt = { path = "../ghostty-vt", optional = true }
 
 [dev-dependencies]
 # The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
@@ -61,11 +63,8 @@ test-support = []
 # (for bindgen) into the build. Everything else in this crate builds with cargo alone, and that
 # stays true for anyone who is not working on terminal state. Turn it on with
 # `cargo build -p workroomd --features terminal-state`; scripts/build-ghostty-vt.sh supplies the
-# library and is invoked by build.rs.
-terminal-state = ["dep:bindgen", "dep:png"]
-
-[build-dependencies]
-bindgen = { version = "0.72", optional = true }
+# library and is invoked by the ghostty-vt crate's build.rs (its `link` feature).
+terminal-state = ["dep:ghostty-vt", "ghostty-vt/link", "dep:png"]
 
 [[bin]]
 name = "workroomd"
