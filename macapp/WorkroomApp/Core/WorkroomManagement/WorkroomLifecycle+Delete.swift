@@ -82,7 +82,8 @@ extension WorkroomLifecycle {
             workroom.name, host: host, environment: remote,
             recorder: remoteRecorder(project: project.path, cli: window.services.cli),
             teardown: Self.remoteTeardown(
-              of: workroom, in: project, log: log, skip: skipTeardown, cli: window.services.cli))
+              of: workroom, in: project, log: log, skip: skipTeardown, cli: window.services.cli),
+            onForgotten: Self.forgetRemote)
         } else {
           try await window.services.cli.delete(
             name: workroom.name, project: project.path, skipTeardown: skipTeardown
@@ -118,6 +119,21 @@ extension WorkroomLifecycle {
       rootScript: URL(fileURLWithPath: project.path + "/scripts/workroom_teardown"), skip: skip,
       judge: judge(.teardown, in: project.path, cli: cli),
       onLine: { line in DispatchQueue.main.async { log?.append(line) } })
+  }
+
+  /// What a remote delete let go of, forgotten by the app's models of it too, at the step the
+  /// delete let it go: a gone host's port forwards and program status; an SSH workroom's own port
+  /// forwards; an SSH host's program status once its last workroom is gone.
+  static func forgetRemote(_ forgotten: RemoteWorkrooms.Forgotten) {
+    switch forgotten {
+    case .host(let host):
+      PortForwardingModel.forgetHost(host)
+      ProgramStatusMonitor.shared.forget(host)
+    case .workroom(let workroom, let host):
+      PortForwardingModel.forgetWorkroom(workroom, on: host)
+    case .lastWorkroom(let host):
+      ProgramStatusMonitor.shared.forget(host)
+    }
   }
 
   /// Teardown failed (it ran in the background): the error sheet says why (which script, and that it
@@ -313,7 +329,8 @@ extension WorkroomLifecycle {
             workroom.name, host: host, environment: remote?.environment(for: host),
             recorder: recorder,
             teardown: Self.remoteTeardown(
-              of: workroom, in: project, log: log, skip: skipTeardown, cli: window.services.cli))
+              of: workroom, in: project, log: log, skip: skipTeardown, cli: window.services.cli),
+            onForgotten: Self.forgetRemote)
         }
         // Each base on its own runtime and context (#309). Config keeps the ones still to go, so
         // a failure part-way leaves what is live recorded for the next delete.

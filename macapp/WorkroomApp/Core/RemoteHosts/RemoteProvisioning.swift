@@ -165,55 +165,83 @@ enum RemoteProvisioning {
     if let gitHubToken = environment.gitHubToken {
       header = cloneEnvironment(token: try await gitHubToken())
     }
-    let host: HostID
-    if let makeHost = environment.makeHost {
-      host = try await makeHost()
-    } else {
-      guard let driver = environment.driver as? any ProvisioningHostDriver else {
-        throw HostDriverError.invalidConfiguration("This host cannot be provisioned")
-      }
-      host = try await driver.create()
-    }
+    return try await place(
+      ProvisionedHostPlacement(environment: environment), cloneURL: cloneURL, path: path,
+      branch: branch, startBranch: startBranch, startCommit: startCommit, header: header,
+      in: environment, checkpoint: checkpoint)
+  }
+
+  /// Makes `placement`, connects to the daemon on its host, and clones and checks the workroom out
+  /// at `path` there (`cloneAndCheckOut`), with the clone's token `header` when the Mac gives git
+  /// its credentials. `checkpoint` is told the host before anything reaches it, and `finish` is the
+  /// last step; either failing undoes the create like any other step. Returns the workroom serving.
+  /// On a failure after the placement is made, the placement is undone; if that fails too,
+  /// `Failure.rollbackIncomplete` says what is still there.
+  static func place(
+    _ placement: some Placement, cloneURL: String, path: String, branch: String,
+    startBranch: String?, startCommit: String?, header: [String: String]?,
+    in environment: Environment,
+    checkpoint: @Sendable (_ host: HostID) async throws -> Void = { _ in },
+    finish: @Sendable (Instance) async throws -> Void = { _ in }
+  ) async throws -> Instance {
+    let host = try await placement.make()
     var connection: DaemonVCSConnection?
     do {
       try await checkpoint(host)
       ProvisioningProgress.reportStep?(.connect)
       let connected = try await environment.connect(host)
       connection = connected
-      ProvisioningProgress.reportStep?(.clone)
-      try await environment.clearCheckout?(host, path, cloneURL)
-      do {
-        _ = try await git(
-          ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
-          environment: header ?? [:], on: connected, step: .clone)
-      } catch Failure.git(let command, let detail) where environment.credentialHint != nil {
-        throw Failure.git(
-          command: command, detail: "\(detail)\n\n\(environment.credentialHint ?? "")")
+      var clear: (@Sendable () async throws -> Void)?
+      if let clearCheckout = environment.clearCheckout {
+        clear = { try await clearCheckout(host, path, cloneURL) }
       }
-      ProvisioningProgress.reportStep?(.checkout)
-      // Fully qualified: a tag or branch named like the short form would make it ambiguous.
-      _ = try await git(
-        [
-          "switch", "--quiet", "--no-track", "--create", branch,
-          startCommit ?? "refs/remotes/origin/\(startBranch ?? "HEAD")",
-        ],
-        in: path, environment: header ?? [:], on: connected, step: .checkout)
-      return Instance(
+      try await cloneAndCheckOut(
+        cloneURL, into: path, branch: branch, startBranch: startBranch, startCommit: startCommit,
+        on: connected, environment: header ?? [:], credentialHint: placement.credentialHint,
+        clearing: clear)
+      let instance = Instance(
         host: host, path: path, branch: branch, connection: connected, relayed: header != nil)
+      try await finish(instance)
+      return instance
     } catch {
       let opened = connection
       // In a task of its own, so a cancelled create still undoes itself.
       let failure = await Task { () -> String? in
         await opened?.close()
-        do { try await tearDown(host: host, in: environment) } catch {
-          return "destroying the instance: \(error.localizedDescription)"
-        }
-        return nil
+        return await placement.unmake(host)
       }.value
       guard let failure else { throw error }
       throw Failure.rollbackIncomplete(
         cause: error.localizedDescription, host: host, cleanup: [failure])
     }
+  }
+
+  /// Clones `cloneURL` into `path` on `connection`'s host, after `clear` removes what was there,
+  /// and checks out the workroom's own `branch` from `startCommit`, else origin's `startBranch`, else
+  /// origin's default branch. git runs with `environment` on top of the host's own. A clone that
+  /// fails says how to give the host GitHub access (`credentialHint`).
+  static func cloneAndCheckOut(
+    _ cloneURL: String, into path: String, branch: String, startBranch: String?,
+    startCommit: String?, on connection: DaemonVCSConnection, environment: [String: String],
+    credentialHint: String?, clearing clear: (@Sendable () async throws -> Void)?
+  ) async throws {
+    ProvisioningProgress.reportStep?(.clone)
+    try await clear?()
+    do {
+      _ = try await git(
+        ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
+        environment: environment, on: connection, step: .clone)
+    } catch Failure.git(let command, let detail) where credentialHint != nil {
+      throw Failure.git(command: command, detail: "\(detail)\n\n\(credentialHint ?? "")")
+    }
+    ProvisioningProgress.reportStep?(.checkout)
+    // Fully qualified: a tag or branch named like the short form would make it ambiguous.
+    _ = try await git(
+      [
+        "switch", "--quiet", "--no-track", "--create", branch,
+        startCommit ?? "refs/remotes/origin/\(startBranch ?? "HEAD")",
+      ],
+      in: path, environment: environment, on: connection, step: .checkout)
   }
 
   /// Takes a workroom down: its connection, then its box. If that fails,

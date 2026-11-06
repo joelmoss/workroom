@@ -38,10 +38,10 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     let calls = Calls()
     try await RemoteWorkrooms.delete(
       "gone", host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID()),
-      environment: nil, recorder: calls.recorder)
+      environment: nil, recorder: calls.recorder, onForgotten: { _ in })
     try await RemoteWorkrooms.delete(
       "crashed", host: HostDescriptor(state: "creating", provisioner: mine, workroomID: UUID()),
-      environment: nil, recorder: calls.recorder)
+      environment: nil, recorder: calls.recorder, onForgotten: { _ in })
     XCTAssertEqual(calls.all, ["forget gone", "forget crashed"])
   }
 
@@ -52,7 +52,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     do {
       try await RemoteWorkrooms.delete(
         "theirs", host: HostDescriptor(provisioner: "another.build", id: UUID()),
-        environment: nil, recorder: calls.recorder)
+        environment: nil, recorder: calls.recorder, onForgotten: { _ in })
       XCTFail("another build's workroom was deleted")
     } catch RemoteWorkrooms.Failure.anotherBuildsHost(let build) {
       XCTAssertEqual(build, "another.build")
@@ -61,7 +61,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 
     try await RemoteWorkrooms.delete(
       "theirs", host: HostDescriptor(state: "destroyed", provisioner: "another.build"),
-      environment: nil, recorder: calls.recorder)
+      environment: nil, recorder: calls.recorder, onForgotten: { _ in })
     XCTAssertEqual(calls.all, ["forget theirs"])
   }
 
@@ -72,7 +72,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     do {
       try await RemoteWorkrooms.delete(
         "live", host: HostDescriptor(provisioner: mine, id: UUID()),
-        environment: nil, recorder: calls.recorder)
+        environment: nil, recorder: calls.recorder, onForgotten: { _ in })
       XCTFail("a live workroom was forgotten")
     } catch RemoteWorkrooms.Failure.signedOut {}
     XCTAssertEqual(calls.all, [])
@@ -439,7 +439,7 @@ final class RemoteTeardownTests: XCTestCase {
       "w", host: host,
       environment: RemoteProvisioning.Environment(
         driver: driver, daemonSocket: driver.daemonSocket),
-      recorder: recorder(log), teardown: teardown)
+      recorder: recorder(log), teardown: teardown, onForgotten: { _ in })
   }
 
   /// Value: protects=the teardown runs, in the checkout, before the host is destroyed and the

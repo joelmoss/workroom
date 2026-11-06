@@ -258,61 +258,29 @@ enum RemoteWorkrooms {
     let name = try await reserve(parent, descriptor)
     let path = parent + "/" + name
     descriptor.path = path
-    var made = false
-    var connection: DaemonVCSConnection?
+    let reserved = descriptor
     do {
-      ProvisioningProgress.reportStep?(.machine)
-      try await driver.prepareFolder(path: path, workroom: workroom)
-      made = true
-      ProvisioningProgress.reportStep?(.connect)
-      let connected = try await environment.connect(driver.hostID)
-      connection = connected
-      ProvisioningProgress.reportStep?(.clone)
-      do {
-        _ = try await RemoteProvisioning.git(
-          ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
-          on: connected, step: .clone)
-      } catch RemoteProvisioning.Failure.git(let command, let detail) {
-        throw RemoteProvisioning.Failure.git(
-          command: command, detail: detail + "\n\n" + (HostKind.ssh.credentialHint ?? ""))
-      }
-      ProvisioningProgress.reportStep?(.checkout)
-      _ = try await RemoteProvisioning.git(
-        [
-          "switch", "--quiet", "--no-track", "--create", branch(for: name),
-          startCommit ?? "refs/remotes/origin/\(startBranch ?? "HEAD")",
-        ],
-        in: path, on: connected, step: .checkout)
-      descriptor.lifecycle = .serving
-      try await recorder.record(name, descriptor)
-      return Created(
-        name: name,
-        instance: .init(
-          host: driver.hostID, path: path, branch: branch(for: name),
-          connection: connected, relayed: false))
+      // git on the user's server uses its own credentials (ADR 0056): the clone gets no token.
+      let instance = try await RemoteProvisioning.place(
+        SSHFolderPlacement(driver: driver, path: path, workroom: workroom), cloneURL: cloneURL,
+        path: path, branch: branch(for: name), startBranch: startBranch, startCommit: startCommit,
+        header: nil, in: environment,
+        finish: { _ in
+          var serving = reserved
+          serving.lifecycle = .serving
+          try await recorder.record(name, serving)
+        })
+      return Created(name: name, instance: instance)
     } catch {
-      let cause = error
-      let opened = connection
-      let hadFolder = made
-      let remaining = descriptor
-      let cleanup = await Task { () -> String? in
-        await opened?.close()
-        if hadFolder {
-          do { try await driver.removeFolder(path: path, workroom: workroom) } catch {
-            return error.localizedDescription
-          }
-        }
-        return nil
-      }.value
-      if let cleanup {
-        var failed = remaining
+      if case RemoteProvisioning.Failure.rollbackIncomplete = error {
+        // The folder is still there: the entry keeps it, `failed`, for a delete to finish.
+        var failed = reserved
         failed.lifecycle = .failed
         try? await recorder.record(name, failed)
-        throw RemoteProvisioning.Failure.rollbackIncomplete(
-          cause: cause.localizedDescription, host: driver.hostID, cleanup: [cleanup])
+      } else {
+        try? await recorder.forget(name)
       }
-      try? await recorder.forget(name)
-      throw cause
+      throw error
     }
   }
 
@@ -531,10 +499,22 @@ enum RemoteWorkrooms {
     }
   }
 
+  /// What a delete let go of, which the app's own models of it forget too
+  /// (`WorkroomLifecycle.forgetRemote`).
+  enum Forgotten: Equatable, Sendable {
+    /// A host gone with its workroom, or a record naming nothing live: the host's port forwards and
+    /// program status.
+    case host(HostID)
+    /// A workroom's folder on an SSH host that stays: that workroom's own port forwards.
+    case workroom(UUID, on: HostID)
+    /// The last workroom on an SSH host: the host's program status. Its daemon runs on (ADR 0056).
+    case lastWorkroom(on: HostID)
+  }
+
   /// Deletes a remote workroom (#253): runs its teardown script on a ready host (`teardown`), takes
   /// down what its record says is live (`isLive`), then has the CLI drop the entry
   /// (`Recorder.forget`). The app's connection to the box goes first; a pane's own ssh goes with the
-  /// box.
+  /// box. `onForgotten` hears what went, at the step it went.
   ///
   /// A teardown script that fails, or a host that can't be reached to run it, stops the delete with
   /// nothing taken down (`Failure.teardownScriptFailed`), so deleting again retries. When part of the
@@ -542,31 +522,25 @@ enum RemoteWorkrooms {
   /// again finishes the job. `environment` is needed only for a live one.
   static func delete(
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
-    recorder: Recorder, teardown: Teardown? = nil, hosts: RemoteHosts = .shared
+    recorder: Recorder, teardown: Teardown? = nil, hosts: RemoteHosts = .shared,
+    onForgotten: @escaping @MainActor @Sendable (Forgotten) -> Void
   ) async throws {
     if host.kind == .ssh, !host.isDestroyed {
       return try await deleteSSH(
         name, host: host, environment: environment, recorder: recorder, teardown: teardown,
-        hosts: hosts)
+        hosts: hosts, onForgotten: onForgotten)
     }
     // The entry goes, and the host's port forwards with it (#380): one step for both ways out, so
     // a workroom with nothing live to take down keeps nothing made this launch.
     func forget() async throws {
-      if let id = host.id {
-        await MainActor.run {
-          PortForwardingModel.forgetHost(.remote(id))
-          ProgramStatusMonitor.shared.forget(.remote(id))
-        }
-      }
+      if let id = host.id { await onForgotten(.host(.remote(id))) }
       try await recorder.forget(name)
     }
     guard try checkDeletable([host]) else { return try await forget() }
     // `checkDeletable` found it live, so it has a box.
     guard let environment, let id = host.id else { throw Failure.signedOut }
     let box = HostID.remote(id)
-    // Only on a ready host: one a create left `creating` or a delete left `failed` may not be whole,
-    // and that delete exists to finish taking it down.
-    if let teardown, !teardown.skip, host.lifecycle == .serving {
+    try await runTeardown(teardown, of: name, recorded: host, on: box, in: environment) {
       // `deletionKey`, as the host's own delete finds its driver: a descriptor from before the
       // `driver` field is Docker's.
       guard let driver = environment.driver as? any HostTerminalDriver,
@@ -574,17 +548,7 @@ enum RemoteWorkrooms {
       else {
         throw Failure.teardownScriptFailed("teardown script failed: this host's driver is unknown")
       }
-      let run = await teardown.run(
-        ScriptRequest(
-          script: .teardown, workroom: name, path: teardown.path, host: box, key: key,
-          driver: driver, daemonBinary: environment.daemonBinary(on: box),
-          rootScript: teardown.rootScript,
-          judge: teardown.judge, onLine: teardown.onLine))
-      switch run {
-      case .failed(let why): throw Failure.teardownScriptFailed(why)
-      case .notTrusted(let script): throw Failure.teardownScriptNotTrusted(script)
-      case .absent, .passed: break
-      }
+      return (key, driver)
     }
     if let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
       await HostConnectionManager.shared.disconnect(lease)
@@ -598,13 +562,38 @@ enum RemoteWorkrooms {
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: liveHost, cleanup: left)
     }
-    await RemoteHosts.shared.forgetRelay(id)
+    await hosts.forgetRelay(id)
     try await forget()
+  }
+
+  /// Runs workroom `name`'s teardown script on `box` before the workroom goes, as the CLI runs a
+  /// local one first, through the host's driver and key (`reach`). Only on a ready host: one a
+  /// create left `creating` or a delete left `failed` may not be whole, and that delete exists to
+  /// finish taking it down. Never for Delete Anyway. A script that fails, or isn't approved on this
+  /// Mac, stops the delete.
+  private static func runTeardown(
+    _ teardown: Teardown?, of name: String, recorded host: HostDescriptor, on box: HostID,
+    in environment: RemoteProvisioning.Environment,
+    reach: () throws -> (key: RemoteHosts.DriverKey, driver: any HostTerminalDriver)
+  ) async throws {
+    guard let teardown, !teardown.skip, host.lifecycle == .serving else { return }
+    let (key, driver) = try reach()
+    let run = await teardown.run(
+      ScriptRequest(
+        script: .teardown, workroom: name, path: teardown.path, host: box, key: key,
+        driver: driver, daemonBinary: environment.daemonBinary(on: box),
+        rootScript: teardown.rootScript, judge: teardown.judge, onLine: teardown.onLine))
+    switch run {
+    case .failed(let why): throw Failure.teardownScriptFailed(why)
+    case .notTrusted(let script): throw Failure.teardownScriptNotTrusted(script)
+    case .absent, .passed: break
+    }
   }
 
   private static func deleteSSH(
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
-    recorder: Recorder, teardown: Teardown?, hosts: RemoteHosts
+    recorder: Recorder, teardown: Teardown?, hosts: RemoteHosts,
+    onForgotten: @escaping @MainActor @Sendable (Forgotten) -> Void
   ) async throws {
     _ = try checkDeletable([host])
     guard let id = host.id, let workroom = host.workroomID,
@@ -625,18 +614,8 @@ enum RemoteWorkrooms {
     }
     do {
       if state == .present {
-        if let teardown, !teardown.skip, host.lifecycle == .serving {
-          let result = await teardown.run(
-            ScriptRequest(
-              script: .teardown, workroom: name, path: path, host: box,
-              key: .ssh(destination: driver.destination), driver: driver,
-              daemonBinary: environment.daemonBinary(on: box), rootScript: teardown.rootScript,
-              judge: teardown.judge, onLine: teardown.onLine))
-          switch result {
-          case .failed(let why): throw Failure.teardownScriptFailed(why)
-          case .notTrusted(let script): throw Failure.teardownScriptNotTrusted(script)
-          case .absent, .passed: break
-          }
+        try await runTeardown(teardown, of: name, recorded: host, on: box, in: environment) {
+          (.ssh(destination: driver.destination), driver)
         }
       }
       try await hosts.ensureConnected(box, wake: true)
@@ -653,10 +632,10 @@ enum RemoteWorkrooms {
       teardown?.onLine("Left \(path) on \(driver.destination): \(error.localizedDescription)")
     }
     try await recorder.forget(name)
-    await MainActor.run { PortForwardingModel.forgetWorkroom(workroom, on: box) }
+    await onForgotten(.workroom(workroom, on: box))
     // A failed config read keeps the shared connection: dropping it is safe only with evidence.
     guard (try? await recorder.hasWorkrooms(id)) == false else { return }
-    await MainActor.run { ProgramStatusMonitor.shared.forget(box) }
+    await onForgotten(.lastWorkroom(on: box))
     if let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
       await HostConnectionManager.shared.disconnect(lease)
     }

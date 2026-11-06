@@ -421,7 +421,7 @@ final class SSHHostIntegrationTests: XCTestCase {
       driver: driver, daemonSocket: driver.daemonSocket)
     try await RemoteWorkrooms.delete(
       names[0], host: descriptors[0], environment: environment, recorder: records.recorder,
-      hosts: hosts)
+      hosts: hosts, onForgotten: WorkroomLifecycle.forgetRemote)
     let afterOne = await HostConnectionManager.shared.snapshot(for: host)
     XCTAssertEqual(afterOne.lease, lease)
     XCTAssertNotNil(ProgramStatusMonitor.shared.hosts[host])
@@ -447,7 +447,7 @@ final class SSHHostIntegrationTests: XCTestCase {
       try await RemoteWorkrooms.delete(
         names[index], host: descriptors[index], environment: environment,
         recorder: records.recorder,
-        hosts: hosts)
+        hosts: hosts, onForgotten: WorkroomLifecycle.forgetRemote)
     }
     let afterLast = await HostConnectionManager.shared.snapshot(for: host)
     XCTAssertEqual(afterLast.status, .disconnected)
@@ -705,7 +705,7 @@ final class SSHHostIntegrationTests: XCTestCase {
         teardown: .init(
           path: workroom.instance.path, rootScript: teardown, judge: judge, onLine: { _ in },
           run: { request in await RemoteWorkrooms.runScript(request, hosts: hosts) }),
-        hosts: hosts)
+        hosts: hosts, onForgotten: WorkroomLifecycle.forgetRemote)
       let teardownOutput = try await onHost(
         fixture, "cat \(PosixShell.quoted(parent + "/teardown-" + workroom.name))")
       XCTAssertEqual(teardownOutput, "ssh \(workroom.name)")

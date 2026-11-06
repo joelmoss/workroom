@@ -63,7 +63,11 @@ destination determines a shared UUIDv5 host id across projects. An SSH create ha
 `PendingMachines` entry. Preserve the marker guard on folder removal and end sessions by the
 workroom UUID tag; per-host cleanup belongs only to the last workroom, including creating entries.
 Port-forward lists belong to host plus workroom. The daemon stays running after deletion.
-Before changing this lifecycle, read [remote host states](../remote-host-states.md) and
+A create on either kind of host makes its `Placement` (`ProvisionedHostPlacement`, or
+`SSHFolderPlacement` for the marked folder) and clones through the one `RemoteProvisioning.place`
+and `cloneAndCheckOut`; both deletes run the one `RemoteWorkrooms.runTeardown`, and say what they
+let go of through `onForgotten`, which `WorkroomLifecycle.forgetRemote` hands to the port-forward
+and program-status models. Before changing this lifecycle, read [remote host states](../remote-host-states.md) and
 [ADR 0056](../adr/0056-ssh-hosts-are-the-users.md) for its safety and parity rules.
 
 ## boxd driver (#256)

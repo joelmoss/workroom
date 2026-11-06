@@ -477,7 +477,8 @@ class ProviderParityTestCase: XCTestCase {
     XCTAssertEqual(RemoteHosts.DriverKey(workroom), key)
 
     try await RemoteWorkrooms.delete(
-      "w", host: workroom, environment: environment, recorder: recorder)
+      "w", host: workroom, environment: environment, recorder: recorder,
+      onForgotten: WorkroomLifecycle.forgetRemote)
     XCTAssertNil(records.workrooms["w"], "the workroom's entry was kept")
     XCTAssertEqual(try provider.leftovers(), [])
   }

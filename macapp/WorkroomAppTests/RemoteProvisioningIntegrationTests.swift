@@ -333,7 +333,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
 
     try await RemoteWorkrooms.delete(
       "w1", host: try XCTUnwrap(made["w1"]), environment: environment,
-      recorder: recorded.recorder)
+      recorder: recorded.recorder, onForgotten: { _ in })
     XCTAssertEqual(recorded.calls.last, .forget("w1"))
     XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the workroom's box was kept")
 
@@ -341,7 +341,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     do {
       try await RemoteWorkrooms.delete(
         "w2", host: try XCTUnwrap(made["w2"]), environment: environment,
-        recorder: recorded.recorder)
+        recorder: recorded.recorder, onForgotten: { _ in })
       XCTFail("a failed removal was swallowed")
     } catch RemoteProvisioning.Failure.rollbackIncomplete {}
     guard case .record("w2", let left) = recorded.calls.last else {
@@ -353,7 +353,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
 
     try FileManager.default.removeItem(at: failing)
     try await RemoteWorkrooms.delete(
-      "w2", host: left, environment: environment, recorder: recorded.recorder)
+      "w2", host: left, environment: environment, recorder: recorded.recorder,
+      onForgotten: { _ in })
     XCTAssertEqual(recorded.calls.last, .forget("w2"))
     XCTAssertEqual(try leftovers("ps", label: label), [], "the second box was kept")
   }
