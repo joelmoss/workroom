@@ -174,10 +174,12 @@ final class PersistentSessionService {
       // Reported as ended, rather than as a close that left something running. "No runtime" is no
       // runtime CLI where the app looks for one, which a helper still running behind a moved CLI
       // would defeat. Off the main actor: it looks at the file system.
-      let noRuntime = await Task.detached { RemoteHosts.shared.runtimeIsMissing(for: host) }.value
+      let noRuntime = await Task.detached {
+        RemoteHosts.shared.registry.runtimeIsMissing(for: host)
+      }.value
       if noRuntime { return true }
       // A click: a box asleep is woken to end the session (#356).
-      try await RemoteHosts.shared.ensureConnected(host, wake: true)
+      try await RemoteHosts.shared.reachability.ensureConnected(host, wake: true)
       return try await HostConnectionManager.shared.endSession(session, on: host)
     }
     self.hostUpdates = { await HostConnectionManager.shared.updates(for: $0) }
@@ -606,7 +608,7 @@ final class PersistentSessionService {
         Task {
           // Only while a pane is still attached: one that exited or closed meanwhile is not.
           guard self.hasAttachedPane(on: host) else { return }
-          try? await RemoteHosts.shared.ensureConnected(host)
+          try? await RemoteHosts.shared.reachability.ensureConnected(host)
         }
         return command
       } catch {
@@ -797,9 +799,9 @@ final class PersistentSessionService {
       // A restart is the user asking for the run to go, so a stopped container is started for it
       // (`docs/remote-host-states.md`). A stop or a quit's stop never starts one just to stop a run
       // that isn't going.
-      if signal == .restart { RemoteHosts.shared.activate(remote.host) }
+      if signal == .restart { RemoteHosts.shared.reachability.activate(remote.host) }
       do {
-        try await RemoteHosts.shared.ensureConnected(remote.host, wake: true)
+        try await RemoteHosts.shared.reachability.ensureConnected(remote.host, wake: true)
         reply = try await HostConnectionManager.shared.signalSession(
           sessionID, signal, on: remote.host)
       } catch {

@@ -80,13 +80,13 @@ final class PortForwardingModel: ObservableObject {
       -> PortForward.Reconnect
     {
       {
-        try? await RemoteHosts.shared.ensureConnected(host, wake: true)
+        try? await RemoteHosts.shared.reachability.ensureConnected(host, wake: true)
         return try? await manager.forwarding(host: host).1.connection
       }
     }
 
     /// `host`'s connection in `manager`. A host's connection is made by selecting its workroom
-    /// (`RemoteHosts.ensureConnected`, through the inspector's reads), so a forward asks for the
+    /// (`HostReachability.ensureConnected`, through the inspector's reads), so a forward asks for the
     /// one there is and never makes one: connecting could start a container the user stopped.
     static func on(_ host: HostID, manager: HostConnectionManager) -> Transport {
       Transport(

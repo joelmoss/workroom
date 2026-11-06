@@ -3035,7 +3035,8 @@ final class TerminalSessions: ObservableObject {
     _ session: UUID, on host: UUID, workingDirectory: String,
     metadata: [(key: String, value: String)], runCommand: String? = nil
   ) {
-    let driver = RemoteHosts.shared.existingDriver(holding: host) ?? HostDriverRegistry.unreachable
+    let driver =
+      RemoteHosts.shared.registry.existingDriver(holding: host) ?? HostDriverRegistry.unreachable
     sessionService.registerRemoteSession(
       session, on: .remote(host), via: driver, workingDirectory: workingDirectory,
       metadata: metadata, runCommand: runCommand)

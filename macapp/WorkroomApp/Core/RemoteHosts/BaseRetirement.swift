@@ -34,7 +34,7 @@ enum BaseRetirement {
       destroy: { base in
         // Signed out of the base's provider: no environment, so it stays until a later launch.
         let environment = try await MainActor.run {
-          try RemoteHosts.shared.environment(toDelete: [base])?.environment(for: base)
+          try RemoteHosts.shared.registry.environment(toDelete: [base])?.environment(for: base)
         }
         guard let id = base.id, let environment else { throw RemoteWorkrooms.Failure.signedOut }
         try await RemoteProvisioning.tearDown(host: .remote(id), in: environment)
@@ -87,7 +87,7 @@ enum BaseRetirement {
     for workroom in project.workrooms {
       guard var host = workroom.host, host.repository == nil,
         // A descriptor from before the `driver` field is Docker's (`deletionKey`).
-        let key = try? RemoteHosts.deletionKey(host),
+        let key = try? HostDriverRegistry.deletionKey(host),
         let base = base(in: bases, for: key), let repository = base.repository
       else { continue }
       host.repository = repository
@@ -127,7 +127,7 @@ enum BaseRetirement {
   /// Docker context, else for Docker one made before #309, which names no context and follows the
   /// current one, as `key` does.
   static func base(in bases: [HostDescriptor], for key: RemoteHosts.DriverKey) -> HostDescriptor? {
-    let keyed = bases.map { (base: $0, key: try? RemoteHosts.deletionKey($0)) }
+    let keyed = bases.map { (base: $0, key: try? HostDriverRegistry.deletionKey($0)) }
     if let exact = keyed.first(where: { $0.key == key }) { return exact.base }
     // Only Docker has an unpinned form; a boxd base belongs to exactly one org and account.
     guard let runtime = key.runtime else { return nil }

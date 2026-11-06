@@ -67,7 +67,7 @@ struct AppServices {
       trasher: SystemTrasher(),
       notifier: SystemNotifier(),
       hostLayoutStore: { host in
-        try await RemoteHosts.shared.ensureConnected(host)
+        try await RemoteHosts.shared.reachability.ensureConnected(host)
         return try await HostConnectionManager.shared.layouts(host: host)
       },
       hostSessions: { try await HostConnectionManager.shared.sessions(on: $0) })

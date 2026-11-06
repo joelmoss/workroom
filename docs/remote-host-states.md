@@ -7,7 +7,8 @@ something on a host: a connect, an exec, a script, a delete.
 ## Reaching a host
 
 - **Something the user asked for** (a click, a create, a delete, a script):
-  `RemoteHosts.activate(host)`, then `try await hosts.ensureConnected(host, wake: true)`. That
+  `reachability.activate(host)`, then `try await reachability.ensureConnected(host, wake: true)`,
+  on `HostReachability` (the app's is `RemoteHosts.shared.reachability`). That
   starts a stopped container, wakes an asleep boxd box, joins a connect already under way, and
   bootstraps the daemon and the credential relay. `RemoteWorkrooms.runScript` is the worked example.
 - **A background read** (a status sweep, a panel refresh): `ensureConnected(host)`. It leaves an
@@ -19,7 +20,7 @@ something on a host: a connect, an exec, a script, a delete.
   connection dropped and its remote panes attach again, rather than wait the minute ssh's keepalive
   takes to notice a dead link; a pane's attach reconnects the host. One that answers keeps its links.
   A container's link is loopback and is left alone.
-- `RemoteHosts.connect(host, driver:)` is the bootstrap step inside `ensureConnected`. It starts no
+- `HostReachability.connect(host, driver:)` is the bootstrap step inside `ensureConnected`. It starts no
   container or provider host itself; on SSH hosts its bootstrap starts the daemon when nothing
   listens. It fails while another connect to the host is under way:
   `HostConnectionManager.connectIfDisconnected` throws `.unavailable` for a `.connecting` host.
@@ -29,7 +30,7 @@ something on a host: a connect, an exec, a script, a delete.
 | State | How it shows | What handles it |
 |---|---|---|
 | Up | `HostConnectionManager` snapshot `.connected` | `ensureConnected` returns at once (and retries a credential relay that didn't take, at most once a `retryAfter`) |
-| Connecting | another caller's attempt in `RemoteHosts.connecting` | `ensureConnected` joins it; `connect` throws `.unavailable` |
+| Connecting | another caller's attempt in `HostReachability.connecting` | `ensureConnected` joins it; `connect` throws `.unavailable` |
 | Stopped container | Docker `inspect` says not running; Apple says `stopped` | `ContainerHostDriver.startIfStopped`, run only for an activated host. Apple's runtime has no restart policy, so after a reboot **every** Apple container is stopped |
 | Asleep boxd box | boxd status `standby` or `hibernated` (`HostPresence.asleep`, from `HostPresenceReporting`), or boxd couldn't say | A background read throws `RepositoryRoutingError.asleep`; with `wake` or `activate` the connect's ssh login wakes it |
 | Gone boxd machine | `HostPresence.gone`: deleted, or in another org or account | A background read throws `RepositoryRoutingError.gone`. With `wake` the presence check is skipped, so the connect is tried and fails as unreachable |

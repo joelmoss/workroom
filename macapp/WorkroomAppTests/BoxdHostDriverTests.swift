@@ -440,7 +440,7 @@ final class BoxdHostDriverTests: XCTestCase {
     let gone = await driver(StubCLI(["machine get": Self.failed("error: VM 'x' not found")]))
       .presence(.remote(UUID()))
     XCTAssertEqual(gone, .gone)
-    // boxd couldn't answer at all (timed out): nil, which `RemoteHosts` takes as asleep.
+    // boxd couldn't answer at all (timed out): nil, which `HostReachability` takes as asleep.
     let timedOut = await driver(
       StubCLI([
         "machine get": CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true)

@@ -138,7 +138,7 @@ final class SSHHostLiveTests: XCTestCase {
         do {
           try await RemoteWorkrooms.delete(
             name, host: descriptor, environment: environment, recorder: records.recorder,
-            hosts: hosts, onForgotten: WorkroomLifecycle.forgetRemote)
+            reachability: hosts.reachability, onForgotten: WorkroomLifecycle.forgetRemote)
         } catch { failures.append("\(descriptor.path ?? name): \(error.localizedDescription)") }
       }
       for connection in connections { await connection.close() }
@@ -220,7 +220,7 @@ final class SSHHostLiveTests: XCTestCase {
         XCTAssertTrue(pane.read(until: "LIVE_READY").contains(item.instance.path))
       }
       adopt()
-      try await hosts.ensureConnected(driver.hostID, wake: true)
+      try await hosts.reachability.ensureConnected(driver.hostID, wake: true)
       let originalLease = await HostConnectionManager.shared.snapshot(for: driver.hostID).lease
       let firstDescriptor = try XCTUnwrap(records.descriptors[created[0].name])
       let firstID = try XCTUnwrap(firstDescriptor.workroomID)
@@ -276,7 +276,8 @@ final class SSHHostLiveTests: XCTestCase {
           item.name, host: descriptor, environment: environment, recorder: records.recorder,
           teardown: .init(
             path: item.instance.path, rootScript: nil, judge: judge, onLine: { lines.add($0) },
-            run: { await RemoteWorkrooms.runScript($0, hosts: hosts) }), hosts: hosts,
+            run: { await RemoteWorkrooms.runScript($0, reachability: hosts.reachability) }),
+          reachability: hosts.reachability,
           onForgotten: WorkroomLifecycle.forgetRemote)
         XCTAssertTrue(lines.all.contains("SSH_TEARDOWN:ssh:\(item.name)"), lines.all.description)
         if index == 0 {

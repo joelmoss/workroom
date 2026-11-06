@@ -82,11 +82,11 @@ final class RemoteLinkMonitor {
       var stale: Set<HostID> = []
       while askAgain {
         askAgain = false
-        stale.formUnion(await RemoteHosts.shared.unansweringProviderHosts())
+        stale.formUnion(await RemoteHosts.shared.reachability.unansweringProviderHosts())
       }
       asking = false
       Self.logger.notice(
-        "remote links: \(stale.count) host(s) gave no answer within \(RemoteHosts.answerDeadline) s or had no link, reattaching their panes and waiting ones"
+        "remote links: \(stale.count) host(s) gave no answer within \(HostReachability.answerDeadline) s or had no link, reattaching their panes and waiting ones"
       )
       NotificationCenter.default.post(
         name: Self.linksStale, object: self, userInfo: [Self.staleHostsKey: stale])

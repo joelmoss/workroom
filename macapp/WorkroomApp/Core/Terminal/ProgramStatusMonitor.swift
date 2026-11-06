@@ -136,18 +136,18 @@ final class ProgramStatusMonitor: ObservableObject {
   @Published private(set) var hosts: [HostID: HostState] = [:]
 
   /// Connects `host` and returns its connection: `LocalDaemonVCS` for this Mac, which may start the
-  /// daemon, and `RemoteHosts` for a remote one, which never wakes a sleeping box.
+  /// daemon, and `HostReachability` for a remote one, which never wakes a sleeping box.
   var connect: @Sendable (HostID) async throws -> any HostServiceConnection = { host in
     if host == .local { return try await LocalDaemonVCS.shared.programStatus() }
-    try await RemoteHosts.shared.ensureConnected(host)
+    try await RemoteHosts.shared.reachability.ensureConnected(host)
     return try await HostConnectionManager.shared.programStatus(host: host)
   }
   var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   /// Returns once `host`'s link comes up as a new connection (its workroom opened, or a boxd host
   /// woken), so a retry need not wait out its backoff; never for this Mac's daemon. A link that is
   /// already up does not count, or a host whose daemon has no program status would be retried
-  /// without pause. A background host that was unreachable is not reconnected early: `RemoteHosts`
-  /// holds its retry window, which this monitor's own failed connects keep open.
+  /// without pause. A background host that was unreachable is not reconnected early:
+  /// `HostReachability` holds its retry window, which this monitor's own failed connects keep open.
   var reconnected: @Sendable (HostID) async -> Void = { host in
     guard host != .local else {
       while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }

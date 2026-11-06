@@ -76,8 +76,8 @@ teardowns everywhere; for a remote workroom that destroys the host without its t
 leave the script's external resources running.
 
 **How to start:** `WorkroomLifecycle.deleteProject` builds each workroom's `RemoteWorkrooms.Teardown`
-with `remoteTeardown(of:in:log:skip:)`, whose `run` is always the live `RemoteWorkrooms.runScript`, and
-takes its hosts' environment from `RemoteHosts.Deletion`. Give the lifecycle a seam for the teardown's
+with `remoteTeardown(of:in:log:skip:)`, whose `run` is nil (the live `RemoteWorkrooms.runScript` over the delete's reachability), and
+takes its hosts' environment from `HostDriverRegistry.Deletion`. Give the lifecycle a seam for the teardown's
 `run` (and a fake `Deletion`), then assert the teardown runs and the log exists for `.configOnly`.
 
 **Effort:** S

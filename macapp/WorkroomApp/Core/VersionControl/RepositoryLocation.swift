@@ -100,7 +100,7 @@ final class RepositoryRouter: @unchecked Sendable {
       localReader: { try await LocalDaemonVCS.shared.reader(context: $0) },
       localWriter: { try await LocalDaemonVCS.shared.writer(context: $0) },
       localFiles: { try await LocalDaemonVCS.shared.files(context: $0) },
-      connectRemote: { try await RemoteHosts.shared.ensureConnected($0) })
+      connectRemote: { try await RemoteHosts.shared.reachability.ensureConnected($0) })
   }()
   private let lock = NSLock()
   private var entries: [RepositoryLocation: Entry] = [:]

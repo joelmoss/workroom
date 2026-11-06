@@ -110,7 +110,8 @@ final class HostOptionsCatalog: ObservableObject {
       return .failed("\(provider.displayName) hosts take no host options.")
     }
     do {
-      guard let reading = try RemoteHosts.shared.driver(key) as? any HostOptionsReading else {
+      guard let reading = try RemoteHosts.shared.registry.driver(key) as? any HostOptionsReading
+      else {
         return .failed("\(provider.displayName) couldn't be reached.")
       }
       switch try await reading.readHostOptions() {

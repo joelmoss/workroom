@@ -28,7 +28,8 @@ extension WorkroomLifecycle {
     var remote: RemoteProvisioning.Environment?
     if let host = workroom.host {
       do {
-        remote = try RemoteHosts.shared.environment(toDelete: [host])?.environment(for: host)
+        remote = try RemoteHosts.shared.registry.environment(toDelete: [host])?
+          .environment(for: host)
       } catch {
         window.present(error)
         window.modals.errorTitle = "Can't delete \(workroom.displayName)"
@@ -233,7 +234,8 @@ extension WorkroomLifecycle {
   /// failed. A failed delete's reload does this itself, and `apply` holds the sweep again if another
   /// delete has begun.
   private func runHeldHostSweep(from window: any LifecycleWindow) async {
-    guard deletingProjects.isEmpty, deletingWorkrooms.isEmpty, RemoteHosts.shared.sweepHeld
+    guard deletingProjects.isEmpty, deletingWorkrooms.isEmpty,
+      RemoteHosts.shared.registry.sweepHeld
     else { return }
     await window.load(warnings: "fast", surfaceErrors: false)
   }
@@ -288,9 +290,9 @@ extension WorkroomLifecycle {
     let remoteWorkrooms = project.workrooms.filter(\.isRemote)
     // An older build's bases that launch has not retired yet (its provider signed out, say).
     let bases = BaseRetirement.bases(of: project.host)
-    let remote: RemoteHosts.Deletion?
+    let remote: HostDriverRegistry.Deletion?
     do {
-      remote = try RemoteHosts.shared.environment(
+      remote = try RemoteHosts.shared.registry.environment(
         toDelete: remoteWorkrooms.compactMap(\.host) + bases)
     } catch {
       window.present(error)

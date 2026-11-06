@@ -134,7 +134,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   public var isDestroyed: Bool { lifecycle == .destroyed }
 
   /// The kind of host `driver` names, or nil for a driver this build doesn't know and for a record
-  /// naming none (which `RemoteHosts.deletionKey` alone takes for Docker's).
+  /// naming none (which `HostDriverRegistry.deletionKey` alone takes for Docker's).
   public var kind: HostKind? { driver.flatMap(HostKind.init(driver:)) }
 
   /// `state`, typed. Setting it writes the string, so an unknown state read here is written back

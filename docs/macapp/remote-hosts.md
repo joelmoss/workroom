@@ -104,7 +104,10 @@ and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#
 host's `HostKind`, ADR 0066, with who its driver acts for: a Docker context, a boxd org and
 account, an exe.dev account or an SSH destination). The app reaches what one provider does (boxd's
 presence, a container's start, SSH's shared connection) through the capability protocols in
-`HostDrivers`, never by casting to a concrete driver (ADR 0067). A background read
+`HostDrivers`, never by casting to a concrete driver (ADR 0067). The registry also records which
+driver holds each host config names, and runs the launch's sweep (`adopt`). Connecting to a host,
+its backoff, waking and starting it, and its credential relay are `HostReachability`'s; the app has
+one of each, on `RemoteHosts.shared`, which a reload's `adopt` tells both. A background read
 of a boxd host asks boxd first and leaves an asleep box asleep, and nothing lets go of an idle
 connection: a box an open app holds awake is the user's to free, by deleting its workroom (#380).
 Signed out, every boxd command that needs an account opens boxd's browser sign-in and waits
@@ -144,5 +147,6 @@ or a remote workroom silently turns local. What the app relies on:
   is held in `deferredTargetSessions` until its first pane opens.
 - Doing something on a host (a connect, an exec, a script, a delete): read
   `docs/remote-host-states.md` first. It lists the states a host can be in (stopped, asleep, gone,
-  connecting, an older daemon), the call that reaches it in each (`activate`, then
-  `ensureConnected(wake: true)` for what the user asked for), and what an exit status means over ssh.
+  connecting, an older daemon), the `HostReachability` call that reaches it in each (`activate`,
+  then `ensureConnected(wake: true)` for what the user asked for), and what an exit status means
+  over ssh.

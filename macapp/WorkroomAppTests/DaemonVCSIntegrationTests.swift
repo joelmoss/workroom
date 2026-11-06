@@ -197,7 +197,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     daemons.append(daemon)
     let connection = try await DaemonVCSConnection.connect(
       host: .local, socketPath: daemon.socketPath)
-    try await withTimeout(seconds: RemoteHosts.answerDeadline) { try await connection.ping() }
+    try await withTimeout(seconds: HostReachability.answerDeadline) { try await connection.ping() }
     await connection.close()
   }
 
@@ -217,7 +217,9 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     } catch is VCSTimeoutError {}
 
     let ping = Task {
-      try await withTimeout(seconds: RemoteHosts.answerDeadline) { try await connection.ping() }
+      try await withTimeout(seconds: HostReachability.answerDeadline) {
+        try await connection.ping()
+      }
     }
     // Control on stream 0 is never a reply: it stands in for bytes of another reply arriving.
     for _ in 0..<10 {

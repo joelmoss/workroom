@@ -87,7 +87,7 @@ final class SSHWorkroomTests: XCTestCase {
                 sshDestination: destination, sshHome: "/home/joel"))
           ])
       ], sweep: false)
-    let unanswering = await hosts.unansweringProviderHosts()
+    let unanswering = await hosts.reachability.unansweringProviderHosts()
     XCTAssertEqual(unanswering, [.remote(id)])
     XCTAssertEqual(calls.all.count, 1)
     XCTAssertTrue(calls.all[0].contains("-O exit \(destination)"))

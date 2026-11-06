@@ -451,6 +451,35 @@ final class RemoteTeardownTests: XCTestCase {
     XCTAssertEqual(log.all, ["script teardown w /home/boxd/r", "destroy", "forget w"])
   }
 
+  /// Value: protects=a delete's teardown connects through the reachability the delete was given,
+  /// as the rest of the delete does; fails_when=the teardown's script runs over
+  /// `RemoteHosts.shared`'s reachability, so the delete's own connect is never asked;
+  /// no_claim=the connect itself (HostReachabilityTests)
+  func testATeardownConnectsThroughTheDeletesReachability() async throws {
+    let log = Log()
+    let hosts = RemoteHosts(
+      connectHost: { _ in
+        log.add("connect")
+        throw HostDriverError.provisioning("no route to host")
+      }, startHost: { _ in })
+    let driver = Driver(log)
+    do {
+      try await RemoteWorkrooms.delete(
+        "w", host: host(),
+        environment: RemoteProvisioning.Environment(
+          driver: driver, daemonSocket: driver.daemonSocket),
+        recorder: recorder(log),
+        teardown: RemoteWorkrooms.Teardown(
+          path: "/home/boxd/r", rootScript: nil, judge: RemoteScriptTests.approveAll,
+          onLine: { _ in }),
+        reachability: hosts.reachability, onForgotten: { _ in })
+      XCTFail("a teardown that couldn't reach its host let the delete go on")
+    } catch RemoteWorkrooms.Failure.teardownScriptFailed(let why) {
+      XCTAssertEqual(why, "teardown script failed: couldn't reach the host")
+    }
+    XCTAssertEqual(log.all, ["connect"], "the teardown didn't connect through the delete's own")
+  }
+
   /// Value: protects=D3, a failed teardown stops the delete with nothing taken down and its reason
   /// kept, so deleting again retries; fails_when=the host is destroyed or the record changed;
   /// no_claim=none beyond protects
@@ -551,7 +580,7 @@ final class RemoteTeardownTests: XCTestCase {
     let log = Log()
     let legacy = HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())
     var teardown = teardown(log, result: .passed)
-    let run = teardown.run
+    let run = try XCTUnwrap(teardown.run)
     teardown.run = { request in
       log.add("key \(request.key == RemoteHosts.DriverKey() ? "docker" : "other")")
       return await run(request)
@@ -565,7 +594,7 @@ final class RemoteTeardownTests: XCTestCase {
   /// connect under way, replaces an older daemon and puts a relayed host's credentials up) before
   /// anything runs, and a failed connect is a failed script; fails_when=the script runs without
   /// connecting, or a failed connect passes; no_claim=the join, bootstrap and relay themselves
-  /// (RemoteHostsTests and DaemonBootstrap's tests)
+  /// (HostReachabilityTests and DaemonBootstrap's tests)
   func testTheScriptConnectsFirstAndAFailedConnectIsAFailure() async {
     let log = Log()
     let driver = Driver(log)
@@ -580,7 +609,7 @@ final class RemoteTeardownTests: XCTestCase {
         script: .teardown, workroom: "w", path: "/home/boxd/r", host: .remote(UUID()),
         key: boxd, driver: driver, daemonBinary: "/workroomd", rootScript: nil,
         judge: RemoteScriptTests.approveAll, onLine: { _ in }),
-      hosts: hosts)
+      reachability: hosts.reachability)
     guard case .failed(let why) = result else { return XCTFail("a failed connect passed") }
     XCTAssertEqual(why, "teardown script failed: couldn't reach the host")
     XCTAssertEqual(log.all, ["connect"], "the script ran without a connection")
@@ -603,7 +632,7 @@ final class RemoteTeardownTests: XCTestCase {
         script: .teardown, workroom: "w", path: "/r", host: .remote(UUID()),
         key: docker, driver: Driver(log), daemonBinary: "/workroomd",
         rootScript: nil, judge: RemoteScriptTests.approveAll, onLine: { _ in }),
-      hosts: hosts)
+      reachability: hosts.reachability)
     XCTAssertEqual(log.all, ["start", "connect"])
   }
 }

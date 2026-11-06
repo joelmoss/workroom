@@ -74,12 +74,13 @@ struct RemoteCreateServices {
         }
       },
       host: { place, options in
-        let key = try await RemoteHosts.shared.key(for: place)
-        var (driver, environment) = try RemoteHosts.shared.environment(key)
+        let registry = RemoteHosts.shared.registry
+        let key = try await registry.key(for: place)
+        var (driver, environment) = try registry.environment(key)
         if let options { environment.made(with: options, by: driver) }
         return RemoteCreateHost(
           key: key, driver: driver, environment: environment,
-          container: key.runtime == nil ? nil : try RemoteHosts.shared.containerDriver(key))
+          container: key.runtime == nil ? nil : try registry.container(key))
       },
       hostOptionLevels: { project, provider in
         (

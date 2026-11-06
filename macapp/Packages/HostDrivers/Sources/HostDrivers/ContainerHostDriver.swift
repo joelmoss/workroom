@@ -368,8 +368,9 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
   /// Starts `host`'s container if it is stopped, and waits until it can be logged in to (#309): a
   /// container someone stopped stays stopped, and a runtime with no restart policy (Apple's) leaves
-  /// every one stopped after a reboot. Only for a workroom the user opens (`RemoteHosts.activate`),
-  /// never for a background probe, which would start every container the app knows.
+  /// every one stopped after a reboot. Only for a workroom the user opens
+  /// (`HostReachability.activate`), never for a background probe, which would start every container
+  /// the app knows.
   public func startIfStopped(_ host: HostID) async throws {
     _ = try reach(host)
     guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {

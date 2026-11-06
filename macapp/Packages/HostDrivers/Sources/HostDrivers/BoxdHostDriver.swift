@@ -352,7 +352,8 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
 
   /// Whether `host` is asleep, from boxd's own record, without reaching the machine: an ssh login
   /// would wake it (#356). Nil when the CLI could not answer (missing, timed out, output it did not
-  /// expect, a machine without a status); `RemoteHosts` takes that as asleep for a background read.
+  /// expect, a machine without a status); `HostReachability` takes that as asleep for a background
+  /// read.
   ///
   /// `gone` when boxd answers that the machine is not found: deleted outside the app, or in an org
   /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
