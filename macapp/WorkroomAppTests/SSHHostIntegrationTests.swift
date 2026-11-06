@@ -23,7 +23,7 @@ final class SSHHostIntegrationTests: XCTestCase {
   }
 
   private var directory: URL!
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
 
   private final class Records: @unchecked Sendable {
     private let lock = NSLock()
@@ -122,8 +122,8 @@ final class SSHHostIntegrationTests: XCTestCase {
       daemon: { _ in daemon }, resources: nil)
   }
 
-  private func connect(_ driver: SSHHostDriver) async throws -> DaemonVCSConnection {
-    let connection = try await DaemonVCSConnection.connect(
+  private func connect(_ driver: SSHHostDriver) async throws -> DaemonClient {
+    let connection = try await DaemonClient.connect(
       host: driver.hostID, stream: try await driver.openStream(to: driver.hostID))
     connections.append(connection)
     return connection

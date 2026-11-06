@@ -16,7 +16,7 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
   daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus
   services) and its git read crates (`wr-vcs-git`,
   `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `DaemonVCSReader` /
-  `DaemonVCSConnection`.
+  `DaemonClient`.
 
 **Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
 in `project.yml`, URL + version identical to SwiftGitX's own dependency so SwiftPM sees one package

@@ -123,8 +123,8 @@ struct PersistentSessionControlClient {
     guard descriptor >= 0 else { return .silent }
     defer { close(descriptor) }
     // A helper that hangs up mid-write must fail the write, not kill the app. Set before `connect`:
-    // see `DaemonVCSConnection.noSignalOnWrite`.
-    DaemonVCSConnection.noSignalOnWrite(descriptor)
+    // see `DaemonClient.noSignalOnWrite`.
+    DaemonClient.noSignalOnWrite(descriptor)
 
     guard var address = Self.address(for: socketPath) else { return .noListener }
     let connected = withUnsafePointer(to: &address) { pointer in

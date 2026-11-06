@@ -4,7 +4,7 @@ import WorkroomVCS
 
 struct DaemonVCSReader: VCSProviding {
   let context: RepositoryContext
-  let connection: DaemonVCSConnection
+  let connection: DaemonClient
 
   private func read<T: Decodable & Sendable>(
     _ method: String, limit: Int? = nil, revision: String? = nil, path: String? = nil,

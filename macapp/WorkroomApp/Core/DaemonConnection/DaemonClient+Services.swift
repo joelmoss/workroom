@@ -5,7 +5,7 @@ import WorkroomVCS
 /// The services on a daemon connection that return the app's own types: repository reads and
 /// writes, the disk facts the write classifier uses, files, layouts and port forwarding. They live
 /// here, not in the DaemonConnection package with the transport, because those types are the app's.
-extension DaemonVCSConnection: HostServiceConnection {
+extension DaemonClient: HostServiceConnection {
   /// The VCS `capabilities` request, which connecting asked already: the daemon answers it with a
   /// constant from a thread of its own, under no session lock, so a repaint can't hold it up. Any
   /// bytes arriving meanwhile answer too: on a slow link the reply can queue behind a large one

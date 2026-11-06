@@ -46,17 +46,17 @@ final class RemoteProvisioningHostKindTests: XCTestCase {
 /// through the relay (#309); a remote provider's, whatever the provider gave its host.
 final class RemoteProvisioningCredentialsTests: XCTestCase {
   /// A connection the sequence reaches and then loses, so the git it runs fails at once.
-  private static let lostConnection: @Sendable (HostID) async throws -> DaemonVCSConnection = {
+  private static let lostConnection: @Sendable (HostID) async throws -> DaemonClient = {
     host in
     let fake = try FakeDaemon(version: 4)
     defer { fake.stop() }
-    return try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
+    return try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
   }
 
   private func environment(
     gitHubToken: (@Sendable () async throws -> String)?, credentialHint: String? = nil,
     driver: any HostDriver = CountingDriver(),
-    connect: @escaping @Sendable (HostID) async throws -> DaemonVCSConnection = lostConnection
+    connect: @escaping @Sendable (HostID) async throws -> DaemonClient = lostConnection
   ) -> RemoteProvisioning.Environment {
     RemoteProvisioning.Environment(
       driver: driver, daemonSocket: RemoteWorkrooms.daemonSocket, gitHubToken: gitHubToken,
@@ -69,9 +69,9 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
 
   private static func connecting(to fake: FakeDaemon)
     -> @Sendable (HostID) async throws
-    -> DaemonVCSConnection
+    -> DaemonClient
   {
-    { host in try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath) }
+    { host in try await DaemonClient.connect(host: host, socketPath: fake.socketPath) }
   }
 
   private func provision(

@@ -82,7 +82,7 @@ const MAX_PARTIAL_TOTAL: usize = 32 * 1024 * 1024;
 ///
 /// Owned by `handle_connection` and threaded in, exactly as `attached` and `token` already are —
 /// NOT a process-global, which the first version of this was and which was wrong three ways at once.
-/// Stream ids restart at 1 on every connect (`DaemonVCSConnection.nextStream`) while the daemon is
+/// Stream ids restart at 1 on every connect (`DaemonClient.nextStream`) while the daemon is
 /// deliberately long-lived ("negotiated with, never replaced"), so a global keyed by stream alone
 /// let one app launch's abandoned buffer corrupt the next launch's identically-numbered request. A
 /// global also had no teardown: a client that vanished mid-request left its entry behind forever,

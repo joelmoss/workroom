@@ -28,7 +28,7 @@ struct DaemonFileProvider: FileProviding {
   static let filesystemOperationsBusy = "too many earlier filesystem operations are still pending"
 
   let context: FileContext
-  let connection: DaemonVCSConnection
+  let connection: DaemonClient
 
   func list() async throws -> CommandResult {
     let request = DaemonFileRequest(

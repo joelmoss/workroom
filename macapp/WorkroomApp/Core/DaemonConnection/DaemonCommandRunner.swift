@@ -4,7 +4,7 @@ import WorkroomSystem
 import WorkroomVCS
 
 /// Forwards `StatusCommandRunning` calls to workroomd's exec service instead of spawning `git`
-/// locally. This is the whole seam `DaemonVCSConnection.writer` needs: `CLIVCSWriter`'s arg
+/// locally. This is the whole seam `DaemonClient.writer` needs: `CLIVCSWriter`'s arg
 /// building, stdout/stderr parsing and failure classification are untouched Swift, and see exactly
 /// the bytes a host-executed command produced — see `vcs.rs`'s `ExecRequest` doc for the design.
 ///
@@ -12,7 +12,7 @@ import WorkroomVCS
 /// `CommandResult` the existing classifiers already understand. Which one is NOT uniform, and the
 /// distinction is load-bearing — see `neverRan` and `outcomeUnknown`.
 struct DaemonCommandRunner: StatusCommandRunning, Sendable {
-  let connection: DaemonVCSConnection
+  let connection: DaemonClient
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -216,7 +216,7 @@ struct DaemonExecResult: Decodable, Sendable {
 }
 
 /// Feeds `CLIVCSWriter.remoteState`'s `currentRef` read through the daemon-routed reader that
-/// `DaemonVCSConnection.writer` already has, instead of shelling a native process for it.
+/// `DaemonClient.writer` already has, instead of shelling a native process for it.
 /// `CLIVCSWriter`'s own doc on `makeProvider` says the seam exists "for `currentRef` only"; every
 /// other method here enforces that by throwing rather than silently answering something wrong.
 struct DaemonCurrentRefProvider: LocalVCSProviding {

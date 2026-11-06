@@ -101,7 +101,7 @@ actor LocalDaemonVCS {
           return try await manager.connect(host: .local) {
             let path = try await runBlocking { try resolveSocketPath() }
             do {
-              return try await DaemonVCSConnection.connect(host: .local, socketPath: path)
+              return try await DaemonClient.connect(host: .local, socketPath: path)
             } catch HostConnectionError.connectionLost {
               // The daemon owns the single-instance flock. Starting a second candidate is harmless
               // if the first is alive; it exits without binding or touching any existing terminal.
@@ -124,7 +124,7 @@ actor LocalDaemonVCS {
               while ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(50))
                 do {
-                  return try await DaemonVCSConnection.connect(host: .local, socketPath: path)
+                  return try await DaemonClient.connect(host: .local, socketPath: path)
                 } catch HostConnectionError.connectionLost { continue }
               }
               throw RepositoryRoutingError.unavailable(.local)

@@ -9,7 +9,7 @@ import Foundation
 /// The daemon keeps a layout as opaque bytes behind a revision. A `put` names the revision it read,
 /// and one that has moved is refused with `DaemonLayoutError.stale`, carrying the current revision.
 struct DaemonLayoutService: Sendable {
-  let connection: DaemonVCSConnection
+  let connection: DaemonClient
 
   /// Whether this daemon keeps layouts at all: one started with no screens directory, as on this
   /// Mac, does not.

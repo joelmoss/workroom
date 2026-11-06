@@ -21,7 +21,7 @@ final class ProgramStatusConnectionTests: XCTestCase {
   func testEventsReachTheSubscriberAndAnUnreadableOneIsDropped() async throws {
     let fake = try FakeDaemon(version: 8, programStatusResult: #"{"available":true}"#)
     defer { fake.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     let received = AsyncStream<ProgramStatusEvent>.makeStream()
     let availability = try await connection.subscribeProgramStatus {
@@ -47,7 +47,7 @@ final class ProgramStatusConnectionTests: XCTestCase {
   func testAnOlderAgentIsUnsupportedAndNeverSentAnEnvelope() async throws {
     let fake = try FakeDaemon(version: 7, programStatusResult: #"{"available":true}"#)
     defer { fake.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     let availability = try await connection.subscribeProgramStatus { _ in }
     XCTAssertEqual(availability, .unsupported)
@@ -60,7 +60,7 @@ final class ProgramStatusConnectionTests: XCTestCase {
     let fake = try FakeDaemon(
       version: 8, programStatusResult: #"{"available":false,"reason":"no terminal-state"}"#)
     defer { fake.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     let availability = try await connection.subscribeProgramStatus { _ in }
     XCTAssertEqual(availability, .unavailable("no terminal-state"))
@@ -71,7 +71,7 @@ final class ProgramStatusConnectionTests: XCTestCase {
   /// marks them stale after the grace and reconnects.
   func testADroppedLinkHandsTheSubscriberLost() async throws {
     let fake = try FakeDaemon(version: 8, programStatusResult: #"{"available":true}"#)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     let lost = expectation(description: "lost")
     _ = try await connection.subscribeProgramStatus { event in

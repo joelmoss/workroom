@@ -370,7 +370,7 @@ final class RepositoryRouter: @unchecked Sendable {
     guard location.host == .local else { return try remoteWriter(context, reader) }
     // Local writes route through the same daemon connection reads already use — mirroring
     // `reader(for:)` above — and fall back to a native `CLIVCSWriter` only when the daemon predates
-    // the write service (`VCSError.backendVersion`, from `DaemonVCSConnection.writer`'s capability
+    // the write service (`VCSError.backendVersion`, from `DaemonClient.writer`'s capability
     // check). The fallback only ever fires before any write is attempted, never mid-operation:
     // obtaining a writer here does not execute anything.
     if let localWriter {

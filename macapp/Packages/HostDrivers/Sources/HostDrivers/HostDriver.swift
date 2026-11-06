@@ -18,7 +18,7 @@ public protocol HostDriver: Sendable {
   /// Whether connect starts an unsupervised daemon when nothing listens (SSH hosts).
   var startsDaemon: Bool { get }
   /// A byte stream to the daemon on `host`, for
-  /// `DaemonVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
+  /// `DaemonClient.connect(host:stream:)`. Not the first thing to open on a host:
   /// `DaemonBootstrap.connect` runs the bootstrap first (#231), which is what puts a daemon there.
   /// Spawned as a `.connection`, which `connect` takes over (`HostStream.handOff`).
   func openStream(to host: HostID) async throws -> HostStream

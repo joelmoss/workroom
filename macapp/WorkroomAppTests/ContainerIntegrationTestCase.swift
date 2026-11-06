@@ -28,7 +28,7 @@ class ContainerIntegrationTestCase: XCTestCase {
   /// This test's own label, so what it left is told apart from other tests' and other runs'.
   var label: String!
   var daemon: URL!
-  var connections: [DaemonVCSConnection] = []
+  var connections: [DaemonClient] = []
   private var cleanups: [() async -> Void] = []
 
   override func setUpWithError() throws {
@@ -167,7 +167,7 @@ class ContainerIntegrationTestCase: XCTestCase {
   }
 
   func connect(_ driver: ContainerHostDriver, _ host: HostID, daemon: URL? = nil) async throws
-    -> DaemonVCSConnection
+    -> DaemonClient
   {
     let bundled = daemon ?? self.daemon!
     let connection = try await DaemonBootstrap.connect(
@@ -454,7 +454,7 @@ class ContainerIntegrationTestCase: XCTestCase {
       answer: { _ in "username=x-access-token\npassword=\(token)\n" },
       transport: .init(
         forwarding: { host in
-          let connection = try await DaemonVCSConnection.connect(
+          let connection = try await DaemonClient.connect(
             host: host, stream: try await driver.openStream(to: host))
           return (.init(host: host, generation: generation), try connection.forwarding())
         },

@@ -105,7 +105,7 @@ final class SSHWorkroomTests: XCTestCase {
 
   private func create(
     _ driver: SSHHostDriver, calls: Calls,
-    connect: @escaping @Sendable (HostID) async throws -> DaemonVCSConnection = { _ in
+    connect: @escaping @Sendable (HostID) async throws -> DaemonClient = { _ in
       XCTFail("The rejected create connected to a daemon")
       throw HostDriverError.provisioning("unexpected connect")
     }
@@ -151,7 +151,7 @@ final class SSHWorkroomTests: XCTestCase {
     defer { fake.stop() }
     do {
       _ = try await create(driver, calls: calls) { host in
-        try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
+        try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
       }
       XCTFail("failed clone was accepted")
     } catch RemoteProvisioning.Failure.git {}
@@ -182,7 +182,7 @@ final class SSHWorkroomTests: XCTestCase {
     let hint = try XCTUnwrap(HostKind.ssh.credentialHint)
     do {
       _ = try await create(driver(calls), calls: calls) { host in
-        try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
+        try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
       }
       XCTFail("failed clone was accepted")
     } catch RemoteProvisioning.Failure.git(let command, let detail) {

@@ -115,7 +115,7 @@ final class RemoteHosts: Sendable {
       nil,
     relayHost: (@Sendable (HostID) async throws -> Void)? = nil,
     connectDaemon: (
-      @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection
+      @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonClient
     )? =
       nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,

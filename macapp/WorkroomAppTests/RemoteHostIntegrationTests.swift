@@ -18,7 +18,7 @@ import XCTest
 /// and the ssh leg from Rust (`remote_transport.rs`, on the Linux runner).
 final class RemoteHostIntegrationTests: XCTestCase {
   private var directory: URL!
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
 
   override func setUp() {
     super.setUp()
@@ -62,11 +62,11 @@ final class RemoteHostIntegrationTests: XCTestCase {
   }
 
   private func connect(_ host: SSHTransport.Host) async throws -> (
-    DaemonVCSConnection, UUID
+    DaemonClient, UUID
   ) {
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: host], directory: directory)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .remote(id), stream: try await driver.openStream(to: .remote(id)))
     connections.append(connection)
     return (connection, id)
@@ -461,7 +461,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       held: layout, key: key, targetID: "wr|/Users/a/app|w", store: try macA.layouts())
     XCTAssertEqual(seeded.revision, 1)
 
-    let macB = try await DaemonVCSConnection.connect(
+    let macB = try await DaemonClient.connect(
       host: .remote(id), stream: try await driver.openStream(to: .remote(id)))
     connections.append(macB)
     let resolved = try await HostLayoutSync.resolve(

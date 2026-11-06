@@ -262,7 +262,7 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 | Record rules, command results (#473), unprobed programs | `vcs/crates/workroomd/src/terminal/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
 | The service: subscribe, `seen`, `clear` | `program_status.rs`: `Hub` publishes, `dispatch` answers |
 | `workroomd program-status` | `vcs/crates/workroomd/src/cli/program_status.rs` |
-| Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonVCSConnection.swift`; shared fixtures in `testdata/program-status/` |
+| Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonClient.swift`; shared fixtures in `testdata/program-status/` |
 | Per-host subscriptions, stale clock, reconnect, rollup per session | `WorkroomApp/Core/Terminal/ProgramStatusMonitor.swift` (`ProgramStatusMonitor.shared`, `ProgramStatusRollup`, `seen`) |
 | Which mark a tab shows | `WorkroomApp/Core/Terminal/TerminalSessions.swift` (`programStatus`, the tab's `indicator`) |
 | Tooltip and VoiceOver wording | `WorkroomApp/Core/Terminal/ProgramStatusPresentation.swift` |

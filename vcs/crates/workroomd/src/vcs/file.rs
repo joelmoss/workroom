@@ -56,7 +56,7 @@ pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CONCURRENT_READS: usize = 4;
 
 /// How long path resolution and file opening wait before answering that they timed out (#334/#343).
-/// The same 10s as a listing, and well under `DaemonVCSConnection.fileRequest`'s 45s, so the app
+/// The same 10s as a listing, and well under `DaemonClient.fileRequest`'s 45s, so the app
 /// hears this answer rather than its own timeout.
 const FILESYSTEM_TIMEOUT: Duration = Duration::from_secs(10);
 

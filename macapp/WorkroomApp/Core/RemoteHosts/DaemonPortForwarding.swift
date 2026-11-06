@@ -27,7 +27,7 @@ import WorkroomVCS
 /// The port-forwarding service on one host's connection. Concrete rather than behind a protocol:
 /// only a workroomd has one, and a second implementer would be a second daemon.
 struct DaemonForwardService: Sendable {
-  let connection: DaemonVCSConnection
+  let connection: DaemonClient
 
   /// Bind a listener on `127.0.0.1` and forward everything accepted on it to `remotePort` on the
   /// daemon's box. `openTimeout` is how long one accepted connection waits for the daemon's REPLY;
@@ -189,7 +189,7 @@ final class PortForward: @unchecked Sendable {
   private static let acceptBackoff: TimeInterval = 0.1
 
   /// A new connection to the forward's host, or nil when there is none to be had.
-  typealias Reconnect = @Sendable () async -> DaemonVCSConnection?
+  typealias Reconnect = @Sendable () async -> DaemonClient?
 
   /// The local port a forward that must keep its port number can't have: something on this Mac
   /// holds it (a dev server of its own, most often).
@@ -207,7 +207,7 @@ final class PortForward: @unchecked Sendable {
   /// can take `localhost` from the forward while it lives.
   let localPort: UInt16
   /// The connection streams are opened on. Replaced only through `reconnect`.
-  private var connection: DaemonVCSConnection
+  private var connection: DaemonClient
   private let reconnect: Reconnect?
   private let timeouts: Timeouts
   private let onEvent: @Sendable (Event) -> Void
@@ -233,7 +233,7 @@ final class PortForward: @unchecked Sendable {
   /// `requireLocalPort` (the dev container spec's `requireLocalPort`, whose default is the same
   /// fallback).
   init(
-    remotePort: UInt16, connection: DaemonVCSConnection, timeouts: Timeouts,
+    remotePort: UInt16, connection: DaemonClient, timeouts: Timeouts,
     localPort preferred: UInt16 = 0, requireLocalPort: Bool = false,
     reconnect: Reconnect? = nil, onEvent: @escaping @Sendable (Event) -> Void
   ) throws {
@@ -385,7 +385,7 @@ final class PortForward: @unchecked Sendable {
     }
   }
 
-  private func begin(_ client: Int32, on connection: DaemonVCSConnection) {
+  private func begin(_ client: Int32, on connection: DaemonClient) {
     let slot = lock.withLock({ stopped }) ? nil : connection.reserveForwardSlot()
     guard let slot else {
       // Closed at once, before an OPEN the daemon would refuse. A browser sees a reset on its 65th
@@ -476,7 +476,7 @@ final class ReverseForward: @unchecked Sendable {
 
   let remotePort: UInt16
   let target: UInt16
-  private let connection: DaemonVCSConnection
+  private let connection: DaemonClient
   private let timeouts: PortForward.Timeouts
   private let onEvent: @Sendable (Event) -> Void
   private let lock = NSLock()
@@ -492,7 +492,7 @@ final class ReverseForward: @unchecked Sendable {
     label: "workroom.daemon.forward.reverse", attributes: .concurrent)
 
   init(
-    remotePort: UInt16, target: UInt16, connection: DaemonVCSConnection,
+    remotePort: UInt16, target: UInt16, connection: DaemonClient,
     timeouts: PortForward.Timeouts, onEvent: @escaping @Sendable (Event) -> Void
   ) {
     self.remotePort = remotePort
@@ -668,7 +668,7 @@ private final class ForwardedConnection: @unchecked Sendable {
   private let socket: Int32
   /// The OPEN body: `open` for a forward from this Mac, `accept` for one a listener took.
   private let request: Data
-  private let connection: DaemonVCSConnection
+  private let connection: DaemonClient
   private let timeouts: PortForward.Timeouts
   private let onEvent: @Sendable (PortForward.Event) -> Void
   private let onFinished: @Sendable () -> Void
@@ -714,7 +714,7 @@ private final class ForwardedConnection: @unchecked Sendable {
   static let messageOverhead = 64
 
   init(
-    socket: Int32, request: Data, connection: DaemonVCSConnection,
+    socket: Int32, request: Data, connection: DaemonClient,
     timeouts: PortForward.Timeouts,
     onEvent: @escaping @Sendable (PortForward.Event) -> Void,
     onFinished: @escaping @Sendable () -> Void
@@ -736,7 +736,7 @@ private final class ForwardedConnection: @unchecked Sendable {
   /// Only here, never in `finish`: the pump thread may still be parked in `read` on this
   /// descriptor, and closing it there could hand the number to another thread's socket. `finish`
   /// shuts it down instead, which unblocks the reader without freeing the number — the same
-  /// discipline `DaemonVCSConnection` keeps for its own.
+  /// discipline `DaemonClient` keeps for its own.
   deinit { Darwin.close(socket) }
 
   func start() {

@@ -34,7 +34,7 @@ enum RemoteProvisioning {
     /// (exe.dev's GitHub integration), or nil where it can't or needn't.
     var grantRepository: (@Sendable (GitHubRepository) async throws -> Void)?
     /// A connection to the daemon on a host, bootstrapping one there first.
-    var connect: @Sendable (HostID) async throws -> DaemonVCSConnection
+    var connect: @Sendable (HostID) async throws -> DaemonClient
     /// Makes the workroom's host, where it isn't the driver's plain `create`: a container from its
     /// devcontainer.json's spec (#308).
     var makeHost: (@Sendable () async throws -> HostID)? = nil
@@ -49,7 +49,7 @@ enum RemoteProvisioning {
       gitHubToken: (@Sendable () async throws -> String)? = nil,
       credentialHint: String? = nil,
       grantRepository: (@Sendable (GitHubRepository) async throws -> Void)? = nil,
-      connect: (@Sendable (HostID) async throws -> DaemonVCSConnection)? = nil
+      connect: (@Sendable (HostID) async throws -> DaemonClient)? = nil
     ) {
       self.driver = driver
       self.daemonSocket = daemonSocket
@@ -88,7 +88,7 @@ enum RemoteProvisioning {
     let host: HostID
     let path: String
     let branch: String
-    let connection: DaemonVCSConnection
+    let connection: DaemonClient
     /// Whether its git takes credentials from the Mac's relay (#309).
     let relayed: Bool
   }
@@ -188,7 +188,7 @@ enum RemoteProvisioning {
     finish: @Sendable (Instance) async throws -> Void
   ) async throws -> Instance {
     let host = try await placement.make()
-    var connection: DaemonVCSConnection?
+    var connection: DaemonClient?
     do {
       try await checkpoint(host)
       ProvisioningProgress.reportStep?(.connect)
@@ -225,7 +225,7 @@ enum RemoteProvisioning {
   /// fails says how to give the host GitHub access (`credentialHint`).
   static func cloneAndCheckOut(
     _ cloneURL: String, into path: String, branch: String, startBranch: String?,
-    startCommit: String?, on connection: DaemonVCSConnection, environment: [String: String],
+    startCommit: String?, on connection: DaemonClient, environment: [String: String],
     credentialHint: String?, clearing clear: (@Sendable () async throws -> Void)?
   ) async throws {
     ProvisioningProgress.reportStep?(.clone)
@@ -586,7 +586,7 @@ enum RemoteProvisioning {
   /// carry the clone's token header (`cloneEnvironment`).
   static func git(
     _ args: [String], in directory: String, environment extra: [String: String] = [:],
-    on connection: DaemonVCSConnection, step: ProvisioningProgress.Step? = nil
+    on connection: DaemonClient, step: ProvisioningProgress.Step? = nil
   ) async throws -> String {
     let log = step.flatMap { step in
       ProvisioningProgress.log.map { log in { @Sendable (text: String) in log(step, text) } }

@@ -36,7 +36,7 @@ struct LiveProvider {
 /// parity criterion). A provider's suite subclasses this, makes its `LiveProvider`, and calls each
 /// case from a `test…` method of its own; none of these is a test by itself.
 class ProviderParityTestCase: XCTestCase {
-  var connections: [DaemonVCSConnection] = []
+  var connections: [DaemonClient] = []
 
   override func tearDown() async throws {
     for connection in connections { await connection.close() }
@@ -63,7 +63,7 @@ class ProviderParityTestCase: XCTestCase {
     ]
   }
 
-  func connect(_ provider: LiveProvider, _ host: HostID) async throws -> DaemonVCSConnection {
+  func connect(_ provider: LiveProvider, _ host: HostID) async throws -> DaemonClient {
     let connection = try await DaemonBootstrap.connect(
       host: host, driver: provider.driver, socket: provider.socket, handOff: false)
     connections.append(connection)

@@ -17,7 +17,7 @@ import XCTest
 final class DaemonPortForwardingTests: XCTestCase {
   private var daemons: [DaemonHarness] = []
   private var fakes: [FakeDaemon] = []
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
   private var forwards: [PortForward] = []
   private var echoes: [EchoServer] = []
   private var clients: [TCPClient] = []
@@ -39,18 +39,18 @@ final class DaemonPortForwardingTests: XCTestCase {
 
   // MARK: Fixtures
 
-  private func fake(_ daemon: FakeDaemon) async throws -> DaemonVCSConnection {
+  private func fake(_ daemon: FakeDaemon) async throws -> DaemonClient {
     fakes.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     return connection
   }
 
-  private func realDaemon() async throws -> DaemonVCSConnection {
+  private func realDaemon() async throws -> DaemonClient {
     let daemon = try DaemonHarness.start(environment: ProcessInfo.processInfo.environment)
     daemons.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     return connection
@@ -64,7 +64,7 @@ final class DaemonPortForwardingTests: XCTestCase {
 
   /// A listener whose refusals are collected rather than dropped, so a test can assert on them.
   private func listen(
-    _ connection: DaemonVCSConnection, to remotePort: UInt16, failures: Failures,
+    _ connection: DaemonClient, to remotePort: UInt16, failures: Failures,
     openTimeout: TimeInterval = PortForward.openTimeout,
     sendTimeout: TimeInterval = PortForward.sendTimeout,
     drainTimeout: TimeInterval = PortForward.drainTimeout
@@ -653,7 +653,7 @@ final class DaemonPortForwardingTests: XCTestCase {
 @MainActor
 final class PortForwardingModelTests: XCTestCase {
   private var fakes: [FakeDaemon] = []
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
   private var continuation: AsyncStream<HostConnectionManager.Snapshot>.Continuation?
   /// What the manager would answer for the connected lease right now; `publish` keeps it in step
   /// with the stream, and a test can move it ahead of the stream to model a watch that lags.
@@ -696,7 +696,7 @@ final class PortForwardingModelTests: XCTestCase {
     let daemon = try FakeDaemon(
       version: 5, forward: true, forwardRefusal: refusal, forwardRefusals: refusals)
     fakes.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     let service = try connection.forwarding()
@@ -813,7 +813,7 @@ final class PortForwardingModelTests: XCTestCase {
       lease: first,
       reconnect: {
         reconnects.bump()
-        let connection = try? await DaemonVCSConnection.connect(
+        let connection = try? await DaemonClient.connect(
           host: .local, socketPath: next.socketPath)
         made.keep(connection)
         return connection
@@ -931,8 +931,8 @@ final class PortForwardingModelTests: XCTestCase {
 
   private final class Made: @unchecked Sendable {
     private let lock = NSLock()
-    private var connections: [DaemonVCSConnection] = []
-    func keep(_ connection: DaemonVCSConnection?) {
+    private var connections: [DaemonClient] = []
+    func keep(_ connection: DaemonClient?) {
       guard let connection else { return }
       lock.withLock { connections.append(connection) }
     }
@@ -964,7 +964,7 @@ final class PortForwardingModelTests: XCTestCase {
     // The transport that `model(lease:forwarding:)` would have used, held behind the gate.
     let daemon = try FakeDaemon(version: 5, forward: true)
     fakes.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     captured = (first, try connection.forwarding())
@@ -998,7 +998,7 @@ final class PortForwardingModelTests: XCTestCase {
     await settle("the watch did not see the connection") { model.connected }
     let daemon = try FakeDaemon(version: 5, forward: true)
     fakes.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     await gate.hold((second, try connection.forwarding()))
@@ -1085,7 +1085,7 @@ final class PortForwardingModelTests: XCTestCase {
   ) {
     let daemon = try FakeDaemon(version: 5, forward: true)
     fakes.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     return (lease, try connection.forwarding())
@@ -1101,7 +1101,7 @@ final class PortForwardingModelTests: XCTestCase {
     }
     let daemon = try FakeDaemon(version: 5, forward: true)
     fakes.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     await gate.hold((first, try connection.forwarding()))
@@ -1166,7 +1166,7 @@ final class PortForwardingModelTests: XCTestCase {
     fakes.append(daemon)
     let manager = HostConnectionManager()
     _ = try await manager.connect(host: .local) {
-      try await DaemonVCSConnection.connect(host: .local, socketPath: daemon.socketPath)
+      try await DaemonClient.connect(host: .local, socketPath: daemon.socketPath)
     }
     let host = HostID.remote(UUID())
     let transport = PortForwardingModel.Transport.on(host, manager: manager)

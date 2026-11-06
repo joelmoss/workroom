@@ -1116,7 +1116,7 @@ final class CreationFlowTests: XCTestCase {
           environment: RemoteProvisioning.Environment(
             driver: driver, daemonSocket: driver.daemonSocket, gitHubToken: gitHubToken,
             grantRepository: grantRepository,
-            connect: { host in try await DaemonVCSConnection.connect(host: host, socketPath: socket)
+            connect: { host in try await DaemonClient.connect(host: host, socketPath: socket)
             }
           ),
           // A container create is given its runtime's driver, as the live `host` service does.

@@ -294,7 +294,7 @@ actor HostConnectionManager {
   /// host keeps when it refused this build's hand-off. Nil when that can't be told: no connection,
   /// or one that is not a daemon's. Never connects.
   func runsRunSessions(on host: HostID) -> Bool? {
-    guard let connection = try? connected(host).1 as? DaemonVCSConnection else { return nil }
+    guard let connection = try? connected(host).1 as? DaemonClient else { return nil }
     return connection.helloVersion >= DaemonHandshake.minRunVersion
   }
 

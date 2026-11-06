@@ -110,7 +110,7 @@ final class SSHHostLiveTests: XCTestCase {
         try await DaemonBootstrap.connect(
           host: host, driver: driver, socket: driver.daemonSocket)
       }, pendingIn: nil)
-    var connections: [DaemonVCSConnection] = []
+    var connections: [DaemonClient] = []
     var panes: [RemoteHostIntegrationTests.Pane] = []
     defer {
       for pane in panes { pane.dropLink() }

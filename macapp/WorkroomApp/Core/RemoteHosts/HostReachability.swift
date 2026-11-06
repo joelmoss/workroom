@@ -40,7 +40,7 @@ final class HostReachability: @unchecked Sendable {
   private let relayHost: (@Sendable (HostID) async throws -> Void)?
   /// `connect`'s daemon connection, bootstrap included; nil in the app (`DaemonBootstrap.connect`).
   private let connectDaemon:
-    (@Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection)?
+    (@Sendable (HostID, any HostTerminalDriver) async throws -> DaemonClient)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
   /// What a host's provider says of it (`HostPresenceReporting`); nil in the app.
   private let presenceSeam: (@Sendable (HostID) async -> HostPresence?)?
@@ -55,7 +55,7 @@ final class HostReachability: @unchecked Sendable {
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     relayHost: (@Sendable (HostID) async throws -> Void)? = nil,
     connectDaemon: (
-      @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonVCSConnection
+      @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonClient
     )? = nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil
   ) {

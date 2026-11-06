@@ -16,7 +16,7 @@ import XCTest
 /// target is a server only the app's side of the forward knows about.
 final class ReverseForwardTests: XCTestCase {
   private var daemons: [DaemonHarness] = []
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
   private var reverses: [ReverseForward] = []
   private var echoes: [EchoServer] = []
   private var clients: [TCPClient] = []
@@ -45,8 +45,8 @@ final class ReverseForwardTests: XCTestCase {
     return daemon
   }
 
-  private func connection(to daemon: DaemonHarness) async throws -> DaemonVCSConnection {
-    let connection = try await DaemonVCSConnection.connect(
+  private func connection(to daemon: DaemonHarness) async throws -> DaemonClient {
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     return connection
@@ -68,7 +68,7 @@ final class ReverseForwardTests: XCTestCase {
 
   /// A reverse forward to `target`, started, and the port the daemon bound.
   private func listening(
-    _ connection: DaemonVCSConnection, target: UInt16, remotePort: UInt16 = 0,
+    _ connection: DaemonClient, target: UInt16, remotePort: UInt16 = 0,
     events: ReverseEvents
   ) async throws -> (ReverseForward, UInt16) {
     let reverse = try connection.forwarding().reverse(remotePort: remotePort, target: target) {
@@ -293,15 +293,15 @@ final class ReverseForwardTests: XCTestCase {
 private final class Current: @unchecked Sendable {
   private let lock = NSLock()
   private var lease: HostConnectionManager.Lease
-  private var connection: DaemonVCSConnection
-  init(lease: HostConnectionManager.Lease, connection: DaemonVCSConnection) {
+  private var connection: DaemonClient
+  init(lease: HostConnectionManager.Lease, connection: DaemonClient) {
     self.lease = lease
     self.connection = connection
   }
-  func get() -> (lease: HostConnectionManager.Lease, connection: DaemonVCSConnection) {
+  func get() -> (lease: HostConnectionManager.Lease, connection: DaemonClient) {
     lock.withLock { (lease, connection) }
   }
-  func set(_ lease: HostConnectionManager.Lease, _ connection: DaemonVCSConnection) {
+  func set(_ lease: HostConnectionManager.Lease, _ connection: DaemonClient) {
     lock.withLock {
       self.lease = lease
       self.connection = connection

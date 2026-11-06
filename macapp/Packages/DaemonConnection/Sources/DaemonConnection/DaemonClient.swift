@@ -9,7 +9,7 @@ import WorkroomWire
 /// relays keep their existing connections.
 /// Blocking socket work runs on GCD. Closing shuts down the descriptor; only deinit closes it,
 /// so an in-flight reader/writer can never act on a recycled descriptor.
-public final class DaemonVCSConnection: @unchecked Sendable {
+public final class DaemonClient: @unchecked Sendable {
   public let host: HostID
   public let disconnection: AsyncStream<Void>
   private let disconnected: AsyncStream<Void>.Continuation
@@ -129,7 +129,7 @@ public final class DaemonVCSConnection: @unchecked Sendable {
 
   deinit { Darwin.close(descriptor) }
 
-  public static func connect(host: HostID, socketPath: String) async throws -> DaemonVCSConnection {
+  public static func connect(host: HostID, socketPath: String) async throws -> DaemonClient {
     let fd = try await runBlocking {
       let fd = socket(AF_UNIX, SOCK_STREAM, 0)
       guard fd >= 0 else { throw HostConnectionError.connectionLost }
@@ -162,7 +162,7 @@ public final class DaemonVCSConnection: @unchecked Sendable {
   /// A handshake the stream never answered is `serviceUnavailable` with what the carrier said, not
   /// `connectionLost`. There is nothing to respawn on a remote host, and "Host key verification
   /// failed." or the relay's "no daemon listening" is the whole diagnosis.
-  public static func connect(host: HostID, stream: HostStream) async throws -> DaemonVCSConnection {
+  public static func connect(host: HostID, stream: HostStream) async throws -> DaemonClient {
     do {
       return try await negotiate(
         host: host, descriptor: stream.handOff(), carrier: stream,
@@ -189,7 +189,7 @@ public final class DaemonVCSConnection: @unchecked Sendable {
 
   private static func negotiate(
     host: HostID, descriptor fd: Int32, carrier: HostStream?, handshakeTimeout: TimeInterval
-  ) async throws -> DaemonVCSConnection {
+  ) async throws -> DaemonClient {
     // `SO_NOSIGPIPE` is already set: by `connect(host:socketPath:)` or `HostStream.spawn`, when
     // the socket was made (see `noSignalOnWrite`).
     let connection = try await runBlocking {
@@ -226,7 +226,7 @@ public final class DaemonVCSConnection: @unchecked Sendable {
         // daemon (mid VCS request on another thread) can leave the socket buffer full past it with
         // no fault of its own; a lingering SO_SNDTIMEO would then report that as connection loss.
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        return DaemonVCSConnection(
+        return DaemonClient(
           host: host, descriptor: fd, helloVersion: helloVersion, carrier: carrier)
       } catch {
         Darwin.close(fd)

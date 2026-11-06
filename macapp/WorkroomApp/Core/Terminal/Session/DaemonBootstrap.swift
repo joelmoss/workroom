@@ -125,12 +125,12 @@ enum DaemonBootstrap {
     host: HostID, driver: any HostDriver, socket: String,
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
     handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
-  ) async throws -> DaemonVCSConnection {
+  ) async throws -> DaemonClient {
     let outcome = try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
       resources: resources)
     logger.notice("daemon bootstrap: \(String(describing: outcome), privacy: .public)")
-    return try await DaemonVCSConnection.connect(
+    return try await DaemonClient.connect(
       host: host, stream: try await driver.openStream(to: host))
   }
 

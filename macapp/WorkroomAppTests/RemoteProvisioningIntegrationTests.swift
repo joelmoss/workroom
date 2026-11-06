@@ -88,7 +88,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   @MainActor
   private func environment(
     _ fixture: Fixture, driver: ContainerHostDriver,
-    connect: (@Sendable (HostID) async throws -> DaemonVCSConnection)? = nil
+    connect: (@Sendable (HostID) async throws -> DaemonClient)? = nil
   ) -> RemoteProvisioning.Environment {
     let daemon = fixture.daemon
     var environment = RemoteProvisioning.Environment(
@@ -768,7 +768,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       answer: { _ in "username=x-access-token\npassword=\(token)\n" },
       transport: .init(
         forwarding: { host in
-          let connection = try await DaemonVCSConnection.connect(
+          let connection = try await DaemonClient.connect(
             host: host, stream: try await driver.openStream(to: host))
           return (.init(host: host, generation: generation), try connection.forwarding())
         },

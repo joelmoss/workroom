@@ -7,12 +7,12 @@ import XCTest
 
 /// The File service end to end: the shipped Rust daemon, the real Swift client, real repositories and
 /// real filesystem changes. Mirrors `DaemonVCSIntegrationTests`, and is where the two halves of the
-/// wire contract (`file.rs`/`watch.rs` and `DaemonFileProvider`/`DaemonVCSConnection`) are proven to agree.
+/// wire contract (`file.rs`/`watch.rs` and `DaemonFileProvider`/`DaemonClient`) are proven to agree.
 final class DaemonFileIntegrationTests: XCTestCase {
   private var roots: [URL] = []
   private var daemons: [DaemonHarness] = []
   private var fakes: [FakeDaemon] = []
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
 
   override func tearDown() {
     for daemon in daemons { daemon.stop() }
@@ -77,10 +77,10 @@ final class DaemonFileIntegrationTests: XCTestCase {
     return root
   }
 
-  private func connect() async throws -> (DaemonVCSConnection, DaemonHarness) {
+  private func connect() async throws -> (DaemonClient, DaemonHarness) {
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     return (connection, daemon)
@@ -91,7 +91,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
     return FileContext(location: location, sharedLocation: shared ? location : nil)
   }
 
-  private func daemonFiles(_ root: URL, connection: DaemonVCSConnection) async throws
+  private func daemonFiles(_ root: URL, connection: DaemonClient) async throws
     -> FileProviding
   {
     try connection.files(context: try await context(root))
@@ -104,7 +104,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
   func testAProtocol2AgentIsNeverSentAFileEnvelopeAndReportsBackendVersion() async throws {
     let fake = try FakeDaemon(version: 2)
     fakes.append(fake)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     connections.append(connection)
     let root = try gitRepo()
@@ -128,7 +128,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
       version: 3, capabilities: #"{"version":1,"result":{"version":2,"reads":12,"exec":2}}"#)
     fakes.append(fake)
     do {
-      let connection = try await DaemonVCSConnection.connect(
+      let connection = try await DaemonClient.connect(
         host: .local, socketPath: fake.socketPath)
       connections.append(connection)
       XCTFail("an incompatible daemon must not connect")
@@ -149,7 +149,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
   func testACompletedRequestsDeadlineDoesNotRetireTheConnection() async throws {
     let fake = try FakeDaemon(version: 2, stallAfterCapabilities: true)
     fakes.append(fake)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     connections.append(connection)
     let stuck = DaemonVCSRequest(method: "status", path: String(repeating: "x", count: 900_000))
@@ -172,7 +172,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
   func testACancelledRequestsStuckSendStillRetiresTheConnection() async throws {
     let fake = try FakeDaemon(version: 2, stallAfterCapabilities: true)
     fakes.append(fake)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     connections.append(connection)
     let stuck = DaemonVCSRequest(method: "status", path: String(repeating: "x", count: 900_000))
@@ -202,7 +202,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
   func testARequestStuckBehindAPeerThatStoppedReadingRetiresTheConnection() async throws {
     let fake = try FakeDaemon(version: 2, stallAfterCapabilities: true)
     fakes.append(fake)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     connections.append(connection)
     // Far larger than a Unix socket's send buffer, and under the one-envelope ceiling.
@@ -230,7 +230,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
   func testAV3AgentThatNeverAnswersTheFileProbeIsAFailureNotAnOldDaemon() async throws {
     let fake = try FakeDaemon(version: 3, files: false)
     fakes.append(fake)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     connections.append(connection)
     XCTAssertTrue(fake.receivedServices.contains(3), "a protocol-3 peer is probed")
@@ -681,7 +681,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
     let seen = Deliveries()
     let current = ConnectionBox()
     let router = RepositoryRouter(localFiles: { [socket = daemon.socketPath] context in
-      let connection = try await DaemonVCSConnection.connect(host: .local, socketPath: socket)
+      let connection = try await DaemonClient.connect(host: .local, socketPath: socket)
       current.set(connection)
       return try connection.files(context: context)
     })
@@ -730,9 +730,9 @@ final class DaemonFileIntegrationTests: XCTestCase {
 
   private final class ConnectionBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: DaemonVCSConnection?
-    func set(_ connection: DaemonVCSConnection) { lock.withLock { value = connection } }
-    var connection: DaemonVCSConnection? { lock.withLock { value } }
+    private var value: DaemonClient?
+    func set(_ connection: DaemonClient) { lock.withLock { value = connection } }
+    var connection: DaemonClient? { lock.withLock { value } }
   }
 }
 

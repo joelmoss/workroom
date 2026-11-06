@@ -9,7 +9,7 @@ final class DaemonLayoutTests: XCTestCase {
   private func connect(screens: Bool) async throws -> (DaemonLayoutService, DaemonHarness) {
     let daemon = try DaemonHarness.start(screens: screens)
     addTeardownBlock { daemon.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     addTeardownBlock { await connection.close() }
     return (try connection.layouts(), daemon)

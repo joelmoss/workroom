@@ -959,7 +959,7 @@ final class RemoteHostsTests: XCTestCase {
       daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
       gitHubToken: { "gho_mac" },
       connect: { host in
-        try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
+        try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
       })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
