@@ -165,7 +165,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
   }
 
   // The other half of the storm — an agent's OSC title writes — is deliberately NOT a separate test:
-  // `TerminalSessions.updateTitle` is private (it is driven by libghostty callbacks) and it lands on
+  // `PaneLiveState.updateTitle` is private (it is driven by libghostty callbacks) and it lands on
   // the same `@Published tabsByTarget` reassignment that `pulsePaneActivity` exercises above. Asserting
   // it would mean widening production access purely for a duplicate of this test.
 

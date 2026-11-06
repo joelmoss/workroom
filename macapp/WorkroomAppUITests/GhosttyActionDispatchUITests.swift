@@ -90,7 +90,7 @@ final class GhosttyActionDispatchUITests: XCTestCase {
   /// One launch, two commands run strictly one after the other in the same shell.
   ///
   /// 1. **A running command retitles the tab (issue #2).** Proves `SET_TITLE` → `handleTitleChange`
-  ///    → `TerminalSessions.updateTitle` → `tab.liveTitle` → the chip identifier.
+  ///    → `PaneLiveState.updateTitle` → `tab.liveTitle` → the chip identifier.
   ///
   ///    Driven through shell integration (which emits OSC 0/2 per command) rather than a
   ///    hand-written `printf '\033]0;…'`: a hand-set title IS delivered, but the shell's own prompt

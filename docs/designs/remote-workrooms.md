@@ -2069,7 +2069,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   state done: see "As built (#254)" below.
 - **As built (#254, remote pane parity).** Pane close was done first, in #306 (#283). The rest:
   - **Cmd-click (C7).** A remote pane's links never reach `TerminalLinkOpener`'s local resolver.
-    `TerminalSessions.wireRemoteLinks` resolves a clicked path against the shell's directory on the
+    `RemotePaneLinks.wire` resolves a clicked path against the shell's directory on the
     host, as its agent reports it (`hostCwd`, #245), or the workroom root before the first report.
     `TerminalLinkOpener.remoteCandidates` keeps the local parsing (`:line[:col]`, trailing dots)
     and drops what the host's file service can't read: anything outside the workroom root, and

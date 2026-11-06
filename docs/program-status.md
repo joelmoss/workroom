@@ -265,6 +265,7 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 | Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonClient.swift`; shared fixtures in `testdata/program-status/` |
 | Per-host subscriptions, stale clock, reconnect, rollup per session | `WorkroomApp/Core/Terminal/ProgramStatusMonitor.swift` (`ProgramStatusMonitor.shared`, `ProgramStatusRollup`, `seen`) |
 | Which mark a tab shows | `WorkroomApp/Core/Terminal/TerminalSessions.swift` (`programStatus`, the tab's `indicator`) |
+| Rollups onto a window's tabs, seen on focus, run tab states (#522) | `WorkroomApp/Core/Terminal/ProgramStatusBinding.swift` |
 | Tooltip and VoiceOver wording | `WorkroomApp/Core/Terminal/ProgramStatusPresentation.swift` |
 | The ✋ and ✓ glyphs, the clock | `WorkroomApp/Views/Terminal/ProgramStatusGlyph.swift` (`ProgramStatusGlyph`, `NeedsYouButton`); drawn by `TerminalTabStrip`, `ProjectSidebar`, `WorkroomTabBar`, `SwitcherRailView` |
 | Unread dot, and when a mark hides it | `TerminalTabStrip.swift` (`markSaysIt`) |

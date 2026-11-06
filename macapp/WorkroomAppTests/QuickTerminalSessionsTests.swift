@@ -96,12 +96,12 @@ final class QuickTerminalSessionsTests: XCTestCase {
     claude.foregroundProcessNameForTesting = "claude"
     // No live process in a test surface, so no environment: the default login, as workroomd says
     // for an unreadable one.
-    XCTAssertEqual(TerminalSessions.localClaudeProfile(of: claude), .reported(""))
+    XCTAssertEqual(PaneLiveState.localClaudeProfile(of: claude), .reported(""))
 
     let shell = GhosttySurfaceView(workingDirectory: "/", command: nil, spawnsSurface: false)
     shell.foregroundProcessNameForTesting = "zsh"
     XCTAssertEqual(
-      TerminalSessions.localClaudeProfile(of: shell), .notReported, "a title alone names no account"
+      PaneLiveState.localClaudeProfile(of: shell), .notReported, "a title alone names no account"
     )
   }
 }

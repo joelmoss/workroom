@@ -27,7 +27,7 @@ enum UnrecognizedToolUsage {
   }
 
   /// Increments the on-disk count for `name` (an executable basename). Callers should keep this off
-  /// the main thread — production's only caller (`TerminalSessions.recordUnrecognizedTool`) already
+  /// the main thread — production's only caller (`PaneLiveState.recordUnrecognizedTool`) already
   /// dispatches to a background queue, since `updateTitle` itself runs on the main thread.
   static func recordUnrecognized(_ name: String, url: URL = defaultURL()) {
     var counts = load(url: url)

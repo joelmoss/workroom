@@ -605,7 +605,7 @@ final class TerminalSessionsTests: XCTestCase {
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // WorkroomAppTests
         .deletingLastPathComponent()  // macapp
-        .appendingPathComponent("WorkroomApp/Core/Terminal/TerminalSessions.swift"), encoding: .utf8
+        .appendingPathComponent("WorkroomApp/Core/Terminal/PaneLiveState.swift"), encoding: .utf8
     )
 
     guard
@@ -627,16 +627,16 @@ final class TerminalSessionsTests: XCTestCase {
     let home = "/Users/me"
     let cwd = "/Users/me/dev/codaset"
     // Directory / prompt titles in every form the shell emits:
-    XCTAssertTrue(TerminalSessions.isDirectoryTitle(cwd, cwd: cwd, home: home))
-    XCTAssertTrue(TerminalSessions.isDirectoryTitle("~/dev/codaset", cwd: cwd, home: home))
+    XCTAssertTrue(PaneLiveState.isDirectoryTitle(cwd, cwd: cwd, home: home))
+    XCTAssertTrue(PaneLiveState.isDirectoryTitle("~/dev/codaset", cwd: cwd, home: home))
     XCTAssertTrue(
-      TerminalSessions.isDirectoryTitle("me@MacBookPro:~/dev/codaset", cwd: cwd, home: home))
+      PaneLiveState.isDirectoryTitle("me@MacBookPro:~/dev/codaset", cwd: cwd, home: home))
     // Real commands are not directory titles:
-    XCTAssertFalse(TerminalSessions.isDirectoryTitle("sleep 5", cwd: cwd, home: home))
-    XCTAssertFalse(TerminalSessions.isDirectoryTitle("vim README.md", cwd: cwd, home: home))
-    XCTAssertFalse(TerminalSessions.isDirectoryTitle("make: build failed", cwd: cwd, home: home))
+    XCTAssertFalse(PaneLiveState.isDirectoryTitle("sleep 5", cwd: cwd, home: home))
+    XCTAssertFalse(PaneLiveState.isDirectoryTitle("vim README.md", cwd: cwd, home: home))
+    XCTAssertFalse(PaneLiveState.isDirectoryTitle("make: build failed", cwd: cwd, home: home))
     // No cwd yet → can't classify, so nothing is treated as a directory.
-    XCTAssertFalse(TerminalSessions.isDirectoryTitle("~/dev/codaset", cwd: nil, home: home))
+    XCTAssertFalse(PaneLiveState.isDirectoryTitle("~/dev/codaset", cwd: nil, home: home))
   }
 
   func testIsDirectoryTitleRecognizesTruncatedPromptTitles() {
@@ -644,19 +644,19 @@ final class TerminalSessionsTests: XCTestCase {
     // zsh `%(4~|…/%3~|%~)` truncates a deep path under $HOME to "…/" + the trailing 3 components.
     let deep = "/Users/me/dev/workroom/macapp/WorkroomApp"
     XCTAssertTrue(
-      TerminalSessions.isDirectoryTitle("…/workroom/macapp/WorkroomApp", cwd: deep, home: home))
+      PaneLiveState.isDirectoryTitle("…/workroom/macapp/WorkroomApp", cwd: deep, home: home))
     // A path outside $HOME truncates the same way (absolute trailing components).
     let abs = "/var/data/dev/workroom/macapp"
-    XCTAssertTrue(TerminalSessions.isDirectoryTitle("…/dev/workroom/macapp", cwd: abs, home: home))
+    XCTAssertTrue(PaneLiveState.isDirectoryTitle("…/dev/workroom/macapp", cwd: abs, home: home))
     // bash's PROMPT_DIRTRIM uses a "..." marker — also a directory title.
     XCTAssertTrue(
-      TerminalSessions.isDirectoryTitle(".../dev/workroom/macapp", cwd: abs, home: home))
+      PaneLiveState.isDirectoryTitle(".../dev/workroom/macapp", cwd: abs, home: home))
     // A dot-prefixed first kept component is preserved (only the marker is stripped, not real dots).
     let hidden = "/Users/me/dev/.worktrees/bar/baz"
     XCTAssertTrue(
-      TerminalSessions.isDirectoryTitle("…/.worktrees/bar/baz", cwd: hidden, home: home))
+      PaneLiveState.isDirectoryTitle("…/.worktrees/bar/baz", cwd: hidden, home: home))
     // A command that merely starts with "…/" but isn't a suffix of the cwd is still a command.
-    XCTAssertFalse(TerminalSessions.isDirectoryTitle("…/other/path", cwd: deep, home: home))
+    XCTAssertFalse(PaneLiveState.isDirectoryTitle("…/other/path", cwd: deep, home: home))
   }
 
   // MARK: Splits (issue #3)

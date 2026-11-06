@@ -71,7 +71,7 @@ final class GhosttySurfaceView: NSView {
   /// unresolved). Resolved via `proc_name`, not the argv0-based lookup the daemon's reattach path
   /// uses (that unification is a deferred follow-up, see TODOS.md — no known bug today since
   /// `updateTitle`'s title-fallback safety-nets the curated-tool lookup for the same limitation).
-  /// `TerminalSessions.updateTitle` reads this ONCE and derives the coding agent, the curated-tool
+  /// `PaneLiveState.updateTitle` reads this ONCE and derives the coding agent, the curated-tool
   /// match (`ToolLogoRegistry.tool(forExecutableName:)`) and the usage-tracking raw name from the
   /// same read — a second live PID read would reopen the TOCTOU gap a review caught and closed.
   var foregroundExecutableName: String? {

@@ -648,7 +648,7 @@ lost with it.
 ### Unify foreground-process detection onto argv0 (macapp) — issue #141 eng-review follow-up, filed 2026-08-17
 
 **What:** `GhosttySurfaceView.foregroundExecutableName` resolves a live pane's foreground process via
-`proc_name`, and `TerminalSessions.updateTitle` derives both the coding agent (issue #49 inline diagnosis
+`proc_name`, and `PaneLiveState.updateTitle` derives both the coding agent (issue #49 inline diagnosis
 badge) and the curated tool (issue #141 favicon) from that one read (#503). Port the
 argv0/`KERN_PROCARGS2` logic of the retired Swift helper's `SessionPTY.executableName(processID:)` (already
 correct; the original is `git show 9ce6201f^:macapp/WorkroomSession/SessionPTY.swift`, and the Rust
