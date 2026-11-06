@@ -16,6 +16,7 @@ struct CreationPane: View {
   /// Whether this is its window's active pane (`TargetTerminalDetail.surfaceActive`).
   var isActive = true
   @EnvironmentObject private var store: AppStore
+  @EnvironmentObject private var modals: ModalState
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @FocusState private var focusedRow: String?
   /// How tall the open log's lines are, so a short log is only as tall as they are.
@@ -64,7 +65,7 @@ struct CreationPane: View {
     // takes the focus it held. Only in the window's active pane, so a terminal being typed in beside
     // it keeps its keys, and once the New Workroom dialog is gone (it disables the window under it).
     // Never at the run's end: focus moved away meanwhile stays where the user put it.
-    .onChange(of: isActive && store.activePicker == nil, initial: true) { _, takes in
+    .onChange(of: isActive && modals.activePicker == nil, initial: true) { _, takes in
       if takes, focusedRow == nil { focusedRow = run.steps.last?.id }
     }
   }
@@ -238,7 +239,7 @@ struct CreationPane: View {
     guard let project = store.projectStore.projects.first(where: { $0.path == run.project.path }),
       let workroom = project.workrooms.first(where: { $0.name == run.name })
     else { return }
-    store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+    store.modals.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
   }
 }
 
@@ -467,30 +468,30 @@ private struct CreationFailureNotice: View {
 
 /// Where a create that found local work starts: unpushed commits on the base branch, or
 /// uncommitted changes in the main checkout, that the remote's copy lacks. A window-modal choice
-/// raised by `AppStore.pendingStartChoice`, offering only the starts that apply; Cancel (and Escape)
+/// raised by `ModalState.pendingStartChoice`, offering only the starts that apply; Cancel (and Escape)
 /// is Cancel Creation. Dismissed otherwise, the create waits, and its pane's Choose Start… asks
 /// again.
 struct StartChoicePresenter: ViewModifier {
   @ObservedObject var store: AppStore
 
   func body(content: Content) -> some View {
-    let pending = store.pendingStartChoice
+    let pending = store.modals.pendingStartChoice
     content.confirmationDialog(
       pending.map { $0.work.summary + "." } ?? "",
       isPresented: Binding(
-        get: { store.pendingStartChoice != nil },
-        set: { if !$0 { store.pendingStartChoice = nil } }),
+        get: { store.modals.pendingStartChoice != nil },
+        set: { if !$0 { store.modals.pendingStartChoice = nil } }),
       titleVisibility: .visible
     ) {
       if let pending {
         ForEach(CreationPanePresentation.startChoices(for: pending.work), id: \.start) { choice in
           Button(choice.title) {
-            store.pendingStartChoice = nil
+            store.modals.pendingStartChoice = nil
             Task { await store.chooseStart(choice.start, for: pending.run) }
           }
         }
         Button("Cancel Creation", role: .cancel) {
-          store.pendingStartChoice = nil
+          store.modals.pendingStartChoice = nil
           store.cancelStartChoice(pending.run)
         }
       }

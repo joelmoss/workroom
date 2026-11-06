@@ -33,6 +33,7 @@ final class CreationPaneAccessibilityTests: XCTestCase {
       onFocus: { _ in }, onSetRatio: { _, _ in }, onClose: { _ in }, onMove: { _, _, _, _ in }
     )
     .environmentObject(store)
+    .environmentObject(store.modals)
     .environmentObject(store.runCommand)
     .environmentObject(store.terminals.codingAgentManager)
     let hosting = NSHostingView(rootView: root)

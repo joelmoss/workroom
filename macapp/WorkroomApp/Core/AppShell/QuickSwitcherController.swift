@@ -389,7 +389,7 @@ final class QuickSwitcherController {
   private func isAlive(_ item: Item) -> Bool {
     switch item {
     case .workroom(let slot):
-      guard let store = slot.store, !store.hasModalPresentation else { return false }
+      guard let store = slot.store, !store.modals.hasModalPresentation else { return false }
       return store.displayedWorkroomTargets().contains { $0.sid == slot.sid }
     case .pane(let tab):
       guard let store = originStore, let target = frozenPaneTarget(in: store) else { return false }

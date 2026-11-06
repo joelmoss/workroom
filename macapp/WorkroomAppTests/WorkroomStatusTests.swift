@@ -254,14 +254,14 @@ final class WorkroomStatusTests: XCTestCase {
 
     store.deleteWorkroom(remote, in: project)
     XCTAssertEqual(store.projectStore.projects, [project])
-    XCTAssertEqual(store.errorTitle, "Can't delete remote")
-    XCTAssertTrue(store.errorMessage?.contains("another Workroom build") == true)
+    XCTAssertEqual(store.modals.errorTitle, "Can't delete remote")
+    XCTAssertTrue(store.modals.errorMessage?.contains("another Workroom build") == true)
 
-    store.errorTitle = nil
-    store.errorMessage = nil
+    store.modals.errorTitle = nil
+    store.modals.errorMessage = nil
     store.deleteProject(project, scope: .configOnly)
     XCTAssertEqual(store.projectStore.projects, [project])
-    XCTAssertEqual(store.errorTitle, "Can't delete p")
+    XCTAssertEqual(store.modals.errorTitle, "Can't delete p")
     XCTAssertTrue(store.deletingProjects.isEmpty, "a refused delete must not tombstone (#287)")
   }
 
@@ -918,8 +918,8 @@ final class WorkroomStatusTests: XCTestCase {
 
     // gh failed → reverted to the original draft, with the error surfaced.
     XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr, draft)
-    XCTAssertEqual(store.errorTitle, "Couldn\u{2019}t ready for review")
-    XCTAssertEqual(store.errorMessage, "pr already ready")
+    XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t ready for review")
+    XCTAssertEqual(store.modals.errorMessage, "pr already ready")
   }
 
   /// Convert-to-draft also flips optimistically (open → draft) the instant it's invoked.
@@ -976,8 +976,8 @@ final class WorkroomStatusTests: XCTestCase {
 
     // gh failed → reverted to the original open/mergeable PR, with the error surfaced.
     XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr, open)
-    XCTAssertEqual(store.errorTitle, "Couldn\u{2019}t merge pull request")
-    XCTAssertEqual(store.errorMessage, "not mergeable")
+    XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t merge pull request")
+    XCTAssertEqual(store.modals.errorMessage, "not mergeable")
   }
 
   // MARK: - refreshGitHubCLI must never publish a non-answer

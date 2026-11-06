@@ -217,7 +217,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 
     XCTAssertEqual(
       cli.calls.all, ["host r destroyed", "delete r", "host project clear", "delete-project"])
-    XCTAssertNil(store.errorMessage)
+    XCTAssertNil(store.modals.errorMessage)
   }
 
   /// Value: protects=C4, Delete Anyway on a project delete re-runs it as the project is now: a remote
@@ -244,11 +244,11 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 
     store.deleteProject(project, scope: .workrooms)
     let deadline = ContinuousClock.now + .seconds(10)
-    while store.errorAction == nil, ContinuousClock.now < deadline {
+    while store.modals.errorAction == nil, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(5))
     }
-    let action = try XCTUnwrap(store.errorAction, "no Delete Anyway was offered")
-    store.clearError()
+    let action = try XCTUnwrap(store.modals.errorAction, "no Delete Anyway was offered")
+    store.modals.clearError()
     action.run()
     while cli.calls.all.filter({ $0 == "delete-project" }).count < 2, ContinuousClock.now < deadline
     {
@@ -279,13 +279,13 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 
     store.deleteProject(project, scope: .workrooms)
     let deadline = ContinuousClock.now + .seconds(10)
-    while store.errorAction == nil, ContinuousClock.now < deadline {
+    while store.modals.errorAction == nil, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(5))
     }
 
-    let action = try XCTUnwrap(store.errorAction)
+    let action = try XCTUnwrap(store.modals.errorAction)
     XCTAssertEqual(action.label, "Delete Without Teardowns")
-    XCTAssertTrue(store.errorDetails?.contains(ssh.path) == true)
+    XCTAssertTrue(store.modals.errorDetails?.contains(ssh.path) == true)
     XCTAssertFalse(
       cli.calls.all.contains("delete-project"), "the first failure must retain the project")
   }
@@ -353,9 +353,9 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   @MainActor
   func testANewErrorMessageDropsTheEarlierErrorsDetails() {
     let store = AppStore()
-    store.errorDetails = "HTTP 409"
-    store.errorMessage = "Teardown failed"
-    XCTAssertNil(store.errorDetails)
+    store.modals.errorDetails = "HTTP 409"
+    store.modals.errorMessage = "Teardown failed"
+    XCTAssertNil(store.modals.errorDetails)
   }
 
   /// Every scope of a project delete takes its remote hosts down, so the sheet says so whichever

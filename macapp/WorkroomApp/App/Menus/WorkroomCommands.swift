@@ -26,7 +26,7 @@ struct WorkroomCommands: Commands {
   /// It does **NOT** go nil merely because a dialog is up, contrary to what this comment used to
   /// claim: verified on the real build, with the Add Project sheet attached every File-menu item still
   /// read `enabled=true` and ⌘T created a second terminal tab behind it. That is why enablement has to
-  /// AND in `AppStore.hasModalPresentation` explicitly (see `modalBlocked` and `MenuStateValues`).
+  /// AND in `ModalState.hasModalPresentation` explicitly (see `modalBlocked` and `MenuStateValues`).
   /// The focused window's store, through the `Observable` form of `@FocusedValue`, so Observation
   /// re-evaluates this `Commands` body when a store property it reads changes: checkmarks like
   /// Projects track the focused window's `sidebarVisible` live. `@FocusedObject` would listen only to
@@ -131,7 +131,7 @@ struct WorkroomCommands: Commands {
   // inspector shows, whose status they need (`inspectorTargetID` is the selection, or nil while it
   // has no tabs); the workroom's own items read the selection, as its right-click menu does.
   private var inspectedWorkroom: SidebarID? {
-    store?.hasModalPresentation == false ? store?.inspectorTargetID : nil
+    store?.modals.hasModalPresentation == false ? store?.inspectorTargetID : nil
   }
   private var canCommit: Bool? { roomCommandState?.canCommit }
   private var pullRequest: RoomCommandState.PullRequest? { roomCommandState?.pullRequest }
@@ -143,7 +143,7 @@ struct WorkroomCommands: Commands {
   /// The selected workroom, as the menu's title and the workroom's right-click menu take it; a root
   /// is never labelled or deleted, so it has none.
   private var selectedPair: (workroom: Workroom, project: Project)? {
-    guard let store, !store.hasModalPresentation, let sid = store.selectedTargetID else {
+    guard let store, !store.modals.hasModalPresentation, let sid = store.selectedTargetID else {
       return nil
     }
     return store.workroomAndProject(for: sid)
@@ -258,7 +258,7 @@ struct WorkroomCommands: Commands {
   private var newItemFileMenuCommands: some Commands {
     CommandGroup(replacing: .newItem) {
       Button("New Project…") {
-        store?.requestAddProject = true
+        store?.modals.requestAddProject = true
       }
 
       Divider()
@@ -523,7 +523,7 @@ struct WorkroomCommands: Commands {
       Divider()
       Button(selectedPair?.workroom.label == nil ? "Set Label…" : "Edit Label…") {
         if let pair = selectedPair {
-          store?.pendingWorkroomLabel = PendingWorkroomLabel(
+          store?.modals.pendingWorkroomLabel = PendingWorkroomLabel(
             workroom: pair.workroom, project: pair.project)
         }
       }
@@ -543,7 +543,7 @@ struct WorkroomCommands: Commands {
       // runs against the worktree (issue #116).
       Button("Delete Workroom…") {
         if let pair = selectedPair {
-          store?.pendingDeletion = PendingWorkroomDeletion(
+          store?.modals.pendingDeletion = PendingWorkroomDeletion(
             workroom: pair.workroom, project: pair.project)
         }
       }

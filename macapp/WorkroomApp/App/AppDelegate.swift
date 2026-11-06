@@ -73,7 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   @MainActor static func shortcutStore(
     for window: NSWindow?, in registry: WindowRegistry = .shared
   ) -> AppStore? {
-    guard let store = registry.store(for: window), store.activePicker == nil else { return nil }
+    guard let store = registry.store(for: window), store.modals.activePicker == nil else {
+      return nil
+    }
     return store
   }
 
@@ -96,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     for window: NSWindow?, in registry: WindowRegistry = .shared
   ) -> SwitcherGate {
     guard let store = registry.store(for: window) else { return .passThrough }
-    return store.hasModalPresentation ? .swallow : .act(store)
+    return store.modals.hasModalPresentation ? .swallow : .act(store)
   }
 
   /// Whether `window` is one of ours *and* has a command-palette dialog open — the case where a
@@ -105,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   @MainActor static func hasModalPicker(
     _ window: NSWindow?, in registry: WindowRegistry = .shared
   ) -> Bool {
-    registry.store(for: window)?.activePicker != nil
+    registry.store(for: window)?.modals.activePicker != nil
   }
 
   private var didScheduleWarmups = false

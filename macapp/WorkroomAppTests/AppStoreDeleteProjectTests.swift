@@ -84,12 +84,12 @@ final class AppStoreDeleteProjectTests: XCTestCase {
   func testRemoveProjectLocallyClearsPendingWorkroomLabelForTheDeletedProject() {
     let p = project("/a", workrooms: ["feat"])
     let store = makeStore([p])
-    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
+    store.modals.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
 
     store.removeProjectLocally(p)
 
     XCTAssertNil(
-      store.pendingWorkroomLabel, "pending label sheet for the deleted project must clear")
+      store.modals.pendingWorkroomLabel, "pending label sheet for the deleted project must clear")
   }
 
   // MARK: - Cross-window deletion (adversarial review: removeProjectLocally only covers the
@@ -102,14 +102,14 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     let store = AppStore(cli: fake)
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     await store.reload()
-    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
+    store.modals.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
 
     // Simulate another window deleting the "feat" workroom.
     fake.projectsToList = [project("/a", workrooms: [])]
     await store.reload()
 
     XCTAssertNil(
-      store.pendingWorkroomLabel,
+      store.modals.pendingWorkroomLabel,
       "pending label sheet must clear once its workroom is gone from a reload")
   }
 
@@ -224,8 +224,8 @@ final class AppStoreDeleteProjectTests: XCTestCase {
 
     store.presentTrashFailure(p, failedPaths: [URL(fileURLWithPath: "/Users/me/dev/app")])
 
-    XCTAssertEqual(store.errorTitle, "Some files of ‘app’ could not be moved to the Bin")
-    let message = store.errorMessage ?? ""
+    XCTAssertEqual(store.modals.errorTitle, "Some files of ‘app’ could not be moved to the Bin")
+    let message = store.modals.errorMessage ?? ""
     XCTAssertTrue(message.contains("/Users/me/dev/app"), "must name the leftover dir")
     XCTAssertTrue(message.contains("removed from Workroom"), "must clarify the project IS gone")
   }

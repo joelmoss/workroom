@@ -87,23 +87,91 @@ struct ErrorAction {
   let run: @MainActor () -> Void
 }
 
-/// One window's modal presentations: the error sheet, the command-palette dialogs, the confirmations
-/// and the store-level sheets, and `hasModalPresentation` over all of them. Owned by `AppStore` as
-/// `modals`; the store forwards each member, so views and tests still read them through the store.
+/// A modal presentation that owns its window while it is up: a command-palette dialog, one of
+/// `RootView`'s own sheets, the error sheet, a confirmation or a store-level sheet.
+///
+/// `ModalState` holds at most one of each kind, not one in all. Several can be up at once: an error,
+/// a provider's setup sheet or a start choice arrives when its work finishes, over whatever the user
+/// opened in the meantime, and must not take that down. An error replacing an open commit sheet would
+/// lose its draft, and one replacing a provider's setup sheet would leave its creates waiting for good.
+enum ActiveModal {
+  case picker(ActivePicker)
+  /// One of `RootView`'s view-local sheets (see `ModalState.auxSheetPresented`).
+  case auxSheet
+  /// The error sheet, by its message. The rest of what it shows is on `ModalState`.
+  case error(String)
+  case workroomDeletion(PendingWorkroomDeletion)
+  case workroomClose(PendingWorkroomClose)
+  case startChoice(PendingStartChoice)
+  case projectDeletion(PendingProjectDeletion)
+  case workroomLabel(PendingWorkroomLabel)
+  case remoteConfirm(PendingVCSAction)
+  case commit(PendingCommit)
+  case remoteSetup(PendingRemoteSetup)
+  case hostOptions(PendingHostOptions)
+
+  enum Kind {
+    case picker, auxSheet, error, workroomDeletion, workroomClose, startChoice, projectDeletion
+    case workroomLabel, remoteConfirm, commit, remoteSetup, hostOptions
+  }
+
+  var kind: Kind {
+    switch self {
+    case .picker: .picker
+    case .auxSheet: .auxSheet
+    case .error: .error
+    case .workroomDeletion: .workroomDeletion
+    case .workroomClose: .workroomClose
+    case .startChoice: .startChoice
+    case .projectDeletion: .projectDeletion
+    case .workroomLabel: .workroomLabel
+    case .remoteConfirm: .remoteConfirm
+    case .commit: .commit
+    case .remoteSetup: .remoteSetup
+    case .hostOptions: .hostOptions
+    }
+  }
+}
+
+/// One window's modal presentations (the `ActiveModal`s that are up), the error sheet's contents, and
+/// the one-shot requests that raise a dialog. Owned by `AppStore` as `modals`.
 @MainActor
 @Observable
-final class ModalState {
+// `ObservableObject` only so views can take it as an `@EnvironmentObject`, as they take the store
+// and `DetachedPaneEnvironmentTests` checks detached windows inject; Observation tracks the reads.
+final class ModalState: ObservableObject {
+  /// What is up, at most one of each kind. The typed members below (`activePicker`, `pending*`,
+  /// `errorMessage`, `auxSheetPresented`) read and write it, and nothing else holds a modal, so
+  /// `hasModalPresentation` cannot leave one out.
+  private var active: [ActiveModal.Kind: ActiveModal] = [:]
+
+  /// Puts `value` up as a modal of `kind`, replacing only one of that kind, or takes that kind down.
+  /// Taking down what isn't up writes nothing, so it notifies no one.
+  private func update<Value>(
+    _ kind: ActiveModal.Kind, to value: Value?, as modal: (Value) -> ActiveModal
+  ) {
+    if let value {
+      active[kind] = modal(value)
+    } else if active[kind] != nil {
+      active[kind] = nil
+    }
+  }
+
   /// Setting it drops `errorDetails` and `errorLog`, which belong to whatever error set them: a later
   /// message from a direct setter must not show an earlier error's codes or output. `present(_:)`
-  /// sets the details after.
+  /// sets the details after. Setting the message already shown changes nothing else, and notifies
+  /// no reader of the message, as an equal write to a stored `String?` does not.
   var errorMessage: String? {
-    didSet {
+    get { if case .error(let message)? = active[.error] { message } else { nil } }
+    set {
       errorDetails = nil
       errorLog = nil
       errorAction = nil
       errorApproval = nil
       errorScriptName = nil
       errorCancel = nil
+      guard newValue != errorMessage else { return }
+      update(.error, to: newValue, as: ActiveModal.error)
     }
   }
   /// Title for the error alert. Nil falls back to the generic title; specific
@@ -145,25 +213,51 @@ final class ModalState {
   var requestOpenWorkroomPicker = false
   /// Which command-palette dialog is currently shown (nil = none). Single source of truth so the New
   /// and Open Workroom presenters are mutually exclusive — opening one replaces the other (issue #94).
-  var activePicker: ActivePicker?
+  /// Raising the one already up notifies no one, as an equal write to a stored optional does not.
+  var activePicker: ActivePicker? {
+    get { if case .picker(let picker)? = active[.picker] { picker } else { nil } }
+    set {
+      guard newValue != activePicker else { return }
+      update(.picker, to: newValue, as: ActiveModal.picker)
+    }
+  }
   /// Whether the picker about to be raised should SPLIT rather than replace (issue #163) — set by
   /// ⌥⌘N / ⌥⌘O. Plain `var`, not `@Published`: it is read once by the presenter as it raises and
   /// cleared in the same breath (`consumePickerSplitIntent`), so nothing observes it.
   var pickerSplits = false
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
-  var pendingDeletion: PendingWorkroomDeletion?
+  var pendingDeletion: PendingWorkroomDeletion? {
+    get {
+      if case .workroomDeletion(let pending)? = active[.workroomDeletion] { pending } else { nil }
+    }
+    set { update(.workroomDeletion, to: newValue, as: ActiveModal.workroomDeletion) }
+  }
   /// A target awaiting close confirmation (tab bar "Close"); setting it raises the close prompt.
-  var pendingWorkroomClose: PendingWorkroomClose?
+  var pendingWorkroomClose: PendingWorkroomClose? {
+    get { if case .workroomClose(let pending)? = active[.workroomClose] { pending } else { nil } }
+    set { update(.workroomClose, to: newValue, as: ActiveModal.workroomClose) }
+  }
   /// A create asking where it starts; setting it raises the choice.
-  var pendingStartChoice: PendingStartChoice?
+  var pendingStartChoice: PendingStartChoice? {
+    get { if case .startChoice(let pending)? = active[.startChoice] { pending } else { nil } }
+    set { update(.startChoice, to: newValue, as: ActiveModal.startChoice) }
+  }
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
   /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
-  var pendingProjectDeletion: PendingProjectDeletion?
+  var pendingProjectDeletion: PendingProjectDeletion? {
+    get {
+      if case .projectDeletion(let pending)? = active[.projectDeletion] { pending } else { nil }
+    }
+    set { update(.projectDeletion, to: newValue, as: ActiveModal.projectDeletion) }
+  }
   /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
   /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
-  var pendingWorkroomLabel: PendingWorkroomLabel?
+  var pendingWorkroomLabel: PendingWorkroomLabel? {
+    get { if case .workroomLabel(let pending)? = active[.workroomLabel] { pending } else { nil } }
+    set { update(.workroomLabel, to: newValue, as: ActiveModal.workroomLabel) }
+  }
   /// A request for a project's settings, which `RootView` hands to Settings ▸ Projects and clears
-  /// at once. See `PendingProjectSettings`.
+  /// at once. See `PendingProjectSettings`. Not a modal: nothing holds this window while it is set.
   var pendingProjectSettings: PendingProjectSettings?
   /// A remote action awaiting confirmation — currently only a pull over a dirty working tree, where
   /// `--autostash` will stash and reapply.
@@ -172,7 +266,13 @@ final class ModalState {
   /// segment and the Room menu's ⌥⇧⌘P), and a gate owned by one view can only guard that view. It
   /// carries the `SidebarID` it was raised for so the confirmed action can't be redirected onto
   /// whatever is selected by the time the dialog is answered.
-  var pendingRemoteConfirm: PendingVCSAction?
+  ///
+  /// A modal so the Room menu's Fetch/Push/Pull shortcuts are inert while the confirmation is up:
+  /// otherwise ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
+  var pendingRemoteConfirm: PendingVCSAction? {
+    get { if case .remoteConfirm(let pending)? = active[.remoteConfirm] { pending } else { nil } }
+    set { update(.remoteConfirm, to: newValue, as: ActiveModal.remoteConfirm) }
+  }
 
   /// The commit sheet's target, or nil when it's closed. Presented from the Changes section header.
   ///
@@ -180,13 +280,26 @@ final class ModalState {
   /// a per-workroom draft store on the AppStore would need pruning on workroom delete, would inherit
   /// a recycled workroom name's old message, and — since `AppStore` is per WINDOW — would let two
   /// windows on the same workroom fight over one `Defaults` dictionary with last-writer-wins.
-  var pendingCommit: PendingCommit?
+  ///
+  /// A modal for the same reason as `pendingRemoteConfirm`: ⌥⇧⌘P could otherwise fire a push behind an
+  /// open commit dialog, and the terminal-scoped shortcuts would still reach a surface the user can't
+  /// see.
+  var pendingCommit: PendingCommit? {
+    get { if case .commit(let pending)? = active[.commit] { pending } else { nil } }
+    set { update(.commit, to: newValue, as: ActiveModal.commit) }
+  }
 
   /// A remote create waiting on the user's setup at its provider (drives `RemoteSetupSheet`).
-  var pendingRemoteSetup: PendingRemoteSetup?
+  var pendingRemoteSetup: PendingRemoteSetup? {
+    get { if case .remoteSetup(let pending)? = active[.remoteSetup] { pending } else { nil } }
+    set { update(.remoteSetup, to: newValue, as: ActiveModal.remoteSetup) }
+  }
 
   /// A boxd or exe.dev create waiting on its host options (drives `HostOptionsPanel`, #575).
-  var pendingHostOptions: PendingHostOptions?
+  var pendingHostOptions: PendingHostOptions? {
+    get { if case .hostOptions(let pending)? = active[.hostOptions] { pending } else { nil } }
+    set { update(.hostOptions, to: newValue, as: ActiveModal.hostOptions) }
+  }
 
   /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
   /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
@@ -196,27 +309,22 @@ final class ModalState {
   /// store: re-homing a local sheet flag to a store-level published item needs a clobber guard to stop
   /// a second trigger silently overwriting an open sheet's in-progress input, and none of that
   /// complexity buys anything here — all this needs is "is something up".
-  var auxSheetPresented = false
+  var auxSheetPresented: Bool {
+    get { active[.auxSheet] != nil }
+    set {
+      guard newValue != auxSheetPresented else { return }
+      active[.auxSheet] = newValue ? .auxSheet : nil
+    }
+  }
 
   /// Whether ANY modal presentation owns this window: a command-palette dialog, a confirmation, an
   /// alert, or one of the sheets. The single source of truth for making shortcuts inert behind a
   /// dialog — read by the key monitor's routing (via `activePicker`), by RootView's menu-enablement
-  /// values, and by `WorkroomTerminalsView`'s terminal-scoped ones, so all three can't drift.
+  /// values, and by `WorkroomTerminalsView`'s terminal-scoped ones, so all three can't drift. Every
+  /// modal is an `ActiveModal`, so a new one is counted without being listed here.
   ///
   /// Needed because a sheet does NOT make menu commands inert on its own: verified on the real build,
   /// with the Add Project sheet attached every File-menu item still read `enabled=true` and ⌘T
   /// actually created a second terminal tab behind it.
-  var hasModalPresentation: Bool {
-    activePicker != nil || auxSheetPresented || pendingDeletion != nil
-      || pendingWorkroomClose != nil || pendingStartChoice != nil
-      || pendingProjectDeletion != nil || pendingWorkroomLabel != nil
-      || errorMessage != nil
-      // Included so the Room menu's Fetch/Push/Pull shortcuts are inert while the confirmation is up
-      // — otherwise ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
-      || pendingRemoteConfirm != nil
-      // Same for the commit sheet: without this, ⌥⇧⌘P could fire a push behind an open commit
-      // dialog, and the terminal-scoped shortcuts would still reach a surface the user can't see.
-      || pendingCommit != nil
-      || pendingRemoteSetup != nil || pendingHostOptions != nil
-  }
+  var hasModalPresentation: Bool { !active.isEmpty }
 }

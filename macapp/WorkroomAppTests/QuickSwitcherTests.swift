@@ -135,7 +135,7 @@ final class QuickSwitcherTests: XCTestCase {
     shared.projects = [project("/p", workrooms: ["w1", "w2"])]
     let a = makeStore(shared, project: "/p", workrooms: ["w1"])
     let b = makeStore(shared, project: "/p", workrooms: ["w2"])
-    b.activePicker = .open
+    b.modals.activePicker = .open
     let registry = WindowRegistry()
     registry.register(window: NSWindow(), store: a)
     registry.register(window: NSWindow(), store: b)
@@ -144,7 +144,7 @@ final class QuickSwitcherTests: XCTestCase {
     XCTAssertEqual(slots.count, 1)
     XCTAssertTrue(slots.first?.store === a)
     XCTAssertTrue(
-      b.hasModalPresentation, "…and the exclusion is driven by the full modal predicate")
+      b.modals.hasModalPresentation, "…and the exclusion is driven by the full modal predicate")
   }
 
   // MARK: monitor gating
@@ -173,7 +173,7 @@ final class QuickSwitcherTests: XCTestCase {
     }
 
     // Not `activePicker` — the *full* predicate, so a commit sheet counts too.
-    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w"))
+    store.modals.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w"))
     guard case .swallow = AppDelegate.switcherGate(for: window, in: registry) else {
       return XCTFail("⌥Tab must not retarget the selection under a live commit sheet")
     }
@@ -202,7 +202,7 @@ final class QuickSwitcherTests: XCTestCase {
         .workrooms, window: nil, registry: registry, recency: SwitcherRecency()),
       "no key window at all ⇒ nothing to switch in")
 
-    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w1"))
+    store.modals.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w1"))
     XCTAssertFalse(
       QuickSwitcher.stepFromKeyWindow(
         .workrooms, window: window, registry: registry, recency: SwitcherRecency()),
@@ -245,7 +245,7 @@ final class QuickSwitcherTests: XCTestCase {
       QuickSwitcher.canSwitchWorkrooms(registry: registry),
       "the second window's workroom counts — the switcher's scope is the whole app")
 
-    b.activePicker = .open
+    b.modals.activePicker = .open
     XCTAssertFalse(
       QuickSwitcher.canSwitchWorkrooms(registry: registry),
       "…and a window with a dialog up isn't a destination, exactly as `workroomSlots` has it")

@@ -14,7 +14,7 @@ import XCTest
 ///   menu-bar item and notification routing but wrong for shortcuts: it falls back *past* a foreign key
 ///   window, firing ⌘R / ⌘1-9 / ⌥⌘S into a background workroom while a sheet, Settings, About,
 ///   Sparkle's updater or the quick terminal is key.
-/// - `AppStore.hasModalPresentation` — ANDed into every menu-enablement boolean, because a menu key
+/// - `ModalState.hasModalPresentation` — ANDed into every menu-enablement boolean, because a menu key
 ///   equivalent fires straight through a dialog otherwise (verified live: ⌘T behind the Add Project
 ///   sheet really did open a second terminal tab).
 ///
@@ -69,13 +69,13 @@ final class ModalShortcutRoutingTests: XCTestCase {
     XCTAssertNotNil(AppDelegate.shortcutStore(for: win, in: registry), "baseline: routes normally")
 
     for picker in [ActivePicker.new, .open] {
-      store.activePicker = picker
+      store.modals.activePicker = picker
       XCTAssertNil(
         AppDelegate.shortcutStore(for: win, in: registry),
         "\(picker) is up, so shortcuts must not reach the window behind it")
     }
 
-    store.activePicker = nil
+    store.modals.activePicker = nil
     XCTAssertNotNil(
       AppDelegate.shortcutStore(for: win, in: registry),
       "dismissing the dialog restores routing — the block can't be sticky")
@@ -90,7 +90,7 @@ final class ModalShortcutRoutingTests: XCTestCase {
     registry.register(window: win, store: store)
 
     XCTAssertFalse(AppDelegate.hasModalPicker(win, in: registry))
-    store.activePicker = .new
+    store.modals.activePicker = .new
     XCTAssertTrue(
       AppDelegate.hasModalPicker(win, in: registry),
       "⌘` must be swallowed rather than cycling windows out from under a dialog")
@@ -110,25 +110,27 @@ final class ModalShortcutRoutingTests: XCTestCase {
       id: TargetID.root(project: "/p"), title: "p", path: "/p", isMissing: false)
 
     let mutations: [(String, (AppStore) -> Void)] = [
-      ("activePicker", { $0.activePicker = .new }),
-      ("auxSheetPresented", { $0.auxSheetPresented = true }),
+      ("activePicker", { $0.modals.activePicker = .new }),
+      ("auxSheetPresented", { $0.modals.auxSheetPresented = true }),
       (
         "pendingDeletion",
-        { $0.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project) }
+        {
+          $0.modals.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+        }
       ),
       (
         "pendingWorkroomClose",
-        { $0.pendingWorkroomClose = PendingWorkroomClose(target: target, name: "w") }
+        { $0.modals.pendingWorkroomClose = PendingWorkroomClose(target: target, name: "w") }
       ),
-      ("pendingProjectDeletion", { $0.pendingProjectDeletion = .init(project: project) }),
+      ("pendingProjectDeletion", { $0.modals.pendingProjectDeletion = .init(project: project) }),
       (
         "pendingWorkroomLabel",
-        { $0.pendingWorkroomLabel = .init(workroom: workroom, project: project) }
+        { $0.modals.pendingWorkroomLabel = .init(workroom: workroom, project: project) }
       ),
       (
         "pendingRemoteSetup",
         {
-          $0.pendingRemoteSetup = PendingRemoteSetup(
+          $0.modals.pendingRemoteSetup = PendingRemoteSetup(
             place: .exeDev,
             setup: ExeDevSetup(
               driver: ExeDevHostDriver(
@@ -139,7 +141,7 @@ final class ModalShortcutRoutingTests: XCTestCase {
       (
         // The Configure… panel (#575), so menu shortcuts can't reach a surface hidden behind it.
         "pendingHostOptions",
-        { $0.pendingHostOptions = PendingHostOptions(project: project, place: .boxd) }
+        { $0.modals.pendingHostOptions = PendingHostOptions(project: project, place: .boxd) }
       ),
       (
         // Value: protects=menu shortcuts go inert while the start choice is up; fails_when=
@@ -147,37 +149,80 @@ final class ModalShortcutRoutingTests: XCTestCase {
         // row sets it; seam=none; no_claim=the choice sheet itself
         "pendingStartChoice",
         {
-          $0.pendingStartChoice = PendingStartChoice(
+          $0.modals.pendingStartChoice = PendingStartChoice(
             run: CreationRun(
               project: project, kind: nil, splitAnchor: nil, previousSelection: nil),
             work: LocalWork(
               branch: "main", remote: "origin", ahead: 1, uncommitted: false, summary: "s"))
         }
       ),
-      ("errorMessage", { $0.errorMessage = "boom" }),
+      ("errorMessage", { $0.modals.errorMessage = "boom" }),
     ]
 
     for (name, mutate) in mutations {
       let store = AppStore(projectStore: ProjectStore())
-      XCTAssertFalse(store.hasModalPresentation, "a fresh store has nothing up (\(name))")
+      XCTAssertFalse(store.modals.hasModalPresentation, "a fresh store has nothing up (\(name))")
       mutate(store)
       XCTAssertTrue(
-        store.hasModalPresentation,
+        store.modals.hasModalPresentation,
         "\(name) is a modal presentation — menu shortcuts must go inert behind it")
     }
   }
 
-  /// The modal state lives on `ModalState` and the store forwards it. A view or menu reading the store
-  /// must still be invalidated by a write, or every sheet and the inert-shortcut gate stop updating.
+  /// The modal state lives on the store's `ModalState`. A view or menu reading it through the store
+  /// must be invalidated by a write, or every sheet and the inert-shortcut gate stop updating.
   func testAReadThroughTheStoreIsInvalidatedByAModalWrite() {
     let store = AppStore()
     var invalidated = false
     withObservationTracking {
-      _ = store.hasModalPresentation
+      _ = store.modals.hasModalPresentation
     } onChange: {
       invalidated = true
     }
-    store.activePicker = .open
+    store.modals.activePicker = .open
     XCTAssertTrue(invalidated, "a forwarded read must track ModalState")
+  }
+
+  /// Value: protects=an error (or a provider's setup sheet, or a start choice) that arrives when its
+  /// work finishes leaves up whatever the user opened meanwhile, so an open commit sheet keeps its
+  /// draft; fails_when=`ModalState` holds one modal in all and a new one replaces the last;
+  /// why_new=no test raised two modals at once; seam=none; no_claim=which sheet SwiftUI draws first
+  func testAModalRaisedOverAnotherLeavesItUp() {
+    let modals = ModalState()
+    let commit = PendingCommit(sid: .workroom(project: "/p", name: "w"))
+    modals.pendingCommit = commit
+    modals.errorMessage = "the push failed"
+
+    XCTAssertEqual(modals.pendingCommit, commit, "the error must not take the commit sheet down")
+    XCTAssertEqual(modals.errorMessage, "the push failed")
+
+    modals.clearError()
+    XCTAssertEqual(modals.pendingCommit, commit, "dismissing the error leaves the commit sheet up")
+    XCTAssertTrue(modals.hasModalPresentation, "the commit sheet still holds the window")
+
+    modals.pendingCommit = nil
+    XCTAssertFalse(modals.hasModalPresentation, "nothing is left up")
+  }
+
+  /// Value: protects=raising the dialog already up, or dismissing what isn't up, redraws no reader of
+  /// the modal state (the dedupe an equal write to a stored optional had, docs/macapp-perf-facts.md);
+  /// fails_when=a `ModalState` setter writes its collection unguarded; why_new=the modals were stored
+  /// optionals until 2.2 and got this from `@Observable`; seam=none; no_claim=writes that change a value
+  func testAModalWriteThatChangesNothingNotifiesNoOne() {
+    let modals = ModalState()
+    modals.activePicker = .new
+    modals.errorMessage = "boom"
+    var invalidated = false
+    withObservationTracking {
+      _ = modals.hasModalPresentation
+    } onChange: {
+      invalidated = true
+    }
+
+    modals.activePicker = .new
+    modals.errorMessage = "boom"
+    modals.auxSheetPresented = false
+    modals.pendingDeletion = nil
+    XCTAssertFalse(invalidated, "nothing changed, so nothing redraws")
   }
 }

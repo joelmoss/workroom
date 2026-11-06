@@ -5,6 +5,7 @@ import WorkroomDomain
 
 struct RootView: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var modals: ModalState
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -28,7 +29,7 @@ struct RootView: View {
   /// `@State`) so the View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showInspector) private var showInspector
 
-  /// Drives the New Project sheet — set from `store.requestAddProject`, which both the menu command
+  /// Drives the New Project sheet — set from `modals.requestAddProject`, which both the menu command
   /// and the sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the command presents
   /// it even if the sidebar is collapsed via the standard toggle. The sheet (issue #103) offers two
   /// modes: add an existing repo, or create + git-init a new directory.
@@ -91,6 +92,7 @@ struct RootView: View {
     // behind the traffic lights uniformly (an opaque fill here didn't match the titlebar strip behind
     // the lights). WindowBackgroundThemer sets the window bg to the panel token.
     .environmentObject(store)
+    .environmentObject(modals)
     .environmentObject(runCommand)
     .environmentObject(store.projectStore)
     .environmentObject(notifications)
@@ -101,16 +103,16 @@ struct RootView: View {
     // and its chips stay clickable through a "modal" dialog, and the bar stays undimmed while
     // everything beneath it darkens. Both halves read the same opacity + curve from
     // `DialogOverlayStyle` so they can't drift.
-    .disabled(store.activePicker != nil)
+    .disabled(modals.activePicker != nil)
     .overlay {
       Color.black
         .opacity(
-          store.activePicker != nil ? DialogOverlayStyle.backdropOpacity(for: colorScheme) : 0
+          modals.activePicker != nil ? DialogOverlayStyle.backdropOpacity(for: colorScheme) : 0
         )
         .allowsHitTesting(false)
     }
     .animation(
-      reduceMotion ? nil : DialogOverlayStyle.revealAnimation, value: store.activePicker != nil)
+      reduceMotion ? nil : DialogOverlayStyle.revealAnimation, value: modals.activePicker != nil)
   }
 
   private var workroomTabsBar: some View {
@@ -209,25 +211,25 @@ struct RootView: View {
       // A sheet, not an alert: an alert's message can't hold the collapsed Details.
       .sheet(
         isPresented: Binding(
-          get: { store.errorMessage != nil },
-          set: { if !$0 { store.clearError() } }
+          get: { modals.errorMessage != nil },
+          set: { if !$0 { modals.clearError() } }
         )
       ) {
         ErrorSheet(
-          title: store.errorTitle ?? "Something went wrong", message: store.errorMessage ?? "",
-          log: store.errorLog, details: store.errorDetails, action: store.errorAction,
-          approval: store.errorApproval, scriptName: store.errorScriptName,
-          cancel: store.errorCancel,
-          onDismiss: { store.clearError() })
+          title: modals.errorTitle ?? "Something went wrong", message: modals.errorMessage ?? "",
+          log: modals.errorLog, details: modals.errorDetails, action: modals.errorAction,
+          approval: modals.errorApproval, scriptName: modals.errorScriptName,
+          cancel: modals.errorCancel,
+          onDismiss: { modals.clearError() })
       }
       // Add-project importer + delete confirmation, re-homed here from ProjectSidebar (issue #23 OV1) so
       // the ⌘O / ⌘⌫ menu commands present reliably even when the sidebar is collapsed in Workrooms View.
-      // The triggers stay on the store (`requestAddProject` / `pendingDeletion`), set by both the menu
-      // commands and the sidebar's own buttons.
-      .onChange(of: store.requestAddProject) { _, request in
+      // The triggers live on `ModalState` (`requestAddProject` / `pendingDeletion`), set by both the
+      // menu commands and the sidebar's own buttons.
+      .onChange(of: modals.requestAddProject) { _, request in
         if request {
           showAddProject = true
-          store.requestAddProject = false
+          modals.requestAddProject = false
         }
       }
       .sheet(isPresented: $showAddProject) {
@@ -252,35 +254,34 @@ struct RootView: View {
       // still handles a filter that matches nothing.
       .modifier(NewWorkroomPresenter(store: store))
       // Open Workroom picker (⌘O, issue #94): same store-flag bridge, also gated on `hasProjects`.
-      // One of several sibling `.sheet` presenters on this view — only one is ever active at a time.
       .modifier(OpenWorkroomPresenter(store: store))
       .modifier(StartChoicePresenter(store: store))
       .confirmationDialog(
-        store.pendingDeletion.map { "Delete '\($0.workroom.displayName)'?" } ?? "Delete workroom?",
+        modals.pendingDeletion.map { "Delete '\($0.workroom.displayName)'?" } ?? "Delete workroom?",
         isPresented: Binding(
-          get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
+          get: { modals.pendingDeletion != nil }, set: { if !$0 { modals.pendingDeletion = nil } }),
         titleVisibility: .visible
       ) {
         Button("Delete", role: .destructive) {
-          if let target = store.pendingDeletion {
+          if let target = modals.pendingDeletion {
             store.deleteWorkroom(target.workroom, in: target.project)
           }
-          store.pendingDeletion = nil
+          modals.pendingDeletion = nil
         }
-        Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
+        Button("Cancel", role: .cancel) { modals.pendingDeletion = nil }
       } message: {
         // #253: a remote workroom has no directory here; its host goes, and all on it.
-        if let target = store.pendingDeletion, target.workroom.isSSH {
+        if let target = modals.pendingDeletion, target.workroom.isSSH {
           Text(
             "This removes \(target.workroom.path) on \(target.workroom.host?.sshDestination ?? "its host"), "
               + "including changes and commits that aren't pushed. The server and its other folders stay."
           )
-        } else if let target = store.pendingDeletion, target.workroom.isRemote {
+        } else if let target = modals.pendingDeletion, target.workroom.isRemote {
           Text(
             "This destroys the workroom's remote machine and everything on it, including changes "
               + "and commits that aren't pushed."
           )
-        } else if let target = store.pendingDeletion,
+        } else if let target = modals.pendingDeletion,
           WindowRegistry.shared.hasLiveInvestigateSession(for: [
             TargetID.workroom(project: target.project.path, name: target.workroom.name)
           ])
@@ -299,17 +300,17 @@ struct RootView: View {
       // Tab bar "Close": tear down all of the workroom's terminal tabs (its chip leaves the bar),
       // leaving the workroom itself in place. Same store-flag → confirmationDialog bridge as delete.
       .confirmationDialog(
-        store.pendingWorkroomClose.map { "Close ‘\($0.name)’?" } ?? "Close workroom?",
+        modals.pendingWorkroomClose.map { "Close ‘\($0.name)’?" } ?? "Close workroom?",
         isPresented: Binding(
-          get: { store.pendingWorkroomClose != nil },
-          set: { if !$0 { store.pendingWorkroomClose = nil } }),
+          get: { modals.pendingWorkroomClose != nil },
+          set: { if !$0 { modals.pendingWorkroomClose = nil } }),
         titleVisibility: .visible
       ) {
         Button("Close", role: .destructive) {
-          if let pending = store.pendingWorkroomClose { store.closeWorkroom(for: pending.target) }
-          store.pendingWorkroomClose = nil
+          if let pending = modals.pendingWorkroomClose { store.closeWorkroom(for: pending.target) }
+          modals.pendingWorkroomClose = nil
         }
-        Button("Cancel", role: .cancel) { store.pendingWorkroomClose = nil }
+        Button("Cancel", role: .cancel) { modals.pendingWorkroomClose = nil }
       } message: {
         Text(
           "This closes all of the workroom's terminal tabs and stops anything running in them. The workroom itself is kept."
@@ -318,7 +319,7 @@ struct RootView: View {
       // Project deletion uses a type-to-confirm sheet (not a one-tap dialog): it's a bigger,
       // optionally-cascading action, so it demands typing the project name. `.sheet(item:)`
       // rebuilds per pending identity, resetting the sheet's typed/toggle state.
-      .sheet(item: $store.pendingProjectDeletion) { pending in
+      .sheet(item: $modals.pendingProjectDeletion) { pending in
         DeleteProjectSheet(
           project: pending.project,
           // Issue #146: deleteProject reaps live terminals unconditionally (even `.configOnly`,
@@ -330,42 +331,42 @@ struct RootView: View {
                 TargetID.workroom(project: pending.project.path, name: $0.name)
               }),
           onDelete: { scope in
-            store.pendingProjectDeletion = nil
+            modals.pendingProjectDeletion = nil
             store.deleteProject(pending.project, scope: scope)
           },
-          onCancel: { store.pendingProjectDeletion = nil })
+          onCancel: { modals.pendingProjectDeletion = nil })
       }
       // Set/edit a workroom's display label (issue #41). Same `.sheet(item:)` bridge as project
       // deletion above — the id-keyed item rebuilds the sheet per workroom, resetting its field.
-      .sheet(item: $store.pendingWorkroomLabel) { pending in
+      .sheet(item: $modals.pendingWorkroomLabel) { pending in
         WorkroomLabelSheet(
           workroom: pending.workroom,
           project: pending.project,
           onSet: { label in
-            store.pendingWorkroomLabel = nil
+            modals.pendingWorkroomLabel = nil
             store.setWorkroomLabel(pending.workroom, in: pending.project, to: label)
           },
-          onCancel: { store.pendingWorkroomLabel = nil })
+          onCancel: { modals.pendingWorkroomLabel = nil })
       }
       // A project's settings open in Settings ▸ Projects (issue #7; #127 adds the no-command Run).
       // Cleared at once: the request is handed on, and no sheet holds this window's shortcuts.
-      .onChange(of: store.pendingProjectSettings?.id) {
-        guard let pending = store.pendingProjectSettings else { return }
-        store.pendingProjectSettings = nil
+      .onChange(of: modals.pendingProjectSettings?.id) {
+        guard let pending = modals.pendingProjectSettings else { return }
+        modals.pendingProjectSettings = nil
         SettingsRoute.shared.show(
           project: pending.project.path, runWarning: pending.showsRunWarning)
         openSettings()
       }
       // One boxd or exe.dev create's host options (#575), from the New Workroom dialog or menu.
-      .sheet(item: $store.pendingHostOptions) { pending in
+      .sheet(item: $modals.pendingHostOptions) { pending in
         HostOptionsPanel(pending: pending).environmentObject(store)
       }
       // The commit dialog. Presented on the ROOT for `VCSFailureSheet`'s reason: it can be opened
       // from the Changes header, and a dialog that only survives while a particular pane happens to
       // be open is worse than no dialog. `pendingCommit` is already counted by
       // `hasModalPresentation`, so the Room menu's Fetch/Push/Pull shortcuts are inert behind it.
-      .sheet(item: $store.pendingCommit) { pending in
-        CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
+      .sheet(item: $modals.pendingCommit) { pending in
+        CommitSheet(pending: pending, onDismiss: { modals.pendingCommit = nil })
           .environmentObject(store)
           .environmentObject(store.projectStore)
       }
@@ -373,7 +374,7 @@ struct RootView: View {
       // A sheet dismissed any other way than its buttons cancels, so no create waits for good.
       .sheet(
         item: Binding(
-          get: { store.pendingRemoteSetup },
+          get: { modals.pendingRemoteSetup },
           set: { if $0 == nil { store.resolveRemoteSetup(carryOn: false) } })
       ) { pending in
         remoteSetupSheet(pending)
@@ -495,7 +496,7 @@ struct RootView: View {
       // Keep the store's mirror of the four view-local sheet flags current, so
       // `hasModalPresentation` is a complete answer for every reader (see its doc comment).
       .onChange(of: auxSheetPresented, initial: true) { _, presented in
-        store.auxSheetPresented = presented
+        modals.auxSheetPresented = presented
       }
       .modifier(RoomCommandStateValues(store: store))
       .modifier(
@@ -503,16 +504,16 @@ struct RootView: View {
           // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
           // false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal still work).
           //
-          // Every boolean here also ANDs in `!store.hasModalPresentation`: a menu item's key
+          // Every boolean here also ANDs in `!modals.hasModalPresentation`: a menu item's key
           // equivalent fires even while a dialog or sheet is up (⌘T behind the Add Project sheet
           // really did open a tab), and a disabled item drops its key equivalent — the same mechanism
           // `hasProjects` already relies on for ⌘N. Doing it here rather than per-item keeps it to one
           // site, and greying the item out tells the user WHY the key did nothing, which swallowing
           // the event in the key monitor cannot.
-          workroomSelected: terminalInteractionAvailable && !store.hasModalPresentation,
-          hasNotifications: !notifications.items.isEmpty && !store.hasModalPresentation,
+          workroomSelected: terminalInteractionAvailable && !modals.hasModalPresentation,
+          hasNotifications: !notifications.items.isEmpty && !modals.hasModalPresentation,
           hasWaitingTerminals: !programStatusAlerts.waiting.isEmpty
-            && !store.hasModalPresentation,
+            && !modals.hasModalPresentation,
           // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81). Deliberately NOT gated
           // on `hasModalPresentation` — ⌘N/⌘O must still work while a picker is open, because raising
           // one picker replaces the other and that's the documented behaviour (issue #94).
@@ -523,32 +524,32 @@ struct RootView: View {
           // keep working while a picker is up, exactly as their plain ⌘N/⌘O siblings do.
           hasWorkroomAnchor: store.selectedTargetID != nil,
           // Go-menu Back/Forward (issue #26).
-          canNavigateBack: store.canGoBack && !store.hasModalPresentation,
-          canNavigateForward: store.canGoForward && !store.hasModalPresentation,
+          canNavigateBack: store.canGoBack && !modals.hasModalPresentation,
+          canNavigateForward: store.canGoForward && !modals.hasModalPresentation,
           // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
-          hasRunCommand: selectedHasRunCommand && !store.hasModalPresentation,
-          runCommandActive: selectedRunCommandActive && !store.hasModalPresentation,
+          hasRunCommand: selectedHasRunCommand && !modals.hasModalPresentation,
+          runCommandActive: selectedRunCommandActive && !modals.hasModalPresentation,
           // Room menu's Fetch / Push / Pull (⌥⇧⌘F / ⇧⌘P / ⌥⇧⌘P). The model's own `can*` already
           // fold in "a remote exists" and "nothing is in flight"; the tool floor and the modal guard
           // are ANDed here so the menu can't fire an action the toolbar itself would refuse.
-          vcsCanFetch: remoteState.canFetch && vcsToolsUsable && !store.hasModalPresentation,
-          vcsCanPush: remoteState.canPush && vcsToolsUsable && !store.hasModalPresentation,
-          vcsCanPull: remoteState.canPull && vcsToolsUsable && !store.hasModalPresentation,
-          hasRunTerminal: runCommand.hasAnyRunTerminal && !store.hasModalPresentation,
+          vcsCanFetch: remoteState.canFetch && vcsToolsUsable && !modals.hasModalPresentation,
+          vcsCanPush: remoteState.canPush && vcsToolsUsable && !modals.hasModalPresentation,
+          vcsCanPull: remoteState.canPull && vcsToolsUsable && !modals.hasModalPresentation,
+          hasRunTerminal: runCommand.hasAnyRunTerminal && !modals.hasModalPresentation,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
           multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
-            && !store.hasModalPresentation,
+            && !modals.hasModalPresentation,
           // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
           // enabled when this window holds the only workroom and another window holds a second one.
           // This window's body is what recomputes it, so another window's change lands here only on the
           // next pass — harmless in both directions: the monitor owns the keystroke either way, and the
           // menu item merely no-ops (or greys) until then.
-          canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !store.hasModalPresentation,
+          canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !modals.hasModalPresentation,
           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
-          canOpenInEditor: store.canOpenInEditor && !store.hasModalPresentation,
+          canOpenInEditor: store.canOpenInEditor && !modals.hasModalPresentation,
           canMoveWorkroom: store.selectedTargetID.map(store.canMoveWorkroom) == true
-            && !store.hasModalPresentation,
-          modalPresented: store.hasModalPresentation))
+            && !modals.hasModalPresentation,
+          modalPresented: modals.hasModalPresentation))
   }
 
   /// The sheets RootView owns as `@State` rather than store state, ORed for the store mirror.
@@ -756,7 +757,7 @@ struct RootView: View {
         }
       } actions: {
         if projectStore.projects.isEmpty {
-          Button("Add Project…") { store.requestAddProject = true }
+          Button("Add Project…") { modals.requestAddProject = true }
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("EmptyStateAddProject")
         }

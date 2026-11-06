@@ -244,7 +244,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     fake.allowDelete = true
     // The tombstone lifts only after the success path's load returns.
     await waitUntil({ store.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
-    XCTAssertNil(store.errorMessage, "a delete that succeeded must not report an error")
+    XCTAssertNil(store.modals.errorMessage, "a delete that succeeded must not report an error")
     XCTAssertEqual(workroomNames(store), ["b"], "the workroom stays gone")
   }
 
@@ -287,11 +287,11 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     store.deleteWorkroom(a, in: project([a]))
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.allowDelete = true
-    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
+    await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")
 
-    XCTAssertEqual(store.errorTitle, "Teardown of ‘a’ failed")
-    XCTAssertEqual(store.errorMessage, reason)
-    XCTAssertEqual(store.errorLog, "dropping myapp_a\ndropdb: database does not exist")
+    XCTAssertEqual(store.modals.errorTitle, "Teardown of ‘a’ failed")
+    XCTAssertEqual(store.modals.errorMessage, reason)
+    XCTAssertEqual(store.modals.errorLog, "dropping myapp_a\ndropdb: database does not exist")
   }
 
   /// A teardown that printed nothing shows no log box, only the reason.
@@ -306,11 +306,12 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     store.deleteWorkroom(a, in: project([a]))
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.allowDelete = true
-    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
+    await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")
 
-    XCTAssertEqual(store.errorMessage, WorkroomCLIError.timedOut.errorDescription)
-    XCTAssertNil(store.errorLog)
-    XCTAssertEqual(store.errorAction?.label, "Delete Anyway", "a teardown that ran out of time")
+    XCTAssertEqual(store.modals.errorMessage, WorkroomCLIError.timedOut.errorDescription)
+    XCTAssertNil(store.modals.errorLog)
+    XCTAssertEqual(
+      store.modals.errorAction?.label, "Delete Anyway", "a teardown that ran out of time")
   }
 
   private static let teardownFailed = WorkroomCLIError.cli(
@@ -331,13 +332,13 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     store.deleteWorkroom(a, in: project([a]))
     fake.allowDelete = true
-    await waitUntil({ store.errorAction != nil }, "no Delete Anyway was offered")
-    XCTAssertEqual(store.errorAction?.label, "Delete Anyway")
+    await waitUntil({ store.modals.errorAction != nil }, "no Delete Anyway was offered")
+    XCTAssertEqual(store.modals.errorAction?.label, "Delete Anyway")
 
     fake.deleteFails = false
     fake.listResult = [project([])]
-    let action = try XCTUnwrap(store.errorAction)
-    store.clearError()
+    let action = try XCTUnwrap(store.modals.errorAction)
+    store.modals.clearError()
     action.run()
     await waitUntil({ fake.skips == [false, true] }, "Delete Anyway didn't skip the script")
     await waitUntil({ self.workroomNames(store).isEmpty }, "the workroom wasn't deleted")
@@ -362,24 +363,24 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     store.deleteWorkroom(a, in: project([a]))
     fake.allowDelete = true
-    await waitUntil({ store.errorApproval != nil }, "no Approve was offered")
-    XCTAssertEqual(store.errorApproval?.label, "Approve")
-    XCTAssertEqual(store.errorAction?.label, "Delete Anyway")
-    XCTAssertEqual(store.errorTitle, "Approve the teardown script?")
+    await waitUntil({ store.modals.errorApproval != nil }, "no Approve was offered")
+    XCTAssertEqual(store.modals.errorApproval?.label, "Approve")
+    XCTAssertEqual(store.modals.errorAction?.label, "Delete Anyway")
+    XCTAssertEqual(store.modals.errorTitle, "Approve the teardown script?")
     XCTAssertEqual(
-      store.errorMessage,
+      store.modals.errorMessage,
       "Deleting ‘a’ in \(project([a]).displayName) runs scripts/workroom_teardown in the workroom "
         + "first, and it is new, or changed since it was approved on this Mac. Read it, then "
         + "approve it to run it and delete the workroom, or delete without running it.")
-    XCTAssertNotNil(store.errorDetails, "the error's codes went with the new message")
-    XCTAssertEqual(store.errorLog, "#!/bin/sh\ndropdb a\n")
+    XCTAssertNotNil(store.modals.errorDetails, "the error's codes went with the new message")
+    XCTAssertEqual(store.modals.errorLog, "#!/bin/sh\ndropdb a\n")
     XCTAssertEqual(
-      store.errorScriptName, "workroom_teardown", "the sheet can't draw it as its file")
+      store.modals.errorScriptName, "workroom_teardown", "the sheet can't draw it as its file")
 
     fake.deleteFails = false
     fake.listResult = [project([])]
-    let approve = try XCTUnwrap(store.errorApproval)
-    store.clearError()
+    let approve = try XCTUnwrap(store.modals.errorApproval)
+    store.modals.clearError()
     approve.run()
     await waitUntil(
       { fake.skips == [false, false] }, "Approve didn't delete with the script")
@@ -401,8 +402,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     store.deleteWorkroom(a, in: project([a]))
     fake.allowDelete = true
-    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
-    XCTAssertNil(store.errorAction)
+    await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")
+    XCTAssertNil(store.modals.errorAction)
   }
 
   // MARK: - Delete withdraws notifications
@@ -484,7 +485,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
       store.projectStore.projects.isEmpty, "a stale reload must NOT bring the project back")
 
     store.deleteProject(project([a]), scope: .configOnly)
-    XCTAssertEqual(store.errorMessage, "\(project([a]).displayName) is already being deleted.")
+    XCTAssertEqual(
+      store.modals.errorMessage, "\(project([a]).displayName) is already being deleted.")
 
     fake.allowDelete = true
     await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
@@ -512,7 +514,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertTrue(
       windowB.projectStore.projects.isEmpty, "another window's reload must not republish it")
     windowB.deleteProject(project([a]), scope: .configOnly)
-    XCTAssertEqual(windowB.errorMessage, "\(project([a]).displayName) is already being deleted.")
+    XCTAssertEqual(
+      windowB.modals.errorMessage, "\(project([a]).displayName) is already being deleted.")
 
     fake.allowDelete = true
     await waitUntil({ shared.deletingProjects.isEmpty }, "tombstone should clear after teardown")
@@ -560,7 +563,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     store.deleteProject(project([a]), scope: .configOnly)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     await store.createWorkroom(in: project([a]))
-    XCTAssertEqual(store.errorMessage, "\(project([a]).displayName) is being deleted.")
+    XCTAssertEqual(store.modals.errorMessage, "\(project([a]).displayName) is being deleted.")
     XCTAssertTrue(store.creationRuns.isEmpty, "no create was started")
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project([a])), "nor a remote one")
 
@@ -610,7 +613,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     fake.allowDelete = true
     await waitUntil({ self.workroomNames(store) == ["a"] }, "failed delete restores the project")
     XCTAssertTrue(store.deletingProjects.isEmpty, "tombstone cleared on failure")
-    XCTAssertNotNil(store.errorTitle, "the failure is surfaced")
+    XCTAssertNotNil(store.modals.errorTitle, "the failure is surfaced")
   }
 
   /// A cascade whose teardown fails keeps the reason as the message and the output in the log box,
@@ -630,19 +633,19 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     store.deleteProject(project([a]), scope: .workrooms)
     await waitUntil({ fake.deleteStarted }, "teardown should start")
     fake.allowDelete = true
-    await waitUntil({ store.errorMessage != nil }, "the failure is surfaced")
+    await waitUntil({ store.modals.errorMessage != nil }, "the failure is surfaced")
 
-    XCTAssertEqual(store.errorTitle, "Delete of ‘wr-race-project’ failed")
-    XCTAssertEqual(store.errorMessage, reason)
-    XCTAssertEqual(store.errorLog, "rm: cannot remove 'tmp'")
+    XCTAssertEqual(store.modals.errorTitle, "Delete of ‘wr-race-project’ failed")
+    XCTAssertEqual(store.modals.errorMessage, reason)
+    XCTAssertEqual(store.modals.errorLog, "rm: cannot remove 'tmp'")
 
     // Delete Anyway reruns the same scope with every teardown skipped.
     fake.deleteFails = false
     fake.listResult = []
-    let action = try XCTUnwrap(store.errorAction)
+    let action = try XCTUnwrap(store.modals.errorAction)
     // A project's says it skips every remaining teardown, not only the failed one.
     XCTAssertEqual(action.label, "Delete Without Teardowns")
-    store.clearError()
+    store.modals.clearError()
     action.run()
     await waitUntil({ fake.skips == [false, true] }, "Delete Anyway didn't skip the teardowns")
     await waitUntil({ store.projectStore.projects.isEmpty }, "the project wasn't deleted")
@@ -651,9 +654,9 @@ final class AppStoreDeleteRaceTests: XCTestCase {
   /// A later message must not show an earlier failure's output.
   func testANewErrorMessageDropsTheLog() {
     let store = makeStore(DeleteRaceFakeCLI())
-    store.errorMessage = "first"
-    store.errorLog = "output"
-    store.errorMessage = "second"
-    XCTAssertNil(store.errorLog)
+    store.modals.errorMessage = "first"
+    store.modals.errorLog = "output"
+    store.modals.errorMessage = "second"
+    XCTAssertNil(store.modals.errorLog)
   }
 }

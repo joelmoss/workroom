@@ -225,7 +225,7 @@ extension AppStore {
   /// by the pane's Choose Start….
   func presentStartChoice(_ run: CreationRun) {
     guard creationRuns[run.id] === run, case .localWorkFound(let work) = run.outcome else { return }
-    pendingStartChoice = PendingStartChoice(run: run, work: work)
+    modals.pendingStartChoice = PendingStartChoice(run: run, work: work)
   }
 
   /// A start chosen for a create that found local work: it continues, in the same pane, from the
@@ -249,20 +249,21 @@ extension AppStore {
       return
     }
     // The message first: setting it clears what the rest set.
-    errorMessage = CreationPanePresentation.setupApprovalMessage(for: run, script: script)
-    errorTitle = script.isDevContainer ? "Approve the dev container?" : "Approve the setup script?"
-    errorLog = script.visibleText
-    errorScriptName = script.name
+    modals.errorMessage = CreationPanePresentation.setupApprovalMessage(for: run, script: script)
+    modals.errorTitle =
+      script.isDevContainer ? "Approve the dev container?" : "Approve the setup script?"
+    modals.errorLog = script.visibleText
+    modals.errorScriptName = script.name
     let confirmation = CreationPanePresentation.skipConfirmation(for: script)
-    errorAction = ErrorAction(
+    modals.errorAction = ErrorAction(
       label: "\(confirmation.button)…", destructive: false, confirmation: confirmation
     ) { [weak self] in Task { await self?.skipSetupScript(run) } }
     // A stale sheet (the run approved or replaced since) cancels nothing.
-    errorCancel = ErrorAction(label: "Cancel Creation") { [weak self] in
+    modals.errorCancel = ErrorAction(label: "Cancel Creation") { [weak self] in
       guard let self, self.creationRuns[run.id] === run else { return }
       self.closeCreation(run)
     }
-    errorApproval = ErrorAction(label: "Approve") { [weak self] in
+    modals.errorApproval = ErrorAction(label: "Approve") { [weak self] in
       Task { await self?.approveSetupScript(run) }
     }
   }
@@ -361,8 +362,8 @@ extension AppStore {
   func createWorkroom(in project: Project, splitAnchor: SidebarID? = nil) async {
     // A picker opened before Delete Project still holds the project (#287).
     guard !deletingProjects.contains(project.path) else {
-      errorTitle = "Can't create a workroom in \(project.displayName)"
-      errorMessage = "\(project.displayName) is being deleted."
+      modals.errorTitle = "Can't create a workroom in \(project.displayName)"
+      modals.errorMessage = "\(project.displayName) is being deleted."
       return
     }
     await runLocalCreate(
@@ -948,7 +949,7 @@ extension AppStore {
   }
 
   private func presentRemoteSetup(_ wait: RemoteSetupWait) {
-    (wait.window ?? self).pendingRemoteSetup = PendingRemoteSetup(
+    (wait.window ?? self).modals.pendingRemoteSetup = PendingRemoteSetup(
       place: wait.place, setup: wait.setup)
     Self.announceCreation(CreationPanePresentation.setupAnnouncement(for: wait.place))
   }
@@ -956,8 +957,8 @@ extension AppStore {
   /// The provider setup sheet in this window closed: Create Workroom (`carryOn`) or Cancel. Every
   /// create waiting on that provider carries on or ends, and the next provider's sheet comes up.
   func resolveRemoteSetup(carryOn: Bool) {
-    guard let pending = pendingRemoteSetup else { return }
-    pendingRemoteSetup = nil
+    guard let pending = modals.pendingRemoteSetup else { return }
+    modals.pendingRemoteSetup = nil
     guard let index = projectStore.remoteSetupWaits.firstIndex(where: { $0.place == pending.place })
     else { return }
     let wait = projectStore.remoteSetupWaits.remove(at: index)

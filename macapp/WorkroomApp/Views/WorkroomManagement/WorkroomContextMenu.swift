@@ -280,7 +280,7 @@ func workroomContextMenu(
     // Close the whole workroom (all its tabs); the workroom's files stay. Confirmed via
     // RootView's `pendingWorkroomClose` dialog.
     Button {
-      store.pendingWorkroomClose = PendingWorkroomClose(target: target, name: closeName)
+      store.modals.pendingWorkroomClose = PendingWorkroomClose(target: target, name: closeName)
     } label: {
       Label("Close", systemImage: "xmark")
     }
@@ -319,7 +319,7 @@ func workroomContextMenu(
 @ViewBuilder
 func workroomLabelMenuItems(store: AppStore, workroom: Workroom, project: Project) -> some View {
   Button {
-    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
+    store.modals.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
   } label: {
     Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
   }
@@ -338,7 +338,7 @@ func workroomLabelMenuItems(store: AppStore, workroom: Workroom, project: Projec
 @ViewBuilder
 func deleteWorkroomMenuItem(store: AppStore, workroom: Workroom, project: Project) -> some View {
   Button(role: .destructive) {
-    store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+    store.modals.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
   } label: {
     Label("Delete Workroom…", systemImage: "trash")
   }

@@ -19,7 +19,7 @@ struct RoomCommandState: Equatable {
     // Keep the filesystem-dependent Finder gate fresh on the same status updates as before,
     // without making the Commands body itself observe the whole status dictionary.
     let canReveal = store.selectedTarget.map { !$0.isMissing } ?? false
-    guard !store.hasModalPresentation, let sid = store.inspectorTargetID else {
+    guard !store.modals.hasModalPresentation, let sid = store.inspectorTargetID else {
       return Self(
         canCommit: false, pullRequest: nil, canChangeDraft: false, canRevealInFinder: canReveal)
     }

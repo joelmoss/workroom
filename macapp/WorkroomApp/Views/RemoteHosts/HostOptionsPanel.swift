@@ -40,7 +40,7 @@ struct HostOptionsPanel: View {
         Divider()
         HStack {
           Spacer()
-          Button("Cancel") { store.pendingHostOptions = nil }
+          Button("Cancel") { store.modals.pendingHostOptions = nil }
             .keyboardShortcut(.cancelAction)
           Button("Create Workroom") { create(provider) }
             .keyboardShortcut(.defaultAction)
@@ -61,7 +61,7 @@ struct HostOptionsPanel: View {
       let saved = Defaults[.projectHostOptions][project: path, provider: provider] ?? HostOptions()
       Defaults[.projectHostOptions][project: path, provider: provider] = options.overlaid(on: saved)
     }
-    store.pendingHostOptions = nil
+    store.modals.pendingHostOptions = nil
     Task {
       await store.createRemoteWorkroom(
         in: pending.project, place: pending.place, splitAnchor: pending.splitAnchor,

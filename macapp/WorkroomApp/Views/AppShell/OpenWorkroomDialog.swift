@@ -199,7 +199,7 @@ struct OpenWorkroomDialog: View {
   }
 }
 
-/// Presents `OpenWorkroomDialog` from `store.requestOpenWorkroomPicker` (set by the File ▸ Open
+/// Presents `OpenWorkroomDialog` from `store.modals.requestOpenWorkroomPicker` (set by the File ▸ Open
 /// workroom… command, ⌘O). A `ViewModifier` so RootView's large `body` stays within the Swift
 /// type-checker's budget — the same reason `NewWorkroomPresenter` is a modifier.
 struct OpenWorkroomPresenter: ViewModifier {
@@ -210,21 +210,21 @@ struct OpenWorkroomPresenter: ViewModifier {
   func body(content: Content) -> some View {
     content
       // Raising Open sets `activePicker = .open`, which replaces New if it was showing (issue #94).
-      .onChange(of: store.requestOpenWorkroomPicker) { _, request in
+      .onChange(of: store.modals.requestOpenWorkroomPicker) { _, request in
         if request {
           // Consume the split intent as we raise, so it can never be read by a LATER plain raise
           // (⌥⌘O → Esc → the title bar's open button would otherwise still split).
           splitIntent = store.consumePickerSplitIntent()
-          store.activePicker = .open
-          store.requestOpenWorkroomPicker = false
+          store.modals.activePicker = .open
+          store.modals.requestOpenWorkroomPicker = false
         }
       }
       // A dismissable overlay (not a `.sheet`) so a click outside the dialog closes it.
       .overlay {
-        if store.activePicker == .open {
-          DialogOverlay(onDismiss: { store.activePicker = nil }) {
+        if store.modals.activePicker == .open {
+          DialogOverlay(onDismiss: { store.modals.activePicker = nil }) {
             OpenWorkroomDialog(
-              store: store, onClose: { store.activePicker = nil }, splitIntent: splitIntent)
+              store: store, onClose: { store.modals.activePicker = nil }, splitIntent: splitIntent)
           }
         }
       }

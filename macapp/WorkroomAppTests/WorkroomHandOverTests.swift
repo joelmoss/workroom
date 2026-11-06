@@ -972,7 +972,7 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(asked.map(\.0), [session])
     XCTAssertEqual(asked.first?.1, target(window).sessionWorkroomKey)
     XCTAssertEqual(quick.terminals.tabCount(forTargetID: quickTarget.id), 1, "refused: it stays")
-    XCTAssertNotNil(window.errorMessage, "and the window says why")
+    XCTAssertNotNil(window.modals.errorMessage, "and the window says why")
 
     answer = true
     await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)

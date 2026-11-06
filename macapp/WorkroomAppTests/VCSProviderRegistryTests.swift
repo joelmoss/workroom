@@ -403,7 +403,8 @@ extension RepositoryRoutingTests {
       XCTAssertEqual(store.projectStore.workroomStatuses[sid]?.pr, prior)
       XCTAssertFalse(store.prActionInFlight)
       XCTAssertEqual(
-        store.errorMessage, RepositoryRoutingError.unavailable(remote.host).localizedDescription)
+        store.modals.errorMessage,
+        RepositoryRoutingError.unavailable(remote.host).localizedDescription)
     }
     let calls = await runner.calls
     XCTAssertEqual(calls, 0)

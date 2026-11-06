@@ -249,6 +249,7 @@ struct RootWindow: View {
     RootView()
       .background(WindowDisplayObserver { store.windowDidDisplay() })
       .environmentObject(store)
+      .environmentObject(store.modals)
       .environmentObject(store.runCommand)
       .environmentObject(store.projectStore)
       .environmentObject(store.notifications)

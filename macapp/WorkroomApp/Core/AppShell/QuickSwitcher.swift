@@ -169,7 +169,7 @@ enum QuickSwitcher {
   /// the MRU ordering it would do is irrelevant to "is there more than one".
   static func canSwitchWorkrooms(registry: WindowRegistry = .shared) -> Bool {
     var count = 0
-    for store in registry.allStores where !store.hasModalPresentation {
+    for store in registry.allStores where !store.modals.hasModalPresentation {
       count += store.orderedWorkroomTargets().count
       if count > 1 { return true }
     }
@@ -185,7 +185,7 @@ enum QuickSwitcher {
     registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
   ) -> [WorkroomSlot] {
     let slots = registry.allStores
-      .filter { !$0.hasModalPresentation }
+      .filter { !$0.modals.hasModalPresentation }
       .flatMap { store in
         store.displayedWorkroomTargets().map {
           WorkroomSlot(store: store, sid: $0.sid, target: $0.target)
@@ -219,7 +219,7 @@ enum QuickSwitcher {
     // session watches, so a window that was clean at open can be modal by the time the modifier is
     // released — and this is the write the monitor's `.swallow` gate exists to prevent: a raise plus a
     // selection change underneath a dialog that is already acting on a different workroom.
-    guard !target.hasModalPresentation else { return false }
+    guard !target.modals.hasModalPresentation else { return false }
     if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
     // Raise first, then select: `AppStore.persistsSidebarPrefs` keys on being `lastActiveStore`, so
     // the registry's didBecomeKey observer must have run before the selection write.
@@ -265,7 +265,7 @@ enum QuickSwitcher {
     pane id: TerminalTab.ID, in store: AppStore, target: TerminalTarget? = nil
   ) -> Bool {
     guard let target = target ?? store.selectedTarget, target.opensTerminals else { return false }
-    guard !store.hasModalPresentation else { return false }
+    guard !store.modals.hasModalPresentation else { return false }
     guard store.terminals.activeTab(for: target)?.id != id else { return false }
     guard store.terminals.tabs(for: target).contains(where: { $0.id == id }) else { return false }
     // `select`, not `focus`: it also promotes the owning workroom in a split and takes keyboard focus.

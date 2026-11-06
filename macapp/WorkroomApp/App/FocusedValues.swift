@@ -127,7 +127,7 @@ struct CanOpenInEditorKey: FocusedValueKey {
   typealias Value = Bool
 }
 
-/// Whether a modal presentation owns the focused window (`AppStore.hasModalPresentation`). Backs the
+/// Whether a modal presentation owns the focused window (`ModalState.hasModalPresentation`). Backs the
 /// menu items that have no other enablement boolean to fold it into — the `@Default`-bound toggles
 /// (⌘B, ⌥⌘C/F/Y/P, ⇧⌘K, ⇧⌘L) and Quick Terminal, which is "always enabled" and whose ⌥§ carries no
 /// ⌘ at all, so nothing in the key monitor would ever gate it.

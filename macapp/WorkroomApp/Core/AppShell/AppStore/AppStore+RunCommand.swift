@@ -9,7 +9,7 @@ import WorkroomWire
 /// The run command (issue #7): starting, restarting and respawning a workroom's run command under
 /// its supervisor, applying the supervisor's status, the run toast list and native banner (issue
 /// #67), and the selection-scoped Run, Stop and Restart actions. These read the store (projects,
-/// run config, selection, host layout, `pendingProjectSettings`, `services.notifier`), so they stay
+/// run config, selection, host layout, `modals`, `services.notifier`), so they stay
 /// here. The run state itself, the toast dismissal, the supervisor's pid and session handling and
 /// the graceful teardown live in `RunCommandController`, which the store owns as `runCommand`.
 extension AppStore {
@@ -528,7 +528,8 @@ extension AppStore {
       // "there's no command" from "the restart itself failed". Leaving the pane open (not closing
       // `oldTab`) also sidesteps issue #67's focus-preservation semantics entirely: nothing about
       // focus changes until the user actually configures a command and restarts again.
-      pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
+      modals.pendingProjectSettings = PendingProjectSettings(
+        project: project, showsRunWarning: true)
       return
     }
     let command = runConfig(forProject: project.path).command.trimmingCharacters(
@@ -661,7 +662,8 @@ extension AppStore {
         // command. It was written when every Run button hid itself behind `canRunCommand` and only the
         // keyboard could get here — so this is a widening of an existing path, not a new one. (The
         // sidebar's per-row buttons still hide.)
-        pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
+        modals.pendingProjectSettings = PendingProjectSettings(
+          project: project, showsRunWarning: true)
       } else {
         startRunCommand(for: target)
       }

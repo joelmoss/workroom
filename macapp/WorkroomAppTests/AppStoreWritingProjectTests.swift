@@ -174,12 +174,12 @@ extension AppStoreWritingProjectTests {
     store.projectStore.committingTargets.insert(wr)
     XCTAssertFalse(store.canCommit(wr), "a commit is already in flight")
     store.requestCommit(wr)
-    XCTAssertNil(store.pendingCommit)
+    XCTAssertNil(store.modals.pendingCommit)
 
     store.projectStore.committingTargets.remove(wr)
     store.requestCommit(nil)
-    XCTAssertNil(store.pendingCommit)
+    XCTAssertNil(store.modals.pendingCommit)
     store.requestCommit(wr)
-    XCTAssertEqual(store.pendingCommit, PendingCommit(sid: wr))
+    XCTAssertEqual(store.modals.pendingCommit, PendingCommit(sid: wr))
   }
 }

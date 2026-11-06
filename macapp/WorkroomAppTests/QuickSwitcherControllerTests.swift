@@ -339,7 +339,7 @@ final class QuickSwitcherControllerTests: XCTestCase {
     let before = controller.items.count
     XCTAssertGreaterThan(before, 1)
     // The whole window goes away (a sheet counts as dead too — you can't switch into a busy window).
-    store.errorMessage = "a dialog went up"  // any `hasModalPresentation` source
+    store.modals.errorMessage = "a dialog went up"  // any `hasModalPresentation` source
     controller.reconcileItems()
     XCTAssertFalse(controller.isLive, "no live candidates left ⇒ end without committing")
     XCTAssertEqual(recorder.ends, 1)
@@ -366,7 +366,8 @@ final class QuickSwitcherControllerTests: XCTestCase {
       guard case .workroom(let slot) = tracked else { return nil }
       return slot.id
     }()
-    a.errorMessage = "a sheet went up in the other window"  // `hasModalPresentation` ⇒ fox is dead
+    // `hasModalPresentation` ⇒ fox is dead
+    a.modals.errorMessage = "a sheet went up in the other window"
     let revealsBefore = recorder.reveals.count
     controller.reconcileItems()
 

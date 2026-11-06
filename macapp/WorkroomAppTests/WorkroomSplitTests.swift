@@ -293,12 +293,12 @@ final class WorkroomSplitTests: XCTestCase {
   func testRaiseWorkroomPickerSetsTheMatchingRequestFlag() {
     let store = store3()
     store.raiseWorkroomPicker(.new, split: true)
-    XCTAssertTrue(store.requestNewWorkroomPicker)
-    XCTAssertFalse(store.requestOpenWorkroomPicker)
-    store.requestNewWorkroomPicker = false
+    XCTAssertTrue(store.modals.requestNewWorkroomPicker)
+    XCTAssertFalse(store.modals.requestOpenWorkroomPicker)
+    store.modals.requestNewWorkroomPicker = false
     store.raiseWorkroomPicker(.open)
-    XCTAssertTrue(store.requestOpenWorkroomPicker)
-    XCTAssertFalse(store.requestNewWorkroomPicker)
+    XCTAssertTrue(store.modals.requestOpenWorkroomPicker)
+    XCTAssertFalse(store.modals.requestNewWorkroomPicker)
   }
 
   func testConsumingTheSplitIntentReturnsItOnce() {
@@ -315,7 +315,7 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.raiseWorkroomPicker(.new, split: true)
     _ = store.consumePickerSplitIntent()  // the picker goes up…
-    store.requestNewWorkroomPicker = false  // …and is cancelled without a pick
+    store.modals.requestNewWorkroomPicker = false  // …and is cancelled without a pick
     store.raiseWorkroomPicker(.new)  // the title bar's + button
     XCTAssertFalse(store.consumePickerSplitIntent(), "the plain raise must not inherit split mode")
   }

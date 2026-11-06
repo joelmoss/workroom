@@ -33,6 +33,11 @@ What follows from it in this app:
   redraws the sidebar again (`testAnUnchangedLocalStatusMergeNotifiesNoOneButKeepsItsClocks`,
   `testARunStateWriteThatChangesNothingNotifiesNoOne`,
   `testAProjectListWriteThatChangesNothingNotifiesNoOne`).
+- `ModalState` keeps every modal in one stored dictionary of `ActiveModal` values (step 2.2), and
+  writing into it in place always notifies. Its setters therefore skip a write that changes
+  nothing: raising the dialog already up, the error message already shown, or dismissing what isn't
+  up (`testAModalWriteThatChangesNothingNotifiesNoOne`). Any change to a modal still notifies every
+  reader of any modal, which the separate stored optionals before it did not.
 - A field that changes on every write defeats the dedupe for the whole value. `WorkroomStatus`'s
   clocks (`lastChecked` and the rest) compare by presence through `PresenceEquatable` for this
   reason (#503). A view that needs a clock's time to redraw would not refresh under that rule.

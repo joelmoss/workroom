@@ -292,6 +292,7 @@ struct EdgeRevealSidebar<Content: View>: View {
 /// `ViewModifier` so `RootView`'s already large `body` stays within the Swift type-checker's budget.
 struct EdgeRevealSidebars: ViewModifier {
   @EnvironmentObject private var store: AppStore
+  @EnvironmentObject private var modals: ModalState
   @EnvironmentObject private var projectStore: ProjectStore
   let sidebarVisible: Bool
   /// Drag-to-split plumbing for the revealed Projects panel (issue #101) — same as the docked
@@ -325,7 +326,7 @@ struct EdgeRevealSidebars: ViewModifier {
           // dialog. Folded into `enabled` rather than added beside it because `enabled` already has the
           // reset path this needs (`onChange(of: enabled)` below).
           side: .leading,
-          enabled: !sidebarVisible && store.activePicker == nil && !projectStore.projects.isEmpty,
+          enabled: !sidebarVisible && modals.activePicker == nil && !projectStore.projects.isEmpty,
           width: panelWidth
         ) {
           ProjectSidebar(

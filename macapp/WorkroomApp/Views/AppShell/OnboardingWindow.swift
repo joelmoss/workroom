@@ -300,7 +300,7 @@ struct OnboardingWindow: View {
       addProjectError = nil
       step = .done
     case .failure(let error):
-      // Shown inline here (not read from `store.errorMessage`) so the failure is visible on THIS
+      // Shown inline here (not read from `store.modals.errorMessage`) so the failure is visible on THIS
       // window even if the main window's own alert for the same error is behind it.
       addProjectError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }

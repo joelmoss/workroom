@@ -23,6 +23,7 @@ struct WorkroomTerminalsView: View {
   var workroomIsSplit: Bool = false
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var modals: ModalState
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// "Dim unfocused panes" (issue #162) — the strip's fade is in lockstep with the pane scrim, so the
   /// setting gates it too (see `PaneTreeView.shouldRecede`).
@@ -140,14 +141,14 @@ struct WorkroomTerminalsView: View {
     .onChange(of: surfaceActive) { _, nowFocused in
       if nowFocused, let id = active?.id { notifications.dismiss(tab: id) }
     }
-    // All three AND in `!store.hasModalPresentation` for the same reason RootView's booleans do: a
+    // All three AND in `!modals.hasModalPresentation` for the same reason RootView's booleans do: a
     // menu key equivalent still fires while a dialog or sheet is up, so ⌘W / ⌘F / ⌘↑ / ⌘↓ / ⌘D would
     // otherwise act on the terminal behind it. Disabling the item drops the key equivalent.
     //
     // Drive the "Close Tab" menu command's enabled state.
-    .focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)
+    .focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !modals.hasModalPresentation)
     // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
-    .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1 && !store.hasModalPresentation)
+    .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1 && !modals.hasModalPresentation)
   }
 
   /// The layout the content area renders: the focused tab's group when it has one, else that tab

@@ -124,7 +124,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     await newer.value
     await older.value
     XCTAssertEqual(store.projectStore.projects.first?.workrooms.map(\.name), ["existing"])
-    XCTAssertNotNil(store.errorMessage, "the current request's error must still surface")
+    XCTAssertNotNil(store.modals.errorMessage, "the current request's error must still surface")
     XCTAssertFalse(store.isLoading)
   }
 
@@ -142,7 +142,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     await newer.value
     await cli.fail(0)
     await older.value
-    XCTAssertNil(first.errorMessage)
+    XCTAssertNil(first.modals.errorMessage)
     XCTAssertEqual(shared.projects.first?.workrooms.map(\.name), ["created"])
     XCTAssertFalse(first.isLoading)
     XCTAssertFalse(second.isLoading)
@@ -163,8 +163,8 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     await cli.fail(1)
     await newer.value
     await older.value
-    XCTAssertNil(first.errorMessage)
-    XCTAssertNil(second.errorMessage)
+    XCTAssertNil(first.modals.errorMessage)
+    XCTAssertNil(second.modals.errorMessage)
     XCTAssertEqual(shared.projects.first?.workrooms.map(\.name), ["existing"])
     XCTAssertFalse(first.isLoading)
     XCTAssertFalse(second.isLoading)
@@ -213,8 +213,8 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     XCTAssertEqual(
       error.localizedDescription,
       "The project was registered, but could not be loaded. Refresh to try again.")
-    XCTAssertEqual(store.errorMessage, error.localizedDescription)
-    XCTAssertNil(other.errorMessage)
+    XCTAssertEqual(store.modals.errorMessage, error.localizedDescription)
+    XCTAssertNil(other.modals.errorMessage)
     XCTAssertTrue(shared.projects.isEmpty)
     XCTAssertNil(store.selectedTargetID)
   }
@@ -373,6 +373,6 @@ extension AppStoreLoadOrderingTests {
     // The accepted listing owns remote registrations too (#253), and this one has no remote
     // workroom, so the one registered by hand is gone; the stale listing did not put it back.
     XCTAssertNil(RepositoryRouter.shared.entry(for: remote))
-    XCTAssertNil(store.errorMessage)
+    XCTAssertNil(store.modals.errorMessage)
   }
 }

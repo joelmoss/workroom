@@ -73,13 +73,13 @@ final class RoomCommandStateTests: XCTestCase {
     store.prActionInFlight = true
     XCTAssertFalse(RoomCommandState.read(store).canChangeDraft)
     store.prActionInFlight = false
-    store.auxSheetPresented = true
+    store.modals.auxSheetPresented = true
     let modal = RoomCommandState.read(store)
     XCTAssertFalse(modal.canCommit)
     XCTAssertNil(modal.pullRequest)
     XCTAssertFalse(modal.canChangeDraft)
     XCTAssertTrue(modal.canRevealInFinder, "Finder's existing modal behavior is unchanged")
-    store.auxSheetPresented = false
+    store.modals.auxSheetPresented = false
     XCTAssertEqual(RoomCommandState.read(store), draft)
     store.projectStore.workroomStatuses[id] = WorkroomStatus(dirty: true, pr: pr(draft: false))
     XCTAssertEqual(RoomCommandState.read(store).pullRequest?.draftAction, .convertToDraft)

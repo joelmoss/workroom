@@ -154,7 +154,7 @@ struct NewWorkroomDialog: View {
     guard let remote = place.remote, remote.takesHostOptions, isUsable(place, in: project)
     else { return }
     onClose()
-    store.pendingHostOptions = PendingHostOptions(
+    store.modals.pendingHostOptions = PendingHostOptions(
       project: project, place: remote,
       splitAnchor: placeAnchor ?? (split ? store.selectedTargetID : nil))
   }
@@ -303,7 +303,7 @@ struct NewWorkroomDialog: View {
   }
 }
 
-/// Presents `NewWorkroomDialog` from `store.requestNewWorkroomPicker` (set by the File ▸ New Workroom
+/// Presents `NewWorkroomDialog` from `store.modals.requestNewWorkroomPicker` (set by the File ▸ New Workroom
 /// command, ⌘N). Factored into a `ViewModifier` so RootView's large `body` stays within the Swift
 /// type-checker's budget — the same reason `EdgeRevealSidebars` is a modifier. Owns the `isPresented`
 /// state so RootView doesn't have to.
@@ -315,13 +315,13 @@ struct NewWorkroomPresenter: ViewModifier {
   func body(content: Content) -> some View {
     content
       // Raising New sets `activePicker = .new`, which replaces Open if it was showing (issue #94).
-      .onChange(of: store.requestNewWorkroomPicker) { _, request in
+      .onChange(of: store.modals.requestNewWorkroomPicker) { _, request in
         if request {
           // Consume the split intent as we raise, so it can never be read by a LATER plain raise
           // (⌥⌘N → Esc → the title bar's + button would otherwise still split).
           splitIntent = store.consumePickerSplitIntent()
-          store.activePicker = .new
-          store.requestNewWorkroomPicker = false
+          store.modals.activePicker = .new
+          store.modals.requestNewWorkroomPicker = false
           // Warm the shell-environment probe while the dialog is open. `create` awaits the same
           // single-flighted refresh, so by the time a project is picked the shell has usually
           // already reported — spending the latency the user was spending anyway. Purely an
@@ -331,10 +331,10 @@ struct NewWorkroomPresenter: ViewModifier {
       }
       // A dismissable overlay (not a `.sheet`) so a click outside the dialog closes it.
       .overlay {
-        if store.activePicker == .new {
-          DialogOverlay(onDismiss: { store.activePicker = nil }) {
+        if store.modals.activePicker == .new {
+          DialogOverlay(onDismiss: { store.modals.activePicker = nil }) {
             NewWorkroomDialog(
-              store: store, onClose: { store.activePicker = nil }, splitIntent: splitIntent)
+              store: store, onClose: { store.modals.activePicker = nil }, splitIntent: splitIntent)
           }
         }
       }

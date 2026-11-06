@@ -228,8 +228,8 @@ final class VCSRemoteTriggerTests: XCTestCase {
     store.performRemoteAction(.pull)
     await store.remoteState.awaitCurrentLoad()
 
-    XCTAssertEqual(store.pendingRemoteConfirm?.action, .pull)
-    XCTAssertEqual(store.pendingRemoteConfirm?.sid, sid)
+    XCTAssertEqual(store.modals.pendingRemoteConfirm?.action, .pull)
+    XCTAssertEqual(store.modals.pendingRemoteConfirm?.sid, sid)
     XCTAssertNil(store.remoteState.inFlight, "nothing may run until the user answers")
     let pulls = await writer.pulls
     XCTAssertEqual(pulls, 0, "the engine must not be reached before confirmation")
@@ -245,7 +245,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     store.performRemoteAction(.pull)
     await store.remoteState.awaitCurrentLoad()
 
-    XCTAssertNil(store.pendingRemoteConfirm)
+    XCTAssertNil(store.modals.pendingRemoteConfirm)
     let pulls = await writer.pulls
     XCTAssertEqual(pulls, 1)
   }
@@ -268,7 +268,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     await select(store, first)
     markDirty(store, first)
     store.performRemoteAction(.pull)
-    let pending = try? XCTUnwrap(store.pendingRemoteConfirm)
+    let pending = try? XCTUnwrap(store.modals.pendingRemoteConfirm)
     XCTAssertEqual(pending?.sid, first)
 
     await select(store, second)
@@ -295,10 +295,10 @@ final class VCSRemoteTriggerTests: XCTestCase {
     await select(store, first)
     markDirty(store, first)
     store.performRemoteAction(.pull)
-    XCTAssertNotNil(store.pendingRemoteConfirm)
+    XCTAssertNotNil(store.modals.pendingRemoteConfirm)
 
     await select(store, .workroom(project: "/p", name: "other"))
-    XCTAssertNil(store.pendingRemoteConfirm)
+    XCTAssertNil(store.modals.pendingRemoteConfirm)
   }
 
   /// A confirmation up means the Room menu's Fetch/Push/Pull shortcuts must be inert, or ⌥⇧⌘P could
@@ -308,9 +308,9 @@ final class VCSRemoteTriggerTests: XCTestCase {
     let sid = SidebarID.workroom(project: "/p", name: "feat")
     await select(store, sid)
     markDirty(store, sid)
-    XCTAssertFalse(store.hasModalPresentation)
+    XCTAssertFalse(store.modals.hasModalPresentation)
     store.performRemoteAction(.pull)
-    XCTAssertTrue(store.hasModalPresentation)
+    XCTAssertTrue(store.modals.hasModalPresentation)
   }
 }
 

@@ -5,7 +5,7 @@ import SwiftUI
 /// Used instead of a `.sheet` for one reason: a click anywhere on the dimmed backdrop closes the
 /// dialog, which a macOS sheet won't do. That is the *only* way it is less modal than a sheet — while
 /// it's up, keyboard shortcuts are inert (the key monitor's `shortcutStore` won't route to a window
-/// with an `activePicker`, and menu items AND in `AppStore.hasModalPresentation`), the terminal gives
+/// with an `activePicker`, and menu items AND in `ModalState.hasModalPresentation`), the terminal gives
 /// up first responder, and clicks can't reach the panes behind it. Do not read "not a sheet" as "not
 /// modal": it was exactly that gap this overlay was fixed for.
 ///

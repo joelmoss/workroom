@@ -112,6 +112,7 @@ final class AppStoreAddProjectTests: XCTestCase {
       return XCTFail("expected .failure, got \(result)")
     }
     XCTAssertEqual((error as? WorkroomCLIError)?.errorDescription, "denied")
-    XCTAssertNotNil(store.errorMessage, "present(error) should still fire on the store, unchanged")
+    XCTAssertNotNil(
+      store.modals.errorMessage, "present(error) should still fire on the store, unchanged")
   }
 }

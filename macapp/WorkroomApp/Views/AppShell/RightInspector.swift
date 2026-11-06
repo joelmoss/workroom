@@ -13,6 +13,7 @@ import WorkroomVCS
 /// sidebar, issue #118.)
 struct RightInspector: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var modals: ModalState
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.openURL) private var openURL
@@ -46,15 +47,15 @@ struct RightInspector: View {
         inspectorSplit(subs: subs)
       }
     }
-    // Bound to the STORE, not a local `@State`: the gate that raises this lives in
+    // Bound to the window's `ModalState`, not a local `@State`: the gate that raises this lives in
     // `AppStore.performRemoteAction` so the Room menu's ⌥⇧⌘P goes through it too. When the
     // toolbar owned the gate, the shortcut autostashed a dirty tree with no warning at all.
     .confirmationDialog(
-      store.pendingRemoteConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",
+      modals.pendingRemoteConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",
       isPresented: Binding(
-        get: { store.pendingRemoteConfirm != nil },
-        set: { if !$0 { store.pendingRemoteConfirm = nil } }),
-      presenting: store.pendingRemoteConfirm
+        get: { modals.pendingRemoteConfirm != nil },
+        set: { if !$0 { modals.pendingRemoteConfirm = nil } }),
+      presenting: modals.pendingRemoteConfirm
     ) { item in
       // `runRemoteAction(on:)`, which re-checks `item.sid` — the dialog isn't modal to the sidebar, so
       // the selection can move while it's open and `performRemoteAction` would re-derive the target.

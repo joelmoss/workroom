@@ -186,7 +186,7 @@ final class AppStore: ObservableObject {
       // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
       // moves. `runRemoteAction` re-checks the sid so answering it couldn't misfire anyway, but leaving
       // the dialog up would ask about a workroom the user is no longer looking at.
-      if pendingRemoteConfirm != nil { pendingRemoteConfirm = nil }
+      if modals.pendingRemoteConfirm != nil { modals.pendingRemoteConfirm = nil }
     }
   }
 
@@ -329,12 +329,6 @@ final class AppStore: ObservableObject {
   }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   var prActionInFlight = false
-
-  /// The commit sheet's target, or nil when it's closed. Lives on `modals`.
-  var pendingCommit: PendingCommit? {
-    get { modals.pendingCommit }
-    set { modals.pendingCommit = newValue }
-  }
 
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
@@ -564,42 +558,8 @@ final class AppStore: ObservableObject {
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   var isLoadingInspectorState = false
 
-  /// This window's modal presentations. The members below forward to it.
+  /// This window's modal presentations and the error sheet's contents.
   let modals = ModalState()
-
-  var errorMessage: String? {
-    get { modals.errorMessage }
-    set { modals.errorMessage = newValue }
-  }
-  var errorTitle: String? {
-    get { modals.errorTitle }
-    set { modals.errorTitle = newValue }
-  }
-  var errorDetails: String? {
-    get { modals.errorDetails }
-    set { modals.errorDetails = newValue }
-  }
-  var errorLog: String? {
-    get { modals.errorLog }
-    set { modals.errorLog = newValue }
-  }
-  var errorAction: ErrorAction? {
-    get { modals.errorAction }
-    set { modals.errorAction = newValue }
-  }
-  var errorApproval: ErrorAction? {
-    get { modals.errorApproval }
-    set { modals.errorApproval = newValue }
-  }
-  var errorScriptName: String? {
-    get { modals.errorScriptName }
-    set { modals.errorScriptName = newValue }
-  }
-  var errorCancel: ErrorAction? {
-    get { modals.errorCancel }
-    set { modals.errorCancel = newValue }
-  }
-  func clearError() { modals.clearError() }
 
   /// Tells the user a closed remote pane's session may still be running on its host (#283), unless
   /// something else is on the error sheet. The notice arrives up to a connect and a request timeout
@@ -607,12 +567,12 @@ final class AppStore: ObservableObject {
   /// `PersistentSessionService` has logged the failure either way. Not for a workroom that is gone
   /// or going, which the notice would tell the user to delete.
   func reportRemoteCloseFailure(target: TerminalTarget.ID, title: String) {
-    guard errorMessage == nil, !deletingWorkrooms.contains(target),
+    guard modals.errorMessage == nil, !deletingWorkrooms.contains(target),
       sidebarID(for: target) != nil
     else { return }
-    errorMessage =
+    modals.errorMessage =
       "Its host didn't confirm the terminal stopped, so whatever was running in it may still be running there. Workroom tries again when it next connects to the host, and deleting the workroom stops it."
-    errorTitle = "Couldn't stop the terminal in \(title)"
+    modals.errorTitle = "Couldn't stop the terminal in \(title)"
   }
 
   var isLoading = false
@@ -646,67 +606,6 @@ final class AppStore: ObservableObject {
     get { projectStore.deletingProjects }
     set { projectStore.deletingProjects = newValue }
   }
-  var requestAddProject: Bool {
-    get { modals.requestAddProject }
-    set { modals.requestAddProject = newValue }
-  }
-  var requestNewWorkroomPicker: Bool {
-    get { modals.requestNewWorkroomPicker }
-    set { modals.requestNewWorkroomPicker = newValue }
-  }
-  var requestOpenWorkroomPicker: Bool {
-    get { modals.requestOpenWorkroomPicker }
-    set { modals.requestOpenWorkroomPicker = newValue }
-  }
-  var activePicker: ActivePicker? {
-    get { modals.activePicker }
-    set { modals.activePicker = newValue }
-  }
-  var pickerSplits: Bool {
-    get { modals.pickerSplits }
-    set { modals.pickerSplits = newValue }
-  }
-  var pendingDeletion: PendingWorkroomDeletion? {
-    get { modals.pendingDeletion }
-    set { modals.pendingDeletion = newValue }
-  }
-  var pendingWorkroomClose: PendingWorkroomClose? {
-    get { modals.pendingWorkroomClose }
-    set { modals.pendingWorkroomClose = newValue }
-  }
-  var pendingStartChoice: PendingStartChoice? {
-    get { modals.pendingStartChoice }
-    set { modals.pendingStartChoice = newValue }
-  }
-  var pendingProjectDeletion: PendingProjectDeletion? {
-    get { modals.pendingProjectDeletion }
-    set { modals.pendingProjectDeletion = newValue }
-  }
-  var pendingWorkroomLabel: PendingWorkroomLabel? {
-    get { modals.pendingWorkroomLabel }
-    set { modals.pendingWorkroomLabel = newValue }
-  }
-  var pendingProjectSettings: PendingProjectSettings? {
-    get { modals.pendingProjectSettings }
-    set { modals.pendingProjectSettings = newValue }
-  }
-  var pendingRemoteSetup: PendingRemoteSetup? {
-    get { modals.pendingRemoteSetup }
-    set { modals.pendingRemoteSetup = newValue }
-  }
-  var pendingHostOptions: PendingHostOptions? {
-    get { modals.pendingHostOptions }
-    set { modals.pendingHostOptions = newValue }
-  }
-  var pendingRemoteConfirm: PendingVCSAction? {
-    get { modals.pendingRemoteConfirm }
-    set { modals.pendingRemoteConfirm = newValue }
-  }
-  var auxSheetPresented: Bool {
-    get { modals.auxSheetPresented }
-    set { modals.auxSheetPresented = newValue }
-  }
-  var hasModalPresentation: Bool { modals.hasModalPresentation }
 
   let terminals: TerminalSessions
   /// In-memory notification spine driving the badges + inspector (issue #10); views observe it
@@ -789,7 +688,7 @@ final class AppStore: ObservableObject {
     // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
     // will stash and reapply, which is worth saying before it happens.
     if action == .pull, projectStore.workroomStatuses[target.sid]?.dirty == true {
-      pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
+      modals.pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
       return
     }
     runRemoteAction(action, on: target.sid)
@@ -2082,11 +1981,11 @@ final class AppStore: ObservableObject {
     // history/notifications/run-toolbar (all keyed on `selectedTargetID`) follow the survivor.
     pruneWorkroomSplitToLiveLeaves(formerSelection: formerSelection)
     let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
-    if let pendingLabel = pendingWorkroomLabel,
+    if let pendingLabel = modals.pendingWorkroomLabel,
       !liveSidebarIDs.contains(
         .workroom(project: pendingLabel.project.path, name: pendingLabel.workroom.name))
     {
-      pendingWorkroomLabel = nil
+      modals.pendingWorkroomLabel = nil
     }
     // Keep the live root-branch watchers in sync with the project set (start new, drop departed).
     updateRootBranchWatches()
@@ -2352,7 +2251,7 @@ final class AppStore: ObservableObject {
         remote = try RemoteHosts.shared.environment(toDelete: [host])?.environment(for: host)
       } catch {
         present(error)
-        errorTitle = "Can't delete \(workroom.displayName)"
+        modals.errorTitle = "Can't delete \(workroom.displayName)"
         return
       }
     }
@@ -2515,11 +2414,11 @@ final class AppStore: ObservableObject {
     _ workroom: Workroom, in project: Project, error: Error, log: ScriptLogSession
   ) {
     present(error)
-    errorTitle = "Teardown of ‘\(workroom.name)’ failed"
-    errorLog = Self.scriptOutput(log)
+    modals.errorTitle = "Teardown of ‘\(workroom.name)’ failed"
+    modals.errorLog = Self.scriptOutput(log)
     if workroom.isSSH {
-      errorDetails =
-        (errorDetails ?? "") + "\nDelete Anyway removes this workroom from Workroom. "
+      modals.errorDetails =
+        (modals.errorDetails ?? "") + "\nDelete Anyway removes this workroom from Workroom. "
         + "The folder \(workroom.path) on \(workroom.host?.sshDestination ?? "its SSH host") may remain."
     } else {
       guard Self.isTeardownFailure(error) else { return }
@@ -2534,28 +2433,28 @@ final class AppStore: ObservableObject {
       self.deleteWorkroom(workroom, in: project, skipTeardown: skipTeardown)
     }
     let deleteAnyway = ErrorAction(label: "Delete Anyway") { deleteAgain(true) }
-    errorAction = deleteAnyway
+    modals.errorAction = deleteAnyway
     guard let script = Self.untrustedTeardown(error) else { return }
     // The CLI's own message tells a terminal what to type: say why the delete stopped, in the app's
     // terms. A new message drops what was set after it, so the rest goes back after.
-    let details = errorDetails
-    errorMessage = Self.teardownApprovalMessage(
+    let details = modals.errorDetails
+    modals.errorMessage = Self.teardownApprovalMessage(
       script, workroom: workroom.displayName, project: project)
-    errorDetails = details
-    errorAction = deleteAnyway
+    modals.errorDetails = details
+    modals.errorAction = deleteAnyway
     // The script never ran, so it printed nothing: its text is what to read before approving it.
-    errorTitle = "Approve the teardown script?"
-    errorLog = script.visibleText
-    errorScriptName = script.name
+    modals.errorTitle = "Approve the teardown script?"
+    modals.errorLog = script.visibleText
+    modals.errorScriptName = script.name
     let cli = self.cli
-    errorApproval = ErrorAction(label: "Approve") { [weak self] in
+    modals.errorApproval = ErrorAction(label: "Approve") { [weak self] in
       Task {
         do {
           try await cli.trustScript(script.name, text: script.approvalBytes, project: path)
           deleteAgain(false)
         } catch {
           self?.present(error)
-          self?.errorTitle = "Couldn't approve the teardown script"
+          self?.modals.errorTitle = "Couldn't approve the teardown script"
         }
       }
     }
@@ -2625,15 +2524,15 @@ final class AppStore: ObservableObject {
       Self.projectPath(of: sidebarID(for: $0)) == project.path
     }
     guard !hasRunningCreation(inProject: project.path), !creatingHere else {
-      errorTitle = "Can't delete \(project.displayName)"
-      errorMessage =
+      modals.errorTitle = "Can't delete \(project.displayName)"
+      modals.errorMessage =
         "A workroom is still being created in this project. Wait for it to finish, then try again."
       return
     }
     // Another window's confirm dialog can outlive the first delete (#287).
     guard !deletingProjects.contains(project.path) else {
-      errorTitle = "Can't delete \(project.displayName)"
-      errorMessage = "\(project.displayName) is already being deleted."
+      modals.errorTitle = "Can't delete \(project.displayName)"
+      modals.errorMessage = "\(project.displayName) is already being deleted."
       return
     }
     // Every scope takes the project's remote workrooms and its base down (#253), even config-only:
@@ -2649,7 +2548,7 @@ final class AppStore: ObservableObject {
         toDelete: remoteWorkrooms.compactMap(\.host) + bases)
     } catch {
       present(error)
-      errorTitle = "Can't delete \(project.displayName)"
+      modals.errorTitle = "Can't delete \(project.displayName)"
       return
     }
     // Tombstone it so a reload while the teardown runs can't republish it (#287), the project-level
@@ -2749,8 +2648,8 @@ final class AppStore: ObservableObject {
   /// the Bin. Report which ones so the user can move them manually (they are not lost).
   func presentTrashFailure(_ project: Project, failedPaths: [URL]) {
     let list = failedPaths.map(\.path).joined(separator: "\n")
-    errorTitle = "Some files of ‘\(project.displayName)’ could not be moved to the Bin"
-    errorMessage =
+    modals.errorTitle = "Some files of ‘\(project.displayName)’ could not be moved to the Bin"
+    modals.errorMessage =
       "‘\(project.displayName)’ was removed from Workroom, but these could not be moved to the "
       + "Bin — move them manually:\n\(list)"
   }
@@ -2797,7 +2696,9 @@ final class AppStore: ObservableObject {
       stamps[project.path] = nil
       Defaults[.vcsLastFetch] = stamps
     }
-    if pendingWorkroomLabel?.project.path == project.path { pendingWorkroomLabel = nil }
+    if modals.pendingWorkroomLabel?.project.path == project.path {
+      modals.pendingWorkroomLabel = nil
+    }
     return targetIDs
   }
 
@@ -2808,20 +2709,20 @@ final class AppStore: ObservableObject {
     _ project: Project, scope: DeleteProjectScope, error: Error, log: ScriptLogSession?
   ) {
     present(error)
-    errorTitle = "Delete of ‘\(project.displayName)’ failed"
-    errorLog = Self.scriptOutput(log)
+    modals.errorTitle = "Delete of ‘\(project.displayName)’ failed"
+    modals.errorLog = Self.scriptOutput(log)
     let ssh = project.workrooms.filter(\.isSSH)
     guard Self.isTeardownFailure(error) || !ssh.isEmpty else { return }
     if !ssh.isEmpty {
-      errorDetails =
-        (errorDetails ?? "") + "\nFolders that can't be removed will stay on their hosts:\n"
+      modals.errorDetails =
+        (modals.errorDetails ?? "") + "\nFolders that can't be removed will stay on their hosts:\n"
         + ssh.map { "\($0.path) on \($0.host?.sshDestination ?? "its SSH host")" }.joined(
           separator: "\n")
     }
     let path = project.path
     // Says what it does: every remaining workroom's teardown is skipped, not only the one that
     // failed, as the CLI's `delete-project --skip-teardown` does.
-    errorAction = ErrorAction(label: "Delete Without Teardowns") {
+    modals.errorAction = ErrorAction(label: "Delete Without Teardowns") {
       [weak self] in
       // As it is now: a remote workroom taken down before the failure is gone from it (C4).
       guard let self, let project = self.projectStore.projects.first(where: { $0.path == path })
@@ -3190,18 +3091,18 @@ final class AppStore: ObservableObject {
   /// point — every raise site goes through it (the two File-menu pairs and the title bar's + and
   /// open buttons), so `pickerSplits` cannot be left set by one path and read by another.
   func raiseWorkroomPicker(_ kind: ActivePicker, split: Bool = false) {
-    pickerSplits = split
+    modals.pickerSplits = split
     switch kind {
-    case .new: requestNewWorkroomPicker = true
-    case .open: requestOpenWorkroomPicker = true
+    case .new: modals.requestNewWorkroomPicker = true
+    case .open: modals.requestOpenWorkroomPicker = true
     }
   }
 
   /// Read the pending split intent and clear it. Each raise consumes exactly once, so a cancelled
   /// ⌥⌘N cannot leak "split" into a later plain raise from the title bar's + button.
   func consumePickerSplitIntent() -> Bool {
-    defer { pickerSplits = false }
-    return pickerSplits
+    defer { modals.pickerSplits = false }
+    return modals.pickerSplits
   }
 
   /// Open an existing root/workroom from the Open Workroom picker (⌘O, issue #94). Brings the app
@@ -3652,9 +3553,9 @@ final class AppStore: ObservableObject {
   // MARK: Errors
 
   func present(_ error: Error) {
-    errorTitle = nil  // generic title
-    errorMessage = errorText(error)
-    errorDetails = Self.errorDetails(error)
+    modals.errorTitle = nil  // generic title
+    modals.errorMessage = errorText(error)
+    modals.errorDetails = Self.errorDetails(error)
   }
 
   /// The technical half of `error`, which the message leaves out: its type and case, and its

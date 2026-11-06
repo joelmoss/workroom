@@ -509,10 +509,10 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let refused = await store.setBaseBranch(
       "featur", forProject: projectPath, presentingError: false)
     XCTAssertNotNil(refused, "the refusal was swallowed")
-    XCTAssertNil(store.errorMessage, "Settings' save was shown in a window too")
+    XCTAssertNil(store.modals.errorMessage, "Settings' save was shown in a window too")
 
     await store.setBaseBranch("featur", forProject: projectPath)
-    XCTAssertNotNil(store.errorMessage, "a window's own save didn't show the refusal")
+    XCTAssertNotNil(store.modals.errorMessage, "a window's own save didn't show the refusal")
   }
 
   /// With NO setup script the create clears itself when it completes: no run survives, and the new

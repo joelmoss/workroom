@@ -34,6 +34,7 @@ final class PaneRenderingTests: XCTestCase {
     let store = AppStore()
     let root = TestPaneHost(target: target, sessions: sessions)
       .environmentObject(store)
+      .environmentObject(store.modals)
       .environmentObject(store.runCommand)
       .environmentObject(sessions.codingAgentManager)
     let hosting = NSHostingView(rootView: root)

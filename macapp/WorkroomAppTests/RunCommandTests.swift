@@ -164,7 +164,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertNil(
       store.runCommand.runTabID(for: t.id), "must not start anything without a configured command")
     XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
-    let pending = try! XCTUnwrap(store.pendingProjectSettings)
+    let pending = try! XCTUnwrap(store.modals.pendingProjectSettings)
     XCTAssertEqual(pending.project.path, "/a")
     XCTAssertTrue(pending.showsRunWarning)
   }
@@ -183,11 +183,11 @@ final class RunCommandTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
     store.runOrFocusRunCommand()
-    XCTAssertNotNil(store.pendingProjectSettings)
+    XCTAssertNotNil(store.modals.pendingProjectSettings)
 
     // Simulates the request handed to Settings ▸ Projects, and a command saved there.
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
-    store.pendingProjectSettings = nil
+    store.modals.pendingProjectSettings = nil
 
     store.runOrFocusRunCommand()
 
@@ -240,7 +240,7 @@ final class RunCommandTests: XCTestCase {
       selectingStore.runCommand.runTabID(for: selectingTarget.id),
       "must not start a duplicate run — the owner window already runs it (issue #70)")
     XCTAssertNil(
-      selectingStore.pendingProjectSettings,
+      selectingStore.modals.pendingProjectSettings,
       "owner-elsewhere takes precedence over the no-command branch — no project settings either")
   }
 
@@ -409,9 +409,9 @@ final class RunCommandTests: XCTestCase {
     store.runOrFocusRunCommand()  // ⌘R again — dead supervisor → respawnRunCommand's guard
 
     XCTAssertEqual(
-      store.pendingProjectSettings?.project.path, "/a",
+      store.modals.pendingProjectSettings?.project.path, "/a",
       "clearing the command must surface the same warning sheet as the no-command case")
-    XCTAssertEqual(store.pendingProjectSettings?.showsRunWarning, true)
+    XCTAssertEqual(store.modals.pendingProjectSettings?.showsRunWarning, true)
     XCTAssertEqual(
       store.runCommand.runTabID(for: t.id), tabID,
       "the stopped pane must stay open — the fix is to warn, not to silently destroy it")
@@ -439,7 +439,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(
       store.runCommand.isRunCommandRunning(for: t.id),
       "a confirmed-dead supervisor must not leave the state reporting .running")
-    XCTAssertEqual(store.pendingProjectSettings?.project.path, "/a")
+    XCTAssertEqual(store.modals.pendingProjectSettings?.project.path, "/a")
   }
 
   func testClosingRunTabClearsState() {

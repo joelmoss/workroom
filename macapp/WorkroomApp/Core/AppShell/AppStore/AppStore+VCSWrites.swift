@@ -20,7 +20,7 @@ extension AppStore {
   /// Open the commit dialog for `sid`, when it has something to commit.
   func requestCommit(_ sid: SidebarID?) {
     guard let sid, canCommit(sid), selectedStatusWorkItem(for: sid) != nil else { return }
-    pendingCommit = PendingCommit(sid: sid)
+    modals.pendingCommit = PendingCommit(sid: sid)
   }
 
   /// Run a PR write action (Phase 2b) on the selected workroom's PR: shell to `gh`, refresh the PR
@@ -54,8 +54,8 @@ extension AppStore {
   ) {
     let sid = item.sid
     guard item.permitsGitHubAccess else {
-      self.errorTitle = errorTitle
-      self.errorMessage =
+      self.modals.errorTitle = errorTitle
+      self.modals.errorMessage =
         RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription
       return
     }
@@ -69,8 +69,8 @@ extension AppStore {
       github = try RepositoryRouter.shared.registeredGitHub(
         for: location, resolver: statusResolver)
     } catch {
-      self.errorTitle = errorTitle
-      self.errorMessage = error.localizedDescription
+      self.modals.errorTitle = errorTitle
+      self.modals.errorMessage = error.localizedDescription
       return
     }
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
@@ -93,9 +93,9 @@ extension AppStore {
           s.pr = priorPR
           self.projectStore.workroomStatuses[sid] = s
         }
-        self.errorTitle = errorTitle
+        self.modals.errorTitle = errorTitle
         let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
+        self.modals.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
       }
     }
   }

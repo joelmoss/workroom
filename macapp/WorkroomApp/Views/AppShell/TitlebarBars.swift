@@ -139,6 +139,7 @@ struct LeadingTitlebarBar: View {
 struct TrailingTitlebarBar: View {
   @EnvironmentObject var updater: Updater
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var modals: ModalState
 
   @Default(.theme) private var theme
   @Default(.quickTerminalShortcut) private var quickTerminalShortcut
@@ -192,7 +193,7 @@ struct TrailingTitlebarBar: View {
       //
       // A popover is transient, so it needs no dismiss affordance and no modal bookkeeping: clicking
       // anywhere else closes it, and anything that raises a dialog closes it too (below). It is
-      // therefore deliberately absent from `AppStore.hasModalPresentation`.
+      // therefore deliberately absent from `ModalState.hasModalPresentation`.
       Button {
         showThemePicker.toggle()
       } label: {
@@ -244,7 +245,7 @@ struct TrailingTitlebarBar: View {
     // and ⌘1–9 (focus a terminal tab) change neither value and leave the dropdown up. ⌘⇧L especially is
     // the point — flipping appearance with the picker still open is how you check a family's other
     // variant.
-    .onChange(of: store.hasModalPresentation) { _, blocked in
+    .onChange(of: modals.hasModalPresentation) { _, blocked in
       if blocked { showThemePicker = false }
     }
     // Only a real navigation BETWEEN two targets closes it. Both transitions involving nil are

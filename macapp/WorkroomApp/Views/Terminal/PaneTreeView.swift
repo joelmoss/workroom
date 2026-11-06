@@ -302,6 +302,7 @@ struct PaneLeafView: View {
   @ObservedObject var sessions: TerminalSessions
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var modals: ModalState
   /// The inline terminal agent (issue #49); its per-tab state drives the auto-diagnose opt-in dialog.
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   let focused: Bool
@@ -386,7 +387,7 @@ struct PaneLeafView: View {
         .modifier(
           ActivateOnPress(
             enabled: !isTerminal, onActivate: onActivate,
-            isBlocked: { store.activePicker != nil })
+            isBlocked: { modals.activePicker != nil })
         )
     }
     .clipShape(
@@ -504,7 +505,7 @@ struct PaneLeafView: View {
         // byte-for-byte duplicate of it. PaneTreeView's own `focused` still drives the focus ring, the
         // find bar and the a11y trait, so only the AppKit responder follows the dialog.
         TerminalContainerView(
-          view: s.view, isFocusedPane: focused && store.activePicker == nil,
+          view: s.view, isFocusedPane: focused && modals.activePicker == nil,
           // Only the host whose kind matches the model may hold the surface (issue #172): the pane
           // tree while the tab is docked, the detached window while it is not. And only in the
           // window whose sessions own the tab: one moved to another window (#444) leaves this

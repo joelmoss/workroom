@@ -142,7 +142,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
         "menu did not enable Commit; active=\(NSApp.isActive), key=\(window.isKeyWindow), "
           + "visible=\(window.isVisible), canBecomeKey=\(window.canBecomeKey), "
           + "policy=\(NSApp.activationPolicy().rawValue), policyChanged=\(policyChanged), activation=\(activationRequested), "
-          + "canCommit=\(store.canCommit(selected)), modal=\(store.hasModalPresentation), "
+          + "canCommit=\(store.canCommit(selected)), modal=\(store.modals.hasModalPresentation), "
           + "inspected=\(String(describing: store.inspectorTargetID)), passes=\(WorkroomCommands.bodyPasses), "
           + "nativeItems=\(items("Commit…", in: NSApp.mainMenu).map { $0.isEnabled })")
     }
@@ -165,12 +165,12 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room[PRAction.markReady.label], false)
     store.prActionInFlight = false
-    store.auxSheetPresented = true
+    store.modals.auxSheetPresented = true
     await flush(hosting)
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room["Commit…"], false)
     XCTAssertNil(room["Go to Pull Request"], "a modal hides inspected PR actions")
-    store.auxSheetPresented = false
+    store.modals.auxSheetPresented = false
     await flush(hosting)
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room[PRAction.markReady.label], true)

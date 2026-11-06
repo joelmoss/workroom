@@ -107,7 +107,7 @@ struct ProjectSidebar: View {
         } description: {
           Text("Add your first project!")
         } actions: {
-          Button("Add Project…") { store.requestAddProject = true }
+          Button("Add Project…") { store.modals.requestAddProject = true }
             .buttonStyle(.borderedProminent)
         }
       } else {
@@ -121,10 +121,11 @@ struct ProjectSidebar: View {
     // like the footer — reserves an 8pt strip of the card surface, matching the card's side margin.
     .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 8) }
     // A project's settings (issue #7) open in Settings ▸ Projects through
-    // `store.pendingProjectSettings`, which ⌘R (a global shortcut) sets too (issue #127).
+    // `store.modals.pendingProjectSettings`, which ⌘R (a global shortcut) sets too (issue #127).
     // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
     // so the ⌘O / ⌘⌫ menu commands present reliably even when this sidebar is collapsed in
-    // Workrooms View. Local buttons here route through `store.requestAddProject` / `pendingDeletion`.
+    // Workrooms View. Local buttons here route through `store.modals` (`requestAddProject` /
+    // `pendingDeletion`).
   }
 
   /// Flat list of rows (project, then its root + workrooms when expanded, then their terminals). All
@@ -250,7 +251,7 @@ struct ProjectSidebar: View {
     return Menu(reason.map { "\(place.displayName) — \($0)" } ?? place.displayName) {
       newRemoteWorkroomButton(at: place, in: project, title: "Create")
       Button("Configure…") {
-        store.pendingHostOptions = PendingHostOptions(project: project, place: place)
+        store.modals.pendingHostOptions = PendingHostOptions(project: project, place: place)
       }
       .help("Choose the image and size for this \(place.displayName) workroom first")
     }
@@ -355,7 +356,7 @@ struct ProjectSidebar: View {
       SettingsRowButton(
         help: "Project settings for \(project.displayName)", visible: hovered
       ) {
-        store.pendingProjectSettings = PendingProjectSettings(project: project)
+        store.modals.pendingProjectSettings = PendingProjectSettings(project: project)
       }
       // "+" asks where, as the context menu does (#309). A create shows its progress in its own pane
       // and row, never here (#483).
@@ -391,13 +392,13 @@ struct ProjectSidebar: View {
       runCommandMenuItems(store: store, target: project.rootTarget)
       Divider()
       Button {
-        store.pendingProjectSettings = PendingProjectSettings(project: project)
+        store.modals.pendingProjectSettings = PendingProjectSettings(project: project)
       } label: {
         Label("Project Settings…", systemImage: "gearshape")
       }
       Divider()
       Button(role: .destructive) {
-        store.pendingProjectDeletion = PendingProjectDeletion(project: project)
+        store.modals.pendingProjectDeletion = PendingProjectDeletion(project: project)
       } label: {
         Label("Delete Project…", systemImage: "trash")
       }
@@ -535,7 +536,8 @@ struct ProjectSidebar: View {
           name: workroom.displayName,
           visible: hovered && !store.isCreatingWorkroom(workroom, in: project)
         ) {
-          store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+          store.modals.pendingDeletion = PendingWorkroomDeletion(
+            workroom: workroom, project: project)
         }
       }
       // A waiting terminal (#358) takes the mark's place and stays on hover: the delete button
@@ -871,7 +873,7 @@ private struct SidebarAddProjectButton: View {
     // (issue #94). Routes through the store's request flag so the importer (re-homed to RootView,
     // issue #23 OV1) can present even when this sidebar is collapsed in Workrooms View.
     Button {
-      store.requestAddProject = true
+      store.modals.requestAddProject = true
     } label: {
       Image(systemName: "plus")
         .font(.system(size: 11))
