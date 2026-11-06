@@ -1111,7 +1111,7 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNil(quick.runCommand.investigateTabs[pane.id])
     XCTAssertEqual(
       window.runCommand.investigateTabs[pane.id], target(window).id,
-      "what WindowRegistry.hasLiveInvestigateSession reads before a delete")
+      "what RunCommands.hasLiveInvestigateSession reads before a delete")
     pane.surface?.onEvent?(.childExited(0))
     XCTAssertNil(window.runCommand.investigateTabs[pane.id], "its exit ends it there")
   }

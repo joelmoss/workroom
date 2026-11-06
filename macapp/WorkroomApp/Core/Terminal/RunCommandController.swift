@@ -14,10 +14,12 @@ enum RunSessionKey {
 
 /// A window's run commands (issue #7): each target's run state and outcome, the run toast's
 /// dismissal bookkeeping, signalling the run's supervisor through its daemon (#522), and the
-/// graceful teardown. Owned by `AppStore` as `runCommand`. What needs the rest of the store stays
-/// in `AppStore+RunCommand.swift`: starting and respawning a run (project, run config, host
-/// layout, the project settings request), applying the supervisor's status (the failure banner and
-/// diagnosis), the derived toast list (selection), and the selection-scoped menu actions.
+/// graceful teardown. Owned by `AppStore` as `runCommand`, and registered with the app's
+/// `RunCommands` while its window is up, which owns what spans windows (run config, the run's
+/// owning window, hand-over, quit). What needs the rest of the store stays in
+/// `AppStore+RunCommand.swift`: starting and respawning a run (project, host layout, the project
+/// settings request), applying the supervisor's status (the failure banner and diagnosis), the
+/// derived toast list (selection), and the selection-scoped menu actions.
 ///
 /// A run is a daemon session (a run session) whose supervisor the daemon runs, on this Mac or on
 /// the workroom's host (`workroomd run-supervisor`). It survives the app quitting; its state comes
@@ -118,7 +120,7 @@ final class RunCommandController: ObservableObject {
   /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
   /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
   /// second, independent process that can coexist with a target's real run command, and must NOT be
-  /// deduped across windows the way `WindowRegistry.runOwner` dedupes a run command. Only feeds
+  /// deduped across windows the way `RunCommands.runOwner` dedupes a run command. Only feeds
   /// `hasLiveRunCommand`, so quit/window-close notice a live agent conversation instead of silently
   /// SIGHUP'ing it. Not `@Published` — its only reader, `hasLiveRunCommand`, is read imperatively by
   /// AppKit code at close/quit time (never by a SwiftUI view that needs a re-render), unlike
@@ -214,28 +216,14 @@ final class RunCommandController: ObservableObject {
 
   // MARK: Hand-over between windows (#444)
 
-  /// One target's run bookkeeping, carried with its workroom to another window. The run tab's
-  /// process moves with its surface; this is everything this window knew about it.
-  struct HandOff {
-    var state: RunState?
-    var outcome: RunOutcome?
-    var restored = false
-    var lastStatus: String?
-    var toastDismissed = false
-    var toastAutoHidden = false
-    /// A toast timer was still to fire: the destination starts its own.
-    var toastTimerPending = false
-    var investigateTabs: [TerminalTab.ID] = []
-  }
-
   /// Lift `targetID`'s run bookkeeping out of this window. A pending toast timer is cancelled, since
   /// it would act on this window's toast, and the destination starts its own.
-  func takeHandOff(for targetID: TerminalTarget.ID) -> HandOff {
+  func takeHandOff(for targetID: TerminalTarget.ID) -> RunCommands.HandOff {
     let timer = runToastDismissWork.removeValue(forKey: targetID)
     timer?.cancel()
     let investigate = investigateTabs.filter { $0.value == targetID }.map(\.key)
     for tab in investigate { investigateTabs[tab] = nil }
-    return HandOff(
+    return RunCommands.HandOff(
       state: runStates.removeValue(forKey: targetID),
       outcome: runOutcomes.removeValue(forKey: targetID),
       restored: restoredRuns.remove(targetID) != nil,
@@ -247,7 +235,7 @@ final class RunCommandController: ObservableObject {
 
   /// The other half of `takeHandOff`, in the window the workroom moved to. A hand-off with no run
   /// leaves this window's own run for the target as it is.
-  func adopt(_ handOff: HandOff, for targetID: TerminalTarget.ID) {
+  func adopt(_ handOff: RunCommands.HandOff, for targetID: TerminalTarget.ID) {
     for tab in handOff.investigateTabs { investigateTabs[tab] = targetID }
     guard let state = handOff.state else { return }
     // This window's own toast state was its replaced run's: the moved run's starts from its own.
@@ -426,6 +414,19 @@ final class RunCommandController: ObservableObject {
   /// Told when a signal could not be confirmed (`.unknown`), with the target and why, so the run's
   /// pane can say so. Set by `AppStore`.
   var onSignalUnconfirmed: ((TerminalTarget.ID, String) -> Void)?
+
+  /// Brings this window forward on its run terminal for `targetID`, for another window whose Run
+  /// found this one already running it (`RunCommands.runOwner`, #70). Set by `AppStore`.
+  var revealRun: ((TerminalTarget.ID) -> Void)?
+
+  /// Whether this window has a live Investigate session for any of `targetIDs` (issue #146):
+  /// `RunCommands.hasLiveInvestigateSession` asks every window.
+  func hasLiveInvestigateSession(for targetIDs: Set<TerminalTarget.ID>) -> Bool {
+    investigateTabs.contains { tabID, targetID in
+      targetIDs.contains(targetID)
+        && terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess == true
+    }
+  }
 
   /// Stop the run command (issue #7): one press tells the SUPERVISOR to stop the child gracefully and
   /// keep the pane (USR2 — it SIGINTs the child's foreground group, waits for it to fully exit, and

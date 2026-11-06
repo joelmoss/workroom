@@ -123,7 +123,7 @@ struct OpenInControl: View {
 /// Note on the same workroom open in two windows: each window has its own `runStates`, so window B
 /// can show Run while A shows Stop. That is pre-existing and is resolved at *press* time, not render
 /// time — `runOrFocusRunCommand(for:)`'s `.armed/.none` branch finds the owning window
-/// (`WindowRegistry.runOwner`) and focuses its run terminal instead of forking a second server.
+/// (`RunCommands.runOwner`) and focuses its run terminal instead of forking a second server.
 /// Rendering a distinct "focus the owner" button here would need cross-store observation the app
 /// doesn't have, so it would go stale rather than help.
 struct RunControls: View {
@@ -132,6 +132,7 @@ struct RunControls: View {
   let projectPath: String
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var runCommands: RunCommands
 
   /// Gap between Restart and Stop. Tighter than the 6pt the header puts between its controls, because
   /// these two are one pair rather than two neighbours — the same reason "Open in…" tucks its chevron
@@ -191,7 +192,7 @@ struct RunControls: View {
             Image(systemName: "play.fill")
           }
           .help(
-            store.hasRunCommand(forProject: projectPath)
+            runCommands.hasRunCommand(forProject: projectPath)
               ? "Run the project command (⌘R)"
               : "No run command configured — set one in Project Settings (⌘R)"
           )

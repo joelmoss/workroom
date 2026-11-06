@@ -35,6 +35,7 @@ final class CreationPaneAccessibilityTests: XCTestCase {
     .environmentObject(store)
     .environmentObject(store.modals)
     .environmentObject(store.runCommand)
+    .environmentObject(store.runCommands)
     .environmentObject(store.terminals.codingAgentManager)
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)

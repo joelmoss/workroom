@@ -7,6 +7,7 @@ struct RootView: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var modals: ModalState
   @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var runCommands: RunCommands
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @ObservedObject private var programStatusAlerts = ProgramStatusAlerts.shared
@@ -94,6 +95,7 @@ struct RootView: View {
     .environmentObject(store)
     .environmentObject(modals)
     .environmentObject(runCommand)
+    .environmentObject(runCommands)
     .environmentObject(store.projectStore)
     .environmentObject(notifications)
     .environmentObject(terminals)
@@ -282,7 +284,7 @@ struct RootView: View {
               + "and commits that aren't pushed."
           )
         } else if let target = modals.pendingDeletion,
-          WindowRegistry.shared.hasLiveInvestigateSession(for: [
+          runCommands.hasLiveInvestigateSession(for: [
             TargetID.workroom(project: target.project.path, name: target.workroom.name)
           ])
         {
@@ -325,7 +327,7 @@ struct RootView: View {
           // Issue #146: deleteProject reaps live terminals unconditionally (even `.configOnly`,
           // which keeps files on disk) — warn if any target in this project has a live Investigate
           // session, since none of the sheet's existing per-scope copy mentions stopping one.
-          hasLiveInvestigateSession: WindowRegistry.shared.hasLiveInvestigateSession(
+          hasLiveInvestigateSession: runCommands.hasLiveInvestigateSession(
             for: [TargetID.root(project: pending.project.path)]
               + pending.project.workrooms.map {
                 TargetID.workroom(project: pending.project.path, name: $0.name)

@@ -1,4 +1,3 @@
-import Defaults
 import Foundation
 import WorkroomDomain
 import WorkroomVCS
@@ -10,8 +9,8 @@ import WorkroomVCS
 /// terminals, splits, history, and run state.
 ///
 /// Views take it from the environment and the store reaches it as `projectStore`. `AppStore` still
-/// forwards the run config and the create and delete sets, which Observation
-/// tracks through it. List requests are ordered here across windows; each `AppStore` reconciles its
+/// forwards the create and delete sets, which Observation tracks through it. Each project's run
+/// config is the app's `RunCommands`'. List requests are ordered here across windows; each `AppStore` reconciles its
 /// own window after an accepted read.
 @MainActor
 @Observable
@@ -36,25 +35,6 @@ final class ProjectStore: ObservableObject {
   private var storedProjects: [Project] = []
   /// The app-wide base branch for projects that name none; nil means origin's default branch.
   var globalBaseBranch: String?
-  /// Bumped by `setRunConfig` and read by `AppStore.runConfig(forProject:)`, so every window's run
-  /// controls re-render when a run command is saved, from any window or Settings: the config lives
-  /// in `Defaults`, which Observation cannot see.
-  private(set) var runConfigRevision = 0
-
-  /// Persist a project's run config (issue #7). A blank command with auto-run off removes the entry
-  /// so the map doesn't accrue dead keys.
-  func setRunConfig(_ config: RunConfig, forProject projectPath: String) {
-    var map = Defaults[.runCommands]
-    if config.hasCommand || config.autoRun {
-      map[projectPath] = RunConfig(
-        command: config.command.trimmingCharacters(in: .whitespacesAndNewlines),
-        autoRun: config.autoRun)
-    } else {
-      map[projectPath] = nil
-    }
-    Defaults[.runCommands] = map
-    runConfigRevision += 1
-  }
 
   /// A read is stamped when issued, across all windows (#170). Superseded callers await
   /// the newest read too. Success publishes its result; failure leaves the project list unchanged.

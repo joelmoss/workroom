@@ -8,7 +8,7 @@ func runCommandMenuItems(store: AppStore, target: TerminalTarget) -> some View {
   let available = target.opensTerminals && !store.isRunBlocked(target.id)
   let configured =
     store.project(forTargetID: target.id).map {
-      store.hasRunCommand(forProject: $0.path)
+      store.runCommands.hasRunCommand(forProject: $0.path)
     } ?? false
   let running = store.runCommand.isRunCommandRunning(for: target.id)
   Button {

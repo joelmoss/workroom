@@ -88,7 +88,7 @@ enum DeleteProjectSheetModel {
 struct DeleteProjectSheet: View {
   let project: Project
   /// Whether any window has a live Investigate session somewhere in this project (issue #146) —
-  /// computed by the caller via `WindowRegistry.hasLiveInvestigateSession(for:)`. Defaulted so
+  /// computed by the caller via `RunCommands.hasLiveInvestigateSession(for:)`. Defaulted so
   /// existing previews/tests that don't care about this still construct the sheet with one argument
   /// fewer.
   var hasLiveInvestigateSession: Bool = false

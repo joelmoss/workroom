@@ -13,8 +13,8 @@ import SwiftUI
 ///   key, captured before any modal (quit alert / Settings) can steal key status, so quit-time
 ///   persistence reads the right window.
 /// - **Aggregation** — the Dock badge (and menu-bar item) sum across every window's notifications.
-/// - **Run-command ownership** — a workroom's run command is single-owner across windows; a second
-///   window's Run focuses the owner instead of forking a duplicate server (issue #70 / issue #7).
+/// - **Run-command windows** — it registers each window's run controller with `RunCommands`, which
+///   owns a run's single owner across windows (issue #70 / issue #7).
 /// - **Quit/close de-dup** — `isTerminating` suppresses the per-window close prompt during a quit.
 ///
 /// Per-window logic stays in `AppStore`; this holds only weak references, so closed windows fall out
@@ -193,6 +193,9 @@ final class WindowRegistry: ObservableObject {
   func register(window: NSWindow, store: AppStore) {
     prune()
     if let existing = entries.first(where: { $0.window === window }) {
+      if let replaced = existing.store, replaced !== store {
+        replaced.runCommands.unregister(replaced.runCommand)
+      }
       existing.store = store
     } else {
       let entry = Entry(window: window, store: store)
@@ -202,6 +205,8 @@ final class WindowRegistry: ObservableObject {
       }
       entries.append(entry)
     }
+    // The app's run commands count this window in what spans windows (#70) while it is here.
+    store.runCommands.register(store.runCommand)
     if lastActiveStore == nil { lastActiveStore = store }
     store.forwardToast = { [weak self] in self?.showToast($0) }
     // The saved session is rebuilt from the live windows (issue #46), and the window layer publishes
@@ -253,7 +258,7 @@ final class WindowRegistry: ObservableObject {
       closing.detachedPanes.closeAll()
       dropNotifications(raisedBy: closing)
     }
-    entries.removeAll { $0.window === window || $0.window == nil }
+    removeEntries { $0.window === window || $0.window == nil }
     windowsChanged += 1
     recomputeBadge()
     recomputeActiveCodingAgents()
@@ -263,7 +268,16 @@ final class WindowRegistry: ObservableObject {
   }
 
   private func prune() {
-    entries.removeAll { $0.window == nil || $0.store == nil }
+    removeEntries { $0.window == nil || $0.store == nil }
+  }
+
+  /// Drop the entries `shouldRemove` matches, and their windows from the app's run commands, which
+  /// count exactly the windows registered here.
+  private func removeEntries(where shouldRemove: (Entry) -> Bool) {
+    for entry in entries where shouldRemove(entry) {
+      if let store = entry.store { store.runCommands.unregister(store.runCommand) }
+    }
+    entries.removeAll(where: shouldRemove)
   }
 
   // MARK: Lookup
@@ -421,53 +435,6 @@ final class WindowRegistry: ObservableObject {
     DockBadge.apply(total)
   }
 
-  // MARK: Run-command ownership
-
-  /// The other window already running `target`'s run command, if any. Derived from each window's live
-  /// `runStates` (no separate map to drift): a second window's Run focuses this owner instead of
-  /// forking a duplicate dev server on the same port (issue #70 / issue #7).
-  func runOwner(for target: TerminalTarget.ID, excluding: AppStore) -> AppStore? {
-    allStores.first { $0 !== excluding && ($0.runCommand.runStates[target]?.isRunning ?? false) }
-  }
-
-  /// Whether any window has a live Investigate session (issue #146) for any of `targetIDs` — used
-  /// to warn before `deleteWorkroom`/`deleteProject` reap those targets' surfaces. Both delete flows
-  /// stop and reap unconditionally (even `.configOnly`, which keeps files but still tears down live
-  /// terminals), and neither goes through `hasLiveRunCommand`/`gracefullyStopRuns` (which only know
-  /// about `runStates`) — so without this check, deleting silently kills a live agent session with
-  /// no wait or warning, and for `.workrooms`/`.fromDisk` also deletes the directory out from under it.
-  func hasLiveInvestigateSession(for targetIDs: [TerminalTarget.ID]) -> Bool {
-    let ids = Set(targetIDs)
-    return allStores.contains { store in
-      store.runCommand.investigateTabs.contains { tabID, targetID in
-        ids.contains(targetID)
-          && store.terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess == true
-      }
-    }
-  }
-
-  // MARK: Quit
-
-  /// Whether any window's run command (not an Investigate tab) is going: what quitting may keep
-  /// running or stop (#522).
-  var hasAnyLiveRun: Bool { allStores.contains(where: \.runCommand.hasLiveRun) }
-
-  /// Ctrl-C every window's live run commands and let them exit before the process dies, so dev
-  /// servers release their ports/pidfiles instead of being orphaned by the OS hangup (issue #7).
-  /// Calls `completion` once all windows have stopped (or each one's timeout elapses).
-  func gracefullyStopAllWindows(timeout: TimeInterval, completion: @escaping () -> Void) {
-    let live = allStores.filter(\.runCommand.stopsRunsBeforeClosing)
-    guard !live.isEmpty else {
-      completion()
-      return
-    }
-    let group = DispatchGroup()
-    for store in live {
-      group.enter()
-      store.runCommand.gracefullyStopAllRunCommands(timeout: timeout) { group.leave() }
-    }
-    group.notify(queue: .main) { completion() }
-  }
 }
 
 /// A forwarding `NSWindowDelegate` proxy that intercepts only `windowShouldClose:` so a window with a

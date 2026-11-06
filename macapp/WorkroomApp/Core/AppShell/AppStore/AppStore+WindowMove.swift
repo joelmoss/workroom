@@ -7,7 +7,7 @@ import WorkroomDomain
 struct WorkroomHandOff {
   let sid: SidebarID
   var sessions: TerminalSessions.TargetHandOff
-  let run: RunCommandController.HandOff
+  let run: RunCommands.HandOff
 }
 
 /// Moves waiting on a window that has been asked for but does not exist yet (issue #444). The new
@@ -354,7 +354,7 @@ extension AppStore {
         }
       } else {
         closing = moved
-        run = RunCommandController.HandOff(investigateTabs: run.investigateTabs)
+        run = RunCommands.HandOff(investigateTabs: run.investigateTabs)
       }
     }
     let wasAt = displayedWorkroomTargets().firstIndex { $0.target.id == id }

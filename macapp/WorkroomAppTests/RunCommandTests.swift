@@ -38,8 +38,9 @@ final class RunCommandTests: XCTestCase {
     super.tearDown()
   }
 
-  private func makeStore(_ projects: [Project]) -> AppStore {
-    let store = AppStore()
+  /// `runCommands`: the app's run commands, for tests of two windows that must share them.
+  private func makeStore(_ projects: [Project], runCommands: RunCommands? = nil) -> AppStore {
+    let store = AppStore(runCommands: runCommands)
     // No close-confirm modal in a unit test. Per store, NOT via `Defaults[.confirmOnCloseTerminal]`:
     // parallel workers share one UserDefaults domain, so writing that key reached into the other
     // close-behaviour classes mid-body (see `AppStore.confirmOnCloseOverrideForTesting`).
@@ -98,21 +99,22 @@ final class RunCommandTests: XCTestCase {
   func testRunConfigRoundTripAndRemoval() {
     let store = makeStore([])
     let config = RunConfig(command: "npm run dev", autoRun: true)
-    store.setRunConfig(config, forProject: "/a")
-    XCTAssertEqual(store.runConfig(forProject: "/a"), config)
-    XCTAssertTrue(store.hasRunCommand(forProject: "/a"))
+    store.runCommands.setRunConfig(config, forProject: "/a")
+    XCTAssertEqual(store.runCommands.runConfig(forProject: "/a"), config)
+    XCTAssertTrue(store.runCommands.hasRunCommand(forProject: "/a"))
 
     // A blank command with auto-run off removes the entry (no dead keys).
-    store.setRunConfig(.empty, forProject: "/a")
-    XCTAssertEqual(store.runConfig(forProject: "/a"), .empty)
+    store.runCommands.setRunConfig(.empty, forProject: "/a")
+    XCTAssertEqual(store.runCommands.runConfig(forProject: "/a"), .empty)
     XCTAssertNil(Defaults[.runCommands]["/a"])
-    XCTAssertFalse(store.hasRunCommand(forProject: "/a"))
+    XCTAssertFalse(store.runCommands.hasRunCommand(forProject: "/a"))
   }
 
   func testSetRunConfigTrimsCommand() {
     let store = makeStore([])
-    store.setRunConfig(RunConfig(command: "  bin/dev  ", autoRun: false), forProject: "/a")
-    XCTAssertEqual(store.runConfig(forProject: "/a").command, "bin/dev")
+    store.runCommands.setRunConfig(
+      RunConfig(command: "  bin/dev  ", autoRun: false), forProject: "/a")
+    XCTAssertEqual(store.runCommands.runConfig(forProject: "/a").command, "bin/dev")
   }
 
   // MARK: Start
@@ -122,7 +124,7 @@ final class RunCommandTests: XCTestCase {
   /// choice and wrap the daemon's own tests pin), never in the tab's own process.
   func testStartRunCommandOpensARunSession() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
 
     store.startRunCommand(for: t)
@@ -186,7 +188,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertNotNil(store.modals.pendingProjectSettings)
 
     // Simulates the request handed to Settings ▸ Projects, and a command saved there.
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     store.modals.pendingProjectSettings = nil
 
     store.runOrFocusRunCommand()
@@ -196,14 +198,14 @@ final class RunCommandTests: XCTestCase {
 
   /// Value: protects=a run command saved in Settings ▸ Projects (or any window) re-renders every
   /// window's Run controls; fails_when=a window reading the config isn't told it changed;
-  /// why_new=Settings has no store of its own; seam=a shared ProjectStore; no_claim=the toolbar's
+  /// why_new=Settings has no store of its own; seam=a shared RunCommands; no_claim=the toolbar's
   /// rendering
   func testARunCommandSavedFromSettingsReachesEveryWindow() {
-    let shared = ProjectStore()
-    let window = AppStore(projectStore: shared)
+    let shared = RunCommands()
+    let window = AppStore(runCommands: shared)
     var changed = false
     withObservationTracking {
-      _ = window.hasRunCommand(forProject: "/a")
+      _ = window.runCommands.hasRunCommand(forProject: "/a")
     } onChange: {
       changed = true
     }
@@ -211,20 +213,22 @@ final class RunCommandTests: XCTestCase {
     shared.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
 
     XCTAssertTrue(changed, "a window showing the run command wasn't told it changed")
-    XCTAssertTrue(window.hasRunCommand(forProject: "/a"))
+    XCTAssertTrue(window.runCommands.hasRunCommand(forProject: "/a"))
   }
 
   /// Issue #127-eng-4 (outside-voice review): the owner-elsewhere branch takes precedence over the
   /// new no-command branch, and unlike every other test in this file, it exercises the real
-  /// `WindowRegistry.shared` singleton `runOrFocusRunCommand` hardcodes — registrations are unwound
-  /// in `tearDown` via `registeredWindows`.
+  /// `WindowRegistry.shared` singleton, which registers each window with the two windows' shared
+  /// `RunCommands` — registrations are unwound in `tearDown` via `registeredWindows`.
   func testRunOrFocusFocusesOwnerWindowInsteadOfStartingDuplicate() {
-    let ownerStore = makeStore([project("/a", workrooms: ["main"])])
-    ownerStore.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let runCommands = RunCommands()
+    let ownerStore = makeStore([project("/a", workrooms: ["main"])], runCommands: runCommands)
+    ownerStore.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let ownerTarget = target(ownerStore, "/a", "main")
     ownerStore.startRunCommand(for: ownerTarget)  // owner is now actually running this target
 
-    let selectingStore = makeStore([project("/a", workrooms: ["main"])])
+    let selectingStore = makeStore([project("/a", workrooms: ["main"])], runCommands: runCommands)
     let selectingTarget = target(selectingStore, "/a", "main")
     selectingStore.selectedTargetID = .workroom(project: "/a", name: "main")
 
@@ -251,7 +255,7 @@ final class RunCommandTests: XCTestCase {
   /// the selection-scoped door would silently have run the selected one instead.
   func testRunOrFocusForTargetActsOnThePassedTargetNotTheSelection() {
     let store = makeStore([project("/a", workrooms: ["main", "other"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let selected = target(store, "/a", "main")
     let pressed = target(store, "/a", "other")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
@@ -270,7 +274,7 @@ final class RunCommandTests: XCTestCase {
   /// switches a tab inside a dimmed, non-focused pane and the click looks like it did nothing.
   func testRunOrFocusForTargetRaisesThePressedPane() {
     let store = makeStore([project("/a", workrooms: ["main", "other"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
     store.runOrFocusRunCommand(for: target(store, "/a", "other"))
@@ -285,7 +289,7 @@ final class RunCommandTests: XCTestCase {
   /// field editor first responder, which is exactly why this seam has to be structural, not conditional).
   func testRunOrFocusForTargetIgnoresTheTextFieldGuard() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = nil  // no selection at all: the ⌘R path would bail here
 
@@ -299,7 +303,7 @@ final class RunCommandTests: XCTestCase {
   /// A missing directory is refused on the per-target path too, not just via the selection.
   func testRunOrFocusForTargetRefusesAMissingWorkroom() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let live = target(store, "/a", "main")
     let missing = TerminalTarget(
       id: live.id, title: live.title, path: live.path, isMissing: true)
@@ -314,11 +318,15 @@ final class RunCommandTests: XCTestCase {
   /// the selection — the branch reads `runStates[target.id]`, so a regression that reverted it to the
   /// selection would fork a second dev server on the same port.
   func testRunOrFocusForTargetChecksOwnerForThePassedTarget() {
-    let ownerStore = makeStore([project("/a", workrooms: ["main", "other"])])
-    ownerStore.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let runCommands = RunCommands()
+    let ownerStore = makeStore(
+      [project("/a", workrooms: ["main", "other"])], runCommands: runCommands)
+    ownerStore.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     ownerStore.startRunCommand(for: target(ownerStore, "/a", "other"))
 
-    let pressingStore = makeStore([project("/a", workrooms: ["main", "other"])])
+    let pressingStore = makeStore(
+      [project("/a", workrooms: ["main", "other"])], runCommands: runCommands)
     let pressed = target(pressingStore, "/a", "other")
     pressingStore.selectedTargetID = .workroom(project: "/a", name: "main")
 
@@ -335,18 +343,44 @@ final class RunCommandTests: XCTestCase {
       "the other window already runs THIS workroom — no duplicate (issue #70)")
   }
 
+  /// Value: protects=a closed window's run stops counting as the workroom's owner, so another
+  /// window's Run starts its own (#70); fails_when=RunCommands still counts a window WindowRegistry
+  /// dropped; why_new=RunCommands keeps its own list of the registered windows; seam=a local
+  /// WindowRegistry; no_claim=the run's own stop when its window closes.
+  func testAClosedWindowNoLongerOwnsItsWorkroomsRun() {
+    let runCommands = RunCommands()
+    let registry = WindowRegistry()
+    let ownerStore = makeStore([project("/a", workrooms: ["main"])], runCommands: runCommands)
+    ownerStore.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    ownerStore.startRunCommand(for: target(ownerStore, "/a", "main"))
+    let pressingStore = makeStore([project("/a", workrooms: ["main"])], runCommands: runCommands)
+    let id = target(pressingStore, "/a", "main").id
+    let winOwner = NSWindow()
+    let winPressing = NSWindow()
+    registry.register(window: winOwner, store: ownerStore)
+    registry.register(window: winPressing, store: pressingStore)
+    XCTAssertTrue(
+      runCommands.runOwner(for: id, excluding: pressingStore.runCommand) === ownerStore.runCommand,
+      "precondition: the owner window runs it")
+
+    registry.unregister(window: winOwner)
+
+    XCTAssertNil(runCommands.runOwner(for: id, excluding: pressingStore.runCommand))
+  }
+
   /// The command goes to the daemon as typed: quoting it for the login shell is the run
   /// supervisor's, where it runs (`workroomd run-supervisor`, #522).
   func testTheCommandReachesTheRunSessionAsTyped() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo 'x'", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo 'x'", autoRun: false), forProject: "/a")
     store.startRunCommand(for: target(store, "/a", "main"))
     XCTAssertEqual(captured.last, "echo 'x'")
   }
 
   func testStartDoesNotDuplicateRunTab() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let first = store.runCommand.runTabID(for: t.id)
@@ -359,7 +393,7 @@ final class RunCommandTests: XCTestCase {
 
   func testChildExitFlipsToStoppedButKeepsPane() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tabID = store.runCommand.runTabID(for: t.id)
@@ -374,7 +408,7 @@ final class RunCommandTests: XCTestCase {
     // Stopped-but-open pane: the supervisor exited, so `restartRunCommand` takes the respawn path
     // (signalSupervisor returns false → respawnRunCommand) → fresh tab.
     let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
@@ -396,7 +430,7 @@ final class RunCommandTests: XCTestCase {
   /// `.armed`/`.none` no-command branch already shows, and leave the stopped pane alone.
   func testRestartWithClearedCommandWarnsInsteadOfClosing() {
     let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
@@ -405,7 +439,8 @@ final class RunCommandTests: XCTestCase {
     store.applyRunStatus("exited 0", for: t)  // now stopped-but-open
     XCTAssertFalse(store.runCommand.isRunCommandRunning(for: t.id))
 
-    store.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")  // cleared
+    // cleared
+    store.runCommands.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")
     store.runOrFocusRunCommand()  // ⌘R again — dead supervisor → respawnRunCommand's guard
 
     XCTAssertEqual(
@@ -425,7 +460,7 @@ final class RunCommandTests: XCTestCase {
   /// toast/sidebar dot keeps claiming a pid that's already confirmed gone.
   func testRestartFromRunningWithClearedCommandStopsReportingAsRunning() {
     let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
@@ -433,7 +468,8 @@ final class RunCommandTests: XCTestCase {
     // Still .running — no exit reported yet.
     XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
 
-    store.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")  // cleared
+    // cleared
+    store.runCommands.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")
     store.restartRunCommand(for: t)  // dead supervisor → respawnRunCommand's no-command guard
 
     XCTAssertFalse(
@@ -444,7 +480,7 @@ final class RunCommandTests: XCTestCase {
 
   func testClosingRunTabClearsState() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tabID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -462,7 +498,7 @@ final class RunCommandTests: XCTestCase {
   /// no_claim=keyDown itself, or the graceful stop of a run that is still live.
   func testAKeyAtTheClosePromptClosesAStoppedRunTabAndAnInvestigateTab() throws {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let run = try XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -488,7 +524,7 @@ final class RunCommandTests: XCTestCase {
     // Under the supervisor model, restart signals SIGUSR1 and the SAME tab stays —  no surface
     // free/respawn. Drive completion with `applyRunStatus("running 1")`.
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let first = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -509,7 +545,7 @@ final class RunCommandTests: XCTestCase {
   /// unchanged — the supervisor restarts the child in place, so no tab replacement occurs (issue #40).
   func testGracefulRestartKeepsRunTabInSplit() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
 
     store.startRunCommand(for: t)
@@ -535,7 +571,7 @@ final class RunCommandTests: XCTestCase {
   func testStoppedReRunKeepsRunTabInSplit() {
     // Supervisor is gone after the run exited, so restartRunCommand takes the respawn path.
     let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
 
@@ -557,7 +593,7 @@ final class RunCommandTests: XCTestCase {
 
   func testArmedAutoRunBackgroundsRunAndOpensShell() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: "/a")
     let t = target(store, "/a", "main")
 
     // Armed auto-run + the always-on "open a terminal in new workrooms": the run starts as a
@@ -579,7 +615,7 @@ final class RunCommandTests: XCTestCase {
 
   func testInitialTerminalOpensShellWhenNotArmed() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
 
     // Not armed (auto-run off) → mounting a pane with no terminals always opens a single plain shell,
@@ -604,7 +640,7 @@ final class RunCommandTests: XCTestCase {
 
   func testReapClearsRunState() async {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     XCTAssertTrue(store.runCommand.isRunCommandRunning(for: t.id))
@@ -619,7 +655,7 @@ final class RunCommandTests: XCTestCase {
   /// must clear state. A fresh run started afterwards must not be mistaken for a pending respawn.
   func testClosingTabMidRestartDoesNotRespawnTheNextRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
 
     store.startRunCommand(for: t)
@@ -647,7 +683,7 @@ final class RunCommandTests: XCTestCase {
   /// exit (keeps the pane). `applyRunStatus("stopped")` drives the state to `.stopped`.
   func testStopShowsPendingStateUntilSupervisorConfirms() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -671,7 +707,7 @@ final class RunCommandTests: XCTestCase {
 
   func testDelayedRunningReportsKeepStopPendingUntilRestart() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     store.runCommand.stopRunCommand(for: t)
@@ -693,7 +729,7 @@ final class RunCommandTests: XCTestCase {
   /// not hard-kill. The supervisor serializes this internally.
   func testStopAfterRestartIsGracefulNotImmediateHardKill() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -721,7 +757,7 @@ final class RunCommandTests: XCTestCase {
   /// per row that only opens the project's settings would be noise.
   func testCanRunCommandGate() {
     let store = makeStore([])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let present = TerminalTarget(
       id: .workroom(project: "/a", name: "x"), title: "main", path: "/a/main", isMissing: false)
     let missing = TerminalTarget(
@@ -782,7 +818,7 @@ final class RunCommandTests: XCTestCase {
     // is present sends SIGTERM via gracefullyStopRuns and waits before freeing. Simulated here by
     // stopping the command and then requesting a close.
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -808,7 +844,7 @@ final class RunCommandTests: XCTestCase {
   /// not wait on a stop nothing will answer (#522).
   func testAStoppedRunWithALivePaneIsNotALiveRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -826,7 +862,7 @@ final class RunCommandTests: XCTestCase {
 
   func testGracefullyStopAllWaitsForEveryLiveCommandThenCompletes() {
     let store = makeStore([project("/a", workrooms: ["main", "two"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t1 = target(store, "/a", "main")
     let t2 = target(store, "/a", "two")
     store.startRunCommand(for: t1)
@@ -858,7 +894,7 @@ final class RunCommandTests: XCTestCase {
 
   func testGracefullyStopAllCompletesImmediatelyWhenNothingLive() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     store.startRunCommand(for: target(store, "/a", "main"))  // no override → no live PTY
     XCTAssertFalse(store.runCommand.hasLiveRunCommand)
 
@@ -869,7 +905,7 @@ final class RunCommandTests: XCTestCase {
 
   func testGracefullyStopAllFallsBackAfterTimeout() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let v = try! XCTUnwrap(runView(store, t))
@@ -974,7 +1010,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(completed, "no runStates entries to iterate → completes synchronously")
   }
 
-  /// `WindowRegistry.hasLiveInvestigateSession` (issue #146) — used to warn before
+  /// `RunCommands.hasLiveInvestigateSession` (issue #146) — used to warn before
   /// deleteWorkroom/deleteProject reap a target's surfaces, since neither goes through
   /// `hasLiveRunCommand`. Must see a live session registered in ANY window, and must not match an
   /// unrelated target id.
@@ -984,15 +1020,17 @@ final class RunCommandTests: XCTestCase {
     registry.register(window: NSWindow(), store: store)
     let t = target(store, "/a", "main")
     let other = target(store, "/a", "other")
+    let runCommands = store.runCommands
 
-    XCTAssertFalse(registry.hasLiveInvestigateSession(for: [t.id]))
+    XCTAssertFalse(runCommands.hasLiveInvestigateSession(for: [t.id]))
 
     let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
     try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
 
-    XCTAssertTrue(registry.hasLiveInvestigateSession(for: [t.id]))
+    XCTAssertTrue(runCommands.hasLiveInvestigateSession(for: [t.id]))
     XCTAssertFalse(
-      registry.hasLiveInvestigateSession(for: [other.id]), "must not match an unrelated target id")
+      runCommands.hasLiveInvestigateSession(for: [other.id]),
+      "must not match an unrelated target id")
   }
 
   /// A third teardown path, distinct from `closeTab`/quit: deleting a workroom/project reaps the
@@ -1046,7 +1084,7 @@ final class RunCommandTests: XCTestCase {
 
   func testStartRunsInBackgroundWithoutStealingFocus() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     let shell = store.terminals.addTab(for: t).id  // a tab the user is on (addTab focuses it)
@@ -1061,7 +1099,7 @@ final class RunCommandTests: XCTestCase {
 
   func testToggleStartDoesNotNavigate() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = nil  // unrelated selection state
 
@@ -1073,7 +1111,7 @@ final class RunCommandTests: XCTestCase {
 
   func testCleanExitMapsToExitedOutcome() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
 
@@ -1084,7 +1122,7 @@ final class RunCommandTests: XCTestCase {
 
   func testNonZeroExitMapsToFailedOutcome() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
 
@@ -1098,7 +1136,7 @@ final class RunCommandTests: XCTestCase {
   /// same way again still arrives; the code is still the second word.
   func testARestartThatFailsTheSameWayEndsTheRestart() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     store.applyRunStatus("exited 127 1", for: t)
@@ -1113,7 +1151,7 @@ final class RunCommandTests: XCTestCase {
 
   func testUserStopThenExitMapsToStopped() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
 
@@ -1126,7 +1164,7 @@ final class RunCommandTests: XCTestCase {
 
   func testRunToastShownWhenBackgroundedHiddenWhenViewing() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)  // a focused shell, so the run isn't the visible tab
@@ -1143,7 +1181,7 @@ final class RunCommandTests: XCTestCase {
 
   func testBackgroundRunToastShowsStoppingUntilConfirmed() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)
@@ -1162,7 +1200,7 @@ final class RunCommandTests: XCTestCase {
     // issue #73: two workrooms running in the background must not pop a live toast each — only the
     // selected workroom's backgrounded run shows a "running" toast; the other's stays silent.
     let store = makeStore([project("/a", workrooms: ["main", "two"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t1 = target(store, "/a", "main")
     let t2 = target(store, "/a", "two")
 
@@ -1186,7 +1224,7 @@ final class RunCommandTests: XCTestCase {
 
   func testDismissRunToastHidesItWithoutStoppingTheRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)
@@ -1201,7 +1239,7 @@ final class RunCommandTests: XCTestCase {
 
   func testRunOrFocusFocusesAnAlreadyRunningBackgroundRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     let shell = store.terminals.addTab(for: t).id
@@ -1221,7 +1259,7 @@ final class RunCommandTests: XCTestCase {
   /// and the user was left with nothing running after a quick Stop → Run.
   func testRunOrFocusAfterStopRestartsRatherThanSwallowing() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
@@ -1242,7 +1280,7 @@ final class RunCommandTests: XCTestCase {
   func testRestartPreservesFocusWhenRunTabWasFocused() {
     // Under the supervisor model, restart signals SIGUSR1 and the same tab stays.
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
@@ -1263,7 +1301,7 @@ final class RunCommandTests: XCTestCase {
   func testBackgroundRestartStaysBackground() {
     // Under the supervisor model, restart signals SIGUSR1 and the same tab stays; focus is preserved.
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     let shell = store.terminals.addTab(for: t).id  // focused
@@ -1284,7 +1322,7 @@ final class RunCommandTests: XCTestCase {
 
   func testRunVisibleInSplitHidesToastEvenWhenNotFocused() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)  // background
@@ -1307,7 +1345,7 @@ final class RunCommandTests: XCTestCase {
       v.spawnFailOverrideForTesting = true
       return v
     }
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
 
     store.startRunCommand(for: t)  // background; spawn "fails"
@@ -1322,7 +1360,7 @@ final class RunCommandTests: XCTestCase {
 
   func testRunToastAutoDismissesAfterTerminalState() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     var pending: [DispatchWorkItem] = []
     store.runCommand.scheduleRunToastDismiss = { _, body in
@@ -1345,7 +1383,7 @@ final class RunCommandTests: XCTestCase {
     // With a dead supervisor (seam returns false), restartRunCommand takes the respawn path
     // (respawnRunCommand), which calls resetRunToast → cancels the stale timer.
     let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     var pending: [DispatchWorkItem] = []
     store.runCommand.scheduleRunToastDismiss = { _, body in
@@ -1365,7 +1403,8 @@ final class RunCommandTests: XCTestCase {
 
   func testRunningToastAutoHidesAfterLinger() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(
+      RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)  // focused shell → the run is backgrounded + toasted
@@ -1394,7 +1433,8 @@ final class RunCommandTests: XCTestCase {
     // Regression guard: a run that quietly auto-hid its "still running" toast must still surface a
     // failure toast if it later crashes — the two dismissal sets are independent.
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(
+      RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)
@@ -1418,7 +1458,8 @@ final class RunCommandTests: XCTestCase {
 
   func testRestartReArmsRunningToastAfterAutoHide() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(
+      RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)
@@ -1457,7 +1498,7 @@ final class RunCommandTests: XCTestCase {
 
   func testTappingRunToastOpensTheRunAndDismissesIt() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)  // focused shell → the run is backgrounded + toasted
@@ -1489,7 +1530,7 @@ final class RunCommandTests: XCTestCase {
 
   func testRunFailedTracksOutcome() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     XCTAssertFalse(store.runCommand.runFailed(for: t.id), "no run yet → not failed")
     store.startRunCommand(for: t)
@@ -1501,7 +1542,7 @@ final class RunCommandTests: XCTestCase {
 
   func testCleanExitIsNotFailed() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     store.applyRunStatus("exited 0", for: t)
@@ -1511,7 +1552,7 @@ final class RunCommandTests: XCTestCase {
   func testFailureToastShowsEvenWhenViewingRunTab() {
     // #79: terminal-state toasts bypass the hide-when-visible rule (live toasts keep it).
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
@@ -1527,7 +1568,7 @@ final class RunCommandTests: XCTestCase {
 
   func testSuccessToastShowsEvenWhenViewingRunTab() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     store.startRunCommand(for: t)
@@ -1542,7 +1583,7 @@ final class RunCommandTests: XCTestCase {
 
   func testUserStopShowsNoToast() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
 
@@ -1556,7 +1597,7 @@ final class RunCommandTests: XCTestCase {
 
   func testRestartShowsNoTerminalToast() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
 
@@ -1569,7 +1610,7 @@ final class RunCommandTests: XCTestCase {
 
   func testClosingRunTabClearsFailureOutcome() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let runID = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -1660,7 +1701,7 @@ final class RunCommandTests: XCTestCase {
   /// no "Running" toast at launch (Q13).
   func testARestoredRunStillGoingShowsNoRunningToast() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.selectedTargetID = .workroom(project: "/a", name: "main")
     _ = store.terminals.addTab(for: t)  // a focused shell, so the run is in the background
@@ -1682,7 +1723,7 @@ final class RunCommandTests: XCTestCase {
   /// A run that failed while the app was closed comes back with its outcome (Q7).
   func testARestoredRunThatFailedComesBackFailed() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     let tab = restoredRun(store, t)
 
@@ -1697,7 +1738,7 @@ final class RunCommandTests: XCTestCase {
   /// tab, starts nothing, and Run starts it again (Q8).
   func testARestoredRunWhoseSessionIsGoneComesBackStopped() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     let tab = restoredRun(store, t)
 
@@ -1712,7 +1753,7 @@ final class RunCommandTests: XCTestCase {
   /// going ends through its own tab's process, which says how (`markRunExited`).
   func testAGoneSessionOfARunThatWasGoingChangesNothing() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -1727,7 +1768,7 @@ final class RunCommandTests: XCTestCase {
   /// would ever say the run is over, and it would read as running for good (#522).
   func testAGoneSessionOfARunReattachingAfterItsLinkDroppedStopsIt() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -1743,7 +1784,7 @@ final class RunCommandTests: XCTestCase {
   /// A stop its daemon can't confirm (R9) keeps the run as it is, stopping, and starts nothing.
   func testAnUnconfirmedStopStartsNothing() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -1760,7 +1801,7 @@ final class RunCommandTests: XCTestCase {
   /// server on its port (#522).
   func testAWindowHoldingAnUnmountedRunStopsItBeforeClosing() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     XCTAssertFalse(store.runCommand.stopsRunsBeforeClosing, "nothing to stop")
     store.startRunCommand(for: t)
@@ -1776,7 +1817,7 @@ final class RunCommandTests: XCTestCase {
   /// stop it and leaves its tab out of the saved layout (#522).
   func testAQuitStopsARunWhosePaneWasNeverMounted() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -1804,7 +1845,7 @@ final class RunCommandTests: XCTestCase {
   /// nothing, so a lost reply can never double a server (R9).
   func testARestartReplacesTheRunOnlyWhenItsSessionIsGone() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let first = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -1824,7 +1865,7 @@ final class RunCommandTests: XCTestCase {
   /// A stop whose daemon holds no such session finds the run stopped already.
   func testAStopOfAGoneRunStopsIt() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
@@ -1854,7 +1895,7 @@ final class RunCommandTests: XCTestCase {
   /// already stopped before the quit is not one the quit stops, and still comes back (Q5).
   func testAQuitThatStopsRunsLeavesTheirTabsOutOfTheLayout() {
     let store = makeStore([project("/a", workrooms: ["main", "two"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let live = target(store, "/a", "main")
     let parked = target(store, "/a", "two")
     store.startRunCommand(for: live)
@@ -1879,7 +1920,7 @@ final class RunCommandTests: XCTestCase {
   /// A saved run tab comes back as the target's run, reattached and waiting for its state.
   func testARestoredRunTabIsTheTargetsRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     let session = UUID()
     let saved = TargetSession(
@@ -1913,6 +1954,6 @@ final class RunCommandTests: XCTestCase {
     let other = session([SessionMetadataKey.workroom: "X", "kind": "run"])
 
     XCTAssertEqual(
-      AppStore.runSessions(in: [shell, mine, other], workroom: "W"), [mine.identifier.uuid!])
+      RunCommands.runSessions(in: [shell, mine, other], workroom: "W"), [mine.identifier.uuid!])
   }
 }

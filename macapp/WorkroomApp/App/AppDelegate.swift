@@ -433,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // while it is still Ask (#522, Q12). Runs it stops are left out of what is saved.
         let action = QuitWithRunningServers.action(
           setting: Defaults[.quitWithRunningServers],
-          hasLiveRuns: WindowRegistry.shared.hasAnyLiveRun,
+          hasLiveRuns: RunCommands.shared.hasAnyLiveRun,
           isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: false)
         AppStore.quitStopsRuns = action == .stop
         let group = DispatchGroup()
@@ -444,7 +444,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           // Only once frozen: the document is built from the live windows, which stopping changes.
           if action == .stop {
             group.enter()
-            WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
+            RunCommands.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
           }
           group.leave()
         }
@@ -546,7 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // answer; that dialog's Cancel stands in for the confirmation (Q9, Q10).
     var action = QuitWithRunningServers.action(
       setting: Defaults[.quitWithRunningServers],
-      hasLiveRuns: WindowRegistry.shared.hasAnyLiveRun,
+      hasLiveRuns: RunCommands.shared.hasAnyLiveRun,
       isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: true)
     if action == .ask {
       guard let answer = askAboutRunningServers() else { return .terminateCancel }
@@ -628,7 +628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       if stoppingRuns {
         group.enter()
         // Stop every window's run commands, not just the focused one's.
-        registry.gracefullyStopAllWindows(timeout: 5) { group.leave() }
+        RunCommands.shared.gracefullyStopAllWindows(timeout: 5) { group.leave() }
       }
       group.leave()
     }

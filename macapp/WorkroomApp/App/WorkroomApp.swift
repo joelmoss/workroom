@@ -225,7 +225,9 @@ struct RootWindow: View {
   init(seed: WindowSeed) {
     self.seed = seed
     // Every window shows the app's one notification list (ADR 0064).
-    let store = AppStore(projectStore: .shared, notifications: WindowRegistry.shared.notifications)
+    let store = AppStore(
+      projectStore: .shared, runCommands: .shared,
+      notifications: WindowRegistry.shared.notifications)
     // Capture the current window's size ONCE, at this window's creation, so the new window can be
     // sized to match it before it's shown (issue #70). nil for the launch window.
     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
@@ -251,6 +253,7 @@ struct RootWindow: View {
       .environmentObject(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
+      .environmentObject(store.runCommands)
       .environmentObject(store.projectStore)
       .environmentObject(store.notifications)
       .environmentObject(store.terminals)

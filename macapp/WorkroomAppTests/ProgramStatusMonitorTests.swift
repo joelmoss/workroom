@@ -343,7 +343,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
         workrooms: [Workroom(name: "main", path: "/a/main", vcsName: "workroom/main", warnings: [])]
       )
     ]
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let target = try XCTUnwrap(store.target(for: .workroom(project: "/a", name: "main")))
     store.startRunCommand(for: target)
     let tab = try XCTUnwrap(store.runCommand.runTabID(for: target.id))

@@ -255,7 +255,7 @@ private struct ProjectSettingsForm: View {
 
   private func saveRun() {
     guard projectExists, let config = draft.runToSave() else { return }
-    ProjectStore.shared.setRunConfig(config, forProject: project.path)
+    RunCommands.shared.setRunConfig(config, forProject: project.path)
   }
 
   private func saveBaseBranch() {

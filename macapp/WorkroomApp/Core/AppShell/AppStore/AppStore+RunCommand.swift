@@ -8,10 +8,11 @@ import WorkroomWire
 
 /// The run command (issue #7): starting, restarting and respawning a workroom's run command under
 /// its supervisor, applying the supervisor's status, the run toast list and native banner (issue
-/// #67), and the selection-scoped Run, Stop and Restart actions. These read the store (projects,
-/// run config, selection, host layout, `modals`, `services.notifier`), so they stay
-/// here. The run state itself, the toast dismissal, the supervisor's pid and session handling and
-/// the graceful teardown live in `RunCommandController`, which the store owns as `runCommand`.
+/// #67), and the selection-scoped Run, Stop and Restart actions. These read the window (projects,
+/// selection, host layout, `modals`, `services.notifier`), so they stay here. The run state itself,
+/// the toast dismissal, the supervisor's pid and session handling and the graceful teardown live in
+/// `RunCommandController`, which the store owns as `runCommand`; the run config and what spans
+/// windows live in the app's `RunCommands`, which it holds as `runCommands`.
 extension AppStore {
   // MARK: Run command (issue #7)
 
@@ -55,7 +56,8 @@ extension AppStore {
       }
       let command =
         project(forTargetID: targetID).map {
-          runConfig(forProject: $0.path).command.trimmingCharacters(in: .whitespacesAndNewlines)
+          runCommands.runConfig(forProject: $0.path).command.trimmingCharacters(
+            in: .whitespacesAndNewlines)
         } ?? ""
       return RunToastItem(
         targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
@@ -106,19 +108,6 @@ extension AppStore {
     return project
   }
 
-  /// The run config for a project path (empty if none set). Single read path for the toolbar, menu,
-  /// Settings ▸ Projects, and auto-run. Stored app-side in `Defaults` (GUI-only — the CLI can't hold a
-  /// long-running process, so it's deliberately out of the `--json` contract, like branch labels).
-  func runConfig(forProject projectPath: String) -> RunConfig {
-    _ = projectStore.runConfigRevision  // a read Observation tracks: `Defaults` is not observable
-    return Defaults[.runCommands][projectPath] ?? .empty
-  }
-
-  /// Whether a project has a non-blank run command configured.
-  func hasRunCommand(forProject projectPath: String) -> Bool {
-    runConfig(forProject: projectPath).hasCommand
-  }
-
   /// Whether to surface run controls for a target: its project has a command configured AND
   /// `startRunCommand` would actually start one (`isRunBlocked`). One gate for the sidebar run
   /// buttons and the ⌘R menu item, so a new condition lands in a single place (review #9/#14).
@@ -132,77 +121,11 @@ extension AppStore {
   /// A remote or container workroom whose panes open here runs too (#522): its run runs on its
   /// host, so the gate is whether a pane can open, not whether its path is on this Mac.
   func canRunCommand(for target: TerminalTarget, inProject projectPath: String) -> Bool {
-    target.opensTerminals && !isRunBlocked(target.id) && hasRunCommand(forProject: projectPath)
-  }
-
-  /// The base branch `project`'s new workrooms start from: its own, else the app-wide one, else nil
-  /// for origin's default branch. The CLI applies the same rule to a local create.
-  func effectiveBaseBranch(for project: Project) -> String? {
-    project.baseBranch ?? projectStore.globalBaseBranch
-  }
-
-  /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
-  /// through the CLI, which owns it so `workroom create` in a terminal agrees.
-  /// Returns the CLI's error when it refused, which this window shows unless `presentingError` is
-  /// false (Settings ▸ Projects shows it by the field).
-  @discardableResult
-  func setBaseBranch(
-    _ branch: String?, forProject projectPath: String, presentingError: Bool = true
-  ) async -> String? {
-    let trimmed = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
-    var refused: String?
-    do {
-      try await cli.setBaseBranch(
-        project: projectPath, branch: trimmed?.isEmpty == false ? trimmed : nil)
-    } catch {
-      refused = errorText(error)
-      if presentingError { present(error) }
-    }
-    await reload()
-    return refused
-  }
-
-  /// Persist a project's run config, through the project store every window shares.
-  func setRunConfig(_ config: RunConfig, forProject projectPath: String) {
-    projectStore.setRunConfig(config, forProject: projectPath)
+    target.opensTerminals && !isRunBlocked(target.id)
+      && runCommands.hasRunCommand(forProject: projectPath)
   }
 
   // MARK: Run command — actions (issue #7)
-
-  /// The current branch label for a terminal target, for the detail-panel status bar (issue
-  /// #49). Reuses the already-resolved sidebar caches — the per-workroom local status (`branchForCI`)
-  /// and the project root's `RootRef` — so it adds no new VCS calls. Nil until those resolve, or when
-  /// no branch is resolvable (the status bar then just omits the segment).
-  func branchLabel(for target: TerminalTarget) -> String? {
-    guard let sid = sidebarID(for: target.id) else { return nil }
-    return branchName(for: sid)
-  }
-
-  /// **The** answer to "what branch is this?", for every surface that shows one: the status
-  /// bar (`branchLabel(for:)`), the Changes panel header, the sidebar's project root row, and the VCS
-  /// toolbar. Four surfaces previously each derived it, which meant they could disagree on screen.
-  ///
-  /// **Reads only caches — never calls a VCS provider, and must stay that way.** Every source here is
-  /// already resolved by something else on its own schedule. This is load-bearing, not incidental: the
-  /// sidebar and status bar render this for every row, and the recorded pitfall
-  /// `history-eager-focus-is-a-full-vcs-read` is exactly what happens when a per-row read turns out to
-  /// open a repo. `BranchLabelTests` pins it with a counting stub that fails if a provider is touched.
-  ///
-  /// Source order, freshest first:
-  /// 1. `resolvedBranchNames` — the VCS toolbar's remote-state read, which is force-refreshed the
-  ///    moment anything changes it, so it leads whenever it has an answer.
-  /// 2. `branchForCI` from the per-workroom status sweep (15s TTL).
-  /// 3. The project root's `RootRef`, resolved by `BranchResolver`.
-  func branchName(for sid: SidebarID) -> String? {
-    if let resolved = resolvedBranchNames[sid], !resolved.isEmpty { return resolved }
-    let status = projectStore.workroomStatuses[sid]
-    if let branch = status?.branchForCI, !branch.isEmpty { return branch }
-    if case .root(let project) = sid {
-      let label = RootPresentation.make(projectStore.rootRefs[project] ?? .unresolved).label
-      return label.isEmpty ? nil : label
-    }
-    return nil
-  }
 
   /// Apply one status line from the supervisor to `RunState`/`RunOutcome` (issues #7, #522): the
   /// AUTHORITATIVE run state, as the run session's daemon publishes it (`TerminalSessions` raises
@@ -329,7 +252,9 @@ extension AppStore {
       case .terminal(let s)? = terminals.tab(tab, for: target)?.content
     else { return }
     let view = s.view
-    let command = project(forTargetID: target.id).map { runConfig(forProject: $0.path).command }
+    let command = project(forTargetID: target.id).map {
+      runCommands.runConfig(forProject: $0.path).command
+    }
     let shell = (ShellEnvironment.loginShell() as NSString).lastPathComponent
 
     Task { @MainActor in
@@ -373,7 +298,7 @@ extension AppStore {
     // and the ⌘R menu item all route through; each of those hides or disables itself on `isRunBlocked`
     // too, so the button and the action agree, but this guard is what makes that safe to rely on.
     guard !isRunBlocked(target.id) else { return }
-    let config = runConfig(forProject: project.path)
+    let config = runCommands.runConfig(forProject: project.path)
     guard config.hasCommand else { return }
     if let existing = runCommand.runStates[target.id]?.tab {
       // issue #67: a plain start never steals focus — only the auto-run-only-tab case passes focus.
@@ -388,7 +313,8 @@ extension AppStore {
     // the host first, and show a run that is already going rather than start a second server.
     guard runCommand.pendingRunStarts.insert(target.id).inserted else { return }
     Task { @MainActor [weak self] in
-      let runs = await Self.liveRunSessions(on: .remote(host), workroom: target.sessionWorkroomKey)
+      let runs = await RunCommands.liveRunSessions(
+        on: .remote(host), workroom: target.sessionWorkroomKey)
       guard let self else { return }
       self.runCommand.pendingRunStarts.remove(target.id)
       guard self.runCommand.runStates[target.id]?.tab == nil else { return }
@@ -408,30 +334,6 @@ extension AppStore {
     }
     var recoverySuggestion: String? {
       "Open the workroom again after updating Workroom on every Mac that uses this host."
-    }
-  }
-
-  /// The live run sessions `host`'s daemon holds for `workroom` (D7), or none when it can't say.
-  /// Connects first, as no pane of the workroom may have yet: the user asked for the run, so its
-  /// host is activated (a stopped container is started) and woken (`docs/remote-host-states.md`).
-  static func liveRunSessions(on host: HostID, workroom: String) async -> [UUID] {
-    RemoteHosts.shared.activate(host)
-    try? await RemoteHosts.shared.ensureConnected(host, wake: true)
-    guard
-      let sessions = try? await HostConnectionManager.shared.sessions(on: host)
-    else { return [] }
-    return runSessions(in: sessions, workroom: workroom)
-  }
-
-  /// The run sessions among `sessions` that are `workroom`'s.
-  static func runSessions(in sessions: [SessionDescriptor], workroom: String) -> [UUID] {
-    sessions.compactMap { descriptor in
-      let tags = Dictionary(
-        descriptor.metadata.map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
-      guard tags[SessionMetadataKey.workroom] == workroom,
-        tags[RunSessionKey.kind] == RunSessionKey.run
-      else { return nil }
-      return descriptor.identifier.uuid
     }
   }
 
@@ -521,7 +423,7 @@ extension AppStore {
     // the command cleared left the toast/sidebar dot reporting "running" against a pid that no
     // longer exists.
     runCommand.runStates[target.id] = .stopped(tab: oldTab)
-    guard hasRunCommand(forProject: project.path) else {
+    guard runCommands.hasRunCommand(forProject: project.path) else {
       // #127 follow-up: the command was cleared while a stopped-but-open run pane sat waiting for
       // this restart. Mirror the `.armed`/`.none` branch's warning instead of silently closing the
       // pane — closing it here used to look exactly like ⌘R had done nothing, with no way to tell
@@ -532,7 +434,7 @@ extension AppStore {
         project: project, showsRunWarning: true)
       return
     }
-    let command = runConfig(forProject: project.path).command.trimmingCharacters(
+    let command = runCommands.runConfig(forProject: project.path).command.trimmingCharacters(
       in: .whitespacesAndNewlines)
     // Issue #67: a restart PRESERVES focus rather than always backgrounding — if the user was viewing
     // the run tab, the replacement stays focused; if it was already backgrounded, it stays so. Capture
@@ -647,12 +549,10 @@ extension AppStore {
       // Single-owner across windows (issue #70, OV-2): if another window already runs this
       // workroom's command, focus its run terminal rather than forking a second server on the same
       // port (which the app's own pid/process-group lifecycle would then fight over).
-      if let owner = WindowRegistry.shared.runOwner(for: target.id, excluding: self) {
-        // Same reason as the notification route: the run terminal may be a detached pane (#172).
-        owner.window(forTab: owner.runCommand.runStates[target.id]?.tab)?.makeKeyAndOrderFront(nil)
-        owner.revealRunTerminal()
+      if let owner = runCommands.runOwner(for: target.id, excluding: runCommand) {
+        owner.revealRun?(target.id)
       } else if let project = project(forTargetID: target.id),
-        !hasRunCommand(forProject: project.path)
+        !runCommands.hasRunCommand(forProject: project.path)
       {
         // Issue #127: ⌘R on a target with no run command configured used to silently no-op inside
         // `startRunCommand`'s guard. Open the project's settings with a warning instead.

@@ -166,8 +166,9 @@ final class CreationFlowTests: XCTestCase {
     fake.release("wr")
     let store = makeStore(fake)
     let id = TargetID.workroom(project: projectPath, name: "wr")
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
-    defer { store.setRunConfig(.empty, forProject: projectPath) }
+    store.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
+    defer { store.runCommands.setRunConfig(.empty, forProject: projectPath) }
 
     await store.createWorkroom(in: emptyProject)
 
@@ -190,8 +191,9 @@ final class CreationFlowTests: XCTestCase {
     let store = makeStore(fake)
     store.closesFinishedCreations = { false }
     let id = TargetID.workroom(project: projectPath, name: "wr")
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
-    defer { store.setRunConfig(.empty, forProject: projectPath) }
+    store.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
+    defer { store.runCommands.setRunConfig(.empty, forProject: projectPath) }
 
     await store.createWorkroom(in: emptyProject)
 
@@ -1383,7 +1385,8 @@ final class CreationFlowTests: XCTestCase {
     }
     store.services.remoteCreate = services
     store.closesFinishedCreations = { false }
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
+    store.runCommands.setRunConfig(
+      RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
 
     await store.createRemoteWorkroom(in: emptyProject, place: .container(.docker))
 
@@ -1517,7 +1520,8 @@ final class CreationFlowTests: XCTestCase {
     // The run waits for Done: a create against the fake daemon ends within one poll of the
     // run's start, so watching `creationRuns` for it mid-flight is a race.
     store.closesFinishedCreations = { false }
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
+    store.runCommands.setRunConfig(
+      RunConfig(command: "bin/dev", autoRun: true), forProject: projectPath)
 
     await store.createRemoteWorkroom(in: emptyProject, place: .boxd)
     let run = try XCTUnwrap(store.creationRuns.values.first, "the run waits for Done")
@@ -1651,7 +1655,8 @@ final class CreationFlowTests: XCTestCase {
       return .failed(why)
     }
     store.services.remoteCreate = services
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: true), forProject: project.path)
+    store.runCommands.setRunConfig(
+      RunConfig(command: "bin/dev", autoRun: true), forProject: project.path)
 
     await store.createRemoteWorkroom(in: project, place: .boxd)
 

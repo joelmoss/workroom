@@ -13,6 +13,35 @@ import WorkroomVCS
 /// `.workroom(project:name:)`, swapped in place. While the run lasts, that target's terminal stays
 /// withheld in every window (`isCreationBlocking`).
 extension AppStore {
+  // MARK: Base branch
+
+  /// The base branch `project`'s new workrooms start from: its own, else the app-wide one, else nil
+  /// for origin's default branch. The CLI applies the same rule to a local create.
+  func effectiveBaseBranch(for project: Project) -> String? {
+    project.baseBranch ?? projectStore.globalBaseBranch
+  }
+
+  /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
+  /// through the CLI, which owns it so `workroom create` in a terminal agrees.
+  /// Returns the CLI's error when it refused, which this window shows unless `presentingError` is
+  /// false (Settings ▸ Projects shows it by the field).
+  @discardableResult
+  func setBaseBranch(
+    _ branch: String?, forProject projectPath: String, presentingError: Bool = true
+  ) async -> String? {
+    let trimmed = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+    var refused: String?
+    do {
+      try await cli.setBaseBranch(
+        project: projectPath, branch: trimmed?.isEmpty == false ? trimmed : nil)
+    } catch {
+      refused = errorText(error)
+      if presentingError { present(error) }
+    }
+    await reload()
+    return refused
+  }
+
   // MARK: Runs
 
   /// The run whose pane `id` is, while it lasts.
@@ -467,7 +496,7 @@ extension AppStore {
   /// It fires when the pane mounts, which is once the create is over. A remote create arms it at
   /// the same point, once its workroom has a name (#522): its run runs on its host.
   func armAutoRunIfConfigured(_ id: TerminalTarget.ID, in project: Project) {
-    let cfg = runConfig(forProject: project.path)
+    let cfg = runCommands.runConfig(forProject: project.path)
     if cfg.autoRun, cfg.hasCommand { runCommand.armAutoRun(forWorkroom: id) }
   }
 

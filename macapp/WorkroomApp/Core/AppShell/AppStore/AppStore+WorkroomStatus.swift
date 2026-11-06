@@ -449,6 +449,41 @@ extension AppStore {
     refreshOpenDiffChangeKinds(for: sid, status: s)
   }
 
+  /// The current branch label for a terminal target, for the detail-panel status bar (issue
+  /// #49). Reuses the already-resolved sidebar caches — the per-workroom local status (`branchForCI`)
+  /// and the project root's `RootRef` — so it adds no new VCS calls. Nil until those resolve, or when
+  /// no branch is resolvable (the status bar then just omits the segment).
+  func branchLabel(for target: TerminalTarget) -> String? {
+    guard let sid = sidebarID(for: target.id) else { return nil }
+    return branchName(for: sid)
+  }
+
+  /// **The** answer to "what branch is this?", for every surface that shows one: the status
+  /// bar (`branchLabel(for:)`), the Changes panel header, the sidebar's project root row, and the VCS
+  /// toolbar. Four surfaces previously each derived it, which meant they could disagree on screen.
+  ///
+  /// **Reads only caches — never calls a VCS provider, and must stay that way.** Every source here is
+  /// already resolved by something else on its own schedule. This is load-bearing, not incidental: the
+  /// sidebar and status bar render this for every row, and the recorded pitfall
+  /// `history-eager-focus-is-a-full-vcs-read` is exactly what happens when a per-row read turns out to
+  /// open a repo. `BranchLabelTests` pins it with a counting stub that fails if a provider is touched.
+  ///
+  /// Source order, freshest first:
+  /// 1. `resolvedBranchNames` — the VCS toolbar's remote-state read, which is force-refreshed the
+  ///    moment anything changes it, so it leads whenever it has an answer.
+  /// 2. `branchForCI` from the per-workroom status sweep (15s TTL).
+  /// 3. The project root's `RootRef`, resolved by `BranchResolver`.
+  func branchName(for sid: SidebarID) -> String? {
+    if let resolved = resolvedBranchNames[sid], !resolved.isEmpty { return resolved }
+    let status = projectStore.workroomStatuses[sid]
+    if let branch = status?.branchForCI, !branch.isEmpty { return branch }
+    if case .root(let project) = sid {
+      let label = RootPresentation.make(projectStore.rootRefs[project] ?? .unresolved).label
+      return label.isEmpty ? nil : label
+    }
+    return nil
+  }
+
   /// Drop the toolbar's cached branch name for `sid` when this sweep disagrees with it.
   ///
   /// `resolvedBranchNames` leads `branchName(for:)` because it is normally the freshest source — but it

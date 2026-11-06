@@ -811,13 +811,14 @@ final class AppStore: ObservableObject {
     private var fixtureAutoSelect = true
   #endif
 
-  /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`; tests
-  /// build an isolated `AppStore()` (own fresh `ProjectStore`), inject `projects`, and drive the real
-  /// recording/navigation paths. `init` does no CLI work (only `bootstrap()`/`load()` do).
+  /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared` and
+  /// `RunCommands.shared`; tests build an isolated `AppStore()` (own fresh `ProjectStore` and
+  /// `RunCommands`), inject `projects`, and drive the real recording/navigation paths. `init` does
+  /// no CLI work (only `bootstrap()`/`load()` do).
   init(
-    projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil,
-    commitHistory: HistoryModel? = nil, remoteState: RemoteStateModel? = nil,
-    notifications: NotificationCenterStore? = nil
+    projectStore: ProjectStore? = nil, runCommands: RunCommands? = nil,
+    cli: WorkroomCLIProtocol? = nil, commitHistory: HistoryModel? = nil,
+    remoteState: RemoteStateModel? = nil, notifications: NotificationCenterStore? = nil
   ) {
     var services = AppServices.current
     if let cli { services.cli = cli }
@@ -839,6 +840,7 @@ final class AppStore: ObservableObject {
     let terminals = TerminalSessions()
     self.terminals = terminals
     self.runCommand = RunCommandController(terminals: terminals)
+    self.runCommands = runCommands ?? RunCommands()
     // Any pane change marks the saved session dirty (issue #46). `objectWillChange` fires BEFORE the
     // mutation, so the coordinator must always schedule a capture — never take one inline here.
     sessionObservation = terminals.objectWillChange.sink { [weak self] _ in
@@ -883,11 +885,17 @@ final class AppStore: ObservableObject {
     // A run tab rebuilt from a saved session is a run session of the project's command (#522).
     terminals.runCommandForTarget = { [weak self] target in
       guard let self, let project = self.project(forTargetID: target.id) else { return nil }
-      let command = self.runConfig(forProject: project.path).command
+      let command = self.runCommands.runConfig(forProject: project.path).command
       return command.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     runCommand.onSignalUnconfirmed = { [weak self] targetID, reason in
       self?.runSignalUnconfirmed(targetID: targetID, reason: reason)
+    }
+    runCommand.revealRun = { [weak self] targetID in
+      guard let self else { return }
+      // Same reason as the notification route: the run terminal may be a detached pane (#172).
+      self.window(forTab: self.runCommand.runStates[targetID]?.tab)?.makeKeyAndOrderFront(nil)
+      self.revealRunTerminal()
     }
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
@@ -1564,6 +1572,9 @@ final class AppStore: ObservableObject {
   /// status stay in `AppStore+RunCommand.swift`, since they read the store. Views reach it through
   /// the environment and everything else as `runCommand`; the store does not forward its members.
   let runCommand: RunCommandController
+  /// The app's run commands: run config, and what spans windows (the window running a workroom's
+  /// command, quit). This window's `runCommand` is registered with it while the window is up.
+  let runCommands: RunCommands
   typealias RunState = RunCommandController.RunState
   typealias RunOutcome = RunCommandController.RunOutcome
   typealias RunToastItem = RunCommandController.RunToastItem
@@ -1763,9 +1774,9 @@ final class AppStore: ObservableObject {
         // command (e.g. a `RunStatusUITests` run) would otherwise leak a stale command into this state
         // (found by review, issue #127).
         if UITestFixture.noRunCommand {
-          setRunConfig(.empty, forProject: project.path)
+          runCommands.setRunConfig(.empty, forProject: project.path)
         } else {
-          setRunConfig(
+          runCommands.setRunConfig(
             RunConfig(
               command: UITestFixture.runCommand ?? "echo PROBE_OK; sleep 30", autoRun: false),
             forProject: project.path)

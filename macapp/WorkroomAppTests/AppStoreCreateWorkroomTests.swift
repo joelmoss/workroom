@@ -664,7 +664,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let proj = project(withWorkroom: "wr")
     store.projectStore.projects = [proj]
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
+    store.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
     let id = TargetID.workroom(project: projectPath, name: "wr")
     let target = proj.workrooms[0].target(inProject: projectPath)
 
@@ -1346,7 +1347,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     }
     // Configured immediately before the call, and cleared right after: `Defaults[.runCommands]` is
     // one domain shared with every parallel test worker, and `RunCommandTests` wipes it wholesale.
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: projectPath)
+    store.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: false), forProject: projectPath)
     store.startRunCommand(for: target)
     XCTAssertNil(
       store.runCommand.runStates[idA]?.tab, "no run terminal may open against a half-built tree")
@@ -1356,11 +1358,12 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     // Positive control: with the create over the SAME call starts a run, so the assertion above
     // failed on a guard rather than on a missing command.
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: projectPath)
+    store.runCommands.setRunConfig(
+      RunConfig(command: "echo hi", autoRun: false), forProject: projectPath)
     store.startRunCommand(for: target)
     XCTAssertNotNil(
       store.runCommand.runStates[idA]?.tab, "once the create is fully over, Run works normally")
-    store.setRunConfig(.empty, forProject: projectPath)
+    store.runCommands.setRunConfig(.empty, forProject: projectPath)
   }
 
   /// REWRITTEN (#483, R3): a create that finishes while ANOTHER create is still unnamed must not be
