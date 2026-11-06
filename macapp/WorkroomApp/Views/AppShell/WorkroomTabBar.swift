@@ -49,16 +49,17 @@ struct WorkroomTabBar: View {
   /// The tab row's coordinate space, which the tabs' frames are measured in.
   static let runSpace = "workroomTabRun"
 
-  /// Whether the hairline before the trailing controls shows. Hidden when the last tab stands apart on
-  /// its own (selected or hovered — its filled pill already separates it), when it's in a split group
-  /// (the `splitWell` bracket frames it, so a divider would double against its rounded edge), and once
-  /// the controls have pinned (issue #129): the fade and gutter already separate the regions. Hidden
-  /// too when the run is empty — the bar is mounted with no tabs at all (a fresh window), and a
-  /// hairline with nothing to its left is a divider between nothing and the buttons.
+  /// Whether the hairline before the trailing controls shows (`TabStripSeparators.atEdge`, the
+  /// terminal strip's rule too). Hidden when the last tab stands apart on its own (selected or
+  /// hovered — its filled pill already separates it), when it's in a split group (the split bracket
+  /// frames it, so a divider would double against its rounded edge), and once the controls have
+  /// pinned (issue #129): the fade and gutter already separate the regions. Hidden too when the run
+  /// is empty — the bar is mounted with no tabs at all (a fresh window), and a hairline with nothing
+  /// to its left is a divider between nothing and the buttons.
   private func showsTrailingDivider(overflowing: Bool, groupOf: [SidebarID: Int]) -> Bool {
     guard !overflowing else { return false }
-    guard let last = tabs.last else { return false }
-    return groupOf[last.sid] == nil && last.sid != selectedID && last.sid != hoveredID
+    return TabStripSeparators.atEdge(
+      of: tabs.last?.sid, active: selectedID, hovered: hoveredID, groupOf: groupOf)
   }
 
   var body: some View {
@@ -121,8 +122,8 @@ struct WorkroomTabBar: View {
   /// Measured as one run for the overflow predicate — which covers the provisional chip and the trailing
   /// hairline too, since both live in this measured row (so neither needs its own bookkeeping; notably
   /// the provisional chip is deliberately absent from `WorkroomTabWidthKey`). The split bracket is drawn
-  /// behind it (leading-aligned, so x = 0 is the first chip's leading edge, which is what `splitRunRects`
-  /// computes against).
+  /// behind it (leading-aligned, so x = 0 is the first chip's leading edge, which is what
+  /// `TabStripSplitRun.rects` computes against).
   ///
   /// The split-group map is built ONCE here and threaded into the three readers (per-chip separator,
   /// trailing divider, brackets) — it walks every leaf of every group, and this body re-renders on every
@@ -225,7 +226,17 @@ struct WorkroomTabBar: View {
         .padding(.trailing, 4)
         .opacity(showsTrailingDivider(overflowing: overflowing, groupOf: groupOf) ? 1 : 0)
     }
-    .background(alignment: .leading) { splitWell(groupOf: groupOf) }
+    .background(alignment: .leading) {
+      // One bracket per group: `displayedWorkroomTargets` keeps each group's members contiguous, so
+      // every group is one block. Hidden during a drag.
+      if !drag.isDragging {
+        TabStripSplitBrackets(
+          runs: TabStripSplitRun.rects(
+            ids: tabs.map(\.sid), width: { drag.widths[$0] ?? 0 }, groupOf: groupOf,
+            spacing: tabSpacing),
+          identifierPrefix: "workroom.tab.splitBracket")
+      }
+    }
     // The row's own space and its view, so a drop from another window maps a screen point onto
     // these tabs (#444).
     .coordinateSpace(.named(Self.runSpace))
@@ -251,89 +262,21 @@ struct WorkroomTabBar: View {
 
   /// Whether to draw a hairline on the leading edge of tab `index`. Every tab gets a leading divider
   /// (including the first — so all tabs are bracketed left and right, the right one being the next
-  /// tab's leading hairline or the trailing "+" divider). The exception is a split group: it only
-  /// divides **within** itself, so a hairline is dropped at the group's **outer** boundary — the first
+  /// tab's leading hairline or the trailing "+" divider); the terminal strip draws none before its
+  /// first tab, and that difference is this bar's own. The rules are `TabStripSeparators`': none
+  /// beside the selected or hovered pill, and none at a split group's **outer** boundary — the first
   /// member's leading edge (index 0 member, or a member following a non-member or a DIFFERENT group's
-  /// member) and, symmetrically, whatever follows a member. The `splitWell` brackets separate the groups
-  /// there instead. Interior member↔member boundaries (same group) keep their hairline. Never mid-drag.
+  /// member) and, symmetrically, whatever follows a member, where the brackets separate the groups
+  /// instead. Interior member↔member boundaries (same group) keep their hairline. Never mid-drag.
   private func showsLeadingSeparator(at index: Int, groupOf: [SidebarID: Int]) -> Bool {
     guard !drag.isDragging else { return false }
-    let here = tabs[index].sid
-    // First tab: a leading divider unless it's the leading (outer) edge of a split group, or is itself
-    // the selected/hovered pill (which stands alone).
     guard index > 0 else {
-      return groupOf[here] == nil && here != selectedID && here != hoveredID
+      return TabStripSeparators.atEdge(
+        of: tabs[index].sid, active: selectedID, hovered: hoveredID, groupOf: groupOf)
     }
-    let prev = tabs[index - 1].sid
-    // Drop the divider on both sides of the selected or hovered tab so its filled pill stands apart
-    // from its neighbours (mirrors `TerminalTabStrip`).
-    if here == selectedID || prev == selectedID { return false }
-    if here == hoveredID || prev == hoveredID { return false }
-    // A group boundary — including group A ↔ group B, where BOTH sides are members of *different*
-    // groups and each has its own bracket.
-    if groupOf[here] != groupOf[prev] { return false }
-    return true
-  }
-
-  /// A rounded outline bracketing each workroom-split group's contiguous chip run, so the grouping is
-  /// visible even while you're viewing a workroom outside it (groups persist). Mirrors
-  /// `TerminalTabStrip.splitWell` — an outline, not a fill, so it doesn't compete with the active-chip
-  /// fill. Hidden during a drag. One bracket per group: `displayedWorkroomTargets` keeps each group's
-  /// members contiguous, so every group is one block.
-  ///
-  /// The `ZStack(alignment: .leading)` is load-bearing and NOT redundant with the caller's
-  /// `.background(alignment: .leading)`: that alignment places the background *content as a whole*, and
-  /// several `ForEach` brackets are wrapped in an implicit stack whose own alignment is the default
-  /// `.center` — so every bracket narrower than the widest one was centred inside it and drawn
-  /// `(widest − mine) / 2` too far right, while the widest one alone landed correctly. With one group
-  /// (all this bar could hold before several groups per window) the sole bracket *was* the widest, so
-  /// the fault was invisible until then. `TabStripSplitRun.rect` was right all along — each `run.x` is
-  /// relative to the first chip's leading edge, which is what this stack restores as every bracket's
-  /// origin.
-  @ViewBuilder private func splitWell(groupOf: [SidebarID: Int]) -> some View {
-    if !drag.isDragging {
-      ZStack(alignment: .leading) {
-        ForEach(Array(splitRunRects(groupOf: groupOf).enumerated()), id: \.offset) { index, run in
-          RoundedRectangle(cornerRadius: 7)
-            .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
-            .frame(width: run.width)
-            .offset(x: run.x)
-            // A frame XCUITest can read, so the misalignment above is testable at all — a stroked
-            // shape is otherwise invisible to it, and the arithmetic was never the faulty half. Kept
-            // OUT of the a11y tree in a normal run (`accessibilityHidden`): it's pure decoration, and
-            // VoiceOver users get the grouping from each chip's own label. Same fixture-gated handle
-            // idea as `PaneTreeView`'s single-pane `.isSelected`.
-            .accessibilityElement()
-            #if DEBUG
-              .accessibilityHidden(!AppEnvironment.current.isFixture)
-            #else
-              .accessibilityHidden(true)
-            #endif
-            .accessibilityIdentifier("workroom.tab.splitBracket.\(index)")
-        }
-      }
-    }
-  }
-
-  /// The x-offset and width of every split group's contiguous run within the chip row (x = 0 at the
-  /// first chip), from the measured chip widths — empty when nothing is grouped. Maps this bar's model to
-  /// position-indexed widths and delegates the arithmetic to the shared `TabStripSplitRun` (unit-tested
-  /// there), exactly as `TerminalTabStrip.splitRunRect` does; a group with fewer than two chips in the
-  /// bar yields no bracket.
-  private func splitRunRects(groupOf: [SidebarID: Int]) -> [(x: CGFloat, width: CGFloat)] {
-    guard !groupOf.isEmpty else { return [] }
-    let chipWidths = tabs.map { drag.widths[$0.sid] ?? 0 }
-    // Bucket the chips by group in ONE pass over the bar (a filter per group would be O(groups × chips)).
-    var byGroup: [Int: [Int]] = [:]
-    for (index, tab) in tabs.enumerated() {
-      guard let group = groupOf[tab.sid] else { continue }
-      byGroup[group, default: []].append(index)
-    }
-    // Sorted by group index so the brackets keep a stable draw order across renders.
-    return byGroup.keys.sorted().compactMap { group in
-      TabStripSplitRun.rect(
-        widths: chipWidths, memberIndices: byGroup[group] ?? [], spacing: tabSpacing)
-    }
+    return TabStripSeparators.between(
+      tabs[index - 1].sid, tabs[index].sid, active: selectedID, hovered: hoveredID,
+      groupOf: groupOf)
   }
 
   /// A reorder translation kept within the tab run (`TabReorderDrag.clamped`): the bar spans the

@@ -29,8 +29,8 @@ struct WorkroomPaneDrag: Equatable {
 /// Workroom-into-workroom split renderer (issue #23 follow-up): renders `PaneLayout<SidebarID>` as
 /// nested, resizable panes — each a full `TargetTerminalDetail`. Deliberately SEPARATE from the
 /// terminal renderer `PaneTreeView` (whose re-parenting/blank-pane history makes surgery risky); it
-/// reuses only the pure `PaneTreeLayout` geometry + the generic `PaneLayout` model and duplicates a
-/// little view chrome (divider, focus border, drop band).
+/// shares the pure `PaneTreeLayout` geometry, the generic `PaneLayout` model, and the divider and
+/// drop band (`SplitDivider`, `DropAccent`), and keeps its own card chrome.
 ///
 /// Like `PaneTreeView`, panes are laid out in ONE flat `ZStack`, positioned by absolute frames and
 /// keyed by `SidebarID`, so a surviving pane keeps the exact same host across a layout change (only its
@@ -109,8 +109,11 @@ struct WorkroomSplitView: View {
           }
         }
         ForEach(plan.dividers) { d in
-          WorkroomSplitDivider(
-            orientation: d.orientation, ratio: d.ratio, total: d.total,
+          // The in-flight ratio is parked in `liveRatio`: it must NOT reach the store, whose write
+          // would rebuild every pane at cursor rate (issue #139). Only the release persists.
+          SplitDivider(
+            orientation: d.orientation, ratio: d.ratio, total: d.total, noun: "workroom",
+            identifier: "workroom.pane.divider",
             onLive: { liveRatio = (d.id, $0, layout.ratio(forSplit: d.id) ?? d.ratio) },
             onCommit: {
               liveRatio = nil
@@ -168,8 +171,9 @@ struct WorkroomSplitView: View {
   }
 }
 
-/// Where a drop will land: an accent wash with an accent border. One look for every drop target,
-/// a workroom tab's or pane's, so they can't drift apart.
+/// Where a drop will land: an accent wash with an accent border, in the theme's accent. One look for
+/// every drop target, a workroom tab's, a workroom pane's or a terminal pane's (`PaneTreeView`), so
+/// they can't drift apart.
 struct DropAccent: View {
   let cornerRadius: CGFloat
 
@@ -656,112 +660,5 @@ private struct WorkroomPaneTitleBar: View {
   /// a `SidebarID`, so this presentation view keeps its store/sid independence.
   private var fullTitle: String {
     WorkroomLabel(project: projectLabel, workroom: workroomName).full
-  }
-}
-
-/// A draggable divider that writes a new ratio for one split node. A near-twin of `PaneTreeView`'s
-/// private `SplitDivider` (kept separate so the terminal renderer stays untouched), reusing the shared
-/// `PaneTreeLayout.clampRatio`/`dividerThickness` math. Unlike `SplitDivider` it draws **no** separator
-/// rule — each workroom pane already has its own rounded border, so a line in the gap would double up;
-/// this is just the (invisible) resize hit-zone, surfaced only by the resize cursor on hover.
-private struct WorkroomSplitDivider: View {
-  let orientation: SplitOrientation
-  let ratio: CGFloat
-  let total: CGFloat
-  /// The in-flight ratio, per mouse-moved tick. The parent parks it in local `@State`; it must NOT
-  /// reach the store, whose `@Published` write would rebuild every pane at cursor rate (issue #139).
-  let onLive: (CGFloat) -> Void
-  /// The final ratio, once, on mouse-up — this is the one that persists.
-  let onCommit: (CGFloat) -> Void
-  @State private var startRatio: CGFloat?
-  /// The translation this drag is measured FROM. Normally zero (the gesture's own origin), but it
-  /// re-bases whenever the divider is re-anchored mid-drag — `value.translation` is cumulative for
-  /// the whole gesture, so a new anchor needs a new origin or the pointer jumps.
-  @State private var baseTranslation: CGSize = .zero
-  /// The last ratio this drag emitted, so an incoming `ratio` that differs from it can only have
-  /// come from somewhere else (issue #126: an auto-even landing while the mouse is down).
-  @State private var lastEmitted: CGFloat?
-
-  var body: some View {
-    Rectangle()
-      .fill(Color.secondary.opacity(0.0001))
-      .contentShape(Rectangle())
-      .gesture(
-        DragGesture(coordinateSpace: .global)
-          .onChanged { value in
-            reanchorIfMovedElsewhere(value.translation)
-            let next = dragged(from: startRatio ?? ratio, by: rebased(value.translation))
-            lastEmitted = next  // what `reanchorIfMovedElsewhere` compares the incoming ratio to
-            onLive(next)
-          }
-          // `startRatio` is set by `onChanged`, so a nil one means the gesture never moved — commit
-          // nothing rather than republishing the ratio it already has. The final translation comes from
-          // this closure's own value; there's no need to mirror each tick into a second `@State`.
-          .onEnded { value in
-            // Re-anchor here too, not just in `onChanged`. An auto-even can land AFTER the last
-            // mouse-moved tick — hold the divider still while a workroom delete lands and
-            // `pruneWorkroomSplitToLiveLeaves` evens the group — and this handler is the one that
-            // PERSISTS. Without it the release replays `stale start + whole-gesture translation`
-            // and silently overwrites the even, which is the exact defect the re-anchor exists to
-            // prevent, left open on the only path that writes to the store. (`SplitDivider` in
-            // `PaneTreeView` is unaffected: it writes live each tick and commits nothing on end.)
-            reanchorIfMovedElsewhere(value.translation)
-            guard let start = startRatio else { return }
-            onCommit(dragged(from: start, by: rebased(value.translation)))
-            startRatio = nil
-            lastEmitted = nil
-            baseTranslation = .zero
-          }
-      )
-      // SwiftUI's pointer style, not an NSCursor push: the terminal panes beside the divider set
-      // their pointer with cursor rects, which override a pushed cursor (#466).
-      .pointerStyle(orientation == .horizontal ? .columnResize : .rowResize)
-      .accessibilityElement()
-      .accessibilityIdentifier("workroom.pane.divider")
-      .accessibilityLabel(
-        orientation == .horizontal ? "Vertical workroom divider" : "Horizontal workroom divider"
-      )
-      .accessibilityValue("\(Int((ratio * 100).rounded()))%")
-      // A discrete step is already the final value — commit it straight away, no live phase.
-      .accessibilityAdjustableAction { direction in
-        let step: CGFloat = 0.05
-        switch direction {
-        case .increment:
-          onCommit(PaneTreeLayout.clampRatio(ratio + step, total: total, along: orientation))
-        case .decrement:
-          onCommit(PaneTreeLayout.clampRatio(ratio - step, total: total, along: orientation))
-        @unknown default: break
-        }
-      }
-  }
-
-  /// The ratio a drag of `translation` from `start` lands on — one formula for both gesture phases, so
-  /// the committed value can't drift from the live one it followed.
-  private func dragged(from start: CGFloat, by translation: CGSize) -> CGFloat {
-    let usable = max(1, total - PaneTreeLayout.dividerThickness)
-    let delta = orientation == .horizontal ? translation.width : translation.height
-    return PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation)
-  }
-
-  /// This gesture's translation measured from its current anchor. `value.translation` is cumulative
-  /// for the whole gesture, so a re-anchor mid-drag needs its origin subtracted.
-  private func rebased(_ translation: CGSize) -> CGSize {
-    CGSize(
-      width: translation.width - baseTranslation.width,
-      height: translation.height - baseTranslation.height)
-  }
-
-  /// Latch the drag's origin, and re-latch it when the divider moved for a reason other than this
-  /// drag (issue #126). `equalized()` keeps every split node's `id`, so an auto-even landing while
-  /// the mouse is down leaves this view — and its latched start — alive over a tree that has since
-  /// changed underneath it. Without re-anchoring, the next tick (and the mouse-up commit) replays
-  /// `stale start + whole-gesture translation` and silently undoes the even.
-  private func reanchorIfMovedElsewhere(_ translation: CGSize) {
-    guard
-      PaneTreeLayout.shouldReanchorDrag(
-        currentRatio: ratio, lastEmitted: lastEmitted, hasStarted: startRatio != nil)
-    else { return }
-    startRatio = ratio
-    baseTranslation = translation
   }
 }

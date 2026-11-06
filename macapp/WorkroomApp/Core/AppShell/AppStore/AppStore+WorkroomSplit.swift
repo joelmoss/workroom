@@ -3,11 +3,14 @@ import CoreGraphics
 import Foundation
 import WorkroomDomain
 
-/// Workroom-into-workroom split (issue #23 follow-up). The stored `@Published var workroomSplits` lives
-/// on `AppStore`; these are the pure-ish transforms over it. They mirror `TerminalSessions`'
-/// `moveTabIntoSplit` / `extractFromSplit` one level up (workrooms, not tabs), and every entry guards
-/// `target(for:) != nil` — which rejects `.project` and any leaf that no longer resolves (so the model
-/// can never hold an invalid workroom). The focused split member IS `selectedTargetID`.
+/// Workroom-into-workroom split (issue #23 follow-up). The stored `workroomSplitGroups` lives on
+/// `AppStore`; these are the transforms over it. The structural rules (move semantics, collapse,
+/// auto-even, the fit check) are `PaneSplitGroups`', shared with `TerminalSessions`' terminal split
+/// one level down; what is the workroom split's own is the policy it hands them
+/// (`workroomSplitPolicy`: dead leaves pruned, workrooms weighted by their terminals) and every
+/// entry's guard on `target(for:) != nil` — which rejects `.project` and any leaf that no longer
+/// resolves (so the model can never hold an invalid workroom). The focused split member IS
+/// `selectedTargetID`.
 ///
 /// **Many groups, not one.** Like the terminal split (which learned this from here), a window can hold
 /// SEVERAL workroom split groups at once — `[main | feature]` and `[docs | review]` both grouped, with
@@ -19,14 +22,7 @@ extension AppStore {
   /// The split group `sid` belongs to, or nil when it isn't grouped. Groups are disjoint, so this is
   /// the one authority on "which group is this workroom in".
   func workroomSplit(containing sid: SidebarID) -> PaneLayout<SidebarID>? {
-    splitIndex(containing: sid).map { workroomSplits[$0] }
-  }
-
-  /// Index into `workroomSplits` of the group holding `sid` (nil when ungrouped). `private` on purpose:
-  /// an index is only valid until the next mutation of the array, so it must not escape this file —
-  /// callers outside want `workroomSplit(containing:)`.
-  private func splitIndex(containing sid: SidebarID) -> Int? {
-    workroomSplits.firstIndex { $0.contains(sid) }
+    workroomSplitGroups.group(containing: sid)
   }
 
   /// The visible group: the one containing the selection (nil when nothing is selected or the selected
@@ -83,50 +79,21 @@ extension AppStore {
 
   /// The active workroom tabs in bar order, but with each split group's members pulled into a contiguous
   /// run at that group's earliest member's slot — so grouped workrooms sit together and one bracket can
-  /// span each group. Mirrors `TerminalSessions.displayedTabIDs`. No groups ⇒ just
-  /// `orderedWorkroomTargets()`.
+  /// span each group (`PaneSplitGroups.normalized`, which the terminal strip's order uses too). No
+  /// groups ⇒ just `orderedWorkroomTargets()`.
   func displayedWorkroomTargets() -> [(sid: SidebarID, target: TerminalTarget)] {
     let ordered = orderedWorkroomTargets()
-    guard !workroomSplits.isEmpty else { return ordered }
+    guard !workroomSplitGroups.isEmpty else { return ordered }
     let byID = Dictionary(ordered.map { ($0.sid, $0) }, uniquingKeysWith: { a, _ in a })
-    let groupOf = workroomSplitGroupIndices()
-    var emittedGroups: Set<Int> = []
-    var placed: Set<SidebarID> = []
-    var result: [(sid: SidebarID, target: TerminalTarget)] = []
-    for entry in ordered {
-      guard let group = groupOf[entry.sid] else {
-        result.append(entry)
-        continue
-      }
-      // First member of this group encountered in bar order: emit the whole group here (in tree order),
-      // and skip its later members — they've already been placed. `placed` keeps a chip from being
-      // emitted twice even if the disjointness invariant ever broke: a duplicate id in the bar is a
-      // duplicate `ForEach` identity, which SwiftUI renders as garbage.
-      guard emittedGroups.insert(group).inserted else { continue }
-      for member in workroomSplits[group].tabIDs {
-        guard let chip = byID[member], placed.insert(member).inserted else { continue }
-        result.append(chip)
-      }
-    }
-    return result
+    // A member with no chip of its own (no terminal yet) is left out of the bar.
+    return workroomSplitGroups.normalized(ordered.map(\.sid)).compactMap { byID[$0] }
   }
 
-  /// `member → group index` for every grouped workroom, so the tab bar can bracket each group's run and
-  /// tell a group boundary (member of A next to member of B, or next to a solo chip) from an interior
-  /// one. Empty when nothing is grouped. Build it ONCE per render pass and thread it down — it walks
+  /// `member → group index` for every grouped workroom, so the tab bar can bracket each group's run
+  /// (`PaneSplitGroups.groupIndices`). Build it ONCE per render pass and thread it down — it walks
   /// every leaf of every group, and the bar consults it per chip.
-  ///
-  /// First-group-wins on a repeat sid, matching `splitIndex(containing:)`. Groups are disjoint by
-  /// construction, so that can't fire today; the tie-break is here because if it ever did, a
-  /// last-wins map would disagree with `splitIndex` and make `displayedWorkroomTargets` emit the same
-  /// chip under two group runs — duplicate `ForEach` ids, which SwiftUI renders as garbage rather than
-  /// degrading.
   func workroomSplitGroupIndices() -> [SidebarID: Int] {
-    var groupOf: [SidebarID: Int] = [:]
-    for (index, group) in workroomSplits.enumerated() {
-      for sid in group.tabIDs where groupOf[sid] == nil { groupOf[sid] = index }
-    }
-    return groupOf
+    workroomSplitGroups.groupIndices
   }
 
   /// Focus a split member: this is the selection (mirrors `RootView.selectWorkroomTab`). Records nav
@@ -138,18 +105,12 @@ extension AppStore {
     selectedProjectID = Self.projectPath(of: sid)
   }
 
-  /// Insert `sid` beside `beside` on `edge`. Joins `beside`'s existing group, or seeds a **new** group
-  /// from the two of them (leaving any other group untouched — a window holds many groups);
-  /// **removes `sid` from its current group first** so dragging an existing pane to a new edge is a
-  /// *move*, not a duplicate. Focuses the inserted member. No-op for a self-drop or non-resolving leaf.
-  /// Mirrors `TerminalSessions.moveTabIntoSplit`.
   /// Whether inserting `sid` beside `beside` GROWS the destination group, rather than rearranging
   /// within it. Two members of the same group swapping places leaves the pane count unchanged, which
   /// is why the floor below only applies to a genuine addition — the same
-  /// policy `TerminalSessions.moveTabIntoSplit` applies with its own `addsAMember` gate.
+  /// gate `TerminalSessions.moveTabIntoSplit` applies (`PaneSplitGroups.addsMember`).
   func workroomSplitWouldAddMember(_ sid: SidebarID, beside: SidebarID) -> Bool {
-    let from = splitIndex(containing: sid)
-    return from == nil || from != splitIndex(containing: beside)
+    workroomSplitGroups.addsMember(sid, beside: beside)
   }
 
   /// Whether a drop of `sid` beside `beside` at `edge` will be ACCEPTED — the admissibility half of
@@ -165,29 +126,30 @@ extension AppStore {
     guard workroomSplitWouldAddMember(sid, beside: beside) else { return true }
     // Group-aware once the container has been measured (issue #126): auto-even redistributes the
     // whole group rather than halving the destination pane, so a pane dragged narrow must not veto
-    // a split the group has room for. Built from the same `evenedIfHonourable` step the commit uses,
-    // so the drop indicator, `canOpenAsSplit` and `insertWorkroomSplit` still agree by construction.
-    if let space = workroomPaneSpace, space.width > 0, space.height > 0 {
-      // The LIVE tree, not the raw stored one. A workroom deleted in another window stays in this
-      // window's tree until the next reload prunes it, while the renderer already drops it on read
-      // (`visibleWorkroomLayout`) and the commit below prunes it too. Judging the raw tree budgets
-      // space for a pane nobody can see and refuses a split the user can plainly make — the
-      // "⌘D silently does nothing" papercut, through the ghost door.
-      let base =
-        splitIndex(containing: beside).map { liveLeavesOnly(workroomSplits[$0]) }
-        ?? .leaf(beside)
-      let prospective = base.inserting(
-        sid, beside: beside, orientation: edge.orientation,
-        newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
-      let stored = evenedWorkroomGroup(prospective, along: edge.orientation)
-      return PaneTreeLayout.fitsEveryPane(
-        stored, in: space, notWorseThan: base, splitting: beside)
+    // a split the group has room for. Judged on the tree the commit will store, so the drop
+    // indicator, `canOpenAsSplit` and `insertWorkroomSplit` still agree by construction.
+    //
+    // Over the LIVE tree, not the raw stored one (the policy's `live`). A workroom deleted in another
+    // window stays in this window's tree until the next reload prunes it, while the renderer already
+    // drops it on read (`visibleWorkroomLayout`) and the commit below prunes it too. Judging the raw
+    // tree budgets space for a pane nobody can see and refuses a split the user can plainly make —
+    // the "⌘D silently does nothing" papercut, through the ghost door.
+    if let admitted = workroomSplitGroups.admits(
+      sid, beside: beside, edge: edge, policy: workroomSplitPolicy)
+    {
+      return admitted
     }
     // Pre-layout fallback: the destination pane's own rect, judged by the anchor-only rule.
     guard let destinationRect else { return true }
     return PaneTreeLayout.canSplit(destinationRect, along: edge.orientation)
   }
 
+  /// Insert `sid` beside `beside` on `edge`. Joins `beside`'s existing group, or seeds a **new** group
+  /// from the two of them (leaving any other group untouched — a window holds many groups);
+  /// **removes `sid` from its current group first** so dragging an existing pane to a new edge is a
+  /// *move*, not a duplicate (`PaneSplitGroups.inserting`, as `TerminalSessions.moveTabIntoSplit`).
+  /// Focuses the inserted member. No-op for a self-drop or non-resolving leaf.
+  ///
   /// Returns whether a split was actually made. The three drag call sites ignore it (hence
   /// `@discardableResult`); the keyboard/menu callers use it as their single guard, so they never
   /// re-derive this function's reject conditions and can't drift from them.
@@ -211,63 +173,15 @@ extension AppStore {
     // unmeasured caller and keeps the pre-floor behaviour rather than guessing.
     guard canInsertWorkroomSplit(sid, beside: beside, edge: edge, destinationRect: destinationRect)
     else { return false }
-    // Whether this GROWS the destination group, read BEFORE the detach below — afterwards `sid` has
-    // already left its old group and every move would look like an addition. A same-group move
-    // rebuilds the tree around `sid` (`A | B | C` with C dropped left of A comes out ¼, ¼, ½), so it
-    // is evened once, after the insert, along both the axis `sid` left and the one it joined;
-    // `detachFromSplitGroup` is therefore never an auto-even site itself.
-    let adds = workroomSplitWouldAddMember(sid, beside: beside)
-    let leftAxis =
-      adds ? nil : splitIndex(containing: sid).flatMap { workroomSplits[$0].axis(around: sid) }
-    let evenAxis = adds || leftAxis == edge.orientation ? edge.orientation : nil
-    // A survivor of the group `sid` is LEAVING, captured before the detach so the source group can be
-    // found again afterwards (indices shift when a group dissolves). A cross-group move removes a
-    // member from that group exactly as the ✕ does, so its survivors are owed the same even-out —
-    // without this, dragging C out of a skewed `A | B | C` left A and B at 0.8 while removing C
-    // through the menu rebalanced them. Along the axis C left only, as the ✕ does.
-    let sourceGroup = adds ? splitIndex(containing: sid).map { workroomSplits[$0] } : nil
-    let sourceSurvivor = sourceGroup?.removingLeaf(sid)?.firstTabID
-    let sourceAxis = sourceGroup?.axis(around: sid)
-    // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
-    // only, no selection re-point: `sid` is about to be focused anyway.
-    detachFromSplitGroup(sid)
-    if let sourceSurvivor, sourceSurvivor != beside,
-      let sourceIndex = splitIndex(containing: sourceSurvivor)
-    {
-      workroomSplits[sourceIndex] = evenedWorkroomGroup(
-        workroomSplits[sourceIndex], along: sourceAxis)
-    }
-    if let index = splitIndex(containing: beside) {
-      let grown = workroomSplits[index].inserting(
-        sid, beside: beside, orientation: edge.orientation,
-        newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
-      // The one auto-even site that can still meet a ghost leaf: a workroom deleted elsewhere is
-      // dropped from the tree by `pruneWorkroomSplitToLiveLeaves` on the next reload, not before.
-      // The pruned-and-evened candidate cannot go through `evenedIfHonourable` (which evens the
-      // tree it is handed), so this one site asks the honourability question directly.
-      if autoEvenSplits(), let evened = prunedAndEvened(grown, along: evenAxis),
-        workroomPaneSpace.map({
-          PaneTreeLayout.plansEvenly(
-            evened, in: $0, evenedAxis: evenAxis, leafSlots: workroomLeafSlots)
-        }) ?? true
-      {
-        workroomSplits[index] = evened
-      } else {
-        workroomSplits[index] = grown
-      }
-    } else {
-      let dropped = PaneLayout<SidebarID>.leaf(sid)
-      let anchor = PaneLayout<SidebarID>.leaf(beside)
-      // Weighted like every other add, so a workroom showing two terminals side by side takes two
-      // thirds next to one showing one — the same tree `canInsertWorkroomSplit` admitted.
-      workroomSplits.append(
-        evenedWorkroomGroup(
-          .split(
-            id: UUID(), orientation: edge.orientation, ratio: 0.5,
-            first: edge.placesDroppedFirst ? dropped : anchor,
-            second: edge.placesDroppedFirst ? anchor : dropped),
-          along: edge.orientation))
-    }
+    // Leaves whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s, with no
+    // selection re-point: `sid` is about to be focused anyway. A cross-group move removes a member
+    // from its old group exactly as the ✕ does, so those survivors are evened as the ✕ evens them;
+    // the joined group is evened as it will render, without a workroom deleted elsewhere that the
+    // next reload's sweep has yet to prune, and weighted like every other even, so a workroom
+    // showing two terminals side by side takes two thirds next to one showing one — the same tree
+    // `canInsertWorkroomSplit` admitted.
+    workroomSplitGroups = workroomSplitGroups.inserting(
+      sid, beside: beside, edge: edge, policy: workroomSplitPolicy)
     focusWorkroomMember(sid)
     return true
   }
@@ -328,44 +242,22 @@ extension AppStore {
     NSApp.activate(ignoringOtherApps: true)
   }
 
-  /// Structural-only removal of `sid` from its group: collapse to the survivor subtree, or drop the
-  /// group entirely when fewer than two members remain. Deliberately does NOT touch the selection —
-  /// used by the move path, which focuses the moved member itself. No-op when `sid` isn't grouped.
-  private func detachFromSplitGroup(_ sid: SidebarID) {
-    guard let index = splitIndex(containing: sid) else { return }
-    if let collapsed = workroomSplits[index].removingLeaf(sid), collapsed.tabIDs.count >= 2 {
-      workroomSplits[index] = collapsed
-    } else {
-      workroomSplits.remove(at: index)
-    }
-  }
-
   /// Remove `sid` from its split group: collapse to the survivor subtree, or dissolve the group (single
   /// view) when fewer than two members remain — re-pointing `selectedTargetID` to a survivor if the
   /// removed member was focused. Other groups are untouched. **Never reaps terminals** (the workroom
-  /// keeps running; it just leaves the split). No-op if `sid` isn't a member of any group. Mirrors
-  /// `TerminalSessions.extractFromSplit`.
+  /// keeps running; it just leaves the split). No-op if `sid` isn't a member of any group. The
+  /// workroom-level `TerminalSessions.extractFromSplit`.
   func removeWorkroomSplitMember(_ sid: SidebarID) {
     // A running create's pane can't be closed (#483, AC 2); a run that has ended is dropped first.
-    guard let index = splitIndex(containing: sid), creationRun(for: sid)?.isRunning != true else {
-      return
-    }
+    guard let group = workroomSplit(containing: sid), creationRun(for: sid)?.isRunning != true
+    else { return }
     let wasFocused = selectedTargetID == sid
     // Non-nil for a group (≥2 leaves, so removing one always leaves a subtree); its first leaf is the
-    // survivor to land on, whether the group collapses or dissolves. Read it BEFORE the structural
-    // edit, which shares one implementation with the move path so the two can't diverge on the
-    // ≥2-members invariant.
-    let survivor = workroomSplits[index].removingLeaf(sid)?.firstTabID
-    let axis = workroomSplits[index].axis(around: sid)
-    detachFromSplitGroup(sid)
-    // The survivors' dividers still budget space for the pane that just left — `A | B | C` at root
-    // 1/3 collapses to `A | B` still at 1/3 — so even them (issue #126), along the axis the member
-    // left only: dividers running the other way stay put. Plain `equalized`, not the pruning
-    // variant: `survivor` was chosen above and a prune-driven dissolve here would strand the
-    // selection on it. Indices shift when a group dissolves, so re-derive.
-    if let survivor, let index = splitIndex(containing: survivor) {
-      workroomSplits[index] = evenedWorkroomGroup(workroomSplits[index], along: axis)
-    }
+    // survivor to land on, whether the group collapses or dissolves. Read it BEFORE the edit.
+    let survivor = group.removingLeaf(sid)?.firstTabID
+    // The survivors are evened along the axis the member left (issue #126), without pruning:
+    // `survivor` was chosen above, and a prune-driven dissolve here would strand the selection on it.
+    workroomSplitGroups = workroomSplitGroups.removing(sid, policy: workroomSplitPolicy)
     if wasFocused, let survivor { focusWorkroomMember(survivor) }
   }
 
@@ -435,10 +327,8 @@ extension AppStore {
   /// Set a divider ratio (driven by `WorkroomSplitView`'s divider drag). Split-node ids are unique
   /// across every group, so this addresses exactly one node wherever it lives.
   func setWorkroomSplitRatio(_ ratio: CGFloat, forSplit splitID: UUID) {
-    guard let index = workroomSplits.firstIndex(where: { $0.containsSplit(splitID) }) else {
-      return
-    }
-    workroomSplits[index] = workroomSplits[index].settingRatio(ratio, forSplit: splitID)
+    guard let set = workroomSplitGroups.settingRatio(ratio, forSplit: splitID) else { return }
+    workroomSplitGroups = set
   }
 
   /// How many panes `sid` shows across `axis`: its widest row of terminals side by side, or its
@@ -457,46 +347,28 @@ extension AppStore {
   /// in along that axis. No-op when auto-even is off, the workroom isn't in
   /// a workroom split, or the even wouldn't leave every terminal at its minimum size.
   func reEvenWorkroomSplit(holding targetID: TerminalTarget.ID, along axis: SplitOrientation?) {
-    guard let sid = Self.sidebarID(forTargetID: targetID, in: projects),
-      let index = splitIndex(containing: sid)
-    else { return }
-    let evened = evenedWorkroomGroup(workroomSplits[index], along: axis)
-    // `workroomSplits` is published: write only a real change, so a no-op even redraws nothing.
-    if evened != workroomSplits[index] { workroomSplits[index] = evened }
+    guard let sid = Self.sidebarID(forTargetID: targetID, in: projects) else { return }
+    let evened = workroomSplitGroups.evening(groupOf: sid, along: axis, policy: workroomSplitPolicy)
+    // `workroomSplitGroups` is observed: write only a real change, so a no-op even redraws nothing.
+    if evened != workroomSplitGroups { workroomSplitGroups = evened }
   }
 
-  /// `group` evened along `axis` when auto-even is on and the window can honour it, each workroom
-  /// weighted by its terminals (`workroomLeafSlots`); otherwise `group` unchanged. Every automatic
+  /// How every workroom split edit evens and judges a group: when auto-even is on and the window
+  /// can honour it, each workroom weighted by its terminals (`workroomLeafSlots`), with leaves whose
+  /// workroom no longer resolves left out of the fit check and the joining even. Every automatic
   /// workroom even goes through here, so none can forget the weight.
-  private func evenedWorkroomGroup(
-    _ group: PaneLayout<SidebarID>, along axis: SplitOrientation?
-  ) -> PaneLayout<SidebarID> {
-    PaneTreeLayout.evenedIfHonourable(
-      group, in: workroomPaneSpace, enabled: autoEvenSplits(), along: axis,
-      leafSlots: workroomLeafSlots)
+  ///
+  /// The prune (`live`) matters because the renderer drops dead leaves on read
+  /// (`visibleWorkroomLayout`) while the stored tree still counts them, so evening or judging the raw
+  /// tree budgets space for a pane nobody can see and leaves the visible ones uneven (issue #126).
+  /// Shared so the admission guard cannot judge a different tree from the one the mutation writes.
+  private var workroomSplitPolicy: PaneSplitPolicy<SidebarID> {
+    PaneSplitPolicy(
+      space: workroomPaneSpace, autoEven: autoEvenSplits(), leafSlots: workroomLeafSlots,
+      live: { [self] group in liveLeavesOnly(group) })
   }
 
-  /// Strip leaves whose workroom no longer resolves, then even what's left. nil ⇒ fewer than two
-  /// live leaves, so the caller must dissolve the group (a lone leaf is "no split").
-  ///
-  /// The prune has to come FIRST: the renderer drops dead leaves on read (`visibleWorkroomLayout`)
-  /// while the stored tree still counts them, so evening the raw tree budgets space for a pane
-  /// nobody can see and leaves the visible ones uneven. Used by `insertWorkroomSplit` (issue #126).
-  ///
-  /// Deliberately NOT called by `removeWorkroomSplitMember`, which picks the survivor to focus
-  /// before its structural edit: a prune that dissolved the group afterwards would leave the
-  /// selection on a workroom that no longer resolves, so that path evens without pruning.
-  private func prunedAndEvened(
-    _ group: PaneLayout<SidebarID>, along axis: SplitOrientation? = nil
-  ) -> PaneLayout<SidebarID>? {
-    let live = liveLeavesOnly(group)
-    guard live.tabIDs.count >= 2 else { return nil }
-    return live.equalized(along: axis, leafSlots: workroomLeafSlots)
-  }
-
-  /// `group` with every leaf whose workroom no longer resolves dropped — what the renderer shows and
-  /// what a commit stores. Shared so the admission guard cannot judge a different tree from the one
-  /// the mutation will write.
+  /// `group` with every leaf whose workroom no longer resolves dropped — what the renderer shows.
   private func liveLeavesOnly(_ group: PaneLayout<SidebarID>) -> PaneLayout<SidebarID> {
     var live = group
     for leaf in group.tabIDs where target(for: leaf) == nil {
@@ -516,7 +388,10 @@ extension AppStore {
   /// contributes no "survivor" at all yet is exactly where the user should stay. Preference order:
   /// the former group's first live leaf, then any dissolved group's survivor.
   func pruneWorkroomSplitToLiveLeaves(formerSelection: SidebarID? = nil) {
-    let formerGroup = formerSelection.flatMap { splitIndex(containing: $0) }
+    let policy = workroomSplitPolicy
+    let formerGroup = formerSelection.flatMap { sid in
+      workroomSplits.firstIndex { $0.contains(sid) }
+    }
     var kept: [PaneLayout<SidebarID>] = []
     var survivors: [SidebarID] = []
     var formerGroupSurvivor: SidebarID?
@@ -538,7 +413,8 @@ extension AppStore {
         // (issue #126): even the survivors rather than leave them budgeted for the workroom that
         // went away, along the axes the dead leaves left (both, when they left different ways).
         // Plain `equalized` — the tree in hand is the pruned one.
-        kept.append(evenedWorkroomGroup(pruned, along: axes.count == 1 ? axes.first : nil))
+        kept.append(
+          policy.evened(pruned, along: axes.count == 1 ? axes.first : nil) ?? pruned)
       } else if let survivor = live.first {
         survivors.append(survivor)
       }

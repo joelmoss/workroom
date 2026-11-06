@@ -20,7 +20,7 @@ enum PaneTitleBarMetrics {
 
   /// This bar's buttons are deliberately DENSER than the two title bars around it. Those carry two or
   /// three controls across a full window or workroom card; this one carries up to four plus a mode
-  /// switch inside a pane that can be as narrow as `TerminalSessions.minPaneWidth` (300pt), all
+  /// switch inside a pane that can be as narrow as `PaneMetrics.minPaneWidth` (300pt), all
   /// competing with the title the bar exists to show. At the shared 22pt/3pt/13pt the group ran ~190pt
   /// and left the title ~100pt; at these numbers it runs ~155pt.
   ///

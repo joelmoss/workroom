@@ -1,14 +1,12 @@
 import WorkroomDomain
 import XCTest
 
-@testable import Workroom
-
 /// Pure split-geometry math used by the pane renderer (plan D5). Extracting it keeps the trickiest
 /// arithmetic in the feature unit-testable even though the SwiftUI views themselves aren't.
 final class PaneTreeLayoutTests: XCTestCase {
-  private let divider = TerminalSessions.dividerThickness  // 4
-  private let minW = TerminalSessions.minPaneWidth  // 300 — the tab strip's furniture sets this
-  private let minH = TerminalSessions.minPaneHeight  // 150 since issue #150's title bar
+  private let divider = PaneMetrics.dividerThickness  // 4
+  private let minW = PaneMetrics.minPaneWidth  // 300 — the tab strip's furniture sets this
+  private let minH = PaneMetrics.minPaneHeight  // 150 since issue #150's title bar
 
   func testLengthsSumToUsableAndSplitEvenly() {
     let (a, b) = PaneTreeLayout.lengths(total: 1000, ratio: 0.5, along: .horizontal)
@@ -207,9 +205,9 @@ final class PaneTreeLayoutTests: XCTestCase {
 /// this takes the rect the renderer's own plan produced.
 final class PaneCanSplitTests: XCTestCase {
 
-  private let divider = TerminalSessions.dividerThickness
-  private let minW = TerminalSessions.minPaneWidth
-  private let minH = TerminalSessions.minPaneHeight
+  private let divider = PaneMetrics.dividerThickness
+  private let minW = PaneMetrics.minPaneWidth
+  private let minH = PaneMetrics.minPaneHeight
 
   private func rect(w: CGFloat, h: CGFloat) -> CGRect {
     CGRect(x: 0, y: 0, width: w, height: h)
@@ -259,9 +257,9 @@ final class PaneGroupFitTests: XCTestCase {
   private let b = UUID()
   private let c = UUID()
   private let d = UUID()
-  private let divider = TerminalSessions.dividerThickness
-  private let minW = TerminalSessions.minPaneWidth
-  private let minH = TerminalSessions.minPaneHeight
+  private let divider = PaneMetrics.dividerThickness
+  private let minW = PaneMetrics.minPaneWidth
+  private let minH = PaneMetrics.minPaneHeight
 
   /// `A | (B / C)` — one full-height pane beside two stacked ones. Under the slot rule the stacked
   /// pair is ONE column, so evening leaves the outer divider at a half.

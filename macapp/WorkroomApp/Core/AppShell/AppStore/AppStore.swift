@@ -291,10 +291,16 @@ final class AppStore: ObservableObject {
   /// terminal-split invariant). At most one group is *visible*: the one holding the selection.
   /// Persisted with the rest of the session (issue #46) as target-id strings; a group whose leaves no
   /// longer resolve dissolves on restore. All edits go through the helpers in
-  /// `AppStore+WorkroomSplit.swift`; stale leaves resolve away in `resolvedSplitLeaves(of:)`, so it's
-  /// self-healing. See that file for the transforms.
-  var workroomSplits: [PaneLayout<SidebarID>] = [] {
+  /// `AppStore+WorkroomSplit.swift`, over the shared `PaneSplitGroups` rules; stale leaves resolve
+  /// away in `resolvedSplitLeaves(of:)`, so it's self-healing. See that file for the transforms.
+  var workroomSplitGroups = PaneSplitGroups<SidebarID>() {
     didSet { markSessionDirty() }
+  }
+  /// `workroomSplitGroups`' trees, for the readers (and the restore and fixture writers) that want
+  /// the list itself.
+  var workroomSplits: [PaneLayout<SidebarID>] {
+    get { workroomSplitGroups.groups }
+    set { workroomSplitGroups = PaneSplitGroups(newValue) }
   }
   /// The rect `WorkroomSplitView` lays its panes out in — the detail content inset by the split
   /// renderer's outer gutter and bottom margin. Mirrored here from `RootView.workroomPaneSpace`

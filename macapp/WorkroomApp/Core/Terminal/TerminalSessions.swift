@@ -465,7 +465,7 @@ enum PaneIndicator: Equatable {
 /// disjoint (a tab belongs to at most one) and each holds ≥2 leaves; at most one is *visible*, the one
 /// containing the focused tab. Splitting two solo tabs therefore leaves existing groups alone instead
 /// of replacing them (which is what the old single-layout model did — grouping C+D silently unsplit
-/// A+B). Mirrors `AppStore+WorkroomSplit`, which went many-groups one level up first.
+/// A+B). The rules are `PaneSplitGroups`', which `AppStore+WorkroomSplit` uses one level up too.
 ///
 /// The shared tab strip lists every tab; each group's members render as a contiguous bracketed run,
 /// ordered by its split tree (`displayedTabIDs`). The whole layout — tabs, order, splits, focus — is
@@ -489,8 +489,10 @@ final class TerminalSessions: ObservableObject {
   /// The split groups for a target. Disjoint (a tab belongs to at most one) and each always ≥2 leaves
   /// — a lone tab is "no split". **Array order carries no meaning**: a group is addressed by
   /// membership, and the strip places each group's run at its earliest member's slot
-  /// (`normalizedTabIDs`), so appending a rebuilt group is always safe.
-  @Published private var splitsByTarget: [TerminalTarget.ID: [TerminalPaneLayout]] = [:]
+  /// (`normalizedTabIDs`), so appending a rebuilt group is always safe. The rules are
+  /// `PaneSplitGroups`', shared with the workroom split; a target with no group has no entry.
+  @Published private var splitsByTarget: [TerminalTarget.ID: PaneSplitGroups<TerminalTab.ID>] =
+    [:]
   /// The focused/selected tab per target. Selection = this tab (+ its split, if it's a member).
   @Published private var focusedTabByTarget: [TerminalTarget.ID: TerminalTab.ID] = [:]
   /// Bumped when a *visible but non-focused* pane reports activity (D3): the renderer flashes that
@@ -671,38 +673,6 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
-  /// Smallest usable pane WIDTH (points). A split is refused when it would shrink a pane below this;
-  /// the renderer applies the same minimum as its divider clamp.
-  ///
-  /// Width and height need different floors because a pane's chrome is horizontal: a row of toolbar
-  /// furniture is what sets the width floor, and it is wider than people guess. That furniture used to
-  /// live in the tab strip; since issue #150 each pane carries it in its own title bar, so the budget
-  /// moved but the arithmetic barely did. The *widest* bar a pane can show is a diff pane's FULL row:
-  /// four 20pt button footprints (Open File, split right, split down, close) plus the ~60pt
-  /// unified/side-by-side switch, a 9pt divider and the 2pt spacings ≈ 155pt trailing, plus the bar's
-  /// 10pt leading inset. (The overflow menu is not in that total — it belongs to the COLLAPSED row,
-  /// which renders instead of this one, never beside it.) At 300pt that leaves the title ~135pt.
-  ///
-  /// The buttons are deliberately denser than the title bars above — see `PaneTitleBarMetrics`. They
-  /// were 28pt footprints at 6pt spacing, which left the title only ~100pt here; the floor did not
-  /// move with them, so the change bought the title width rather than allowing narrower panes.
-  ///
-  /// 300pt is also about 41 terminal columns, which is the first width where a terminal is honestly
-  /// usable rather than merely non-degenerate.
-  nonisolated static let minPaneWidth: CGFloat = 300
-  /// Smallest usable pane HEIGHT (points). Raised 120 → 150 with issue #150: a pane now carries 56pt
-  /// of horizontal chrome (a 28pt title bar above the content and a 28pt status bar below it) where it
-  /// used to carry 28. 150 keeps the same ~94pt of actual content the old 120 left, rather than
-  /// shrinking every stacked pane to roughly four terminal rows.
-  ///
-  /// Read together with `fits(splitting:)`, which measures the whole PANE rect — chrome included — for
-  /// every content kind, so this number means the same thing for a terminal and a diff pane.
-  nonisolated static let minPaneHeight: CGFloat = 150
-  /// Inter-pane gutter thickness (points), shared by the fit guard and the renderer. No separator
-  /// rule is drawn anymore, so this is just the gap between panes and the width of the (invisible)
-  /// resize hit-zone — kept tight, since the panes' own rounded borders mark the boundary.
-  nonisolated static let dividerThickness: CGFloat = 2
-
   /// The inline terminal agent (issue #49). Owned here so the per-tab callbacks can feed it; injected
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
   let codingAgentManager: TerminalCodingAgentManager
@@ -792,32 +762,12 @@ final class TerminalSessions: ObservableObject {
   /// `sessionCapture` reads this directly so a detached pane is persisted in its old strip position.
   ///
   /// The loose order, with every group's members replaced by that group's tree order as a contiguous
-  /// block at its earliest member's slot. So each bracket is always one run and strip order always
-  /// matches pane order (rearranging panes IS strip reorder). Mirrors
-  /// `AppStore.displayedWorkroomTargets()`.
+  /// block at its earliest member's slot (`PaneSplitGroups.normalized`, which the workroom tab bar's
+  /// order uses too). So each bracket is always one run and strip order always matches pane order
+  /// (rearranging panes IS strip reorder).
   func normalizedTabIDs(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID] {
     let order = orderByTarget[targetID] ?? []
-    let groups = splitsByTarget[targetID] ?? []
-    guard !groups.isEmpty else { return order }
-    let groupOf = splitGroupIndices(forTargetID: targetID)
-    var emitted: Set<Int> = []
-    var placed: Set<TerminalTab.ID> = []
-    var result: [TerminalTab.ID] = []
-    for id in order {
-      guard let group = groupOf[id] else {
-        result.append(id)
-        continue
-      }
-      // First member of this group in strip order: emit the whole group here (in tree order) and skip
-      // its later members. `placed` keeps an id from being emitted twice even if the disjointness
-      // invariant ever broke — a duplicate id in the strip is a duplicate `ForEach` identity, which
-      // SwiftUI renders as garbage rather than degrading.
-      guard emitted.insert(group).inserted else { continue }
-      for member in groups[group].tabIDs where placed.insert(member).inserted {
-        result.append(member)
-      }
-    }
-    return result
+    return splitsByTarget[targetID]?.normalized(order) ?? order
   }
 
   // MARK: Session capture (issue #46)
@@ -848,7 +798,7 @@ final class TerminalSessions: ObservableObject {
     let ordered = normalizedTabIDs(forTargetID: targetID).compactMap { dict[$0] }
     guard !ordered.isEmpty else { return nil }
     return SessionCapture(
-      tabs: ordered, splits: splitsByTarget[targetID] ?? [], focused: focusedTabByTarget[targetID],
+      tabs: ordered, splits: splits(forTargetID: targetID), focused: focusedTabByTarget[targetID],
       counter: counts[targetID] ?? ordered.count)
   }
 
@@ -944,39 +894,25 @@ final class TerminalSessions: ObservableObject {
 
   /// Every split group this target owns, visible or not (empty when nothing is grouped).
   func splits(for target: TerminalTarget) -> [TerminalPaneLayout] {
-    splitsByTarget[target.id] ?? []
+    splits(forTargetID: target.id)
+  }
+
+  private func splits(forTargetID targetID: TerminalTarget.ID) -> [TerminalPaneLayout] {
+    splitsByTarget[targetID]?.groups ?? []
   }
 
   /// The group `tabID` belongs to, or nil when it isn't grouped. Groups are disjoint, so this is the
   /// one authority on "which group is this tab in" — as opposed to `split(for:)`, which answers the
   /// narrower "which group is on screen".
   func split(containing tabID: TerminalTab.ID, for target: TerminalTarget) -> TerminalPaneLayout? {
-    splitIndex(containing: tabID, for: target.id).map { splitsByTarget[target.id]![$0] }
+    splitsByTarget[target.id]?.group(containing: tabID)
   }
 
-  /// Index into `splitsByTarget[targetID]` of the group holding `tabID` (nil when ungrouped).
-  /// `private` on purpose: an index is only valid until the next mutation of the array, so it must
-  /// not escape this file — callers outside want `split(containing:for:)`.
-  private func splitIndex(containing tabID: TerminalTab.ID, for targetID: TerminalTarget.ID) -> Int?
-  {
-    splitsByTarget[targetID]?.firstIndex { $0.contains(tabID) }
-  }
-
-  /// `member → group index` for every grouped tab, so the strip can bracket each group's run and tell
-  /// a group boundary (member of A next to member of B, or next to a solo chip) from an interior one.
-  /// Empty when nothing is grouped. Build it ONCE per render pass and thread it down — it walks every
-  /// leaf of every group, and the strip consults it per chip. Mirrors
-  /// `AppStore.workroomSplitGroupIndices()`, first-group-wins tie-break included.
+  /// `member → group index` for every grouped tab, so the strip can bracket each group's run
+  /// (`PaneSplitGroups.groupIndices`, as the workroom tab bar's). Build it ONCE per render pass and
+  /// thread it down — it walks every leaf of every group, and the strip consults it per chip.
   func splitGroupIndices(for target: TerminalTarget) -> [TerminalTab.ID: Int] {
-    splitGroupIndices(forTargetID: target.id)
-  }
-
-  private func splitGroupIndices(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID: Int] {
-    var groupOf: [TerminalTab.ID: Int] = [:]
-    for (index, group) in (splitsByTarget[targetID] ?? []).enumerated() {
-      for id in group.tabIDs where groupOf[id] == nil { groupOf[id] = index }
-    }
-    return groupOf
+    splitsByTarget[target.id]?.groupIndices ?? [:]
   }
 
   /// Look up a tab by id (the pane renderer resolves leaves → surfaces through this).
@@ -1132,7 +1068,7 @@ final class TerminalSessions: ObservableObject {
     let restoredSplits = session.splits.compactMap { saved in
       saved.materialize { key in idsByKey[key].flatMap { detachedIDs.contains($0) ? nil : $0 } }
     }
-    splitsByTarget[target.id] = restoredSplits.isEmpty ? nil : restoredSplits
+    setSplits(PaneSplitGroups(restoredSplits), for: target.id)
     // Mark detached panes BEFORE choosing focus. `setFocused`'s own guard refuses to focus a detached
     // tab (focusing one makes `contentLayout` render it back in THIS window and re-homes the
     // libghostty view out of its own window, which then goes blank) — but that guard reads
@@ -1549,13 +1485,14 @@ final class TerminalSessions: ObservableObject {
     // Re-derive the group from the pre-close tree with the new tab in the old leaf's slot — exact for
     // any depth (a 3-pane split keeps both siblings), unlike re-inserting beside a guessed neighbour.
     // The close already collapsed that group, so find what is left of it through a surviving member;
-    // a two-pane group is gone entirely (index nil) and the rebuilt tree re-enters as a new group.
+    // a two-pane group is gone entirely and the rebuilt tree re-enters as a new group. Not evened:
+    // the panes are the ones that were there.
     if let priorSplit {
-      let index = priorSplit.tabIDs.first { $0 != oldID }
-        .flatMap { splitIndex(containing: $0, for: target.id) }
-      setSplit(
-        priorSplit.replacingLeaf(oldID, with: tab.id), groupAt: index, for: target.id,
-        evening: false)
+      setSplits(
+        splitGroups(target.id).storing(
+          priorSplit.replacingLeaf(oldID, with: tab.id),
+          overGroupOf: priorSplit.tabIDs.first { $0 != oldID }),
+        for: target.id)
     }
     if focus {
       setFocused(tab.id, for: target.id)
@@ -1599,27 +1536,13 @@ final class TerminalSessions: ObservableObject {
     let newTab = newPaneTab(splitting: focused, for: target)
     tabsByTarget[target.id, default: [:]][newTab.id] = newTab
 
-    let groupIndex = splitIndex(containing: focused.id, for: target.id)
-    if let groupIndex {
-      // Grow the focused pane's own group beside it, on the requested side. Always an add, so it
-      // always evens (issue #126) — every caller of this function is a split command.
-      setSplit(
-        splitsByTarget[target.id]![groupIndex].inserting(
-          newTab.id, beside: focused.id, orientation: edge.orientation,
-          newLeafFirst: edge.placesDroppedFirst, ratio: 0.5),
-        groupAt: groupIndex, for: target.id, evening: true, along: edge.orientation)
-    } else {
-      // Seed a NEW group from the focused solo tab. `groupAt: nil` appends, so the other groups stay
-      // exactly as they are — this is the whole difference from the old single-layout model.
-      let new = PaneLayout.leaf(newTab.id)
-      let anchor = PaneLayout.leaf(focused.id)
-      setSplit(
-        .split(
-          id: UUID(), orientation: edge.orientation, ratio: 0.5,
-          first: edge.placesDroppedFirst ? new : anchor,
-          second: edge.placesDroppedFirst ? anchor : new),
-        groupAt: nil, for: target.id, evening: true, along: edge.orientation)
-    }
+    // Grow the focused pane's own group beside it, on the requested side, or seed a NEW group from
+    // the focused solo tab, leaving every other group exactly as it was. Always an add, so it always
+    // evens along the split's axis (issue #126) — every caller of this function is a split command.
+    setSplits(
+      splitGroups(target.id).inserting(
+        newTab.id, beside: focused.id, edge: edge, policy: splitPolicy(for: target.id)),
+      for: target.id)
     // Place the new tab right after the focused one in the loose order (display normalises anyway).
     insertID(newTab.id, after: focused.id, for: target)
     setFocused(newTab.id, for: target.id)
@@ -1717,31 +1640,21 @@ final class TerminalSessions: ObservableObject {
     // Same floor ⌘D obeys. Without this the two paths disagree by the whole floor: ⌘D refuses to
     // halve a pane under `minPaneWidth`, while dragging a chip onto that same pane's edge split it
     // anyway. Rearranging *within* an existing split is exempt — the pane count doesn't change, so
-    // nothing new has to fit; only a drop that adds a member to this pane is measured.
-    let fromIndex = splitIndex(containing: movedID, for: target.id)
-    let destIndex = splitIndex(containing: destID, for: target.id)
-    // An addition is a move ACROSS groups (or in from solo); two members of one group swapping places
-    // leaves the pane count — and so the pane sizes — unchanged.
-    let addsAMember = fromIndex == nil || fromIndex != destIndex
-    if addsAMember, !fits(splitting: dest, orientation: edge.orientation, for: target) { return }
+    // nothing new has to fit; only a drop that adds a member to this pane is measured. An addition
+    // is a move ACROSS groups (or in from solo); two members of one group swapping places leaves the
+    // pane count — and so the pane sizes — unchanged.
+    let groups = splitGroups(target.id)
+    if groups.addsMember(movedID, beside: destID),
+      !fits(splitting: dest, orientation: edge.orientation, for: target)
+    {
+      return
+    }
 
-    // Detach first, insert second — and re-resolve the destination's group AFTER the detach, because
-    // removing the last-but-one member deletes a group and shifts every later index. A genuine move
-    // evens the group left behind and the one joined. A rearrange within one group rebuilds the tree
-    // around the moved pane (`A | B | C` with C dropped left of A comes out ¼, ¼, ½), so it skips
-    // the detach's evening and is evened once, after the insert, along both the axis it left and the
-    // one it joined.
-    let leftAxis =
-      addsAMember ? nil : fromIndex.flatMap { splitsByTarget[target.id]?[$0].axis(around: movedID) }
-    let evenAxis = addsAMember || leftAxis == edge.orientation ? edge.orientation : nil
-    removeFromGroup(movedID, for: target.id, evening: addsAMember)
-    let index = splitIndex(containing: destID, for: target.id)
-    let base = index.map { splitsByTarget[target.id]![$0] } ?? .leaf(destID)
-    setSplit(
-      base.inserting(
-        movedID, beside: destID, orientation: edge.orientation,
-        newLeafFirst: edge.placesDroppedFirst, ratio: 0.5),
-      groupAt: index, for: target.id, evening: true, along: evenAxis)
+    // Detach first, insert second. A genuine move evens the group left behind and the one joined; a
+    // rearrange within one group is evened once, after the insert (`PaneSplitGroups.inserting`).
+    setSplits(
+      groups.inserting(movedID, beside: destID, edge: edge, policy: splitPolicy(for: target.id)),
+      for: target.id)
     insertID(movedID, after: destID, for: target)  // display normalises the contiguous run
     setFocused(movedID, for: target.id)
     reconcileOcclusion(for: target)
@@ -1765,7 +1678,7 @@ final class TerminalSessions: ObservableObject {
     let wasFocused = focusedTabByTarget[target.id] == tabID
     let successor = closeSuccessor(of: tabID, for: target)
     if tab.isPreview { persist(tabID, for: target) }
-    removeFromGroup(tabID, for: target.id, evening: true)
+    removeFromGroup(tabID, for: target.id)
     detachedTabIDs.insert(tabID)
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
@@ -1865,7 +1778,7 @@ final class TerminalSessions: ObservableObject {
     guard !dict.isEmpty else { return nil }
     let ids = normalizedTabIDs(forTargetID: target.id).filter { dict[$0] != nil }
     let handOff = TargetHandOff(
-      target: target, tabs: ids.compactMap { dict[$0] }, splits: splitsByTarget[target.id] ?? [],
+      target: target, tabs: ids.compactMap { dict[$0] }, splits: splits(forTargetID: target.id),
       focused: focusedTabByTarget[target.id], counter: counts[target.id] ?? ids.count,
       detached: Dictionary(
         uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }),
@@ -1917,7 +1830,7 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[target.id]?.removeAll { $0 == tabID }
     forgetPerTabWork(tabID)
     watchedDone.remove(tabID)
-    removeFromGroup(tabID, for: target.id, evening: true)
+    removeFromGroup(tabID, for: target.id)
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
     onEvent?(.tabsRemoved(target.id, [tabID]))
@@ -1949,7 +1862,7 @@ final class TerminalSessions: ObservableObject {
       codingAgentManager.adopt(id, banner: agent.banner, failure: agent.failure)
     }
     if !merging {
-      splitsByTarget[target.id] = handOff.splits.isEmpty ? nil : handOff.splits
+      setSplits(PaneSplitGroups(handOff.splits), for: target.id)
     }
     counts[target.id] = max(handOff.counter, counts[target.id] ?? 0)
     let focus =
@@ -1966,9 +1879,9 @@ final class TerminalSessions: ObservableObject {
   /// Pull a tab out of its group so it's a solo terminal again (drag a chip clear of the group). The
   /// group dissolves if only one member would remain. No-op if the tab isn't in a group.
   func extractFromSplit(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    guard splitIndex(containing: tabID, for: target.id) != nil else { return }
+    guard split(containing: tabID, for: target) != nil else { return }
     // A removal: the survivors keep ratios budgeted for the pane that just left, so even them.
-    removeFromGroup(tabID, for: target.id, evening: true)
+    removeFromGroup(tabID, for: target.id)
     setFocused(tabID, for: target.id)  // show the extracted tab on its own
     reconcileOcclusion(for: target)
   }
@@ -2060,10 +1973,10 @@ final class TerminalSessions: ObservableObject {
   /// Set the divider ratio of one split node (the view clamps to the points-based minimum first).
   /// Addressed by the node's own id, so it finds the right group without the caller knowing which.
   func setRatio(_ ratio: CGFloat, forSplit splitID: UUID, for target: TerminalTarget) {
-    guard let index = splitsByTarget[target.id]?.firstIndex(where: { $0.containsSplit(splitID) })
-    else { return }
-    splitsByTarget[target.id]![index] = splitsByTarget[target.id]![index].settingRatio(
-      ratio, forSplit: splitID)
+    guard let set = splitsByTarget[target.id]?.settingRatio(ratio, forSplit: splitID) else {
+      return
+    }
+    splitsByTarget[target.id] = set
   }
 
   /// Close a tab. If it's a split member the split collapses to the surviving sibling subtree (and
@@ -2094,7 +2007,7 @@ final class TerminalSessions: ObservableObject {
 
     // A lone remaining member is not a group any more; two or more get evened, since their dividers
     // still budget space for the pane that just closed (issue #126).
-    removeFromGroup(tabID, for: target.id, evening: true)
+    removeFromGroup(tabID, for: target.id)
 
     if wasFocused { setFocused(successor, for: target.id) }
     recency.forgetPanes([tabID])  // after the successor is picked, before anyone else looks
@@ -2496,18 +2409,15 @@ final class TerminalSessions: ObservableObject {
     // adding a pane redistributes the WHOLE group instead of halving this one, so "can this pane be
     // halved" stops being the question — a pane dragged narrow would refuse ⌘D while the group has
     // ample room. Ask instead whether every pane of the tree we are about to store clears the
-    // floors, using the same `evenedIfHonourable` step the mutation itself uses so the guard and the
-    // commit can never disagree.
-    if let space = paneSpace[target.id], space.width > 0, space.height > 0 {
-      let base = split(containing: tab.id, for: target) ?? .leaf(tab.id)
-      // The side the new leaf lands on mirrors the tree without changing any pane's size, so the
-      // guard doesn't need the edge — only the axis and the resulting pane count.
-      let prospective = base.inserting(
-        UUID(), beside: tab.id, orientation: orientation, newLeafFirst: false, ratio: 0.5)
-      let stored = PaneTreeLayout.evenedIfHonourable(
-        prospective, in: space, enabled: autoEvenSplits(), along: orientation)
-      return PaneTreeLayout.fitsEveryPane(
-        stored, in: space, notWorseThan: base, splitting: tab.id)
+    // floors, evened as the mutation itself evens it, so the guard and the commit can never
+    // disagree. The new pane is a placeholder id on the trailing side: the side it lands on mirrors
+    // the tree without changing any pane's size, so the guard doesn't need the edge — only the axis
+    // and the resulting pane count.
+    if let admitted = splitGroups(target.id).admits(
+      UUID(), beside: tab.id, edge: orientation == .horizontal ? .right : .bottom,
+      policy: splitPolicy(for: target.id))
+    {
+      return admitted
     }
     // Pre-layout fallback: the pane's own rect (or its surface), judged by the anchor-only rule.
     let rect =
@@ -2517,48 +2427,27 @@ final class TerminalSessions: ObservableObject {
     return PaneTreeLayout.canSplit(rect, along: orientation)
   }
 
-  /// Store `tree` as the target's group at `index` — replacing that group, or appending a NEW one
-  /// when `index` is nil. A nil `tree`, or one that has fallen below two leaves, deletes the group
-  /// instead. **Every other group is untouched**, which is the whole point of many groups: this is
-  /// the single funnel every split mutation goes through, so "grouping these two leaves those alone"
-  /// is enforced in one place rather than at each call site.
-  ///
-  /// Evens the tree first when `evening` is set and the container can honour equality (issue
-  /// #126). The gate is INTENT, not a leaf-count delta: every caller already knows whether it is
-  /// adding, removing, or rearranging, and a rearrange evens once, after its insert, so its detach
-  /// passes `false`. `axis` limits the even to one direction: an add passes its split's
-  /// orientation, a removal the orientation of the split the pane left, and a rearrange that
-  /// crosses axes nil (both).
-  private func setSplit(
-    _ tree: TerminalPaneLayout?, groupAt index: Int?, for targetID: TerminalTarget.ID,
-    evening: Bool,
-    along axis: SplitOrientation? = nil
+  /// The target's split groups, empty when it has none.
+  private func splitGroups(_ targetID: TerminalTarget.ID) -> PaneSplitGroups<TerminalTab.ID> {
+    splitsByTarget[targetID] ?? PaneSplitGroups()
+  }
+
+  /// Store `groups` as the target's split groups, or no entry when it has none. The single funnel
+  /// every split mutation goes through; the edits themselves are `PaneSplitGroups`', which leave
+  /// every group but the one they touch exactly as it was — the whole point of many groups — and
+  /// never hand out an index, so none can be held across a mutation.
+  private func setSplits(
+    _ groups: PaneSplitGroups<TerminalTab.ID>, for targetID: TerminalTarget.ID
   ) {
-    var groups = splitsByTarget[targetID] ?? []
-    guard let tree, tree.tabIDs.count >= 2 else {
-      if let index, groups.indices.contains(index) { groups.remove(at: index) }
-      splitsByTarget[targetID] = groups.isEmpty ? nil : groups
-      return
-    }
-    let stored =
-      evening
-      ? PaneTreeLayout.evenedIfHonourable(
-        tree, in: paneSpace[targetID], enabled: autoEvenSplits(), along: axis)
-      : tree
-    // A nil index means "append a new group". A NON-nil index that no longer addresses anything means
-    // a caller held one across a mutation — and appending there would silently seed a SECOND group
-    // over leaves an existing one already owns, breaking disjointness quietly (first-group-wins in
-    // `splitGroupIndices` plus `normalizedTabIDs`' `placed` guard would mask it into "a pane renders
-    // in one place and brackets in another"). No caller can do this today; assert so a future one
-    // fails loudly in debug rather than corrupting the model.
-    assert(
-      index == nil || groups.indices.contains(index!), "stale group index held across a mutation")
-    if let index, groups.indices.contains(index) {
-      groups[index] = stored
-    } else {
-      groups.append(stored)
-    }
-    splitsByTarget[targetID] = groups
+    splitsByTarget[targetID] = groups.isEmpty ? nil : groups
+  }
+
+  /// How this target's split evens (issue #126): when the setting is on and the measured container
+  /// can honour equality, every pane weighing one. The gate is INTENT, not a leaf-count delta: each
+  /// mutation knows whether it is adding, removing, or rearranging, and picks the edit that evens
+  /// accordingly; the axis limits the even to one direction (`PaneSplitGroups`).
+  private func splitPolicy(for targetID: TerminalTarget.ID) -> PaneSplitPolicy<TerminalTab.ID> {
+    PaneSplitPolicy(space: paneSpace[targetID], autoEven: autoEvenSplits())
   }
 
   /// Tell `AppStore` which axes `target`'s shown panes changed along since its last reconcile.
@@ -2578,25 +2467,19 @@ final class TerminalSessions: ObservableObject {
   /// How many panes `targetID` shows across each axis: its widest row and tallest column
   /// (`maxSlots`) of the group holding the focused tab, or one each way for a solo tab.
   private func shownSlots(_ targetID: TerminalTarget.ID) -> [SplitOrientation: Int] {
-    let shown = focusedTabByTarget[targetID].flatMap { tabID in
-      splitIndex(containing: tabID, for: targetID).map { splitsByTarget[targetID]![$0] }
-    }
+    let shown = focusedTabByTarget[targetID].flatMap { splitGroups(targetID).group(containing: $0) }
     return Dictionary(
       uniqueKeysWithValues: SplitOrientation.allCases.map { ($0, shown?.maxSlots(along: $0) ?? 1) })
   }
 
   /// Drop `tabID` from whatever group holds it, deleting the group when fewer than two leaves would
-  /// remain. No-op when the tab is solo. The one removal path — close, detach, extract and the
-  /// move-half of a drag all route through it, so "a leaving pane collapses its own group, and only
-  /// its own" exists once.
-  private func removeFromGroup(
-    _ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID, evening: Bool
-  ) {
-    guard let index = splitIndex(containing: tabID, for: targetID) else { return }
-    let group = splitsByTarget[targetID]![index]
-    setSplit(
-      group.removingLeaf(tabID), groupAt: index, for: targetID, evening: evening,
-      along: group.axis(around: tabID))
+  /// remain, and evening the survivors along the axis it left. No-op when the tab is solo. The one
+  /// removal path — close, detach, extract and hand-off all route through it, so "a leaving pane
+  /// collapses its own group, and only its own" exists once (`PaneSplitGroups.removing`).
+  private func removeFromGroup(_ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID) {
+    let groups = splitGroups(targetID)
+    guard groups.group(containing: tabID) != nil else { return }
+    setSplits(groups.removing(tabID, policy: splitPolicy(for: targetID)), for: targetID)
   }
 
   /// The tab to focus after `tabID` is closed: the most-recently-focused tab that is still open
@@ -2631,8 +2514,7 @@ final class TerminalSessions: ObservableObject {
   private func splitRemoving(_ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID)
     -> TerminalPaneLayout?
   {
-    guard let index = splitIndex(containing: tabID, for: targetID) else { return nil }
-    return splitsByTarget[targetID]![index].removingLeaf(tabID)
+    splitGroups(targetID).group(containing: tabID)?.removingLeaf(tabID)
   }
 
   private func insert(_ tab: TerminalTab, for target: TerminalTarget) {

@@ -1,10 +1,8 @@
 import WorkroomDomain
 import XCTest
 
-@testable import Workroom
-
 /// How `PaneTreeLayout` renders a `PaneLayout` tree: the geometry half of the split-pane tests. The
-/// tree's own transforms are tested beside it, in the WorkroomDomain package.
+/// tree's own transforms are tested beside it, in `PaneLayoutTests`.
 final class PaneLayoutGeometryTests: XCTestCase {
   private let a = UUID()
   private let b = UUID()

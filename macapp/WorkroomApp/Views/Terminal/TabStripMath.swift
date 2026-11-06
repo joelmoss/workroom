@@ -4,7 +4,8 @@ import CoreGraphics
 // Workrooms tab bar (`WorkroomTabBar`). Everything here is view-free so it's unit-testable, and
 // shared so the two strips can't drift: drag-to-reorder (`TabReorder`, issue #23), the
 // overflow/pinning decision and its constants (`TabStripOverflow` / `TabStripMetrics`, issue #129),
-// and the split-group bracket's geometry (`TabStripSplitRun`).
+// the split-group bracket's geometry (`TabStripSplitRun`), and where the hairlines between chips go
+// (`TabStripSeparators`). The bracket view itself is `TabStripSplitBrackets`.
 
 /// Pure drag-to-reorder math, shared by the terminal tab strip (`TerminalTabStrip`) and the
 /// Workrooms tab bar (`WorkroomTabBar`, issue #23). Lifted out of `TerminalTabStrip` so the index
@@ -256,5 +257,58 @@ enum TabStripSplitRun {
     for i in first...last { width += widths[i] }
     width += spacing * CGFloat(last - first)
     return (x, width)
+  }
+
+  /// The x-offset and width of every split group's contiguous run within a strip, in the chips'
+  /// coordinate space (x = 0 at the first chip), from the measured chip widths — empty when nothing
+  /// is grouped. `ids` is the strip's display order, which keeps each group's members contiguous; a
+  /// group with fewer than two chips in the strip yields no bracket. `width` is read only when
+  /// something is grouped, so a strip with no groups never observes its measured widths.
+  static func rects<ID: Hashable>(
+    ids: [ID], width: (ID) -> CGFloat, groupOf: [ID: Int], spacing: CGFloat
+  ) -> [(x: CGFloat, width: CGFloat)] {
+    guard !groupOf.isEmpty else { return [] }
+    let chipWidths = ids.map(width)
+    // Bucket the chips by group in ONE pass over the strip (a filter per group would be
+    // O(groups × chips)).
+    var byGroup: [Int: [Int]] = [:]
+    for (index, id) in ids.enumerated() {
+      guard let group = groupOf[id] else { continue }
+      byGroup[group, default: []].append(index)
+    }
+    // Sorted by group index so the brackets keep a stable draw order across renders.
+    return byGroup.keys.sorted().compactMap { group in
+      rect(widths: chipWidths, memberIndices: byGroup[group] ?? [], spacing: spacing)
+    }
+  }
+}
+
+/// Where a strip draws the hairlines between its chips. A divider sits between adjacent chips, and
+/// is dropped around any chip that is set apart on its own — the **active** chip (its pill frames
+/// it) and the **hovered** chip (its wash frames it) — and at a split group's **outer** boundary,
+/// where the group's bracket already separates it. Each strip adds its own guards on top: neither
+/// draws one mid-drag, and only the workroom bar puts one before its first chip.
+enum TabStripSeparators {
+  /// Whether a hairline separates `prev` from the chip after it, `here`.
+  ///
+  /// The boundary test compares GROUP IDENTITY, not mere membership: two adjacent groups are both
+  /// "grouped", and a membership test would draw an interior-style divider between two bracket edges.
+  static func between<ID: Hashable>(
+    _ prev: ID, _ here: ID, active: ID?, hovered: ID?, groupOf: [ID: Int]
+  ) -> Bool {
+    if here == active || prev == active { return false }
+    if here == hovered || prev == hovered { return false }
+    return groupOf[here] == groupOf[prev]
+  }
+
+  /// Whether a hairline may sit on the outer side of the end chip `id` (nil: no chips), where its
+  /// neighbour is not a chip: the trailing controls, or the run's leading edge. Not beside the active
+  /// or hovered chip, and not beside a split member: the bracket's edge already separates the group
+  /// there, so a divider would double against it.
+  static func atEdge<ID: Hashable>(
+    of id: ID?, active: ID?, hovered: ID?, groupOf: [ID: Int]
+  ) -> Bool {
+    guard let id else { return false }
+    return groupOf[id] == nil && id != active && id != hovered
   }
 }

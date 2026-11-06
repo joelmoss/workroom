@@ -8,7 +8,7 @@ enum TerminalPanelMetrics {
   static let cornerRadius: CGFloat = 8
   /// Height of a pane's chrome rows — the title bar above the content (`PaneTitleBarMetrics.height`)
   /// and the status bar below it (`TerminalStatusBar`). One constant because the two must match: they
-  /// bracket the content, and `TerminalSessions.minPaneHeight` budgets for BOTH of them, so a change
+  /// bracket the content, and `PaneMetrics.minPaneHeight` budgets for BOTH of them, so a change
   /// in one place that missed the others would make the pane floor quietly wrong.
   static let chromeRowHeight: CGFloat = 28
 }
