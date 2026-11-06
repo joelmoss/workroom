@@ -228,7 +228,7 @@ extension AppStore {
       terminals.tab(tabID, for: target) != nil
     else { return }
     // Nil for a pane with no background session (an Investigate tab's agent): nothing to retag.
-    let sessionID = terminals.surface(of: tabID)?.persistentSessionID
+    let sessionID = terminals.surface(of: tabID)?.attachment.sessionID
     let service = terminals.sessionService
     if let sessionID,
       !(await service.retag(sessionID: sessionID, workroom: into.sessionWorkroomKey))
@@ -363,7 +363,7 @@ extension AppStore {
     if target.remoteHost == nil, !target.isRemoteWorkroom,
       handOff.sessions.tabs.contains(where: {
         guard let view = handOff.sessions.surfaces[$0.id] else { return false }
-        return view.persistentSessionIsRestored && view.persistentSessionID != nil
+        return view.attachment.isRestored && view.attachment.sessionID != nil
           && view.surface == nil
       })
     {

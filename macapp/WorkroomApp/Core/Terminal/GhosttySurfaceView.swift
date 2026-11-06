@@ -5,7 +5,6 @@ import SwiftUI
 import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
-import os
 
 /// What a surface tells its owner, `TerminalSessions`, through `GhosttySurfaceView.onEvent`: the
 /// same single-sink rule as `TerminalSessions.Event` (ADR 0021), one layer down.
@@ -49,9 +48,6 @@ enum SurfaceEvent {
 /// `tearDown()`/`deinit`; callbacks are nil'd and the C-string config pointers freed on teardown so
 /// no in-flight libghostty callback can touch a dead view.
 final class GhosttySurfaceView: NSView {
-  private static let sessionLogger = Logger(
-    subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
-
   /// The live surface, or nil before creation / after teardown. `nonisolated(unsafe)` because the
   /// runtime callbacks (via `ghostty_surface_userdata`) read it; all writes happen on the main thread.
   nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
@@ -106,33 +102,9 @@ final class GhosttySurfaceView: NSView {
     "Workroom's background helper isn't available, so the run command can't start here. "
       + "Press Run to try again.")
 
-  /// Names this pane's attach (`PersistentSessionService.attachCommand(by:)`), so only this pane
-  /// clears it. Not its object identity, which a later view can reuse once this one is freed.
-  let attachToken = UUID()
-  /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
-  /// launches `workroom-session attach` instead of a login shell.
-  // `nonisolated(unsafe)`, like the two timers: set on the main actor, and read again in the
-  // nonisolated `deinit`, which runs once nothing else holds the view.
-  nonisolated(unsafe) var persistentSessionID: UUID? {
-    // Pointed at another session (the detached-sessions list): the old one's ssh goes with the
-    // surface it is about to lose, so it no longer counts as attached to its remote host (#356).
-    didSet {
-      if let oldValue, oldValue != persistentSessionID {
-        // Only ever set on the main actor (the `nonisolated(unsafe)` note above).
-        MainActor.assumeIsolated {
-          PersistentSessionService.shared.paneDetached(oldValue, by: attachToken)
-        }
-      }
-    }
-  }
-  /// Whether `persistentSessionID` was carried over from a previous launch rather than minted for
-  /// this pane. Only a restored id can name a session that has since died, and only a restored id
-  /// is re-checked before attaching — asking about a fresh one would refuse every new pane, since
-  /// no helper holds an id that has never existed.
-  var persistentSessionIsRestored = false
-
-  /// Project / workroom / tab / title metadata sent on attach.
-  var sessionMetadata: [(key: String, value: String)] = []
+  /// The daemon session this pane attaches to, and when it attaches again. `createSurface` asks it
+  /// what to launch; its child's exit, the pane's close and network changes reach it.
+  let attachment = PaneSessionAttachment()
 
   /// Test seam (view-layer unit tests): when `false`, `createSurface()` is a no-op, so the view still
   /// mounts as a real `NSView` in the window — letting `PaneRenderingTests` assert on the AppKit
@@ -191,9 +163,6 @@ final class GhosttySurfaceView: NSView {
   // Workroom windows or the Quick Terminal, and app activate/deactivate (see `syncFocusToKeyWindow`);
   // and screen changes (see `syncDisplayID`).
   nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
-  /// `RemoteLinkMonitor`'s, for the view's lifetime: a hidden tab or a detached pane keeps its ssh
-  /// while it is in no window.
-  nonisolated(unsafe) private var remoteLinkObserver: NSObjectProtocol?
 
   // IME / marked-text state.
   private var markedText = ""
@@ -291,12 +260,7 @@ final class GhosttySurfaceView: NSView {
       // wouldn't reach the shell until you clicked the pane.
       if action == .end { self.window?.makeFirstResponder(self) }
     }
-    remoteLinkObserver = NotificationCenter.default.addObserver(
-      forName: RemoteLinkMonitor.linksStale, object: nil, queue: .main
-    ) { [weak self] note in
-      let stale = note.userInfo?[RemoteLinkMonitor.staleHostsKey] as? Set<HostID> ?? []
-      MainActor.assumeIsolated { self?.reattachAfterNetworkChange(staleHosts: stale) }
-    }
+    attachment.surface = self
   }
 
   @available(*, unavailable)
@@ -346,12 +310,19 @@ final class GhosttySurfaceView: NSView {
       envPairs.append(("PATH", path))
     }
 
-    let startedPersistent = applyPersistentSession(
-      to: &config, environment: &envPairs)
-    // A pane's first attach starts here, not in `reattachPersistentSession`: without this its
-    // `lastAttachAt` stays `.distantPast`, and a first attach that never connected reads as a
-    // link that was up (`reconnectIfTheLinkDropped`).
-    if startedPersistent { lastAttachAt = Date() }
+    // Non-nil sets `config.command`; see `PaneSessionAttachment.launch` for what that does and does
+    // not mean.
+    var startedPersistent = false
+    if let launch = attachment.launch(
+      workingDirectory: workingDirectory, runCommand: runCommand, isRunSession: isRunSession),
+      let attachPointer = strdup(launch.command)
+    {
+      surfaceCStrings.append(attachPointer)
+      config.command = UnsafePointer(attachPointer)
+      config.wait_after_command = false
+      envPairs.append(contentsOf: launch.environment)
+      startedPersistent = true
+    }
 
     // A run session's command runs only in a daemon session, whose supervisor the app stops,
     // restarts and reattaches to (#522, D5). Run here it would be none of those, and a restored
@@ -387,7 +358,7 @@ final class GhosttySurfaceView: NSView {
     guard let surface else {
       freeSurfaceCStrings()
       // No surface, no ssh: the attach its command recorded is gone (#356).
-      detachFromHost()
+      attachment.surfaceGone()
       return
     }
 
@@ -436,7 +407,7 @@ final class GhosttySurfaceView: NSView {
     if let surface { ghostty_surface_free(surface) }
     surface = nil
     // Its ssh went with it, so it no longer counts as attached to its remote host (#356).
-    detachFromHost()
+    attachment.surfaceGone()
     lastSetFocus = nil  // a new surface starts unfocused — don't let a stale value skip the re-sync
     freeSurfaceCStrings()
   }
@@ -445,8 +416,7 @@ final class GhosttySurfaceView: NSView {
   /// callback resolving this view via `userdata` can't invoke a dangling closure, then frees.
   func tearDown() {
     isTornDown = true  // dead view: block any later re-spawn (issue #7 phantom respawn)
-    pendingReconnect?.cancel()
-    pendingReconnect = nil
+    attachment.close()
     setHandCursor(false)
     onEvent = nil
     onOpenURL = nil
@@ -463,10 +433,6 @@ final class GhosttySurfaceView: NSView {
     }
     for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
     windowObservers = []
-    if let remoteLinkObserver {
-      NotificationCenter.default.removeObserver(remoteLinkObserver)
-      self.remoteLinkObserver = nil
-    }
     destroySurface()
     removeFromSuperview()
   }
@@ -475,15 +441,15 @@ final class GhosttySurfaceView: NSView {
     progressTimeoutTimer?.invalidate()
     accessibilityPollTimer?.invalidate()
     if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
-    if let remoteLinkObserver { NotificationCenter.default.removeObserver(remoteLinkObserver) }
     for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
     // A window closing frees its panes without a teardown; their ssh goes with them (#356). Only
-    // this pane's own mark goes, so the hop to the main actor cannot undo a later pane's attach.
-    if surface != nil, let id = persistentSessionID {
-      let pane = attachToken
-      Task { @MainActor in PersistentSessionService.shared.paneDetached(id, by: pane) }
+    // this pane's own mark goes (its attachment's token), so the hop to the main actor cannot undo
+    // a later pane's attach. Nothing else holds the attachment, so its session cannot change first.
+    if surface != nil {
+      let attachment = attachment
+      Task { @MainActor in attachment.surfaceGone() }
     }
   }
 
@@ -496,143 +462,9 @@ final class GhosttySurfaceView: NSView {
     envVarCount = 0
   }
 
-  /// Configure libghostty to spawn a session helper for a background session.
-  ///
-  /// Returns whether it set `config.command` — not strictly "a session was attached". A restored
-  /// session that has since ended gets `workroomd attach --no-create`, which tells the user so and
-  /// starts a new session in its place, or a plain shell if even that fails. The
-  /// caller only uses the result to decide
-  /// whether to install a run command, and a pane with a persistent session is never a run-command
-  /// pane (`TerminalPersistentSessionPolicy` excludes them), so the distinction costs nothing.
-  @discardableResult
-  private func applyPersistentSession(
-    to config: inout ghostty_surface_config_s,
-    environment: inout [(String, String)]
-  ) -> Bool {
-    // No session was requested for this pane — not a failure, nothing to log.
-    guard let persistentSessionID else { return false }
-
-    // Ask the retired Swift helper once more, before committing to an attach, whether it still holds
-    // this. It CREATES a session on attach for an id it does not hold, so a cached ownership answer
-    // that has outlived its session would turn a reattach into a brand new shell with nothing to
-    // mark it as one. A lost one drops its cached owner, so the attach below re-resolves to the
-    // daemon, whose `--no-create` attach shows the session ended and starts a new one in its place.
-    // See `confirmBeforeAttach`.
-    PersistentSessionService.shared.confirmBeforeAttach(
-      sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored)
-    // A run session that is gone is never replaced (#522, D2): its tab says the run ended.
-    if !isRunSession,
-      PersistentSessionService.shared.willReplaceRestoredSession(
-        persistentSessionID, wasRestored: persistentSessionIsRestored)
-    {
-      showPaneNotice(PaneNoticeToast.sessionReplaced)
-    }
-    // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
-    // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
-    // for the backend a NEW session would go to, so it goes false whenever the daemon is unhealthy
-    // — which is precisely when a session the retired Swift helper still holds most needs reaching.
-    // Gating here rejected those panes before `attachCommand` could route them, defeating the
-    // attach-only client in its own use case. `attachCommand(forSession:)` already answers nil when
-    // the owning backend has no binary, so the global check bought nothing on this path.
-    guard
-      let attach = PersistentSessionService.shared.attachCommand(
-        forSession: persistentSessionID, restored: persistentSessionIsRestored,
-        by: attachToken),
-      let attachPointer = strdup(attach)
-    else {
-      // A pane that expected a persisted session fell back to a plain login shell. Whatever the
-      // helper-side session was doing is now orphaned/unreachable from this pane — worth a log
-      // line since the resulting terminal otherwise looks identical to a normal fresh shell.
-      Self.sessionLogger.error(
-        """
-        persistent session \(persistentSessionID.uuidString, privacy: .public) unavailable \
-        (no owning helper resolved); falling back to a plain shell
-        """)
-      return false
-    }
-    surfaceCStrings.append(attachPointer)
-    config.command = UnsafePointer(attachPointer)
-    config.wait_after_command = false
-    environment.append(
-      contentsOf: PersistentSessionService.shared.launchEnvironment(
-        sessionID: persistentSessionID,
-        workingDirectory: workingDirectory,
-        metadata: sessionMetadata,
-        runCommand: isRunSession ? runCommand : nil))
-    return true
-  }
-
-  /// A pane on a remote host whose ssh lost the link reattaches, rather than sitting on a dead
-  /// process while its session runs on: 255 is ssh's own failure, as after laptop sleep, a network
-  /// change or the host rebooting. It reattaches as a restored pane, so a session that ended
-  /// meanwhile shows as ended. See `RemoteReconnectBackoff` for when it gives up.
-  ///
-  /// ssh's status comes from what the attach wrapper recorded, never from the pane's exit status:
-  /// libghostty runs every command under macOS `login`, which exits 0 whatever ran under it, so
-  /// gating on the exit status meant no pane ever reattached (#392).
-  ///
-  /// Only a pane whose attach had been up becomes a restored one. A new pane whose first attach
-  /// never connected (opened offline, or before the bootstrap installed the daemon) has no session
-  /// on the host yet: reattaching it with `--no-create` would show it ended instead of creating
-  /// it. Up means longer than the backoff's ceiling, which already reads that as a link that was up.
-  ///
-  /// An attach that recorded no status was killed before ssh exited, as by a Ctrl-C typed while
-  /// ssh was still connecting. Ctrl-C does there what it does to any ssh. When the app's own
-  /// reconnect was bringing back a restored session (one on the host already, as after a link
-  /// that was up or a launch), the pane keeps trying, as the retry notice on screen promises: what
-  /// the user meant to stop was most likely the program they had been typing to (#507). A new
-  /// pane's attaches, and any attach the app's reconnect did not start, stay stopped.
-  private func reconnectIfTheLinkDropped() {
-    let attachedFor = Date().timeIntervalSince(lastAttachAt)
-    guard let session = persistentSessionID, !isTornDown,
-      PersistentSessionService.shared.isRemote(session),
-      case let ended = PersistentSessionService.shared.remoteLastAttach(session),
-      ended == .lostLink
-        || (ended == .unrecorded && attachedByTheAppsReconnect && persistentSessionIsRestored),
-      let delay = remoteReconnects.next(
-        attachedFor: attachedFor,
-        refused: PersistentSessionService.shared.remoteHostRefusedLastAttach(session))
-    else { return }
-    let wasUp = linkWasUp
-    let reconnect = DispatchWorkItem { [weak self] in
-      guard let self, !self.isTornDown, self.persistentSessionID == session else { return }
-      if wasUp { self.persistentSessionIsRestored = true }
-      self.reattachPersistentSession(reconnecting: true)
-    }
-    pendingReconnect = reconnect
-    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: reconnect)
-  }
-
-  /// The Mac woke or changed networks (`RemoteLinkMonitor`): attach again now rather than wait up
-  /// to a minute for ssh's keepalive to notice a dead link, or out a backoff of up to 30 s. A pane
-  /// that stopped (refused for good, or its session ended) stays stopped. A pane whose ssh still
-  /// runs attaches again only when its host didn't answer (`staleHosts`), since one that did most
-  /// likely still carries it. A container's link is loopback, which no network change breaks.
-  func reattachAfterNetworkChange(staleHosts: Set<HostID>) {
-    guard let session = persistentSessionID, !isTornDown,
-      PersistentSessionService.shared.remoteLinkCrossesNetwork(session)
-    else { return }
-    if let pendingReconnect {
-      remoteReconnects = RemoteReconnectBackoff()
-      // Its own work item, which knows whether the link had been up (`reconnectIfTheLinkDropped`).
-      pendingReconnect.perform()
-      return
-    }
-    guard hasLiveProcess, let host = PersistentSessionService.shared.remoteHost(of: session),
-      staleHosts.contains(host)
-    else { return }
-    remoteReconnects = RemoteReconnectBackoff()
-    if linkWasUp { persistentSessionIsRestored = true }
-    reattachPersistentSession(reconnecting: true)
-  }
-
-  /// `reconnecting`: the app's own reconnect is starting this attach, not the user (#507).
-  func reattachPersistentSession(reconnecting: Bool = false) {
-    guard persistentSessionID != nil, !isTornDown else { return }
-    attachedByTheAppsReconnect = reconnecting
-    pendingReconnect?.cancel()
-    pendingReconnect = nil
-    lastAttachAt = Date()
+  /// Free the surface and spawn it again, which attaches anew: only `attachment.reattach` calls
+  /// this, after its own torn-down check. The spawn still goes through `canSpawnSurface`.
+  func respawnSurface() {
     destroySurface()
     if bounds.width <= 0 || bounds.height <= 0 {
       setFrameSize(CGSize(width: 800, height: 480))
@@ -1059,35 +891,10 @@ final class GhosttySurfaceView: NSView {
   }
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SHOW_CHILD_EXITED` — the surface's child
-  /// process exited. Forwards to the host; only run tabs act on it (issue #7).
-  /// When a remote pane reattaches after its ssh exits 255, and when it stops trying.
-  private var remoteReconnects = RemoteReconnectBackoff()
-  /// When this pane last attached, to tell a link that dropped after a while (start the backoff
-  /// again) from one that never came up (keep backing off).
-  private var lastAttachAt = Date.distantPast
-  /// Whether the last attach was up long enough to count as a link that was up, so attaching again
-  /// is a restored pane's (`reconnectIfTheLinkDropped`).
-  private var linkWasUp: Bool {
-    Date().timeIntervalSince(lastAttachAt) > RemoteReconnectBackoff.ceiling
-  }
-  /// Whether the app's own reconnect started the current attach, so one that brings back a
-  /// restored session keeps trying when it is killed before ssh exits (#507).
-  private var attachedByTheAppsReconnect = false
-  /// The reconnect waiting out its delay, cancelled by any other reattach so the pane does not
-  /// attach twice, and by closing the pane.
-  private(set) var pendingReconnect: DispatchWorkItem?
-
-  /// This pane's ssh is gone: it no longer counts as attached to its remote host (#356).
-  private func detachFromHost() {
-    if let persistentSessionID {
-      PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
-    }
-  }
-
+  /// process exited. Its attachment hears first (a remote pane may reconnect); then the host, where
+  /// only run tabs act on it (issue #7).
   func handleChildExited(exitCode: UInt32) {
-    // A dead ssh no longer counts as attached, whether or not it reconnects (#356).
-    detachFromHost()
-    reconnectIfTheLinkDropped()
+    attachment.childExited()
     onEvent?(.childExited(exitCode))
   }
 
@@ -1118,16 +925,6 @@ final class GhosttySurfaceView: NSView {
   /// Whether this pane has not been mounted yet: no surface, and one spawns when it is (a restored
   /// tab in a workroom not opened since launch).
   var awaitsMount: Bool { awaitsMountOverrideForTesting ?? canSpawnSurface }
-
-  /// Test seam: forces `isReattachingAfterLinkLoss`.
-  var reattachingOverrideForTesting: Bool?
-
-  /// Whether the app is reattaching this remote pane after its link dropped, or is about to: a run
-  /// session that ended meanwhile then shows the daemon's ended notice and holds, so the run's end
-  /// never reaches this pane's own exit (#522).
-  var isReattachingAfterLinkLoss: Bool {
-    reattachingOverrideForTesting ?? (pendingReconnect != nil || attachedByTheAppsReconnect)
-  }
 
   /// Test seam: forces `didSpawnFail` (tests run with `spawnsSurface: false`, where a nil surface is
   /// intentional, so the real check can't exercise the failed-spawn path). Production leaves this nil.
@@ -2389,32 +2186,4 @@ private final class GoToBottomButton: NSView {
   }
 }
 
-/// When a remote pane whose ssh exited 255 attaches again, and when it stops (#241).
-///
-/// Backs off from 1s, doubling to 30s, and keeps trying for as long as it takes: a rebooting cloud
-/// VM can be gone for minutes, and its pane should come back to its last screen (#232) on its own.
-/// The exception is a host that answered and refused for good (a changed host key, a refused key:
-/// `HostTerminalDriver.hostRefusedLastAttach`). The fifth of those within 30s of an attach stops
-/// the pane with ssh's message on screen, since retrying would only repeat it. Other failures in
-/// between do not restart that count, so a refusal that alternates with a host that is briefly
-/// unreachable still stops. A pane whose host is gone for good retries until it is closed.
-struct RemoteReconnectBackoff {
-  static let ceiling: TimeInterval = 30
-  static let maxRefusals = 5
-  private(set) var delay: TimeInterval = 1
-  private(set) var refusals = 0
-
-  /// The wait before the next attach, or nil to stop. `attachedFor` is how long ago the attach
-  /// that just failed began; longer than the ceiling is a link that dropped after it was up.
-  mutating func next(attachedFor: TimeInterval, refused: Bool) -> TimeInterval? {
-    if attachedFor > Self.ceiling {
-      delay = 1
-      refusals = 0
-    } else if refused {
-      refusals += 1
-      guard refusals < Self.maxRefusals else { return nil }
-    }
-    defer { delay = min(delay * 2, Self.ceiling) }
-    return delay
-  }
-}
+extension GhosttySurfaceView: PaneSessionSurface {}

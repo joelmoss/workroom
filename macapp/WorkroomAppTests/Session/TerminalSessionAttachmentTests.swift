@@ -39,8 +39,8 @@ final class TerminalSessionAttachmentTests: XCTestCase {
 
     XCTAssertEqual(sessions.sessionID(forTab: tab.id, inTarget: target.id), session)
     let surface = try XCTUnwrap(sessions.surface(tab))
-    XCTAssertEqual(surface.persistentSessionID, session, "the surface reattaches to it")
-    XCTAssertTrue(surface.persistentSessionIsRestored, "it names a session that already exists")
+    XCTAssertEqual(surface.attachment.sessionID, session, "the surface reattaches to it")
+    XCTAssertTrue(surface.attachment.isRestored, "it names a session that already exists")
     let saved = try XCTUnwrap(sessions.tab(tab.id, for: target)).content
     guard case .terminal(let state) = saved else { return XCTFail("not a terminal") }
     XCTAssertEqual(
@@ -66,7 +66,7 @@ final class TerminalSessionAttachmentTests: XCTestCase {
         sessionID: session, target: target, sessions: sessions))
 
     XCTAssertNil(sessions.sessionID(forTab: other.id, inTarget: target.id))
-    XCTAssertNil(try XCTUnwrap(sessions.surface(other)).persistentSessionID)
+    XCTAssertNil(try XCTUnwrap(sessions.surface(other)).attachment.sessionID)
     XCTAssertEqual(sessions.owner(of: session, in: target), owner.id, "the owner keeps it")
   }
 

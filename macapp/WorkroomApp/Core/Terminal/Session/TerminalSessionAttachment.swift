@@ -22,11 +22,11 @@ enum TerminalSessionAttachment {
     // tab is made (`TerminalSessions.makeTerminalTab`), so readers of the tab's need not ask the view.
     let previous = state.sessionID
     state.sessionID = sessionID
-    view.persistentSessionID = sessionID
+    view.attachment.sessionID = sessionID
     // Always restored: this path exists to point a pane at a session that already exists, chosen
     // by the user from the detached-sessions list.
-    view.persistentSessionIsRestored = true
-    view.reattachPersistentSession()
+    view.attachment.isRestored = true
+    view.attachment.reattach()
     tab.content = .terminal(state)
     sessions.replace(tab, for: target)
     sessions.refreshProgramStatus(tab: tab.id, target: target.id)

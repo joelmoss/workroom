@@ -1,9 +1,9 @@
 //! `workroomd serve | attach`, mirroring today's shipped `workroom-session daemon | attach`.
 //!
-//! That shape is deliberate rather than inherited: `applyPersistentSession` sets libghostty's
-//! `config.command` to a command LINE, so libghostty forks a *process* — meaning there has to be
-//! a forked relay executable as well as the in-process client. One binary in both roles keeps the
-//! frame codec in one language instead of duplicating it forever.
+//! That shape is deliberate rather than inherited: `PaneSessionAttachment.launch` sets
+//! libghostty's `config.command` to a command LINE, so libghostty forks a *process* — meaning there
+//! has to be a forked relay executable as well as the in-process client. One binary in both roles
+//! keeps the frame codec in one language instead of duplicating it forever.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

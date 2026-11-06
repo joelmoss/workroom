@@ -209,7 +209,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
   ///
   /// **This is NOT a control for the view's guard, and an earlier version of this comment claimed
   /// it was.** Measured: restoring `PersistentSessionService.shared.isAvailable` to the guard in
-  /// `GhosttySurfaceView.applyPersistentSession` leaves all three tests here green, because they
+  /// `PaneSessionAttachment.launch` leaves all three tests here green, because they
   /// drive the service directly and never reach the view. What they prove is the service-level
   /// contract — that the state is reachable and answers correctly. The call site is pinned
   /// separately by `PersistentSessionAttachGateTests`.

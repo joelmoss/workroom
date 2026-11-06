@@ -362,7 +362,8 @@ final class LiveTitle {
 struct TerminalState {
   /// Daemon session this pane attaches to (separate from `tab.id`, which remints on restore). Set
   /// when the tab is made and when it is pointed at another session (`TerminalSessionAttachment`),
-  /// each time together with the surface's attach id (`persistentSessionID`), so the two agree.
+  /// each time together with the surface's attach id (`PaneSessionAttachment.sessionID`), so the
+  /// two agree.
   var sessionID: UUID?
   /// What the pane's process is (a shell, a command in its own process, or a run session), as its
   /// surface was told when the tab was made. Never changes.
@@ -1844,7 +1845,7 @@ final class TerminalSessions: ObservableObject {
       focused: tabID, counter: 0, detached: [:], agent: [tabID: codingAgentManager.handOff(tabID)])
     if let view {
       let project = destination.id.projectPath ?? destination.path
-      view.sessionMetadata = view.sessionMetadata.map { entry in
+      view.attachment.metadata = view.attachment.metadata.map { entry in
         switch entry.key {
         case SessionMetadataKey.workroom: (entry.key, destination.sessionWorkroomKey)
         case SessionMetadataKey.project: (entry.key, project)
@@ -2341,11 +2342,14 @@ final class TerminalSessions: ObservableObject {
         assignedSessionID, on: host, workingDirectory: cwd, metadata: metadata,
         runCommand: runSession ? command : nil)
     }
-    view.persistentSessionID = assignedSessionID
+    // The surface attaches through the service this window registers and ends its sessions with,
+    // whichever factory made it.
+    view.attachment.service = sessionService
+    view.attachment.sessionID = assignedSessionID
     // `sessionID` non-nil means this pane is being rebuilt from a restore payload, so its id names
     // a session that may no longer exist. A fresh pane's id was minted a line ago.
-    view.persistentSessionIsRestored = sessionID != nil
-    view.sessionMetadata = metadata
+    view.attachment.isRestored = sessionID != nil
+    view.attachment.metadata = metadata
     // The tab's facts are what the surface was just told, read back once: its launch and start
     // directory never change, and its session changes with its surface's, through
     // `TerminalSessionAttachment`.

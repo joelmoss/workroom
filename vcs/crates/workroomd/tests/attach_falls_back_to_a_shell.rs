@@ -5,7 +5,7 @@
 //! and parses a version string. That answers "can this binary start and print", not "can it serve a
 //! session": a stale socket it cannot bind, a peer it cannot negotiate with, a crash between the
 //! two — all pass the probe and fail here. And by the time `workroomd attach` runs, the app has
-//! already chosen; `applyPersistentSession` set libghostty's `config.command`, and
+//! already chosen; `PaneSessionAttachment.launch` set libghostty's `config.command`, and
 //! `config.wait_after_command` is false, so a relay that exits leaves a pane with no shell in it at
 //! all. Nothing the app can do at that point recovers it, which is why the relay execs a shell.
 //!

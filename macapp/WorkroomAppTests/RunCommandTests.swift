@@ -1772,7 +1772,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
-    try! XCTUnwrap(runView(store, t)).reattachingOverrideForTesting = true
+    try! XCTUnwrap(runView(store, t)).attachment.reattachingOverrideForTesting = true
 
     store.terminals.onEvent?(.runSessionGone(t.id, tab))
 
@@ -1807,7 +1807,7 @@ final class RunCommandTests: XCTestCase {
     store.startRunCommand(for: t)
     let view = try! XCTUnwrap(runView(store, t))
     view.awaitsMountOverrideForTesting = true
-    view.persistentSessionID = view.persistentSessionID ?? UUID()
+    view.attachment.sessionID = view.attachment.sessionID ?? UUID()
 
     XCTAssertTrue(store.runCommand.stopsRunsBeforeClosing)
   }
@@ -1823,7 +1823,7 @@ final class RunCommandTests: XCTestCase {
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     let view = try! XCTUnwrap(runView(store, t))
     view.awaitsMountOverrideForTesting = true  // never mounted, so no live process
-    view.persistentSessionID = view.persistentSessionID ?? UUID()
+    view.attachment.sessionID = view.attachment.sessionID ?? UUID()
     XCTAssertFalse(view.hasLiveProcess)
 
     XCTAssertTrue(store.runCommand.hasLiveRun, "quit asks about it")

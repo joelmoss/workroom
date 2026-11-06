@@ -49,10 +49,10 @@ const RUN_ENDED_NOTICE: &str = "The run command that was running here has ended.
 /// Become an ordinary shell, because this relay could not deliver a persistent session.
 ///
 /// **Why the relay and not the app.** The app decides whether a pane gets a session before it
-/// forks anything: `applyPersistentSession` either hands libghostty `workroomd attach` as its
-/// `config.command` or lets it open a plain shell, and by the time this process exists that choice
-/// is spent. `config.wait_after_command` is false, so a relay that exits leaves a dead pane — no
-/// shell, no prompt, nothing the user can type into. The only place left that can still turn a
+/// forks anything: `PaneSessionAttachment.launch` either hands libghostty `workroomd attach` as
+/// its `config.command` or lets it open a plain shell, and by the time this process exists that
+/// choice is spent. `config.wait_after_command` is false, so a relay that exits leaves a dead pane
+/// — no shell, no prompt, nothing the user can type into. The only place left that can still turn a
 /// failed attach into a working terminal is this process, by replacing itself with the shell the
 /// pane would have run anyway.
 ///

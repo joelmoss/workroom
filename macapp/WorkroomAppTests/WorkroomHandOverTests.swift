@@ -951,7 +951,7 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(window.terminals.allTabs(for: t).last?.id, pane.id, "after the workroom's own")
     XCTAssertEqual(window.terminals.focusedTab(for: t)?.id, pane.id)
     XCTAssertEqual(
-      paneSurface?.sessionMetadata.first { $0.key == SessionMetadataKey.workroom }?.value,
+      paneSurface?.attachment.metadata.first { $0.key == SessionMetadataKey.workroom }?.value,
       t.sessionWorkroomKey, "a reattach names its new workroom")
     paneSurface?.handleTitleChange("vim")
     XCTAssertEqual(window.terminals.tab(pane.id, for: t)?.title, "vim", "it reports to the window")
@@ -970,7 +970,7 @@ final class WorkroomHandOverTests: XCTestCase {
       return answer
     }
     let session = UUID()
-    quick.terminals.surface(pane)?.persistentSessionID = session
+    quick.terminals.surface(pane)?.attachment.sessionID = session
     let quickTarget = QuickTerminalController.target()
 
     await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)
@@ -1154,7 +1154,7 @@ final class WorkroomHandOverTests: XCTestCase {
       if asked.count == 1 { self.shared.projects = [] }
       return true
     }
-    quick.terminals.surface(pane)?.persistentSessionID = UUID()
+    quick.terminals.surface(pane)?.attachment.sessionID = UUID()
     let quickTarget = QuickTerminalController.target()
     let key = target(window).sessionWorkroomKey
 

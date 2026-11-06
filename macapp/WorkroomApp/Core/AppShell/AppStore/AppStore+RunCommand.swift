@@ -215,7 +215,7 @@ extension AppStore {
     if runCommand.restoredRuns.remove(targetID) != nil {
       notice = Self.runEndedWhileClosed
     } else if runCommand.runStates[targetID]?.isRunning == true,
-      view?.isReattachingAfterLinkLoss == true
+      view?.attachment.isReattachingAfterLinkLoss == true
     {
       notice = Self.runEndedWhileReconnecting
     } else {
@@ -647,11 +647,11 @@ extension AppStore {
   /// otherwise fall back to the process's code. What the run left behind, its daemon ends (R8).
   ///
   /// Not a run's end when the pane is about to attach again: a remote pane whose link dropped
-  /// reattaches (`GhosttySurfaceView.reconnectIfTheLinkDropped`) and its run carries on.
+  /// reattaches (`PaneSessionAttachment.reconnectIfTheLinkDropped`) and its run carries on.
   private func markRunExited(for target: TerminalTarget, exitCode: UInt32) {
     guard let tab = runCommand.runStates[target.id]?.tab else { return }
     let view = terminals.view(forTab: tab, inTarget: target.id)
-    guard view?.pendingReconnect == nil else { return }
+    guard view?.attachment.pendingReconnect == nil else { return }
     runCommand.restoredRuns.remove(target.id)
     if view?.refusedRun == true {
       // No daemon took the run (D5): the pane said why, and nothing ran.
@@ -661,7 +661,7 @@ extension AppStore {
       return
     }
     // The run's last status, which may have come in after the last one applied.
-    if runCommand.runOutcomes[target.id] == nil, let sessionID = view?.persistentSessionID,
+    if runCommand.runOutcomes[target.id] == nil, let sessionID = view?.attachment.sessionID,
       let line = terminals.programStatus.run(for: sessionID)
     {
       applyRunStatus(line, for: target)

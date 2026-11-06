@@ -10,9 +10,9 @@ private enum GateTestError: Error {
   case symbolMissing
 }
 
-/// The one thing about `GhosttySurfaceView.applyPersistentSession` that a behavioural test cannot
-/// reach: that it does **not** consult the global `PersistentSessionService.isAvailable` before
-/// attaching.
+/// The one thing about `PaneSessionAttachment.launch` (once the surface view's
+/// `applyPersistentSession`) that a behavioural test cannot reach: that it does **not** consult the
+/// global `PersistentSessionService.isAvailable` before attaching.
 ///
 /// **Why this is a source-parsing test.** The obvious version drives the service and asserts
 /// `attachCommand(forSession:)` is non-nil while `isAvailable` is false — which is true whatever
@@ -22,8 +22,9 @@ private enum GateTestError: Error {
 /// that twice already (see the commit "cover the wiring, not just the writer" and the "verify the
 /// premise" rule in `macapp/AGENTS.md`).
 ///
-/// `applyPersistentSession` is private, builds a `ghostty_surface_config_s`, and lives on an
-/// `NSView` subclass that XCUITest cannot query, so the call site itself is the only observable.
+/// `launch` runs without a view now, but the case the guard would break needs a session the retired
+/// helper holds, its binary resolved from the app bundle, while the daemon is unhealthy, which the
+/// test host cannot stage, so the call site itself is the only observable.
 /// `DefaultsIsolationTests.testEveryShippedKeyDeclaresTheAppSuite` already parses source to enforce
 /// a rule the type system cannot, which is the same trade: a cheap, blunt check that actually fires.
 ///
@@ -33,27 +34,25 @@ private enum GateTestError: Error {
 final class PersistentSessionAttachGateTests: XCTestCase {
   /// Walks up from this file rather than reading a bundle resource: the app sources are not in the
   /// test bundle, and `#filePath` is stable across every configuration this suite runs in.
-  private static var surfaceViewSource: String {
+  private static var attachmentSource: String {
     get throws {
       let url = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // Session/
         .deletingLastPathComponent()  // WorkroomAppTests/
         .deletingLastPathComponent()  // macapp/
-        .appendingPathComponent("WorkroomApp/Core/Terminal/GhosttySurfaceView.swift")
+        .appendingPathComponent("WorkroomApp/Core/Terminal/Session/PaneSessionAttachment.swift")
       return try String(contentsOf: url, encoding: .utf8)
     }
   }
 
-  /// The body of `applyPersistentSession`, from its declaration to the next declaration at the same
-  /// indentation.
+  /// The body of `launch`, from its declaration to the next declaration at the same indentation.
   ///
-  /// Matching `"\n  private func"` was wrong: the next declaration is `func
-  /// reattachPersistentSession()`, which is not private, so the extracted "body" ran on past the end
-  /// of the function it was supposed to bound. Matching any `func` at two-space indentation is what
-  /// the comment always claimed.
-  private static func applyPersistentSessionBody(in source: String) throws -> String {
-    guard let start = source.range(of: "private func applyPersistentSession") else {
-      XCTFail("applyPersistentSession has been renamed; update this test deliberately")
+  /// Matching `"\n  private func"` was wrong: the next declaration was not private, so the
+  /// extracted "body" ran on past the end of the function it was supposed to bound. Matching any
+  /// `func` at two-space indentation is what the comment always claimed.
+  private static func launchBody(in source: String) throws -> String {
+    guard let start = source.range(of: "\n  func launch(") else {
+      XCTFail("PaneSessionAttachment.launch has been renamed; update this test deliberately")
       throw GateTestError.symbolMissing
     }
     let rest = source[start.upperBound...]
@@ -66,18 +65,20 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   }
 
   func testTheAttachGuardDoesNotConsultGlobalAvailability() throws {
-    let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
+    let body = try Self.launchBody(in: Self.attachmentSource)
 
     // No discount for the log line, deliberately: the diff removed the only prose use, so any
     // occurrence at all is a fresh one. A future author who wants the value for diagnostics should
-    // read this and decide consciously rather than have it slip back in as a condition.
+    // read this and decide consciously rather than have it slip back in as a condition. The code
+    // asks its injected `service`; the singleton spelling is counted too.
     let uses =
-      body.components(separatedBy: "PersistentSessionService.shared.isAvailable").count - 1
+      ["service.isAvailable", "PersistentSessionService.shared.isAvailable"]
+      .map { body.components(separatedBy: $0).count - 1 }.reduce(0, +)
 
     XCTAssertEqual(
       uses, 0,
       """
-      applyPersistentSession references PersistentSessionService.isAvailable again. That answers \
+      launch references PersistentSessionService.isAvailable again. That answers \
       for the backend a NEW session would go to, so an unhealthy daemon makes it false and strands \
       every session the retired Swift helper is still holding — the exact case the attach-only \
       client exists to serve. Route per session through attachCommand(forSession:) instead. \
@@ -94,28 +95,28 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   /// `attachCommand(` — which the body's own prose comment contains, so deleting the real call left
   /// it green. That is the same discriminator the availability test already relies on: the comments
   /// write `attachCommand(forSession:)` and `PersistentSessionService.isAvailable`, the code writes
-  /// `PersistentSessionService.shared.…`.
+  /// `service.…`, its injected service.
   func testTheAttachGuardRoutesPerSession() throws {
-    let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
+    let body = try Self.launchBody(in: Self.attachmentSource)
     XCTAssertTrue(
-      body.contains("PersistentSessionService.shared.attachCommand("),
-      "applyPersistentSession no longer resolves an attach command")
+      body.contains("service.attachCommand("),
+      "launch no longer resolves an attach command")
     XCTAssertTrue(
-      body.contains("forSession: persistentSessionID"),
-      "applyPersistentSession no longer routes per session")
+      body.contains("forSession: sessionID"),
+      "launch no longer routes per session")
     // Without its token the pane's attach holds nothing, and its host is not reconnected for it.
     XCTAssertTrue(
-      body.contains("by: attachToken"), "applyPersistentSession no longer marks the pane attached")
+      body.contains("by: token"), "launch no longer marks the pane attached")
     // Without it a restored pane's attach creates a session it lost, rather than showing it ended.
     XCTAssertTrue(
-      body.contains("restored: persistentSessionIsRestored"),
-      "applyPersistentSession no longer says whether the pane was restored")
+      body.contains("restored: isRestored"),
+      "launch no longer says whether the pane was restored")
   }
 
   /// The other call site this commit added, and the one with the same blind spot.
   ///
   /// `HelperSessionSubstitutionTests` drives `confirmBeforeAttach` through the service and proves
-  /// the rule; none of it reaches the view. Deleting the call from `applyPersistentSession` leaves
+  /// the rule; none of it reaches the attach. Deleting the call from `launch` leaves
   /// every one of those tests green while restoring the bug in full: a reattach to a session the
   /// v2.0.0 helper has lost, which it answers by forking a new shell and passing it off as the
   /// user's. Same "cover the wiring, not just the writer" failure this file was written for.
@@ -123,12 +124,12 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   /// Order is asserted too. A confirmation made AFTER the attach command is resolved is useless:
   /// the stale helper owner it is supposed to drop has already been routed to.
   func testTheAttachIsConfirmedWithTheHelperBeforeItIsRouted() throws {
-    let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
+    let body = try Self.launchBody(in: Self.attachmentSource)
 
     guard let confirm = body.range(of: "confirmBeforeAttach(") else {
       return XCTFail(
         """
-        applyPersistentSession no longer asks the helper whether it still holds this session. The \
+        launch no longer asks the helper whether it still holds this session. The \
         shipped v2.0.0 helper CREATES a session on attach for an id it does not hold, so a cached \
         ownership answer that has outlived its session turns a reattach into a brand new shell \
         with nothing to mark it as one. See PersistentSessionService.confirmBeforeAttach.
@@ -136,7 +137,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
     }
 
     guard let attach = body.range(of: "attachCommand(") else {
-      return XCTFail("applyPersistentSession no longer resolves an attach command")
+      return XCTFail("launch no longer resolves an attach command")
     }
     XCTAssertTrue(
       confirm.lowerBound < attach.lowerBound,

@@ -1879,7 +1879,7 @@ final class RemotePaneFooterTests: XCTestCase {
     state.sessionID = session
     tab.content = .terminal(state)
     sessions.replace(tab, for: target)
-    try XCTUnwrap(sessions.surface(tab)).persistentSessionID = session
+    try XCTUnwrap(sessions.surface(tab)).attachment.sessionID = session
   }
 
   private func waitFor(_ condition: () -> Bool) async throws {

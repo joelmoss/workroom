@@ -385,7 +385,7 @@ final class RunCommandController: ObservableObject {
   /// The run session of the target's run tab, or nil when it has none (no daemon took it).
   private func runSessionID(for targetID: TerminalTarget.ID) -> UUID? {
     guard let tab = runStates[targetID]?.tab else { return nil }
-    return terminals.view(forTab: tab, inTarget: targetID)?.persistentSessionID
+    return terminals.view(forTab: tab, inTarget: targetID)?.attachment.sessionID
   }
 
   /// Asks the target's run supervisor, through its daemon, to restart, stop or quit, and hands the
@@ -484,7 +484,7 @@ final class RunCommandController: ObservableObject {
   private func unmountedRunView(for targetID: TerminalTarget.ID) -> GhosttySurfaceView? {
     guard let state = runStates[targetID], state.isRunning, let tabID = state.tab,
       let view = terminals.view(forTab: tabID, inTarget: targetID),
-      view.awaitsMount, view.persistentSessionID != nil
+      view.awaitsMount, view.attachment.sessionID != nil
     else { return nil }
     return view
   }
