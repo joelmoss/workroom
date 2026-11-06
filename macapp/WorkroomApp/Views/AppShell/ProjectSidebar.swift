@@ -101,7 +101,7 @@ struct ProjectSidebar: View {
 
   var body: some View {
     Group {
-      if store.projects.isEmpty {
+      if projectStore.projects.isEmpty {
         ContentUnavailableView {
           Label("No projects yet", systemImage: "folder.badge.plus")
         } description: {
@@ -135,7 +135,7 @@ struct ProjectSidebar: View {
     let interval = Self.signposter.beginInterval("Sidebar tree")
     defer { Self.signposter.endInterval("Sidebar tree", interval) }
     return List {
-      ForEach(store.projects) { project in
+      ForEach(projectStore.projects) { project in
         SidebarHoverRegion(id: .project(project.path)) { hovered in
           projectRow(project, hovered: hovered)
             .listRowInsets(rowInsets)

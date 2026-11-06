@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import WorkroomDomain
 import XCTest
 
@@ -31,31 +32,55 @@ final class MultiWindowTests: XCTestCase {
     let b = AppStore(projectStore: shared)
 
     shared.projects = [project("/p", workrooms: ["w"])]
-    XCTAssertEqual(a.projects.map(\.id), ["/p"])
-    XCTAssertEqual(b.projects.map(\.id), ["/p"], "both windows read the one shared project list")
+    XCTAssertEqual(a.projectStore.projects.map(\.id), ["/p"])
+    XCTAssertEqual(
+      b.projectStore.projects.map(\.id), ["/p"], "both windows read the one shared project list")
 
     a.selectedTargetID = .root(project: "/p")
     XCTAssertEqual(a.selectedTargetID, .root(project: "/p"))
     XCTAssertNil(b.selectedTargetID, "selection is per-window, not shared")
   }
 
-  func testProxyWritesThroughToSharedStore() {
+  func testAWriteThroughOneWindowReachesTheSharedStore() {
     let shared = ProjectStore()
     let a = AppStore(projectStore: shared)
     let b = AppStore(projectStore: shared)
 
-    a.projects = [project("/x")]
+    a.projectStore.projects = [project("/x")]
     XCTAssertEqual(
       shared.projects.map(\.id), ["/x"], "writing via one window updates the shared store")
-    XCTAssertEqual(b.projects.map(\.id), ["/x"], "…and is visible to the other window")
+    XCTAssertEqual(
+      b.projectStore.projects.map(\.id), ["/x"], "…and is visible to the other window")
   }
 
   func testIsolatedStoresDoNotShareProjects() {
     let a = AppStore()  // default: its own fresh ProjectStore
     let b = AppStore()
-    a.projects = [project("/only-a")]
+    a.projectStore.projects = [project("/only-a")]
     XCTAssertTrue(
-      b.projects.isEmpty, "bare AppStore() is isolated, so tests never pollute each other")
+      b.projectStore.projects.isEmpty,
+      "bare AppStore() is isolated, so tests never pollute each other")
+  }
+
+  /// A project-list write that changes nothing notifies no one, so the sidebar, tab bar and title
+  /// bar reading the list do not redraw: a workroom relabelled to the label it has, or one dropped
+  /// that is already gone. An in-place write to a stored `@Observable` property notifies even when
+  /// the value is equal; `ProjectStore`'s setter makes it a whole-value write, which does not.
+  func testAProjectListWriteThatChangesNothingNotifiesNoOne() {
+    let store = AppStore()
+    store.projectStore.projects = [project("/p", workrooms: ["w"])]
+    let gone = Workroom(name: "gone", path: "/p/gone", vcsName: "git", warnings: [])
+    var notified = false
+    withObservationTracking {
+      _ = store.projectStore.projects
+    } onChange: {
+      notified = true
+    }
+    store.relabelLocally("w", in: "/p", to: nil)
+    store.removeWorkroomLocally(gone, in: store.projectStore.projects[0])
+    XCTAssertFalse(notified, "a write that changed nothing must not redraw")
+    store.relabelLocally("w", in: "/p", to: "Auth")
+    XCTAssertTrue(notified, "a write that changes the list still notifies")
   }
 
   // MARK: Blank new windows

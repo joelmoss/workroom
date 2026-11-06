@@ -77,7 +77,7 @@ final class QuickSwitcherControllerTests: XCTestCase {
   private func makeStore(workrooms: [String], panes: Int = 1) -> AppStore {
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: workrooms.map {

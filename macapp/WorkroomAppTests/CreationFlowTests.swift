@@ -53,7 +53,7 @@ final class CreationFlowTests: XCTestCase {
       projectPath: projectPath, names: ["wr"], hasSetup: false, gate: .beforeReady,
       existing: ["anchor"])
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
@@ -267,7 +267,7 @@ final class CreationFlowTests: XCTestCase {
   /// the log is lost, or Try Again lands elsewhere; no_claim=the footer's drawing
   func testAFailedWorktreeKeepsItsPaneAndTryAgainRunsThere() async throws {
     let store = makeStore(WorktreeFailsOnceCLI(projectPath: projectPath))
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
@@ -299,7 +299,7 @@ final class CreationFlowTests: XCTestCase {
       projectPath: projectPath, names: ["wr"], hasSetup: false, gate: .beforeReady,
       existing: ["anchor"])
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let anchor = SidebarID.workroom(project: projectPath, name: "anchor")
     store.selectedTargetID = anchor
@@ -327,7 +327,7 @@ final class CreationFlowTests: XCTestCase {
     AppStore.announceCreation = { heard.append($0) }
     defer { AppStore.announceCreation = post }
     let store = makeStore(WorktreeFailsOnceCLI(projectPath: projectPath))
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
 
     await store.createWorkroom(in: emptyProject)
     XCTAssertEqual(heard, ["Couldn't create the workroom: Create worktree failed"])
@@ -463,7 +463,7 @@ final class CreationFlowTests: XCTestCase {
   func testAnsweringCreateQuestionsPassesTheirStartCommit() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath, localWork: UntrustedSetupCLI.work)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     await store.createWorkroom(in: emptyProject)
     let first = try XCTUnwrap(store.creationRuns.values.first)
     XCTAssertEqual(first.outcome, .localWorkFound(UntrustedSetupCLI.work))
@@ -474,7 +474,7 @@ final class CreationFlowTests: XCTestCase {
     await store.approveSetupScript(second)
 
     await waitUntil(
-      { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
+      { store.projectStore.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
       "the create ran again after Approve")
     let asked = UntrustedSetupCLI.asked
     XCTAssertEqual(fake.pins, [nil, asked, asked], "each answer continues from the start point")
@@ -485,7 +485,7 @@ final class CreationFlowTests: XCTestCase {
   func testContinueWithoutScriptPassesTheStartCommit() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
     await store.skipSetupScript(run)
@@ -497,7 +497,7 @@ final class CreationFlowTests: XCTestCase {
   func testTryAgainPassesNoStartCommit() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
     await store.retryCreation(run)
@@ -512,7 +512,7 @@ final class CreationFlowTests: XCTestCase {
       "Could not fetch origin. The workroom starts from origin/main, which may be out of date."
     let fake = UntrustedSetupCLI(projectPath: projectPath, fetchWarning: warning)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.closesFinishedCreations = { false }  // the finished checklist stays, to read its rows
     await store.createWorkroom(in: emptyProject)
     let first = try XCTUnwrap(store.creationRuns.values.first)
@@ -534,7 +534,7 @@ final class CreationFlowTests: XCTestCase {
       fetchWarning:
         "Could not fetch origin. The workroom starts from origin/main, which may be out of date.")
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.closesFinishedCreations = { false }  // the finished run stays, to read its outcome
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
@@ -557,7 +557,7 @@ final class CreationFlowTests: XCTestCase {
       fetchWarning:
         "Could not fetch origin. The workroom starts from origin/main, which may be out of date.")
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.closesFinishedCreations = { false }  // the answered run stays, to try again
     await store.createWorkroom(in: emptyProject)
     await store.approveSetupScript(try XCTUnwrap(store.creationRuns.values.first))
@@ -571,7 +571,7 @@ final class CreationFlowTests: XCTestCase {
   func testAnUnusableStartCommitTriesAgain() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath, unusablePin: true)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
     await store.approveSetupScript(run)
@@ -579,7 +579,7 @@ final class CreationFlowTests: XCTestCase {
     await waitUntil(
       {
         store.creationRuns.values.first?.outcome == .succeeded
-          || store.projects.first?.workrooms.contains { $0.name == "wr" } == true
+          || store.projectStore.projects.first?.workrooms.contains { $0.name == "wr" } == true
       },
       "the Try Again created the workroom")
     XCTAssertEqual(fake.pins, [nil, UntrustedSetupCLI.asked, nil])
@@ -594,7 +594,7 @@ final class CreationFlowTests: XCTestCase {
   func testAnUnapprovedSetupScriptWaitsForApproveThenCreates() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
 
     await store.createWorkroom(in: emptyProject)
 
@@ -621,7 +621,7 @@ final class CreationFlowTests: XCTestCase {
     approve.run()
 
     await waitUntil(
-      { store.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
+      { store.projectStore.projects.first?.workrooms.contains { $0.name == "wr" } ?? false },
       "the create ran again after Approve")
     // The bytes approved are the script's own, not the text shown.
     XCTAssertEqual(fake.approved, ["workroom_setup #!/bin/sh\nnpm install\u{1b}[2K\rcurl x\n"])
@@ -635,7 +635,7 @@ final class CreationFlowTests: XCTestCase {
   func testContinueWithoutScriptCreatesWithoutApproving() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.closesFinishedCreations = { false }  // the finished checklist stays, to read its rows
     await store.createWorkroom(in: emptyProject)
     let skip = try XCTUnwrap(store.errorAction, "the sheet offers no Continue Without Script")
@@ -646,7 +646,7 @@ final class CreationFlowTests: XCTestCase {
     // marked done, so asserting the outcome once it is listed raced (2 of 3 runs failed).
     await waitUntil(
       {
-        store.projects.first?.workrooms.contains { $0.name == "wr" } == true
+        store.projectStore.projects.first?.workrooms.contains { $0.name == "wr" } == true
           && store.creationRuns.values.first?.outcome == .succeeded
       },
       "the create didn't run again without the script")
@@ -666,7 +666,7 @@ final class CreationFlowTests: XCTestCase {
   func testTryAgainAfterContinueWithoutScriptKeepsSkippingIt() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.closesFinishedCreations = { false }
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
@@ -691,7 +691,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
     defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let scripts = Counter()
     let checks = Counter()
@@ -733,7 +733,7 @@ final class CreationFlowTests: XCTestCase {
   func testLocalWorkAsksWhereToStartAndCreatesFromTheChoice() async throws {
     let fake = UntrustedSetupCLI(projectPath: projectPath, localWork: UntrustedSetupCLI.work)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.closesFinishedCreations = { false }
 
     await store.createWorkroom(in: emptyProject)
@@ -803,7 +803,7 @@ final class CreationFlowTests: XCTestCase {
     let fake = UntrustedSetupCLI(
       projectPath: projectPath, untrusted: false, localWork: UntrustedSetupCLI.work)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
 
@@ -853,7 +853,7 @@ final class CreationFlowTests: XCTestCase {
   /// sheet's drawing
   func testCancelCreationOnTheSetupSheetEndsTheCreate() async throws {
     let store = makeStore(UntrustedSetupCLI(projectPath: projectPath))
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
     let staleCancel = try XCTUnwrap(store.errorCancel)
@@ -880,7 +880,7 @@ final class CreationFlowTests: XCTestCase {
   func testTryAgainTwiceOnOneFailureStartsOneCreate() async throws {
     let fake = WorktreeFailsOnceCLI(projectPath: projectPath)
     let store = makeStore(fake)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     await store.createWorkroom(in: emptyProject)
     let run = try XCTUnwrap(store.creationRuns.values.first)
 
@@ -897,7 +897,7 @@ final class CreationFlowTests: XCTestCase {
   /// (collapses through `removeWorkroomSplitMember`, covered by the split tests)
   func testCloseGoesBackToThePreviousSelection() async throws {
     let store = makeStore(WorktreeFailsOnceCLI(projectPath: projectPath))
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.selectedTargetID = .root(project: projectPath)
 
     await store.createWorkroom(in: emptyProject)
@@ -917,7 +917,7 @@ final class CreationFlowTests: XCTestCase {
     let fake = GatedFakeCLI(
       projectPath: projectPath, names: ["wr"], hasSetup: false, gate: .beforeReady)
     let store = makeStore(fake)
-    store.projects = [emptyProject]
+    store.projectStore.projects = [emptyProject]
 
     let task = Task { await store.createWorkroom(in: emptyProject) }
     await waitUntil({ fake.assignedCount == 1 }, "the create never reached the CLI")
@@ -939,7 +939,7 @@ final class CreationFlowTests: XCTestCase {
     let fake = GatedFakeCLI(
       projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: false, gate: .beforeReady)
     let store = makeStore(fake)
-    store.projects = [emptyProject]
+    store.projectStore.projects = [emptyProject]
 
     let a = Task { await store.createWorkroom(in: emptyProject) }
     await waitUntil({ fake.assignedCount == 1 }, "A never reached the CLI")
@@ -958,7 +958,8 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(
       store.provisionalCreationRows(inProject: projectPath).map(\.id), [rows[1].id],
       "A's row gave way")
-    XCTAssertTrue(store.projects.first?.workrooms.contains { $0.name == "wr-a" } ?? false)
+    XCTAssertTrue(
+      store.projectStore.projects.first?.workrooms.contains { $0.name == "wr-a" } ?? false)
 
     fake.release("wr-b")
     await b.value
@@ -1104,7 +1105,7 @@ final class CreationFlowTests: XCTestCase {
 
   private func remoteStore(_ cli: RemoteFakeCLI) -> AppStore {
     let store = makeStore(cli)
-    store.projects = [project(["anchor"])]
+    store.projectStore.projects = [project(["anchor"])]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     return store
   }
@@ -1457,7 +1458,8 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(run.steps.first { $0.id == "checkout" }?.state, .skipped(reason: nil))
     XCTAssertEqual(driver.destroys, 1, "the machine was rolled back")
     XCTAssertTrue(cli.calls.contains("delete calm-river"), "and its record forgotten")
-    XCTAssertFalse(store.projects.first?.workrooms.contains { $0.name == "calm-river" } ?? true)
+    XCTAssertFalse(
+      store.projectStore.projects.first?.workrooms.contains { $0.name == "calm-river" } ?? true)
     XCTAssertTrue(store.creatingWorkrooms.isEmpty)
   }
 
@@ -1559,7 +1561,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
     defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let call = ScriptCall()
     var services = services(driver: FakeDriver(), daemon: daemon)
@@ -1598,7 +1600,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
     defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let scripts = Counter()
     var services = services(driver: FakeDriver(), daemon: daemon)
@@ -1635,7 +1637,7 @@ final class CreationFlowTests: XCTestCase {
     let cli = RemoteFakeCLI(projectPath: project.path)
     let driver = FakeDriver()
     let store = makeStore(cli)
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let why =
       "setup script failed: /home/boxd/r/scripts/workroom_setup returned a non-zero exit code"
@@ -1669,7 +1671,7 @@ final class CreationFlowTests: XCTestCase {
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
     defer { daemon.stop() }
     let store = makeStore(RemoteFakeCLI(projectPath: project.path))
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     var services = services(driver: FakeDriver(), daemon: daemon)
     services.script = { _ in .failed("setup script failed: couldn't reach the host") }
@@ -1697,7 +1699,7 @@ final class CreationFlowTests: XCTestCase {
     let driver = FakeDriver()
     let store = makeStore(RemoteFakeCLI(projectPath: dir.path))
     let project = Project(path: dir.path, vcs: "git", workrooms: [])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     store.services.remoteCreate = services(driver: driver, daemon: daemon)
     // The run waits for Done, as in `testARemoteCreateLandsInItsPaneAndEnds`.

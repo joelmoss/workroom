@@ -6,6 +6,7 @@ import WorkroomDomain
 struct RootView: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @ObservedObject private var programStatusAlerts = ProgramStatusAlerts.shared
   // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
@@ -170,9 +171,9 @@ struct RootView: View {
     let inspectorVisible = showInspector && store.selectedTarget != nil
     // Same reasoning as `inspectorVisible`: with zero projects, `SidebarColumn` has nothing to list
     // but its own "No projects yet" empty state — which `detailContent`'s empty state now also shows
-    // (with the same "Add Project…" action), so the sidebar just doubles it. Gated on the store's
-    // own `projects`, not a write to `Defaults[.sidebarVisible]`, for the same other-window reason.
-    let sidebarShown = store.sidebarVisible && !store.projects.isEmpty
+    // (with the same "Add Project…" action), so the sidebar just doubles it. Gated on
+    // `projectStore.projects`, not a write to `Defaults[.sidebarVisible]`, for the same other-window reason.
+    let sidebarShown = store.sidebarVisible && !projectStore.projects.isEmpty
     return NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
       Color.clear.frame(width: 0)
     } detail: {
@@ -515,7 +516,7 @@ struct RootView: View {
           // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81). Deliberately NOT gated
           // on `hasModalPresentation` — ⌘N/⌘O must still work while a picker is open, because raising
           // one picker replaces the other and that's the documented behaviour (issue #94).
-          hasProjects: !store.projects.isEmpty,
+          hasProjects: !projectStore.projects.isEmpty,
           // `hasWorkroomAnchor`: the two "(split right)" items (⌥⌘N/⌥⌘O, issue #163) need a workroom
           // to split BESIDE. Deliberately NOT gated on `hasModalPresentation`, for the same reason
           // `hasProjects` isn't — a disabled item drops its key equivalent, and these chords must
@@ -748,13 +749,13 @@ struct RootView: View {
       } description: {
         // Zero projects: the sidebar's own empty-state copy (`ProjectSidebar`) — the sidebar itself
         // is hidden in this state (see `splitView`), so this is the only place left to say it.
-        if store.projects.isEmpty {
+        if projectStore.projects.isEmpty {
           Text("Add your first project!")
         } else {
           Text("Select a project's root, or open (⌘O) or create (⌘N) a workroom to get started.")
         }
       } actions: {
-        if store.projects.isEmpty {
+        if projectStore.projects.isEmpty {
           Button("Add Project…") { store.requestAddProject = true }
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("EmptyStateAddProject")

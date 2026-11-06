@@ -12,7 +12,7 @@ final class RoomCommandStateTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(path: path, vcs: "git", workrooms: []),
       Project(path: "/room-command-other", vcs: "git", workrooms: []),
     ]

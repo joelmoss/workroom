@@ -62,7 +62,7 @@ final class DeleteMountsNoPaneTests: XCTestCase {
       return GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.terminals.recency = SwitcherRecency()
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.terminals.addTab(for: workrooms[1].target(inProject: projectPath))
 
     let run = CreationRun(

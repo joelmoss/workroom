@@ -4,8 +4,8 @@ import WorkroomDomain
 
 /// Workroom labels (issue #41): the GUI-only display names kept in `Defaults[.workroomLabels]` and
 /// merged onto the CLI's model. Moved out of `AppStore.swift` as is. Coupling points left on
-/// `AppStore`: `projects`, which these methods read and rewrite, and the load and delete paths that
-/// call `enrichLabels`, `pruneOrphanedLabels` and `forgetLabels`.
+/// `AppStore`: `projectStore.projects`, which these methods read and rewrite, and the load and
+/// delete paths that call `enrichLabels`, `pruneOrphanedLabels` and `forgetLabels`.
 extension AppStore {
   // MARK: - Workroom labels (issue #41)
 
@@ -63,7 +63,8 @@ extension AppStore {
   /// single read path, falling back to the real `name` when the workroom isn't in `projects` yet
   /// (a mid-reload race) — mirroring `windowTitle`'s own fallback.
   func displayName(forWorkroom name: String, inProject path: String) -> String {
-    projects.first { $0.id == path }?.workrooms.first { $0.id == name }?.displayName ?? name
+    projectStore.projects.first { $0.id == path }?.workrooms.first { $0.id == name }?.displayName
+      ?? name
   }
 
   /// Set (or, for a blank value, remove) a workroom's display label (issue #41). Normalises at the
@@ -95,15 +96,15 @@ extension AppStore {
   /// replace just the one workroom with a copy carrying the new label, leaving sort order, selection,
   /// and splits untouched (a label never changes any of them). `internal` so store tests can drive it.
   func relabelLocally(_ name: String, in projectPath: String, to label: String?) {
-    guard let pIdx = projects.firstIndex(where: { $0.id == projectPath }),
-      let wIdx = projects[pIdx].workrooms.firstIndex(where: { $0.id == name })
+    guard let pIdx = projectStore.projects.firstIndex(where: { $0.id == projectPath }),
+      let wIdx = projectStore.projects[pIdx].workrooms.firstIndex(where: { $0.id == name })
     else { return }
-    var workrooms = projects[pIdx].workrooms
+    var workrooms = projectStore.projects[pIdx].workrooms
     var wr = workrooms[wIdx]
     wr.label = label
     workrooms[wIdx] = wr
-    let p = projects[pIdx]
-    projects[pIdx] = Project(
+    let p = projectStore.projects[pIdx]
+    projectStore.projects[pIdx] = Project(
       path: p.path, vcs: p.vcs, workrooms: workrooms, host: p.host, baseBranch: p.baseBranch)
   }
 }

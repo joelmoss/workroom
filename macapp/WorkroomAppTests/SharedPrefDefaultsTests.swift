@@ -160,12 +160,12 @@ final class SharedPrefDefaultsTests: XCTestCase {
   @MainActor
   func testTheSidebarTogglesOnlyWithAProject() {
     let store = AppStore()
-    store.projects = []
+    store.projectStore.projects = []
     let shown = store.sidebarVisible
     store.toggleSidebar()
     XCTAssertEqual(store.sidebarVisible, shown, "no projects: nothing to show")
 
-    store.projects = [
+    store.projectStore.projects = [
       Project(path: "/private/var/tmp/wr-sidebar-project", vcs: "git", workrooms: [])
     ]
     store.toggleSidebar()

@@ -80,7 +80,7 @@ final class FilesPanelInvalidationTests: XCTestCase {
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     let projectPath = "/files-invalidation"
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: projectPath, vcs: "git",
         workrooms: [

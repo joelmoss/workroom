@@ -33,7 +33,7 @@ final class TitleLayoutBenchmarkTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     let project = Project(path: NSTemporaryDirectory(), vcs: "git", workrooms: [])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     let target = try XCTUnwrap(store.target(for: .root(project: project.path)))
     let tab = store.terminals.addTab(for: target)
     let surface = try XCTUnwrap(tab.surface)

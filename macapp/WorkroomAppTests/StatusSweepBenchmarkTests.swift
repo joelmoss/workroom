@@ -116,7 +116,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     store.selectionStatusTask?.cancel()
     store.watchRefreshTask?.cancel()
     store.workroomFileWatcher.stop()
-    store.projects = []
+    store.projectStore.projects = []
     store.updateRootBranchWatches()
     await store.statusSweepTask?.value
     await store.selectionStatusTask?.value
@@ -129,8 +129,9 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     let fixture = try await fixture(workrooms: 1)
     addTeardownBlock { await self.cleanUp(fixture) }
     let store = fixture.store
-    store.projects = [fixture.project]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [fixture.project]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     var firstCheckedAt: Date?
     for sid in [
       SidebarID.root(project: fixture.project.path),
@@ -199,8 +200,9 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     let fixture = try await fixture(workrooms: 1)
     addTeardownBlock { await self.cleanUp(fixture) }
     let store = fixture.store
-    store.projects = [fixture.project]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [fixture.project]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     store.selectedTargetID = .root(project: fixture.project.path)
     await store.selectionStatusTask?.value
     XCTAssertEqual(fixture.recorder.counts["gh api graphql"], 1)
@@ -232,8 +234,9 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     let store = fixture.store
     try "ignored/\n".write(
       toFile: fixture.project.path + "/.git/info/exclude", atomically: true, encoding: .utf8)
-    store.projects = [fixture.project]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [fixture.project]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     let sid = SidebarID.workroom(project: fixture.project.path, name: "room-0")
     store.selectedTargetID = sid
     await store.selectionStatusTask?.value

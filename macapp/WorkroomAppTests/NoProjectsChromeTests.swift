@@ -21,7 +21,7 @@ final class NoProjectsChromeTests: XCTestCase {
   /// menu (`ViewMenuShortcutsUITests`) and the sidebar shortcuts (`SharedPrefDefaultsTests`)
   func testTheProjectControlsShowOnlyWithAProject() throws {
     let store = AppStore()
-    store.projects = []
+    store.projectStore.projects = []
     let empty = identifiers(rendering: store)
     XCTAssertTrue(
       empty.contains("activityBar.settings"), "the chrome rendered, and the rail keeps Settings")
@@ -29,7 +29,7 @@ final class NoProjectsChromeTests: XCTestCase {
       XCTAssertFalse(empty.contains(id), "\(id) shows with no projects")
     }
 
-    store.projects = [
+    store.projectStore.projects = [
       Project(path: "/private/var/tmp/wr-chrome-project", vcs: "git", workrooms: [])
     ]
     let withProject = identifiers(rendering: store)

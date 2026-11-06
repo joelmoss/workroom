@@ -84,7 +84,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = (0..<32).map { index in
+    store.projectStore.projects = (0..<32).map { index in
       let path = index == 0 ? directory.path : "/menu-benchmark/project-\(index)"
       return Project(
         path: path, vcs: "git",
@@ -94,7 +94,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
         })
     }
     let selected = SidebarID.root(project: directory.path)
-    let other = SidebarID.root(project: store.projects[1].path)
+    let other = SidebarID.root(project: store.projectStore.projects[1].path)
     let target = try XCTUnwrap(store.target(for: selected))
     _ = store.terminals.addTab(for: target)
     store.selectedTargetID = selected

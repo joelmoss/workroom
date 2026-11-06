@@ -451,7 +451,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   /// activation reads that terminal's notifications.
   func testActivationReadsTheKeyWindowsFocusedTerminal() {
     let sid = SidebarID.workroom(project: "/p", name: "al")
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "al", path: "/p/al", vcsName: "git", warnings: [])])
@@ -486,7 +486,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   /// The title names the workroom, or a root's project, so the origin line never repeats it: a
   /// workroom alert adds just its project, a root's adds nothing.
   func testANeedsYouAlertNamesItsPlaceOnce() {
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "al", path: "/p/al", vcsName: "git", warnings: [])])

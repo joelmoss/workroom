@@ -97,7 +97,9 @@ extension AppStore {
   /// the render path (`TerminalStatusBar.body` → `branchLabel` → `validatedSelection`), which is
   /// what hung the app in WORKROOM-3D. A lookup never needs the `isMissing`/`title` a target carries.
   func project(forTargetID id: TerminalTarget.ID) -> Project? {
-    guard let project = projects.first(where: { $0.path == id.projectPath }) else { return nil }
+    guard let project = projectStore.projects.first(where: { $0.path == id.projectPath }) else {
+      return nil
+    }
     if case .workroom(_, let name) = id, !project.workrooms.contains(where: { $0.id == name }) {
       return nil
     }

@@ -59,7 +59,7 @@ extension AppStore {
   /// Every root + workroom as a status work item.
   func statusWorkItems() -> [StatusWorkItem] {
     var items: [StatusWorkItem] = []
-    for p in projects {
+    for p in projectStore.projects {
       items.append(
         StatusWorkItem(sid: .root(project: p.id), path: p.path, projectRoot: p.path))
       // A remote workroom's path is not a path on this Mac: a reachable one is probed on its host,
@@ -250,7 +250,7 @@ extension AppStore {
   /// The worst-status child of a project (root + workrooms), for the collapsed project row's
   /// aggregate badge. nil when nothing needs attention (all clean / unresolved).
   func aggregateStatus(forProject projectPath: String) -> WorkroomStatus? {
-    guard let p = projects.first(where: { $0.id == projectPath }) else { return nil }
+    guard let p = projectStore.projects.first(where: { $0.id == projectPath }) else { return nil }
     var sids: [SidebarID] = [.root(project: p.id)]
     sids += p.workrooms.map { SidebarID.workroom(project: p.id, name: $0.name) }
     let worst = sids.compactMap { projectStore.workroomStatuses[$0] }
@@ -267,7 +267,9 @@ extension AppStore {
   /// Changes inspector is exercisable hermetically — the fixture paths aren't real repos, so the
   /// live probe would only ever report "unknown". No-ops when the services probe instead.
   func seedStatuses() {
-    guard let seeded = services.seededStatuses, let project = projects.first else { return }
+    guard let seeded = services.seededStatuses, let project = projectStore.projects.first else {
+      return
+    }
     let seed = seeded()
     projectStore.workroomStatuses[.root(project: project.path)] = seed.root
     if let workroom = project.workrooms.first {
@@ -294,10 +296,10 @@ extension AppStore {
   func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
     switch sid {
     case .root(let path):
-      guard let p = projects.first(where: { $0.id == path }) else { return nil }
+      guard let p = projectStore.projects.first(where: { $0.id == path }) else { return nil }
       return StatusWorkItem(sid: sid, path: p.path, projectRoot: p.path)
     case .workroom(let path, let name):
-      guard let p = projects.first(where: { $0.id == path }),
+      guard let p = projectStore.projects.first(where: { $0.id == path }),
         let w = p.workrooms.first(where: { $0.id == name })
       else { return nil }
       // A remote workroom's item is on its host. One this app can't reach has none, which also

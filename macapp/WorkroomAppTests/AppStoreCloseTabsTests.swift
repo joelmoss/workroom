@@ -86,7 +86,7 @@ final class AppStoreCloseTabsTests: XCTestCase {
 
   private func remoteWorkroomStore(_ names: [String]) -> AppStore {
     let store = makeStore()
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: names.map { Workroom(name: $0, path: "/p/\($0)", vcsName: "main", warnings: []) }

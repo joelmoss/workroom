@@ -235,7 +235,7 @@ struct CreationPane: View {
   /// The existing delete confirmation, for the workroom this create made; for one left behind it
   /// takes the machine down too.
   private func deleteWorkroom() {
-    guard let project = store.projects.first(where: { $0.path == run.project.path }),
+    guard let project = store.projectStore.projects.first(where: { $0.path == run.project.path }),
       let workroom = project.workrooms.first(where: { $0.name == run.name })
     else { return }
     store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)

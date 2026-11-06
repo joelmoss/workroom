@@ -52,7 +52,7 @@ final class RunCommandTests: XCTestCase {
       self?.signals.append((id, sig))
       return .delivered
     }
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 
@@ -70,7 +70,7 @@ final class RunCommandTests: XCTestCase {
       self?.signals.append((id, sig))
       return .gone
     }
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 

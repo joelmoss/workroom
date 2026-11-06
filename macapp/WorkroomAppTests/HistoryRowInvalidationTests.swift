@@ -95,7 +95,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: Self.projectPath, vcs: "git",
         workrooms: [

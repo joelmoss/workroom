@@ -139,7 +139,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
   }
 
   private func workroomNames(_ store: AppStore) -> [String] {
-    (store.projects.first { $0.id == projectPath }?.workrooms.map(\.name) ?? []).sorted()
+    (store.projectStore.projects.first { $0.id == projectPath }?.workrooms.map(\.name) ?? [])
+      .sorted()
   }
 
   private func targetID(_ name: String) -> TerminalTarget.ID {
@@ -475,11 +476,12 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await store.reload()
 
     store.deleteProject(project([a]), scope: .configOnly)
-    XCTAssertTrue(store.projects.isEmpty, "optimistic removal")
+    XCTAssertTrue(store.projectStore.projects.isEmpty, "optimistic removal")
     await waitUntil({ fake.deleteStarted }, "teardown should start")
 
     await store.reload()  // stale: `list` still has the project
-    XCTAssertTrue(store.projects.isEmpty, "a stale reload must NOT bring the project back")
+    XCTAssertTrue(
+      store.projectStore.projects.isEmpty, "a stale reload must NOT bring the project back")
 
     store.deleteProject(project([a]), scope: .configOnly)
     XCTAssertEqual(store.errorMessage, "\(project([a]).displayName) is already being deleted.")
@@ -488,7 +490,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
     fake.listResult = []
     await store.reload()
-    XCTAssertTrue(store.projects.isEmpty, "a fresh list after the teardown keeps it gone")
+    XCTAssertTrue(
+      store.projectStore.projects.isEmpty, "a fresh list after the teardown keeps it gone")
   }
 
   /// The tombstone lives in the shared `ProjectStore`, so another window's reload can't republish
@@ -506,7 +509,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await waitUntil({ fake.deleteStarted }, "teardown should start")
 
     await windowB.reload()  // stale: `list` still has the project
-    XCTAssertTrue(windowB.projects.isEmpty, "another window's reload must not republish it")
+    XCTAssertTrue(
+      windowB.projectStore.projects.isEmpty, "another window's reload must not republish it")
     windowB.deleteProject(project([a]), scope: .configOnly)
     XCTAssertEqual(windowB.errorMessage, "\(project([a]).displayName) is already being deleted.")
 
@@ -541,7 +545,8 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await waitUntil({ shared.deletingProjects.isEmpty }, "tombstone should clear after teardown")
     gate.open = true
     await stale.value
-    XCTAssertTrue(store.projects.isEmpty, "a stale in-flight read must not republish the project")
+    XCTAssertTrue(
+      store.projectStore.projects.isEmpty, "a stale in-flight read must not republish the project")
   }
 
   /// A create from a picker opened before the delete is refused while the project is tombstoned.
@@ -588,7 +593,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertEqual(trasher.seen.count, 1)
     XCTAssertEqual(trasher.seen.first?.tombstoned, true, "trashed while still tombstoned")
     XCTAssertEqual(trasher.seen.first?.listCalls, readsBefore, "trashed before the reload began")
-    XCTAssertTrue(store.projects.isEmpty)
+    XCTAssertTrue(store.projectStore.projects.isEmpty)
   }
 
   /// A FAILED Delete Project lifts the tombstone before reloading, so the project reappears.
@@ -640,7 +645,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     store.clearError()
     action.run()
     await waitUntil({ fake.skips == [false, true] }, "Delete Anyway didn't skip the teardowns")
-    await waitUntil({ store.projects.isEmpty }, "the project wasn't deleted")
+    await waitUntil({ store.projectStore.projects.isEmpty }, "the project wasn't deleted")
   }
 
   /// A later message must not show an earlier failure's output.

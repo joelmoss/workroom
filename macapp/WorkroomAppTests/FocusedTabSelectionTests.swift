@@ -18,7 +18,7 @@ final class FocusedTabSelectionTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: projectPath, vcs: "git",
         workrooms: [

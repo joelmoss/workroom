@@ -13,7 +13,7 @@ final class BranchLabelTests: XCTestCase {
   private func makeStore() -> AppStore {
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: [])]
@@ -111,7 +111,8 @@ final class BranchLabelTests: XCTestCase {
     store.setResolvedBranchName("feature/login", for: workroom)
     store.setResolvedBranchName("main", for: root)
 
-    store.removeWorkroomLocally(store.projects[0].workrooms[0], in: store.projects[0])
+    store.removeWorkroomLocally(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0])
     XCTAssertNil(store.resolvedBranchNames[workroom])
     XCTAssertEqual(store.resolvedBranchNames[root], "main", "only the deleted workroom is pruned")
 
@@ -119,7 +120,7 @@ final class BranchLabelTests: XCTestCase {
     let whole = makeStore()
     whole.setResolvedBranchName("feature/login", for: workroom)
     whole.setResolvedBranchName("main", for: root)
-    whole.removeProjectLocally(whole.projects[0])
+    whole.removeProjectLocally(whole.projectStore.projects[0])
     XCTAssertNil(whole.resolvedBranchNames[root])
     XCTAssertNil(whole.resolvedBranchNames[workroom])
   }

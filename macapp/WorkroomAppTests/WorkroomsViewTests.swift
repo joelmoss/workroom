@@ -26,7 +26,7 @@ final class WorkroomsViewTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 
@@ -108,7 +108,7 @@ final class WorkroomsViewTests: XCTestCase {
     XCTAssertTrue(store.orderedWorkroomTargets(order: []).contains { $0.sid == feature })
 
     // Remove the workroom from the project list (its terminal is still live, but it no longer resolves).
-    store.projects = [project("/a", workrooms: ["main"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main"])]
     XCTAssertFalse(store.orderedWorkroomTargets(order: []).contains { $0.sid == feature })
   }
 

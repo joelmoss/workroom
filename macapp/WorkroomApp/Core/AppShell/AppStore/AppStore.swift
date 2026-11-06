@@ -21,9 +21,9 @@ import WorkroomVCS
 final class AppStore: ObservableObject {
   /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
   /// it that is identical across windows (root labels, VCS/CI status cache, GitHub-CLI status, busy
-  /// set). Views take it from the environment and the store's code reads it here. The project list
-  /// and the create and delete sets still proxy through to it, and Observation tracks those reads
-  /// through it, so views/menus observing this store still re-render when the shared data changes.
+  /// set). Views take it from the environment and the store's code reads it here. The create and
+  /// delete sets still proxy through to it, and Observation tracks those reads through it, so
+  /// views/menus observing this store still re-render when the shared data changes.
   let projectStore: ProjectStore
   /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
   /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
@@ -135,13 +135,6 @@ final class AppStore: ObservableObject {
     return WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true
   }
 
-  /// The list of configured projects — proxied to the shared `ProjectStore` so every window sees the
-  /// same list. (Storage moved out of `AppStore`; the get/set proxy keeps all existing call sites,
-  /// incl. `projects[i] = …` / `projects.removeAll`, working unchanged.)
-  var projects: [Project] {
-    get { projectStore.projects }
-    set { projectStore.projects = newValue }
-  }
   var selectedProjectID: Project.ID?
   /// The selected terminal target — a `.root` or a `.workroom` (never `.project`), or nil
   /// when nothing is selected (the launch state). `.project` is not a target; clicking a
@@ -255,7 +248,7 @@ final class AppStore: ObservableObject {
   /// Shows or hides the Projects sidebar (the title-bar button, ⌃⌘S, ⌥⌘S, ⌥⌘B): nothing with no
   /// projects, where it has nothing to list and stays hidden (`RootView.splitView`).
   func toggleSidebar() {
-    if !projects.isEmpty { sidebarVisible.toggle() }
+    if !projectStore.projects.isEmpty { sidebarVisible.toggle() }
   }
   /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
   /// left Projects overlay (`previewingLeft`) and the right inspector overlay (`previewingRight`).
@@ -452,7 +445,7 @@ final class AppStore: ObservableObject {
       projectPath = p
       path = p
     case .workroom(let p, let name):
-      guard let project = projects.first(where: { $0.path == p }),
+      guard let project = projectStore.projects.first(where: { $0.path == p }),
         let workroom = project.workrooms.first(where: { $0.name == name })
       else { return nil }
       if workroom.isRemote {
@@ -465,7 +458,9 @@ final class AppStore: ObservableObject {
       projectPath = p
       path = workroom.path
     }
-    guard let project = projects.first(where: { $0.path == projectPath }) else { return nil }
+    guard let project = projectStore.projects.first(where: { $0.path == projectPath }) else {
+      return nil
+    }
     return RemoteStateModel.Target(
       sid: sid, path: path, projectRoot: project.path,
       location: RepositoryRouter.shared.localLocation(for: path))
@@ -1399,13 +1394,15 @@ final class AppStore: ObservableObject {
   func title(for sid: SidebarID?) -> String {
     switch sid {
     case .root(let path):
-      return projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
+      return projectStore.projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
     case .workroom(let path, let name):
-      guard let project = projects.first(where: { $0.id == path })?.displayName else { return name }
+      guard let project = projectStore.projects.first(where: { $0.id == path })?.displayName
+      else { return name }
       // Show the workroom's display label when set (issue #41); falls back to the real name.
       return "\(project) — \(displayName(forWorkroom: name, inProject: path))"
     case .creation(let path, _):
-      let project = projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
+      let project =
+        projectStore.projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
       return "\(project) — New workroom"
     case .project, nil:
       return defaultWindowTitle
@@ -1423,9 +1420,9 @@ final class AppStore: ObservableObject {
   func target(for sid: SidebarID) -> TerminalTarget? {
     switch sid {
     case .root(let path):
-      return projects.first { $0.id == path }?.rootTarget
+      return projectStore.projects.first { $0.id == path }?.rootTarget
     case .workroom(let path, let name):
-      guard let project = projects.first(where: { $0.id == path }),
+      guard let project = projectStore.projects.first(where: { $0.id == path }),
         let workroom = project.workrooms.first(where: { $0.id == name })
       else {
         // A create's named pane whose workroom a reload hasn't listed (yet, or any more): its run
@@ -1573,7 +1570,7 @@ final class AppStore: ObservableObject {
   /// the setup-log dock, and menu commands that are workroom-specific.
   var selectedWorkroom: Workroom? {
     guard case .workroom(let path, let name) = selectedTargetID,
-      let project = projects.first(where: { $0.id == path })
+      let project = projectStore.projects.first(where: { $0.id == path })
     else { return nil }
     return project.workrooms.first { $0.id == name }
   }
@@ -1587,7 +1584,7 @@ final class AppStore: ObservableObject {
   /// against `projects` (e.g. a deleted workroom).
   ///
   /// `order` defaults to the `@Published workroomTabOrder`, so a view observing the store re-renders
-  /// when a drag-reorder rewrites it. Reads `@Published projects` + `terminals.activeTargetIDs`
+  /// when a drag-reorder rewrites it. Reads `projectStore.projects` + `terminals.activeTargetIDs`
   /// (`@Published tabsByTarget`) too — so the bar updates as terminals open/close. `order:` is for tests.
   func orderedWorkroomTargets(order: [TerminalTarget.ID]? = nil)
     -> [(sid: SidebarID, target: TerminalTarget)]
@@ -1812,7 +1809,7 @@ final class AppStore: ObservableObject {
           resolveBranches()
           refreshWorkroomStatuses()
         } else {
-          reconcileWindow(with: projects)
+          reconcileWindow(with: projectStore.projects)
         }
         lastLoadAt = Date()
       case .failure(let error):
@@ -1837,7 +1834,7 @@ final class AppStore: ObservableObject {
     /// never reaches `apply` at all (caught writing the delete-clears-notifications UI test).
     private func loadFixture() {
       let fixtures = applyingDeletionTombstones(UITestFixture.projects())
-      projects = fixtures
+      projectStore.projects = fixtures
       // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
       if let pulled = UITestFixture.imagePull, let project = fixtures.first,
         !creationRuns.values.contains(where: { $0.project.path == project.path })
@@ -2030,7 +2027,7 @@ final class AppStore: ObservableObject {
       })
     RepositoryRouter.shared.replaceRemote(RemoteWorkrooms.registrations(fresh))
     let resolved = selectedWorkroom?.reachableHost
-    projects = fresh
+    projectStore.projects = fresh
     // A selection restored before its projects were loaded opened nothing then (#309). Only then:
     // every reload passes here, and opening again on each would restart a container the user
     // stopped.
@@ -2156,7 +2153,7 @@ final class AppStore: ObservableObject {
   /// `id`'s sidebar row while it is still listed, else nil (always nil for a create's pane and the
   /// Quick Terminal, which have no row).
   func sidebarID(for id: TargetID) -> SidebarID? {
-    Self.validatedSelection(id.sidebarID, in: projects)
+    Self.validatedSelection(id.sidebarID, in: projectStore.projects)
   }
 
   nonisolated private static func targetExists(_ id: SidebarID, in projects: [Project]) -> Bool {
@@ -2179,7 +2176,7 @@ final class AppStore: ObservableObject {
   private func resolveBranches() {
     branchTask?.cancel()
     let resolver = self.resolver
-    let snapshot = projects.map { (id: $0.id, path: $0.path, vcs: $0.vcs) }
+    let snapshot = projectStore.projects.map { (id: $0.id, path: $0.path, vcs: $0.vcs) }
     branchTask = Task { [weak self] in
       await withTaskGroup(of: (String, RootRef).self) { group in
         for p in snapshot {
@@ -2208,14 +2205,14 @@ final class AppStore: ObservableObject {
       rootBranchRefreshTasks.removeAll()
       return
     }
-    let live = Set(projects.map(\.id))
+    let live = Set(projectStore.projects.map(\.id))
     for id in rootBranchWatchers.keys where !live.contains(id) {
       rootBranchWatchers[id]?.stop()
       rootBranchWatchers[id] = nil
       rootBranchRefreshTasks[id]?.cancel()
       rootBranchRefreshTasks[id] = nil
     }
-    for p in projects {
+    for p in projectStore.projects {
       guard let dir = Self.vcsMetadataDir(path: p.path, vcs: p.vcs) else { continue }
       let id = p.id
       let watcher =
@@ -2238,7 +2235,7 @@ final class AppStore: ObservableObject {
   /// doesn't invalidate the sidebar). Cancel-and-replace per project so a write burst resolves once;
   /// `.none` never clobbers a prior label (matches `resolveBranches`).
   func handleRootBranchChange(projectID: Project.ID) {
-    guard probesRepositories, let p = projects.first(where: { $0.id == projectID })
+    guard probesRepositories, let p = projectStore.projects.first(where: { $0.id == projectID })
     else { return }
     // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / ref
     // update in the project or one of its workrooms (git worktree refs land in the shared `.git`, so
@@ -2293,8 +2290,8 @@ final class AppStore: ObservableObject {
     #if DEBUG
       if AppEnvironment.current.isFixture {
         let canonical = AddProjectSheetModel.normalize(path)
-        if !projects.contains(where: { $0.path == canonical }) {
-          projects.append(Project(path: canonical, vcs: "git", workrooms: []))
+        if !projectStore.projects.contains(where: { $0.path == canonical }) {
+          projectStore.projects.append(Project(path: canonical, vcs: "git", workrooms: []))
         }
         selectedProjectID = canonical
         selectedTargetID = .root(project: canonical)
@@ -2309,7 +2306,7 @@ final class AppStore: ObservableObject {
       // open a terminal on its root, mirroring workroom creation rather than leaving
       // the user on the "Nothing selected" empty state (issue #104). A new project
       // has no workrooms, so the root is the only sensible terminal to open.
-      guard let match = projects.first(where: { $0.path == canonical }) else {
+      guard let match = projectStore.projects.first(where: { $0.path == canonical }) else {
         throw NSError(
           domain: "Workroom.AppStore", code: 1,
           userInfo: [
@@ -2501,9 +2498,9 @@ final class AppStore: ObservableObject {
   /// Drops a workroom from the in-memory project list so the sidebar updates instantly. `internal`
   /// so the label-cleanup it performs is a unit-test seam (mirrors `removeProjectLocally`).
   func removeWorkroomLocally(_ workroom: Workroom, in project: Project) {
-    guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
-    let p = projects[idx]
-    projects[idx] = Project(
+    guard let idx = projectStore.projects.firstIndex(where: { $0.id == project.id }) else { return }
+    let p = projectStore.projects[idx]
+    projectStore.projects[idx] = Project(
       path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id },
       host: p.host, baseBranch: p.baseBranch)
     forgetLabels(forProject: project.path, workroomNames: [workroom.name])
@@ -2531,7 +2528,7 @@ final class AppStore: ObservableObject {
     let path = project.path
     // As it is now, after the failure's reload, not as it was when the delete began.
     let deleteAgain = { [weak self] (skipTeardown: Bool) in
-      guard let self, let project = self.projects.first(where: { $0.path == path }),
+      guard let self, let project = self.projectStore.projects.first(where: { $0.path == path }),
         let workroom = project.workrooms.first(where: { $0.name == name })
       else { return }
       self.deleteWorkroom(workroom, in: project, skipTeardown: skipTeardown)
@@ -2769,7 +2766,7 @@ final class AppStore: ObservableObject {
   func removeProjectLocally(_ project: Project) -> [TerminalTarget.ID] {
     let targetIDs = project.targetIDs
 
-    projects.removeAll { $0.id == project.id }
+    projectStore.projects.removeAll { $0.id == project.id }
     if selectedProjectID == project.id { selectedProjectID = nil }
     // Clear selection if it pointed anywhere inside this project (its root or any workroom).
     if let sel = selectedTargetID, sel.belongsToProject(project.path) { selectedTargetID = nil }
@@ -2827,7 +2824,8 @@ final class AppStore: ObservableObject {
     errorAction = ErrorAction(label: "Delete Without Teardowns") {
       [weak self] in
       // As it is now: a remote workroom taken down before the failure is gone from it (C4).
-      guard let self, let project = self.projects.first(where: { $0.path == path }) else { return }
+      guard let self, let project = self.projectStore.projects.first(where: { $0.path == path })
+      else { return }
       self.deleteProject(project, scope: scope, skipTeardown: true)
     }
   }
@@ -2907,7 +2905,7 @@ final class AppStore: ObservableObject {
   /// sidebar does without re-deriving the lookup.
   func workroomAndProject(for sid: SidebarID) -> (workroom: Workroom, project: Project)? {
     guard case .workroom(let path, let name) = sid,
-      let project = projects.first(where: { $0.id == path }),
+      let project = projectStore.projects.first(where: { $0.id == path }),
       let workroom = project.workrooms.first(where: { $0.id == name })
     else { return nil }
     return (workroom, project)
@@ -3582,7 +3580,7 @@ final class AppStore: ObservableObject {
   /// workroom terminal (e.g. "platform" for a root, "platform / fix-auth" for a workroom).
   /// Resolved against the live projects (no string parsing of the id).
   func notificationSource(forTargetID id: TerminalTarget.ID) -> String {
-    Self.notificationSource(forTargetID: id, in: projects)
+    Self.notificationSource(forTargetID: id, in: projectStore.projects)
   }
 
   /// The display label parts for a sidebar item — the one resolver behind the workroom tab chip's

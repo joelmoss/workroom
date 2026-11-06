@@ -9,6 +9,6 @@ import WorkroomDomain
 func makeStore(_ projects: [Project]) -> AppStore {
   let store = AppStore()
   store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-  store.projects = projects
+  store.projectStore.projects = projects
   return store
 }

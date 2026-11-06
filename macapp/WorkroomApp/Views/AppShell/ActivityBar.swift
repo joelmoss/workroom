@@ -29,7 +29,7 @@ struct ActivityBar: View {
     let _ = store.inspectorToggles
     VStack(spacing: 2) {
       // No projects: no inspector to show, so only Settings stays on the rail.
-      ForEach(store.projects.isEmpty ? [] : ActivitySection.allCases) { section in
+      ForEach(projectStore.projects.isEmpty ? [] : ActivitySection.allCases) { section in
         ActivityBarButton(
           section: section,
           // Active only while the pane is actually shown — a closed inspector highlights nothing

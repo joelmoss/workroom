@@ -34,6 +34,7 @@ struct WorkroomTabBar: View {
   let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
 
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -109,7 +110,7 @@ struct WorkroomTabBar: View {
   private var trailingControls: some View {
     HStack(spacing: tabSpacing) {
       // No projects: nothing to open or create a workroom in (⌘O and ⌘N are off too).
-      if !store.projects.isEmpty {
+      if !projectStore.projects.isEmpty {
         openWorkroomButton
         addWorkroomButton
       }

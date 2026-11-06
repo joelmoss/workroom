@@ -83,7 +83,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let shared = ProjectStore()
     let first = makeStore(shared, cli: cli)
     let second = acrossWindows ? makeStore(shared, cli: cli) : first
-    first.projects = projects(["anchor"])
+    first.projectStore.projects = projects(["anchor"])
     let older = Task { await first.reload() }
     await fulfillment(of: [started[0]], timeout: 5)
     let newer = Task { await second.reload() }
@@ -111,19 +111,19 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let started = [expectation(description: "older list"), expectation(description: "newer list")]
     let cli = GatedListCLI(started: started)
     let store = makeStore(ProjectStore(), cli: cli)
-    store.projects = projects(["existing"])
+    store.projectStore.projects = projects(["existing"])
     let older = Task { await store.reload() }
     await fulfillment(of: [started[0]], timeout: 5)
     let newer = Task { await store.reload() }
     await fulfillment(of: [started[1]], timeout: 5)
     await cli.release(0, projects: [])
-    XCTAssertEqual(store.projects.first?.workrooms.map(\.name), ["existing"])
+    XCTAssertEqual(store.projectStore.projects.first?.workrooms.map(\.name), ["existing"])
     XCTAssertTrue(store.isLoading)
 
     await cli.fail(1)
     await newer.value
     await older.value
-    XCTAssertEqual(store.projects.first?.workrooms.map(\.name), ["existing"])
+    XCTAssertEqual(store.projectStore.projects.first?.workrooms.map(\.name), ["existing"])
     XCTAssertNotNil(store.errorMessage, "the current request's error must still surface")
     XCTAssertFalse(store.isLoading)
   }
@@ -154,7 +154,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let shared = ProjectStore()
     let first = makeStore(shared, cli: cli)
     let second = makeStore(shared, cli: cli)
-    first.projects = projects(["existing"])
+    first.projectStore.projects = projects(["existing"])
     let older = Task { await first.reload() }
     await fulfillment(of: [started[0]], timeout: 5)
     let newer = Task { await second.reloadIfStale() }
@@ -227,7 +227,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let shared = ProjectStore()
     let store = makeStore(shared, cli: cli)
     let other = makeStore(shared, cli: cli)
-    store.projects = projects(["anchor"])
+    store.projectStore.projects = projects(["anchor"])
     let anchor = SidebarID.workroom(project: path, name: "anchor")
     let created = SidebarID.workroom(project: path, name: "created")
     let finished = expectation(description: "landing must wait")
@@ -263,7 +263,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     let shared = ProjectStore()
     let first = makeStore(shared, cli: cli)
     let second = makeStore(shared, cli: cli)
-    first.projects = projects(["anchor", "deleted"])
+    first.projectStore.projects = projects(["anchor", "deleted"])
     let anchor = SidebarID.workroom(project: path, name: "anchor")
     let deleted = SidebarID.workroom(project: path, name: "deleted")
     first.insertWorkroomSplit(deleted, beside: anchor, edge: .right)
@@ -277,7 +277,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     await older.value
     XCTAssertEqual(first.selectedTargetID, anchor)
     XCTAssertTrue(first.workroomSplits.isEmpty)
-    XCTAssertEqual(first.projects.first?.workrooms.map(\.name), ["anchor"])
+    XCTAssertEqual(first.projectStore.projects.first?.workrooms.map(\.name), ["anchor"])
   }
 
   func testSupersededWindowRestoresItsOwnPendingSelection() async {

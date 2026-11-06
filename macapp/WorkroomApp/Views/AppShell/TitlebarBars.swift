@@ -72,11 +72,12 @@ struct TitlebarDivider: View {
 /// hidden outright in `WindowBackgroundThemer` to kill its "more toolbar items" overflow chevron.
 struct LeadingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
 
   var body: some View {
     HStack(spacing: 6) {
       // No projects: no sidebar to show, so no button for it.
-      if !store.projects.isEmpty {
+      if !projectStore.projects.isEmpty {
         Button {
           store.toggleSidebar()
         } label: {

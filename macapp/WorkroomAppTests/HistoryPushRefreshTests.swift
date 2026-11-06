@@ -86,7 +86,7 @@ final class HistoryPushRefreshTests: XCTestCase {
     }
     // One project whose single "workroom" IS the repo itself — enough for the History pane, and it keeps
     // the fixture to one real repo.
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: path, vcs: "git",
         workrooms: [
@@ -123,7 +123,7 @@ final class HistoryPushRefreshTests: XCTestCase {
     XCTAssertEqual(sh("git push -q origin main", in: repo).exit, 0)
 
     // The watcher's callback: a ref moved under the project's VCS metadata dir.
-    store.handleRootBranchChange(projectID: store.projects[0].id)
+    store.handleRootBranchChange(projectID: store.projectStore.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
 
     XCTAssertEqual(
@@ -140,12 +140,12 @@ final class HistoryPushRefreshTests: XCTestCase {
     let repo = try repoWithLocalCommit()
     let store = await liveHistoryStore(on: repo)
     XCTAssertEqual(sh("git push -q origin main", in: repo).exit, 0)
-    store.handleRootBranchChange(projectID: store.projects[0].id)
+    store.handleRootBranchChange(projectID: store.projectStore.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
     XCTAssertTrue(store.commitHistory.commits.allSatisfy { !$0.showsUnpushedBadge })
 
     sh("echo three > c.txt && git add . && git commit -qm afterpush", in: repo)
-    store.handleRootBranchChange(projectID: store.projects[0].id)
+    store.handleRootBranchChange(projectID: store.projectStore.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
 
     XCTAssertEqual(state(store, "afterpush"), .unpushed)

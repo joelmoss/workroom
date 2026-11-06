@@ -210,7 +210,8 @@ struct OnboardingWindow: View {
       let probe = AppStore(projectStore: .shared)
       await probe.bootstrap(restore: false)
       if !OnboardingGate.shouldShow(
-        hasCompleted: Defaults[.hasCompletedOnboarding], projectsEmpty: probe.projects.isEmpty
+        hasCompleted: Defaults[.hasCompletedOnboarding],
+        projectsEmpty: probe.projectStore.projects.isEmpty
       ) {
         // The real gate disagrees — an existing install with projects that just never completed
         // onboarding. This window shouldn't have opened; closing it opens the real main window, via

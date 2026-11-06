@@ -107,7 +107,7 @@ final class TerminalFocusReconciliationTests: XCTestCase {
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, command: nil, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/focus-reconcile", vcs: "git",
         workrooms: [

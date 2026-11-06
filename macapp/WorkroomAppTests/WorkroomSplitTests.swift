@@ -20,7 +20,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 
@@ -477,7 +477,8 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)  // 3 leaves
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]  // "feature" deleted
+    // "feature" deleted
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     let layout = store.visibleWorkroomLayout(for: wr("main"))
     XCTAssertEqual(
       Set(layout.tabIDs), [wr("main"), wr("bugfix")],
@@ -487,7 +488,8 @@ final class WorkroomSplitTests: XCTestCase {
   func testVisibleWorkroomLayoutFallsToLeafWhenPruneLeavesOne() {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // [main, feature]
-    store.projects = [project("/a", workrooms: ["main"])]  // delete "feature" → one live leaf
+    // delete "feature" → one live leaf
+    store.projectStore.projects = [project("/a", workrooms: ["main"])]
     XCTAssertEqual(
       store.visibleWorkroomLayout(for: wr("main")), .leaf(wr("main")),
       "a lone surviving leaf renders solo, not a one-pane split")
@@ -527,7 +529,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     XCTAssertEqual(store.resolvedSplitLeaves()?.count, 2)
     // Remove "feature" from the project list → only "main" resolves → <2 live → nil.
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     XCTAssertNil(store.resolvedSplitLeaves())
     XCTAssertFalse(store.workroomSplitActive)
   }
@@ -536,7 +538,8 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)  // → 3 leaves
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]  // delete "feature"
+    // delete "feature"
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertEqual(Set(onlySplit(store)?.tabIDs ?? []), [wr("main"), wr("bugfix")])
   }
@@ -545,7 +548,7 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.selectedTargetID = nil  // mimic apply() having nilled a dead selection before prune
-    store.projects = [project("/a", workrooms: ["main"])]  // only "main" survives
+    store.projectStore.projects = [project("/a", workrooms: ["main"])]  // only "main" survives
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertNil(onlySplit(store))
     XCTAssertEqual(store.selectedTargetID, wr("main"), "dissolve re-selects the live survivor")
@@ -789,7 +792,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)  // group B
     // Delete "feature" and "review" out of the project list: BOTH groups drop to one live leaf, so both
     // dissolve — the prune walks every group, not just the visible one.
-    store.projects = [project("/a", workrooms: ["main", "docs"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "docs"])]
     store.selectedTargetID = nil  // mimic apply() nilling a dead selection before the prune
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertTrue(store.workroomSplits.isEmpty, "both groups dissolved to a lone live leaf")
@@ -810,7 +813,7 @@ final class WorkroomSplitTests: XCTestCase {
       "precondition: a 3-member group and a pair")
 
     // "feature" (in A) and "review" (in B) deleted out of band.
-    store.projects = [project("/a", workrooms: ["main", "spike", "docs"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "spike", "docs"])]
     store.selectedTargetID = nil  // mimic apply() nilling a dead selection before the prune
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertEqual(
@@ -830,7 +833,8 @@ final class WorkroomSplitTests: XCTestCase {
     let former = store.selectedTargetID
     XCTAssertEqual(former, wr("review"), "precondition: viewing group B")
 
-    store.projects = [project("/a", workrooms: ["main", "docs"])]  // feature + review deleted
+    // feature + review deleted
+    store.projectStore.projects = [project("/a", workrooms: ["main", "docs"])]
     store.selectedTargetID = nil  // apply() nils the dead selection before pruning
     store.pruneWorkroomSplitToLiveLeaves(formerSelection: former)
     XCTAssertEqual(
@@ -851,7 +855,7 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(former, wr("review"), "precondition: viewing group B")
 
     // Kill B's selected member (B keeps feature + spike) and one of A's (A dissolves to docs).
-    store.projects = [project("/a", workrooms: ["feature", "spike", "docs"])]
+    store.projectStore.projects = [project("/a", workrooms: ["feature", "spike", "docs"])]
     store.selectedTargetID = nil
     store.pruneWorkroomSplitToLiveLeaves(formerSelection: former)
     XCTAssertEqual(
@@ -867,7 +871,8 @@ final class WorkroomSplitTests: XCTestCase {
     // survivor — is still the right answer.
     let store = store4()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.projects = [project("/a", workrooms: ["main", "docs", "review"])]  // feature deleted
+    // feature deleted
+    store.projectStore.projects = [project("/a", workrooms: ["main", "docs", "review"])]
     store.selectedTargetID = nil
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertEqual(store.selectedTargetID, wr("main"))
@@ -974,7 +979,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: names.map {
@@ -1098,7 +1103,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     let store = threeColumnStore()
     store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)  // or 0.5 would hold either way
     store.selectedTargetID = wr("main")
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: ["main", "feature"].map {
@@ -1114,7 +1119,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     let store = threePaneStore()  // main | (feature / bugfix)
     store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
     store.selectedTargetID = wr("main")
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: ["main", "feature"].map {
@@ -1234,7 +1239,7 @@ final class WorkroomSplitPaneWeightTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: names.map {

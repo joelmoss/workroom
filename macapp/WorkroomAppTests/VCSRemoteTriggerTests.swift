@@ -44,7 +44,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     store.inspectorVisibleOverrideForTesting = visible
     store.isolatesInspectorSectionForTesting = true
     store.isolatesInspectorLayoutForTesting = true
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: [])]
@@ -135,7 +135,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   /// A write under another project's `.git` says nothing about this workroom.
   func testMetadataChangeForAnotherProjectIsIgnored() async {
     let (store, writer) = makeStore(visible: true, section: .changes)
-    store.projects.append(Project(path: "/other", vcs: "git", workrooms: []))
+    store.projectStore.projects.append(Project(path: "/other", vcs: "git", workrooms: []))
     await select(store, .workroom(project: "/p", name: "feat"))
     let before = await writer.stateReads
     store.handleRootBranchChange(projectID: "/other")
@@ -255,7 +255,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   /// about a specific workroom.
   func testAConfirmedPullIsRejectedIfTheSelectionMoved() async {
     let (store, writer) = makeStore(visible: true, section: .changes)
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [
@@ -283,7 +283,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   /// And the stale dialog is dismissed rather than left asking about a workroom nobody is looking at.
   func testChangingSelectionDismissesAPendingConfirmation() async {
     let (store, _) = makeStore(visible: true, section: .changes)
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [

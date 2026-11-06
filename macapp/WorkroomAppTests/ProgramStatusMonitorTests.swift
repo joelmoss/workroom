@@ -337,7 +337,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
     }
     store.terminals.programStatus = monitor
     store.runCommand.signalSupervisorForTesting = { _, _ in .delivered }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: [Workroom(name: "main", path: "/a/main", vcsName: "workroom/main", warnings: [])]
@@ -427,7 +427,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
     }
     store.terminals.programStatus = monitor
     store.runCommand.signalSupervisorForTesting = { _, _ in .delivered }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: [

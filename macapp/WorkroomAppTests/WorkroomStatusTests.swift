@@ -174,7 +174,7 @@ final class WorkroomStatusTests: XCTestCase {
         Workroom(name: "a", path: "/p/a", vcsName: "git", warnings: []),
         Workroom(name: "b", path: "/p/b", vcsName: "git", warnings: []),
       ])
-    store.projects = [project]
+    store.projectStore.projects = [project]
 
     // clean + dirty → dirty wins
     store.projectStore.workroomStatuses[.workroom(project: "/p", name: "a")] = WorkroomStatus(
@@ -200,7 +200,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testStatusWorkItemsKeyWorkroomsByProjectRoot() {
     let store = AppStore()
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [
@@ -218,7 +218,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testStatusWorkItemsSkipRemoteWorkrooms() {
     let store = AppStore()
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [
@@ -250,17 +250,17 @@ final class WorkroomStatusTests: XCTestCase {
       workrooms: [
         Workroom(name: "local", path: "/p/local", vcsName: "workroom/local", warnings: []), remote,
       ])
-    store.projects = [project]
+    store.projectStore.projects = [project]
 
     store.deleteWorkroom(remote, in: project)
-    XCTAssertEqual(store.projects, [project])
+    XCTAssertEqual(store.projectStore.projects, [project])
     XCTAssertEqual(store.errorTitle, "Can't delete remote")
     XCTAssertTrue(store.errorMessage?.contains("another Workroom build") == true)
 
     store.errorTitle = nil
     store.errorMessage = nil
     store.deleteProject(project, scope: .configOnly)
-    XCTAssertEqual(store.projects, [project])
+    XCTAssertEqual(store.projectStore.projects, [project])
     XCTAssertEqual(store.errorTitle, "Can't delete p")
     XCTAssertTrue(store.deletingProjects.isEmpty, "a refused delete must not tombstone (#287)")
   }
@@ -291,7 +291,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testMergeLocalStatusCarriesTheLocalProbeFields() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     let fresh = WorkroomStatus(
       dirty: true,
@@ -311,7 +311,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testMergeLocalStatusPreservesCI() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     // Seed: a prior snapshot with CI already resolved.
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: true, ci: .passing)
@@ -548,7 +548,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testMergeLocalStatusPreservesPR() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(
       dirty: true,
@@ -568,7 +568,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testMergeLocalStatusSkipsDeletedTarget() {
     let store = AppStore()
-    store.projects = []  // the project the sweep captured has since been deleted
+    store.projectStore.projects = []  // the project the sweep captured has since been deleted
     let sid = SidebarID.root(project: "/gone")
     store.mergeLocalStatus(
       WorkroomStatus(dirty: true, branchForCI: "main"), into: sid)
@@ -783,7 +783,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testApplyChecksStatusListAbsentKeepPrior() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false)
 
@@ -807,7 +807,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testApplyChecksStatusKeepPriorFirstProbeStaysUnloaded() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(dirty: false)
     store.applyChecksStatus(.keepPrior, to: sid)
@@ -820,7 +820,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testApplyPRStatusClearsChecksOnPRNumberChange() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
@@ -842,7 +842,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testApplyPRStatusKeepsChecksOnSamePRNumber() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
@@ -864,7 +864,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testApplyPRStatusAbsentClearsChecks() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
@@ -896,8 +896,9 @@ final class WorkroomStatusTests: XCTestCase {
   func testPerformPRActionRevertsOnFailure() async throws {
     let p = try checkout()
     let store = AppStore()
-    store.projects = [Project(path: p, vcs: "git", workrooms: [])]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [Project(path: p, vcs: "git", workrooms: [])]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "pr already ready", exitCode: 1, timedOut: false)
@@ -926,8 +927,9 @@ final class WorkroomStatusTests: XCTestCase {
   func testPerformPRActionConvertToDraftIsOptimistic() async throws {
     let p = try checkout()
     let store = AppStore()
-    store.projects = [Project(path: p, vcs: "git", workrooms: [])]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [Project(path: p, vcs: "git", workrooms: [])]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
@@ -951,8 +953,9 @@ final class WorkroomStatusTests: XCTestCase {
   func testPerformMergeRevertsOnFailure() async throws {
     let p = try checkout()
     let store = AppStore()
-    store.projects = [Project(path: p, vcs: "git", workrooms: [])]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [Project(path: p, vcs: "git", workrooms: [])]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "not mergeable", exitCode: 1, timedOut: false)

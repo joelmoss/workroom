@@ -27,8 +27,9 @@ final class AppStoreDeleteProjectTests: XCTestCase {
 
     let targets = store.removeProjectLocally(p)
 
-    XCTAssertFalse(store.projects.contains { $0.id == "/a" }, "project not removed")
-    XCTAssertTrue(store.projects.contains { $0.id == "/b" }, "unrelated project disturbed")
+    XCTAssertFalse(store.projectStore.projects.contains { $0.id == "/a" }, "project not removed")
+    XCTAssertTrue(
+      store.projectStore.projects.contains { $0.id == "/b" }, "unrelated project disturbed")
     XCTAssertEqual(
       Set(targets),
       [

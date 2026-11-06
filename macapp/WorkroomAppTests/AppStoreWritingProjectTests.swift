@@ -16,7 +16,7 @@ final class AppStoreWritingProjectTests: XCTestCase {
   private func makeStore(_ projects: [Project]) async throws -> AppStore {
     RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(projects))
     let store = AppStore()
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 
@@ -118,7 +118,7 @@ final class AppStoreWritingProjectTests: XCTestCase {
   /// Unknown ownership refuses the commit before reserving any cross-window suppression.
   func testUnregisteredCommitFailsWithoutMarkingAWrite() async throws {
     let store = AppStore(projectStore: ProjectStore())
-    store.projects = [project("/missing-project", workrooms: ["feat"])]
+    store.projectStore.projects = [project("/missing-project", workrooms: ["feat"])]
     let sid = SidebarID.workroom(project: "/missing-project", name: "feat")
     let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
     let result: VCSCommitResult = await withCheckedContinuation { continuation in

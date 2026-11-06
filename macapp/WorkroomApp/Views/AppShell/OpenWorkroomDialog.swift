@@ -136,7 +136,7 @@ struct OpenWorkroomDialog: View {
     }
     .frame(width: 420, height: 460)
     .onAppear {
-      targets = OpenPickerModel.targets(from: store.projects)
+      targets = OpenPickerModel.targets(from: store.projectStore.projects)
       searchFocused = true
     }
     // ↑/↓ move the highlight; ⏎ opens the highlighted target. The single-line search field doesn't

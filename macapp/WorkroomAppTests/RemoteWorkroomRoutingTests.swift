@@ -232,10 +232,11 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
   func testARemoteWorkroomHasAStatusItemOnItsHost() throws {
     let host = UUID()
     let store = AppStore()
-    store.projects = [
+    store.projectStore.projects = [
       project([remote("a", host: host), remote("b", host: UUID(), state: "failed")])
     ]
-    RepositoryRouter.shared.replaceRemote(RemoteWorkrooms.registrations(store.projects))
+    RepositoryRouter.shared.replaceRemote(
+      RemoteWorkrooms.registrations(store.projectStore.projects))
 
     let item = try XCTUnwrap(
       store.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "a")))

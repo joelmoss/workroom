@@ -10,7 +10,7 @@ import WorkroomVCS
 /// terminals, splits, history, and run state.
 ///
 /// Views take it from the environment and the store reaches it as `projectStore`. `AppStore` still
-/// forwards the project list, the run config and the create and delete sets, which Observation
+/// forwards the run config and the create and delete sets, which Observation
 /// tracks through it. List requests are ordered here across windows; each `AppStore` reconciles its
 /// own window after an accepted read.
 @MainActor
@@ -25,7 +25,15 @@ final class ProjectStore: ObservableObject {
 
   /// The list of configured projects (from the CLI's `~/.config/workroom/config.json`). The one
   /// piece of state shared across all windows.
-  var projects: [Project] = []
+  ///
+  /// Computed over a private stored list, like the status collections below, so an in-place write
+  /// that changes nothing (`projects[i] = p`, a `removeAll` that matches nothing) notifies no one,
+  /// as it did when `AppStore` forwarded the list.
+  var projects: [Project] {
+    get { storedProjects }
+    set { storedProjects = newValue }
+  }
+  private var storedProjects: [Project] = []
   /// The app-wide base branch for projects that name none; nil means origin's default branch.
   var globalBaseBranch: String?
   /// Bumped by `setRunConfig` and read by `AppStore.runConfig(forProject:)`, so every window's run

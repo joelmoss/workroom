@@ -176,7 +176,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   @MainActor
   func testLocalSweepNeverExceedsItsConcurrencyCap() async {
     let store = AppStore()
-    store.projects = (0..<8).map { throwawayProject("\($0)") }
+    store.projectStore.projects = (0..<8).map { throwawayProject("\($0)") }
 
     let counter = InFlightCounter()
     store.statusResolver = WorkroomStatusResolver(
@@ -218,8 +218,9 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   @MainActor
   func testCISweepNeverExceedsItsConcurrencyCap() async throws {
     let store = AppStore()
-    store.projects = (0..<8).map { throwawayProject("ci-\($0)") }
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = (0..<8).map { throwawayProject("ci-\($0)") }
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
 
     let ghCounter = InFlightCounter()
     // `dirty: false` (not counted here) only needs to make every item CI-eligible
@@ -269,8 +270,9 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   func testCISweepLooksUpTheRepositoryOncePerProject() async throws {
     let store = AppStore()
     let projects = [project("once-a", workrooms: 2), project("once-b", workrooms: 2)]
-    store.projects = projects
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = projects
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
 
     let runner = LookupCountingRunner()
     store.statusResolver = WorkroomStatusResolver(
@@ -293,8 +295,9 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   @MainActor
   func testCISweepSharesATransientLookupFailureAcrossWorkrooms() async throws {
     let store = AppStore()
-    store.projects = [project("blip", workrooms: 3)]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [project("blip", workrooms: 3)]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
 
     let runner = LookupCountingRunner(
       lookupResult: CommandResult(

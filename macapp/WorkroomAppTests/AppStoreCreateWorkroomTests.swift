@@ -471,13 +471,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     fake.projectBase = "develop"
     let store = makeStore(fake)
     await store.reload()
-    guard let project = store.projects.first, let workroom = project.workrooms.first else {
+    guard let project = store.projectStore.projects.first, let workroom = project.workrooms.first
+    else {
       return XCTFail("no project")
     }
     store.setWorkroomLabel(workroom, in: project, to: "Labelled")
     await store.reload()
 
-    XCTAssertEqual(store.projects.first?.baseBranch, "develop")
+    XCTAssertEqual(store.projectStore.projects.first?.baseBranch, "develop")
   }
 
   /// Project Settings stores a trimmed branch, and a blank one clears it.
@@ -626,7 +627,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
         projectPath: projectPath, names: ["wr"], hasSetup: false, gate: .beforeReady,
         existing: ["live"])
       let store = makeStore(fake)
-      store.projects = [project(withWorkroom: "live")]
+      store.projectStore.projects = [project(withWorkroom: "live")]
       store.selectedTargetID = selected
 
       let task = Task { await store.createWorkroom(in: emptyProject) }
@@ -662,7 +663,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testRunIsRefusedWhileTheSetupDialogStillCoversThePane() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let proj = project(withWorkroom: "wr")
-    store.projects = [proj]
+    store.projectStore.projects = [proj]
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
     let id = TargetID.workroom(project: projectPath, name: "wr")
     let target = proj.workrooms[0].target(inProject: projectPath)
@@ -716,12 +717,12 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let sid = SidebarID.workroom(project: projectPath, name: "wr")
     let run = seedRun(store, holding: "wr")
 
-    store.projects = [project(withWorkroom: "wr")]
+    store.projectStore.projects = [project(withWorkroom: "wr")]
     store.selectedTargetID = sid
     XCTAssertTrue(store.creationRun(forTargetID: id) === run, "its own pane draws its run")
 
     // The stale snapshot lands: the workroom is gone from `projects` but the create is still live.
-    store.projects = []
+    store.projectStore.projects = []
     XCTAssertEqual(
       store.selectedTarget?.id, id,
       "it still resolves, through its run — otherwise the log and its failure are unreachable")
@@ -917,7 +918,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// `insertWorkroomSplit` to accept it, so it goes into the seeded project list.
   private func anchoredStore(_ fake: WorkroomCLIProtocol, anchor: String) -> (AppStore, SidebarID) {
     let store = makeStore(fake)
-    store.projects = [project(withWorkroom: anchor)]
+    store.projectStore.projects = [project(withWorkroom: anchor)]
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let sid = SidebarID.workroom(project: projectPath, name: anchor)
     store.selectedTargetID = sid
@@ -976,7 +977,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       projectPath: projectPath, workroomName: "calm-otter", hasSetup: false,
       existingWorkrooms: ["anchor-wr", "elsewhere"])
     let store = makeStore(fake)
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: projectPath, vcs: "git",
         workrooms: ["anchor-wr", "elsewhere"].map {
@@ -1055,12 +1056,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       store.creatingWorkrooms.contains(idA),
       "B landing must not lift the guard on A, whose subprocess is still running")
     // The chokepoint itself: a delete of A is refused outright while that holds.
-    let projectNow = store.projects.first { $0.path == projectPath }
+    let projectNow = store.projectStore.projects.first { $0.path == projectPath }
     let workroomA = projectNow?.workrooms.first { $0.name == "wr-a" }
     XCTAssertNotNil(workroomA)
     store.deleteWorkroom(workroomA!, in: projectNow!)
     XCTAssertTrue(
-      store.projects.first { $0.path == projectPath }?.workrooms.contains { $0.name == "wr-a" }
+      store.projectStore.projects.first { $0.path == projectPath }?.workrooms.contains {
+        $0.name == "wr-a"
+      }
         ?? false,
       "a workroom mid-setup must not be torn down")
 
@@ -1199,7 +1202,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     fake.release("wr-b")
     await b.value
     XCTAssertTrue(store.creationRuns.isEmpty, "both done")
-    XCTAssertEqual(store.projects.first?.workrooms.map(\.name), ["wr-a", "wr-b"])
+    XCTAssertEqual(store.projectStore.projects.first?.workrooms.map(\.name), ["wr-a", "wr-b"])
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and neither create stranded its own guard")
   }
 
@@ -1409,7 +1412,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
     // Seeded directly rather than via `reload()`: that forks the status sweep, which probes this same
     // row on its own lane. This test drives the lanes by hand, so it must be the only one running.
-    store.projects = [proj]
+    store.projectStore.projects = [proj]
     let sid = SidebarID.workroom(project: root, name: "wr")
 
     let early = Date()
@@ -1455,7 +1458,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let (proj, root, _) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
-    store.projects = [proj]
+    store.projectStore.projects = [proj]
     let sid = SidebarID.workroom(project: root, name: "wr")
     let early = Date()
     store.projectStore.workroomStatuses[sid] = WorkroomStatus(
@@ -1507,7 +1510,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let (proj, root, _) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
-    store.projects = [proj]
+    store.projectStore.projects = [proj]
     let sid = SidebarID.workroom(project: root, name: "wr")
 
     // With nothing recorded the probe merges: `makeRealProject` is a plain directory, so a probe that

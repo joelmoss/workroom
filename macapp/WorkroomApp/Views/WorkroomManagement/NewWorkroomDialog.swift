@@ -46,7 +46,7 @@ struct NewWorkroomDialog: View {
   @FocusState private var placesFocused: Bool
 
   private var filtered: [Project] {
-    ProjectPickerModel.filtered(store.projects, query: query)
+    ProjectPickerModel.filtered(store.projectStore.projects, query: query)
   }
 
   /// Pick a project: dismiss first, then kick off the (async) create+open. `createWorkroom` mounts

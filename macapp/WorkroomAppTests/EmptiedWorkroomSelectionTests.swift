@@ -25,7 +25,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 
@@ -225,7 +225,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
     let wasSelected = store.selectedTargetID == wr("feature")
 
     // Mimic removeWorkroomLocally dropping feature from the project list.
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     store.detachTarget(wr("feature"))
     XCTAssertNil(store.selectedTargetID, "detaching a solo selected workroom nils selection")
 
@@ -241,7 +241,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     let wasSelected = store.selectedTargetID == wr("feature")
 
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]  // drop feature
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]  // drop feature
     store.detachTarget(wr("feature"))  // dissolves split → selection moves to survivor main
     XCTAssertEqual(
       store.selectedTargetID, wr("main"), "detach of a split member yields to its survivor")
@@ -257,7 +257,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
     store.selectedTargetID = wr("solo")
     let wasSelected = store.selectedTargetID == wr("solo")
 
-    store.projects = [project("/a", workrooms: [])]  // drop the only workroom
+    store.projectStore.projects = [project("/a", workrooms: [])]  // drop the only workroom
     store.detachTarget(wr("solo"))
     store.reselectAfterWorkroomDetached(wasSelectedHere: wasSelected)
 
@@ -270,7 +270,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
     store.selectedTargetID = wr("main")  // viewing main, deleting feature
     let wasSelected = store.selectedTargetID == wr("feature")  // false
 
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     store.detachTarget(wr("feature"))  // not selected → leaves selection untouched
     store.reselectAfterWorkroomDetached(wasSelectedHere: wasSelected)
 

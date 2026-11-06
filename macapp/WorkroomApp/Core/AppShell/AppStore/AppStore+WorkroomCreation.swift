@@ -331,7 +331,7 @@ extension AppStore {
   ) async {
     // A second click before the pane redraws must not start a second create (or paid machine).
     guard creationRuns[run.id] === run else { return }
-    let project = projects.first { $0.path == run.project.path } ?? run.project
+    let project = projectStore.projects.first { $0.path == run.project.path } ?? run.project
     let start = start ?? run.start
     let retry = CreationRun(
       id: run.id, project: project, kind: run.kind, splitAnchor: run.splitAnchor,
@@ -543,7 +543,7 @@ extension AppStore {
     splitAnchor: SidebarID? = nil, hostOptions: HostOptions? = nil
   ) async {
     // As it is now, not as a menu or the picker caught it: its base branch may have changed.
-    let project = projects.first { $0.path == project.path } ?? project
+    let project = projectStore.projects.first { $0.path == project.path } ?? project
     guard canCreateRemoteWorkroom(in: project) else { return }
     await runRemoteCreate(
       startCreationRun(

@@ -386,7 +386,7 @@ extension RepositoryRoutingTests {
     try RepositoryRouter.shared.register(
       .init(location: local, sharedLocation: local))
     let store = AppStore()
-    store.projects = [Project(path: path, vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: path, vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: path)
     let prior = PullRequestInfo(
       number: 1, title: "t", state: .open, isDraft: false,
@@ -416,7 +416,7 @@ extension RepositoryRoutingTests {
     try RepositoryRouter.shared.register(
       .init(location: location, sharedLocation: location))
     let store = AppStore()
-    store.projects = [Project(path: path, vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: path, vcs: "git", workrooms: [])]
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }

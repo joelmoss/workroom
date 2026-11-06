@@ -92,7 +92,8 @@ final class WorkroomLabelFormatTests: XCTestCase {
     let sid = SidebarID.workroom(project: "/Users/me/platform", name: "fox")
     XCTAssertEqual(store.label(for: sid), WorkroomLabel(project: "platform", workroom: "fox"))
     // A relabel (issue #41) must show through — the resolver reads displayName, not the sid's name.
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "Auth")
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "Auth")
     XCTAssertEqual(store.label(for: sid).workroom, "Auth")
     XCTAssertEqual(store.label(for: sid).full, "platform / Auth")
   }

@@ -148,7 +148,7 @@ extension AppStore {
       // whole, the same self-heal `validatedSelection` and `pruneWorkroomSplitToLiveLeaves` apply.
       guard
         let sid = Self.validatedSelection(
-          TargetID(encoded: saved.targetID)?.sidebarID, in: projects),
+          TargetID(encoded: saved.targetID)?.sidebarID, in: projectStore.projects),
         let target = target(for: sid)
       else { continue }
       // A remote workroom this app can't reach (#253) waits: its terminals built now would be
@@ -174,7 +174,7 @@ extension AppStore {
     // one-workroom "group" can never reach the live model.
     workroomSplits = session.workroomSplits.compactMap { saved in
       saved.materialize {
-        Self.validatedSelection(TargetID(encoded: $0)?.sidebarID, in: projects)
+        Self.validatedSelection(TargetID(encoded: $0)?.sidebarID, in: projectStore.projects)
       }
     }
     // Sidebar terminal-subtree expansion (issue #30). Only for targets that actually came back —

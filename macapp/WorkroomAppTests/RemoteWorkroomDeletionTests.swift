@@ -105,12 +105,12 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
       host: HostDescriptor(provisioner: mine, id: UUID()))
     let project = Project(path: "/proj", vcs: "git", workrooms: [workroom], host: base)
-    store.projects = [project]
+    store.projectStore.projects = [project]
 
     store.removeWorkroomLocally(workroom, in: project)
 
-    XCTAssertEqual(store.projects.first?.workrooms, [])
-    XCTAssertEqual(store.projects.first?.host, base)
+    XCTAssertEqual(store.projectStore.projects.first?.workrooms, [])
+    XCTAssertEqual(store.projectStore.projects.first?.host, base)
   }
 
   /// The CLI, recording each call the delete flows make, in order.
@@ -210,7 +210,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
           host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID())),
       ],
       host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID()))
-    store.projects = [project]
+    store.projectStore.projects = [project]
 
     store.deleteProject(project, scope: .fromDisk)
     await waitFor("delete-project", in: cli)
@@ -236,7 +236,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
           name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
           host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID())),
       ])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     // The CLI's teardown fails after the remote workroom went; the reload no longer lists it.
     cli.deleteProjectError = WorkroomCLIError.cli(
       kind: "TeardownScriptFailed", message: "teardown script failed")
@@ -274,7 +274,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     let local = Workroom(
       name: "local", path: "/proj/local", vcsName: "workroom/local", warnings: [])
     let project = Project(path: "/proj", vcs: "git", workrooms: [ssh, local])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     cli.listed = [project]
 
     store.deleteProject(project, scope: .workrooms)
@@ -299,14 +299,14 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
       host: HostDescriptor(state: "destroyed", provisioner: mine))
     let project = Project(path: "/proj", vcs: "git", workrooms: [remote])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     cli.listed = [Project(path: "/proj", vcs: "git", workrooms: [])]
 
     store.deleteWorkroom(remote, in: project)
     await waitFor("delete r", in: cli)
 
     XCTAssertEqual(cli.calls.all, ["host r destroyed", "delete r"])
-    XCTAssertEqual(store.projects.first?.workrooms, [])
+    XCTAssertEqual(store.projectStore.projects.first?.workrooms, [])
   }
 
   /// A remote workroom still being created (a create running in its project) can't be deleted,
@@ -321,14 +321,14 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       name: "c", path: "/home/workroom/r", vcsName: "workroom/c", warnings: [],
       host: HostDescriptor(state: "creating", provisioner: mine, workroomID: UUID()))
     let project = Project(path: "/proj", vcs: "git", workrooms: [creating])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     XCTAssertFalse(store.isCreatingWorkroom(creating, in: project))
 
     store.register(
       CreationRun(project: project, kind: .boxd, splitAnchor: nil, previousSelection: nil))
     XCTAssertTrue(store.isCreatingWorkroom(creating, in: project))
     store.deleteWorkroom(creating, in: project)
-    XCTAssertEqual(store.projects, [project], "a create still deriving was deleted")
+    XCTAssertEqual(store.projectStore.projects, [project], "a create still deriving was deleted")
   }
 
   /// A teardown that fails says what is still up and why, ending in one full stop whether or not
