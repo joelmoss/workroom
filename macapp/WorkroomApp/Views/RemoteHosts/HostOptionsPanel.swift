@@ -18,7 +18,8 @@ struct HostOptionsPanel: View {
   @Default(.projectHostOptions) private var projectHostOptions
 
   var body: some View {
-    if let provider = pending.place.hostProvider {
+    if pending.place.takesHostOptions {
+      let provider = pending.place
       VStack(spacing: 0) {
         Form {
           HostOptionsSection(
@@ -52,7 +53,7 @@ struct HostOptionsPanel: View {
     }
   }
 
-  private func create(_ provider: HostProvider) {
+  private func create(_ provider: HostKind) {
     let pending = pending
     let options = options
     if remember, !options.isEmpty {

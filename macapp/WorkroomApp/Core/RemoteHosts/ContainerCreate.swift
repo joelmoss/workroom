@@ -81,7 +81,7 @@ enum ContainerCreate {
   /// the container's spec. `start` is the judged commit, which a build's files come from.
   static func prepare(
     _ file: File?, project: String, repository: String, start: String,
-    runtime: RemoteWorkrooms.Runtime, driver: ContainerHostDriver, defaultImage: String,
+    runtime: ContainerRuntime, driver: ContainerHostDriver, defaultImage: String,
     environment: [String: String] = ProcessInfo.processInfo.environment, featureCache: URL
   ) async throws -> Prepared {
     let config = file?.config

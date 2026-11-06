@@ -132,7 +132,7 @@ final class RemoteHostsTests: XCTestCase {
           Workroom(
             name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner,
+              driver: HostKind.container(.docker).driver, provisioner: RemoteWorkrooms.provisioner,
               id: id, container: Self.sshRecord(context: nil)))
         ])
     ])
@@ -184,7 +184,7 @@ final class RemoteHostsTests: XCTestCase {
           Workroom(
             name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
               account: "usr_1"))
         ])
     ])
@@ -301,12 +301,12 @@ final class RemoteHostsTests: XCTestCase {
             workroom(
               "b",
               HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner,
                 id: boxd, account: "usr_1")),
             workroom(
               "c",
               HostDescriptor(
-                driver: RemoteWorkrooms.Runtime.docker.rawValue,
+                driver: ContainerRuntime.docker.rawValue,
                 provisioner: RemoteWorkrooms.provisioner, id: container)),
           ])
       ], sweep: false)
@@ -336,7 +336,7 @@ final class RemoteHostsTests: XCTestCase {
             Workroom(
               name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
               host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner,
                 id: id, account: "usr_1"))
           ])
       ], sweep: false)
@@ -383,7 +383,7 @@ final class RemoteHostsTests: XCTestCase {
             Workroom(
               name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
               host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner,
                 id: id, account: "usr_1"))
           ])
       ], sweep: false)
@@ -415,7 +415,7 @@ final class RemoteHostsTests: XCTestCase {
             Workroom(
               name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
               host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner,
                 id: id, account: "usr_1"))
           ])
       ], sweep: false)
@@ -651,7 +651,7 @@ final class RemoteHostsTests: XCTestCase {
           Workroom(
             name: "w", path: "/home/exedev/r", vcsName: "workroom/w", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+              driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner,
               id: id, credentials: "relay", account: "me@x.dev"))
         ])
     ])
@@ -730,7 +730,7 @@ final class RemoteHostsTests: XCTestCase {
       host: HostDescriptor(state: "destroyed", driver: "apple-container")
     ).target(inProject: "/proj")
     XCTAssertEqual(destroyed.workroomGlyph, "network")
-    for driver in [RemoteWorkrooms.boxdDriver, RemoteWorkrooms.exeDevDriver] {
+    for driver in [HostKind.boxd.driver, HostKind.exeDev.driver] {
       let cloud = Workroom(
         name: "c", path: "/home/boxd/r", vcsName: "workroom/c", warnings: [],
         host: HostDescriptor(driver: driver, provisioner: RemoteWorkrooms.provisioner, id: UUID())
@@ -752,7 +752,7 @@ final class RemoteHostsTests: XCTestCase {
     func host(_ driver: String?, by provisioner: String) -> HostDescriptor {
       HostDescriptor(driver: driver, provisioner: provisioner, id: UUID())
     }
-    for driver in [RemoteWorkrooms.boxdDriver, RemoteWorkrooms.exeDevDriver] {
+    for driver in [HostKind.boxd.driver, HostKind.exeDev.driver] {
       XCTAssertTrue(RemoteWorkrooms.ownsHost(host(driver, by: nightly), as: release), driver)
       XCTAssertTrue(RemoteWorkrooms.ownsHost(host(driver, by: release), as: nightly), driver)
       XCTAssertFalse(RemoteWorkrooms.ownsHost(host(driver, by: release), as: dev), driver)
@@ -813,7 +813,7 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertTrue(workroom("container").isContainer)
     XCTAssertTrue(workroom("apple-container").isContainer)
     XCTAssertFalse(workroom("boxd").isContainer)
-    XCTAssertFalse(workroom(RemoteWorkrooms.exeDevDriver).isContainer)
+    XCTAssertFalse(workroom(HostKind.exeDev.driver).isContainer)
     XCTAssertFalse(workroom(nil).isContainer)
   }
 
@@ -827,7 +827,7 @@ final class RemoteHostsTests: XCTestCase {
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
     XCTAssertNil(store.createBlockedReason(in: project))
     store.creationRuns[UUID()] = CreationRun(
-      project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+      project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
     XCTAssertNil(store.createBlockedReason(in: project), "a create in flight blocks nothing")
     store.deletingProjects.insert("/proj")
     XCTAssertEqual(store.createBlockedReason(in: project), "the project is being deleted")
@@ -995,7 +995,7 @@ final class RemoteHostsTests: XCTestCase {
   func testARuntimeThatIsNotRunningSaysSo() async throws {
     for (dialect, said, expected) in [
       (
-        ContainerHostDriver.Dialect.docker,
+        ContainerRuntime.docker,
         "Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?",
         "Docker didn't answer"
       ),
@@ -1021,7 +1021,7 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   private static func driver(
-    runtime: URL, context: String?, dialect: ContainerHostDriver.Dialect = .docker,
+    runtime: URL, context: String?, dialect: ContainerRuntime = .docker,
     directory: URL? = nil
   ) -> ContainerHostDriver {
     // A directory of its own: a sweep writes down what it found unknown there (#284), which another
@@ -1120,13 +1120,13 @@ final class RemoteHostsTests: XCTestCase {
   /// a key is found, a base made before #309 (no context) still serves Docker, and removing one
   /// keeps the others.
   func testAnOlderProjectsBasesAreFoundAndRemovedOneByOne() throws {
-    let base = { (runtime: RemoteWorkrooms.Runtime, context: String?) in
+    let base = { (runtime: ContainerRuntime, context: String?) in
       HostDescriptor(
         driver: runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
         container: Self.record(context: context))
     }
     let old = base(.docker, nil)
-    let key = { (runtime: RemoteWorkrooms.Runtime, context: String?) in
+    let key = { (runtime: ContainerRuntime, context: String?) in
       RemoteHosts.DriverKey(runtime: runtime, context: context)
     }
     // The one-base form a project before #309 has serves Docker on any context, and not Apple.
@@ -1170,7 +1170,8 @@ final class RemoteHostsTests: XCTestCase {
     let (base, pinned) = (UUID(), UUID())
     let descriptor = { (id: UUID, context: String?) in
       HostDescriptor(
-        driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+        driver: HostKind.container(.docker).driver, provisioner: RemoteWorkrooms.provisioner,
+        id: id,
         container: Self.record(context: context))
     }
     let project = Project(
@@ -1199,12 +1200,12 @@ final class RemoteHostsTests: XCTestCase {
   /// this build doesn't know is refused rather than taken down with another.
   func testABoxdHostIsItsOwnDriverKeyNeverDockers() throws {
     let boxd = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
       org: "acme", account: "usr_1")
     let key = RemoteHosts.DriverKey(boxd)
     XCTAssertEqual(key, .boxd(org: "acme", account: "usr_1"))
     XCTAssertNil(key?.runtime)
-    XCTAssertEqual(key?.place, .boxd)
+    XCTAssertEqual(key?.kind, .boxd)
     // A boxd machine logs in as `boxd`, so the clone goes in its home, not the container user's.
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     XCTAssertEqual(
@@ -1237,14 +1238,14 @@ final class RemoteHostsTests: XCTestCase {
     let rows: [(host: HostDescriptor, key: RemoteHosts.DriverKey, socket: String)] = [
       (
         HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+          driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
           org: "acme", account: "usr_1"),
         .boxd(org: "acme", account: "usr_1"),
         BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket
       ),
       (
         HostDescriptor(
-          driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+          driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner,
           id: UUID(), account: "me@x.dev"),
         .exeDev(account: "me@x.dev"),
         ExeDevHostDriver.Configuration().daemonSocket
@@ -1275,10 +1276,10 @@ final class RemoteHostsTests: XCTestCase {
       // why_new=the provisioning test hands its hint in itself; seam=none; no_claim=the wording
       let (_, creating) = try remote.environment(row.key)
       XCTAssertNotNil(creating.credentialHint, "\(row.key)")
-      XCTAssertEqual(creating.credentialHint, row.key.place.credentialHint, "\(row.key)")
+      XCTAssertEqual(creating.credentialHint, row.key.kind.credentialHint, "\(row.key)")
       // Only exe.dev's create adds the repository's integration before the VM.
       XCTAssertEqual(
-        creating.grantRepository != nil, row.key.place == .exeDev, "\(row.key)")
+        creating.grantRepository != nil, row.key.kind == .exeDev, "\(row.key)")
     }
   }
 
@@ -1310,13 +1311,13 @@ final class RemoteHostsTests: XCTestCase {
   /// A remote provider's failed clone says how that provider gives a host GitHub access, the
   /// command included; a container's is Workroom's own relay, which says so itself.
   func testOnlyARemoteProviderSaysHowToGiveItsHostGitHubAccess() {
-    XCTAssertNil(RemoteWorkrooms.Place.container(.docker).credentialHint)
-    XCTAssertNil(RemoteWorkrooms.Place.container(.apple).credentialHint)
+    XCTAssertNil(HostKind.container(.docker).credentialHint)
+    XCTAssertNil(HostKind.container(.apple).credentialHint)
     XCTAssertTrue(
-      RemoteWorkrooms.Place.boxd.credentialHint?.contains("boxd manage integrations connect git")
+      HostKind.boxd.credentialHint?.contains("boxd manage integrations connect git")
         == true)
     XCTAssertTrue(
-      RemoteWorkrooms.Place.exeDev.credentialHint?.contains("exe.dev/integrations") == true)
+      HostKind.exeDev.credentialHint?.contains("exe.dev/integrations") == true)
   }
 
   /// The Details pane's link to a host: each provider's own page for the machine, as its web app
@@ -1324,12 +1325,12 @@ final class RemoteHostsTests: XCTestCase {
   func testADashboardURLIsTheProvidersPageForTheMachine() {
     let machine = "workroom-8a13f76f-01f4-45d1-9065-c14b5cbd86e1"
     XCTAssertEqual(
-      RemoteWorkrooms.Place.boxd.dashboardURL(machine: machine)?.absoluteString,
+      HostKind.boxd.dashboardURL(machine: machine)?.absoluteString,
       "https://app.boxd.sh/machines?m=\(machine)")
     XCTAssertEqual(
-      RemoteWorkrooms.Place.exeDev.dashboardURL(machine: machine)?.absoluteString,
+      HostKind.exeDev.dashboardURL(machine: machine)?.absoluteString,
       "https://exe.dev/vm/\(machine)")
-    XCTAssertNil(RemoteWorkrooms.Place.container(.docker).dashboardURL(machine: machine))
+    XCTAssertNil(HostKind.container(.docker).dashboardURL(machine: machine))
   }
 
   /// After a relaunch a boxd workroom is reached without Docker: its driver is made by name, with
@@ -1344,7 +1345,7 @@ final class RemoteHostsTests: XCTestCase {
         Workroom(
           name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
           host: HostDescriptor(
-            driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+            driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
             org: "acme", account: "usr_1"))
       ])
 
@@ -1364,15 +1365,15 @@ final class RemoteHostsTests: XCTestCase {
   /// account, and its descriptor round-trips through config.
   func testAnExeDevHostIsItsOwnDriverKey() throws {
     let host = HostDescriptor(
-      driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
       account: "me@x.dev")
     let key = try XCTUnwrap(RemoteHosts.DriverKey(host))
     XCTAssertEqual(key, .exeDev(account: "me@x.dev"))
     XCTAssertTrue(key.isRemoteProvider)
-    XCTAssertEqual(key.place, .exeDev)
+    XCTAssertEqual(key.kind, .exeDev)
     XCTAssertEqual(key.account, "me@x.dev")
     XCTAssertNil(key.org)
-    XCTAssertEqual(RemoteWorkrooms.driverName(key), "exedev")
+    XCTAssertEqual(key.kind.driver, "exedev")
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository, on: key), "/home/exedev/r")
     XCTAssertEqual(try RemoteHosts.deletionKey(host), key)
@@ -1400,7 +1401,7 @@ final class RemoteHostsTests: XCTestCase {
           Workroom(
             name: "w", path: "/home/exedev/r", vcsName: "workroom/w", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+              driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner,
               id: id, account: "me@x.dev"))
         ])
     ])
@@ -1418,7 +1419,7 @@ final class RemoteHostsTests: XCTestCase {
     // the sweep can never take a machine config names, whatever a later config read says.
     let pending = try hostsDirectory()
     try PendingMachines.add(
-      .init(id: made, driver: RemoteWorkrooms.boxdDriver, account: "usr_1"), in: pending)
+      .init(id: made, driver: HostKind.boxd.driver, account: "usr_1"), in: pending)
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
@@ -1439,12 +1440,12 @@ final class RemoteHostsTests: XCTestCase {
     } catch {}
     XCTAssertEqual(PendingMachines.entries(in: pending), [], "a recorded machine stayed pending")
     let live = try XCTUnwrap(recorded.all.last { $0.id == made })
-    XCTAssertEqual(live.driver, RemoteWorkrooms.boxdDriver)
+    XCTAssertEqual(live.driver, HostKind.boxd.driver)
     XCTAssertEqual(live.org, "acme")
     XCTAssertEqual(live.account, "usr_1")
     XCTAssertNil(live.container)
     XCTAssertTrue(
-      recorded.all.allSatisfy { $0.driver == RemoteWorkrooms.boxdDriver && $0.account == "usr_1" })
+      recorded.all.allSatisfy { $0.driver == HostKind.boxd.driver && $0.account == "usr_1" })
   }
 
   // Value: protects=a repository the provider won't grant fails the create before a name is
@@ -1900,7 +1901,7 @@ final class RemoteHostsTests: XCTestCase {
       Set(swept.calls.compactMap(\.context)), ["docker orbstack pending", "apple nil pending"])
 
     let boxd = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
       account: "usr_1")
     make().adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: boxd)])
     for _ in 0..<500 where swept.calls.count < 4 { try await Task.sleep(for: .milliseconds(2)) }
@@ -1910,7 +1911,7 @@ final class RemoteHostsTests: XCTestCase {
 
     let id = UUID()
     let recorded = HostDescriptor(
-      driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      driver: HostKind.container(.docker).driver, provisioner: RemoteWorkrooms.provisioner, id: id,
       container: Self.record(context: "orbstack"))
     let remote = make()
     remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
@@ -1938,7 +1939,7 @@ final class RemoteHostsTests: XCTestCase {
     let ids = (0..<5).map { _ in UUID() }
     for id in ids {
       try PendingMachines.add(
-        .init(id: id, driver: RemoteWorkrooms.boxdDriver, account: "usr_1"), in: directory)
+        .init(id: id, driver: HostKind.boxd.driver, account: "usr_1"), in: directory)
     }
     let (first, second, third) = (UUID(), UUID(), UUID())
     var gone: [UUID] = []
@@ -1971,9 +1972,9 @@ final class RemoteHostsTests: XCTestCase {
     let (old, new) = (UUID(), UUID())
     try PendingMachines.add(
       .init(
-        id: old, driver: RemoteWorkrooms.boxdDriver, unrecordedIn: UUID(), made: .distantPast),
+        id: old, driver: HostKind.boxd.driver, unrecordedIn: UUID(), made: .distantPast),
       in: directory)
-    try PendingMachines.add(.init(id: new, driver: RemoteWorkrooms.boxdDriver), in: directory)
+    try PendingMachines.add(.init(id: new, driver: HostKind.boxd.driver), in: directory)
     try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
     defer {
       try? FileManager.default.setAttributes(
@@ -1996,14 +1997,14 @@ final class RemoteHostsTests: XCTestCase {
     let (earlier, fresh, recorded) = (UUID(), UUID(), UUID())
     try PendingMachines.add(
       .init(
-        id: earlier, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID(),
+        id: earlier, driver: HostKind.boxd.driver, account: "usr_1", unrecordedIn: UUID(),
         made: .distantPast),
       in: directory)
     try PendingMachines.add(
-      .init(id: fresh, driver: RemoteWorkrooms.exeDevDriver, account: "me@x.dev"), in: directory)
+      .init(id: fresh, driver: HostKind.exeDev.driver, account: "me@x.dev"), in: directory)
     try PendingMachines.add(
       .init(
-        id: recorded, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID(),
+        id: recorded, driver: HostKind.boxd.driver, account: "usr_1", unrecordedIn: UUID(),
         made: .distantPast),
       in: directory)
     let destroyed = Swept()
@@ -2012,7 +2013,7 @@ final class RemoteHostsTests: XCTestCase {
         MachineDriver(made: UUID(), onDestroy: { destroyed.add("\(key) \($0)", []) })
       }, pendingIn: directory)
     let host = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: recorded,
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: recorded,
       account: "usr_1")
 
     remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
@@ -2036,7 +2037,7 @@ final class RemoteHostsTests: XCTestCase {
     let id = UUID()
     try PendingMachines.add(
       .init(
-        id: id, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID(),
+        id: id, driver: HostKind.boxd.driver, account: "usr_1", unrecordedIn: UUID(),
         made: .distantPast), in: directory)
     try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
     defer {
@@ -2049,7 +2050,7 @@ final class RemoteHostsTests: XCTestCase {
         MachineDriver(made: UUID(), onDestroy: { destroyed.add("\($0)", []) })
       }, pendingIn: directory)
     let host = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
       account: "usr_1")
 
     remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
@@ -2306,7 +2307,7 @@ final class RemoteHostsTests: XCTestCase {
           runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker)
       }, sweepDriver: { _, _, _, _ in [] })
     let (docker, apple) = (UUID(), UUID())
-    let host = { (id: UUID, runtime: RemoteWorkrooms.Runtime) in
+    let host = { (id: UUID, runtime: ContainerRuntime) in
       HostDescriptor(
         driver: runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: id,
         container: Self.record(context: nil))
@@ -2330,7 +2331,7 @@ final class RemoteHostsTests: XCTestCase {
   /// Why a container runtime's New Workroom entry is off, in the order a user has to fix it:
   /// Apple's needs Apple silicon and macOS 26 before installing it means anything (#309).
   func testARuntimeEntrySaysWhyItIsOff() {
-    let ready = { (runtime: RemoteWorkrooms.Runtime) in
+    let ready = { (runtime: ContainerRuntime) in
       RemoteWorkrooms.unavailability(
         of: runtime, installed: true, appleSilicon: true, macOS26: true, signedIn: true)
     }

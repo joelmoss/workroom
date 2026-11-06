@@ -1,27 +1,5 @@
 import Foundation
 
-/// A provider whose hosts Workroom creates with host options (#575): boxd and exe.dev. Container
-/// workrooms take their image and size from devcontainer.json (ADR 0060); SSH hosts aren't made.
-public enum HostProvider: String, Codable, Hashable, Sendable, CaseIterable {
-  case boxd
-  case exeDev
-
-  public var displayName: String {
-    switch self {
-    case .boxd: "boxd"
-    case .exeDev: "exe.dev"
-    }
-  }
-
-  /// What the provider starts a host from when a level names an image.
-  public var imageKind: HostImageKind {
-    switch self {
-    case .boxd: .snapshot
-    case .exeDev: .containerImage
-    }
-  }
-}
-
 /// What a provider's host image is (#575), and so what the app calls it and whether it can list
 /// the account's own.
 public enum HostImageKind: Sendable {
@@ -129,11 +107,11 @@ public struct HostOptions: Codable, Hashable, Sendable {
   }
 
   /// Resolves each key on its own: `create`, then `project`, then `settings`, then the provider's
-  /// own default.
+  /// own default. Nil for a kind that takes no host options (`HostKind.takesHostOptions`).
   public static func resolve(
-    for provider: HostProvider, create: HostOptions?, project: HostOptions?,
+    for provider: HostKind, create: HostOptions?, project: HostOptions?,
     settings: HostOptions?
-  ) -> Resolution {
+  ) -> Resolution? {
     let levels: [(Level, HostOptions?)] = [
       (.create, create), (.project, project), (.settings, settings),
     ]
@@ -158,6 +136,8 @@ public struct HostOptions: Codable, Hashable, Sendable {
       return Resolution(
         image: image, cpu: walk(\.cpu), memory: none, disk: none,
         sizeTakenBySnapshot: image.value != nil)
+    case .container, .ssh:
+      return nil
     }
   }
 }

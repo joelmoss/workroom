@@ -82,10 +82,15 @@ public struct ContainerHostRecord: Codable, Hashable, Sendable {
 /// only presence and `state`. Decoded as leniently as the CLI reads it: any non-null value counts
 /// as present, and each field that does not decode is nil, so a malformed descriptor still keeps a
 /// remote workroom away from every local action instead of failing the whole listing.
+///
+/// `driver` and `state` stay strings, as config.json and the CLI carry them (ADR 0014); code reads
+/// them through `kind` and `lifecycle` (ADR 0066), never by comparing the strings.
 public struct HostDescriptor: Codable, Hashable, Sendable {
+  /// Where the host is in its life (`lifecycle`): nil while serving.
   public var state: String? = nil
-  /// Which `HostDriver` made the host: `container` or `apple-container` (`ContainerHostDriver`),
-  /// or `boxd` (`BoxdHostDriver`, #356).
+  /// Which `HostDriver` made the host (`kind`): `container` or `apple-container`
+  /// (`ContainerHostDriver`), `boxd` (`BoxdHostDriver`, #356), `exedev` (`ExeDevHostDriver`, #259)
+  /// or `ssh` (`SSHHostDriver`, #378). nil on a record from before the field, which is Docker's.
   public var driver: String? = nil
   /// The bundle ID of the build that made the host, whose key and labels it carries: a Dev and a
   /// Nightly app share config but not keys, so each adopts only its own hosts.
@@ -126,7 +131,18 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   public var isRelayed: Bool { credentials == "relay" }
 
-  public var isDestroyed: Bool { state == "destroyed" }
+  public var isDestroyed: Bool { lifecycle == .destroyed }
+
+  /// The kind of host `driver` names, or nil for a driver this build doesn't know and for a record
+  /// naming none (which `RemoteHosts.deletionKey` alone takes for Docker's).
+  public var kind: HostKind? { driver.flatMap(HostKind.init(driver:)) }
+
+  /// `state`, typed. Setting it writes the string, so an unknown state read here is written back
+  /// as it was.
+  public var lifecycle: HostLifecycle {
+    get { HostLifecycle(state: state) }
+    set { state = newValue.state }
+  }
 
   enum CodingKeys: String, CodingKey {
     case state, driver, provisioner, id, repository, path, container, bases, credentials, org

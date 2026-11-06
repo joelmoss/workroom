@@ -137,7 +137,7 @@ struct NewWorkroomDialog: View {
       }
       .buttonStyle(.plain)
       .accessibilityIdentifier("newWorkroom.place.\(place.id)")
-      if place.remote?.hostProvider != nil {
+      if place.remote?.takesHostOptions == true {
         Button("Configure…") {
           openOptions(place, in: project, split: PickerSplitIntent.requestedFromCurrentModifiers())
         }
@@ -151,7 +151,7 @@ struct NewWorkroomDialog: View {
 
   /// A boxd or exe.dev place's Configure… (#575): the create waits on its host options panel.
   private func openOptions(_ place: WorkroomPlace, in project: Project, split: Bool = false) {
-    guard let remote = place.remote, remote.hostProvider != nil, isUsable(place, in: project)
+    guard let remote = place.remote, remote.takesHostOptions, isUsable(place, in: project)
     else { return }
     onClose()
     store.pendingHostOptions = PendingHostOptions(
@@ -227,7 +227,7 @@ struct NewWorkroomDialog: View {
         if WorkroomPlace.all.indices.contains(highlighted) {
           let place = WorkroomPlace.all[highlighted]
           // ⌘⏎ opens a boxd or exe.dev place's Configure… (#575); elsewhere it creates, as before.
-          if press.modifiers.contains(.command), place.remote?.hostProvider != nil {
+          if press.modifiers.contains(.command), place.remote?.takesHostOptions == true {
             openOptions(place, in: placing, split: split)
           } else {
             pick(place, in: placing, split: split)
@@ -345,30 +345,23 @@ struct NewWorkroomPresenter: ViewModifier {
 /// or a boxd machine.
 enum WorkroomPlace: Hashable {
   case thisMac
-  case remote(RemoteWorkrooms.Place)
+  case remote(HostKind)
 
   static var all: [WorkroomPlace] {
-    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .remote(.container($0)) }
-      + RemoteWorkrooms.Place.remoteProviders.map { .remote($0) }
+    [.thisMac] + ContainerRuntime.allCases.map { .remote(.container($0)) }
+      + HostKind.remoteProviders.map { .remote($0) }
   }
 
-  /// The remote place this is, or nil for this Mac.
-  var remote: RemoteWorkrooms.Place? {
-    if case .remote(let place) = self { return place }
+  /// The kind of host this is, or nil for this Mac.
+  var remote: HostKind? {
+    if case .remote(let kind) = self { return kind }
     return nil
   }
 
-  var name: String { remote?.displayName ?? "This Mac" }
+  var name: String { CreationRun.destination(of: remote) }
 
-  var id: String {
-    switch self {
-    case .thisMac: "thisMac"
-    case .remote(.container(let runtime)): runtime.rawValue
-    case .remote(.boxd): RemoteWorkrooms.boxdDriver
-    case .remote(.exeDev): RemoteWorkrooms.exeDevDriver
-    case .remote(.ssh): RemoteWorkrooms.sshDriver
-    }
-  }
+  /// The descriptor's `driver` for a host, which accessibility identifiers name.
+  var id: String { remote?.driver ?? "thisMac" }
 
   var icon: String {
     switch self {

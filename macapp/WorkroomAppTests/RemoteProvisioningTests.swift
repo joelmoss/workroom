@@ -32,13 +32,13 @@ final class RemoteProvisioningHostKindTests: XCTestCase {
   /// exedev); fails_when=a kind's word changes or two kinds swap; why_new=tests pass a literal
   /// hostKind; seam=none; no_claim=the word reaching a script
   func testEachKindOfHostHasItsDocumentedWord() {
-    XCTAssertEqual(RemoteProvisioning.hostKind(.init(runtime: .docker)), "docker")
-    XCTAssertEqual(
-      RemoteProvisioning.hostKind(.init(runtime: .docker, context: "colima")), "docker")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.init(runtime: .apple)), "apple")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.boxd(org: nil, account: nil)), "boxd")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.exeDev(account: nil)), "exedev")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.ssh(destination: "myserver")), "ssh")
+    typealias Key = RemoteHosts.DriverKey
+    XCTAssertEqual(Key(runtime: .docker).kind.workroomHost, "docker")
+    XCTAssertEqual(Key(runtime: .docker, context: "colima").kind.workroomHost, "docker")
+    XCTAssertEqual(Key(runtime: .apple).kind.workroomHost, "apple")
+    XCTAssertEqual(Key.boxd(org: nil, account: nil).kind.workroomHost, "boxd")
+    XCTAssertEqual(Key.exeDev(account: nil).kind.workroomHost, "exedev")
+    XCTAssertEqual(Key.ssh(destination: "myserver").kind.workroomHost, "ssh")
   }
 }
 

@@ -72,7 +72,6 @@ public final class SSHHostDriver: HostTerminalDriver, Sendable {
     }
   }
 
-  public static let driverName = "ssh"
   public let configuration: Configuration
   public let directory: URL
   private let runner: any StatusCommandRunning

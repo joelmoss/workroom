@@ -36,7 +36,7 @@ struct TerminalTarget: Identifiable, Hashable {
   var machineName: String? = nil
   /// Where a remote workroom's host is, for its icon: nil for a workroom on this Mac, and for one
   /// whose record names no driver this build knows.
-  var hostPlace: RemoteWorkrooms.Place? = nil
+  var hostPlace: HostKind? = nil
   /// A remote workroom's own id (`HostDescriptor.workroomID`): the same on every Mac, where `id`
   /// holds this Mac's project path (#255).
   var remoteWorkroomID: UUID? = nil
@@ -151,7 +151,7 @@ extension Workroom {
       id: TerminalTarget.workroomID(project: projectPath, name: name),
       title: displayName, path: path, unavailability: unavailability,
       remoteHost: reachableHost, remoteNote: remoteNote, hostKind: host?.kindDescription,
-      machineName: host?.machineName, hostPlace: host.flatMap(RemoteHosts.DriverKey.init)?.place,
+      machineName: host?.machineName, hostPlace: host.flatMap(RemoteHosts.DriverKey.init)?.kind,
       remoteWorkroomID: host?.workroomID)
   }
 
@@ -164,13 +164,13 @@ extension Workroom {
         "Another Workroom build made it (\(host.provisioner ?? "unknown")), and only that build "
         + "can open it."
     }
-    switch host.state {
-    case "creating":
+    switch host.lifecycle {
+    case .creating:
       return "It isn't ready: it is being created, or creating it was interrupted. If nothing is "
         + "creating it, delete it."
-    case "failed":
+    case .failed:
       return "Creating it failed, and part of it may still be running. Delete it to finish."
-    default:
+    case .serving, .destroyed, .unknown:
       // Serving, but naming no host to open.
       return "Its record names no host to open. Delete it."
     }
@@ -178,13 +178,14 @@ extension Workroom {
 
   /// Whether its host is a Docker or Apple container on this Mac, not a remote provider's machine.
   var isContainer: Bool { host.flatMap(RemoteHosts.DriverKey.init)?.runtime != nil }
-  var isSSH: Bool { host?.driver == RemoteWorkrooms.sshDriver }
+  var isSSH: Bool { host?.kind == .ssh }
 
-  /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only one this
-  /// build owns (`RemoteWorkrooms.ownsHost`): another build's container takes its key.
+  /// Only a serving host is reachable: one creating, failed, destroyed or in a state this build
+  /// doesn't know is not. Only one this build owns (`RemoteWorkrooms.ownsHost`): another build's
+  /// container takes its key. An SSH host's destination must check out (`DriverKey`).
   var reachableHost: UUID? {
-    guard let host, host.state == nil, RemoteWorkrooms.ownsHost(host),
-      host.driver != RemoteWorkrooms.sshDriver || RemoteHosts.DriverKey(host) != nil
+    guard let host, host.lifecycle == .serving, RemoteWorkrooms.ownsHost(host),
+      host.kind != .ssh || RemoteHosts.DriverKey(host) != nil
     else { return nil }
     return host.id
   }
@@ -246,17 +247,16 @@ extension HostDescriptor {
   /// Mac, on Docker (naming its context when it has one) or Apple's runtime, or a remote provider by
   /// its driver's name.
   var kindDescription: String {
-    if driver == RemoteWorkrooms.sshDriver {
+    switch kind {
+    case .ssh:
       return "SSH host · \(sshDestination ?? "unknown host")"
-    }
-    switch driver.flatMap(RemoteWorkrooms.Runtime.init(rawValue:)) {
-    case .docker:
+    case .container(.docker):
       let context = container?.context.map { " (\($0))" } ?? ""
       return "Docker container\(context) on this Mac"
-    case .apple:
+    case .container(.apple):
       return "Apple container on this Mac"
-    case nil:
-      let provider = RemoteHosts.DriverKey(self)?.place.displayName ?? driver
+    case .boxd, .exeDev, nil:
+      let provider = RemoteHosts.DriverKey(self)?.kind.displayName ?? driver
       return provider.map { "Remote workroom on \($0)" } ?? "Remote workroom"
     }
   }
@@ -264,7 +264,7 @@ extension HostDescriptor {
   /// The name the host's provider lists it under, so it can be found in boxd's or exe.dev's
   /// dashboard, or in `docker ps`: every driver names a host `workroom-<id>`.
   var machineName: String? {
-    driver == RemoteWorkrooms.sshDriver
+    kind == .ssh
       ? sshDestination
       : (isDestroyed ? nil : id.map(ContainerHostDriver.containerName))
   }

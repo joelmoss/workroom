@@ -16,7 +16,7 @@ protocol RemoteSetup: AnyObject {
 /// The provider setup sheet on screen in this window. Keyed on the provider: every create waiting
 /// on it shares the one sheet (R2, #483), and its Create Workroom carries all of them on.
 struct PendingRemoteSetup: Identifiable {
-  let place: RemoteWorkrooms.Place
+  let place: HostKind
   let setup: any RemoteSetup
   var id: String { place.displayName }
 }
@@ -26,13 +26,13 @@ struct PendingRemoteSetup: Identifiable {
 /// raising a second sheet. Each waiting create resumes with true on Create Workroom, false on Cancel.
 @MainActor
 final class RemoteSetupWait {
-  let place: RemoteWorkrooms.Place
+  let place: HostKind
   let setup: any RemoteSetup
   /// The window the first create started in, which shows the sheet.
   weak var window: AppStore?
   var waiting: [CheckedContinuation<Bool, Never>] = []
 
-  init(place: RemoteWorkrooms.Place, setup: any RemoteSetup, window: AppStore) {
+  init(place: HostKind, setup: any RemoteSetup, window: AppStore) {
     self.place = place
     self.setup = setup
     self.window = window

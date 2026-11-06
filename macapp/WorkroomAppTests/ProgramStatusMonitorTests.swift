@@ -433,7 +433,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
           Workroom(
             name: "docker", path: "/workspaces/app", vcsName: "workroom/docker", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.Runtime.docker.rawValue,
+              driver: ContainerRuntime.docker.rawValue,
               provisioner: RemoteWorkrooms.provisioner, id: hostID))
         ])
     ]

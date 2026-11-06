@@ -852,7 +852,7 @@ final class ExeDevHostDriverTests: XCTestCase {
       // fails_when=destroy skips the forget, or forgets a VM it failed to remove;
       // why_new=only a create's rollback is checked; seam=none
       try PendingMachines.add(
-        .init(id: id, driver: RemoteWorkrooms.exeDevDriver), in: driver.directory)
+        .init(id: id, driver: HostKind.exeDev.driver), in: driver.directory)
       defer {
         XCTAssertEqual(
           PendingMachines.entries(in: driver.directory).map(\.id), gone ? [] : [id], printed)
@@ -928,7 +928,7 @@ final class ExeDevHostDriverTests: XCTestCase {
       // Pending too, with its account, so the launch sweep takes it if no record ever does (#373).
       let pending = PendingMachines.entries(in: driver.directory)
       XCTAssertEqual(pending.map(\.id), [id])
-      XCTAssertEqual(pending.map(\.driver), [RemoteWorkrooms.exeDevDriver])
+      XCTAssertEqual(pending.map(\.driver), [HostKind.exeDev.driver])
       XCTAssertEqual(pending.map(\.account), ["me@x.dev"])
       XCTAssertNotNil(pending.first?.made, "an entry was written down with no age")
     }

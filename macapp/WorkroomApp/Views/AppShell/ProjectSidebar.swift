@@ -224,13 +224,13 @@ struct ProjectSidebar: View {
     }
     newLocalWorkroomButton(Text("This Mac"), in: project)
     Section("Local containers") {
-      ForEach(RemoteWorkrooms.Runtime.allCases, id: \.self) { runtime in
+      ForEach(ContainerRuntime.allCases, id: \.self) { runtime in
         newRemoteWorkroomButton(at: .container(runtime), in: project)
       }
     }
     Section("Remote") {
-      ForEach(RemoteWorkrooms.Place.remoteProviders, id: \.self) { place in
-        if place.hostProvider != nil {
+      ForEach(HostKind.remoteProviders, id: \.self) { place in
+        if place.takesHostOptions {
           hostOptionsPlaceMenu(at: place, in: project)
         } else {
           newRemoteWorkroomButton(at: place, in: project)
@@ -241,7 +241,7 @@ struct ProjectSidebar: View {
 
   /// boxd or exe.dev (#575): a submenu with Create, at once with the resolved host options, and
   /// Configure…, which opens one create's host options first.
-  private func hostOptionsPlaceMenu(at place: RemoteWorkrooms.Place, in project: Project)
+  private func hostOptionsPlaceMenu(at place: HostKind, in project: Project)
     -> some View
   {
     let reason = RemoteWorkrooms.unavailability(of: place)
@@ -274,7 +274,7 @@ struct ProjectSidebar: View {
   /// project's GitHub origin. One that can't be used now says why in its title. `title` replaces
   /// the place's name, as Create does inside a place's own submenu.
   private func newRemoteWorkroomButton(
-    at place: RemoteWorkrooms.Place, in project: Project, title: String? = nil
+    at place: HostKind, in project: Project, title: String? = nil
   ) -> some View {
     #if DEBUG
       Self.menuEvaluations += 1
@@ -360,7 +360,7 @@ struct ProjectSidebar: View {
       CreateRowButton(
         help:
           "New workroom in \(project.displayName), on this Mac, in a local container or on "
-          + RemoteWorkrooms.Place.remoteProviders.map(\.displayName).joined(separator: " or "),
+          + HostKind.remoteProviders.map(\.displayName).joined(separator: " or "),
         places: { newWorkroomPlaces(in: project) }
       )
     }

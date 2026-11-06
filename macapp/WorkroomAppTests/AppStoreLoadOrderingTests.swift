@@ -234,7 +234,7 @@ final class AppStoreLoadOrderingTests: XCTestCase {
     finished.isInverted = true
     // The create's pane opened beside the anchor on the click (#483); the landing names it.
     let run = CreationRun(
-      project: projects(["anchor"])[0], kind: .local, splitAnchor: anchor,
+      project: projects(["anchor"])[0], kind: nil, splitAnchor: anchor,
       previousSelection: anchor)
     store.register(run)
     store.insertWorkroomSplit(.creation(project: path, id: run.id), beside: anchor, edge: .right)

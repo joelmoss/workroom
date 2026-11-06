@@ -63,7 +63,7 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
   }
 
   /// The host descriptor's `driver` for this provider's hosts.
-  public static let driverName = "exedev"
+  public static let driverName = HostKind.exeDev.driver
   /// The user every exe.dev VM logs in as (exeuntu's `exe.dev/login-user`).
   public static let user = "exedev"
   public static let stateDirectory = "/home/\(user)/.local/state/workroom"

@@ -317,7 +317,7 @@ final class BoxdHostDriverTests: XCTestCase {
       let driver = driver(cli)
       cli.pendingIn = driver.directory
       _ = try? await driver.create()
-      XCTAssertEqual(cli.pendingAt("machine new")?.map(\.driver), [RemoteWorkrooms.boxdDriver])
+      XCTAssertEqual(cli.pendingAt("machine new")?.map(\.driver), [HostKind.boxd.driver])
       XCTAssertNotNil(
         cli.pendingAt("machine new")?.first?.made, "an entry was written down with no age")
       XCTAssertEqual(PendingMachines.entries(in: driver.directory).count, removed ? 0 : 1)
@@ -337,7 +337,7 @@ final class BoxdHostDriverTests: XCTestCase {
       let driver = driver(cli)
       let id = UUID()
       try PendingMachines.add(
-        .init(id: id, driver: RemoteWorkrooms.boxdDriver), in: driver.directory)
+        .init(id: id, driver: HostKind.boxd.driver), in: driver.directory)
       _ = try? await driver.destroy(.remote(id))
       XCTAssertEqual(
         PendingMachines.entries(in: driver.directory).map(\.id), removed ? [] : [id])

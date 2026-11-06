@@ -3,41 +3,21 @@ import Foundation
 import HostDrivers
 import WorkroomDomain
 
-/// What kind of workroom a create makes, which decides its step plan and where it goes.
-enum CreationKind: Equatable {
-  case local
-  case container(RemoteWorkrooms.Runtime)
-  case boxd
-  case exeDev
-  case ssh
-
-  init(_ place: RemoteWorkrooms.Place) {
-    switch place {
-    case .container(let runtime): self = .container(runtime)
-    case .boxd: self = .boxd
-    case .exeDev: self = .exeDev
-    case .ssh: self = .ssh
-    }
-  }
-
+/// What a create makes, which decides its step plan and where it goes: a workroom on this Mac
+/// (`kind` nil), or on a host of `kind`.
+extension CreationRun {
   /// Where the workroom goes, as the pane's subtitle and the provisional sidebar row say it.
-  var destination: String {
-    switch self {
-    case .local: "This Mac"
-    case .container(let runtime): RemoteWorkrooms.Place.container(runtime).displayName
-    case .boxd: RemoteWorkrooms.Place.boxd.displayName
-    case .exeDev: RemoteWorkrooms.Place.exeDev.displayName
-    case .ssh: RemoteWorkrooms.Place.ssh.displayName
-    }
+  nonisolated static func destination(of kind: HostKind?) -> String {
+    kind?.displayName ?? "This Mac"
   }
 
-  /// The steps a create of this kind runs, in order (spec section 3), all pending. A remote step's
+  /// The steps a create of `kind` runs, in order (spec section 3), all pending. A remote step's
   /// id is its `ProvisioningProgress.Step`'s, which is how a driver's report finds its row.
-  var plan: [CreationStep] {
+  nonisolated static func plan(for kind: HostKind?) -> [CreationStep] {
     typealias Step = ProvisioningProgress.Step
     let remote: [(Step, String)]
-    switch self {
-    case .local:
+    switch kind {
+    case nil:
       return [
         CreationStep(id: "fetch", title: "Fetch base branch"),
         CreationStep(id: "worktree", title: "Create worktree"),
@@ -87,7 +67,7 @@ enum CreationKind: Equatable {
   /// The rows that show only when their step runs: a container create's devcontainer.json rows
   /// (#308), and a boxd create's restart, which only a snapshot needs (#575). A step's `begin`
   /// puts its row back.
-  static let onDemand: Set<String> = Set(
+  nonisolated static let onDemand: Set<String> = Set(
     ([.config, .initialize, .build, .restart] + DevContainerConfig.Hook.inContainer.map(\.step))
       .map(\.rawValue))
 }
@@ -191,7 +171,8 @@ enum CreationStart: String, Equatable {
 final class CreationRun: ObservableObject, Identifiable {
   let id: UUID
   let project: Project
-  let kind: CreationKind
+  /// The kind of host the workroom goes on, or nil for one on this Mac.
+  let kind: HostKind?
   /// The pane the create was opened beside, if it was opened as a split.
   let splitAnchor: SidebarID?
   /// What was selected before the create took the selection, for Close to go back to.
@@ -234,7 +215,7 @@ final class CreationRun: ObservableObject, Identifiable {
   /// a create question (`startCommit`) fetches nothing, so it shows `carriedFetch`, the fetch row of
   /// the try whose question it answers: one create, one fetch.
   init(
-    id: UUID = UUID(), project: Project, kind: CreationKind, splitAnchor: SidebarID?,
+    id: UUID = UUID(), project: Project, kind: HostKind?, splitAnchor: SidebarID?,
     previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
     skipsSetup: Bool = false, skipsDevContainer: Bool = false, start: CreationStart = .ask,
     startCommit: String? = nil, carriedFetch: CreationStep? = nil,
@@ -252,12 +233,12 @@ final class CreationRun: ObservableObject, Identifiable {
     self.startCommit = startCommit
     self.now = now
     self.startedAt = now()
-    self.steps = kind.plan.filter {
+    self.steps = Self.plan(for: kind).filter {
       // A skipped script keeps its row, to say so: it may be one only the base commit has.
       (hasSetupScript || skipsSetup || $0.id != "script")
         && (hasIncludeFile || $0.id != ProvisioningProgress.Step.include.rawValue)
         && (start == .localWithChanges || $0.id != "changes")
-        && !CreationKind.onDemand.contains($0.id)
+        && !Self.onDemand.contains($0.id)
     }
     if let carriedFetch, let index = steps.firstIndex(where: { $0.id == carriedFetch.id }) {
       steps[index] = carriedFetch
@@ -445,7 +426,7 @@ final class CreationRun: ObservableObject, Identifiable {
   /// A step of the plan left out of `steps` (the setup script's or the include step's), put back in
   /// its place in the plan.
   private func restore(_ stepID: String) -> Int? {
-    let plan = kind.plan
+    let plan = Self.plan(for: kind)
     guard let position = plan.firstIndex(where: { $0.id == stepID }) else { return nil }
     let later = Set(plan[(position + 1)...].map(\.id))
     let index = steps.firstIndex { later.contains($0.id) } ?? steps.endIndex

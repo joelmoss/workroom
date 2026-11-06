@@ -1,4 +1,5 @@
 import HostDrivers
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -11,7 +12,7 @@ import XCTest
 ///   TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroomd-linux-aarch64> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/AppleContainerIntegrationTests
 final class AppleContainerIntegrationTests: ContainerIntegrationTestCase {
-  override var dialect: ContainerHostDriver.Dialect { .apple }
+  override var dialect: ContainerRuntime { .apple }
   override var optIn: String { "WR_APPLE_CONTAINER_TESTS" }
 
   func testAContainerServesAndDestroyingItLeavesNothing() async throws {

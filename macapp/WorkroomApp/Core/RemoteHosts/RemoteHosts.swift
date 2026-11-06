@@ -16,48 +16,51 @@ final class RemoteHosts: @unchecked Sendable {
   static let shared = RemoteHosts()
 
   private let lock = NSLock()
-  /// Which driver a host is in (#309, #356): a container runtime on this Mac, and for Docker the
-  /// context it names (nil names none); or a boxd org (nil is the account's own) and account.
+  /// Which driver a host is in (#309, #356): its kind (`HostKind`), and who that driver acts for.
+  /// A container runtime on this Mac, and for Docker the context it names (nil names none); a boxd
+  /// org (nil is the account's own) and account; an exe.dev account; or an SSH destination.
   enum DriverKey: Hashable, Sendable {
-    case container(RemoteWorkrooms.Runtime, context: String?)
+    case container(ContainerRuntime, context: String?)
     case boxd(org: String?, account: String?)
     /// An exe.dev account, `whoami`'s email (#259).
     case exeDev(account: String?)
     case ssh(destination: String)
 
-    /// The driver a recorded host is in, or nil for a descriptor of no driver this build knows.
+    /// The driver a recorded host is in, or nil for a descriptor of no driver this build knows, and
+    /// for an SSH host whose destination doesn't check out.
     init?(_ descriptor: HostDescriptor) {
-      if descriptor.driver == RemoteWorkrooms.sshDriver {
+      switch descriptor.kind {
+      case .ssh:
         guard let destination = descriptor.sshDestination,
           (try? SSHHostDriver.validateDestination(destination)) != nil
         else { return nil }
         self = .ssh(destination: destination)
-        return
+      case .boxd: self = .boxd(org: descriptor.org, account: descriptor.account)
+      case .exeDev: self = .exeDev(account: descriptor.account)
+      case .container(let runtime):
+        self.init(runtime: runtime, context: descriptor.container?.context)
+      case nil: return nil
       }
-      if descriptor.driver == RemoteWorkrooms.boxdDriver {
-        self = .boxd(org: descriptor.org, account: descriptor.account)
-        return
-      }
-      if descriptor.driver == RemoteWorkrooms.exeDevDriver {
-        self = .exeDev(account: descriptor.account)
-        return
-      }
-      guard let runtime = RemoteWorkrooms.Runtime(rawValue: descriptor.driver ?? "") else {
-        return nil
-      }
-      self.init(runtime: runtime, context: descriptor.container?.context)
     }
 
-    init(runtime: RemoteWorkrooms.Runtime = .docker, context: String? = nil) {
+    init(runtime: ContainerRuntime = .docker, context: String? = nil) {
       // Apple's runtime has no contexts.
       self = .container(runtime, context: runtime == .docker ? context : nil)
     }
 
-    /// Whether the key names a remote provider rather than a container runtime on this Mac. A
-    /// remote provider's workroom takes git credentials from the provider, never the Mac's relay,
-    /// is reached by name with nothing to adopt, and runs whether or not this Mac has a container
-    /// runtime (#259).
-    var isRemoteProvider: Bool { runtime == nil }
+    /// The kind of host this driver makes and reaches.
+    var kind: HostKind {
+      switch self {
+      case .container(let runtime, _): .container(runtime)
+      case .boxd: .boxd
+      case .exeDev: .exeDev
+      case .ssh: .ssh
+      }
+    }
+
+    /// Whether the key names a remote provider rather than a container runtime on this Mac
+    /// (`HostKind.isRemoteProvider`).
+    var isRemoteProvider: Bool { kind.isRemoteProvider }
 
     /// The user its driver's hosts log in as, whose home holds the clone.
     var loginUser: String {
@@ -69,9 +72,9 @@ final class RemoteHosts: @unchecked Sendable {
       }
     }
 
-    /// The container runtime, or nil for boxd.
-    var runtime: RemoteWorkrooms.Runtime? {
-      if case .container(let runtime, _) = self { return runtime }
+    /// The container runtime, or nil for a remote provider.
+    var runtime: ContainerRuntime? {
+      if case .container(let runtime) = kind { return runtime }
       return nil
     }
 
@@ -90,16 +93,6 @@ final class RemoteHosts: @unchecked Sendable {
       switch self {
       case .boxd(_, let account), .exeDev(let account): account
       case .container, .ssh: nil
-      }
-    }
-
-    /// Where this key's workrooms are made.
-    var place: RemoteWorkrooms.Place {
-      switch self {
-      case .container(let runtime, _): .container(runtime)
-      case .boxd: .boxd
-      case .exeDev: .exeDev
-      case .ssh: .ssh
       }
     }
   }
@@ -310,7 +303,7 @@ final class RemoteHosts: @unchecked Sendable {
     let recorded = descriptors.filter {
       DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
     }
-    for descriptor in recorded where descriptor.driver == RemoteWorkrooms.sshDriver {
+    for descriptor in recorded where descriptor.kind == .ssh {
       guard let key = DriverKey(descriptor), let home = descriptor.sshHome else { continue }
       do { try (driver(key) as? SSHHostDriver)?.adopt(home: home) } catch {
         Self.logger.error("SSH host record: \(error.localizedDescription, privacy: .public)")
@@ -336,7 +329,7 @@ final class RemoteHosts: @unchecked Sendable {
     // A runtime with a container a create began, which a crash may have left before config
     // recorded it (#284).
     let marked = (pendingIn.map(ContainerHostDriver.pending(in:)) ?? []).map {
-      DriverKey(runtime: $0.dialect == .apple ? .apple : .docker, context: $0.context)
+      DriverKey(runtime: $0.dialect, context: $0.context)
     }
     // A boxd or exe.dev machine a create began, which config may not have recorded (#373).
     let recordedIDs = Set(recorded.compactMap(\.id))
@@ -428,10 +421,10 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
-  /// The driver key a new workroom at `place` wants: a container runtime's (`key(for:)` below), or
-  /// for boxd the org and account it is signed in to now (#356).
-  func key(for place: RemoteWorkrooms.Place) async throws -> DriverKey {
-    switch place {
+  /// The driver key a new workroom on a host of `kind` wants: a container runtime's (`key(for:)`
+  /// below), or for boxd the org and account it is signed in to now (#356).
+  func key(for kind: HostKind) async throws -> DriverKey {
+    switch kind {
     case .ssh:
       throw HostDriverError.invalidConfiguration("Choose an SSH host first")
     case .container(let runtime): return try await key(for: runtime)
@@ -454,7 +447,7 @@ final class RemoteHosts: @unchecked Sendable {
 
   /// The driver key a new workroom on `runtime` wants (#309): Apple's runtime has one, and Docker's
   /// is the context the CLI uses now, which the new host is pinned to.
-  func key(for runtime: RemoteWorkrooms.Runtime) async throws -> DriverKey {
+  func key(for runtime: ContainerRuntime) async throws -> DriverKey {
     guard runtime == .docker else { return DriverKey(runtime: runtime) }
     return DriverKey(runtime: .docker, context: try await containerDriver().currentContext())
   }
@@ -470,7 +463,7 @@ final class RemoteHosts: @unchecked Sendable {
     let environment = RemoteProvisioning.Environment(
       driver: driver, daemonSocket: driver.daemonSocket,
       gitHubToken: key.isRemoteProvider ? nil : CredentialRelay.gitHubToken,
-      credentialHint: key.place.credentialHint,
+      credentialHint: key.kind.credentialHint,
       grantRepository: (driver as? ExeDevHostDriver).map { exeDev in
         { @Sendable (repository: GitHubRepository) async throws in
           try await exeDev.grantGitHub(
@@ -807,7 +800,7 @@ final class RemoteHosts: @unchecked Sendable {
     guard case .remote(let id) = host else { return false }
     let key = lock.withLock { keys[id] }
     if let key, key.isRemoteProvider { return false }
-    return (key?.runtime.map { [$0] } ?? RemoteWorkrooms.Runtime.allCases).allSatisfy {
+    return (key?.runtime.map { [$0] } ?? ContainerRuntime.allCases).allSatisfy {
       Self.executable(for: $0) == nil
     }
   }
@@ -875,7 +868,7 @@ final class RemoteHosts: @unchecked Sendable {
   }
 
   /// `runtime`'s CLI on this Mac, or nil when it isn't installed.
-  static func executable(for runtime: RemoteWorkrooms.Runtime) -> String? {
+  static func executable(for runtime: ContainerRuntime) -> String? {
     (runtime == .docker ? runtimeCandidates : appleCandidates).first {
       FileManager.default.isExecutableFile(atPath: $0)
     }
@@ -886,7 +879,7 @@ final class RemoteHosts: @unchecked Sendable {
   /// its memory, between 2 and 8 GB. Docker's containers share Docker's VM, which already bounds
   /// them, so they get nothing unless set.
   static func resources(
-    for runtime: RemoteWorkrooms.Runtime, cpus: Int? = Defaults[.containerCPUs],
+    for runtime: ContainerRuntime, cpus: Int? = Defaults[.containerCPUs],
     memory: String? = Defaults[.containerMemory],
     cores: Int = ProcessInfo.processInfo.activeProcessorCount,
     physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
@@ -910,7 +903,7 @@ final class RemoteHosts: @unchecked Sendable {
       user: RemoteWorkrooms.user, daemonSocket: RemoteWorkrooms.daemonSocket,
       // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
       labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: target.context,
-      dialect: runtimeKind == .docker ? .docker : .apple, cpus: resources.cpus,
+      dialect: runtimeKind, cpus: resources.cpus,
       memory: resources.memory,
       // A container's entrypoint (#308): the daemon this build bundles for its architecture,
       // mounted on Apple's runtime from a folder of this build's own.

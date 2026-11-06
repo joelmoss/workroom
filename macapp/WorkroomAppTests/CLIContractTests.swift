@@ -247,7 +247,7 @@ final class CLIContractTests: XCTestCase {
   @MainActor
   func testAGoldenCreateDrivesARunToItsStates() throws {
     let run = CreationRun(
-      project: Project(path: "/p", vcs: "git", workrooms: []), kind: .local, splitAnchor: nil,
+      project: Project(path: "/p", vcs: "git", workrooms: []), kind: nil, splitAnchor: nil,
       previousSelection: nil)
     for event in try events("create-fetch-warning-events.ndjson") { run.apply(event) }
     XCTAssertEqual(

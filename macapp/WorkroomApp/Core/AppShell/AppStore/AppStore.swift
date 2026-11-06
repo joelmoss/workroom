@@ -2060,7 +2060,7 @@ final class AppStore: ObservableObject {
             let hasSetup = !UITestFixture.creatingSplitMemberNoSetup
             if UITestFixture.creatingSplitMember || UITestFixture.creatingSplitMemberNoSetup {
               let run = CreationRun(
-                project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+                project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
               run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
               run.begin("worktree")
               if hasSetup {

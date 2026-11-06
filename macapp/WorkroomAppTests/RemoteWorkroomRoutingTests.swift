@@ -62,7 +62,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
       Workroom(
         name: name, path: self.path, vcsName: "workroom/\(name)", warnings: [],
         host: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: host,
+          driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: host,
           repository: repository, org: "acme", account: "usr_1"))
     }
     let alone = RemoteWorkrooms.registrations([
@@ -74,7 +74,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
       Project(
         path: "/proj", vcs: "git", workrooms: [workroom("w", other, "o/new")],
         host: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+          driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
           repository: "o/old", org: "acme", account: "usr_1"))
     ])
     XCTAssertEqual(beside.first?.entry.github?.flag, "github.com/o/new")

@@ -22,21 +22,21 @@ final class HostOptionsCatalog: ObservableObject {
     var snapshots: [String]?
     var boxdSize: BoxdHostDriver.DefaultSize?
     var plan: ExeDevHostDriver.PlanLimits?
-    var failure: [HostProvider: String] = [:]
+    var failure: [HostKind: String] = [:]
     /// The providers whose read is over, whether it worked or not.
-    var finished: Set<HostProvider> = []
+    var finished: Set<HostKind> = []
   }
 
   @Published private(set) var found = Found()
   var snapshots: [String]? { found.snapshots }
   var boxdSize: BoxdHostDriver.DefaultSize? { found.boxdSize }
   var plan: ExeDevHostDriver.PlanLimits? { found.plan }
-  var failure: [HostProvider: String] { found.failure }
-  var finished: Set<HostProvider> { found.finished }
+  var failure: [HostKind: String] { found.failure }
+  var finished: Set<HostKind> { found.finished }
   /// When each provider was last read well.
-  private var readAt: [HostProvider: Date] = [:]
+  private var readAt: [HostKind: Date] = [:]
   /// Each provider's read under way, which every screen asking for it waits on.
-  private var reading: [HostProvider: Task<Reading, Never>] = [:]
+  private var reading: [HostKind: Task<Reading, Never>] = [:]
 
   /// What one provider's read found.
   enum Reading {
@@ -48,13 +48,13 @@ final class HostOptionsCatalog: ObservableObject {
 
   /// Seams for tests: the clock, and the read itself.
   var now: () -> Date = Date.init
-  var fetch: ((HostProvider) async -> Reading)?
+  var fetch: ((HostKind) async -> Reading)?
 
   /// Reads `provider` unless it was read well under `freshFor` ago; a read already under way is
   /// waited on instead. The read is the catalog's, not the asking screen's, so a screen going away
   /// doesn't cut it short for another still waiting. What it found is set all at once, so its
   /// sections redraw once.
-  func load(_ provider: HostProvider) async {
+  func load(_ provider: HostKind) async {
     if let at = readAt[provider], now().timeIntervalSince(at) < Self.freshFor { return }
     if let running = reading[provider] {
       _ = await running.value
@@ -94,7 +94,7 @@ final class HostOptionsCatalog: ObservableObject {
     readAt = [:]
   }
 
-  private func read(_ provider: HostProvider) async -> Reading {
+  private func read(_ provider: HostKind) async -> Reading {
     do {
       switch provider {
       case .boxd:
@@ -116,6 +116,8 @@ final class HostOptionsCatalog: ObservableObject {
           let driver = try RemoteHosts.shared.driver(.exeDev(account: nil)) as? ExeDevHostDriver
         else { return .failed("exe.dev couldn't be reached.") }
         return .exeDev(try await driver.planLimits())
+      case .container, .ssh:
+        return .failed("\(provider.displayName) hosts take no host options.")
       }
     } catch {
       // Usually a provider not set up yet (story 40): options can still be saved before signing up.
@@ -134,7 +136,7 @@ final class HostOptionsCatalog: ObservableObject {
 /// and nothing else waits on it. Until then they are laid out but hidden, with a spinner by the
 /// heading, so the section already has its height and nothing moves when they show.
 struct HostOptionsSection: View {
-  let provider: HostProvider
+  let provider: HostKind
   @Binding var options: HostOptions
   let inherited: HostOptions.Resolution?
   @ObservedObject var catalog: HostOptionsCatalog
@@ -166,7 +168,7 @@ struct HostOptionsSection: View {
 /// A provider's host options heading in Settings (#575): what the group is for, with "info"
 /// linking to how host options work.
 struct HostOptionsHeader: View {
-  let provider: HostProvider
+  let provider: HostKind
 
   private static let subtitle: AttributedString = {
     var text = AttributedString("Override the default options used during creation - ")
@@ -257,7 +259,8 @@ extension HostOptions.Level {
 /// (`HostOptionChoices`). Settings is the last level, so there choosing nothing is the provider's
 /// default.
 struct HostOptionsFields: View {
-  let provider: HostProvider
+  /// A kind that takes host options (`HostKind.takesHostOptions`).
+  let provider: HostKind
   @Binding var options: HostOptions
   /// What this level inherits from the levels below it, or nil at Settings.
   let inherited: HostOptions.Resolution?
@@ -300,16 +303,20 @@ struct HostOptionsFields: View {
           "Disk", option: $options.disk,
           choices: HostOptionChoices(providerDefault: nil, below: inherited?.disk))
       }
+    case .container, .ssh:
+      EmptyView()
     }
   }
 
   /// The host image, called what it is for the provider: a snapshot lists the account's own.
   @ViewBuilder private var imageField: some View {
-    let snapshots = provider.imageKind == .snapshot ? catalog.snapshots : nil
-    OptionTextField(
-      provider.imageKind.fieldLabel, option: $options.image,
-      choices: HostOptionChoices(providerDefault: nil, below: inherited?.image),
-      suggestions: snapshots ?? [])
+    let snapshots = provider.hostImageKind == .snapshot ? catalog.snapshots : nil
+    if let imageKind = provider.hostImageKind {
+      OptionTextField(
+        imageKind.fieldLabel, option: $options.image,
+        choices: HostOptionChoices(providerDefault: nil, below: inherited?.image),
+        suggestions: snapshots ?? [])
+    }
     if case .value(let name)? = options.image, let snapshots, !snapshots.contains(name) {
       Text(Self.missingSnapshot)
         .font(.footnote)
@@ -330,7 +337,7 @@ struct HostOptionsFields: View {
   /// boxd's four sizes, up to the org's quota, which a snapshot doesn't take: it keeps its
   /// source's.
   @ViewBuilder private var boxdSize: some View {
-    let snapshot = resolvedHere.sizeTakenBySnapshot
+    let snapshot = resolvedHere?.sizeTakenBySnapshot == true
     OptionPicker(
       "Size", option: $options.cpu,
       values: [1, 2, 4, 8].filter { $0 <= (catalog.boxdSize?.maxVCPU ?? 8) },
@@ -354,6 +361,7 @@ struct HostOptionsFields: View {
     switch provider {
     case .boxd: (catalog.boxdSize?.vcpu, nil)
     case .exeDev: (ExeDevHostDriver.defaultCPUs, catalog.plan?.defaultDiskGB.map { "\($0)GB" })
+    case .container, .ssh: (nil, nil)
     }
   }
 
@@ -364,7 +372,7 @@ struct HostOptionsFields: View {
   }
 
   /// This level's options over what it inherits, for what follows from them here.
-  private var resolvedHere: HostOptions.Resolution {
+  private var resolvedHere: HostOptions.Resolution? {
     HostOptions.resolve(
       for: provider, create: options, project: nil,
       settings: inherited.map { HostOptions(resolved: $0) })

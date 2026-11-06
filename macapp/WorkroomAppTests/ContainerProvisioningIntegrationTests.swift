@@ -10,7 +10,7 @@ import XCTest
 ///   TEST_RUNNER_WR_DOCKER_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroomd-linux-<arch>> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/ContainerProvisioningIntegrationTests
 final class ContainerProvisioningIntegrationTests: ContainerIntegrationTestCase {
-  override var dialect: ContainerHostDriver.Dialect { .docker }
+  override var dialect: ContainerRuntime { .docker }
   override var optIn: String { "WR_DOCKER_CONTAINER_TESTS" }
 
   func testAContainerServesAndDestroyingItLeavesNothing() async throws {

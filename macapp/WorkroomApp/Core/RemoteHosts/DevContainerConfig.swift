@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 import WorkroomVCS
 
 /// A repository's dev container, as its `devcontainer.json` describes it (the Development
@@ -136,7 +137,7 @@ struct DevContainerConfig: Equatable, Sendable {
   }
 
   /// Every key the file holds that a workroom on `runtime` leaves out, by key.
-  func ignoredKeys(on runtime: RemoteWorkrooms.Runtime) -> [IgnoredKey] {
+  func ignoredKeys(on runtime: ContainerRuntime) -> [IgnoredKey] {
     var keys = unhonoured
     if runtime == .apple {
       let reason = "a Docker setting, which Apple's container runtime doesn't take"

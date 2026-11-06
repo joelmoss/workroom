@@ -149,7 +149,7 @@ final class ModalShortcutRoutingTests: XCTestCase {
         {
           $0.pendingStartChoice = PendingStartChoice(
             run: CreationRun(
-              project: project, kind: .local, splitAnchor: nil, previousSelection: nil),
+              project: project, kind: nil, splitAnchor: nil, previousSelection: nil),
             work: LocalWork(
               branch: "main", remote: "origin", ahead: 1, uncommitted: false, summary: "s"))
         }

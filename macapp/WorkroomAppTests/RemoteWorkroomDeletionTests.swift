@@ -268,7 +268,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     let ssh = Workroom(
       name: "ssh", path: "/home/workroom/r", vcsName: "workroom/ssh", warnings: [],
       host: HostDescriptor(
-        driver: RemoteWorkrooms.sshDriver, provisioner: mine,
+        driver: HostKind.ssh.driver, provisioner: mine,
         id: SSHHostDriver.id(for: destination), workroomID: UUID(), path: "/home/workroom/r",
         sshDestination: destination))
     let local = Workroom(
@@ -413,7 +413,7 @@ final class RemoteTeardownTests: XCTestCase {
 
   private func host(state: String? = nil) -> HostDescriptor {
     HostDescriptor(
-      state: state, driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+      state: state, driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner,
       id: UUID())
   }
 

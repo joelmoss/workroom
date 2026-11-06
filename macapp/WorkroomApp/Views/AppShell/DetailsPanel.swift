@@ -54,8 +54,8 @@ struct DetailsPanel: View {
     if let sid = store.inspectorTargetID, let (workroom, _) = store.workroomAndProject(for: sid),
       let made = workroom.host?.madeWith, !made.isProviderDefault
     {
-      if let image = made.image, let provider = target.hostPlace?.hostProvider {
-        fact(provider.imageKind.madeFromLabel, image, copyable: true)
+      if let image = made.image, let imageKind = target.hostPlace?.hostImageKind {
+        fact(imageKind.madeFromLabel, image, copyable: true)
       }
       let size = [
         made.cpu.map { "\($0) CPU" }, made.memory, made.disk.map { "\($0) disk" },

@@ -80,7 +80,7 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
   }
 
   /// The host descriptor's `driver` for this provider's hosts.
-  public static let driverName = "boxd"
+  public static let driverName = HostKind.boxd.driver
   /// The user every boxd machine logs in as, whose home holds the daemon's state and the clone.
   public static let user = "boxd"
   /// Where Workroom keeps its state on a boxd machine: the daemon's socket and the sessions' screens.

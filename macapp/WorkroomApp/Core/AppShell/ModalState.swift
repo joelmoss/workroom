@@ -65,7 +65,7 @@ struct PendingProjectSettings: Identifiable {
 /// lands, taken when it was asked for.
 struct PendingHostOptions: Identifiable {
   let project: Project
-  let place: RemoteWorkrooms.Place
+  let place: HostKind
   var splitAnchor: SidebarID?
   let id = UUID()
 }

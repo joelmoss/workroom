@@ -13,7 +13,7 @@ selection, as a `.creation(project:id:)` target that becomes the workroom's
 the reload that publishes it, so no window mounts a terminal there early). While a run lasts, its
 pane draws `Views/WorkroomManagement/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
 `removeWorkroomSplitMember` refuses a running one. The pane lists the kind's plan of steps
-(`CreationKind.plan`; a local create leaves out the setup script's row when the project has no
+(`CreationRun.plan(for:)`; a local create leaves out the setup script's row when the project has no
 `scripts/workroom_setup`, and `CreationRun.begin` puts it back if a script runs anyway), fed by
 the CLI's NDJSON `step` and `log` events for a local create and by
 `ProvisioningProgress.$reportStep` and `$log` for the others; what it says lives in
@@ -37,7 +37,7 @@ user's boxd `git` integration, and an exe.dev VM an exe.dev GitHub integration p
 `ExeDevHostDriver.grantGitHub` adds before the VM when none names the repository. The integration
 answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
 `Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
-that fails says the provider's fix (`RemoteWorkrooms.Place.credentialHint`). A local container's git
+that fails says the provider's fix (`HostKind.credentialHint`). A local container's git
 asks the Mac's own `gh` through `CredentialRelay` (#309), whose daemon side is `workroomd credential`
 (`vcs/crates/workroomd/src/host/credential.rs`). A new user's first exe.dev create walks them through
 exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
@@ -91,7 +91,8 @@ snapshot an older build's derive may have left under that name. Bases older buil
 until a follow-up retires them (`TODOS.md`); Delete Project still takes them down. `BoxdIntegrationTests`
 make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`
 and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356): `RemoteHosts`
-holds any driver by `DriverKey` (a container runtime or a boxd org and account), a background read
+holds any driver by `DriverKey` (a host's `HostKind`, ADR 0066, with who its driver acts for: a
+Docker context, a boxd org and account, an exe.dev account or an SSH destination), a background read
 of a boxd host asks boxd first and leaves an asleep box asleep, and nothing lets go of an idle
 connection: a box an open app holds awake is the user's to free, by deleting its workroom (#380).
 Signed out, every boxd command that needs an account opens boxd's browser sign-in and waits
@@ -109,7 +110,9 @@ ADR 0049 (hosts bring their own git credentials).
 A workroom or project entry in `config.json` can carry a `"host"` object, which `list --json`
 passes through as `host`. The app owns its schema (`HostDescriptor` in
 `Packages/WorkroomDomain/Sources/WorkroomDomain/Model.swift`); the CLI reads only whether a
-workroom has one (remote) and `state == "destroyed"`. `workroom host set|clear` (#252) writes one
+workroom has one (remote) and `state == "destroyed"`. The app reads `driver` and `state` through
+`HostDescriptor.kind` and `.lifecycle` (ADR 0066), never by comparing the strings, and keeps them
+as strings on disk. `workroom host set|clear` (#252) writes one
 verbatim on an existing entry, and the app calls it through `WorkroomCLI.setHost`.
 Every CLI config write preserves an existing one, so a change to a config writer must keep `host`,
 or a remote workroom silently turns local. What the app relies on:

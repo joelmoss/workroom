@@ -92,7 +92,7 @@ final class HostOptionsCatalogTests: XCTestCase {
   func testAGoodReadIsReusedForTwoMinutesAndAFailedOneIsRetried() async {
     let catalog = HostOptionsCatalog()
     var clock = Date(timeIntervalSince1970: 0)
-    var reads: [HostProvider] = []
+    var reads: [HostKind] = []
     var works = true
     catalog.now = { clock }
     catalog.fetch = { provider in
@@ -174,7 +174,7 @@ final class HostOptionsCatalogTests: XCTestCase {
   func testEachProvidersReadIsRetriedOrKeptOnItsOwn() async {
     let catalog = HostOptionsCatalog()
     var clock = Date(timeIntervalSince1970: 0)
-    var reads: [HostProvider] = []
+    var reads: [HostKind] = []
     let plan = ExeDevHostDriver.PlanLimits(
       maxCPUs: 4, maxMemoryGB: 16, defaultDiskGB: 25, maxDiskGB: 100)
     catalog.now = { clock }

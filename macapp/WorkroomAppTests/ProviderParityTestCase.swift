@@ -468,7 +468,7 @@ class ProviderParityTestCase: XCTestCase {
     XCTAssertNil(records.project, "the project recorded a base")
     let workroom = try XCTUnwrap(records.workrooms["w"])
     XCTAssertEqual(records.path, "\(provider.home)/r")
-    XCTAssertEqual(workroom.driver, RemoteWorkrooms.driverName(key))
+    XCTAssertEqual(workroom.driver, key.kind.driver)
     XCTAssertEqual(workroom.org, key.org)
     XCTAssertEqual(workroom.account, key.account)
     XCTAssertEqual(workroom.repository, "o/r")

@@ -86,7 +86,7 @@ extension AppStore {
       .sorted { ($0.startedAt, $0.id.uuidString) < ($1.startedAt, $1.id.uuidString) }
     var seen: [String: Int] = [:]
     return runs.map { run in
-      let destination = run.kind.destination
+      let destination = CreationRun.destination(of: run.kind)
       seen[destination, default: 0] += 1
       let count = seen[destination] ?? 1
       return ProvisionalCreationRow(
@@ -97,7 +97,7 @@ extension AppStore {
   /// Places a new run's pane before the create does any work (AC 1): beside `splitAnchor`, or as
   /// the selection.
   private func startCreationRun(
-    project: Project, kind: CreationKind, splitAnchor: SidebarID?,
+    project: Project, kind: HostKind?, splitAnchor: SidebarID?,
     hostOptions: HostOptions? = nil
   ) -> CreationRun {
     let run = CreationRun(
@@ -344,12 +344,10 @@ extension AppStore {
     register(retry)
     let fresh = SidebarID.creation(project: project.path, id: run.id)
     if pane != fresh { for store in affectedStores { store.replacePane(pane, with: fresh) } }
-    switch run.kind {
-    case .local: await runLocalCreate(retry)
-    case .container(let runtime): await runRemoteCreate(retry, place: .container(runtime))
-    case .boxd: await runRemoteCreate(retry, place: .boxd)
-    case .exeDev: await runRemoteCreate(retry, place: .exeDev)
-    case .ssh: await runRemoteCreate(retry, place: .ssh)
+    if let kind = run.kind {
+      await runRemoteCreate(retry, place: kind)
+    } else {
+      await runLocalCreate(retry)
     }
   }
 
@@ -366,7 +364,7 @@ extension AppStore {
       return
     }
     await runLocalCreate(
-      startCreationRun(project: project, kind: .local, splitAnchor: splitAnchor))
+      startCreationRun(project: project, kind: nil, splitAnchor: splitAnchor))
   }
 
   private func runLocalCreate(_ run: CreationRun) async {
@@ -497,7 +495,8 @@ extension AppStore {
         // down.
         try await cli.setHost(
           project: path, workroom: workroom,
-          descriptor: try JSONEncoder().encode(HostDescriptor(state: "destroyed")))
+          descriptor: try JSONEncoder().encode(
+            HostDescriptor(state: HostLifecycle.destroyed.state)))
         try await cli.delete(name: workroom, project: path, onLog: nil)
       },
       reserveInParent: { parent, descriptor in
@@ -538,7 +537,7 @@ extension AppStore {
   /// `hostOptions` are this create's own (the Options panel's, #575), over the project's and
   /// Settings'.
   func createRemoteWorkroom(
-    in project: Project, place: RemoteWorkrooms.Place = .container(.docker),
+    in project: Project, place: HostKind = .container(.docker),
     splitAnchor: SidebarID? = nil, hostOptions: HostOptions? = nil
   ) async {
     // As it is now, not as a menu or the picker caught it: its base branch may have changed.
@@ -546,23 +545,22 @@ extension AppStore {
     guard canCreateRemoteWorkroom(in: project) else { return }
     await runRemoteCreate(
       startCreationRun(
-        project: project, kind: CreationKind(place), splitAnchor: splitAnchor,
-        hostOptions: hostOptions),
+        project: project, kind: place, splitAnchor: splitAnchor, hostOptions: hostOptions),
       place: place)
   }
 
   /// How a create of `place` in `project` resolves its host options (#575), with each value's
   /// source: nil for a place that takes none. `create` is this create's own.
   func hostOptionResolution(
-    for place: RemoteWorkrooms.Place, in project: Project, create: HostOptions?
+    for place: HostKind, in project: Project, create: HostOptions?
   ) -> HostOptions.Resolution? {
-    guard let provider = place.hostProvider else { return nil }
-    let levels = services.remoteCreate.hostOptionLevels(project, provider)
+    guard place.takesHostOptions else { return nil }
+    let levels = services.remoteCreate.hostOptionLevels(project, place)
     return HostOptions.resolve(
-      for: provider, create: create, project: levels.project, settings: levels.settings)
+      for: place, create: create, project: levels.project, settings: levels.settings)
   }
 
-  private func runRemoteCreate(_ run: CreationRun, place: RemoteWorkrooms.Place) async {
+  private func runRemoteCreate(_ run: CreationRun, place: HostKind) async {
     let path = run.project.path
     let services = self.services.remoteCreate
     var defaultNotUsed: String?
@@ -931,7 +929,7 @@ extension AppStore {
   /// (R2): true to carry on, false when cancelled. A run for a provider whose sheet is already up
   /// or queued joins it; only one sheet is up at a time, across every window.
   private func waitForRemoteSetup(
-    _ run: CreationRun, place: RemoteWorkrooms.Place, setup: any RemoteSetup
+    _ run: CreationRun, place: HostKind, setup: any RemoteSetup
   ) async -> Bool {
     run.waitForUser("account")
     return await withCheckedContinuation { continuation in
@@ -991,7 +989,7 @@ extension AppStore {
       TerminalTarget.workroomID(project: project.path, name: workroom.name))
       // A remote create (#253) is in this set from just after its workroom has a name; until then,
       // its run says so. One a crash left at `creating` is deletable.
-      || (workroom.host?.state == "creating" && hasRunningCreation(inProject: project.path))
+      || (workroom.host?.lifecycle == .creating && hasRunningCreation(inProject: project.path))
   }
 }
 
@@ -1018,14 +1016,13 @@ struct RemoteCreateHost {
 /// account, and its hosts. `live` in the app; tests stand in fakes.
 struct RemoteCreateServices {
   var plan: @MainActor (AppStore, Project) async throws -> RemoteCreatePlan
-  var setupNeeded: @MainActor (RemoteWorkrooms.Place) async -> (any RemoteSetup)?
+  var setupNeeded: @MainActor (HostKind) async -> (any RemoteSetup)?
   /// The provider's host and how it is reached, made with the resolved host options a boxd or
   /// exe.dev create takes (#575); nil for any other place.
-  var host:
-    @MainActor (RemoteWorkrooms.Place, ResolvedHostOptions?) async throws -> RemoteCreateHost
+  var host: @MainActor (HostKind, ResolvedHostOptions?) async throws -> RemoteCreateHost
   /// The project's and Settings' host options for `provider` (#575), read afresh at each try.
   var hostOptionLevels:
-    @MainActor (Project, HostProvider) -> (project: HostOptions?, settings: HostOptions?) = {
+    @MainActor (Project, HostKind) -> (project: HostOptions?, settings: HostOptions?) = {
       _, _ in (nil, nil)
     }
   /// Runs the setup script on the new workroom's host (`RemoteWorkrooms.runScript`). A test's fakes
@@ -1069,7 +1066,7 @@ struct RemoteCreateServices {
       hostOptionLevels: { project, provider in
         (
           project: Defaults[.projectHostOptions][project: project.path, provider: provider],
-          settings: Defaults[.hostOptions][provider.rawValue]
+          settings: provider.hostOptionsKey.flatMap { Defaults[.hostOptions][$0] }
         )
       },
       script: { request in await RemoteWorkrooms.runScript(request) },

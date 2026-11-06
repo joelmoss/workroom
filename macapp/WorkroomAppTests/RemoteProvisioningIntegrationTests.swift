@@ -265,7 +265,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertNotNil(hostMade.container)
     XCTAssertTrue(RemoteWorkrooms.isLive(hostMade))
     XCTAssertNil(workroom.state, "a serving workroom's descriptor has a state")
-    XCTAssertEqual(workroom.driver, RemoteWorkrooms.containerDriver)
+    XCTAssertEqual(workroom.driver, HostKind.container(.docker).driver)
     XCTAssertNil(workroom.credentials, "a provider's host was relayed")
     XCTAssertEqual(workroom.workroomID, creating.workroomID)
     XCTAssertEqual(workroom.repository, "o/r")

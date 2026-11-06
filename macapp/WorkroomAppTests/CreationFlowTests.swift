@@ -787,10 +787,10 @@ final class CreationFlowTests: XCTestCase {
   /// fails_when=it shows on every local create; no_claim=the step's events (the Go tests)
   func testTheChangesRowIsOnlyForACreateCopyingThem() {
     let plain = CreationRun(
-      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil)
+      project: emptyProject, kind: nil, splitAnchor: nil, previousSelection: nil)
     XCTAssertFalse(plain.steps.contains { $0.id == "changes" })
     let copying = CreationRun(
-      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil,
+      project: emptyProject, kind: nil, splitAnchor: nil, previousSelection: nil,
       start: .localWithChanges)
     XCTAssertEqual(
       copying.steps.map(\.id).prefix(3), ["fetch", "worktree", "changes"])

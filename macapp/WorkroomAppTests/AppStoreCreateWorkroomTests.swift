@@ -332,7 +332,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testAnUnnamedCreationAppearsAsTab() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let run = CreationRun(
-      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil)
+      project: emptyProject, kind: nil, splitAnchor: nil, previousSelection: nil)
     store.register(run)
 
     XCTAssertEqual(
@@ -344,7 +344,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   func testANamedCreationBeforeItsReloadAppearsAsOneTab() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let run = CreationRun(
-      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil)
+      project: emptyProject, kind: nil, splitAnchor: nil, previousSelection: nil)
     store.register(run)
     run.setName("wr")
     store.creationRunForTarget[TerminalTarget.workroomID(project: projectPath, name: "wr")] = run.id
@@ -357,7 +357,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     _ store: AppStore, holding name: String, outcome: CreationOutcome = .running
   ) -> CreationRun {
     let run = CreationRun(
-      project: emptyProject, kind: .local, splitAnchor: nil, previousSelection: nil)
+      project: emptyProject, kind: nil, splitAnchor: nil, previousSelection: nil)
     run.setName(name)
     if case .setupScriptFailed = outcome { run.fail(outcome) }
     store.creationRuns[run.id] = run
@@ -903,7 +903,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let landing = CreationLandingBox()
     landing.close()  // the create already finished; this is the late echo
     let run = CreationRun(
-      project: project(withWorkroom: "wr"), kind: .local, splitAnchor: nil, previousSelection: nil)
+      project: project(withWorkroom: "wr"), kind: nil, splitAnchor: nil, previousSelection: nil)
     await store.landOnCreatedWorkroom(name: "wr", run: run, setup: false, landing: landing)
     XCTAssertTrue(
       store.creatingWorkrooms.isEmpty,

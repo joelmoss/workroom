@@ -17,7 +17,7 @@ final class CreationPaneAccessibilityTests: XCTestCase {
   func testARunningCreatesPaneExposesItsChecklistContainerInsideItsPane() throws {
     let store = AppStore()
     let project = Project(path: "/private/var/tmp/wr-a11y-project", vcs: "git", workrooms: [])
-    let run = CreationRun(project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+    let run = CreationRun(project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
     run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
     run.begin("worktree")
     store.register(run)

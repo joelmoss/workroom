@@ -66,7 +66,7 @@ final class DeleteMountsNoPaneTests: XCTestCase {
     store.terminals.addTab(for: workrooms[1].target(inProject: projectPath))
 
     let run = CreationRun(
-      project: Project(path: projectPath, vcs: "git", workrooms: []), kind: .local,
+      project: Project(path: projectPath, vcs: "git", workrooms: []), kind: nil,
       splitAnchor: nil, previousSelection: nil)
     run.setName("gone")
     run.fail(.setupScriptFailed(message: "exit 1"))

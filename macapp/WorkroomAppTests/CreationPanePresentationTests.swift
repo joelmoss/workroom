@@ -95,7 +95,7 @@ final class CreationPanePresentationTests: XCTestCase {
     unnamed.fail(.remoteFailed(message: "x", leftBehind: false))
     XCTAssertEqual(P.title(of: unnamed), "New workroom", "a failed create isn't still creating")
     let local = CreationRun(
-      project: Project(path: "/code/acme-web", vcs: "git", workrooms: []), kind: .local,
+      project: Project(path: "/code/acme-web", vcs: "git", workrooms: []), kind: nil,
       splitAnchor: nil, previousSelection: nil)
     XCTAssertEqual(P.subtitle(of: local), "acme-web · This Mac")
   }
@@ -129,7 +129,7 @@ final class CreationPanePresentationTests: XCTestCase {
     XCTAssertEqual(P.setupAnnouncement(for: .boxd), "boxd needs setting up")
     XCTAssertEqual(P.setupAnnouncement(for: .exeDev), "exe.dev needs setting up")
     let run = CreationRun(
-      project: Project(path: "/p", vcs: "git", workrooms: []), kind: .local, splitAnchor: nil,
+      project: Project(path: "/p", vcs: "git", workrooms: []), kind: nil, splitAnchor: nil,
       previousSelection: nil)
     run.begin("worktree")
     run.fail(.failedBeforeWorkroom(message: "boom"))

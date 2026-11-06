@@ -1,5 +1,6 @@
 import DaemonConnection
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
 
 /// How the container driver reaches its containers (#308): the runtime's own `exec` (Docker's, or
@@ -16,7 +17,7 @@ public enum ContainerExecTransport {
   /// One container, as `exec` reaches it.
   public struct Target: Sendable {
     public let runtime: URL
-    public let dialect: ContainerHostDriver.Dialect
+    public let dialect: ContainerRuntime
     /// The Docker context every command names, or nil (Apple's runtime has none).
     public let context: String?
     public let container: String
@@ -27,7 +28,7 @@ public enum ContainerExecTransport {
     public let daemonBinary: String
 
     public init(
-      runtime: URL, dialect: ContainerHostDriver.Dialect, context: String?, container: String,
+      runtime: URL, dialect: ContainerRuntime, context: String?, container: String,
       user: String?, daemonSocket: String, daemonBinary: String? = nil
     ) {
       self.runtime = runtime

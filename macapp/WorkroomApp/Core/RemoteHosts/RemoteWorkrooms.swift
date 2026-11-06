@@ -11,109 +11,11 @@ import os
 /// folder on an existing SSH server. A remote workroom belongs to a project registered on this Mac
 /// (design doc, Phase 4: there are no remote projects).
 enum RemoteWorkrooms {
-  /// Which container runtime makes a workroom's host (#309): Docker (Desktop, OrbStack, Colima) or
-  /// Apple's `container`. The raw value is the descriptor's `driver`; `container` predates Apple's
-  /// and keeps meaning Docker, so every record made before stays Docker's.
-  enum Runtime: String, CaseIterable, Sendable {
-    case docker = "container"
-    case apple = "apple-container"
-
-    var displayName: String { self == .docker ? "Docker" : "Apple Container" }
-    /// One of its containers, in a sentence: "a Docker container", "an Apple container".
-    var containerPhrase: String { self == .docker ? "a Docker container" : "an Apple container" }
-  }
-
-  /// Where a remote workroom is made (#309, #356): a container runtime on this Mac, or boxd.
-  enum Place: Hashable, Sendable {
-    case container(Runtime)
-    case boxd
-    case exeDev
-    case ssh
-
-    var displayName: String {
-      switch self {
-      case .container(let runtime): runtime.displayName
-      case .boxd: "boxd"
-      case .exeDev: "exe.dev"
-      case .ssh: "SSH"
-      }
-    }
-
-    /// The provider whose hosts take host options (#575): boxd's and exe.dev's. A container's
-    /// image and size are devcontainer.json's (ADR 0060), and an SSH host is the user's own.
-    var hostProvider: HostProvider? {
-      switch self {
-      case .boxd: .boxd
-      case .exeDev: .exeDev
-      case .container, .ssh: nil
-      }
-    }
-
-    /// Its SF Symbol, wherever a workroom or a choice of place is shown: a container on this Mac
-    /// is on the local network, a remote provider's machine is in the cloud.
-    var icon: String {
-      switch self {
-      case .container: "network"
-      case .boxd, .exeDev, .ssh: "cloud"
-      }
-    }
-
-    /// The host's own page on its provider's dashboard, or nil for a container, which has none.
-    /// Read from the providers' web apps (2026-10-20): boxd's machines list selects `?m=<name>`,
-    /// and exe.dev serves `/vm/<name>` behind its sign-in.
-    func dashboardURL(machine: String) -> URL? {
-      switch self {
-      case .container, .ssh: return nil
-      case .boxd:
-        var url = URLComponents(string: "https://app.boxd.sh/machines")!
-        url.queryItems = [URLQueryItem(name: "m", value: machine)]
-        return url.url
-      case .exeDev: return URL(string: "https://exe.dev/vm/")?.appendingPathComponent(machine)
-      }
-    }
-
-    /// One of its hosts, in a sentence: "a Docker container on this Mac", "a boxd machine".
-    var hostPhrase: String {
-      switch self {
-      case .container(let runtime): "\(runtime.containerPhrase) on this Mac"
-      case .boxd: "a boxd machine"
-      case .exeDev: "an exe.dev VM"
-      case .ssh: "an SSH host"
-      }
-    }
-
-    /// The remote providers, in the order the New Workroom menu and picker list them (#259). A new
-    /// provider is a case here and an entry in this list.
-    static let remoteProviders: [Place] = [.boxd, .exeDev, .ssh]
-
-    /// How the user gives this place's hosts GitHub access, said after git's own words when a clone
-    /// fails, or nil where Workroom gives it (a container takes the Mac's `gh` through the relay,
-    /// #309). A remote provider's host fetches and pushes with the provider's own credentials, so
-    /// it keeps working with this Mac closed. Worded for the one cause Workroom can't tell apart
-    /// from git's message: the clone fails the same way for a network or GitHub outage.
-    var credentialHint: String? {
-      switch self {
-      case .container: nil
-      case .ssh:
-        "If GitHub refused the clone, set up credentials on the host: a GitHub SSH key for an "
-          + "SSH URL, or `gh auth login` and `gh auth setup-git` for HTTPS."
-      case .boxd:
-        "If GitHub refused the clone: a boxd machine reaches GitHub through your boxd git "
-          + "integration. Connect it with `boxd manage integrations connect git`."
-      case .exeDev:
-        "If GitHub refused the clone: an exe.dev VM reaches a GitHub repository through an exe.dev "
-          + "integration for it, which Workroom adds. Check that GitHub is still connected at "
-          + "https://exe.dev/integrations#github, and that `ssh exe.dev integrations list` shows the "
-          + "repository attached to auto:all."
-      }
-    }
-  }
-
-  /// Why a workroom can't be created at `place` now, as the New Workroom menu and picker show it
-  /// beside the entry, or nil when it can.
+  /// Why a workroom can't be created on a host of `kind` now, as the New Workroom menu and picker
+  /// show it beside the entry, or nil when it can.
   @MainActor
-  static func unavailability(of place: Place) -> String? {
-    switch place {
+  static func unavailability(of kind: HostKind) -> String? {
+    switch kind {
     case .container(let runtime): unavailability(of: runtime)
     case .boxd, .exeDev, .ssh:
       // Never unavailable: a create first checks the user's account there and, when it isn't
@@ -122,18 +24,10 @@ enum RemoteWorkrooms {
     }
   }
 
-  /// The descriptor's `driver` for a Docker host.
-  static let containerDriver = Runtime.docker.rawValue
-  /// The descriptor's `driver` for a boxd host (#356).
-  static let boxdDriver = BoxdHostDriver.driverName
-  /// The descriptor's `driver` for an exe.dev host (#259).
-  static let exeDevDriver = ExeDevHostDriver.driverName
-  static let sshDriver = "ssh"
-
   /// Why a workroom can't be created on `runtime` now, as the New Workroom menu shows it beside the
   /// entry, or nil when it can (#309).
   @MainActor
-  static func unavailability(of runtime: Runtime) -> String? {
+  static func unavailability(of runtime: ContainerRuntime) -> String? {
     var arm64: Int32 = 0
     var size = MemoryLayout<Int32>.size
     let appleSilicon = sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0) == 0 && arm64 == 1
@@ -148,7 +42,8 @@ enum RemoteWorkrooms {
   }
 
   static func unavailability(
-    of runtime: Runtime, installed: Bool, appleSilicon: Bool, macOS26: Bool, signedIn: Bool
+    of runtime: ContainerRuntime, installed: Bool, appleSilicon: Bool, macOS26: Bool,
+    signedIn: Bool
   ) -> String? {
     if runtime == .apple {
       // Apple's runtime runs each container in a VM of its own, on Apple silicon and macOS 26.
@@ -356,7 +251,7 @@ enum RemoteWorkrooms {
     }
     let workroom = UUID()
     var descriptor = HostDescriptor(
-      state: "creating", driver: sshDriver, provisioner: provisioner,
+      state: HostLifecycle.creating.state, driver: HostKind.ssh.driver, provisioner: provisioner,
       id: SSHHostDriver.id(for: driver.destination), workroomID: workroom,
       repository: "\(repository.owner)/\(repository.name)", cloneURL: cloneURL,
       sshDestination: driver.destination, sshHome: driver.home)
@@ -379,7 +274,7 @@ enum RemoteWorkrooms {
           on: connected, step: .clone)
       } catch RemoteProvisioning.Failure.git(let command, let detail) {
         throw RemoteProvisioning.Failure.git(
-          command: command, detail: detail + "\n\n" + (Place.ssh.credentialHint ?? ""))
+          command: command, detail: detail + "\n\n" + (HostKind.ssh.credentialHint ?? ""))
       }
       ProvisioningProgress.reportStep?(.checkout)
       _ = try await RemoteProvisioning.git(
@@ -388,7 +283,7 @@ enum RemoteWorkrooms {
           startCommit ?? "refs/remotes/origin/\(startBranch ?? "HEAD")",
         ],
         in: path, on: connected, step: .checkout)
-      descriptor.state = nil
+      descriptor.lifecycle = .serving
       try await recorder.record(name, descriptor)
       return Created(
         name: name,
@@ -411,7 +306,7 @@ enum RemoteWorkrooms {
       }.value
       if let cleanup {
         var failed = remaining
-        failed.state = "failed"
+        failed.lifecycle = .failed
         try? await recorder.record(name, failed)
         throw RemoteProvisioning.Failure.rollbackIncomplete(
           cause: cause.localizedDescription, host: driver.hostID, cleanup: [cleanup])
@@ -460,7 +355,7 @@ enum RemoteWorkrooms {
     let name = try await recorder.reserve(
       path,
       HostDescriptor(
-        state: "creating", driver: driverName(key), provisioner: provisioner,
+        state: HostLifecycle.creating.state, driver: key.kind.driver, provisioner: provisioner,
         workroomID: workroomID, org: key.org, account: key.account))
     let instance: RemoteProvisioning.Instance
     do {
@@ -470,16 +365,12 @@ enum RemoteWorkrooms {
       ) { host in
         // Still `creating`, but now naming what a delete has to take down.
         try await recorder.record(
-          name,
-          remaining(
-            state: "creating", workroomID: workroomID, host: host, key: key, driver: driver))
+          name, remaining(.creating, workroomID: workroomID, host: host, key: key, driver: driver))
       }
     } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let host, let left) {
       await recordLeftBehind(host) {
         try await recorder.record(
-          name,
-          remaining(
-            state: "failed", workroomID: workroomID, host: host, key: key, driver: driver))
+          name, remaining(.failed, workroomID: workroomID, host: host, key: key, driver: driver))
       }
       throw RemoteProvisioning.Failure.rollbackIncomplete(cause: cause, host: host, cleanup: left)
     } catch HostDriverError.leftBehind(let cause, let left, let host?) {
@@ -487,9 +378,7 @@ enum RemoteWorkrooms {
       // the workroom takes it down. Forgotten, a paid machine would run on with nothing to find it.
       await recordLeftBehind(host) {
         try await recorder.record(
-          name,
-          remaining(
-            state: "failed", workroomID: workroomID, host: host, key: key, driver: driver))
+          name, remaining(.failed, workroomID: workroomID, host: host, key: key, driver: driver))
       }
       throw RemoteProvisioning.Failure.rollbackIncomplete(cause: cause, host: host, cleanup: left)
     } catch {
@@ -520,8 +409,7 @@ enum RemoteWorkrooms {
         await recordLeftBehind(host) {
           try await recorder.record(
             name,
-            remaining(
-              state: "failed", workroomID: workroomID, host: host, key: key, driver: driver))
+            remaining(.failed, workroomID: workroomID, host: host, key: key, driver: driver))
         }
         throw error
       } catch {
@@ -535,11 +423,11 @@ enum RemoteWorkrooms {
 
   /// The descriptor of a workroom whose undoing left `host` live.
   private static func remaining(
-    state: String, workroomID: UUID, host: HostID, key: RemoteHosts.DriverKey,
+    _ lifecycle: HostLifecycle, workroomID: UUID, host: HostID, key: RemoteHosts.DriverKey,
     driver: any HostTerminalDriver
   ) -> HostDescriptor {
     var descriptor = HostDescriptor(
-      state: state, driver: driverName(key), provisioner: provisioner,
+      state: lifecycle.state, driver: key.kind.driver, provisioner: provisioner,
       workroomID: workroomID, org: key.org, account: key.account)
     if case .remote(let id) = host {
       descriptor.id = id
@@ -554,21 +442,11 @@ enum RemoteWorkrooms {
     _ host: HostID, key: RemoteHosts.DriverKey, driver: any HostTerminalDriver, credentials: Bool
   ) -> HostDescriptor {
     var descriptor = HostDescriptor(
-      driver: driverName(key), provisioner: provisioner,
+      driver: key.kind.driver, provisioner: provisioner,
       container: (driver as? ContainerHostDriver)?.record(of: host),
       credentials: credentials ? "relay" : nil, org: key.org, account: key.account)
     if case .remote(let id) = host { descriptor.id = id }
     return descriptor
-  }
-
-  /// The descriptor's `driver` for `key`.
-  static func driverName(_ key: RemoteHosts.DriverKey) -> String {
-    switch key {
-    case .container(let runtime, _): runtime.rawValue
-    case .boxd: boxdDriver
-    case .exeDev: exeDevDriver
-    case .ssh: sshDriver
-    }
   }
 
   /// Whether `host` records a box still up. A destroyed one has none, and neither has one a create
@@ -630,7 +508,7 @@ enum RemoteWorkrooms {
     }
     return await RemoteProvisioning.runScript(
       request.script, workroom: request.workroom, at: request.path,
-      hostKind: RemoteProvisioning.hostKind(request.key), rootScript: request.rootScript,
+      hostKind: request.key.kind.workroomHost, rootScript: request.rootScript,
       daemonBinary: request.daemonBinary, on: request.host, driver: request.driver,
       judge: request.judge, environment: request.environment, onStart: request.onStart,
       onLine: request.onLine)
@@ -666,7 +544,7 @@ enum RemoteWorkrooms {
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
     recorder: Recorder, teardown: Teardown? = nil, hosts: RemoteHosts = .shared
   ) async throws {
-    if host.driver == sshDriver, !host.isDestroyed {
+    if host.kind == .ssh, !host.isDestroyed {
       return try await deleteSSH(
         name, host: host, environment: environment, recorder: recorder, teardown: teardown,
         hosts: hosts)
@@ -688,7 +566,7 @@ enum RemoteWorkrooms {
     let box = HostID.remote(id)
     // Only on a ready host: one a create left `creating` or a delete left `failed` may not be whole,
     // and that delete exists to finish taking it down.
-    if let teardown, !teardown.skip, host.state == nil {
+    if let teardown, !teardown.skip, host.lifecycle == .serving {
       // `deletionKey`, as the host's own delete finds its driver: a descriptor from before the
       // `driver` field is Docker's.
       guard let driver = environment.driver as? any HostTerminalDriver,
@@ -715,7 +593,7 @@ enum RemoteWorkrooms {
       try await RemoteProvisioning.tearDown(host: box, in: environment)
     } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let liveHost, let left) {
       var remaining = host
-      remaining.state = "failed"
+      remaining.lifecycle = .failed
       await recordLeftBehind(liveHost) { try await recorder.record(name, remaining) }
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: liveHost, cleanup: left)
@@ -747,7 +625,7 @@ enum RemoteWorkrooms {
     }
     do {
       if state == .present {
-        if let teardown, !teardown.skip, host.state == nil {
+        if let teardown, !teardown.skip, host.lifecycle == .serving {
           let result = await teardown.run(
             ScriptRequest(
               script: .teardown, workroom: name, path: path, host: box,

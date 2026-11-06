@@ -67,7 +67,7 @@ enum CreationPanePresentation {
 
   /// The header's second line: "<project> · <destination>", also the provisional row's destination.
   @MainActor static func subtitle(of run: CreationRun) -> String {
-    "\(run.project.displayName) · \(run.kind.destination)"
+    "\(run.project.displayName) · \(CreationRun.destination(of: run.kind))"
   }
 
   // MARK: Accessibility
@@ -99,7 +99,7 @@ enum CreationPanePresentation {
   }
 
   /// D17: the provider's setup sheet needs the user.
-  static func setupAnnouncement(for place: RemoteWorkrooms.Place) -> String {
+  static func setupAnnouncement(for place: HostKind) -> String {
     "\(place.displayName) needs setting up"
   }
 

@@ -28,7 +28,7 @@ enum RemoteProvisioning {
     /// relay (#309), or nil on a remote provider's host, whose git credentials are the provider's.
     var gitHubToken: (@Sendable () async throws -> String)? = nil
     /// What to tell the user when the clone fails, where the provider gives the host its GitHub
-    /// access (`RemoteWorkrooms.Place.credentialHint`).
+    /// access (`HostKind.credentialHint`).
     var credentialHint: String?
     /// Gives the provider's hosts a repository before the first is made, where Workroom can
     /// (exe.dev's GitHub integration), or nil where it can't or needn't.
@@ -325,16 +325,6 @@ enum RemoteProvisioning {
 
   /// How long a script may run, as the app gives a local one through the CLI (`WorkroomCLI.create`).
   static let scriptTimeout: TimeInterval = 600
-
-  /// `WORKROOM_HOST` for a host on `key` (`docs/designs/scripts-on-every-workroom.md`).
-  static func hostKind(_ key: RemoteHosts.DriverKey) -> String {
-    switch key {
-    case .container(let runtime, _): runtime == .docker ? "docker" : "apple"
-    case .boxd: "boxd"
-    case .exeDev: "exedev"
-    case .ssh: "ssh"
-    }
-  }
 
   /// Runs `script` for workroom `name` in its checkout at `path` on `host`, through the host daemon's
   /// `run-script`: `onStart` once a script is found, then `onLine` each line it prints as it prints

@@ -19,7 +19,7 @@ import XCTest
 /// the `terminal-state` feature that keeps screens; a plain `cargo zigbuild` leaves it out.
 class ContainerIntegrationTestCase: XCTestCase {
   /// The runtime's suite says which.
-  var dialect: ContainerHostDriver.Dialect { .docker }
+  var dialect: ContainerRuntime { .docker }
   /// The switch that opts the suite in.
   var optIn: String { "WR_DOCKER_CONTAINER_TESTS" }
 
@@ -40,7 +40,7 @@ class ContainerIntegrationTestCase: XCTestCase {
       throw XCTSkip("set TEST_RUNNER_WR_LINUX_DAEMON to the Linux workroomd")
     }
     daemon = URL(fileURLWithPath: path)
-    let runtimeKind: RemoteWorkrooms.Runtime = dialect == .apple ? .apple : .docker
+    let runtimeKind = dialect
     guard let found = RemoteHosts.executable(for: runtimeKind) else {
       throw XCTSkip("\(runtimeKind.rawValue)'s CLI isn't installed")
     }
