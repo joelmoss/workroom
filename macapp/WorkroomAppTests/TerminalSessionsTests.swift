@@ -413,6 +413,34 @@ final class TerminalSessionsTests: XCTestCase {
     watching.cancel()
   }
 
+  /// A target's panes live in their own object, but every change to them still publishes the
+  /// sessions' `objectWillChange` BEFORE it lands: the saved-layout dirty mark and the observing
+  /// views depend on both halves, until the sessions move to `@Observable` (plan step 3.5).
+  func testEveryPaneChangePublishesBeforeItLands() {
+    let s = makeSessions()
+    let first = s.addTab(for: target)
+    let second = s.addTab(for: target)
+    var seen: [TerminalTab.ID?] = []
+    let watching = s.objectWillChange.sink { _ in seen.append(s.focusedTab(for: self.target)?.id) }
+
+    s.focus(first.id, for: target)
+    XCTAssertEqual(seen.first, second.id, "published while the old focus was still in place")
+
+    seen = []
+    s.moveTab(first.id, toIndex: 1, for: target)
+    XCTAssertFalse(seen.isEmpty, "a reorder publishes")
+    XCTAssertEqual(s.displayedTabIDs(for: target), [second.id, first.id])
+
+    seen = []
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertFalse(seen.isEmpty, "a split publishes")
+
+    seen = []
+    s.closeTab(second.id, for: target)
+    XCTAssertFalse(seen.isEmpty, "a close publishes")
+    watching.cancel()
+  }
+
   func testActiveAgentsIncludeBackgroundTargetsAndDeduplicateProviders() {
     let sessions = makeSessions()
     let other = TerminalTarget(

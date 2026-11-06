@@ -49,7 +49,8 @@ app by name, since every workroom's app, test host and XCUITest app is called "W
 ## Packages and build troubleshooting
 
 - **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomVCS`, `WorkroomWire`,
-  `WorkroomSystem`, `DaemonConnection`, `HostDrivers`, `DesignSystem`, `SyntaxHighlighting`), each in
+  `WorkroomSystem`, `DaemonConnection`, `HostDrivers`, `DesignSystem`, `SyntaxHighlighting`,
+  `TerminalModel`), each in
   Swift 6 language mode with its own tests, run by `make app-package-test` rather than
   `make app-test`. A file that names a package's type imports that package itself; nothing
   re-exports one. A package depends on Foundation (AppKit and SwiftUI too, for `DesignSystem`), its

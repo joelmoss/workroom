@@ -49,6 +49,8 @@ packages:
     path: Packages/WorkroomWire
   SyntaxHighlighting:
     path: Packages/SyntaxHighlighting
+  TerminalModel:
+    path: Packages/TerminalModel
   # git backend: SwiftGitX (libgit2, pure-Swift). Local repositories are read here; the bundled
   # workroomd serves the same reads over its VCS service. Both feed one VCSProviding model layer.
   SwiftGitX:
@@ -153,6 +155,7 @@ targets:
       - package: DaemonConnection
       - package: HostDrivers
       - package: WorkroomWire
+      - package: TerminalModel
       - target: workroom-session
         embed: false
         link: false
@@ -367,6 +370,7 @@ targets:
       - package: DaemonConnection
       - package: HostDrivers
       - package: WorkroomWire
+      - package: TerminalModel
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

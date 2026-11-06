@@ -7,8 +7,8 @@ import WorkroomDomain
 /// this runs; `SavedLayoutStore` owns the file.
 ///
 /// Capture reads only through existing public queries plus the one new
-/// `TerminalSessions.sessionCapture(forTargetID:)`, so the four pane dictionaries stay
-/// `@Published private` where they belong.
+/// `TerminalSessions.sessionCapture(forTargetID:)`, so each target's pane state stays private where
+/// it belongs.
 extension AppStore {
   /// This window's whole restorable state, right now.
   ///

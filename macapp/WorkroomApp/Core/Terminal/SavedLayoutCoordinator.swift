@@ -20,7 +20,7 @@ final class SavedLayoutCoordinator {
   ///
   /// The dirty sources publish faster than 1 Hz whenever a terminal is doing anything:
   /// `TerminalSessions.pulsePaneActivity` bumps a `@Published` dict per activity report, and every
-  /// live-title/cwd/progress update reassigns `tabsByTarget` (`TerminalTab` is a value type). A plain
+  /// live-title/cwd/progress update replaces the tab's record (`TerminalTab` is a value). A plain
   /// cancel-and-replace debounce therefore has its deadline pushed out forever while output streams,
   /// and **never fires** — so splitting a pane beside a running dev server would never be saved.
   ///
