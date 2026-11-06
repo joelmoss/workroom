@@ -8,49 +8,9 @@ import XCTest
 /// These two encoders live in different languages and cannot share a definition, so the only thing
 /// keeping them honest is a test on each side asserting the same bytes. The byte literals here are
 /// deliberate: asserting "encode then decode round-trips" would pass happily while both halves
-/// drifted together away from what the daemon actually speaks.
+/// drifted together away from what the daemon actually speaks. The envelope's own tests are the
+/// codec's, in the DaemonConnection package (`DaemonControlCodecTests`).
 final class DaemonControlClientTests: XCTestCase {
-
-  // MARK: - Envelope
-
-  func testEnvelopeHeaderIsServiceThenStreamThenLength() {
-    let bytes = DaemonControlClient.encodeEnvelope(
-      service: .terminal, stream: 0xDEAD_BEEF, payload: [1, 2, 3])
-    XCTAssertEqual(bytes[0], 0x01, "terminal service")
-    XCTAssertEqual(Array(bytes[1..<5]), [0xDE, 0xAD, 0xBE, 0xEF], "stream id, big-endian")
-    XCTAssertEqual(Array(bytes[5..<9]), [0, 0, 0, 3], "payload length, big-endian")
-    XCTAssertEqual(Array(bytes[9...]), [1, 2, 3])
-  }
-
-  func testEnvelopeRoundTrips() throws {
-    let payload = Array(repeating: UInt8(7), count: 5000)
-    let bytes = DaemonControlClient.encodeEnvelope(service: .control, stream: 1, payload: payload)
-    let decoded = try XCTUnwrap(DaemonControlClient.decodeEnvelope(bytes))
-    XCTAssertEqual(decoded.payload, payload)
-    XCTAssertEqual(decoded.consumed, bytes.count)
-  }
-
-  func testEnvelopeNeedsMoreBytesRatherThanGuessing() {
-    let bytes = DaemonControlClient.encodeEnvelope(service: .control, stream: 1, payload: [9, 9])
-    for cut in 0..<bytes.count {
-      XCTAssertNil(
-        DaemonControlClient.decodeEnvelope(Array(bytes.prefix(cut))),
-        "a \(cut)-byte prefix should not decode")
-    }
-  }
-
-  /// The layering the whole design rests on: a terminal frame inside an envelope, out again
-  /// unchanged.
-  func testASessionFrameSurvivesTheEnvelope() throws {
-    let frame = SessionFrame(kind: .list)
-    let wire = DaemonControlClient.encodeEnvelope(
-      service: .control, stream: 0, payload: frame.encoded())
-    let decoded = try XCTUnwrap(DaemonControlClient.decodeEnvelope(wire))
-
-    var frames = SessionFrameDecoder()
-    frames.push(decoded.payload)
-    XCTAssertEqual(try frames.next(), frame)
-  }
 
   // MARK: - Descriptors
 

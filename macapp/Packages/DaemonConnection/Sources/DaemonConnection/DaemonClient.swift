@@ -95,18 +95,18 @@ public final class DaemonClient: @unchecked Sendable {
   /// `Service::Vcs`, `Service::File`, `Service::Status` and `Service::Forward` in the daemon's
   /// envelope. Status is retired (#382) and never asked, but a daemon from before then may still
   /// send on it, which is dropped rather than failing the connection.
-  private static let vcsService: UInt8 = 2
-  public static let fileService: UInt8 = 3
-  private static let statusService: UInt8 = 4
-  private static let forwardService: UInt8 = 5
+  private static let vcsService = DaemonService.vcs.rawValue
+  public static let fileService = DaemonService.file.rawValue
+  private static let statusService = DaemonService.status.rawValue
+  private static let forwardService = DaemonService.forward.rawValue
   /// `Service::Layout` (#255): JSON like the others, and chunked like VCS, since a layout can be
   /// larger than one envelope.
-  public static let layoutService: UInt8 = 6
+  public static let layoutService = DaemonService.layout.rawValue
   /// `Service::ProgramStatus` (#358): requests on their own streams, events on stream 0.
-  public static let programStatusService: UInt8 = 7
+  public static let programStatusService = DaemonService.programStatus.rawValue
   /// `Service::Control`: the session list a terminal helper answers (#239). Its payloads are
   /// `SessionFrame`s, not a chunk flag and JSON.
-  private static let controlService: UInt8 = 0
+  private static let controlService = DaemonService.control.rawValue
   /// Live forwarded streams, keyed by the multiplex stream id the daemon echoes on every envelope.
   /// Every access holds `lock`: the insert in `reserveForward`, the remove in `releaseForward`, the
   /// read in `receive()` and the clear in `fail()`.
@@ -327,34 +327,22 @@ public final class DaemonClient: @unchecked Sendable {
   /// The host's session list: the same `List` frame the local control client sends.
   public func sessions() async throws -> [SessionDescriptor] {
     let reply = try await request(
-      bytes: Data(SessionFrame(kind: .list).encoded()), timeout: 30,
-      service: Self.controlService)
-    var frames = SessionFrameDecoder()
-    frames.push(Array(reply))
-    guard let frame = try frames.next() else {
+      bytes: Data(DaemonControl.list()), timeout: 30, service: Self.controlService)
+    guard let frame = try DaemonControl.firstFrame(of: reply) else {
       throw HostConnectionError.serviceUnavailable("Incomplete session list.")
     }
-    guard frame.kind == .sessions else {
-      // `.failure` carries the daemon's reason: a list over the frame cap, for one.
-      let reason = String(decoding: frame.payload, as: UTF8.self)
-      throw HostConnectionError.serviceUnavailable("No session list: \(reason)")
-    }
-    return try SessionDescriptor.decodeList(frame.payload)
+    return try DaemonControl.sessionList(in: frame)
   }
 
   /// The same `Kill` frame the local control client sends, on this connection's Control service.
   public func endSession(_ session: UUID) async throws -> Bool {
     guard let identifier = SessionIdentifier(uuidString: session.uuidString) else { return true }
     let reply = try await request(
-      bytes: Data(
-        SessionFrame(kind: .kill, payload: SessionIdentifierPayload.encode(identifier)).encoded()),
-      timeout: 30, service: Self.controlService)
-    var frames = SessionFrameDecoder()
-    frames.push(Array(reply))
-    guard let frame = try frames.next() else {
+      bytes: Data(DaemonControl.kill(identifier)), timeout: 30, service: Self.controlService)
+    guard let frame = try DaemonControl.firstFrame(of: reply) else {
       throw HostConnectionError.serviceUnavailable("Incomplete kill reply.")
     }
-    return frame.kind == .acknowledged
+    return DaemonControl.killed(frame)
   }
 
   /// Asks a run session's supervisor to restart, stop or quit (#522), on this connection's Control
@@ -365,7 +353,8 @@ public final class DaemonClient: @unchecked Sendable {
       throw HostConnectionError.serviceUnavailable("This host's workroomd predates run sessions.")
     }
     let reply = try await request(
-      bytes: Data(signal.frame(session: session)), timeout: 10, service: Self.controlService)
+      bytes: Data(DaemonControl.signal(signal, session: session)), timeout: 10,
+      service: Self.controlService)
     guard let answer = RunSignalReply.decode(Array(reply)) else {
       throw HostConnectionError.serviceUnavailable("No reply to a run signal.")
     }
@@ -419,7 +408,7 @@ public final class DaemonClient: @unchecked Sendable {
       guard lock.withLock({ !closed }) else { return }
       do {
         try sendOnWrites(
-          Self.envelope(service: Self.forwardService, stream: stream, payload: payload))
+          DaemonEnvelope.encode(service: Self.forwardService, stream: stream, payload: payload))
       } catch {
         fail(error)
       }
@@ -575,17 +564,6 @@ public final class DaemonClient: @unchecked Sendable {
 
   private static let logger = Logger(subsystem: "com.developwithstyle.workroom", category: "daemon")
 
-  /// One envelope: the service byte, the stream, the payload length, then the payload.
-  private static func envelope(service: UInt8 = vcsService, stream: UInt32, payload: Data) -> Data {
-    var envelope = Data([service])
-    for value in [stream, UInt32(payload.count)] {
-      var value = value.bigEndian
-      withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
-    }
-    envelope.append(payload)
-    return envelope
-  }
-
   /// The payloads to send for one request: exactly one, byte-identical to what shipped before, or a
   /// marker-framed sequence when the body exceeds one envelope.
   ///
@@ -609,7 +587,7 @@ public final class DaemonClient: @unchecked Sendable {
   public func close() async { fail(HostConnectionError.connectionLost) }
 
   public func request<Request: Encodable>(
-    _ request: Request, timeout: TimeInterval = 30, service: UInt8 = 2
+    _ request: Request, timeout: TimeInterval = 30, service: UInt8 = DaemonService.vcs.rawValue
   ) async throws -> Data {
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -699,7 +677,7 @@ public final class DaemonClient: @unchecked Sendable {
           do {
             for payload in Self.payloads(for: bytes, chunked: chunked) {
               try sendOnWrites(
-                Self.envelope(service: service, stream: stream, payload: payload),
+                DaemonEnvelope.encode(service: service, stream: stream, payload: payload),
                 stallAfter: timeout / 2)
             }
           } catch {
@@ -783,11 +761,8 @@ public final class DaemonClient: @unchecked Sendable {
     var chunk = [UInt8](repeating: 0, count: 65536)
     do {
       while true {
-        while buffer.count >= 9 {
-          let header = Array(buffer.prefix(9))
-          let stream = header[1..<5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-          let length = header[5..<9].reduce(0) { ($0 << 8) | Int($1) }
-          let service = header[0]
+        while let header = DaemonEnvelope.header(of: buffer) {
+          let (service, stream, length) = (header.service, header.stream, header.length)
           // Stream 0 is the daemon's own: File watch events and, from a daemon before #382, the
           // Status service's verdict changes, never a reply. On the VCS service it has always been a
           // violation and still is.
@@ -811,9 +786,10 @@ public final class DaemonClient: @unchecked Sendable {
           else {
             throw HostConnectionError.serviceUnavailable("Invalid daemon envelope.")
           }
-          guard buffer.count >= 9 + length else { break }
-          let payload = Data(buffer.dropFirst(9).prefix(length))
-          buffer = Data(buffer.dropFirst(9 + length))
+          let headerSize = DaemonEnvelope.headerSize
+          guard buffer.count >= headerSize + length else { break }
+          let payload = Data(buffer.dropFirst(headerSize).prefix(length))
+          buffer = Data(buffer.dropFirst(headerSize + length))
           // A Forward payload is one OPCODE byte then raw connection bytes, NOT a chunk flag then
           // JSON, so it is routed before the chunk guard every other service's payload satisfies.
           // Three of the five opcodes (DATA, EOF, CLOSE) are neither 0 nor 1, so leaving this below

@@ -46,11 +46,16 @@ public enum RunSignalReply: Equatable, Sendable {
     var frames = SessionFrameDecoder()
     frames.push(payload)
     guard let frame = try? frames.next() else { return nil }
+    return RunSignalReply(frame: frame)
+  }
+
+  /// The reply one frame carries, or nil when it is not a reply to a signal.
+  public init?(frame: SessionFrame) {
     switch frame.kind {
-    case .acknowledged: return .delivered
+    case .acknowledged: self = .delivered
     case .failure:
       let reason = String(decoding: frame.payload, as: UTF8.self)
-      return reason.hasPrefix("no session ") ? .noSuchSession : .refused(reason)
+      self = reason.hasPrefix("no session ") ? .noSuchSession : .refused(reason)
     default: return nil
     }
   }

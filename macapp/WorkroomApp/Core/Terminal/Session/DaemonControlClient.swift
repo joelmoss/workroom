@@ -38,16 +38,8 @@ extension PersistentSessionControlClient: SessionControlPlane {}
 struct DaemonControlClient: SessionControlPlane {
   let socketPath: String
 
-  enum Service: UInt8 {
-    case control = 0x00
-    case terminal = 0x01
-  }
-
   func list() -> [SessionDescriptor] {
-    transact(SessionFrame(kind: .list)) { frame in
-      guard frame.kind == .sessions else { return nil }
-      return try? SessionDescriptor.decodeList(frame.payload)
-    } ?? []
+    transact(DaemonControl.list()) { try? DaemonControl.sessionList(in: $0) } ?? []
   }
 
   /// Served by filtering `list()` rather than by its own frame: the daemon's session count is the
@@ -62,68 +54,41 @@ struct DaemonControlClient: SessionControlPlane {
   /// answering `.notOwned` for the first would throw away a live session. Going through `transact`
   /// directly keeps nil meaning "nothing readable came back".
   func ownership(identifier: SessionIdentifier) -> SessionOwnership {
-    let sessions = transact(SessionFrame(kind: .list)) { frame -> [SessionDescriptor]? in
-      guard frame.kind == .sessions else { return nil }
-      return try? SessionDescriptor.decodeList(frame.payload)
-    }
+    let sessions = transact(DaemonControl.list()) { try? DaemonControl.sessionList(in: $0) }
     guard let sessions else { return .unreachable }
     return sessions.contains { $0.identifier == identifier } ? .owned : .notOwned
   }
 
   func kill(identifier: SessionIdentifier) -> Bool {
-    transact(
-      SessionFrame(kind: .kill, payload: SessionIdentifierPayload.encode(identifier))
-    ) { $0.kind == .acknowledged } ?? false
+    transact(DaemonControl.kill(identifier)) { DaemonControl.killed($0) } ?? false
   }
 
   /// Asks a run session's supervisor to restart, stop or quit (#522). Nil when the daemon could not
   /// be asked, predates run sessions, or did not answer: the signal may or may not have been sent.
   func signal(session: UUID, _ signal: RunSignal) -> RunSignalReply? {
-    transact(bytes: signal.frame(session: session), minimumVersion: DaemonHandshake.minRunVersion) {
-      RunSignalReply.decode($0.encoded())
-    }
+    transact(
+      DaemonControl.signal(signal, session: session),
+      minimumVersion: DaemonHandshake.minRunVersion
+    ) { RunSignalReply(frame: $0) }
   }
 
   /// Tags `session` with `workroom` from now on. Nil when the daemon could not be asked, predates
   /// retagging, or did not answer; false when it refused (no such session).
   func retag(session: UUID, workroom: String) -> Bool? {
     transact(
-      bytes: SessionRetag.frame(session: session, workroom: workroom),
+      DaemonControl.retag(session: session, workroom: workroom),
       minimumVersion: DaemonHandshake.minRetagVersion
-    ) { SessionRetag.decode($0.encoded()) }
+    ) { SessionRetag.reply(to: $0) }
   }
 
-  // MARK: - Wire
+  // MARK: - Transport
 
-  static func encodeEnvelope(service: Service, stream: UInt32, payload: [UInt8]) -> [UInt8] {
-    var bytes: [UInt8] = [service.rawValue]
-    for shift in [24, 16, 8, 0] { bytes.append(UInt8((stream >> UInt32(shift)) & 0xFF)) }
-    let length = UInt32(payload.count)
-    for shift in [24, 16, 8, 0] { bytes.append(UInt8((length >> UInt32(shift)) & 0xFF)) }
-    bytes.append(contentsOf: payload)
-    return bytes
-  }
-
-  static let envelopeHeaderSize = 9
-
-  /// `nil` when the envelope is not yet complete.
-  static func decodeEnvelope(_ bytes: [UInt8]) -> (payload: [UInt8], consumed: Int)? {
-    guard bytes.count >= envelopeHeaderSize else { return nil }
-    var length = 0
-    for index in 5..<9 { length = length << 8 | Int(bytes[index]) }
-    let end = envelopeHeaderSize + length
-    guard bytes.count >= end else { return nil }
-    return (Array(bytes[envelopeHeaderSize..<end]), end)
-  }
-
-  private func transact<T>(_ frame: SessionFrame, parse: (SessionFrame) -> T?) -> T? {
-    transact(bytes: frame.encoded(), minimumVersion: 1, parse: parse)
-  }
-
+  /// One Control request on its own connection, answered by the first reply frame `parse` reads.
+  ///
   /// `minimumVersion`: the daemon's own greeting must be at least this, or nothing is sent, since
   /// an older daemon drops a frame it does not know without answering.
   private func transact<T>(
-    bytes frame: [UInt8], minimumVersion: UInt16, parse: (SessionFrame) -> T?
+    _ frame: [UInt8], minimumVersion: UInt16 = 1, parse: (SessionFrame) -> T?
   ) -> T? {
     let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
@@ -163,14 +128,15 @@ struct DaemonControlClient: SessionControlPlane {
     guard greeting.version >= minimumVersion else { return nil }
     buffer.removeFirst(greeting.consumed)
 
-    let envelope = Self.encodeEnvelope(service: .control, stream: 0, payload: frame)
+    let envelope = DaemonEnvelope.encode(
+      service: DaemonService.control.rawValue, stream: 0, payload: frame)
     guard send(descriptor, envelope) else { return nil }
 
     // Loop rather than parse once: the daemon may send an unrelated envelope first, and a control
     // client that gave up on the first non-matching frame would be racy rather than wrong.
     let deadline = Date().addingTimeInterval(2)
     while Date() < deadline {
-      if let decoded = Self.decodeEnvelope(buffer) {
+      if let decoded = DaemonEnvelope.decode(buffer) {
         buffer.removeFirst(decoded.consumed)
         var frames = SessionFrameDecoder()
         frames.push(decoded.payload)

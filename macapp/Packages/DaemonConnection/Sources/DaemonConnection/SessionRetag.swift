@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomWire
 
 /// The daemon's `Retag` frame: tag a live session with another workroom, for a Quick Terminal pane
 /// that moved into one. A Control frame `WorkroomWire` predates, so it is encoded here, as `Signal`
@@ -17,5 +18,10 @@ public enum SessionRetag {
   /// is.
   public static func decode(_ payload: [UInt8]) -> Bool? {
     RunSignalReply.decode(payload).map { $0 == .delivered }
+  }
+
+  /// `decode`, from a frame already read.
+  public static func reply(to frame: SessionFrame) -> Bool? {
+    RunSignalReply(frame: frame).map { $0 == .delivered }
   }
 }
