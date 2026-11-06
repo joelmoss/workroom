@@ -34,7 +34,7 @@ pub(crate) mod vcs;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod testing {
-    pub use crate::daemon::serve::{AttachRequest, BUILD, handle_connection, parse_session_id};
+    pub use crate::daemon::serve::{BUILD, handle_connection};
     pub use crate::daemon::transport::{FdStream, PipeTransport, close, set_nonblocking};
     pub use crate::host::credential::{
         CredentialError, configure_git, credential, helper_command, install_relay,

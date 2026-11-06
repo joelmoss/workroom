@@ -1059,7 +1059,7 @@ fn update(method: &str, request: &Value, sessions: &SessionStore) -> Result<Valu
     let session = request
         .get("session")
         .and_then(Value::as_str)
-        .and_then(|text| crate::daemon::serve::parse_session_id(std::ffi::OsStr::new(text)))
+        .and_then(|text| wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(text)))
         .ok_or("unsupported")?;
     // `None` for `clear`; for `seen`, the revision shown and the states it covers.
     let seen = if method == "clear" {

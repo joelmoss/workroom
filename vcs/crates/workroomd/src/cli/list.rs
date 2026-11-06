@@ -45,7 +45,9 @@ pub fn run_list(args: &[String]) -> ExitCode {
             frames.push(&envelope.payload);
             while let Ok(Some(frame)) = frames.next_frame() {
                 if frame.kind == FrameKind::Sessions {
-                    for (id, attached, command) in serve::decode_descriptor_list(&frame.payload) {
+                    for (id, attached, command) in
+                        wr_protocol::terminal::decode_descriptor_list(&frame.payload)
+                    {
                         println!(
                             "{id} {} {command}",
                             if attached { "attached" } else { "detached" }

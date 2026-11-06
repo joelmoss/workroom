@@ -30,7 +30,7 @@ fn fixture(name: &str) -> &'static str {
 }
 
 fn uuid(text: &str) -> SessionId {
-    crate::daemon::serve::parse_session_id(std::ffi::OsStr::new(text)).unwrap()
+    wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(text)).unwrap()
 }
 
 const BOOT: &str = "6f1c2e0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b";

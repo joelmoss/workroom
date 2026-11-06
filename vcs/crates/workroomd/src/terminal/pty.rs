@@ -36,26 +36,8 @@ pub const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5
 pub const DEFAULT_COLUMNS: u16 = 80;
 pub const DEFAULT_ROWS: u16 = 24;
 
-/// A terminal's size. Zero pixels means nobody has said: a client with no terminal, or one older
-/// than pixel sizes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Size {
-    pub columns: u16,
-    pub rows: u16,
-    pub x_pixels: u16,
-    pub y_pixels: u16,
-}
-
-impl Size {
-    /// A size with no pixels.
-    pub fn cells(columns: u16, rows: u16) -> Size {
-        Size {
-            columns,
-            rows,
-            ..Size::default()
-        }
-    }
-}
+/// A terminal's size, as a Resize frame carries it.
+pub use wr_protocol::terminal::Size;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PtyError {

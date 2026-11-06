@@ -1,4 +1,5 @@
 use super::*;
+use wr_protocol::terminal::decode_descriptor_list;
 
 /// A container's daemon is its entrypoint, so nothing makes the socket's folder first (#308):
 /// the lock beside the socket is the first thing written there.
@@ -392,22 +393,6 @@ fn an_oversized_session_list_is_refused_rather_than_panicking() {
     assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE + 1]), FrameKind::Failure);
 }
 
-#[test]
-fn a_retag_payload_is_an_id_and_a_bounded_non_empty_utf8_workroom() {
-    let with = |tail: &[u8]| [&[7u8; 16][..], tail].concat();
-    assert_eq!(
-        decode_retag(&with(b"/w/x")),
-        Ok((SessionId([7; 16]), "/w/x"))
-    );
-    assert!(decode_retag(&with(b"")).is_err(), "empty workroom");
-    assert!(decode_retag(&[7; 15]).is_err(), "short id");
-    assert!(decode_retag(&with(&[0xff, 0xfe])).is_err(), "not UTF-8");
-    let longest = "a".repeat(MAX_WORKROOM_BYTES);
-    assert!(decode_retag(&with(longest.as_bytes())).is_ok());
-    let too_long = "a".repeat(MAX_WORKROOM_BYTES + 1);
-    assert!(decode_retag(&with(too_long.as_bytes())).is_err());
-}
-
 fn env(entries: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
     entries
         .iter()
@@ -505,12 +490,6 @@ fn many_sessions_at_the_metadata_bounds_still_list() {
 }
 
 #[test]
-fn an_empty_descriptor_list_is_just_a_zero_count() {
-    assert_eq!(encode_descriptor_list(&[]), vec![0, 0, 0, 0]);
-    assert!(decode_descriptor_list(&[0, 0, 0, 0]).is_empty());
-}
-
-#[test]
 fn a_truncated_descriptor_list_decodes_to_what_survived() {
     use crate::terminal::session::SessionInfo;
     let full = encode_descriptor_list(&[SessionInfo {
@@ -524,139 +503,4 @@ fn a_truncated_descriptor_list_decodes_to_what_survived() {
     }]);
     // Cut mid-descriptor: no panic, no phantom entry.
     assert!(decode_descriptor_list(&full[..20]).is_empty());
-}
-
-#[test]
-fn a_resize_round_trips_with_its_pixels() {
-    let size = Size {
-        columns: 120,
-        rows: 40,
-        x_pixels: 1200,
-        y_pixels: 800,
-    };
-    assert_eq!(decode_resize(&encode_resize(size)), Some(size));
-}
-
-/// An older client's resize still works, with no pixels, and a short one is ignored.
-#[test]
-fn a_resize_without_pixels_still_resizes() {
-    assert_eq!(decode_resize(&[0, 120, 0, 40]), Some(Size::cells(120, 40)));
-    assert_eq!(decode_resize(&[0, 120, 0]), None);
-}
-
-#[test]
-fn attach_request_round_trips() {
-    let request = AttachRequest {
-        id: Some(SessionId([7u8; 16])),
-        shell: Some(OsString::from("/bin/zsh")),
-        command: Some(OsString::from("npm run dev")),
-        cwd: Some(OsString::from("/Users/x/dev/workroom")),
-        resources: Some(OsString::from(
-            "/Applications/Workroom.app/Contents/Resources/ghostty",
-        )),
-        columns: 120,
-        rows: 40,
-        x_pixels: 1200,
-        y_pixels: 800,
-        env: vec![
-            (OsString::from("TERM"), OsString::from("xterm-ghostty")),
-            (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
-        ],
-        existing_only: true,
-    };
-    let decoded = AttachRequest::decode(&request.encode()).expect("decode");
-    assert_eq!(decoded, request);
-}
-
-/// A value containing `=` must survive: PATH-like variables and commands are full of them, and
-/// splitting on the LAST rather than the FIRST separator would quietly corrupt them.
-#[test]
-fn attach_request_keeps_equals_signs_in_values() {
-    let request = AttachRequest {
-        id: Some(SessionId([1u8; 16])),
-        command: Some(OsString::from("FOO=bar make test ARGS=-v")),
-        env: vec![(OsString::from("K"), OsString::from("a=b=c"))],
-        ..Default::default()
-    };
-    let decoded = AttachRequest::decode(&request.encode()).expect("decode");
-    assert_eq!(decoded.command, request.command);
-    assert_eq!(decoded.env, request.env);
-}
-
-#[test]
-fn attach_request_survives_empty_optional_fields() {
-    let request = AttachRequest {
-        id: Some(SessionId([2u8; 16])),
-        ..Default::default()
-    };
-    let decoded = AttachRequest::decode(&request.encode()).expect("decode");
-    assert_eq!(decoded, request);
-}
-
-#[test]
-fn attach_request_rejects_a_short_payload() {
-    assert!(AttachRequest::decode(&[0u8; 8]).is_none());
-}
-
-/// The app sets these and passes NO flags, so the environment alone has to be sufficient.
-/// The app sets these and passes NO flags, so the environment alone has to be sufficient.
-#[test]
-fn attach_request_reads_the_app_environment_contract() {
-    let vars = [
-        (
-            "WORKROOM_SESSION_ID",
-            "550e8400-e29b-41d4-a716-446655440000",
-        ),
-        ("WORKROOM_SESSION_SHELL", "/bin/fish"),
-        ("WORKROOM_SESSION_CWD", "/work/room"),
-        ("WORKROOM_SESSION_COMMAND", ""),
-    ];
-    let request = AttachRequest::from_vars(
-        |name| {
-            vars.iter()
-                .find(|(k, _)| *k == name)
-                .map(|(_, v)| OsString::from(*v))
-        },
-        vec![(OsString::from("TERM"), OsString::from("xterm-ghostty"))],
-    );
-    assert_eq!(
-        request.id.map(|i| i.to_hyphenated()).as_deref(),
-        Some("550e8400-e29b-41d4-a716-446655440000")
-    );
-    assert_eq!(request.shell.as_deref(), Some(OsStr::new("/bin/fish")));
-    assert_eq!(request.cwd.as_deref(), Some(OsStr::new("/work/room")));
-    // An empty COMMAND is "ordinary shell", not a command — `sh -c ""` exits instantly and
-    // reads as a session that died on creation.
-    assert_eq!(request.command, None);
-    assert_eq!(request.env.len(), 1);
-}
-
-/// Falls back to the plain SHELL when the app did not name one.
-#[test]
-fn attach_request_falls_back_to_the_plain_shell_variable() {
-    let request = AttachRequest::from_vars(
-        |name| (name == "SHELL").then(|| OsString::from("/bin/zsh")),
-        Vec::new(),
-    );
-    assert_eq!(request.shell.as_deref(), Some(OsStr::new("/bin/zsh")));
-}
-
-#[test]
-fn parses_the_apps_uuid_format() {
-    let id = parse_session_id(OsStr::new("550E8400-E29B-41D4-A716-446655440000")).expect("id");
-    assert_eq!(id.to_hyphenated(), "550e8400-e29b-41d4-a716-446655440000");
-    // Unhyphenated is the same id: the separators carry no information.
-    assert_eq!(
-        parse_session_id(OsStr::new("550e8400e29b41d4a716446655440000")),
-        Some(id)
-    );
-}
-
-#[test]
-fn rejects_a_malformed_session_id() {
-    assert!(parse_session_id(OsStr::new("not-a-uuid")).is_none());
-    assert!(parse_session_id(OsStr::new("")).is_none());
-    // 31 and 33 hex digits are both wrong, and neither may be silently padded or truncated.
-    assert!(parse_session_id(OsStr::new(&"a".repeat(31))).is_none());
-    assert!(parse_session_id(OsStr::new(&"a".repeat(33))).is_none());
 }

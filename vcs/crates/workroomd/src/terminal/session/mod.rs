@@ -182,32 +182,8 @@ type Metadata = Vec<(String, String)>;
 /// sessions the app's layout does not name (#255). A hand-off carries it, so it never resets.
 pub const CREATED_KEY: &str = "created";
 
-/// The client-minted session id: 16 bytes, matching `SessionIdentifier`'s UUID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SessionId(pub [u8; 16]);
-
-impl SessionId {
-    pub fn from_slice(bytes: &[u8]) -> Option<SessionId> {
-        (bytes.len() == 16).then(|| {
-            let mut id = [0u8; 16];
-            id.copy_from_slice(bytes);
-            SessionId(id)
-        })
-    }
-
-    /// Lowercase hyphenated UUID, so daemon logs and the app's own logs can be grepped together.
-    pub fn to_hyphenated(self) -> String {
-        let h: Vec<String> = self.0.iter().map(|b| format!("{b:02x}")).collect();
-        format!(
-            "{}-{}-{}-{}-{}",
-            h[0..4].concat(),
-            h[4..6].concat(),
-            h[6..8].concat(),
-            h[8..10].concat(),
-            h[10..16].concat()
-        )
-    }
-}
+/// The client-minted session id, as the wire carries it.
+pub use wr_protocol::terminal::SessionId;
 
 /// One session as a hand-off carries it to the next program: what that program needs to adopt it.
 #[derive(Debug, Clone, PartialEq, Eq)]

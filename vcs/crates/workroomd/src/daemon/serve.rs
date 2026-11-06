@@ -17,7 +17,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -37,6 +37,9 @@ use wr_protocol::frame::{
     Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE, RunSignal,
 };
 use wr_protocol::reply::Reply;
+use wr_protocol::terminal::{
+    AttachRequest, MAX_WORKROOM_BYTES, SessionDescriptor, decode_resize, decode_retag,
+};
 
 pub const BUILD: &str = concat!("workroomd ", env!("CARGO_PKG_VERSION"));
 
@@ -858,16 +861,6 @@ fn run_invocation(
     })
 }
 
-/// The session list, in the wire format `SessionDescriptor.decodeList` already reads.
-///
-/// Matching the shipped Swift encoding rather than inventing a second one: the app's decoder,
-/// its `SessionDescriptor` type and every caller of `liveSessions()` then work against either
-/// backend with no branching. The format is
-/// `count:u32`, then per session `id:[16]`, `pid:i32`, `tty:u64`, `cwd:string`,
-/// `attached:u8`, `metadata:entries` — all big-endian, strings length-prefixed.
-///
-/// `tty` is zero: the Swift helper reports the pty's device number, and nothing in the app reads
-/// it (verified by grep). Reporting a fabricated value would be worse than reporting none.
 /// Wraps an encoded session list in the frame to send, refusing one that is too big.
 ///
 /// A `Sessions` reply grows with the session count and each session's cwd, and unlike output it
@@ -960,102 +953,39 @@ fn kill_off_the_reader(
     Some(acknowledged())
 }
 
+/// The session list as a `Sessions` reply carries it (`wr_protocol::terminal`).
+///
+/// Each session's metadata: the foreground command, under the key the app's own daemon uses for
+/// it, so a pane title resolves identically on either backend; then what the client said about the
+/// session, which is how the app finds a workroom's sessions (#255). The Claude profile is sent
+/// only for a confirmed `claude`, empty when unset; its absence tells the app there is no account
+/// to show (#480).
 pub fn encode_descriptor_list(sessions: &[crate::terminal::session::SessionInfo]) -> Vec<u8> {
-    fn put_string(out: &mut Vec<u8>, value: &str) {
-        out.extend_from_slice(&(value.len() as u32).to_be_bytes());
-        out.extend_from_slice(value.as_bytes());
-    }
-
-    let mut out = Vec::new();
-    out.extend_from_slice(&(sessions.len() as u32).to_be_bytes());
-    for info in sessions {
-        out.extend_from_slice(&info.id.0);
-        out.extend_from_slice(&info.pid.to_be_bytes());
-        out.extend_from_slice(&0u64.to_be_bytes());
-        put_string(&mut out, info.cwd.as_deref().unwrap_or(""));
-        out.push(u8::from(info.attached));
-        // Metadata: the foreground command, under the key the app's own daemon uses for it, so a
-        // pane title resolves identically on either backend; then what the client said about the
-        // session, which is how the app finds a workroom's sessions (#255). The Claude profile is
-        // sent only for a confirmed `claude`, empty when unset; its absence tells the app there is
-        // no account to show (#480).
-        let entries = u32::from(info.foreground.is_some())
-            + u32::from(info.claude_profile.is_some())
-            + info.metadata.len() as u32;
-        out.extend_from_slice(&entries.to_be_bytes());
-        if let Some(command) = &info.foreground {
-            put_string(&mut out, "command");
-            put_string(&mut out, command);
-        }
-        if let Some(profile) = &info.claude_profile {
-            put_string(&mut out, "claude_profile");
-            put_string(&mut out, profile);
-        }
-        for (key, value) in &info.metadata {
-            put_string(&mut out, key);
-            put_string(&mut out, value);
-        }
-    }
-    out
-}
-
-/// Decodes what `encode_descriptor_list` produced, for `workroomd list`'s own output.
-pub fn decode_descriptor_list(payload: &[u8]) -> Vec<(String, bool, String)> {
-    let mut out = Vec::new();
-    let mut at = 0usize;
-    let take = |at: &mut usize, n: usize| -> Option<&[u8]> {
-        let slice = payload.get(*at..*at + n)?;
-        *at += n;
-        Some(slice)
-    };
-    let Some(count) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap())) else {
-        return out;
-    };
-    for _ in 0..count {
-        let Some(id) = take(&mut at, 16).and_then(SessionId::from_slice) else {
-            break;
-        };
-        if take(&mut at, 4).is_none() || take(&mut at, 8).is_none() {
-            break;
-        }
-        let Some(cwd_len) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
-        else {
-            break;
-        };
-        if take(&mut at, cwd_len as usize).is_none() {
-            break;
-        }
-        let Some(attached) = take(&mut at, 1).map(|b| b[0] == 1) else {
-            break;
-        };
-        let Some(entries) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
-        else {
-            break;
-        };
-        let mut command = String::from("-");
-        for _ in 0..entries {
-            let Some(key_len) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
-            else {
-                break;
-            };
-            let key = take(&mut at, key_len as usize)
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_default();
-            let Some(value_len) =
-                take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
-            else {
-                break;
-            };
-            let value = take(&mut at, value_len as usize)
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_default();
-            if key == "command" {
-                command = value;
-            }
-        }
-        out.push((id.to_hyphenated(), attached, command));
-    }
-    out
+    let descriptors: Vec<SessionDescriptor<'_>> = sessions
+        .iter()
+        .map(|info| SessionDescriptor {
+            id: info.id,
+            pid: info.pid,
+            cwd: info.cwd.as_deref().unwrap_or(""),
+            attached: info.attached,
+            metadata: info
+                .foreground
+                .iter()
+                .map(|command| ("command", command.as_str()))
+                .chain(
+                    info.claude_profile
+                        .iter()
+                        .map(|profile| ("claude_profile", profile.as_str())),
+                )
+                .chain(
+                    info.metadata
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str())),
+                )
+                .collect(),
+        })
+        .collect();
+    wr_protocol::terminal::encode_descriptor_list(&descriptors)
 }
 
 /// Connects to a running daemon, or returns None if there is nothing listening.
@@ -1089,10 +1019,6 @@ pub fn spawn_daemon(binary: &Path, socket: &Path) -> std::io::Result<()> {
     command.spawn().map(|_| ())
 }
 
-/// The longest workroom id a session keeps (#255). A local workroom's id is `wr|<project>|<name>`,
-/// and a macOS path is at most 1024 bytes, so every real one fits. One past it drops the session's
-/// metadata rather than cutting an id that would then match the wrong workroom, or none.
-pub const MAX_WORKROOM_BYTES: usize = 2048;
 /// The longest title a session keeps, cut at a character boundary. Every session's metadata goes
 /// out in one list reply (`list_reply`), so one long title must not be able to fill it.
 pub const MAX_TITLE_BYTES: usize = 256;
@@ -1138,202 +1064,6 @@ pub fn session_metadata(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
     metadata
 }
 
-/// A Retag frame's payload: the 16-byte session id, then the new workroom as UTF-8. Held to the
-/// rule `session_metadata` applies to a workroom: non-empty, and no longer than
-/// `MAX_WORKROOM_BYTES` (refused, never cut, since a cut id could match the wrong workroom).
-pub fn decode_retag(payload: &[u8]) -> Result<(SessionId, &str), &'static str> {
-    let id = payload.get(..16).and_then(SessionId::from_slice);
-    let workroom = payload.get(16..).map(std::str::from_utf8);
-    match (id, workroom) {
-        (Some(id), Some(Ok(workroom))) if !workroom.is_empty() => {
-            if workroom.len() > MAX_WORKROOM_BYTES {
-                Err("a retag's workroom is too long")
-            } else {
-                Ok((id, workroom))
-            }
-        }
-        _ => Err("a retag names one 16-byte session id and a non-empty UTF-8 workroom"),
-    }
-}
-
-/// A Resize frame's payload: columns and rows, then the pixels. An older daemon reads the first
-/// two and ignores the rest.
-pub fn encode_resize(size: Size) -> Vec<u8> {
-    [size.columns, size.rows, size.x_pixels, size.y_pixels]
-        .iter()
-        .flat_map(|value| value.to_be_bytes())
-        .collect()
-}
-
-/// The size in a Resize frame's payload. An older client sends no pixels.
-fn decode_resize(payload: &[u8]) -> Option<Size> {
-    let value = |at: usize| {
-        Some(u16::from_be_bytes([
-            *payload.get(at)?,
-            *payload.get(at + 1)?,
-        ]))
-    };
-    Some(Size {
-        columns: value(0)?,
-        rows: value(2)?,
-        x_pixels: value(4).unwrap_or(0),
-        y_pixels: value(6).unwrap_or(0),
-    })
-}
-
-/// How a client asks for a session to exist: the id, plus what to run if it does not yet.
-///
-/// These travel in the Attach frame rather than being read from the daemon's own environment,
-/// because the daemon is long-lived and shared — its environment is whatever it happened to be
-/// spawned with, which may be minutes or days older than the client's, and belongs to a different
-/// workroom. The client knows the shell, the directory and the metadata; the daemon must be told.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct AttachRequest {
-    pub id: Option<SessionId>,
-    pub shell: Option<OsString>,
-    pub command: Option<OsString>,
-    pub cwd: Option<OsString>,
-    /// Ghostty's bundled resources, whose `shell-integration` subtree the shell is pointed at.
-    /// Without it the shell loads the user's own config directly and the app loses OSC 2/7 —
-    /// which is what a pane's title and working directory are read from.
-    pub resources: Option<OsString>,
-    pub columns: u16,
-    pub rows: u16,
-    pub x_pixels: u16,
-    pub y_pixels: u16,
-    /// Passed to the child verbatim. The client's environment, not the daemon's.
-    pub env: Vec<(OsString, OsString)>,
-    /// Attach only if the session exists; never create it (`CREATE=0`). A restored pane sends it,
-    /// because creating would hand back a fresh shell that looks like the one that was running
-    /// there. A local relay that is refused attaches again without it, after saying so (#459).
-    /// Every daemon-owned restored pane, local or remote, sends it, so one request cannot
-    /// race the answer; the app asks first (`confirmBeforeAttach`) only about a session the
-    /// retired Swift helper held, whose client has no such flag. Inverted so the default,
-    /// and an older client that never sends it, keeps create-on-attach.
-    pub existing_only: bool,
-}
-
-impl AttachRequest {
-    /// 16-byte id, then NUL-terminated `KEY=VALUE` entries. Deliberately not a serialisation
-    /// format: the envelope already carries the version, the fields are all strings, and a
-    /// dependency-free encoding keeps the daemon linkable into anything.
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&self.id.map(|i| i.0).unwrap_or([0u8; 16]));
-        let mut put = |key: &str, value: &[u8]| {
-            out.extend_from_slice(key.as_bytes());
-            out.push(b'=');
-            out.extend_from_slice(value);
-            out.push(0);
-        };
-        if let Some(shell) = &self.shell {
-            put("SHELL", shell.as_bytes());
-        }
-        if let Some(command) = &self.command {
-            put("COMMAND", command.as_bytes());
-        }
-        if let Some(cwd) = &self.cwd {
-            put("CWD", cwd.as_bytes());
-        }
-        if let Some(resources) = &self.resources {
-            put("RESOURCES", resources.as_bytes());
-        }
-        put("COLS", self.columns.to_string().as_bytes());
-        put("ROWS", self.rows.to_string().as_bytes());
-        put("XPIXELS", self.x_pixels.to_string().as_bytes());
-        put("YPIXELS", self.y_pixels.to_string().as_bytes());
-        if self.existing_only {
-            put("CREATE", b"0");
-        }
-        for (key, value) in &self.env {
-            let mut entry = b"ENV:".to_vec();
-            entry.extend_from_slice(key.as_bytes());
-            out.extend_from_slice(&entry);
-            out.push(b'=');
-            out.extend_from_slice(value.as_bytes());
-            out.push(0);
-        }
-        out
-    }
-
-    pub fn decode(payload: &[u8]) -> Option<AttachRequest> {
-        let id = SessionId::from_slice(payload.get(..16)?)?;
-        let mut request = AttachRequest {
-            id: Some(id),
-            ..Default::default()
-        };
-        for entry in payload[16..].split(|b| *b == 0) {
-            if entry.is_empty() {
-                continue;
-            }
-            let Some(split) = entry.iter().position(|b| *b == b'=') else {
-                continue;
-            };
-            let (key, value) = (&entry[..split], &entry[split + 1..]);
-            let value = OsString::from_vec(value.to_vec());
-            match key {
-                b"SHELL" => request.shell = Some(value),
-                b"COMMAND" => request.command = Some(value),
-                b"CWD" => request.cwd = Some(value),
-                b"RESOURCES" => request.resources = Some(value),
-                b"COLS" => {
-                    request.columns = value.to_string_lossy().parse().unwrap_or(0);
-                }
-                b"ROWS" => {
-                    request.rows = value.to_string_lossy().parse().unwrap_or(0);
-                }
-                b"XPIXELS" => {
-                    request.x_pixels = value.to_string_lossy().parse().unwrap_or(0);
-                }
-                b"YPIXELS" => {
-                    request.y_pixels = value.to_string_lossy().parse().unwrap_or(0);
-                }
-                b"CREATE" => request.existing_only = value == "0",
-                _ => {
-                    if let Some(name) = key.strip_prefix(b"ENV:") {
-                        request.env.push((OsString::from_vec(name.to_vec()), value));
-                    }
-                }
-            }
-        }
-        Some(request)
-    }
-
-    /// Built from the environment `PersistentSessionService.launchEnvironment` sets, so the app
-    /// needs no new contract: it already exports every one of these.
-    pub fn from_env() -> AttachRequest {
-        Self::from_vars(|name| std::env::var_os(name), std::env::vars_os().collect())
-    }
-
-    /// The parsing, with the environment passed in.
-    ///
-    /// Separated from `from_env` so tests never touch the process environment. Setting variables
-    /// in a test is a shared-mutable-state bug waiting to happen: these tests passed serially and
-    /// raced each other under cargo's default parallelism, each clobbering the ids the others had
-    /// just set.
-    pub fn from_vars(
-        get: impl Fn(&str) -> Option<OsString>,
-        env: Vec<(OsString, OsString)>,
-    ) -> AttachRequest {
-        let var = |name: &str| get(name).filter(|v| !v.is_empty());
-        AttachRequest {
-            // An empty COMMAND is the app's "ordinary shell", not a command to run: `sh -c ""`
-            // exits instantly and reads as a session that died on creation.
-            id: var("WORKROOM_SESSION_ID").and_then(|v| parse_session_id(&v)),
-            shell: var("WORKROOM_SESSION_SHELL").or_else(|| var("SHELL")),
-            command: var("WORKROOM_SESSION_COMMAND"),
-            cwd: var("WORKROOM_SESSION_CWD"),
-            resources: var("WORKROOM_SESSION_RESOURCES"),
-            columns: 0,
-            rows: 0,
-            x_pixels: 0,
-            y_pixels: 0,
-            env,
-            existing_only: false,
-        }
-    }
-}
-
 /// The socket the app told us to use, matching `PersistentSessionService`'s
 /// `WORKROOM_SESSION_SOCKET`. `attachCommand()` passes no flags, so the environment is the whole
 /// contract on the app's side.
@@ -1341,22 +1071,6 @@ pub fn socket_from_env() -> Option<PathBuf> {
     std::env::var_os("WORKROOM_SESSION_SOCKET")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-}
-
-/// Parses the app's `uuidString` form — uppercase and hyphenated — tolerantly: hex digits only,
-/// exactly 32 of them. Tolerant because the id is a stored-data contract with Swift's `UUID`
-/// description, and a formatting difference should not silently orphan a live session.
-pub fn parse_session_id(value: &OsStr) -> Option<SessionId> {
-    let text = String::from_utf8(value.as_bytes().to_vec()).ok()?;
-    let hex: String = text.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if hex.len() != 32 {
-        return None;
-    }
-    let mut bytes = [0u8; 16];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
-    }
-    Some(SessionId(bytes))
 }
 
 #[cfg(test)]

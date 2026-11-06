@@ -29,11 +29,12 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use workroomd::testing::{
-    AttachRequest, FdStream, PipeTransport, Screens, SessionId, SessionStore, close,
-    handle_connection, set_nonblocking,
+    FdStream, PipeTransport, Screens, SessionId, SessionStore, close, handle_connection,
+    set_nonblocking,
 };
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
+use wr_protocol::terminal::AttachRequest;
 
 /// Drives a daemon from the client side of a stream, speaking the real protocol.
 struct Client {

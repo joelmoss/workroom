@@ -9,6 +9,7 @@ use crate::daemon::serve;
 use crate::terminal::pty::Size;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
+use wr_protocol::terminal::{AttachRequest, encode_resize};
 
 /// What a restored pane (`--no-create`) shows when its session has ended and the daemon kept no
 /// record of it (`crate::terminal::screens`), if it cannot be given a new session instead.
@@ -23,7 +24,7 @@ use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 /// A run session's pane is never given a shell, here or remotely: it would run the run command,
 /// starting a dev server nobody asked for (#522, D2). It says the run ended and holds, and the app,
 /// which knows the run, offers to start it again.
-fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
+fn ended(request: &AttachRequest, no_spawn: bool) -> ExitCode {
     let run = crate::terminal::run::is_requested(&request.env);
     if !no_spawn && !run {
         return fall_back_to_shell(
@@ -66,7 +67,7 @@ const RUN_ENDED_NOTICE: &str = "The run command that was running here has ended.
 ///
 /// Never returns on success — `exec` replaces this process, so the shell inherits the pty, the
 /// window title, the exit status, everything. Returns only when `exec` itself fails.
-fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode {
+fn fall_back_to_shell(request: &AttachRequest, reason: &str) -> ExitCode {
     use std::os::unix::process::CommandExt;
 
     // A run command runs only in a daemon session, whose supervisor the app can stop, restart and
@@ -182,6 +183,13 @@ fn candidate_directories(requested: Option<&std::ffi::OsString>) -> Vec<PathBuf>
     .collect()
 }
 
+/// The attach request this process's environment makes (`AttachRequest::from_vars`): the
+/// variables `PersistentSessionService.launchEnvironment` sets, and the environment the child is
+/// given.
+fn request_from_env() -> AttachRequest {
+    AttachRequest::from_vars(|name| std::env::var_os(name), std::env::vars_os().collect())
+}
+
 pub fn run_attach(args: &[String]) -> ExitCode {
     // **Only a relay falls back**, and this is read BEFORE anything can write to it. `attach` is
     // also a documented subcommand someone can type, and answering a typo by silently opening a
@@ -209,7 +217,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // Parsed BEFORE the socket is resolved, so a misconfigured invocation can still fall back to a
     // shell: `fall_back_to_shell` reads the shell, cwd and resources the app exported, and those
     // arrive in the same environment.
-    let mut request = serve::AttachRequest::from_env();
+    let mut request = request_from_env();
     // `--no-create`: attach only if the session exists (see `AttachRequest::existing_only`).
     request.existing_only = args.iter().any(|arg| arg == "--no-create");
     // `--no-spawn`: never start a daemon. On a remote host that is the supervisor's job, and a
@@ -314,7 +322,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             fall_back_to_shell(&request, reason)
         }
     };
-    let encode = |request: &serve::AttachRequest| {
+    let encode = |request: &AttachRequest| {
         let attach = Frame::new(FrameKind::Attach, request.encode());
         Envelope::new(Service::Terminal, 1, attach.encode()).encode()
     };
@@ -366,7 +374,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                     && !run =>
             {
                 replaced = true;
-                attach = encode(&serve::AttachRequest {
+                attach = encode(&AttachRequest {
                     existing_only: false,
                     ..request.clone()
                 });
@@ -594,7 +602,7 @@ fn relay_resizes(mut stream: std::os::unix::net::UnixStream, initial: Size) {
         };
         size = next;
 
-        let frame = Frame::new(FrameKind::Resize, serve::encode_resize(size));
+        let frame = Frame::new(FrameKind::Resize, encode_resize(size));
         if stream
             .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
             .is_err()
