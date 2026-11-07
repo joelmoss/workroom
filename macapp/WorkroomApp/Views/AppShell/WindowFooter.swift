@@ -8,7 +8,6 @@ struct WindowFooter: View {
   static let dividerGap: CGFloat = 24
 
   @Default(.usageInWindowFooter) private var showsUsage
-  @State private var themeTick = 0
   /// The free space between the usage row and the notifications button.
   @State private var gap: CGFloat = .infinity
   @Environment(\.themeTokens) private var tokens
@@ -37,6 +36,5 @@ struct WindowFooter: View {
     .background(tokens.panel)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("window.footer")
-    .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
   }
 }

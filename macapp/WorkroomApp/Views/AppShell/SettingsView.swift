@@ -33,10 +33,6 @@ struct SettingsView: View {
   @State private var selection: SettingsPane = Defaults[.settingsSelectedPane]
   @State private var hovered: SettingsPane?
   @State private var history = SettingsHistory()
-  // Bumped on `.themeDidChange` so the themed background/highlights repaint live when the user
-  // switches theme in the Appearance pane (the tokens are read from the `ThemeService` singleton,
-  // which SwiftUI doesn't observe on its own here).
-  @State private var themeTick = 0
   @Environment(\.themeTokens) private var tokens
 
   /// The header strip's height, level with the window's traffic lights, as System Settings' is.
@@ -59,7 +55,6 @@ struct SettingsView: View {
     .ignoresSafeArea(.container, edges: .top)
     .background(tokens.panel.ignoresSafeArea())
     .background(SettingsWindowThemer())
-    .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
     .onAppear {
       selection = Defaults[.settingsSelectedPane]
       // Fresh host option reads each time Settings opens, so a snapshot saved meanwhile shows.

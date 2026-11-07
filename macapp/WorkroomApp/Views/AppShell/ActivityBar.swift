@@ -15,9 +15,6 @@ struct ActivityBar: View {
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var vcsStatus: VCSStatusService
   @Default(.showInspector) private var showInspector
-  // Bumped on `.themeDidChange` so the flat panel fill repaints live on a theme switch (tokens are
-  // read from the `ThemeService` singleton, which SwiftUI doesn't observe on its own).
-  @State private var themeTick = 0
   @Environment(\.themeTokens) private var tokens
   /// The rail's width. Not private: it's the trailing-most column of the window, so the title bar's
   /// trailing controls centre their last button over this rail's icon column
@@ -61,7 +58,6 @@ struct ActivityBar: View {
     // Not under the title bar: a fill there leaves the bar out of the window's drag region — see
     // `RootView.detail`.
     .background(tokens.panel, ignoresSafeAreaEdges: [])
-    .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
   }
 
   /// Whether the inspector's current target has an uncommitted working tree — drives the Changes

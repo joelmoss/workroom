@@ -7,8 +7,6 @@ struct QuickTerminalContent: View {
   let sessions: TerminalPanes
   /// Read here so a changed "Opens in" applies to the next tab, not only the next window.
   @Default(.quickTerminalDirectory) private var directory
-  /// The surrounding window isn't SwiftUI, so nothing else redraws this on a theme switch.
-  @State private var themeTick = 0
   /// Injected by `QuickTerminalController`, which hosts this view.
   @Environment(\.themeTokens) private var tokens
 
@@ -26,8 +24,5 @@ struct QuickTerminalContent: View {
       // The tab strip takes the titlebar's place; without this the hosting view insets everything
       // below the (hidden) titlebar and leaves an empty strip above the tabs.
       .ignoresSafeArea()
-      .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in
-        themeTick += 1
-      }
   }
 }

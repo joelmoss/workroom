@@ -80,8 +80,10 @@ struct VCSToolbar: View {
 
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var vcsStatus: VCSStatusService
-  /// `ThemeService.shared` isn't observed by SwiftUI, so a theme switch would otherwise leave the
-  /// hairlines stale. Same pattern as `ActivityBar`.
+  /// Not what repaints the toolbar on a theme switch: `\.themeTokens` does that (measured:
+  /// `ThemeRepaintTests.testVCSToolbarRepaintsOnASwitch` passed with this removed). Bumped on
+  /// `.themeDidChange` for the `.id` below, which resets the toolbar's identity on a switch, and with
+  /// it the segments' hover and copy-anchor state. Kept so that reset stays as it was.
   @State private var themeTick = 0
 
   @Environment(\.themeTokens) private var theme
