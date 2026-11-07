@@ -63,7 +63,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
 
   private func host(_ store: AppStore) -> (NSWindow, NSView) {
     // Rooted as the inspector roots it (`InspectorPaneViewController.setContent`).
-    let root = ChangesPanel(sessions: store.terminals)
+    let root = ChangesPanelAdapter()
       .themeTokensRoot()
       .environmentObject(store)
       .environmentObject(store.vcsStatus)

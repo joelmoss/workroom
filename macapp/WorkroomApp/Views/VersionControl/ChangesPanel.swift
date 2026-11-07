@@ -22,10 +22,12 @@ struct ChangedFileRow: View, Equatable {
   /// `@ObservedObject TerminalPanes` and compute this itself, which meant every terminal
   /// title/activity publish rebuilt all `renderCap` rows (WORKROOM-2B's defect, one pane over).
   let selection: FocusedTabSelection?
-  /// Still an `@EnvironmentObject`: the row's click/context-menu actions need the store, and those are
-  /// four call sites, not one value. `AppStore` publishes on status sweeps — seconds apart — not per
-  /// terminal keystroke, so it is not the invalidation source this fix was about.
-  @EnvironmentObject var store: AppStore
+  /// Whether the inspector's workroom has no directory on this Mac (a remote or missing one), which
+  /// disables "Open File in…". Part of the equality gate: it is the one window state the row shows.
+  let targetIsMissing: Bool
+  /// What a click, the hover toolbar and the context menu do. Behaviour-constant (the file and its
+  /// source are arguments, not captures), which is what lets `==` leave it out.
+  let actions: ChangedFileActions
   @State private var hovering = false
   /// Time of the last click, so a quick second click promotes the preview tab to persisted (eager
   /// single/double discrimination — the single click never waits).
@@ -102,16 +104,16 @@ struct ChangedFileRow: View, Equatable {
     .onHover { hovering = $0 }
     .onTapGesture {
       if NSEvent.modifierFlags.contains(.command) {
-        store.openChangedFileInEditor(file)  // ⌘-click → open the file, not the diff (issue #93)
+        actions.openInEditor(file)  // ⌘-click → open the file, not the diff (issue #93)
         lastClick = nil  // clear any pending double-click state so the next plain click is fresh
         return
       }
       let now = Date()
       if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
-        store.openDiffPersistent(file, source: source)  // quick second click → persist
+        actions.openDiff(file, source, true)  // quick second click → persist
         lastClick = nil
       } else {
-        store.openDiffPreview(file, source: source)  // eager: open the preview immediately
+        actions.openDiff(file, source, false)  // eager: open the preview immediately
         lastClick = now
       }
     }
@@ -126,18 +128,18 @@ struct ChangedFileRow: View, Equatable {
     // keeps the external-editor path (issue #93). Both no-op for a deleted file (no working copy).
     .contextMenu {
       Button {
-        store.openChangedFileInApp(file)
+        actions.openInApp(file)
       } label: {
         Label("Open File", systemImage: "doc.text")
       }
       .disabled(file.change == .deleted)
       Button {
-        store.openChangedFileInEditor(file)
+        actions.openInEditor(file)
       } label: {
         Label("Open File in \(openFileEditorName)", systemImage: "arrow.up.forward.app")
       }
       // A remote workroom's files aren't on this Mac.
-      .disabled(file.change == .deleted || store.inspectorTarget?.isMissing != false)
+      .disabled(file.change == .deleted || targetIsMissing)
     }
   }
 
@@ -153,7 +155,7 @@ struct ChangedFileRow: View, Equatable {
           accessibilityLabel: "Open file",
           identifier: "changes.file.openFile.\(file.path)"
         ) {
-          store.openChangedFileInApp(file)
+          actions.openInApp(file)
         }
       }
       .padding(.horizontal, 2)
@@ -186,13 +188,14 @@ struct ChangedFileRow: View, Equatable {
 
   /// The equality gate behind `.equatable()` in `fileList`: a panel body pass that rebuilds the rows,
   /// such as a status sweep that changes one file, re-creates every row value, and only the ones whose
-  /// file, group or selected-ness actually changed get a body. `@EnvironmentObject`/`@State`/
-  /// `@Default` still invalidate past this gate, so hover, the editor-preference label and
-  /// store-driven updates are unaffected. A theme change needs no input here, unlike `HistoryRow`'s:
-  /// every row reads `tokens` outside any ternary (the change letter's `color`), so the theme
-  /// environment repaints each row past the gate.
+  /// file, group, selected-ness or target availability actually changed get a body. `@State` and
+  /// `@Default` still invalidate past this gate, so hover and the editor-preference label are
+  /// unaffected. A theme change needs no input here, unlike `HistoryRow`'s: every row reads `tokens`
+  /// outside any ternary (the change letter's `color`), so the theme environment repaints each row
+  /// past the gate.
   nonisolated static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
     lhs.file == rhs.file && lhs.source == rhs.source && lhs.isSelected == rhs.isSelected
+      && lhs.targetIsMissing == rhs.targetIsMissing
   }
 
   // Letter / colour / word live in `ChangeBadge` (Core) so the mapping is unit-testable — see its
@@ -214,26 +217,44 @@ struct ChangedFileRow: View, Equatable {
   }
 }
 
+/// What a changed-file row's clicks do: open its diff (as a preview, or persisted), open the file in
+/// the app, or in the external editor.
+struct ChangedFileActions {
+  /// The diff of `file` from `source`; `persist` keeps the tab rather than previewing it.
+  var openDiff: (_ file: ChangedFile, _ source: DiffSource, _ persist: Bool) -> Void
+  var openInApp: (ChangedFile) -> Void
+  var openInEditor: (ChangedFile) -> Void
+}
+
+/// What the Changes panel shows from the window: the inspector's workroom and, read lazily, the
+/// focused content tab.
+struct ChangesPanelInputs {
+  /// The inspector's target row (`AppStore.inspectorTargetID`), nil when nothing is shown.
+  var targetID: SidebarID?
+  /// That row's target, nil once it has gone.
+  var target: TerminalTarget?
+  /// What the focused content tab shows. A closure, called only while the file list renders, so the
+  /// focused-tab and `TerminalPanes` reads stay the panel's own (see `ChangesPanel.fileList`).
+  var selection: () -> FocusedTabSelection?
+}
+
 /// The Changes section body: the selected workroom's branch, sync state, working-tree changes
-/// (relative to HEAD), and CI. Reads `store.selectedTargetID` + `vcsStatus.workroomStatuses`.
+/// (relative to HEAD), and CI. Reads its inputs' target + `vcsStatus.workroomStatuses`.
 /// Covers the empty/edge states the design review enumerated: nothing selected, a project
 /// (non-target), missing directory, still-loading, unknown (probe failed), and clean.
+///
+/// Store-free: `ChangesPanelAdapter` builds `inputs` and `actions` from the window's `AppStore`.
 struct ChangesPanel: View {
-  @EnvironmentObject var store: AppStore
   @EnvironmentObject var vcsStatus: VCSStatusService
-  /// Read HERE so the rows don't have to. While each `ChangedFileRow` observed `TerminalPanes`
-  /// directly, every terminal title/activity write rebuilt all `renderCap` rows — the same defect
-  /// that produced the WORKROOM-2B App Hang in the History pane (see `HistoryPanel`'s invalidation
-  /// diagram). The panel reads the selected target's focused tab through Observation, so only that
-  /// target's pane changes re-run it, and no row rebuilds (`ChangedFileRowInvalidationTests`).
-  let sessions: TerminalPanes
+  let inputs: ChangesPanelInputs
+  let actions: ChangedFileActions
   /// Hard cap on rendered rows so a huge change set can't blow up the list (the underlying
   /// output is already byte-capped by `StatusCommandRunner`).
   private let renderCap = 200
 
   var body: some View {
     Group {
-      if let sid = store.inspectorTargetID, sid.isStatusable {
+      if let sid = inputs.targetID, sid.isStatusable {
         content(for: sid)
       } else {
         inspectorMessage("Select a workroom to see its changes.")
@@ -244,7 +265,7 @@ struct ChangesPanel: View {
 
   @ViewBuilder
   private func content(for sid: SidebarID) -> some View {
-    let target = store.target(for: sid)
+    let target = inputs.target
     let status = vcsStatus.workroomStatuses[sid]
     // `terminalUnavailability`: a remote workroom this app reaches has its changes read on its host.
     if let reason = target?.terminalUnavailability {
@@ -295,12 +316,20 @@ struct ChangesPanel: View {
   private func fileList(_ files: [ChangedFile], source: DiffSource) -> some View {
     let shown = Array(files.prefix(renderCap))
     // Resolved once for the whole list, not once per row: this is the read that used to make every row
-    // observe `TerminalPanes`.
-    let selection = FocusedTabSelection.current(store: store, sessions: sessions)
+    // observe `TerminalPanes`. While each `ChangedFileRow` observed it directly, every terminal
+    // title/activity write rebuilt all `renderCap` rows — the same defect that produced the
+    // WORKROOM-2B App Hang in the History pane (see `HistoryPanel`'s invalidation diagram). Read
+    // here, in the panel's body, only the selected target's pane changes re-run the panel, and no
+    // row rebuilds (`ChangedFileRowInvalidationTests`).
+    let selection = inputs.selection()
+    let targetIsMissing = inputs.target?.isMissing != false
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
-        ChangedFileRow(file: file, source: source, selection: selection)
-          .equatable()
+        ChangedFileRow(
+          file: file, source: source, selection: selection, targetIsMissing: targetIsMissing,
+          actions: actions
+        )
+        .equatable()
       }
       if files.count > shown.count {
         Text("Showing first \(shown.count) of \(files.count)")
@@ -330,6 +359,44 @@ struct ChangesPanel: View {
   }
 }
 
+/// Builds `ChangesPanel`'s inputs and actions from the window's `AppStore`.
+///
+/// It reads the inspector's target, as the panel's body did; the focused tab and the statuses are
+/// read by the panel, so a terminal pulse reaches the panel and not this, and a status sweep re-runs
+/// the panel alone.
+struct ChangesPanelAdapter: View {
+  @EnvironmentObject var store: AppStore
+
+  var body: some View {
+    let targetID = store.inspectorTargetID
+    ChangesPanel(
+      inputs: ChangesPanelInputs(
+        targetID: targetID,
+        target: targetID.flatMap { $0.isStatusable ? store.target(for: $0) : nil },
+        // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
+        selection: { [store] in
+          FocusedTabSelection.current(store: store, sessions: store.terminals)
+        }),
+      actions: actions)
+  }
+
+  /// `[store]` only, and the file and source as arguments: the capture list is what makes these
+  /// behaviour-constant, which is what lets `ChangedFileRow.==` exclude them.
+  private var actions: ChangedFileActions {
+    ChangedFileActions(
+      openDiff: { [store] file, source, persist in
+        if persist {
+          store.openDiffPersistent(file, source: source)
+        } else {
+          store.openDiffPreview(file, source: source)
+        }
+      },
+      openInApp: { [store] file in store.openChangedFileInApp(file) },
+      openInEditor: { [store] file in store.openChangedFileInEditor(file) }
+    )
+  }
+}
+
 extension SidebarID {
   /// A row whose VCS status the inspector can show: the project root or a workroom, but not the
   /// collapsed `.project` group header. Shared by the Changes and Pull Request panels.
@@ -348,3 +415,32 @@ func inspectorMessage(_ text: String) -> some View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(12)
 }
+
+#if DEBUG
+  #Preview("Changes") {
+    // Three changed files in a workroom, the second open as a diff.
+    let sid = SidebarID.workroom(project: "/tmp/platform", name: "fix-auth")
+    let target = TerminalTarget(
+      id: .workroom(project: "/tmp/platform", name: "fix-auth"), title: "fix-auth",
+      path: "/tmp/platform/fix-auth", unavailability: nil)
+    let status = VCSStatusService(projectStore: ProjectStore())
+    status.workroomStatuses[sid] = WorkroomStatus(
+      dirty: true,
+      changedFiles: [
+        ChangedFile(path: "README.md", change: .modified),
+        ChangedFile(path: "Sources/Auth/Token.swift", change: .added),
+        ChangedFile(path: "Sources/Auth/Legacy.swift", change: .deleted),
+      ],
+      lastChecked: Date())
+    return ChangesPanel(
+      inputs: ChangesPanelInputs(
+        targetID: sid, target: target,
+        selection: { .diff(path: "Sources/Auth/Token.swift", source: .gitWorktree) }),
+      actions: ChangedFileActions(
+        openDiff: { _, _, _ in }, openInApp: { _ in }, openInEditor: { _ in })
+    )
+    .environmentObject(status)
+    .themeTokensRoot()
+    .frame(width: 320, height: 200)
+  }
+#endif

@@ -185,7 +185,7 @@ struct RightInspector: View {
     switch sub {
     case .changes:
       return AnyView(
-        ChangesPanel(sessions: store.terminals)
+        ChangesPanelAdapter()
           .environmentObject(store).environmentObject(vcsStatus)
           .environmentObject(notifications))
     case .files:
