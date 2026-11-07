@@ -12,11 +12,12 @@ enum RunSessionKey {
   static let run = "run"
 }
 
-/// A window's run commands (issue #7): each target's run state and outcome, the run toast's
-/// dismissal bookkeeping, signalling the run's supervisor through its daemon (#522), and the
-/// graceful teardown. Owned by `AppStore` as `runCommand`, and registered with the app's
-/// `RunCommands` while its window is up, which owns what spans windows (run config, the run's
-/// owning window, hand-over, quit). What needs the rest of the store stays in
+/// A window's run commands (issue #7): which tab is each target's run here and its run state, read
+/// and written per target over what its run tab knows of the run (outcome, status, the run toast's
+/// dismissal), the window's toast timers, signalling the run's supervisor through its daemon
+/// (#522), and the graceful teardown. Owned by `AppStore` as `runCommand`, and registered with the
+/// app's `RunCommands` while its window is up, which owns what spans windows (run config, the
+/// run's owning window, hand-over, quit). What needs the rest of the store stays in
 /// `AppStore+RunCommand.swift`: starting and respawning a run (project, host layout, the project
 /// settings request), applying the supervisor's status (the failure banner and diagnosis), the
 /// derived toast list (selection), and the selection-scoped menu actions.
@@ -106,25 +107,38 @@ final class RunCommandController: ObservableObject {
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
   /// `TerminalPanes` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
   ///
-  /// This and the other run-state collections are computed over private stored ones so that a write
+  /// It is the window's pointer to each target's run: which tab is the target's run here, and where
+  /// the window's stop and restart have it. The rest of what is known of the run is the tab's (see
+  /// "The target's run's bookkeeping" below), so a move to another window hands over only this.
+  ///
+  /// This and `pendingRunStarts` are computed over private stored ones so that a write
   /// which changes nothing notifies no one: `@Observable` skips an equal whole-value assignment, but
   /// an in-place write (`runStates[id] = nil`, `insert(_:)`) to a stored property always notifies.
   /// The setter makes every write the first kind. Outside callers got that from `AppStore`'s
   /// forwarding proxies; the controller's own in-place writes always notified, and now dedupe too.
   var runStates: [TerminalTarget.ID: RunState] {
     get { storedRunStates }
-    set { storedRunStates = newValue }
+    set {
+      // Every run tab a pointer names has its bookkeeping cell before anyone reads through the
+      // pointer: the registry's map of cells is not observed, so a view that read a cell not made
+      // yet would never hear the first write to it.
+      for tab in newValue.values.compactMap(\.tab) { _ = terminals.makeRun(of: tab) }
+      storedRunStates = newValue
+    }
   }
   private var storedRunStates: [TerminalTarget.ID: RunState] = [:]
 
-  /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
-  /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
-  /// second, independent process that can coexist with a target's real run command, and must NOT be
-  /// deduped across windows the way `RunCommands.runOwner` dedupes a run command. Only feeds
-  /// `hasLiveRunCommand`, so quit/window-close notice a live agent conversation instead of silently
-  /// SIGHUP'ing it. Not `@Published` — its only reader, `hasLiveRunCommand`, is read imperatively by
-  /// AppKit code at close/quit time (never by a SwiftUI view that needs a re-render), unlike
-  /// `runStates`, which the toolbar/sidebar/menu genuinely observe.
+  /// Live Investigate sessions (issue #49/#146) this window holds, tab → the target whose layout
+  /// holds it. Kept separate from `runStates` (one `RunState` per target, modelling a single
+  /// dev-server-style run): an Investigate session is a second, independent process that can coexist
+  /// with a target's real run command, and must NOT be deduped across windows the way
+  /// `RunCommands.runOwner` dedupes a run command. Only feeds `hasLiveRunCommand`, so quit/window-close
+  /// notice a live agent conversation instead of silently SIGHUP'ing it. Its readers are imperative
+  /// (AppKit code at close/quit time, the delete check), never a SwiftUI view.
+  ///
+  /// The mark is the tab's (`RunCommands.TabRun.investigate`), so it moves with the tab to another
+  /// window and goes when the tab closes. A write's value is not kept: the target is always the one
+  /// whose layout holds the tab now, and a write for a tab this window does not hold does nothing.
   ///
   ///        runStates                    investigateTabs
   ///   [TargetID: RunState]          [TabID: TargetID]
@@ -142,36 +156,96 @@ final class RunCommandController: ObservableObject {
   ///   live Investigate session    `runStates` feeds the actual
   ///                                gracefully-stop loop
   var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] {
-    get { storedInvestigateTabs }
-    set { storedInvestigateTabs = newValue }
+    get {
+      var tabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
+      for tab in terminals.investigateTabIDs {
+        tabs[tab] = terminals.targetID(ofTab: tab)
+      }
+      return tabs
+    }
+    set {
+      let old = investigateTabs
+      for tab in old.keys where newValue[tab] == nil { terminals.run(of: tab)?.investigate = false }
+      for tab in newValue.keys where old[tab] == nil {
+        terminals.makeRun(of: tab)?.investigate = true
+      }
+    }
   }
-  private var storedInvestigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
+
+  // MARK: The target's run's bookkeeping
+  //
+  // What is known of a run is its run tab's (`RunCommands.TabRun`, in the app's `TerminalTabs`), so
+  // it stays with the tab when the workroom moves to another window and goes when the tab closes.
+  // These read and write it per target, through `runStates`, the window's pointer to the target's
+  // run tab. A write for a target with no run tab (none, or `.armed`) has no run to describe and
+  // does nothing: a run's bookkeeping is written once its tab is the target's run.
+
+  /// The target's run tab's bookkeeping here, nil when it has no run tab or nothing is known yet.
+  private func run(_ targetID: TerminalTarget.ID) -> RunCommands.TabRun? {
+    runStates[targetID]?.tab.flatMap(terminals.run(of:))
+  }
+
+  /// The targets' runs' `value`, for every target with a run tab that has one.
+  private func perRun<Value>(
+    _ value: KeyPath<RunCommands.TabRun, Value?>
+  ) -> [TerminalTarget.ID: Value] {
+    runStates.reduce(into: [:]) { values, entry in
+      values[entry.key] = entry.value.tab.flatMap(terminals.run(of:))?[keyPath: value]
+    }
+  }
+
+  /// Write `values` to the targets' runs, only where it changes something, so a write that changes
+  /// nothing notifies no one.
+  private func setPerRun<Value: Equatable>(
+    _ value: ReferenceWritableKeyPath<RunCommands.TabRun, Value?>,
+    _ values: [TerminalTarget.ID: Value]
+  ) {
+    for (targetID, state) in runStates {
+      guard let tab = state.tab, values[targetID] != run(targetID)?[keyPath: value] else {
+        continue
+      }
+      terminals.makeRun(of: tab)?[keyPath: value] = values[targetID]
+    }
+  }
+
+  /// The targets whose run has `flag` set.
+  private func targets(where flag: KeyPath<RunCommands.TabRun, Bool>) -> Set<TerminalTarget.ID> {
+    Set(runStates.keys.filter { run($0)?[keyPath: flag] == true })
+  }
+
+  /// Set `flag` on exactly `targets`' runs, writing only where it changes.
+  private func setTargets(
+    _ flag: ReferenceWritableKeyPath<RunCommands.TabRun, Bool>, _ targets: Set<TerminalTarget.ID>
+  ) {
+    for (targetID, state) in runStates {
+      let on = targets.contains(targetID)
+      guard let tab = state.tab, on != (run(targetID)?[keyPath: flag] ?? false) else { continue }
+      terminals.makeRun(of: tab)?[keyPath: flag] = on
+    }
+  }
 
   /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
   /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
   var runOutcomes: [TerminalTarget.ID: RunOutcome] {
-    get { storedRunOutcomes }
-    set { storedRunOutcomes = newValue }
+    get { perRun(\.outcome) }
+    set { setPerRun(\.outcome, newValue) }
   }
-  private var storedRunOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
 
   /// Targets whose run toast was explicitly dismissed (✕) or auto-dismissed after a terminal state.
   /// Cleared when a fresh run starts. Open-terminal does NOT add here — it lets the visibility rule
   /// hide the toast while the run is on screen, so it reappears when you navigate away.
   var dismissedRunToasts: Set<TerminalTarget.ID> {
-    get { storedDismissedRunToasts }
-    set { storedDismissedRunToasts = newValue }
+    get { targets(where: \.toastDismissed) }
+    set { setTargets(\.toastDismissed, newValue) }
   }
-  private var storedDismissedRunToasts: Set<TerminalTarget.ID> = []
   /// Targets whose LIVE (running/restarting) toast auto-hid after lingering a while — separate from
   /// `dismissedRunToasts` so a run that quietly auto-hid its "still running" toast can still surface
   /// a later terminal (exited/failed) toast; only gates the non-terminal branch of `runToastItems`.
   /// Cleared on a fresh "running" edge (start or restart), so the toast reappears each time.
   var runningToastAutoHidden: Set<TerminalTarget.ID> {
-    get { storedRunningToastAutoHidden }
-    set { storedRunningToastAutoHidden = newValue }
+    get { targets(where: \.toastAutoHidden) }
+    set { setTargets(\.toastAutoHidden, newValue) }
   }
-  private var storedRunningToastAutoHidden: Set<TerminalTarget.ID> = []
   /// Pending auto-dismiss/auto-hide timers, one per target, cancelled on restart so a stale timer
   /// can't dismiss the next run's toast (review: timer cancellation on restart).
   var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
@@ -191,20 +265,18 @@ final class RunCommandController: ObservableObject {
   /// Last status line applied per target, so a repeated report changes nothing (and doesn't re-fire
   /// the auto-dismiss timer). Cleared in `forgetRun`.
   var lastRunStatus: [TerminalTarget.ID: String] {
-    get { storedLastRunStatus }
-    set { storedLastRunStatus = newValue }
+    get { perRun(\.lastStatus) }
+    set { setPerRun(\.lastStatus, newValue) }
   }
-  private var storedLastRunStatus: [TerminalTarget.ID: String] = [:]
 
   /// Runs reattached from a saved session (#522) that have not reported yet. Their first status is
   /// how the run is NOW, not a change the user caused: a running one gets no "Running" toast
   /// (Q13), and a failure it reports (it crashed while the app was closed) never starts an agent
   /// to diagnose it (Q7). Gone before it reports means it ended while the app was closed (Q8).
   var restoredRuns: Set<TerminalTarget.ID> {
-    get { storedRestoredRuns }
-    set { storedRestoredRuns = newValue }
+    get { targets(where: \.restored) }
+    set { setTargets(\.restored, newValue) }
   }
-  private var storedRestoredRuns: Set<TerminalTarget.ID> = []
 
   /// Remote starts asking their host for a run already going (D7), so a second press while it
   /// answers starts nothing more.
@@ -216,36 +288,25 @@ final class RunCommandController: ObservableObject {
 
   // MARK: Hand-over between windows (#444)
 
-  /// Lift `targetID`'s run bookkeeping out of this window. A pending toast timer is cancelled, since
-  /// it would act on this window's toast, and the destination starts its own.
+  /// Lift `targetID`'s run out of this window: its pointer, before the tabs go, so their
+  /// `.tabsRemoved` finds no run of this window's to clear. What is known of the run stays with its
+  /// tab. A pending toast timer is cancelled, since it would act on this window's toast, and the
+  /// destination starts its own.
   func takeHandOff(for targetID: TerminalTarget.ID) -> RunCommands.HandOff {
     let timer = runToastDismissWork.removeValue(forKey: targetID)
     timer?.cancel()
-    let investigate = investigateTabs.filter { $0.value == targetID }.map(\.key)
-    for tab in investigate { investigateTabs[tab] = nil }
     return RunCommands.HandOff(
-      state: runStates.removeValue(forKey: targetID),
-      outcome: runOutcomes.removeValue(forKey: targetID),
-      restored: restoredRuns.remove(targetID) != nil,
-      lastStatus: lastRunStatus.removeValue(forKey: targetID),
-      toastDismissed: dismissedRunToasts.remove(targetID) != nil,
-      toastAutoHidden: runningToastAutoHidden.remove(targetID) != nil,
-      toastTimerPending: timer != nil, investigateTabs: investigate)
+      state: runStates.removeValue(forKey: targetID), toastTimerPending: timer != nil)
   }
 
-  /// The other half of `takeHandOff`, in the window the workroom moved to. A hand-off with no run
-  /// leaves this window's own run for the target as it is.
+  /// The other half of `takeHandOff`, in the window the workroom moved to, once its tabs are this
+  /// window's. A hand-off with no run leaves this window's own run for the target as it is; one
+  /// with a run makes it the target's run here, with its own bookkeeping, not the replaced run's.
   func adopt(_ handOff: RunCommands.HandOff, for targetID: TerminalTarget.ID) {
-    for tab in handOff.investigateTabs { investigateTabs[tab] = targetID }
     guard let state = handOff.state else { return }
-    // This window's own toast state was its replaced run's: the moved run's starts from its own.
-    resetRunToast(for: targetID)
+    // This window's timer was its replaced run's toast's.
+    runToastDismissWork.removeValue(forKey: targetID)?.cancel()
     runStates[targetID] = state
-    runOutcomes[targetID] = handOff.outcome
-    if handOff.restored { restoredRuns.insert(targetID) }
-    lastRunStatus[targetID] = handOff.lastStatus
-    if handOff.toastDismissed { dismissedRunToasts.insert(targetID) }
-    if handOff.toastAutoHidden { runningToastAutoHidden.insert(targetID) }
     // Afresh rather than for what was left of it: a toast lingers a little longer, never forever.
     guard handOff.toastTimerPending else { return }
     if state.isRunning {
@@ -303,7 +364,7 @@ final class RunCommandController: ObservableObject {
   /// the workroom tab-bar dot (issue #79). Derived from `RunOutcome.isFailure`, the same predicate
   /// the banner uses, so "is a failure" has one definition. Cleared on a fresh start and on close.
   func runFailed(for targetID: TerminalTarget.ID) -> Bool {
-    runOutcomes[targetID]?.isFailure ?? false
+    run(targetID)?.outcome?.isFailure ?? false
   }
 
   /// ✕ on the run toast: a real dismiss — it won't reappear for this run (until the next start).
@@ -365,12 +426,13 @@ final class RunCommandController: ObservableObject {
   /// Drop the target's whole run once its run tab is gone (closed or reaped): its state, its outcome
   /// (the red run icon, issue #79), what the window knew of it, and its toast (issue #67). One
   /// assignment clears every phase, so no stop/restart bookkeeping can be left behind to drive a
-  /// later unexpected respawn or first-press hard kill.
+  /// later unexpected respawn or first-press hard kill. The pointer goes last, so a run tab still
+  /// here has its bookkeeping cleared too; a closed one's went with it.
   func clearRun(for targetID: TerminalTarget.ID) {
-    runStates[targetID] = nil
     runOutcomes[targetID] = nil
     forgetRun(for: targetID)
     resetRunToast(for: targetID)
+    runStates[targetID] = nil
   }
 
   // MARK: Run command — supervisor control (issues #7, #522)

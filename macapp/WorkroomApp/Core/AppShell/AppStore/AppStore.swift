@@ -927,13 +927,12 @@ final class AppStore: ObservableObject {
         self.expandedTerminalTargets.remove(targetID)
       }
       // If the target's run terminal was closed/reaped, drop its whole run state (issue #7, review
-      // #1).
+      // #1). A move to another window lifts the run first (`takeHandOff`), so this finds none. What
+      // is known of a run, or that a tab is an Investigate session (#146), is the tab's and went
+      // with a closed or reaped one; a tab handed to another window keeps it.
       if let runTab = self.runCommand.runStates[targetID]?.tab, ids.contains(runTab) {
         self.runCommand.clearRun(for: targetID)
       }
-      // Same idea for a closed/reaped Investigate tab (issue #146) — a second, independent cleanup
-      // path from `.childExited`, since a surface doesn't raise that on every teardown.
-      for id in ids { self.runCommand.investigateTabs.removeValue(forKey: id) }
       // Closing the last terminal in a co-displayed split pane leaves an empty pane whose only
       // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
       // workroom from the split (issue #55). No-op for a solo workroom or a non-member.

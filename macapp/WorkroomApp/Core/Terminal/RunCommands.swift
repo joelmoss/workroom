@@ -8,11 +8,14 @@ import WorkroomWire
 /// window runs a workroom's command (#70), a run's hand-over between windows (#444), the quit and
 /// delete checks that span every window, and the host's own runs for a remote workroom (D7).
 ///
-/// Run state stays per window, in each window's `RunCommandController`. Two windows can show one
-/// workroom with tabs of their own (#444 Q12), and each can hold a run for it (at most one running,
-/// #70), so a run belongs to the window whose tab it is in. Each window's controller is registered
-/// here while the window is up (`WindowRegistry.register`). The Quick Terminal never registers, as
-/// it never joins `WindowRegistry` (ADR 0064).
+/// What is known of a run is its run tab's (`TabRun`), kept beside the tab in the app's
+/// `TerminalTabs`, so it stays put when the tab moves between windows. Which tab is a target's run
+/// is the window's: two windows can show one workroom with tabs of their own (#444 Q12), and each
+/// can hold a run for it (at most one running, #70), so each window's `RunCommandController` keeps,
+/// per target, the pointer to its run tab and its own toast timers. Each window's controller is
+/// registered here while the window is up (`WindowRegistry.register`). The Quick Terminal never
+/// registers, as it never joins `WindowRegistry` (ADR 0064); its tabs' bookkeeping is in the same
+/// registry, so an Investigate pane it hands to a window is still one there.
 ///
 /// Production builds every window's store with `.shared`; tests build an isolated `AppStore()` with
 /// its own, as they do `ProjectStore`.
@@ -122,21 +125,39 @@ final class RunCommands: ObservableObject {
     group.notify(queue: .main) { completion() }
   }
 
+  // MARK: A run tab's bookkeeping
+
+  /// What is known of one run tab's run, or that a tab is an Investigate session (#146). It is the
+  /// tab's, not a window's: it lives beside the tab in `TerminalTabs`, is read only by the window
+  /// holding the tab, and goes when the tab closes or is reaped, never when the tab moves to another
+  /// window (#444, ADR 0069). Each cell is observed on its own, so a write to one run redraws only
+  /// what reads that run. Windows reach it through `RunCommandController`'s per-target facades.
+  @MainActor
+  @Observable
+  final class TabRun {
+    /// How the run ended, nil while it has not (issue #67).
+    var outcome: RunCommandController.RunOutcome?
+    /// The last status line applied, so a repeated report changes nothing.
+    var lastStatus: String?
+    /// Reattached from a saved session and not reported yet (#522).
+    var restored = false
+    /// Its toast was dismissed, by hand or after lingering.
+    var toastDismissed = false
+    /// Its live toast auto-hid after lingering.
+    var toastAutoHidden = false
+    /// The tab is an Investigate session (#146), not a run command.
+    var investigate = false
+  }
+
   // MARK: Hand-over between windows (#444)
 
-  /// One target's run bookkeeping, carried with its workroom to another window
-  /// (`RunCommandController.takeHandOff` and `adopt`). The run tab's process moves with its
-  /// surface; this is everything the window it left knew about it.
+  /// Which run is a target's in the window a workroom leaves, carried to the window it joins
+  /// (`RunCommandController.takeHandOff` and `adopt`): the window's pointer to its run tab, and
+  /// whether the window's toast timer for it was still to fire, so the destination starts its own.
+  /// Everything else known of the run is the run tab's (`TabRun`), which stays where it is.
   struct HandOff {
     var state: RunCommandController.RunState?
-    var outcome: RunCommandController.RunOutcome?
-    var restored = false
-    var lastStatus: String?
-    var toastDismissed = false
-    var toastAutoHidden = false
-    /// A toast timer was still to fire: the destination starts its own.
     var toastTimerPending = false
-    var investigateTabs: [TerminalTab.ID] = []
   }
 
   // MARK: A remote workroom's runs (D7)

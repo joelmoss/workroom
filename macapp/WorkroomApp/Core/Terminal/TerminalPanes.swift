@@ -1085,6 +1085,20 @@ final class TerminalPanes {
     tabRegistry.surface(of: tabID, heldBy: holder)
   }
 
+  /// What is known of `tabID`'s run while this window holds it, nil when nothing is yet. It stays
+  /// with the tab when the tab moves to another window, and goes when the tab closes.
+  func run(of tabID: TerminalTab.ID) -> RunCommands.TabRun? {
+    tabRegistry.run(of: tabID, heldBy: holder)
+  }
+
+  /// `run(of:)`, made on first use; nil for a tab this window does not hold.
+  func makeRun(of tabID: TerminalTab.ID) -> RunCommands.TabRun? {
+    tabRegistry.makeRun(of: tabID, heldBy: holder)
+  }
+
+  /// The Investigate tabs (#146) this window holds, detached panes included.
+  var investigateTabIDs: [TerminalTab.ID] { tabRegistry.investigateTabs(heldBy: holder) }
+
   /// The focused tab (selection), falling back to the first tab in strip order.
   func focusedTab(for target: TerminalTarget) -> TerminalTab? {
     if let id = targets[target.id]?.state.focused, let match = record(id, in: target.id) {

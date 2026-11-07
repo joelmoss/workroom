@@ -346,30 +346,33 @@ extension AppStore {
     if let session {
       tab = terminals.addRestoredRunTab(
         for: target, command: command, sessionID: session, focus: focus)
-      runCommand.restoredRuns.insert(target.id)
-      runCommand.runningToastAutoHidden.insert(target.id)
     } else {
       tab = terminals.addRunTab(
         for: target, command: command, cwd: target.path, focus: focus, runSession: true)
       // A new run always gets a fresh toast (clear dismiss + timer).
       runCommand.resetRunToast(for: target.id)
     }
-    runCommand.runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
-    runCommand.lastRunStatus[target.id] = nil
+    // A fresh run clears the prior outcome (issue #67) and status: its tab's bookkeeping is new.
     // Background start spawns the surface off-window (`addRunTab(focus:false)`); if that failed, or
     // no daemon could take the run (D5), nothing runs: say so rather than show a lying "running"
     // toast. (Foreground starts spawn on mount, so the surface is legitimately nil here — the exit
     // of the pane's notice says it then, through `markRunExited`.)
     let surface = terminals.surface(of: tab.id)
-    if !focus, surface?.didSpawnFail == true || surface?.refusedRun == true {
+    let failed = !focus && (surface?.didSpawnFail == true || surface?.refusedRun == true)
+    // The tab is the target's run first: what is known of a run is written to its tab.
+    runCommand.runStates[target.id] =
+      failed ? .stopped(tab: tab.id) : .running(tab: tab.id, interrupted: false)
+    if session != nil {
+      runCommand.restoredRuns.insert(target.id)
+      runCommand.runningToastAutoHidden.insert(target.id)
+    }
+    if failed {
       runCommand.runOutcomes[target.id] = .failedToStart
-      runCommand.runStates[target.id] = .stopped(tab: tab.id)
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       postRunFailureBannerIfBackgrounded(
         targetID: target.id, tabID: tab.id, title: "Run failed to start", body: command)
       return
     }
-    runCommand.runStates[target.id] = .running(tab: tab.id, interrupted: false)
     if session != nil { terminals.reportRunStatus(tab: tab.id, target: target) }
   }
 
@@ -444,13 +447,14 @@ extension AppStore {
     let tab = terminals.respawnRunTab(
       replacing: oldTab, for: target, command: command, cwd: target.path, focus: wasFocused,
       runSession: true)
-    runCommand.runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
-    runCommand.resetRunToast(for: target.id)  // restart re-arms the toast + cancels a stale timer
-    runCommand.lastRunStatus[target.id] = nil
+    // A fresh run clears the prior outcome (issue #67) and status: its tab's bookkeeping is new.
+    // A restart re-arms the toast and cancels a stale timer.
+    runCommand.resetRunToast(for: target.id)
     let surface = terminals.surface(of: tab.id)
     if !wasFocused, surface?.didSpawnFail == true || surface?.refusedRun == true {
-      runCommand.runOutcomes[target.id] = .failedToStart
+      // The tab is the target's run first: what is known of a run is written to its tab.
       runCommand.runStates[target.id] = .stopped(tab: tab.id)
+      runCommand.runOutcomes[target.id] = .failedToStart
       runCommand.scheduleRunToastAutoDismiss(for: target.id)
       postRunFailureBannerIfBackgrounded(
         targetID: target.id, tabID: tab.id, title: "Run failed to start", body: command)

@@ -3,7 +3,8 @@ import WorkroomDomain
 
 /// A workroom on its way from one window to another (issue #444): everything the window it leaves
 /// knew about it that the window it joins must go on knowing. The terminals themselves never
-/// travel: they are the app's (`TerminalTabs`), and `sessions` carries only their layout.
+/// travel: they are the app's (`TerminalTabs`), and `sessions` carries only their layout, as `run`
+/// carries only which tab is the workroom's run.
 struct WorkroomHandOff {
   let sid: SidebarID
   var sessions: TerminalPanes.TargetHandOff
@@ -252,15 +253,10 @@ extension AppStore {
     // Before the hand-off, whose `.tabsRemoved` may close the Quick Terminal and drop what it raised.
     notifications.repoint(
       tab: tabID, to: into.id, in: ObjectIdentifier(destination))
-    // Read before the hand-off, whose `.tabsRemoved` forgets it here.
-    let investigating = runCommand.investigateTabs[tabID] != nil
+    // An Investigate pane stays one there (the mark is its tab's), so deleting its workroom asks
+    // first (#146), and its exit, which the destination's sessions now raise, ends it there.
     guard let handOff = terminals.handOffTab(tabID, from: target, to: into) else { return }
     destination.terminals.adopt(handOff)
-    if investigating {
-      // Still an Investigate session there, so deleting its workroom asks first (#146), and its
-      // exit, which the destination's sessions now raise, ends it there.
-      destination.runCommand.investigateTabs[tabID] = into.id
-    }
     // A split member's pane: that member becomes the focused workroom, so the pane has the keys.
     destination.selectedTargetID = sid
     destination.selectedProjectID = Self.projectPath(of: sid)
@@ -314,7 +310,7 @@ extension AppStore {
     markSessionDirty()
   }
 
-  /// Lift the workroom out of this window. Its run bookkeeping goes first: the `.tabsRemoved` the
+  /// Lift the workroom out of this window. Its run pointer goes first: the `.tabsRemoved` the
   /// sessions fire would otherwise clear it as for a closed run tab.
   private func takeWorkroom(_ sid: SidebarID, target: TerminalTarget) -> WorkroomHandOff? {
     let run = runCommand.takeHandOff(for: target.id)
@@ -355,7 +351,7 @@ extension AppStore {
         }
       } else {
         closing = moved
-        run = RunCommands.HandOff(investigateTabs: run.investigateTabs)
+        run = RunCommands.HandOff()
       }
     }
     let wasAt = displayedWorkroomTargets().firstIndex { $0.target.id == id }

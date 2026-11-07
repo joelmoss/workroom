@@ -483,6 +483,43 @@ final class TerminalPanesTests: XCTestCase {
     XCTAssertNotNil(adopter.tab(id, for: other))
   }
 
+  /// What is known of a run is its tab's: it stays put when the tab moves to another window, and goes
+  /// when the tab closes, or with the window holding it. Negative control for both halves: a close
+  /// frees it, a hand-off does not.
+  /// Value: protects=a moved run keeps its outcome and toast state, and a closed run tab leaves
+  /// nothing behind in the app-wide registry; fails_when=the bookkeeping is dropped on a hand-off,
+  /// or kept after its tab is gone (TerminalTabs.remove / removeAll forget it); why_new=run
+  /// bookkeeping moved from each window to the tab in C1; seam=none; no_claim=the run itself.
+  func testARunTabsBookkeepingMovesWithItAndGoesWithIt() async throws {
+    let origin = makeSessions()
+    let destination = makeSessions()
+    let run = origin.addTab(for: target)
+    let bookkeeping = try XCTUnwrap(origin.makeRun(of: run.id).map(ObjectIdentifier.init))
+    origin.run(of: run.id)?.outcome = .exited(code: 1)
+    XCTAssertNil(destination.run(of: run.id), "another window's run is not this one's")
+
+    destination.adopt(try XCTUnwrap(origin.handOff(target)))
+
+    XCTAssertNil(origin.run(of: run.id), "the window it left no longer reads it")
+    XCTAssertEqual(
+      destination.run(of: run.id).map(ObjectIdentifier.init), bookkeeping,
+      "the same run, not a copy")
+    XCTAssertEqual(destination.run(of: run.id)?.outcome, .exited(code: 1))
+
+    weak var closed = destination.run(of: run.id)
+    destination.closeTab(run.id, for: target)
+    XCTAssertNil(closed, "a closed run tab's bookkeeping goes with it")
+
+    weak var windowsOwn: RunCommands.TabRun?
+    autoreleasepool {
+      let window = makeSessions()
+      windowsOwn = window.makeRun(of: window.addTab(for: target).id)
+      XCTAssertNotNil(windowsOwn)
+    }
+    try await waitFor(tries: 100) { windowsOwn == nil }
+    XCTAssertNil(windowsOwn, "a window that goes takes its tabs' runs with it")
+  }
+
   /// One layout at a time: a window holds only the tabs its layout has, and another window's tab
   /// is invisible to it even for the same workroom (#444 Q12).
   /// Value: protects=two windows on one workroom see only their own tabs; fails_when=a window

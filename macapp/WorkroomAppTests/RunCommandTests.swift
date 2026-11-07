@@ -1683,6 +1683,28 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(notified.happened, "a write that changes the state still notifies")
   }
 
+  /// What is known of a run is its tab's, kept in cells the app-wide registry does not observe, so
+  /// a view that read a run before anything was known of it must still hear the first thing that is.
+  /// Value: protects=the red run icon and the toast appear when a run first fails, and a repeat of
+  /// the same outcome redraws nothing; fails_when=a run's bookkeeping cell is made on its first
+  /// write, after a view read through the pointer and found none; why_new=run bookkeeping moved to
+  /// the run tab in C1; seam=none; no_claim=the views themselves.
+  func testARunsFirstOutcomeRedrawsWhatReadItBefore() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let tab = store.terminals.addRunTab(for: t, command: "a", cwd: "/a", focus: false)
+    store.runCommand.runStates[t.id] = .stopped(tab: tab.id)
+    let failed = observeChange { _ = store.runCommand.runFailed(for: t.id) }
+
+    store.runCommand.runOutcomes[t.id] = .exited(code: 1)
+
+    XCTAssertTrue(failed.happened, "the run's first outcome redraws what read it")
+    XCTAssertTrue(store.runCommand.runFailed(for: t.id))
+    let again = observeChange { _ = store.runCommand.runFailed(for: t.id) }
+    store.runCommand.runOutcomes[t.id] = .exited(code: 1)
+    XCTAssertFalse(again.happened, "the same outcome again redraws nothing")
+  }
+
   // MARK: Run sessions (#522)
 
   /// A run tab the store has reattached from a saved session, as `TerminalPanes.restore`

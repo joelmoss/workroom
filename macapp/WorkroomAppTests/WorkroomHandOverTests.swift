@@ -242,6 +242,40 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertNil(destination.runCommand.runOutcomes[t.id], "the moved run has not ended")
   }
 
+  /// Value: protects=a running run moved in over a window's own reattached run that has not reported
+  /// yet (Q12) is its own run, not a reattached one: its first status shows its "Running" toast
+  /// (Q13) and a failure would be diagnosed (Q7); fails_when=the replaced run's bookkeeping is the
+  /// target's and the moved run inherits its "restored" mark (as before C1); why_new=run
+  /// bookkeeping became the run tab's in C1; seam=the store's scheduleRunToastDismiss;
+  /// no_claim=the toast's rendering.
+  func testARunMovedInOverAReattachedOneIsNotReattached() {
+    let origin = makeOrigin()
+    let destination = makeStore()
+    var delays: [TimeInterval] = []
+    destination.runCommand.scheduleRunToastDismiss = { delay, _ in
+      delays.append(delay)
+      return DispatchWorkItem {}
+    }
+    let t = target(origin)
+    let moved = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
+    origin.runCommand.runStates[t.id] = .running(tab: moved.id, interrupted: false)
+    let replaced = destination.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
+    destination.runCommand.runStates[t.id] = .running(tab: replaced.id, interrupted: false)
+    destination.runCommand.restoredRuns.insert(t.id)
+    // Its supervisor is still up, so its close waits for it to exit.
+    destination.terminals.surface(replaced)?.liveProcessOverrideForTesting = true
+
+    origin.moveWorkroom(sid, to: destination)
+
+    XCTAssertEqual(
+      destination.runCommand.runStates[t.id], .running(tab: moved.id, interrupted: false))
+    XCTAssertFalse(destination.runCommand.restoredRuns.contains(t.id), "the moved run's own")
+    destination.terminals.onEvent?(.runStatus(t.id, moved.id, "running"))
+    XCTAssertEqual(delays.count, 1, "its first status starts its Running toast's linger")
+    XCTAssertFalse(destination.runCommand.runningToastAutoHidden.contains(t.id))
+    destination.terminals.surface(replaced)?.liveProcessOverrideForTesting = false
+  }
+
   /// A run's state comes with its session's program status to whichever window holds its tab
   /// (#522), so once the run moves the destination hears it and the origin, which no longer
   /// holds the run, changes nothing.
@@ -747,10 +781,11 @@ final class WorkroomHandOverTests: XCTestCase {
     _ = origin.terminals.addTab(for: t)
     let probe = origin.terminals.addTab(for: t)
     origin.runCommand.investigateTabs[probe.id] = t.id
-    origin.runCommand.dismissedRunToasts.insert(t.id)
-    origin.runCommand.runningToastAutoHidden.insert(t.id)
     let run = origin.terminals.addRunTab(for: t, command: "a", cwd: "/p/a", focus: false)
     origin.runCommand.runStates[t.id] = .running(tab: run.id, interrupted: false)
+    // The flags are the run's, so they are set once the target has one.
+    origin.runCommand.dismissedRunToasts.insert(t.id)
+    origin.runCommand.runningToastAutoHidden.insert(t.id)
 
     origin.moveWorkroom(sid, to: destination)
 
