@@ -196,7 +196,6 @@ struct NotificationsBarButton: View {
     .accessibilityIdentifier("activityBar.notifications")
     .popover(isPresented: $showPopover, arrowEdge: .bottom) {
       NotificationsPopover(onActivate: { showPopover = false })
-        .themeTokensRoot()
         .environmentObject(store)
         .environmentObject(notifications)
         .frame(width: 320, height: 360)

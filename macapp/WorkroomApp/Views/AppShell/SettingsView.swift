@@ -570,7 +570,7 @@ private struct AppearanceSettingsPane: View {
           .frame(width: 160, alignment: .trailing)
         }
         .popover(isPresented: $showThemePopover, arrowEdge: .bottom) {
-          ThemePicker().themeTokensRoot()
+          ThemePicker()
         }
       }
       .help("Choose the color theme family (its light or dark variant follows Appearance).")

@@ -218,7 +218,6 @@ struct SidebarNotificationStrip: View {
     .accessibilityIdentifier("sidebar.notifications.plus")
     .popover(isPresented: $showExtras, arrowEdge: .top) {
       NotificationsPopover(dropFirst: true, onActivate: { showExtras = false })
-        .themeTokensRoot()
         .environmentObject(store)
         .environmentObject(notifications)
     }

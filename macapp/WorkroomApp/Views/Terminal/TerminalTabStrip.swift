@@ -194,7 +194,7 @@ struct TerminalTabStrip: View {
             get: { codingAgentPopoverTab == tab.id },
             set: { if !$0 { codingAgentPopoverTab = nil } })
         ) {
-          codingAgentPopover(for: tab).themeTokensRoot()
+          codingAgentPopover(for: tab)
         }
         .onHover { inside in
           if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }

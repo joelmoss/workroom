@@ -165,7 +165,6 @@ struct TerminalStatusBar<DetachedSessions: View>: View {
         }
       )
       .frame(width: 380)
-      .themeTokensRoot()
     }
   }
 

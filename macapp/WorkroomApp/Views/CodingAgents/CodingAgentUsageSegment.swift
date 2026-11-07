@@ -167,7 +167,6 @@ struct CodingAgentUsageSegment: View {
     CodingAgentUsagePopover(item: item, now: now)
       .frame(width: CodingAgentUsageDetailView.popoverWidth)
       .onAppear { codingAgentUsage.poll() }
-      .themeTokensRoot()
   }
 
   // MARK: Presentation rules
@@ -424,7 +423,6 @@ struct CodingAgentUsageOverflowChip: View {
         .frame(width: CodingAgentUsageDetailView.popoverWidth)
         .frame(maxHeight: 480)
         .onAppear { codingAgentUsage.poll() }
-        .themeTokensRoot()
       }
   }
 }

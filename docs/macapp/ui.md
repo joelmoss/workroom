@@ -69,12 +69,14 @@ Everything reads the theme from the environment; roots inject it. Views and the 
 components read `@Environment(\.themeTokens) private var tokens`, not `ThemeService.shared`, and
 no component takes the theme as an argument. `DesignSystem` declares the key, with the system
 palette (`ThemeTokens(preview: nil)`) as its default. Every SwiftUI root injects the live theme
-with `themeTokensRoot()`: each scene's root view, every `NSHostingView` or
-`NSHostingController` (the environment does not cross one), and the content of each `.sheet`
-and `.popover`, as the environment objects are re-injected there. A tree a root is missing from
-draws the native palette and never sees a switch. A hosted test that renders a themed view
-injects a root too, as production does. `ThemeService.shared` stays for AppKit drawing, for
-picking a theme, and for `generation`, which keys the syntax highlighting.
+with `themeTokensRoot()`: each scene's root view and every `NSHostingView` or
+`NSHostingController` (the environment does not cross one). A `.sheet` or `.popover` takes no
+root of its own: it inherits the theme from the view that presents it, and repaints on a switch
+while open. A view needs no `.themeDidChange` observer to repaint either. `ThemeRepaintTests`
+measures both. A tree a root is missing from draws the native palette and never sees a switch.
+A hosted test that renders a themed view injects a root too, as production does.
+`ThemeService.shared` stays for AppKit drawing, for picking a theme, and for `generation`, which
+keys the syntax highlighting.
 
 Shared components:
 

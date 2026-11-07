@@ -203,7 +203,7 @@ struct TrailingTitlebarBar: View {
       .accessibilityLabel("Theme")
       .accessibilityIdentifier("toolbar.theme")
       .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
-        ThemePicker().themeTokensRoot()
+        ThemePicker()
       }
 
       // Quick Terminal (⌥§ by default) — a shell in its own slide-in window, always at the trailing

@@ -166,7 +166,6 @@ struct VCSFailurePresenter: ViewModifier {
         onRecover: onRecover,
         onDismiss: { model.dismissFailureReport() }
       )
-      .themeTokensRoot()
     }
   }
 }
