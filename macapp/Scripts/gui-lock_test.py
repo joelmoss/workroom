@@ -24,12 +24,15 @@ HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui-lock.py")
 NOT_WITHIN = 1.0
 PROMPTLY = 10.0
 
-# started -> wait for release -> exit with the requested status.
+# started -> wait for release -> exit with the requested status. A case's cleanup releases each
+# run, kills its helper and then deletes the case's directory, which can beat a blocker the killed
+# helper orphaned to its next look at the release marker; a gone directory releases it too, or it
+# would poll forever.
 BLOCKER = """
 import os, sys, time
 marker, release, status = sys.argv[1], sys.argv[2], int(sys.argv[3])
 open(marker, "w").close()
-while not os.path.exists(release):
+while not os.path.exists(release) and os.path.isdir(os.path.dirname(release)):
     time.sleep(0.02)
 sys.exit(status)
 """
@@ -38,13 +41,14 @@ sys.exit(status)
 class Run:
     """One gui-lock.py invocation wrapping a BLOCKER."""
 
-    def __init__(self, case, name, mode, status=0, env=None, command=None, label=None):
+    def __init__(self, case, name, mode, status=0, env=None, command=None, label=None,
+                 options=()):
         self.started = os.path.join(case.tmp, name + ".started")
         self.release_marker = os.path.join(case.tmp, name + ".release")
         if command is None:
             command = [sys.executable, "-c", BLOCKER, self.started, self.release_marker,
                        str(status)]
-        args = [sys.executable, HELPER, mode]
+        args = [sys.executable, HELPER, mode] + list(options)
         if label is not None:
             args += ["--label", label]
         args += ["--"] + command
@@ -278,6 +282,156 @@ class GuiLockTests(unittest.TestCase):
                 [sys.executable, HELPER] + args, env=self.env, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE)
             self.assertEqual(result.returncode, 2, args)
+
+
+# Records the slot it was given, then blocks like BLOCKER.
+SLOT_BLOCKER = """
+import os, sys, time
+marker, release = sys.argv[1], sys.argv[2]
+with open(marker, "w") as handle:
+    handle.write(os.environ.get("WR_VM_SLOT", ""))
+while not os.path.exists(release) and os.path.isdir(os.path.dirname(release)):
+    time.sleep(0.02)
+"""
+
+
+class VmSlotTests(unittest.TestCase):
+    """`vm-slot`: a counting lock over this Mac's two macOS guests (make app-uitest-vm)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gui-lock-vm-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.env = dict(os.environ)
+        self.env["WR_VM_LOCK_DIR"] = os.path.join(self.tmp, "vm-locks")
+        self.env["WR_GUI_LOCK_DIR"] = os.path.join(self.tmp, "gui-locks")
+        for name in ("WR_GUI_LOCK", "WR_GUI_LOCK_TIMEOUT", "WR_VM_LOCK_TIMEOUT", "WR_VM_SLOT"):
+            self.env.pop(name, None)
+
+    def guest(self, name, slots=2, env=None, label=None):
+        started = os.path.join(self.tmp, name + ".started")
+        release = os.path.join(self.tmp, name + ".release")
+        return Run(self, name, "vm-slot", env=env, label=label,
+                   options=["--slots", str(slots)],
+                   command=[sys.executable, "-c", SLOT_BLOCKER, started, release])
+
+    def slot_of(self, run):
+        with open(run.started) as handle:
+            return handle.read()
+
+    def vm_status(self, slots=2):
+        result = subprocess.run(
+            [sys.executable, HELPER, "vm-status", "--slots", str(slots)], env=self.env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        return result.returncode, result.stdout
+
+    def test_two_guests_run_at_once_and_a_third_waits(self):
+        first = self.guest("first")
+        second = self.guest("second")
+        self.assertTrue(first.wait_started())
+        self.assertTrue(second.wait_started(), "two guests must not exclude each other")
+        self.assertEqual({self.slot_of(first), self.slot_of(second)}, {"1", "2"})
+        third = self.guest("third")
+        self.assertTrue(third.stays_blocked(), "a third guest started while two ran")
+        freed = self.slot_of(second)
+        second.release()
+        self.assertEqual(second.finish()[0], 0)
+        self.assertTrue(third.wait_started(), "the third guest never got the freed slot")
+        self.assertEqual(self.slot_of(third), freed, "the third guest must take the freed slot")
+        first.release()
+        third.release()
+        self.assertEqual(first.finish()[0], 0)
+        code, _, err = third.finish()
+        self.assertEqual(code, 0)
+        self.assertIn("waiting for a VM slot", err)
+
+    def test_slots_is_the_count(self):
+        only = self.guest("only", slots=1)
+        self.assertTrue(only.wait_started())
+        self.assertEqual(self.slot_of(only), "1")
+        next_run = self.guest("next", slots=1)
+        self.assertTrue(next_run.stays_blocked(), "--slots 1 let a second guest in")
+        only.release()
+        self.assertTrue(next_run.wait_started())
+
+    def test_an_unusable_lock_directory_fails_closed(self):
+        blocker = os.path.join(self.tmp, "not-a-directory")
+        open(blocker, "w").close()
+        run = self.guest("closed", env={"WR_VM_LOCK_DIR": os.path.join(blocker, "locks")})
+        code, _, err = run.finish()
+        self.assertEqual(code, 75)
+        self.assertFalse(run.has_started(), "a guest ran without the slot lock")
+        self.assertIn("cannot use the VM slot lock", err)
+
+    def test_gui_lock_off_does_not_bypass_the_slots(self):
+        first = self.guest("first", slots=1)
+        self.assertTrue(first.wait_started())
+        second = self.guest("second", slots=1, env={"WR_GUI_LOCK": "off"})
+        self.assertTrue(second.stays_blocked(), "WR_GUI_LOCK=off let a guest past a full slot")
+
+    def test_a_killed_holder_frees_its_slot(self):
+        first = self.guest("first", slots=1)
+        self.assertTrue(first.wait_started())
+        first.process.send_signal(signal.SIGKILL)
+        first.process.wait()
+        second = self.guest("second", slots=1)
+        self.assertTrue(second.wait_started(), "a SIGKILLed holder kept its slot")
+
+    def test_sigterm_reaches_the_command_and_frees_the_slot(self):
+        first = self.guest("first", slots=1)
+        self.assertTrue(first.wait_started())
+        first.process.send_signal(signal.SIGTERM)
+        code, _, _ = first.finish()
+        self.assertEqual(code, 128 + signal.SIGTERM, "the command should have died of SIGTERM")
+        second = self.guest("second", slots=1)
+        self.assertTrue(second.wait_started())
+
+    def test_a_waiting_run_interrupted_exits_without_running(self):
+        holder = self.guest("holder", slots=1)
+        self.assertTrue(holder.wait_started())
+        waiter = self.guest("waiter", slots=1)
+        self.assertTrue(waiter.stays_blocked())
+        waiter.process.send_signal(signal.SIGINT)
+        self.assertEqual(waiter.finish()[0], 128 + signal.SIGINT)
+        self.assertFalse(waiter.has_started())
+
+    def test_timeout_gives_up_with_ex_tempfail(self):
+        holder = self.guest("holder", slots=1)
+        self.assertTrue(holder.wait_started())
+        waiter = self.guest("waiter", slots=1, env={"WR_VM_LOCK_TIMEOUT": "0.3"})
+        code, _, err = waiter.finish()
+        self.assertEqual(code, 75)
+        self.assertIn("gave up", err)
+        self.assertFalse(waiter.has_started())
+
+    def test_the_slots_are_apart_from_the_gui_session(self):
+        ui = Run(self, "ui", "exclusive")
+        self.assertTrue(ui.wait_started())
+        guest = self.guest("guest")
+        self.assertTrue(guest.wait_started(), "a guest waited on this Mac's GUI session")
+
+    def test_vm_status_names_holders_and_exits_1_when_full(self):
+        self.assertEqual(self.vm_status(), (0, "gui-lock: 0 of 2 VM slots in use\n"))
+        first = self.guest("first", label="app-uitest-vm /work/brave-otter")
+        self.assertTrue(first.wait_started())
+        code, out = self.vm_status()
+        self.assertEqual(code, 0)
+        self.assertIn("1 of 2 VM slots in use", out)
+        self.assertIn("slot 1    app-uitest-vm /work/brave-otter", out)
+        second = self.guest("second", label="app-uitest-vm /work/quiet-fern")
+        self.assertTrue(second.wait_started())
+        code, out = self.vm_status()
+        self.assertEqual(code, 1)
+        self.assertIn("slot 2    app-uitest-vm /work/quiet-fern", out)
+
+    def test_bad_slot_counts_are_usage_errors(self):
+        for args in (["vm-slot", "--slots", "0", "--", "true"],
+                     ["vm-slot", "--slots", "two", "--", "true"],
+                     ["vm-slot", "--slots"], ["vm-status", "extra"]):
+            result = subprocess.run(
+                [sys.executable, HELPER] + args, env=self.env, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+            self.assertEqual(result.returncode, 2, args)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
