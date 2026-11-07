@@ -25,8 +25,8 @@ jobs:
   # the latest tag reachable from master: a prerelease tag targets its own release
   # (v2.0.0-beta.21 → 2.0.0), a stable tag bumps MINOR (v1.3.0 → 1.4.0). Minor, not patch, because
   # master is always the next minor — patch releases ship from a `release/X.Y` branch (see
-  # CONTRIBUTING "Patch releases"), and a `2.0.1-nightly.N` here would semver-sort *below* the
-  # v2.0.1 cut over there. Release-branch tags stay unreachable from master (fixes are
+  # docs/contributing/releasing.md "Patch releases"), and a `2.0.1-nightly.N` here would
+  # semver-sort *below* the v2.0.1 cut over there. Release-branch tags stay unreachable from master (fixes are
   # cherry-picked onto the branch, never merged back), so `git describe` here never sees them.
   # The commit count is the monotonic ordering key the CLI + Sparkle compare on.
   check:

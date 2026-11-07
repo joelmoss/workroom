@@ -70,7 +70,7 @@ These apply when reviewing a pull request. Raise a finding only when it passes t
 
 ## Architecture & Configuration
 
-Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md` and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
+Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md`, [the architecture](docs/contributing/architecture.md) and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
 
 ## Agent skills
 

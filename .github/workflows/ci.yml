@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    # `release/**` are the maintenance branches patch releases are cut from (CONTRIBUTING "Patch
-    # releases"). They get the same gate as master — a v2.0.1 tag pushed there triggers a real
-    # release, so it must not be the first CI that branch has seen.
+    # `release/**` are the maintenance branches patch releases are cut from
+    # (docs/contributing/releasing.md "Patch releases"). They get the same gate as master — a
+    # v2.0.1 tag pushed there triggers a real release, so it must not be the first CI that branch
+    # has seen.
     branches: [master, "release/**"]
   pull_request:
     branches: [master, "release/**"]

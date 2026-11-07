@@ -40,7 +40,7 @@ The macOS app targets (`app-build`, `app-run`, `app-test`, `app-test-scripts`, `
 
 ## Releases
 
-See `CONTRIBUTING.md` for the release process. Use the `curate-release` skill for
+See [the release process](contributing/releasing.md). Use the `curate-release` skill for
 channel architecture and note curation when it is available in your agent environment.
 
 Release download counts are snapshotted daily, and before every `--clobber` upload, onto the

@@ -43,7 +43,7 @@ never shows.
 `Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`
 (build → notarize → staple → DMG → EdDSA-sign for Sparkle), `appcast.sh` (publishes the Sparkle
 appcast to the fixed `appcast` release), `appcast-notes.sh` (re-renders a published item's
-`<description>` from the current release body — see [auto-update](../../CONTRIBUTING.md#auto-update-sparkle-appcast)), `make-icon.swift`
+`<description>` from the current release body — see [auto-update](../contributing/releasing.md#auto-update-sparkle-appcast)), `make-icon.swift`
 (regenerates the `AppIcon` PNGs in `Assets.xcassets` — run `swift Scripts/make-icon.swift`).
 
 ## App design tokens

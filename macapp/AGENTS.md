@@ -57,4 +57,4 @@ Before changing or reviewing an area, read its reference:
 | App identity, preferences, Ghostty entry point, engine pin or child environment | [Runtime](../docs/macapp/runtime.md) |
 | Menus, shortcuts, quick switchers, layout or Escape automation | [UI conventions](../docs/macapp/ui.md) |
 | Skipping unchanged work, or assuming what a `ghostty_surface_*` call does | [Performance facts](../docs/macapp-perf-facts.md) |
-| Release channels, versioning, Sparkle feeds or update notes | [Release process](../CONTRIBUTING.md#deployment--releases); use the curate-release skill when available |
+| Release channels, versioning, Sparkle feeds or update notes | [Release process](../docs/contributing/releasing.md); use the curate-release skill when available |

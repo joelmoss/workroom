@@ -2,7 +2,7 @@
 
 Paths beginning `Core/`, `Packages/`, `Resources/` and `Scripts/` are relative to `macapp/`.
 Release channels and Sparkle feeds are documented in
-[CONTRIBUTING](../../CONTRIBUTING.md#release-channels); `project.yml` owns the live settings.
+[the release process](../contributing/releasing.md#release-channels); `project.yml` owns the live settings.
 
 - **Debug builds run side by side with the release build.** The Debug config has a distinct
   identity — bundle id `com.developwithstyle.workroom.dev`, product/display name `Workroom Dev`,
