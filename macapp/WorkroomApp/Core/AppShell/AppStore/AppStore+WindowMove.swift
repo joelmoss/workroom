@@ -2,8 +2,8 @@ import AppKit
 import WorkroomDomain
 
 /// A workroom on its way from one window to another (issue #444): everything the window it leaves
-/// knew about it that the window it joins must go on knowing. The terminals themselves travel live,
-/// with their surfaces, inside `sessions`.
+/// knew about it that the window it joins must go on knowing. The terminals themselves never
+/// travel: they are the app's (`TerminalTabs`), and `sessions` carries only their layout.
 struct WorkroomHandOff {
   let sid: SidebarID
   var sessions: TerminalSessions.TargetHandOff
@@ -361,8 +361,8 @@ extension AppStore {
     let wasAt = displayedWorkroomTargets().firstIndex { $0.target.id == id }
     terminals.adopt(handOff.sessions)
     if target.remoteHost == nil, !target.isRemoteWorkroom,
-      handOff.sessions.tabs.contains(where: {
-        guard let view = handOff.sessions.surfaces[$0.id] else { return false }
+      handOff.sessions.tabIDs.contains(where: {
+        guard let view = terminals.surface(of: $0) else { return false }
         return view.attachment.isRestored && view.attachment.sessionID != nil
           && view.surface == nil
       })

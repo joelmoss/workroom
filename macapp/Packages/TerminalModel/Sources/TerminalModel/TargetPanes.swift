@@ -1,27 +1,27 @@
 import Observation
 
-/// One target's panes in one window: its tab records and its `PaneState` (order, split groups,
-/// focus, counter). The app's `TerminalSessions` holds one per target it shows, in a dictionary that
-/// changes only when a target is added or removed, so a change here is this target's alone (eng
-/// review D3).
+/// One target's layout in one window: its `PaneState` (order, split groups, focus, counter) over
+/// tab ids. The tabs themselves are app-wide, in `TabRecords`, so two windows showing one workroom
+/// each arrange their own tabs here (#444 Q12), and a move between windows shifts ids from one
+/// window's layout to the other's while every tab stays where it is (D2 as revised by eng review
+/// D4). Each window's `TerminalSessions` holds one per target it shows, in a dictionary that changes only
+/// when a target is added or removed, so a change here is this target's alone (eng review D3).
 ///
-/// Views observe it through Observation: a view that reads one target's tabs or arrangement
-/// re-renders when they change, and not when another target's do (plan step 3.5).
+/// Views observe it through Observation: a view that reads one target's arrangement re-renders
+/// when it changes, and not when another target's does (plan step 3.5).
 ///
 /// Every write goes through the methods below, and each calls `willChange` first. That is how the
-/// sessions' `paneWillChange` fires BEFORE every pane mutation, which `AppStore`'s saved-layout
-/// dirty mark hangs off.
-///
-/// Generic over the tab record, which is the app's (`TerminalTab`): a record is a value whose id is
-/// the one `PaneState` arranges, and these rules need nothing else of it.
+/// sessions' `paneWillChange` fires BEFORE every layout change, which `AppStore`'s saved-layout dirty
+/// mark hangs off.
 @MainActor
 @Observable
-public final class TargetPanes<Tab: Identifiable> {
-  /// Every tab of the target, by id: the single source of truth for titles and content. A tab is a
-  /// value, so a live update replaces its record here.
-  public private(set) var tabs: [Tab.ID: Tab] = [:]
-  /// The ids-only arrangement of those tabs.
-  public private(set) var state = PaneState<Tab.ID>()
+public final class TargetPanes<ID: Hashable> {
+  /// The ids-only arrangement: `order` is the list of every tab the target holds here.
+  public private(set) var state = PaneState<ID>()
+  /// Whether the target holds any tab here. Stored, and written only when it flips, so a reader
+  /// that asks only this (whether a workroom has a terminal, across windows) re-renders when a
+  /// target gains its first tab or loses its last, and not on any other change.
+  public private(set) var hasTabs = false
 
   @ObservationIgnored private let willChange: () -> Void
 
@@ -29,38 +29,27 @@ public final class TargetPanes<Tab: Identifiable> {
     self.willChange = willChange
   }
 
-  /// The tabs in `normalizedOrder`, detached panes included.
-  public var orderedTabs: [Tab] { state.normalizedOrder.compactMap { tabs[$0] } }
-
-  /// Store `tab`, adding it or replacing the record with its id.
-  public func setTab(_ tab: Tab) {
-    willChange()
-    tabs[tab.id] = tab
-  }
-
-  /// Drop the record of `id`.
-  public func removeTab(_ id: Tab.ID) {
-    willChange()
-    tabs[id] = nil
-  }
-
-  /// Replace every tab record at once (a restore).
-  public func setTabs(_ records: [Tab.ID: Tab]) {
-    willChange()
-    tabs = records
-  }
+  /// Whether the target holds `id` here, detached panes included.
+  public func holds(_ id: ID) -> Bool { state.order.contains(id) }
 
   /// Edit the arrangement.
   @discardableResult
-  public func updateState<Result>(_ body: (inout PaneState<Tab.ID>) -> Result) -> Result {
+  public func updateState<Result>(_ body: (inout PaneState<ID>) -> Result) -> Result {
     willChange()
-    return body(&state)
+    let result = body(&state)
+    noteWhetherItHasTabs()
+    return result
   }
 
   /// Every tab gone, the counter kept (`PaneState.emptied`): the target is emptied, not forgotten.
   public func empty() {
     willChange()
-    tabs = [:]
     state = state.emptied()
+    noteWhetherItHasTabs()
+  }
+
+  private func noteWhetherItHasTabs() {
+    let has = !state.order.isEmpty
+    if has != hasTabs { hasTabs = has }
   }
 }

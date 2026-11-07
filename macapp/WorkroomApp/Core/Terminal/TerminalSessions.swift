@@ -22,10 +22,10 @@ typealias TerminalPaneLayout = PaneLayout<TerminalTab.ID>
 /// tab's `id`, so a content tab is a first-class peer of a terminal tab with no special casing — a
 /// split can mix a terminal pane and a diff pane. Terminal-only state lives INSIDE the `.terminal`
 /// payload, so a content tab carries none of it. `TerminalTab` stays a value type on purpose: a
-/// live-title/progress/preview update mutates a copy and reassigns the record in its target's
-/// `TargetPanes`, which is what its observers see (a reference type would not). It holds no
-/// view: a terminal tab's surface is its window's, in `TerminalSessions`' `SurfaceRegistry`, and
-/// `teardown(_:)` frees it (a no-op for content tabs — they have no surface).
+/// live-title/progress/preview update mutates a copy and reassigns its record in the app's
+/// `TerminalTabs`, which is what its observers see (a reference type would not). It holds no
+/// view: a terminal tab's surface is kept beside its record, in `TerminalTabs`, and the window
+/// holding it frees it in `teardown(_:)` (a no-op for content tabs — they have no surface).
 struct TerminalTab: Identifiable {
   let id = UUID()
   var content: TabContent
@@ -485,36 +485,50 @@ enum PaneIndicator: Equatable {
 ///              └ bracket ┘     └ bracket ┘    focused == A  →  CONTENT renders just A; both groups persist.
 /// ```
 ///
-/// Observed through Observation, per target: a view reads a target's panes through its
-/// `TargetPanes`, so a change to one workroom's tabs re-runs only the views that read that
-/// workroom (plan step 3.5). What views may observe here is the target dictionary, which changes
-/// only when a target is added or removed, `activityPulses` and `detachedTabIDs`. Everything else
-/// is bookkeeping, measurement or wiring, and is `@ObservationIgnored`, as it was never published.
+/// The tabs themselves are app-wide (`TerminalTabs`, ADR 0069): a window holds, per target, only
+/// the layout of the tabs it shows (`TargetPanes`), so two windows can show one workroom with
+/// tabs, splits and focus of their own (#444 Q12), and a move between windows hands over a layout,
+/// never a tab. Everything this window reads of a tab it reads through its own layout, so it never
+/// sees another window's.
+///
+/// Observed through Observation, per target and per tab: a view reads a target's layout through
+/// its `TargetPanes` and each tab through its own record, so a change to one workroom's tabs
+/// re-runs only the views that read that workroom, in this window or any other (plan step 3.5).
+/// What views may observe here is the target dictionary, which changes only when a target is added
+/// or removed, `activityPulses` and `detachedTabIDs`. Everything else is bookkeeping, measurement
+/// or wiring, and is `@ObservationIgnored`, as it was never published.
 @MainActor
 @Observable
 final class TerminalSessions {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "TerminalSessions")
 
-  /// Each target's panes: its tab records, strip order, split groups, focus and "Terminal N"
-  /// counter (`TargetPanes`, over a `PaneState`). The split groups are disjoint (a tab belongs to
-  /// at most one) and each always ≥2 leaves — a lone tab is "no split" — and **their array order
-  /// carries no meaning**: a group is addressed by membership, and the strip places each group's
-  /// run at its earliest member's slot (`normalizedTabIDs`), so appending a rebuilt group is always
-  /// safe. The rules are `PaneSplitGroups`', shared with the workroom split.
+  /// Each target's layout here: strip order, split groups, focus and "Terminal N" counter
+  /// (`TargetPanes`, over a `PaneState`), over the ids of the tabs this window holds for it. The
+  /// split groups are disjoint (a tab belongs to at most one) and each always ≥2 leaves — a lone
+  /// tab is "no split" — and **their array order carries no meaning**: a group is addressed by
+  /// membership, and the strip places each group's run at its earliest member's slot
+  /// (`normalizedTabIDs`), so appending a rebuilt group is always safe. The rules are
+  /// `PaneSplitGroups`', shared with the workroom split.
   ///
   /// The dictionary itself changes only when a target is added (its first tab, or the first
   /// terminal number it hands out) or removed (`reap`). A target whose tabs all closed or moved
   /// away keeps its entry, emptied, so `ensureTab` does not read it as never opened. Every change
   /// inside an entry sends `paneWillChange` first (`TargetPanes`), and so does every write here.
-  private var targets: [TerminalTarget.ID: TargetPanes<TerminalTab>] {
+  private var targets: [TerminalTarget.ID: TargetPanes<TerminalTab.ID>] {
     get { panesByTarget }
     set {
       paneWillChange.send()
       panesByTarget = newValue
     }
   }
-  private var panesByTarget: [TerminalTarget.ID: TargetPanes<TerminalTab>] = [:]
+  private var panesByTarget: [TerminalTarget.ID: TargetPanes<TerminalTab.ID>] = [:]
+
+  /// The app's tabs: their records and surfaces, by id. This window reaches a tab there only while
+  /// its layout holds it (`record(_:in:)`, `surface(of:)`).
+  @ObservationIgnored let tabRegistry: TerminalTabs
+  /// This window's name in `tabRegistry`: what each tab it holds is held by.
+  @ObservationIgnored private let holder = UUID()
 
   /// Sent synchronously BEFORE every change to the panes: a tab's record or a target's arrangement
   /// (each `TargetPanes` is wired to it in `openPanes`), a target added or removed, an activity
@@ -523,9 +537,6 @@ final class TerminalSessions {
   /// that wants the new state schedules its read rather than taking it inline.
   let paneWillChange = PassthroughSubject<Void, Never>()
 
-  /// The surface of every terminal tab in `targets`, by tab id. Not observed: an entry comes and
-  /// goes in the same call as its tab's record, which is.
-  @ObservationIgnored private var surfaces = SurfaceRegistry()
   /// Bumped when a *visible but non-focused* pane reports activity (D3): the renderer flashes that
   /// pane's border instead of badging it (you can see it, so no banner/badge — just a glance cue).
   /// Keyed by tab id; the value is an opaque counter the leaf view watches for changes.
@@ -736,12 +747,12 @@ final class TerminalSessions {
   private var tabAccess: TerminalTabAccess {
     TerminalTabAccess(
       state: { [weak self] tabID, targetID in self?.terminalState(tabID, in: targetID) },
-      holds: { [weak self] tabID, targetID in self?.targets[targetID]?.tabs[tabID] != nil },
+      holds: { [weak self] tabID, targetID in self?.record(tabID, in: targetID) != nil },
       mutate: { [weak self] tabID, targetID, body in
         self?.mutateTerminalState(tabID, target: targetID, body)
       },
       terminals: { [weak self] in self?.terminalStates() ?? [] },
-      surface: { [weak self] tabID in self?.surfaces[tabID] },
+      surface: { [weak self] tabID in self?.surface(of: tabID) },
       raise: { [weak self] event in self?.onEvent?(event) })
   }
 
@@ -789,7 +800,10 @@ final class TerminalSessions {
   /// in place of `detachPane` (`QuickTerminalPaneDrag.end`).
   @ObservationIgnored var dropOutsideWindow: ((TerminalTab.ID, TerminalTarget) -> Void)?
 
-  init() {
+  /// `tabs` is the app's: every window shares `.shared`, which is what lets a tab move between
+  /// them by id.
+  init(tabs: TerminalTabs? = nil) {
+    tabRegistry = tabs ?? .shared
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
     // so the XCUITest sees the banner; otherwise the normal opt-in, default-off real runner.
     #if DEBUG
@@ -803,6 +817,20 @@ final class TerminalSessions {
     codingAgentManager = TerminalCodingAgentManager()
     // The OS-appearance observer that used to live here now belongs to `ThemeService` — one owner
     // for the whole app rather than one per window (WORKROOM-3R).
+  }
+
+  // A window that goes takes the tabs it holds with it, as its store did when it owned them: each
+  // surface is freed as its record goes, without a teardown, as before. A tab on its way to another
+  // window is held by none, so it waits for the window adopting it. The holder is never reused, so
+  // a late release cannot take another window's tabs.
+  deinit {
+    let tabs = tabRegistry
+    let holder = holder
+    if Thread.isMainThread {
+      MainActor.assumeIsolated { tabs.removeAll(heldBy: holder) }
+    } else {
+      Task { @MainActor in tabs.removeAll(heldBy: holder) }
+    }
   }
 
   // MARK: Queries
@@ -842,7 +870,7 @@ final class TerminalSessions {
   /// live tab with a live process, and `tabs(for:)` hides it. That distinction is what four bulk-close
   /// paths got wrong when `tabs(for:)` was narrowed (issue #172).
   func allTabs(for target: TerminalTarget) -> [TerminalTab] {
-    targets[target.id]?.orderedTabs ?? []
+    tabRegistry.records(normalizedTabIDs(forTargetID: target.id))
   }
 
   /// Strip order with EACH group's members normalised into one contiguous run, **detached panes
@@ -857,9 +885,37 @@ final class TerminalSessions {
     targets[targetID]?.state.normalizedOrder ?? []
   }
 
-  /// A target's tab records by id, empty when it has none.
+  /// A target's tab records by id, empty when it has none: the tabs its layout here holds.
   private func tabRecords(_ targetID: TerminalTarget.ID) -> [TerminalTab.ID: TerminalTab] {
-    targets[targetID]?.tabs ?? [:]
+    guard let order = targets[targetID]?.state.order else { return [:] }
+    return Dictionary(
+      tabRegistry.records(order).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  }
+
+  /// `tabID`'s record while `targetID`'s layout here holds it. A view reading it re-renders on that
+  /// target's layout and that tab's record, never on another tab's.
+  private func record(_ tabID: TerminalTab.ID, in targetID: TerminalTarget.ID) -> TerminalTab? {
+    guard targets[targetID]?.holds(tabID) == true else { return nil }
+    return tabRegistry.record(tabID)
+  }
+
+  /// Store `tab`'s record, a new tab's or a held one's: the panes are about to change, so the
+  /// signal goes first, as for any other pane write.
+  private func store(_ tab: TerminalTab) {
+    paneWillChange.send()
+    tabRegistry.set(tab, by: holder)
+  }
+
+  /// Store `tab`'s new record while `targetID` holds it; nothing for a tab it does not.
+  private func update(_ tab: TerminalTab, in targetID: TerminalTarget.ID) {
+    guard targets[targetID]?.holds(tab.id) == true else { return }
+    store(tab)
+  }
+
+  /// Drop `tabID` from the app altogether, record and surface (a close or a reap).
+  private func discard(_ tabID: TerminalTab.ID) {
+    paneWillChange.send()
+    tabRegistry.remove(tabID)
   }
 
   // MARK: Session capture (issue #46)
@@ -881,12 +937,12 @@ final class TerminalSessions {
   }
 
   func sessionCapture(forTargetID targetID: TerminalTarget.ID) -> SessionCapture? {
-    guard let panes = targets[targetID], !panes.tabs.isEmpty else { return nil }
+    guard let panes = targets[targetID] else { return nil }
     // `normalizedOrder`, NOT the displayed order: a detached pane (issue #172) must be captured in
     // its old strip position or it is lost. This matters before quit as well as at quit — the app
     // writes the session on `willResignActive`, so a filtered capture would drop a detached pane
     // from merely ⌘-tabbing away.
-    let ordered = panes.orderedTabs
+    let ordered = tabRegistry.records(panes.state.normalizedOrder)
     guard !ordered.isEmpty else { return nil }
     return SessionCapture(
       tabs: ordered, splits: panes.state.splits.groups, focused: panes.state.focused,
@@ -905,18 +961,23 @@ final class TerminalSessions {
   /// Whether any target owns the tab `id`. Tab ids are unique across windows, so `WindowRegistry`
   /// uses this to route an OS-notification click to the window that owns the tab (issue #70).
   func containsTab(_ id: TerminalTab.ID) -> Bool {
-    targets.values.contains { $0.tabs[id] != nil }
+    targets.values.contains { $0.holds(id) }
   }
 
   /// The target that owns the tab `id` here, or nil.
   func targetID(ofTab id: TerminalTab.ID) -> TerminalTarget.ID? {
-    targets.first { $0.value.tabs[id] != nil }?.key
+    targets.first { $0.value.holds(id) }?.key
+  }
+
+  /// Every tab this window holds, target by target.
+  private var heldTabs: [TerminalTab] {
+    targets.values.flatMap { tabRegistry.records($0.state.order) }
   }
 
   /// Includes hidden targets, background tabs, and panes popped into their own windows.
   var activeCodingAgentBackends: Set<CodingAgentBackend> {
     Set(
-      targets.values.flatMap { $0.tabs.values }.compactMap { tab in
+      heldTabs.compactMap { tab in
         if case .terminal(let state) = tab.content { return state.activeCodingAgentBackend }
         return nil
       })
@@ -925,10 +986,11 @@ final class TerminalSessions {
   /// The set of target ids that currently own at least one terminal — the "active" targets backing
   /// the Workrooms View tab bar (issue #23). Filtered on **non-empty** because `closeTab` leaves an
   /// emptied target's entry in place while `reap` removes it entirely; both must read as inactive.
-  /// It reads every target's tabs, so a view that reads it re-renders on any target's tab change,
-  /// including as targets gain or lose terminals.
+  /// It reads only whether each target has tabs (`TargetPanes.hasTabs`), so a view that reads it,
+  /// in this window or another (⌥Tab's enablement counts every window's), re-renders as targets
+  /// come and go or gain or lose their terminals, and on nothing else.
   var activeTargetIDs: Set<TerminalTarget.ID> {
-    Set(targets.compactMap { $0.value.tabs.isEmpty ? nil : $0.key })
+    Set(targets.compactMap { $0.value.hasTabs ? $0.key : nil })
   }
 
   /// Whether any terminal in this target is mid-command (has a live command title, issue #2) — drives
@@ -1005,7 +1067,7 @@ final class TerminalSessions {
 
   /// Look up a tab by id (the pane renderer resolves leaves → surfaces through this).
   func tab(_ id: TerminalTab.ID, for target: TerminalTarget) -> TerminalTab? {
-    targets[target.id]?.tabs[id]
+    record(id, in: target.id)
   }
 
   /// The surface view for a tab, located by target + tab id without a `TerminalTarget` value. Lets
@@ -1014,15 +1076,17 @@ final class TerminalSessions {
   func view(
     forTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID
   ) -> GhosttySurfaceView? {
-    guard targets[targetID]?.tabs[tabID] != nil else { return nil }
-    return surfaces[tabID]
+    guard targets[targetID]?.holds(tabID) == true else { return nil }
+    return surface(of: tabID)
   }
 
   /// The surface of terminal tab `tabID`, or nil for a content tab or a tab this window does not
   /// hold. The single accessor every surface-specific path (occlusion, theme reload, teardown,
   /// run-state) funnels through, so a content tab transparently does *fewer* surface operations —
-  /// never more.
-  func surface(of tabID: TerminalTab.ID) -> GhosttySurfaceView? { surfaces[tabID] }
+  /// never more. Not observed: a surface comes and goes with its tab's record, which is.
+  func surface(of tabID: TerminalTab.ID) -> GhosttySurfaceView? {
+    tabRegistry.surface(of: tabID, heldBy: holder)
+  }
 
   /// The focused tab (selection), falling back to the first tab in strip order.
   func focusedTab(for target: TerminalTarget) -> TerminalTab? {
@@ -1151,7 +1215,8 @@ final class TerminalSessions {
     guard !order.isEmpty else { return .nothing }
 
     let panes = openPanes(target.id)
-    panes.setTabs(tabs)
+    // The terminals are stored as they are made; the content tabs join them here.
+    for tab in tabs.values { store(tab) }
     panes.updateState { $0.order = order }
     // Detached tabs resolve to NOTHING here, so a saved group naming one comes back without it.
     // The split groups' invariant is that a detached tab is never a member (`targets`): rendering
@@ -1263,9 +1328,9 @@ final class TerminalSessions {
       onEvent?(.tabContentChanged(target.id, existing))
       return existing
     }
-    if let previewID = previewTabID(in: target.id), var tab = targets[target.id]?.tabs[previewID] {
+    if let previewID = previewTabID(in: target.id), var tab = record(previewID, in: target.id) {
       tab.content = desc.makeTabContent()
-      targets[target.id]?.setTab(tab)
+      update(tab, in: target.id)
       focus(previewID, for: target)
       // The content moved but the focus did not, so `.focusChanged` will not fire — this is the one
       // opener branch navigation history cannot otherwise see (issue #26 follow-up).
@@ -1308,7 +1373,7 @@ final class TerminalSessions {
   private func contentTab(matching descriptor: some ContentDescriptor, in target: TerminalTarget.ID)
     -> TerminalTab.ID?
   {
-    targets[target]?.tabs.first { _, tab in descriptor.matches(tab.content) }?.key
+    tabRecords(target).first { _, tab in descriptor.matches(tab.content) }?.key
   }
 
   /// Open a file diff as the target's single PREVIEW content tab (issue #66).
@@ -1328,7 +1393,7 @@ final class TerminalSessions {
   /// Persist a preview content tab (double-click its chip, or "Keep Open" in its menu). No-op unless
   /// it's a preview content tab (diff, file, or changeset).
   func persist(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    guard var tab = targets[target.id]?.tabs[tabID] else { return }
+    guard var tab = record(tabID, in: target.id) else { return }
     switch tab.content {
     case .diff(var d) where d.isPreview:
       d.isPreview = false
@@ -1342,7 +1407,7 @@ final class TerminalSessions {
     default:
       return
     }
-    targets[target.id]?.setTab(tab)
+    update(tab, in: target.id)
   }
 
   /// Open a file as the target's single PREVIEW content tab (VS-Code semantics), read-only. Shares
@@ -1368,9 +1433,9 @@ final class TerminalSessions {
   func setDiffViewMode(
     _ mode: DiffViewMode, forTab tabID: TerminalTab.ID, in target: TerminalTarget
   ) {
-    guard var tab = targets[target.id]?.tabs[tabID], case .diff = tab.content else { return }
+    guard var tab = record(tabID, in: target.id), case .diff = tab.content else { return }
     tab.diffViewModeOverride = mode
-    targets[target.id]?.setTab(tab)
+    update(tab, in: target.id)
   }
 
   /// Set the selected file within a changeset tab (the History detail's file list). Reassigns the
@@ -1380,12 +1445,12 @@ final class TerminalSessions {
   func setChangesetSelectedPath(
     _ path: String?, forTab tabID: TerminalTab.ID, in target: TerminalTarget
   ) {
-    guard var tab = targets[target.id]?.tabs[tabID], case .changeset(var desc) = tab.content,
+    guard var tab = record(tabID, in: target.id), case .changeset(var desc) = tab.content,
       desc.selectedPath != path
     else { return }
     desc.selectedPath = path
     tab.content = .changeset(desc)
-    targets[target.id]?.setTab(tab)
+    update(tab, in: target.id)
     // A selection change inside a commit is its own location, and it moves no focus — so, like the
     // preview retarget, only this seam can tell navigation history about it.
     onEvent?(.tabContentChanged(target.id, tabID))
@@ -1406,12 +1471,12 @@ final class TerminalSessions {
   func refreshDiffChangeKind(
     _ change: ChangedFile.Change, forTab tabID: TerminalTab.ID, in targetID: TerminalTarget.ID
   ) -> Bool {
-    guard var tab = targets[targetID]?.tabs[tabID], case .diff(var desc) = tab.content,
+    guard var tab = record(tabID, in: targetID), case .diff(var desc) = tab.content,
       desc.change != change
     else { return false }
     desc.change = change
     tab.content = .diff(desc)
-    targets[targetID]?.setTab(tab)
+    update(tab, in: targetID)
     return true
   }
 
@@ -1421,9 +1486,9 @@ final class TerminalSessions {
   func setMarkdownPreview(
     _ preview: Bool, forTab tabID: TerminalTab.ID, in target: TerminalTarget
   ) {
-    guard var tab = targets[target.id]?.tabs[tabID], case .file = tab.content else { return }
+    guard var tab = record(tabID, in: target.id), case .file = tab.content else { return }
     tab.markdownPreviewOverride = preview
-    targets[target.id]?.setTab(tab)
+    update(tab, in: target.id)
   }
 
   /// Put `payload` back into a SPECIFIC tab, in place — back/forward replay's landing primitive, and the
@@ -1439,11 +1504,11 @@ final class TerminalSessions {
   /// openers write `content`, and none of them writes `.terminal`), so this is a guard against a future
   /// caller rather than a live case — but silently freeing a live surface would be unrecoverable.
   func setContent(_ payload: NavPayload, forTab tabID: TerminalTab.ID, in target: TerminalTarget) {
-    guard var tab = targets[target.id]?.tabs[tabID] else { return }
+    guard var tab = record(tabID, in: target.id) else { return }
     let wasPreview = tab.isPreview
     guard case .terminal = tab.content else {
       tab.content = payload.makeTabContent(isPreview: wasPreview)
-      targets[target.id]?.setTab(tab)
+      update(tab, in: target.id)
       onEvent?(.tabContentChanged(target.id, tabID))
       return
     }
@@ -1453,7 +1518,7 @@ final class TerminalSessions {
   /// The id of the target's single preview content tab, if one exists (the ≤1-preview invariant).
 
   private func previewTabID(in target: TerminalTarget.ID) -> TerminalTab.ID? {
-    targets[target]?.tabs.first { _, tab in tab.isPreview }?.key
+    tabRecords(target).first { _, tab in tab.isPreview }?.key
   }
 
   /// Open the dedicated "run command" terminal (issue #7): a solo tab that launches `command` in
@@ -1501,7 +1566,7 @@ final class TerminalSessions {
     } else {
       // Issue #67 (run in the background): not focusing means the pane never mounts, so spawn the
       // surface off-window now — otherwise the command would never start and the toast would lie.
-      surfaces[tab.id]?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+      surface(of: tab.id)?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
     }
     reconcileOcclusion(for: target)
     return tab
@@ -1520,7 +1585,7 @@ final class TerminalSessions {
     if focus {
       setFocused(tab.id, for: target.id)
     } else {
-      surfaces[tab.id]?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+      surface(of: tab.id)?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
     }
     reconcileOcclusion(for: target)
     return tab
@@ -1550,7 +1615,6 @@ final class TerminalSessions {
 
     let tab = makeRunTab(for: target, command: command, cwd: cwd, runSession: runSession)
     let panes = openPanes(target.id)
-    panes.setTab(tab)
     panes.updateState {
       if let orderIndex {
         $0.order.insert(tab.id, at: min(orderIndex, $0.order.count))
@@ -1575,7 +1639,7 @@ final class TerminalSessions {
     } else {
       // Background restart (issue #67): keep it unfocused, but spawn off-window so the respawned
       // command actually runs (the new tab won't mount until the user opens it).
-      surfaces[tab.id]?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+      surface(of: tab.id)?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
     }
     reconcileOcclusion(for: target)
     return tab
@@ -1610,7 +1674,7 @@ final class TerminalSessions {
     guard fits(splitting: focused, orientation: edge.orientation, for: target) else { return }
 
     let newTab = newPaneTab(splitting: focused, for: target)
-    openPanes(target.id).setTab(newTab)
+    store(newTab)
 
     // Grow the focused pane's own group beside it, on the requested side, or seed a NEW group from
     // the focused solo tab, leaving every other group exactly as it was. Always an add, so it always
@@ -1663,7 +1727,7 @@ final class TerminalSessions {
   /// workroom to the focused member of a workroom split (#23); then splits the now-focused anchor (a
   /// diff anchor splits into a second diff pane, a terminal into a new shell — see `newPaneTab`).
   func splitTab(_ tabID: TerminalTab.ID, on edge: PaneEdge, for target: TerminalTarget) {
-    guard let tab = targets[target.id]?.tabs[tabID] else { return }
+    guard let tab = record(tabID, in: target.id) else { return }
     // Check the fit BEFORE `select`, not after. `splitFocusedPane` refuses silently when the pane is
     // too small to halve, and `select` has already moved the focused tab and promoted this workroom
     // to the focused split member by then — so a refused split still visibly changed the selection,
@@ -1708,8 +1772,8 @@ final class TerminalSessions {
     _ movedID: TerminalTab.ID, ontoEdge edge: PaneEdge, of destID: TerminalTab.ID,
     for target: TerminalTarget
   ) {
-    guard movedID != destID, targets[target.id]?.tabs[movedID] != nil,
-      let dest = targets[target.id]?.tabs[destID]
+    guard movedID != destID, record(movedID, in: target.id) != nil,
+      let dest = record(destID, in: target.id)
     else { return }
     // Same floor ⌘D obeys. Without this the two paths disagree by the whole floor: ⌘D refuses to
     // halve a pane under `minPaneWidth`, while dragging a chip onto that same pane's edge split it
@@ -1747,7 +1811,7 @@ final class TerminalSessions {
   /// included, so the next Changes/Files click would otherwise replace this pane's content in place
   /// and the popped-out window would silently become a different file.
   func detachPane(_ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint) {
-    guard allowsDetach, let tab = targets[target.id]?.tabs[tabID], !detachedTabIDs.contains(tabID)
+    guard allowsDetach, let tab = record(tabID, in: target.id), !detachedTabIDs.contains(tabID)
     else { return }
     let wasFocused = targets[target.id]?.state.focused == tabID
     let successor = closeSuccessor(of: tabID, for: target)
@@ -1824,25 +1888,29 @@ final class TerminalSessions {
 
   // MARK: Hand-over between windows (#444)
 
-  /// One target's live tabs, lifted out of a window's sessions for another window's to adopt. The
-  /// tabs keep their ids and their surfaces, so processes, scrollback and notifications carry
-  /// straight across. Nothing reattaches: a reattach repaints only the newest few MiB of history and
-  /// re-mints tab ids, and a run tab has no session to reattach to.
+  /// One target's layout, lifted out of a window for another window to adopt. Only the layout
+  /// travels: the tabs it names stay in the app's `TerminalTabs`, with their ids, records and
+  /// surfaces, so processes, scrollback and notifications carry straight across and no per-tab
+  /// field can be dropped on the way. Nothing reattaches: a reattach repaints only the newest few
+  /// MiB of history and re-mints tab ids, and a run tab has no session to reattach to.
+  ///
+  /// Between the hand-off and the adopt the tabs are held by no window (`TabRecords.release`).
   struct TargetHandOff {
     let target: TerminalTarget
-    /// Every tab, detached panes included, in strip order.
-    let tabs: [TerminalTab]
-    /// The terminal tabs' surfaces, by tab id, taken out of this window's `SurfaceRegistry`: the
-    /// hand-off keeps them alive until the other window adopts them, as the tab values once did.
-    let surfaces: [TerminalTab.ID: GhosttySurfaceView]
-    let splits: [TerminalPaneLayout]
-    let focused: TerminalTab.ID?
-    let counter: Int
-    /// The tabs in their own windows, each with its window's frame (`AppStore` fills the frames
-    /// in, since it owns the windows).
+    /// The target's layout in the window it left: every tab id in strip order, detached panes
+    /// included, its splits, focus and "Terminal N" counter.
+    let layout: PaneState<TerminalTab.ID>
+    /// The tabs in their own windows, each with its window's frame. Window-level, not per tab: the
+    /// detached windows are the window's (`DetachedPaneWindows`), so the one it left closes them and
+    /// this one opens its own at the same frames (`AppStore` fills the frames in).
     var detached: [TerminalTab.ID: NSRect]
-    /// Each tab's coding-agent banner and last failure, from this window's manager.
+    /// Each tab's coding-agent banner and last failure, from the manager of the window it left.
+    /// Window-level too: the manager is each window's environment object, observed by its views as
+    /// a whole, so holding every window's banners in one would re-render every window on each.
     let agent: [TerminalTab.ID: (banner: CodingAgentBannerState?, failure: FailedCommand?)]
+
+    /// The tabs, in strip order, detached panes included.
+    var tabIDs: [TerminalTab.ID] { layout.normalizedOrder }
   }
 
   /// Lift `target`'s tabs out of this window WITHOUT ending a session or freeing a surface: the one
@@ -1851,15 +1919,20 @@ final class TerminalSessions {
   /// membership goes silently: `AppStore` closes those windows itself and the destination reopens
   /// them, which `.paneDocked` would race.
   func handOff(_ target: TerminalTarget) -> TargetHandOff? {
-    guard let panes = targets[target.id], !panes.tabs.isEmpty else { return nil }
-    let tabs = panes.orderedTabs
-    let ids = tabs.map(\.id)
+    guard let panes = targets[target.id] else { return nil }
+    let ids = tabRegistry.records(panes.state.normalizedOrder).map(\.id)
+    guard !ids.isEmpty else { return nil }
+    let state = panes.state
     let handOff = TargetHandOff(
-      target: target, tabs: tabs, surfaces: surfaces.remove(ids), splits: panes.state.splits.groups,
-      focused: panes.state.focused, counter: panes.state.counter ?? ids.count,
+      target: target,
+      layout: PaneState(
+        order: ids, splits: state.splits, focused: state.focused,
+        counter: state.counter ?? ids.count
+      ),
       detached: Dictionary(
         uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }),
       agent: Dictionary(uniqueKeysWithValues: ids.map { ($0, codingAgentManager.handOff($0)) }))
+    tabRegistry.release(ids, by: holder)
     for id in ids {
       detachedTabIDs.remove(id)
       forgetPerTabWork(id)
@@ -1880,16 +1953,17 @@ final class TerminalSessions {
   func handOffTab(
     _ tabID: TerminalTab.ID, from target: TerminalTarget, to destination: TerminalTarget
   ) -> TargetHandOff? {
-    guard let tab = targets[target.id]?.tabs[tabID], !detachedTabIDs.contains(tabID) else {
+    guard let tab = record(tabID, in: target.id), !detachedTabIDs.contains(tabID) else {
       return nil
     }
     let wasFocused = targets[target.id]?.state.focused == tabID
     let successor = closeSuccessor(of: tabID, for: target)
     if tab.isPreview { persist(tabID, for: target) }
-    let view = surfaces.remove(tabID)
+    let view = surface(of: tabID)
     let handOff = TargetHandOff(
-      target: destination, tabs: [tab], surfaces: view.map { [tabID: $0] } ?? [:], splits: [],
-      focused: tabID, counter: 0, detached: [:], agent: [tabID: codingAgentManager.handOff(tabID)])
+      target: destination, layout: PaneState(order: [tabID], focused: tabID, counter: 0),
+      detached: [:], agent: [tabID: codingAgentManager.handOff(tabID)])
+    tabRegistry.release([tabID], by: holder)
     if let view {
       let project = destination.id.projectPath ?? destination.path
       view.attachment.metadata = view.attachment.metadata.map { entry in
@@ -1913,38 +1987,44 @@ final class TerminalSessions {
   /// already shows, they join after its own tabs, its own layout stays, and the moved splits go.
   func adopt(_ handOff: TargetHandOff) {
     let target = handOff.target
+    let ids = handOff.tabIDs
+    // One layout at a time: the window that handed these off let them go, so nobody else may hold
+    // them. One that does would show the same tab, and drive the same surface, in two windows.
+    guard tabRegistry.claim(ids, by: holder) else {
+      assertionFailure("adopted tabs another window still holds")
+      Self.logger.error(
+        "adopt refused for \(target.id, privacy: .public): another window holds them")
+      return
+    }
     let merging = !tabRecords(target.id).isEmpty
     // A target keeps at most one preview: with this window's own, a moved one stays open, pinned.
     let ownPreview = merging && previewTabID(in: target.id) != nil
-    for tab in handOff.tabs {
-      let panes = openPanes(target.id)
-      if let view = handOff.surfaces[tab.id] { surfaces.register(view, for: tab.id) }
-      panes.setTab(tab)
-      panes.updateState { $0.order.append(tab.id) }
-      guard case .terminal(let state) = tab.content, let view = handOff.surfaces[tab.id] else {
-        continue
-      }
-      wire(view, tab: tab.id, target: target)
+    for id in ids {
+      openPanes(target.id).updateState { $0.order.append(id) }
+      guard case .terminal(let state)? = tabRegistry.record(id)?.content,
+        let view = surface(of: id)
+      else { continue }
+      wire(view, tab: id, target: target)
       if state.sessionID != nil {
         programStatusBinding.follow(target.remoteHost.map(HostID.remote) ?? .local)
       }
     }
     if ownPreview {
-      for tab in handOff.tabs where tab.isPreview { persist(tab.id, for: target) }
+      for id in ids where tabRegistry.record(id)?.isPreview == true { persist(id, for: target) }
     }
     for id in handOff.detached.keys { detachedTabIDs.insert(id) }
     for (id, agent) in handOff.agent {
       codingAgentManager.adopt(id, banner: agent.banner, failure: agent.failure)
     }
     if !merging {
-      setSplits(PaneSplitGroups(handOff.splits), for: target.id)
+      setSplits(handOff.layout.splits, for: target.id)
     }
-    openPanes(target.id).updateState { $0.raiseCounter(to: handOff.counter) }
+    openPanes(target.id).updateState { $0.raiseCounter(to: handOff.layout.counter ?? 0) }
     let focus =
-      handOff.focused.flatMap { detachedTabIDs.contains($0) ? nil : $0 }
-      ?? handOff.tabs.first { !detachedTabIDs.contains($0.id) }?.id
+      handOff.layout.focused.flatMap { detachedTabIDs.contains($0) ? nil : $0 }
+      ?? ids.first { !detachedTabIDs.contains($0) }
     if let focus { setFocused(focus, for: target.id, notify: false) }
-    for tab in handOff.tabs { refreshProgramStatus(tab: tab.id, target: target.id) }
+    for id in ids { refreshProgramStatus(tab: id, target: target.id) }
     for (id, frame) in handOff.detached {
       onEvent?(.paneRestoredDetached(target.id, id, frame: frame))
     }
@@ -1964,7 +2044,7 @@ final class TerminalSessions {
   /// Focus a tab (and, if it's a split member, show the split). Single entry point: chip tap, ⌘1–9,
   /// notification routing, neighbour-after-close. `select` is an alias kept for existing call sites.
   func focus(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    guard let panes = targets[target.id], panes.tabs[tabID] != nil else { return }
+    guard let panes = targets[target.id], record(tabID, in: target.id) != nil else { return }
     guard panes.state.focused != tabID else { return }
     setFocused(tabID, for: target.id)
     reconcileOcclusion(for: target)
@@ -2053,7 +2133,7 @@ final class TerminalSessions {
   /// Close a tab. If it's a split member the split collapses to the surviving sibling subtree (and
   /// dissolves when only one member would remain). Closing the last tab leaves the target with none.
   func closeTab(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    guard let tab = targets[target.id]?.tabs[tabID] else { return }
+    guard let tab = record(tabID, in: target.id) else { return }
     let wasFocused = targets[target.id]?.state.focused == tabID
 
     // Compute the focus successor BEFORE mutating, using the on-screen order.
@@ -2069,7 +2149,7 @@ final class TerminalSessions {
     // The task keeps the torn-down surface alive until the session's end is answered, as the tab
     // value it captured did when the tab held its view, so a pane closed from inside one of its own
     // callbacks is never freed under that callback's stack.
-    let view = surfaces[tabID]
+    let view = surface(of: tabID)
     Task {
       let ended = await self.endPersistentSession(for: tab)
       withExtendedLifetime(view) {}
@@ -2077,10 +2157,10 @@ final class TerminalSessions {
       if remote && !ended { self.onEvent?(.remoteCloseFailed(target.id, title: target.title)) }
     }
     teardown(tab)
-    surfaces.remove(tabID)
     // A lone remaining member is not a group any more; two or more get evened, since their dividers
     // still budget space for the pane that just closed (issue #126).
     remove(tabID, from: target.id)
+    discard(tabID)
     forgetPerTabWork(tabID)
 
     if wasFocused { setFocused(successor, for: target.id) }
@@ -2115,8 +2195,8 @@ final class TerminalSessions {
     }
     await sessionService.endSessions(matchingWorkroom: id.encoded)
     // Tabs, order, splits, focus and numbering go at once, without a focus change to report, and
-    // the surfaces with them: every tab the target holds now, as its records go.
-    surfaces.remove(Array(tabRecords(id).keys))
+    // the surfaces with them: every tab the target holds now, as its layout goes.
+    for held in tabRecords(id).keys { discard(held) }
     targets[id] = nil
     announcedShownSlots[id] = nil
     recency.forgetPanes(removedIDs)
@@ -2141,13 +2221,11 @@ final class TerminalSessions {
   /// appearance flip (WORKROOM-3R). It now runs once, in `applyActiveTheme`.
   func applyThemeToAll(isDark: Bool) {
     let config = GhosttyApp.shared.config
-    for panes in targets.values {
-      for tab in panes.tabs.values {
-        // Content tabs have no surface to re-theme.
-        guard let surface = surfaces[tab.id] else { continue }
-        if let config { surface.updateConfig(config) }
-        surface.applyColorScheme(isDark: isDark)
-      }
+    for tab in heldTabs {
+      // Content tabs have no surface to re-theme.
+      guard let surface = surface(of: tab.id) else { continue }
+      if let config { surface.updateConfig(config) }
+      surface.applyColorScheme(isDark: isDark)
     }
   }
 
@@ -2163,7 +2241,7 @@ final class TerminalSessions {
     for tab in tabRecords(target.id).values {
       // Only terminal tabs own a GPU surface to occlude; a content tab (diff) pauses itself by
       // unmounting from the window when it leaves the screen, so there's nothing to toggle here.
-      surfaces[tab.id]?.setVisible(visible.contains(tab.id))
+      surface(of: tab.id)?.setVisible(visible.contains(tab.id))
     }
   }
 
@@ -2179,7 +2257,7 @@ final class TerminalSessions {
   private func terminalState(
     _ tabID: TerminalTab.ID, in targetID: TerminalTarget.ID
   ) -> TerminalState? {
-    guard case .terminal(let state)? = targets[targetID]?.tabs[tabID]?.content else { return nil }
+    guard case .terminal(let state)? = record(tabID, in: targetID)?.content else { return nil }
     return state
   }
 
@@ -2188,27 +2266,26 @@ final class TerminalSessions {
     target: TerminalTarget.ID, tab: TerminalTab.ID, state: TerminalState
   )] {
     targets.flatMap { targetID, panes in
-      panes.tabs.compactMap { tabID, tab in
+      tabRegistry.records(panes.state.order).compactMap { tab in
         guard case .terminal(let state) = tab.content else { return nil }
-        return (targetID, tabID, state)
+        return (targetID, tab.id, state)
       }
     }
   }
 
   /// Mutate the `.terminal` payload of a tab in place and republish (the reassign is what
-  /// publishes). A no-op if the tab is missing or isn't a terminal — so the OSC callbacks (only
-  /// ever wired for terminal tabs) stay correct even if a content tab id is ever passed.
+  /// publishes). A no-op if the tab is missing, isn't a terminal or `target` does not hold it here —
+  /// so the OSC callbacks (only ever wired for terminal tabs) stay correct even if a content tab id
+  /// is ever passed, and a late answer for a pane that moved on lands nowhere.
   private func mutateTerminalState(
     _ tabID: TerminalTab.ID, target: TerminalTarget.ID, _ body: (inout TerminalState) -> Void
   ) {
-    guard let panes = targets[target], var tab = panes.tabs[tabID],
-      case .terminal(var s) = tab.content
-    else {
+    guard var tab = record(tabID, in: target), case .terminal(var s) = tab.content else {
       return
     }
     body(&s)
     tab.content = .terminal(s)
-    panes.setTab(tab)
+    store(tab)
   }
 
   // MARK: Internals
@@ -2251,16 +2328,16 @@ final class TerminalSessions {
     // Pre-layout fallback: the pane's own rect (or its surface), judged by the anchor-only rule.
     let rect =
       paneRects[target.id]?[tab.id]
-      ?? surfaces[tab.id].map { CGRect(origin: .zero, size: $0.bounds.size) }
+      ?? surface(of: tab.id).map { CGRect(origin: .zero, size: $0.bounds.size) }
     guard let rect else { return true }
     return PaneTreeLayout.canSplit(rect, along: orientation)
   }
 
   /// `targetID`'s panes, made (empty) when it has none yet. The one place an entry is added, and
   /// where each is wired to send `paneWillChange` before its every change.
-  private func openPanes(_ targetID: TerminalTarget.ID) -> TargetPanes<TerminalTab> {
+  private func openPanes(_ targetID: TerminalTarget.ID) -> TargetPanes<TerminalTab.ID> {
     if let panes = targets[targetID] { return panes }
-    let panes = TargetPanes<TerminalTab> { [weak self] in self?.paneWillChange.send() }
+    let panes = TargetPanes<TerminalTab.ID> { [weak self] in self?.paneWillChange.send() }
     targets[targetID] = panes
     return panes
   }
@@ -2320,12 +2397,12 @@ final class TerminalSessions {
     panes.updateState { $0.ungroup(tabID, policy: policy) }
   }
 
-  /// Drop `tabID` from `targetID` altogether: its record, its strip slot and its group. Focus is
-  /// the caller's, picked beforehand (`closeSuccessor` reads the order this changes).
+  /// Drop `tabID` from `targetID`'s layout here: its strip slot and its group. The tab itself is
+  /// the caller's: a close discards it, a hand-off lets another window take it. Focus is the
+  /// caller's too, picked beforehand (`closeSuccessor` reads the order this changes).
   private func remove(_ tabID: TerminalTab.ID, from targetID: TerminalTarget.ID) {
     guard let panes = targets[targetID] else { return }
     let policy = splitPolicy(for: targetID)
-    panes.removeTab(tabID)
     panes.updateState { $0.remove(tabID, policy: policy) }
   }
 
@@ -2347,7 +2424,7 @@ final class TerminalSessions {
 
   private func insert(_ tab: TerminalTab, for target: TerminalTarget) {
     let panes = openPanes(target.id)
-    panes.setTab(tab)
+    store(tab)
     panes.updateState { $0.order.append(tab.id) }
     liveState.refreshBranch(forTab: tab.id, target: target.id)
   }
@@ -2410,7 +2487,10 @@ final class TerminalSessions {
       state.programStatus = programStatus.rollup(for: assignedSessionID)
     }
     let tab = TerminalTab(content: .terminal(state))
-    surfaces.register(view, for: tab.id)
+    // Stored, and so this window's, from the moment it is made: every caller puts it in the
+    // target's layout in the same call.
+    tabRegistry.register(view, for: tab.id)
+    store(tab)
     wire(view, tab: tab.id, target: target)
     return tab
   }
@@ -2508,13 +2588,13 @@ final class TerminalSessions {
   /// `tabID`'s own name ("Terminal 2"), never the title its program set: a program renames its
   /// tab freely (Claude Code to its task), so this is the name that always reads as a terminal.
   func defaultTitle(ofTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID) -> String? {
-    guard case .terminal(let state)? = targets[targetID]?.tabs[tabID]?.content else { return nil }
+    guard case .terminal(let state)? = record(tabID, in: targetID)?.content else { return nil }
     return state.defaultTitle
   }
 
   /// The program-status session `tabID` attaches to, if it is a daemon-backed terminal.
   func sessionID(forTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID) -> UUID? {
-    guard case .terminal(let state)? = targets[targetID]?.tabs[tabID]?.content else { return nil }
+    guard case .terminal(let state)? = record(tabID, in: targetID)?.content else { return nil }
     return state.sessionID
   }
 
@@ -2555,7 +2635,7 @@ final class TerminalSessions {
   /// Tear down a tab's surface (clears callbacks before freeing, so no in-flight libghostty callback
   /// touches a dead view). A no-op for a content tab — it owns no surface, so there's nothing to free
   /// (and the refactor therefore frees *strictly fewer* surfaces than before — no new free races).
-  private func teardown(_ tab: TerminalTab) { surfaces[tab.id]?.tearDown() }
+  private func teardown(_ tab: TerminalTab) { surface(of: tab.id)?.tearDown() }
 
   func owner(of sessionID: UUID, in target: TerminalTarget) -> TerminalTab.ID? {
     tabRecords(target.id).first { _, tab in
@@ -2565,7 +2645,7 @@ final class TerminalSessions {
   }
 
   func replace(_ tab: TerminalTab, for target: TerminalTarget) {
-    targets[target.id]?.setTab(tab)
+    update(tab, in: target.id)
   }
 
   func ownedSessionIDs(for target: TerminalTarget) -> Set<UUID> {
@@ -2579,7 +2659,7 @@ final class TerminalSessions {
   /// Every session ID owned by an open tab across every target in this window.
   var allOwnedSessionIDs: Set<UUID> {
     Set(
-      targets.values.flatMap { $0.tabs.values }.compactMap { tab in
+      heldTabs.compactMap { tab in
         if case .terminal(let state) = tab.content { return state.sessionID }
         return nil
       })
@@ -2594,22 +2674,20 @@ final class TerminalSessions {
     load: () async -> [SessionDescriptor]
   ) async {
     var generations: [TerminalTab.ID: (sessionID: UUID?, generation: Int)] = [:]
-    for panes in targets.values {
-      for tab in panes.tabs.values {
-        if case .terminal(let state) = tab.content {
-          generations[tab.id] = (state.sessionID, state.commandFinishGeneration)
-        }
+    for tab in heldTabs {
+      if case .terminal(let state) = tab.content {
+        generations[tab.id] = (state.sessionID, state.commandFinishGeneration)
       }
     }
     let live = await load()
     // Which tabs to visit is fixed here: a tab that arrives during the waits below is not one
     // this launch's sessions were listed for.
-    let snapshot = targets.mapValues(\.tabs)
-    for (target, tabs) in snapshot where reattaches(target) {
-      for tabID in tabs.keys {
-        // Earlier panes suspend while attaching. The dictionary snapshot can now describe a
-        // command that finished or a pane that moved; hydrate only its current model state.
-        guard reattaches(target), let tab = targets[target]?.tabs[tabID],
+    let snapshot = targets.mapValues(\.state.order)
+    for (target, tabIDs) in snapshot where reattaches(target) {
+      for tabID in tabIDs {
+        // Earlier panes suspend while attaching. The snapshot can now describe a command that
+        // finished or a pane that moved; hydrate only its current model state.
+        guard reattaches(target), let tab = record(tabID, in: target),
           case .terminal(let state) = tab.content,
           let sessionID = state.sessionID,
           let descriptor = live.first(where: { $0.identifier.uuid == sessionID })
@@ -2632,14 +2710,14 @@ final class TerminalSessions {
             }
           }
         }
-        guard let view = surfaces[tab.id], view.surface == nil else { continue }
+        guard let view = surface(of: tab.id), view.surface == nil else { continue }
         // A yield alone may immediately re-enter the main actor without an AppKit update. Give
         // display/input a frame between hidden engines; visible panes mount eagerly as usual.
         do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
         // Closing, moving or reassigning a pane during the new suspension must not recreate it.
-        guard reattaches(target), let current = targets[target]?.tabs[tab.id],
+        guard reattaches(target), let current = record(tab.id, in: target),
           case .terminal(let currentState) = current.content,
-          currentState.sessionID == sessionID, surfaces[tab.id] === view
+          currentState.sessionID == sessionID, surface(of: tab.id) === view
         else { continue }
         view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
       }

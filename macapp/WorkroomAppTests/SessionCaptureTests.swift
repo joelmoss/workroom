@@ -78,6 +78,40 @@ final class SessionCaptureTests: XCTestCase {
     XCTAssertEqual(captured.tabs.map(\.key), sessions.tabs(for: target).map(\.id.uuidString))
   }
 
+  /// Two windows showing one workroom (#444 Q12) each save their own tabs, split, focus and counter,
+  /// and nothing of the other's: the tabs are app-wide (ADR 0069), but a window's capture reads
+  /// through its own layout. One window's saved layout is byte for byte what it was before the
+  /// other opened tabs there.
+  /// Value: protects=session.json for a two-window, one-workroom state; fails_when=a capture reads
+  /// the app's tabs rather than its window's layout; why_new=no capture test had two windows on one
+  /// target; seam=none; no_claim=the window list `SavedLayoutCoordinator` writes.
+  func testTwoWindowsOnOneWorkroomEachSaveOnlyTheirOwnTabs() throws {
+    let one = makeSessions()
+    one.addTab(for: target)
+    one.splitFocusedPane(for: target, orientation: .horizontal)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    let alone = try encoder.encode(XCTUnwrap(capture(one)))
+
+    let two = makeSessions()
+    let theirs = two.addTab(for: target)
+    two.addTab(for: target)
+    two.addTab(for: target)
+
+    let oneCaptured = try XCTUnwrap(capture(one))
+    XCTAssertEqual(try encoder.encode(oneCaptured), alone, "the other window changed this one's")
+    let twoCaptured = try XCTUnwrap(capture(two))
+    XCTAssertEqual(
+      Set(oneCaptured.tabs.map(\.key)).intersection(twoCaptured.tabs.map(\.key)), [],
+      "no tab saved by both windows")
+    XCTAssertEqual(oneCaptured.tabs.count, 2)
+    XCTAssertEqual(oneCaptured.splits.count, 1)
+    XCTAssertEqual(twoCaptured.tabs.map(\.key), two.tabs(for: target).map(\.id.uuidString))
+    XCTAssertTrue(twoCaptured.splits.isEmpty)
+    XCTAssertEqual(twoCaptured.terminalCounter, 3, "each window numbers its own terminals")
+    XCTAssertNotEqual(twoCaptured.focusedKey, theirs.id.uuidString, "its own focus, the last tab")
+  }
+
   func testCapturedSplitAddressesTheCapturedTabs() throws {
     let sessions = makeSessions()
     sessions.addTab(for: target)

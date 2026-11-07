@@ -542,9 +542,9 @@ struct RootView: View {
             && !modals.hasModalPresentation,
           // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
           // enabled when this window holds the only workroom and another window holds a second one.
-          // This window's body is what recomputes it, so another window's change lands here only on the
-          // next pass — harmless in both directions: the monitor owns the keystroke either way, and the
-          // menu item merely no-ops (or greys) until then.
+          // Observation tracks the other windows' reads too, and they ask only whether each workroom
+          // has terminals (`TerminalSessions.activeTargetIDs`), so another window's workroom opening
+          // or emptying re-runs this body, and its tabs' titles, agents and progress do not.
           canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !modals.hasModalPresentation,
           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
           canOpenInEditor: store.canOpenInEditor && !modals.hasModalPresentation,

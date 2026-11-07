@@ -98,6 +98,149 @@ final class PaneInvalidationTests: XCTestCase {
       PaneTitleBar.bodyPasses, 0, "workroom A's pane change re-ran workroom B's pane title bar")
   }
 
+  // MARK: Two windows (step 3.9)
+
+  /// What RootView computes for ⌥Tab's menu item, across every window (`canSwitchWorkrooms`),
+  /// counted. RootView itself needs the whole app around it; this is the one cross-window read in
+  /// its body.
+  private struct SwitcherEnablementProbe: View {
+    static var bodyPasses = 0
+    let registry: WindowRegistry
+
+    var body: some View {
+      Self.bodyPasses += 1
+      return Text(QuickSwitcher.canSwitchWorkrooms(registry: registry) ? "switch" : "stay")
+    }
+  }
+
+  private struct TwoWindows {
+    let registry: WindowRegistry
+    let one: AppStore
+    let two: AppStore
+    let a: TerminalTarget
+    let b: TerminalTarget
+    let surfaceA: GhosttySurfaceView
+    let windows: [NSWindow]
+  }
+
+  /// Window one holds workroom A, window two holds workroom B and draws its terminals and the
+  /// switcher's enablement, as RootView would.
+  private func twoWindows() throws -> TwoWindows {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("pane-invalidation-\(UUID().uuidString)")
+    let paths = ["a", "b"].map { root.appendingPathComponent($0).path }
+    let projects = ProjectStore()
+    projects.projects = paths.map { Project(path: $0, vcs: "git", workrooms: []) }
+    let stores = [AppStore(projectStore: projects), AppStore(projectStore: projects)]
+    for store in stores {
+      store.terminals.sessionService = PersistentSessionService(
+        probe: { _ in .unhealthy(reason: "no sessions in invalidation fixture") },
+        ownership: { _ in .notOwned })
+      store.terminals.makeView = { _, cwd, command in
+        GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+      }
+    }
+    let a = try XCTUnwrap(stores[0].target(for: .root(project: paths[0])))
+    let b = try XCTUnwrap(stores[1].target(for: .root(project: paths[1])))
+    let surfaceA = try XCTUnwrap(stores[0].terminals.surface(stores[0].terminals.addTab(for: a)))
+    _ = stores[1].terminals.addTab(for: b)
+
+    let registry = WindowRegistry()
+    let frame = NSRect(x: 100, y: 100, width: 900, height: 600)
+    let windows = stores.map { _ in
+      let window = NSWindow(
+        contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      return window
+    }
+    // Before the view is made: its first body pass is what subscribes to every window's reads.
+    for (window, store) in zip(windows, stores) { registry.register(window: window, store: store) }
+    let hosting = NSHostingView(
+      rootView: VStack {
+        SwitcherEnablementProbe(registry: registry)
+        WorkroomTerminalsView(target: b, sessions: stores[1].terminals)
+      }
+      .environmentObject(stores[1])
+      .environmentObject(stores[1].modals)
+      .environmentObject(stores[1].runCommand)
+      .environmentObject(stores[1].notifications)
+      .environmentObject(stores[1].terminals.codingAgentManager)
+      .frame(width: 900, height: 600))
+    hosting.frame = frame
+    windows[1].contentView = hosting
+    windows[1].orderFront(nil)
+    return TwoWindows(
+      registry: registry, one: stores[0], two: stores[1], a: a, b: b, surfaceA: surfaceA,
+      windows: windows)
+  }
+
+  /// An agent working in window one's workroom re-runs nothing in window two: not its tab strip
+  /// or pane title bar (each tab's record is its own, wherever the tab is, D4), and not the
+  /// switcher enablement it reads across every window, which asks only whether each workroom has
+  /// tabs (F1 of step 3.5's review).
+  func testAnotherWindowsPaneChangeReRunsNoViewOfThisWindow() async throws {
+    let f = try twoWindows()
+    defer {
+      for window in f.windows { window.close() }
+      Task {
+        await f.one.terminals.reapAll()
+        await f.two.terminals.reapAll()
+      }
+    }
+    f.windows[1].contentView?.layoutSubtreeIfNeeded()
+    f.windows[1].displayIfNeeded()
+    try await Task.sleep(for: .milliseconds(150))
+    f.windows[1].displayIfNeeded()
+    XCTAssertTrue(
+      QuickSwitcher.canSwitchWorkrooms(registry: f.registry), "two workrooms, two windows")
+    XCTAssertGreaterThan(SwitcherEnablementProbe.bodyPasses, 0, "the probe drew")
+    resetPasses()
+    SwitcherEnablementProbe.bodyPasses = 0
+
+    try await agentStartsWorking(on: f.surfaceA)
+    try await Task.sleep(for: .milliseconds(150))
+    f.windows[1].contentView?.layoutSubtreeIfNeeded()
+    f.windows[1].displayIfNeeded()
+
+    XCTAssertTrue(f.one.terminals.isRunning(forTargetID: f.a.id), "window one's change landed")
+    XCTAssertEqual(
+      TerminalTabStrip.bodyPasses, 0, "window one's pane change re-ran window two's tab strip")
+    XCTAssertEqual(
+      PaneTitleBar.bodyPasses, 0, "window one's pane change re-ran window two's pane title bar")
+    XCTAssertEqual(
+      SwitcherEnablementProbe.bodyPasses, 0,
+      "window one's pane change re-ran window two's cross-window menu enablement")
+  }
+
+  /// The positive half for the cross-window read: window one's workroom losing its last terminal
+  /// is what the switcher's answer depends on, so window two hears that.
+  func testAnotherWindowLosingItsWorkroomReRunsTheSwitcherEnablement() async throws {
+    let f = try twoWindows()
+    defer {
+      for window in f.windows { window.close() }
+      Task {
+        await f.one.terminals.reapAll()
+        await f.two.terminals.reapAll()
+      }
+    }
+    f.windows[1].contentView?.layoutSubtreeIfNeeded()
+    f.windows[1].displayIfNeeded()
+    try await Task.sleep(for: .milliseconds(150))
+    f.windows[1].displayIfNeeded()
+    SwitcherEnablementProbe.bodyPasses = 0
+
+    f.one.terminals.closeTab(
+      try XCTUnwrap(f.one.terminals.tabs(for: f.a).first).id, for: f.a)
+    try await Task.sleep(for: .milliseconds(150))
+    f.windows[1].contentView?.layoutSubtreeIfNeeded()
+    f.windows[1].displayIfNeeded()
+
+    XCTAssertFalse(QuickSwitcher.canSwitchWorkrooms(registry: f.registry))
+    XCTAssertGreaterThan(
+      SwitcherEnablementProbe.bodyPasses, 0,
+      "window one's workroom losing its last terminal must re-run window two's enablement")
+  }
+
   /// The positive half: the same change in the workroom the view shows still re-runs it, so the
   /// test above is not passing on a view that never updates.
   func testThisWorkroomsPaneChangeStillReRunsItsViews() async throws {

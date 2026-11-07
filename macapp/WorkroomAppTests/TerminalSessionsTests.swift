@@ -450,6 +450,56 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(surface, "freed once the session's end is answered")
   }
 
+  /// The tabs are the app's (ADR 0069), but a window that goes still takes its own with it, as its
+  /// store did when it owned them: its surfaces are freed, not kept by the registry. The negative
+  /// control: a tab on its way to another window is no window's, so its leaving one does not free
+  /// it, and the window adopting it holds it.
+  /// Value: protects=a closed window frees its terminals (no shell kept alive by the registry);
+  /// fails_when=the registry outlives the windows that hold its tabs, or frees a tab in transit;
+  /// why_new=tabs moved to an app-wide registry in step 3.9; seam=none; no_claim=the process's own
+  /// hang-up, which is libghostty's on free.
+  func testAWindowThatGoesFreesItsTabsButNotOnesOnTheirWay() async throws {
+    weak var kept: GhosttySurfaceView?
+    weak var moving: GhosttySurfaceView?
+    let adopter = makeSessions()
+    var handOff: TerminalSessions.TargetHandOff?
+    let other = TerminalTarget(
+      id: .workroom(project: "/p", name: "moving"), title: "moving", path: "/tmp", isMissing: false)
+    autoreleasepool {
+      let window = makeSessions()
+      kept = window.surface(window.addTab(for: target))
+      moving = window.surface(window.addTab(for: other))
+      handOff = window.handOff(other)
+      XCTAssertNil(handOff.flatMap { window.surface(of: $0.tabIDs[0]) }, "it let the tab go")
+    }
+    for _ in 0..<100 where kept != nil { try await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertNil(kept, "the window's own tab went with it")
+    XCTAssertNotNil(moving, "a tab between windows survives the one it left")
+
+    adopter.adopt(try XCTUnwrap(handOff))
+    let id = try XCTUnwrap(handOff?.tabIDs.first)
+    XCTAssertTrue(adopter.surface(of: id) === moving, "the adopting window holds it now")
+    XCTAssertNotNil(adopter.tab(id, for: other))
+  }
+
+  /// One layout at a time: a window holds only the tabs its layout has, and another window's tab
+  /// is invisible to it even for the same workroom (#444 Q12).
+  /// Value: protects=two windows on one workroom see only their own tabs; fails_when=a window
+  /// reads the app's tabs rather than its own layout's; why_new=step 3.9's registry;
+  /// seam=none; no_claim=the views.
+  func testTwoWindowsOnOneWorkroomSeeOnlyTheirOwnTabs() {
+    let one = makeSessions()
+    let two = makeSessions()
+    let mine = one.addTab(for: target)
+    let theirs = two.addTab(for: target)
+
+    XCTAssertEqual(one.allTabs(for: target).map(\.id), [mine.id])
+    XCTAssertNil(one.tab(theirs.id, for: target))
+    XCTAssertNil(one.surface(of: theirs.id), "another window's surface is not this one's")
+    XCTAssertFalse(one.containsTab(theirs.id))
+    XCTAssertNotNil(two.surface(of: theirs.id))
+  }
+
   /// A target's panes live in their own object, but every change to them still sends the
   /// sessions' `paneWillChange` BEFORE it lands: the saved-layout dirty mark depends on both
   /// halves, as it schedules its capture rather than taking one inline.
