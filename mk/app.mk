@@ -244,6 +244,21 @@ app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queue
 	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' $(APP_UITEST_FLAGS) test-without-building; \
 	  $(call test_summary,WorkroomAppUITests); }
 
+# The same build and test selection as app-uitest, but the tests run in Tart macOS guests cloned
+# from wr-uitest-base (macapp/Scripts/uitest-vm.sh), so they leave this Mac's screen, pointer and
+# keyboard alone and take no GUI lock. A Mac runs at most two macOS guests, so each guest holds one
+# of VM_SLOTS slots (gui-lock.py vm-slot), shared by every checkout; the lock fails closed and
+# ignores WR_GUI_LOCK=off. VM_SHARDS=2 splits one run's classes across two guests at once.
+# Prerequisites and measurements: "UI tests off the host screen" in
+# docs/designs/parallel-workroom-testing.md.
+VM_SHARDS ?= 1
+VM_SLOTS ?= 2
+app-uitest-vm: ## Run the UI tests in Tart macOS guests, off this Mac's screen, two at a time [VM_SHARDS=2]
+	cd macapp && xcodegen generate && \
+	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
+	  VM_SHARDS="$(VM_SHARDS)" VM_SLOTS="$(VM_SLOTS)" \
+	  bash Scripts/uitest-vm.sh DerivedData/Build/Products $(APP_UITEST_FLAGS)
+
 app-identity: ## Print the bundle id this checkout's Debug build gets (one per workroom)
 	@echo "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)"
 
