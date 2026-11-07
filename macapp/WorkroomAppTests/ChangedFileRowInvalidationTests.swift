@@ -195,7 +195,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     settle(view)
 
     XCTAssertEqual(
-      FocusedTabSelection.current(store: store, sessions: store.terminals),
+      FocusedTabSelection.current(store: store, panes: store.terminals),
       .diff(path: "src/file0.swift", source: .gitWorktree), "file0's diff must be the focused tab")
     // Counted from the first render: a row no longer rebuilds on an unrelated `AppStore` change, so
     // nudging the store can't show the rows are there.
@@ -209,7 +209,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     store.terminals.focus(terminalTab.id, for: target)
     settle(view, until: { ChangedFileRow.bodyPasses > 0 })
 
-    XCTAssertNil(FocusedTabSelection.current(store: store, sessions: store.terminals))
+    XCTAssertNil(FocusedTabSelection.current(store: store, panes: store.terminals))
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0,
       "moving focus off the diff clears file0's selected state, so the affected rows MUST rebuild — "
