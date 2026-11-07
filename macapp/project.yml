@@ -361,6 +361,9 @@ targets:
       - package: WorkroomVCS
       - package: WorkroomSystem
       - package: DaemonConnection
+      # The scripted daemon and loopback TCP fixtures DaemonConnection's own tests share with these.
+      - package: DaemonConnection
+        product: DaemonConnectionTestSupport
       - package: HostDrivers
       - package: WorkroomWire
       - package: TerminalModel

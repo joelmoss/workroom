@@ -1,4 +1,3 @@
-import DaemonConnection
 import Darwin
 import Foundation
 import WorkroomSystem
@@ -26,8 +25,8 @@ import WorkroomVCS
 
 /// The port-forwarding service on one host's connection. Concrete rather than behind a protocol:
 /// only a workroomd has one, and a second implementer would be a second daemon.
-struct DaemonForwardService: Sendable {
-  let connection: DaemonClient
+public struct DaemonForwardService: Sendable {
+  public let connection: DaemonClient
 
   /// Bind a listener on `127.0.0.1` and forward everything accepted on it to `remotePort` on the
   /// daemon's box. `openTimeout` is how long one accepted connection waits for the daemon's REPLY;
@@ -38,7 +37,7 @@ struct DaemonForwardService: Sendable {
   /// `reconnect`, when given, makes the forward outlive this connection (#380): a connection
   /// accepted once it has ended waits for `reconnect` to give it a new one, and the forward keeps
   /// that one from then on. Without it, the forward carries only while this connection lives.
-  func listen(
+  public func listen(
     remotePort: UInt16, localPort: UInt16 = 0, requireLocalPort: Bool = false,
     openTimeout: TimeInterval = PortForward.openTimeout,
     sendTimeout: TimeInterval = PortForward.sendTimeout,
@@ -56,7 +55,7 @@ struct DaemonForwardService: Sendable {
   /// The other direction: listen on `remotePort` on the daemon's box (0 for any free port) and carry
   /// every connection to it to `127.0.0.1:<target>` on this Mac. `start()` it once the owner holds
   /// it, so an event cannot arrive for a listener nobody kept.
-  func reverse(
+  public func reverse(
     remotePort: UInt16, target: UInt16,
     onEvent: @escaping @Sendable (ReverseForward.Event) -> Void
   ) -> ReverseForward {
@@ -66,6 +65,24 @@ struct DaemonForwardService: Sendable {
         open: PortForward.openTimeout, send: PortForward.sendTimeout,
         drain: PortForward.drainTimeout),
       onEvent: onEvent)
+  }
+}
+
+extension DaemonClient {
+  /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer
+  /// predates it (issue #208).
+  ///
+  /// There is no probe and no negotiation state to keep: `Service::Forward` has no `capabilities`
+  /// method — its only request opens a real socket — so the peer's raw greeting version is the whole
+  /// answer, checked the way File checks its own. A protocol-4 daemon drops a Forward
+  /// envelope without answering it, so it is never sent one.
+  public func forwarding() throws -> DaemonForwardService {
+    guard !isClosed else { throw HostConnectionError.connectionLost }
+    // `helloVersion` is fixed at connect, so it needs no lock.
+    guard helloVersion >= DaemonHandshake.minForwardVersion else {
+      throw VCSError.backendVersion("Daemon does not support port forwarding.")
+    }
+    return DaemonForwardService(connection: self)
   }
 }
 
@@ -154,11 +171,11 @@ private struct ForwardReply: Decodable {
 
 /// One port on this Mac's loopback, listened on at `127.0.0.1` and `::1`, forwarding every
 /// connection accepted on it to one port on the daemon's box over its own multiplex stream.
-final class PortForward: @unchecked Sendable {
+public final class PortForward: @unchecked Sendable {
   /// What a forward reports about the connections through it. `opened` clears an earlier failure:
   /// a dev server that was not running when the page first loaded is a fact about then, not about
   /// the forward.
-  enum Event: Sendable, Equatable {
+  public enum Event: Sendable, Equatable {
     case opened
     case failed(String)
     /// The listener itself is gone. The row must go with it: a row that outlived its listener would
@@ -169,15 +186,15 @@ final class PortForward: @unchecked Sendable {
   /// The daemon bounds its own connect at 3s (`CONNECT_TIMEOUT`) and its module doc warns that a
   /// client which gives up first leaves the id held. This waits longer than that, and the id is
   /// never handed out again either way.
-  static let openTimeout: TimeInterval = 5
+  public static let openTimeout: TimeInterval = 5
   /// A `send` parked on a full socket buffer is a local client that has stopped reading. Per call:
   /// what makes a parked `send` return at all, so a write gets to check the drain deadline, which is
   /// the bound on the drain as a whole.
-  static let sendTimeout: TimeInterval = 30
+  public static let sendTimeout: TimeInterval = 30
   /// How long past a connection's end the queued writes may keep draining to a client that is still
   /// reading. Checked between `send`s, so the true worst case is this plus one `sendTimeout` for a
   /// `send` already parked when the deadline was set.
-  static let drainTimeout: TimeInterval = 30
+  public static let drainTimeout: TimeInterval = 30
 
   /// The three clocks one forwarded connection runs on, passed down as one value.
   struct Timeouts {
@@ -189,13 +206,13 @@ final class PortForward: @unchecked Sendable {
   private static let acceptBackoff: TimeInterval = 0.1
 
   /// A new connection to the forward's host, or nil when there is none to be had.
-  typealias Reconnect = @Sendable () async -> DaemonClient?
+  public typealias Reconnect = @Sendable () async -> DaemonClient?
 
   /// The local port a forward that must keep its port number can't have: something on this Mac
   /// holds it (a dev server of its own, most often).
-  struct LocalPortTaken: LocalizedError, Equatable {
-    let port: UInt16
-    var errorDescription: String? {
+  public struct LocalPortTaken: LocalizedError, Equatable {
+    public let port: UInt16
+    public var errorDescription: String? {
       "Port \(port) is in use on this Mac, and the dev container requires the same port."
     }
   }
@@ -205,7 +222,7 @@ final class PortForward: @unchecked Sendable {
   /// the address the user connects to, as `localhost:<port>`: it is bound on 127.0.0.1 and on `::1`,
   /// which a browser asking for `localhost` tries first, so no server the Mac starts later on `::1`
   /// can take `localhost` from the forward while it lives.
-  let localPort: UInt16
+  public let localPort: UInt16
   /// The connection streams are opened on. Replaced only through `reconnect`.
   private var connection: DaemonClient
   private let reconnect: Reconnect?
@@ -292,7 +309,7 @@ final class PortForward: @unchecked Sendable {
   /// Close the listener and every connection still running through it. Each live stream is told
   /// CLOSE, so the daemon drops the socket it is holding rather than waiting for the whole multiplex
   /// connection to end.
-  func stop() {
+  public func stop() {
     // Taken out whole so the slots are released after the lock, not under it: a slot's release
     // takes the connection's lock.
     let taken = lock.withLock {
@@ -453,8 +470,8 @@ final class PortForward: @unchecked Sendable {
 /// connection is up, and from there it is a `ForwardedConnection` like any other. A target that
 /// cannot be reached still has its claim made, and closed at once, so the process that connected on
 /// the daemon's box learns now rather than at the daemon's expiry.
-final class ReverseForward: @unchecked Sendable {
-  enum Event: Sendable, Equatable {
+public final class ReverseForward: @unchecked Sendable {
+  public enum Event: Sendable, Equatable {
     /// The daemon bound this port: connections to it on the daemon's box now reach the target.
     case listening(UInt16)
     /// One connection could not be carried. The listener carries on.
@@ -463,9 +480,9 @@ final class ReverseForward: @unchecked Sendable {
     case stopped(String)
   }
 
-  struct Refusal: Error, Equatable {
-    let detail: String
-    init(_ detail: String) { self.detail = detail }
+  public struct Refusal: Error, Equatable {
+    public let detail: String
+    public init(_ detail: String) { self.detail = detail }
   }
 
   /// How long one claimed connection waits for the target. A loopback connect is refused at once
@@ -516,7 +533,7 @@ final class ReverseForward: @unchecked Sendable {
   }
 
   /// Ask the daemon to listen. The answer arrives as `.listening` or `.stopped`.
-  func start() {
+  public func start() {
     guard let request = try? JSONEncoder().encode(ForwardListenRequest(port: remotePort)) else {
       end("Could not encode the listen request.")
       return
@@ -541,7 +558,7 @@ final class ReverseForward: @unchecked Sendable {
 
   /// Close the listener and every connection it is carrying. The daemon releases the port when it
   /// sees the CLOSE.
-  func stop() {
+  public func stop() {
     let taken:
       (stream: UInt32?, entries: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)])? =
         lock.withLock {

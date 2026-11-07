@@ -1,4 +1,5 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import WorkroomDomain
 import WorkroomGit
 import WorkroomSystem

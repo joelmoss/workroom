@@ -4,8 +4,10 @@ import WorkroomGit
 import WorkroomVCS
 
 /// The services on a daemon connection that return the app's own types: repository reads and
-/// writes, the disk facts the write classifier uses, files, layouts and port forwarding. They live
-/// here, not in the DaemonConnection package with the transport, because those types are the app's.
+/// writes, the disk facts the write classifier uses, files and layouts. They live here, not in the
+/// DaemonConnection package with the transport, because those types are the app's. Port forwarding
+/// is the package's own (`DaemonForwardService`), and `forwarding()` witnesses the protocol from
+/// there.
 extension DaemonClient: HostServiceConnection {
   /// The VCS `capabilities` request, which connecting asked already: the daemon answers it with a
   /// constant from a thread of its own, under no session lock, so a repaint can't hold it up. Any
@@ -123,21 +125,5 @@ extension DaemonClient: HostServiceConnection {
   /// A Layout request. 15s: a `put` syncs a file and its directory, and a `get` reads one.
   func layoutRequest(_ request: DaemonLayoutRequest) async throws -> Data {
     try await self.request(request, timeout: 15, service: .layout)
-  }
-
-  /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer
-  /// predates it (issue #208).
-  ///
-  /// There is no probe and no negotiation state to keep: `Service::Forward` has no `capabilities`
-  /// method — its only request opens a real socket — so the peer's raw greeting version is the whole
-  /// answer, checked the way File checks its own. A protocol-4 daemon drops a Forward
-  /// envelope without answering it, so it is never sent one.
-  func forwarding() throws -> DaemonForwardService {
-    guard !isClosed else { throw HostConnectionError.connectionLost }
-    // `helloVersion` is fixed at connect, so it needs no lock.
-    guard helloVersion >= DaemonHandshake.minForwardVersion else {
-      throw VCSError.backendVersion("Daemon does not support port forwarding.")
-    }
-    return DaemonForwardService(connection: self)
   }
 }

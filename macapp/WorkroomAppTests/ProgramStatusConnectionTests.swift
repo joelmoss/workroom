@@ -1,4 +1,5 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import XCTest
 
 @testable import Workroom

@@ -1,4 +1,5 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
 import WorkroomDomain

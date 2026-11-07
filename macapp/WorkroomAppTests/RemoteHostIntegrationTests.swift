@@ -1,4 +1,5 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Darwin
 import HostDrivers
 import WorkroomDomain
