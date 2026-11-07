@@ -8,11 +8,7 @@ import XCTest
 /// It runs hosted because `CreationRun` is app state; the goldens' decoding is
 /// `WorkroomDomainTests.CLIContractTests`, under `swift test`.
 final class CreationRunContractTests: XCTestCase {
-  /// The repository's `testdata/contracts`, found from this file's own source location.
-  private static let contracts = URL(fileURLWithPath: String(describing: #filePath))
-    .deletingLastPathComponent()  // WorkroomAppTests
-    .deletingLastPathComponent()  // macapp
-    .deletingLastPathComponent()  // repository root
+  private static let contracts = SharedFixture.repositoryRoot
     .appendingPathComponent("testdata/contracts")
 
   private func golden(_ name: String) throws -> Data {

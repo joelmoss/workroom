@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/errs"
+	"github.com/joelmoss/workroom/internal/testtable"
 	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
 
@@ -352,27 +353,11 @@ func TestGitCreateDoesNotFallBackWhenTheFetchFailed(t *testing.T) {
 // The cases are shared with the app's RemoteWorkrooms.splitBase (TerminalTargetTests), which reads
 // the same table, so the two copies of the rule can't drift.
 func TestSplitBase(t *testing.T) {
-	data, err := os.ReadFile("../../testdata/twins/split_base.tsv")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows := 0
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		if len(fields) != 4 {
-			t.Fatalf("malformed fixture line (want 4 fields): %q", line)
-		}
+	for _, fields := range testtable.Rows(t, "../../testdata/twins/split_base.tsv", 4) {
 		remotes, base, wantRemote, wantBranch := strings.Split(fields[0], ","), fields[1], fields[2], fields[3]
 		if remote, branch := SplitBase(base, remotes); remote != wantRemote || branch != wantBranch {
 			t.Errorf("SplitBase(%q, %q) = %q, %q; want %q, %q", base, remotes, remote, branch, wantRemote, wantBranch)
 		}
-		rows++
-	}
-	if rows == 0 {
-		t.Fatal("no cases in the fixture")
 	}
 }
 

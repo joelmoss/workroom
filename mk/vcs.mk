@@ -1,7 +1,5 @@
 # --- Rust workspace (vcs/) ---
 
-.PHONY: vcs-lint vcs-lint-linux vcs-test
-
 # The toolchain ci-rust.yml pins for its Rust lint gates. rustfmt's layout and clippy's lints
 # change between releases, so another toolchain can pass here and fail there; the root Makefile's
 # PATH puts Homebrew's cargo first, so the recipe puts this one ahead of it. Keep in step with

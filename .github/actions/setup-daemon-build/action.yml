@@ -2,7 +2,8 @@ name: Set up the daemon build
 description: >-
   Prepare a macOS runner to build the workroomd the app bundles, the Linux daemons included: the
   pinned Zig, the stable toolchain's targets, and cargo-zigbuild. Shared by CI, the nightly and the
-  release, so the Zig pin and the cargo-zigbuild version live in one place.
+  release, so all three set the build up the same way and the macOS Zig checksum lives in one
+  place. The Zig and cargo-zigbuild versions are install-zig's and install-cargo-zigbuild's.
 
 inputs:
   targets:
@@ -26,7 +27,6 @@ runs:
     - name: Install Zig
       uses: ./.github/actions/install-zig
       with:
-        version: "0.17.0"
         archive: aarch64-macos
         sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
         cache: ${{ inputs.cache }}
@@ -42,17 +42,7 @@ runs:
         TARGETS: ${{ inputs.targets }}
       run: echo "$TARGETS" | xargs rustup target add --toolchain stable
 
-    # `cargo install` compiles cargo-zigbuild from source on every run (~1 minute). The binary is
-    # all that is installed, so cache it on the pinned version.
-    - name: Cache cargo-zigbuild
-      id: zigbuild
-      if: inputs.cache == 'true' && github.ref_type != 'tag'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/.cargo/bin/cargo-zigbuild
-        key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
-
     - name: Install cargo-zigbuild
-      if: steps.zigbuild.outputs.cache-hit != 'true'
-      shell: bash
-      run: cargo install cargo-zigbuild --locked --version 0.23.4
+      uses: ./.github/actions/install-cargo-zigbuild
+      with:
+        cache: ${{ inputs.cache }}

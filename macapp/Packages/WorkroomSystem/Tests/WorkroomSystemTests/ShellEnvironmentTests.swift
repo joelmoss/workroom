@@ -143,7 +143,7 @@ final class ShellEnvironmentTests: XCTestCase {
   /// The repository's `testdata/twins/login_shell.tsv`, found from this file's own location. The
   /// CLI's `loginShellInvocation` and workroomd's `probe_invocation` read the same table, so the
   /// three copies of the rule can't drift.
-  private static let loginShellCases = URL(fileURLWithPath: String(describing: #filePath))
+  private static let loginShellCases = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()  // WorkroomSystemTests
     .deletingLastPathComponent()  // Tests
     .deletingLastPathComponent()  // WorkroomSystem

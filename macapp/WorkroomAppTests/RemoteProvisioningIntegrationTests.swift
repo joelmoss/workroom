@@ -480,9 +480,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     await instance.connection.close()
     cleanups.append { try? await driver.destroy(instance.host) }
 
-    let contract = URL(fileURLWithPath: String(describing: #filePath))
-      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-      .appendingPathComponent("testdata/script-env")
+    let contract = SharedFixture.repositoryRoot.appendingPathComponent("testdata/script-env")
     let script = try Data(contentsOf: contract.appendingPathComponent("workroom_script"))
     let setup = "\(Self.path)/scripts/workroom_setup"
     let (written, said) = try await driver.exec(

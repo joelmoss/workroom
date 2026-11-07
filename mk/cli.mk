@@ -1,6 +1,6 @@
 # --- Go CLI (repo root) ---
-
-.PHONY: cli-build cli-test cli-install cli-lint cli-clean
+#
+# `cli-lint` needs golangci-lint installed (see AGENTS.md).
 
 # bin/ rather than the repo root, so a built binary never sits beside the sources (gitignored).
 cli-build: ## Build the workroom binary (version injected)

@@ -1,16 +1,11 @@
 # Repo-wide dev tasks, namespaced: `cli-*` = the Go CLI (the primary product), `app-*` = the
-# macOS app under macapp/ (Xcode-based), `vcs-*` = the Rust workspace under vcs/. Run `make` with
-# no target to list them. Each area's targets live in mk/<area>.mk, included below.
-#
-# App recipes run inside macapp/ and need its toolchain on PATH (xcodegen via Homebrew). The
-# Xcode build also runs project.yml phases — a non-fatal swift-format lint and embedding the Go
-# helper (macapp/Scripts/build-helper.sh). `cli-lint` needs golangci-lint installed (see AGENTS.md),
-# `actions-lint` jactionlint (CONTRIBUTING).
+# macOS app under macapp/ (Xcode-based), `vcs-*` = the Rust workspace under vcs/, `docs-*` = the
+# docs site under docs-site/, `actions-*` = the GitHub Actions under .github/. Run `make` with no
+# target to list them. Each area's targets live in mk/<area>.mk, included below.
 export PATH := /opt/homebrew/bin:/usr/local/bin:$(PATH)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .DEFAULT_GOAL := help
-.PHONY: help
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -18,3 +13,7 @@ help: ## List available targets
 
 # Named, not globbed: `help` lists targets in MAKEFILE_LIST order, so this order is the listing's.
 include mk/cli.mk mk/docs.mk mk/actions.mk mk/vcs.mk mk/app.mk
+
+# Every target is a task, not a file, and every one has the `## ` line `help` lists, so the phony
+# list is read the same way and a new target can't be left off it.
+.PHONY: $(shell sed -nE 's/^([a-z][a-zA-Z0-9_-]*):.*\#\# .*/\1/p' $(MAKEFILE_LIST))

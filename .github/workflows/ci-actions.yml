@@ -67,8 +67,9 @@ jobs:
       - name: Test the CI path filter
         run: python3 scripts/ci/test_changed_areas.py
 
-      # Also in `make app-test-scripts`, but that runs only when a change touches the app or the
-      # daemon, and this test greps the whole tracked tree: a docs-only change can turn it red.
-      # Needs nothing but sh and git, so it runs here on every change.
+      # Also in a local `make app-test-scripts` (CI's app-scripts job skips it), but that job runs
+      # only when a change touches the app or the daemon, and this test greps the whole tracked
+      # tree: a docs-only change can turn it red. Needs nothing but sh and git, so it runs here on
+      # every change.
       - name: Test the daemon's old name stays gone
         run: sh macapp/Scripts/daemon-name_test.sh

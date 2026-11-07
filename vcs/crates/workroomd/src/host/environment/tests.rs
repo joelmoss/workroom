@@ -82,9 +82,7 @@ fn merging_drops_the_probes_state_and_puts_the_overrides_on_top() {
 /// which read the same table, so the three copies of the rule can't drift.
 #[test]
 fn a_posix_shell_is_probed_login_and_interactive_and_anything_else_through_sh() {
-    let table =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/twins/login_shell.tsv");
-    let table = std::fs::read_to_string(&table).unwrap();
+    let table = include_str!("../../../../../../testdata/twins/login_shell.tsv");
     let mut rows = 0;
     for line in table.lines() {
         if line.is_empty() || line.starts_with('#') {

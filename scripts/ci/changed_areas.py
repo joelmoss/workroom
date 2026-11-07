@@ -14,48 +14,42 @@ its own tree. The master push runs everything whatever this says.
 """
 
 import sys
+from fnmatch import fnmatchcase
 
 JOBS = ("cli", "rust", "packages", "app", "scripts")
 ALL = frozenset(JOBS)
 
-# First match wins. A prefix ends in "/"; anything else is a whole path, or a suffix for "*.x".
+# First match wins. Patterns are fnmatch globs, matched case-sensitively, whose `*` also matches
+# "/": "mk/*" is everything under mk/, and "*.md" is every Markdown file in the tree.
 RULES = (
     # Build and CI plumbing every job runs through.
-    ((".github/", "Makefile", "mk/"), ALL),
+    ((".github/*", "Makefile", "mk/*"), ALL),
     # The shared fixture tables (contracts, cross-language twins, program status, script env).
-    (("testdata/",), ALL),
+    (("testdata/*",), ALL),
     # The app's packages, which the app imports and the script tests grep.
-    (("macapp/Packages/",), {"packages", "app", "scripts"}),
+    (("macapp/Packages/*",), {"packages", "app", "scripts"}),
     # The daemon's far-side bootstrap, which remote_transport.rs runs too.
-    (("macapp/Resources/daemon-bootstrap/",), {"rust", "app", "scripts"}),
-    (("macapp/",), {"app", "scripts"}),
+    (("macapp/Resources/daemon-bootstrap/*",), {"rust", "app", "scripts"}),
+    (("macapp/*",), {"app", "scripts"}),
     # The app bundles the daemon and runs its macOS-only tests; the script tests build it.
-    (("vcs/",), {"rust", "app", "scripts"}),
+    (("vcs/*",), {"rust", "app", "scripts"}),
     # The app's setup-go and the CLI it compiles read the toolchain from go.mod.
     (("go.mod", "go.sum"), {"cli", "app", "scripts"}),
     # KeyboardShortcutsDocsTests reads this page; cmd/docs_test.go and internal/docsite read all.
     (("docs-site/pages/reference/keyboard-shortcuts.md",), {"cli", "app"}),
-    (("docs-site/",), {"cli"}),
+    (("docs-site/*",), {"cli"}),
     # Go sources only: a data file under cmd/ or internal/ (channel_cases.tsv, which the app and
     # the script tests read) has no rule and so runs everything.
     (("*.go", ".golangci.yml", ".goreleaser.yml"), {"cli"}),
     # Read by no job's tests. The `workflows` job, which is never filtered, covers scripts/ci/.
-    (("docs/", "*.md", ".agents/", ".claude/", ".out-of-scope/", ".gstack/", "scripts/ci/",
+    (("docs/*", "*.md", ".agents/*", ".claude/*", ".out-of-scope/*", ".gstack/*", "scripts/ci/*",
       "MIT-LICENSE"), frozenset()),
 )
 
 
-def matches(path, pattern):
-    if pattern.endswith("/"):
-        return path.startswith(pattern)
-    if pattern.startswith("*"):
-        return path.endswith(pattern[1:])
-    return path == pattern
-
-
 def jobs_for(path):
     for patterns, jobs in RULES:
-        if any(matches(path, pattern) for pattern in patterns):
+        if any(fnmatchcase(path, pattern) for pattern in patterns):
             return jobs
     return ALL
 

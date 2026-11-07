@@ -1,11 +1,8 @@
 # --- macOS app (macapp/) ---
-
-.PHONY: app-run app-run-exedev-fresh app-run-boxd-fresh app-build app-test red-proof \
-        app-package-test app-uitest app-identity app-test-supervisor app-test-preflight \
-        app-test-scripts app-scripts-lint app-generate app-lsp app-format app-lint app-release \
-        app-icon app-tool-logos app-clean app-check app-bench-title app-bench-output-flood \
-        app-bench-status app-bench-usage app-bench-restore app-bench-startup-reads app-bench-memory \
-        app-bench-sentry
+#
+# App recipes run inside macapp/ and need its toolchain on PATH (xcodegen via Homebrew). The
+# Xcode build also runs project.yml phases — a non-fatal swift-format lint and embedding the Go
+# helper (macapp/Scripts/build-helper.sh).
 
 # The Debug product is "Workroom Dev" (distinct bundle id + name) so it runs alongside the
 # installed release "Workroom" without conflict — see macapp/project.yml.
@@ -260,9 +257,12 @@ app-test-preflight: ## Check Makefile/workflow invariants and benchmark failure 
 
 # Every macapp/Scripts/*_test.sh, found rather than listed, so a new script test cannot be left out.
 # test-invariants_test.sh is app-test-preflight's, which runs first as the prerequisite.
-APP_SCRIPT_TESTS := $(sort $(filter-out macapp/Scripts/test-invariants_test.sh,$(wildcard macapp/Scripts/*_test.sh)))
+# APP_SCRIPT_TESTS_SKIP names tests a caller already runs elsewhere: CI's app-scripts job skips
+# daemon-name_test.sh, which ci-actions.yml runs on every change.
+APP_SCRIPT_TESTS_SKIP ?=
+APP_SCRIPT_TESTS := $(sort $(filter-out macapp/Scripts/test-invariants_test.sh $(APP_SCRIPT_TESTS_SKIP),$(wildcard macapp/Scripts/*_test.sh)))
 
-app-test-scripts: app-test-preflight ## Run the script tests (build-helper/build-daemon archs, channel classify, dev identity, GUI lock, daemon protocol, daemon name, exe.dev git setup, test summary, red proof, restore mtime)
+app-test-scripts: app-test-preflight ## Run every macapp/Scripts/*_test.sh, then gui-lock_test.py (after app-test-preflight)
 	@for script in $(APP_SCRIPT_TESTS); do echo "sh $$script"; sh "$$script" || exit $$?; done
 	python3 macapp/Scripts/gui-lock_test.py
 

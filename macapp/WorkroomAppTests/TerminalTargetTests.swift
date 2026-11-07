@@ -88,22 +88,11 @@ final class TerminalTargetTests: XCTestCase {
   /// The cases are `testdata/twins/split_base.tsv`, which the CLI's `TestSplitBase` also reads, so
   /// the two copies of the rule can't drift.
   func testSplitBaseMatchesTheCLIsRule() throws {
-    let url = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()  // WorkroomAppTests
-      .deletingLastPathComponent()  // macapp
-      .deletingLastPathComponent()  // repository root
-      .appendingPathComponent("testdata/twins/split_base.tsv")
-    var rows = 0
-    for line in try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
-    where !line.hasPrefix("#") {
-      let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-      guard fields.count == 4 else { return XCTFail("malformed fixture line: \(line)") }
+    for fields in try SharedFixture.rows("testdata/twins/split_base.tsv", columns: 4) {
       let remotes = fields[0].split(separator: ",").map(String.init)
       let split = RemoteWorkrooms.splitBase(fields[1], remotes: remotes)
       XCTAssertTrue(split == (fields[2], fields[3]), "\(fields[1]) with \(remotes) gave \(split)")
-      rows += 1
     }
-    XCTAssertGreaterThan(rows, 0, "no cases in the fixture")
   }
 
   /// The project's base branch arrives under the CLI's snake_case key.

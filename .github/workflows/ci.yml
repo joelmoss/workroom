@@ -47,10 +47,14 @@ jobs:
     steps:
       # A pull request's run checks out GitHub's merge commit: its first parent is the base
       # branch's tip, so the diff between the two is exactly what merging the PR would change.
+      # A name-only diff reads only the two commits' trees, so no other blobs are fetched and only
+      # the script is checked out.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 2
+          filter: blob:none
+          sparse-checkout: scripts/ci
 
       # `--no-renames`, so a file moved between trees names both sides: a rename shows only its
       # new path otherwise, and a file moved out of macapp/ would skip the app that lost it.

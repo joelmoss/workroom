@@ -82,12 +82,12 @@ jobs:
           rustup toolchain install 1.96.1 --profile minimal --component clippy
           rustup default 1.96.1
 
-      # Pinned by version AND checksum. An unpinned toolchain would silently change the emulator
-      # this links, and the snapshot format it produces carries no compatibility guarantee.
+      # Pinned by version (install-zig's) AND checksum. An unpinned toolchain would silently change
+      # the emulator this links, and the snapshot format it produces carries no compatibility
+      # guarantee.
       - name: Install Zig
         uses: ./.github/actions/install-zig
         with:
-          version: "0.17.0"
           archive: x86_64-linux
           sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
 
@@ -147,7 +147,6 @@ jobs:
       - name: Install Zig
         uses: ./.github/actions/install-zig
         with:
-          version: "0.17.0"
           archive: x86_64-linux
           sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
 
@@ -164,18 +163,9 @@ jobs:
           workspaces: vcs
           key: ${{ env.TARGET }}
 
-      # `cargo install` compiles cargo-zigbuild from source on every run; the binary is all that is
-      # installed, so cache it on the pinned version.
-      - name: Cache cargo-zigbuild
-        id: zigbuild
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cargo-zigbuild
-          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
-
+      # The version the app's daemon build uses, cached on it.
       - name: Install cargo-zigbuild
-        if: steps.zigbuild.outputs.cache-hit != 'true'
-        run: cargo install cargo-zigbuild --locked --version 0.23.4
+        uses: ./.github/actions/install-cargo-zigbuild
 
       - name: Install qemu
         if: matrix.arch == 'aarch64'

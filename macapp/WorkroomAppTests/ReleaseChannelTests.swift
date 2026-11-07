@@ -25,17 +25,11 @@ final class ReleaseChannelTests: XCTestCase {
   /// `channel-helper.sh` classify tags into (and `appcast.sh` writes): every channel in their
   /// shared fixture, `internal/channel/testdata/channel_cases.tsv`, and no other.
   func testRawValuesAreTheChannelsTheClassifiersProduce() throws {
-    let url = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()  // WorkroomAppTests
-      .deletingLastPathComponent()  // macapp
-      .deletingLastPathComponent()  // repository root
-      .appendingPathComponent("internal/channel/testdata/channel_cases.tsv")
     var channels = Set<String>()
-    for line in try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
-    where !line.hasPrefix("#") {
-      let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
-      guard fields.count == 2 else { return XCTFail("malformed fixture line: \(line)") }
-      if fields[1] != "EXCLUDED" { channels.insert(String(fields[1])) }
+    for fields in try SharedFixture.rows(
+      "internal/channel/testdata/channel_cases.tsv", columns: 2)
+    where fields[1] != "EXCLUDED" {
+      channels.insert(fields[1])
     }
     XCTAssertEqual(Set(ReleaseChannel.allCases.map(\.rawValue)), channels)
   }

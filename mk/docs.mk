@@ -1,7 +1,5 @@
 # --- Docs site (docs-site/; the format contract is docs-site/README.md) ---
 
-.PHONY: docs-check docs-cli docs-preview
-
 CODASET_PATH ?= $(HOME)/dev/codaset
 
 docs-check: ## Check docs-site/ (nav, front matter, links, anchors) and that the CLI pages are current

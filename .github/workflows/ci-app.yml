@@ -75,9 +75,10 @@ jobs:
         with:
           targets: aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 
-      # Keyed on the pinned engine sha, as in `daemon-terminal-state`: a bump refetches and
-      # rebuilds, nothing else does. `kit` because this job's cache also holds GhosttyKit, which
-      # `app-scripts`, on the same OS and script, never builds: sharing a key would restore that.
+      # Keyed on the pinned engine sha, as in ci-rust.yml's `daemon-terminal-state`: a bump
+      # refetches and rebuilds, nothing else does. `kit` because this job's cache also holds
+      # GhosttyKit, which `app-scripts`, on the same OS and script, never builds: sharing a key
+      # would restore that.
       - name: Cache libghostty-vt and GhosttyKit
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -385,10 +386,10 @@ jobs:
       #
       # The musl targets and cargo-zigbuild are the same gap for the Linux daemons (#227): without
       # them the Linux case skips, and build-daemon.sh's Linux branch would first run on a nightly.
-      # `daemon-linux` does not cover it, because it calls `cargo zigbuild` directly.
+      # ci-rust.yml's `daemon-linux` does not cover it, because it calls `cargo zigbuild` directly.
       #
-      # After the two caches above, as before the move into the action: Zig lands outside both,
-      # and the targets and cargo-zigbuild stay after rust-cache's restore of ~/.cargo.
+      # After both caches above: Zig lands outside them, and the targets and cargo-zigbuild must
+      # come after rust-cache restores ~/.cargo.
       - name: Set up the daemon build (universal-arch and Linux-daemon script tests)
         uses: ./.github/actions/setup-daemon-build
         with:
@@ -400,7 +401,9 @@ jobs:
       # exercise build-helper.sh's / build-daemon.sh's multi-arch path — the branch whose absence
       # shipped an arm64-only CLI inside every universal .app. These run them directly with
       # ARCHS="arm64 x86_64".
-      - name: Test (build + channel helper scripts)
+      #
+      # daemon-name_test.sh is skipped: ci-actions.yml runs it on every change.
+      - name: Test (app scripts)
         env:
           BUILD_DAEMON_TEST_TARGET_DIR: ${{ github.workspace }}/vcs/build-daemon-target
-        run: make app-test-scripts
+        run: make app-test-scripts APP_SCRIPT_TESTS_SKIP=macapp/Scripts/daemon-name_test.sh
