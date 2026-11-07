@@ -97,6 +97,21 @@ final class PaneLayoutTests: XCTestCase {
       XCTFail("inner split not found")
     }
   }
+  /// A divider drag draws its in-flight ratio over the tree, and only while its node still holds
+  /// the ratio the drag began from: a node that moved underneath it (a re-even, issue #126) or
+  /// went away is drawn as it is, so the divider re-anchors.
+  func testShowingDragOverlaysOnlyWhileItsNodeIsUnmoved() {
+    let id = UUID()
+    let tree = PaneLayout.split(
+      id: id, orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    XCTAssertEqual(
+      tree.showingDrag(0.7, forSplit: id, from: 0.5).ratio(forSplit: id) ?? 0, 0.7,
+      accuracy: 0.0001, "the live ratio is drawn")
+    XCTAssertEqual(
+      tree.showingDrag(0.7, forSplit: id, from: 0.4), tree, "a moved node is drawn as stored")
+    XCTAssertEqual(
+      tree.showingDrag(0.7, forSplit: UUID(), from: 0.5), tree, "a gone node changes nothing")
+  }
   func testContainsSplitFindsRootAndNestedNodesOnly() {
     // The lookup a holder of SEVERAL trees uses to find which one owns a dragged divider
     // (`AppStore.setWorkroomSplitRatio` over `workroomSplits`).

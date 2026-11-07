@@ -35,10 +35,24 @@ struct PaneTreeView: View {
   /// "Dim unfocused panes" (issue #162) — read here, at the tree, and passed to every leaf.
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @State private var drag: PaneDragState?
+  /// The divider ratio being dragged right now, held here rather than written to the sessions on
+  /// every mouse-moved tick: a write changes the target's panes, which re-runs every view of the
+  /// workroom (its strip, each pane's title and status bar) and marks the saved layout dirty, at
+  /// cursor rate. The release commits it once. The workroom divider's pattern
+  /// (`WorkroomSplitView.liveRatio`, issue #139), including `stored`: the split's ratio in the
+  /// sessions when the drag began, so a re-even that lands mid-drag (issue #126) drops the override.
+  @State private var liveRatio: (split: UUID, ratio: CGFloat, stored: CGFloat)?
   private static let space = "paneContent"
 
   /// Whichever drag is active: an in-tree pane-handle drag, or an incoming chip drag.
   private var activeDrag: PaneDragState? { drag ?? externalDrag }
+
+  /// The layout to draw: the given one, with the in-flight divider ratio overlaid while a drag is
+  /// live. Once committed, `liveRatio` clears and the sessions' own value takes over.
+  private var displayedLayout: TerminalPaneLayout {
+    guard let liveRatio else { return layout }
+    return layout.showingDrag(liveRatio.ratio, forSplit: liveRatio.split, from: liveRatio.stored)
+  }
 
   /// Whether a pane should show the dim scrim. `multiPane || !surfaceActive`: dim split-mates AND
   /// every pane of a *backgrounded* workroom — `surfaceActive` is `false` only for a co-displayed,
@@ -85,8 +99,9 @@ struct PaneTreeView: View {
   var body: some View {
     let focusedID = sessions.focusedTab(for: target)?.id
     let multiPane = layout.tabIDs.count >= 2
+    let shown = displayedLayout
     GeometryReader { geo in
-      let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: geo.size))
+      let plan = PaneTreeLayout.plan(shown, in: CGRect(origin: .zero, size: geo.size))
       ZStack(alignment: .topLeading) {
         ForEach(Array(layout.tabIDs.enumerated()), id: \.element) { index, tabID in
           if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
@@ -120,11 +135,15 @@ struct PaneTreeView: View {
           }
         }
         ForEach(plan.dividers) { d in
-          // Live only: each drag tick writes the store, where the workroom divider commits on release.
+          // The in-flight ratio is parked in `liveRatio`; only the release reaches the sessions.
           SplitDivider(
             orientation: d.orientation, ratio: d.ratio, total: d.total, noun: "pane",
             identifier: "pane.divider",
-            onLive: { sessions.setRatio($0, forSplit: d.id, for: target) }
+            onLive: { liveRatio = (d.id, $0, layout.ratio(forSplit: d.id) ?? d.ratio) },
+            onCommit: {
+              liveRatio = nil
+              sessions.setRatio($0, forSplit: d.id, for: target)
+            }
           )
           .frame(width: d.hitRect.width, height: d.hitRect.height)
           .position(x: d.rect.midX, y: d.rect.midY)
@@ -799,8 +818,9 @@ struct SplitDivider: View {
   /// The in-flight ratio, per mouse-moved tick.
   let onLive: (CGFloat) -> Void
   /// The final ratio, once, on mouse-up, for a caller that parks `onLive`'s values in local state
-  /// rather than the store (the workroom split, issue #139). A VoiceOver step is already final, so it
-  /// goes here too. nil: `onLive` is the whole story.
+  /// rather than the store (both splits do: the workroom split since issue #139, the terminal
+  /// panes since plan step 3.5). A VoiceOver step is already final, so it goes here too. nil:
+  /// `onLive` is the whole story.
   var onCommit: ((CGFloat) -> Void)?
   @State private var startRatio: CGFloat?
   /// The translation this drag is measured FROM. Normally zero (the gesture's own origin), but it

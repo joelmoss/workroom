@@ -141,9 +141,7 @@ struct WorkroomSplitView: View {
   /// live. Once committed, `liveRatio` clears and the store's own value takes over.
   private var displayedLayout: PaneLayout<SidebarID> {
     guard let liveRatio else { return layout }
-    // The store moved this node underneath the drag: show the store's tree so the divider re-anchors.
-    guard layout.ratio(forSplit: liveRatio.split) == liveRatio.stored else { return layout }
-    return layout.settingRatio(liveRatio.ratio, forSplit: liveRatio.split)
+    return layout.showingDrag(liveRatio.ratio, forSplit: liveRatio.split, from: liveRatio.stored)
   }
 
   /// The whole workroom a Quick Terminal pane dragged over this window would join, in the drop

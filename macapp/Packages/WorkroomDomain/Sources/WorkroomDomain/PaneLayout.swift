@@ -194,6 +194,18 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
     }
   }
 
+  /// This tree as a divider drag shows it: `ratio` on the split node `splitID`, while that node
+  /// still holds `stored`, its ratio when the drag began. Once the node has moved for another
+  /// reason (a re-even landing mid-drag, issue #126), or is gone, the tree as it is, so the
+  /// divider re-anchors on the new value instead of replaying its stale start. Both splits'
+  /// dividers draw through this while a drag is live and write their ratio only on release.
+  public func showingDrag(_ ratio: CGFloat, forSplit splitID: UUID, from stored: CGFloat)
+    -> PaneLayout<Leaf>
+  {
+    guard self.ratio(forSplit: splitID) == stored else { return self }
+    return settingRatio(ratio, forSplit: splitID)
+  }
+
   /// Number of leaves in this (sub)tree (issue #83). A lone leaf is 1; a split is the sum of its
   /// children. Kept for callers that need the true pane count; `equalized()` deliberately does NOT
   /// weight by it — see `slots(along:)`.
