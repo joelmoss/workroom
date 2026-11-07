@@ -187,7 +187,7 @@ final class PortForwardingModelTests: XCTestCase {
   private var continuation: AsyncStream<HostConnectionManager.Snapshot>.Continuation?
   /// What the manager would answer for the connected lease right now; `publish` keeps it in step
   /// with the stream, and a test can move it ahead of the stream to model a watch that lags.
-  private let current = CurrentLease()
+  private let current = Locked<HostConnectionManager.Lease?>(nil)
 
   private var models: [PortForwardingModel] = []
 
@@ -342,7 +342,7 @@ final class PortForwardingModelTests: XCTestCase {
     let model = try await model(
       lease: first,
       reconnect: {
-        reconnects.bump()
+        reconnects.add()
         let connection = try? await DaemonClient.connect(
           host: .local, socketPath: next.socketPath)
         made.keep(connection)
@@ -470,12 +470,6 @@ final class PortForwardingModelTests: XCTestCase {
     }
   }
 
-  private final class Counter: Sendable {
-    private let value = Mutex(0)
-    func bump() { value.withLock { $0 += 1 } }
-    var count: Int { value.withLock { $0 } }
-  }
-
   /// An `add()` that resumes after the watch consumed a disconnect must not leave a row for a
   /// connection that is already gone: the watch had nothing to drop then, and will see no further
   /// snapshot to drop it by.
@@ -579,7 +573,8 @@ final class PortForwardingModelTests: XCTestCase {
     let held = try await service(on: second)
     let current = self.current
     let gate = Gate()
-    let reads = Reads()
+    // `current()` reads, which arrive from the watch's task and `add()` alike.
+    let reads = Counter()
     let model = try await model(
       lease: first,
       forwarding: {
@@ -937,7 +932,7 @@ final class PortForwardingModelTests: XCTestCase {
     await model.add()
     let reads = Counter()
     let read = { @Sendable () -> (path: String, data: Data)? in
-      reads.bump()
+      reads.add()
       return (".devcontainer.json", Data(#"{"forwardPorts": [3000, 5173]}"#.utf8))
     }
     await model.forwardDeclared(read: read)
@@ -954,7 +949,7 @@ final class PortForwardingModelTests: XCTestCase {
     let model = try await model(lease: lease())
     let reads = Counter()
     await model.forwardDeclared {
-      reads.bump()
+      reads.add()
       if reads.count == 1 { throw RepositoryRoutingError.unavailable(.remote(UUID())) }
       return (".devcontainer.json", Data(#"{"forwardPorts": [5173]}"#.utf8))
     }
@@ -990,7 +985,7 @@ final class PortForwardingModelTests: XCTestCase {
     let model = try await model(
       lease: first,
       forwarding: {
-        fails.bump()
+        fails.add()
         if fails.count == 1 { throw RepositoryRoutingError.unavailable(.remote(UUID())) }
         return held
       })
@@ -1009,12 +1004,6 @@ final class PortForwardingModelTests: XCTestCase {
 
 /// Holds a transport's answer until the test lets it through, so the test can act while `add()` is
 /// suspended.
-final class CurrentLease: Sendable {
-  private let lease = Mutex<HostConnectionManager.Lease?>(nil)
-  func set(_ lease: HostConnectionManager.Lease?) { self.lease.withLock { $0 = lease } }
-  func get() -> HostConnectionManager.Lease? { lease.withLock { $0 } }
-}
-
 actor Gate {
   private var opened = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -1036,18 +1025,6 @@ actor Gate {
     opened = true
     for waiter in waiters { waiter.resume() }
     waiters = []
-  }
-}
-
-/// Counts `current()` reads, which arrive from the watch's task and `add()` alike.
-final class Reads: Sendable {
-  private let calls = Mutex(0)
-  var count: Int { calls.withLock { $0 } }
-  func next() -> Int {
-    calls.withLock {
-      $0 += 1
-      return $0
-    }
   }
 }
 

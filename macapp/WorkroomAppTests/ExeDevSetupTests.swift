@@ -14,6 +14,9 @@ final class ExeDevSetupTests: XCTestCase {
 
   /// Answers each lobby command from `answers` by its name, as `whoami` for `email`, or, unless
   /// ssh `signsIn`, as ssh refused by the gateway. Records every command and ssh's arguments.
+  ///
+  /// A copy of HostDrivers' `ExeDevHostDriverTests.StubExeDev`, which a hosted test cannot import:
+  /// keep the two lobbies' answers in step.
   private final class StubExeDev: StatusCommandRunning, Sendable {
     private let calls = Mutex<[(command: String, ssh: [String], arguments: [String])]>([])
     private let answers: Mutex<[String: CommandResult]>
@@ -33,9 +36,6 @@ final class ExeDevSetupTests: XCTestCase {
     }
     var commands: [String] {
       calls.withLock { $0.map(\.command) }.filter { $0 != "whoami" }
-    }
-    func arguments(of command: String) -> [String]? {
-      calls.withLock { calls in calls.last { $0.command == command }?.arguments }
     }
     /// ssh's own arguments for the last lobby command, up to and including the destination.
     var ssh: [String] { calls.withLock { $0.last?.ssh ?? [] } }
@@ -94,14 +94,6 @@ final class ExeDevSetupTests: XCTestCase {
       directory: root, runner: exe)
   }
 
-  private final class Lines: Sendable {
-    private let heard = Mutex<[(ProvisioningProgress.Step, String)]>([])
-    var all: [(ProvisioningProgress.Step, String)] { heard.withLock { $0 } }
-    func add(_ step: ProvisioningProgress.Step, _ line: String) {
-      heard.withLock { $0.append((step, line)) }
-    }
-  }
-
   private struct Stop: Error {}
 
   /// Value: protects=#483's command log, the repository grant a create runs first logs its exe.dev
@@ -121,10 +113,10 @@ final class ExeDevSetupTests: XCTestCase {
           host: repository.host, owner: repository.owner, name: repository.name)
       },
       connect: { _ in throw Stop() })
-    let lines = Lines()
-    let steps = Lines()
-    let log: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add($0, $1) }
-    let report: @Sendable (ProvisioningProgress.Step) -> Void = { steps.add($0, "") }
+    let lines = Calls<(ProvisioningProgress.Step, String)>()
+    let steps = Calls<(ProvisioningProgress.Step, String)>()
+    let log: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add(($0, $1)) }
+    let report: @Sendable (ProvisioningProgress.Step) -> Void = { steps.add(($0, "")) }
     await ProvisioningProgress.$reportStep.withValue(report) {
       await ProvisioningProgress.$log.withValue(log) {
         _ = try? await RemoteWorkrooms.create(

@@ -1,7 +1,6 @@
 import DaemonConnection
 import DevContainer
 import HostDrivers
-import Synchronization
 import WorkroomDomain
 import XCTest
 
@@ -24,12 +23,6 @@ final class ContainerHookTests: XCTestCase {
     }
   }
 
-  private final class Lines: Sendable {
-    private let lines = Mutex<[String]>([])
-    var all: [String] { lines.withLock { $0 } }
-    func add(_ line: String) { lines.withLock { $0.append(line) } }
-  }
-
   func testAHookIsWrittenRunAndAPostStartMarkedDoneEitherWay() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "hook-\(UUID().uuidString)")
@@ -41,7 +34,9 @@ final class ContainerHookTests: XCTestCase {
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: daemon.path)
     let folder = root.appendingPathComponent("hooks").path
     let done = root.appendingPathComponent("done")
-    func run(_ hook: DevContainerConfig.Hook, _ command: String, _ lines: Lines) async -> String? {
+    func run(_ hook: DevContainerConfig.Hook, _ command: String, _ lines: Calls<String>) async
+      -> String?
+    {
       await ContainerCreate.runHook(
         hook,
         script: DevContainerSetup.hookScript(
@@ -50,14 +45,14 @@ final class ContainerHookTests: XCTestCase {
         done: done.path, onLine: { lines.add($0) })
     }
 
-    let said = Lines()
+    let said = Calls<String>()
     let passed = await run(.postCreate, "echo one; echo two >&2", said)
     XCTAssertNil(passed)
     XCTAssertEqual(Set(said.all), ["one", "two"])
     XCTAssertTrue(FileManager.default.fileExists(atPath: folder + "/postCreateCommand"))
     XCTAssertFalse(FileManager.default.fileExists(atPath: done.path), "only postStart marks done")
 
-    let failed = await run(.postStart, "exit 4", Lines())
+    let failed = await run(.postStart, "exit 4", Calls<String>())
     XCTAssertEqual(failed, "The dev container's postStartCommand failed: it exited 4.")
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: done.path), "a failed postStart held panes")

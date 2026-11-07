@@ -1,6 +1,5 @@
 import DaemonConnection
 import HostDrivers
-import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -335,7 +334,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     let host = try await create(driver, image: try await gitImage(driver))
     let connection = try await connect(driver, host)
     let session = UUID()
-    let statuses = Lines()
+    let statuses = Calls<String>()
     let availability = try await connection.subscribeProgramStatus { event in
       if case .status(_, let reported, _, _, _, let run?) = event, reported == session {
         statuses.add(run)
@@ -499,7 +498,7 @@ class ContainerIntegrationTestCase: XCTestCase {
           + " \(script) > \(checkout)/scripts/\(script) && chmod 755 \(checkout)/scripts/\(script)")
     }
     for script in [RemoteProvisioning.Script.setup, .teardown] {
-      let lines = Lines()
+      let lines = Calls<String>()
       let result = await RemoteProvisioning.runScript(
         script, workroom: "box", at: checkout, hostKind: "docker", rootScript: nil,
         daemonBinary: try XCTUnwrap(driver.daemonPath(on: host)), on: host, driver: driver,
@@ -547,11 +546,5 @@ class ContainerIntegrationTestCase: XCTestCase {
       "\(ContainerHostDriver.containerDaemon) list --socket \(ContainerHostDriver.containerSocket)")
     XCTAssertTrue(listed.lowercased().contains(session.uuidString.lowercased()), listed)
     try await driver.destroy(host)
-  }
-
-  final class Lines: Sendable {
-    private let lines = Mutex<[String]>([])
-    var all: [String] { lines.withLock { $0 } }
-    func add(_ line: String) { lines.withLock { $0.append(line) } }
   }
 }

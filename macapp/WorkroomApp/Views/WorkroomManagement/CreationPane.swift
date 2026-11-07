@@ -350,7 +350,7 @@ private struct CreationStepRow: View {
     case .done:
       Image(systemName: "checkmark.circle.fill").foregroundStyle(tokens.success)
     case .warning:
-      Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(tokens.warning)
+      WarningGlyph(tokens: tokens)
     case .failed:
       Image(systemName: "xmark.octagon.fill").foregroundStyle(tokens.failure)
     case .skipped:

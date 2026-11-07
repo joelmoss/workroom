@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 
 /// Reference sheet listing every available keyboard shortcut, grouped by area (raised by the
@@ -67,10 +68,10 @@ private struct ShortcutRow: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background(
-          RoundedRectangle(cornerRadius: 6)
+          RoundedRectangle(cornerRadius: Radius.s)
             .fill(tokens.surface)
             .overlay(
-              RoundedRectangle(cornerRadius: 6).strokeBorder(tokens.border, lineWidth: 0.5))
+              RoundedRectangle(cornerRadius: Radius.s).strokeBorder(tokens.border, lineWidth: 0.5))
         )
     }
     .padding(.horizontal, 4)

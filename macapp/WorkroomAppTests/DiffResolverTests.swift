@@ -208,16 +208,9 @@ final class DiffResolverTests: XCTestCase {
 
   func testFailedCommitDiffIsNotCached() async {
     let p = StubDiffProvider()
-    final class Attempts: Sendable {
-      let count = Mutex(0)
-    }
-    let attempts = Attempts()
+    let attempts = Counter()
     p.commitText = { _, _ in
-      let attempt = attempts.count.withLock {
-        $0 += 1
-        return $0
-      }
-      if attempt == 1 { throw VCSError.io("blip") }
+      if attempts.next() == 1 { throw VCSError.io("blip") }
       return sampleDiff
     }
     let r = resolver(p)

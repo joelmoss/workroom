@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 import SyntaxHighlighting
 
@@ -78,9 +79,9 @@ struct ScriptBox: View {
             horizontalPadding: PaneTitleBarMetrics.wellPadding)
         )
         .font(.system(size: PaneTitleBarMetrics.glyph))
-        .background(tokens.panel, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .background(tokens.panel, in: RoundedRectangle(cornerRadius: Radius.xs, style: .continuous))
         .overlay(
-          RoundedRectangle(cornerRadius: 5, style: .continuous)
+          RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
             .strokeBorder(tokens.border, lineWidth: 1)
         )
         .padding(6)

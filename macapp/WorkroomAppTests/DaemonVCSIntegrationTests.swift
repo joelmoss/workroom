@@ -1,6 +1,5 @@
 import DaemonConnection
 import DaemonConnectionTestSupport
-import Synchronization
 import WorkroomDomain
 import WorkroomGit
 import WorkroomSystem
@@ -534,11 +533,6 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   /// touching the real per-bundle Application Support socket a live Workroom Dev instance might
   /// already own.
   func testConcurrentReadersCoalesceOntoOneConnectAttempt() async throws {
-    final class Counter: Sendable {
-      private let count = Mutex(0)
-      func increment() { count.withLock { $0 += 1 } }
-      func value() -> Int { count.withLock { $0 } }
-    }
     let root = try gitRepo()
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
@@ -547,7 +541,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     let localDaemon = LocalDaemonVCS(
       manager: HostConnectionManager(),
       resolveSocketPath: {
-        attempts.increment()
+        attempts.add()
         return socketPath
       },
       binaryURL: { try? DaemonHarness.binaryURL() })
@@ -564,7 +558,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     XCTAssertEqual(refs.2.name, "main")
     XCTAssertEqual(refs.3.name, "main")
     XCTAssertEqual(
-      attempts.value(), 1, "four concurrent callers must coalesce onto one connect attempt")
+      attempts.count, 1, "four concurrent callers must coalesce onto one connect attempt")
   }
 
   // MARK: - Writes (#205)

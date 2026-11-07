@@ -15,14 +15,21 @@ import SwiftUI
 /// Store-free: it renders `model` and forwards taps to `actions`. `ToastStackAdapter` builds both
 /// from the window's `AppStore`.
 struct ToastStack: View {
+  #if DEBUG
+    /// How many times the stack's body has run, read by `AdapterGateInvalidationTests`.
+    static var bodyPasses = 0
+  #endif
   let model: ToastStackModel
   let actions: ToastStackActions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
     // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
     // two never overlap in the bottom-right corner (they'd collide as separate overlays).
-    VStack(alignment: .trailing, spacing: 8) {
+    return VStack(alignment: .trailing, spacing: 8) {
       // Tool-version warnings ride at the top: unlike the two below, these describe a STANDING
       // condition (an old `git` doesn't fix itself), so they never auto-dismiss and stay until the
       // user closes them. See `VCSToolVersions`.
@@ -134,7 +141,10 @@ struct ToastStackActions {
 /// Builds `ToastStack`'s model and actions from the window's `AppStore`.
 ///
 /// A view of its own, not a computation in `RootView`: its body is where the toast lists are read,
-/// so a toast arriving re-evaluates this and the stack, and not the window around them.
+/// so a toast arriving re-evaluates this and the stack, and not the window around them. This body
+/// also runs on every `NotificationCenterStore` publish (an `ObservableObject`, so any change to
+/// the notification list); the stack, measured, does not (`AdapterGateInvalidationTests`), so it
+/// needs no equality gate.
 struct ToastStackAdapter: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
@@ -210,8 +220,8 @@ private struct ToolWarningToastView: View {
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
     .frame(width: 300, alignment: .leading)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tokens.border, lineWidth: 0.5))
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.l))
+    .overlay(RoundedRectangle(cornerRadius: Radius.l).strokeBorder(tokens.border, lineWidth: 0.5))
     .overlay(alignment: .topLeading) { closeButton }
     .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
     .onHover { hovering = $0 }
@@ -262,13 +272,13 @@ private struct ToastView: View {
       .padding(.horizontal, 12)
       .padding(.vertical, 10)
       .frame(width: 300, alignment: .leading)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.l))
       // Faint fill + a touch more border on hover so the card reads as the clickable target it is.
       .overlay(
-        RoundedRectangle(cornerRadius: 12).fill(tokens.hover.opacity(hovering ? 1 : 0))
+        RoundedRectangle(cornerRadius: Radius.l).fill(tokens.hover.opacity(hovering ? 1 : 0))
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 12)
+        RoundedRectangle(cornerRadius: Radius.l)
           .strokeBorder(tokens.border, lineWidth: 0.5)
       )
       .overlay(alignment: .topTrailing) { closeButton }
@@ -277,7 +287,7 @@ private struct ToastView: View {
         color: .black.opacity(hovering ? 0.34 : 0.28), radius: hovering ? 22 : 18,
         y: hovering ? 10 : 8
       )
-      .contentShape(RoundedRectangle(cornerRadius: 12))
+      .contentShape(RoundedRectangle(cornerRadius: Radius.l))
       .onTapGesture { onTap() }
       .onHover { hovering = $0 }
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
@@ -401,15 +411,15 @@ private struct RunToastView: View {
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
     .frame(width: 300, alignment: .leading)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    .overlay(RoundedRectangle(cornerRadius: 12).fill(tokens.hover.opacity(hovering ? 1 : 0)))
-    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tokens.border, lineWidth: 0.5))
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.l))
+    .overlay(RoundedRectangle(cornerRadius: Radius.l).fill(tokens.hover.opacity(hovering ? 1 : 0)))
+    .overlay(RoundedRectangle(cornerRadius: Radius.l).strokeBorder(tokens.border, lineWidth: 0.5))
     .overlay(alignment: .topLeading) { closeButton }
     .shadow(
       color: .black.opacity(hovering ? 0.34 : 0.28), radius: hovering ? 22 : 18,
       y: hovering ? 10 : 8
     )
-    .contentShape(RoundedRectangle(cornerRadius: 12))
+    .contentShape(RoundedRectangle(cornerRadius: Radius.l))
     .onTapGesture { onTap() }
     .onHover { hovering = $0 }
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)

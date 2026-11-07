@@ -189,26 +189,26 @@ struct HistoryPanelActions {
 /// Builds `HistoryPanel`'s inputs and actions from the window's `AppStore`.
 ///
 /// It reads the inspector's target and whether the History section shows; the focused tab and the
-/// model's state are read by the panel, as before. So this re-evaluates when the History pane's
-/// target or visibility change, and a terminal pulse reaches the panel and not this.
+/// model's state are read by the panel, as before. The store is observed through Observation, so
+/// this re-evaluates only when those reads (and the theme generation) change, which are the
+/// panel's inputs, so the panel needs no equality gate of its own; a terminal pulse reaches the
+/// panel and not this.
 struct HistoryPanelAdapter: View {
   @EnvironmentObject var store: AppStore
-  /// Passed through, not observed here: the panel observes it.
-  let model: HistoryModel
-  /// Read only inside `inputs.selectedCommitID`, which the panel calls (see `HistoryPanelInputs`).
-  let sessions: TerminalPanes
 
   var body: some View {
-    HistoryPanel(model: model, inputs: inputs, actions: actions)
+    // `commitHistory` is a `let`, so reading it here subscribes to nothing: the panel observes it.
+    HistoryPanel(model: store.commitHistory, inputs: inputs, actions: actions)
   }
 
   private var inputs: HistoryPanelInputs {
     HistoryPanelInputs(
       hasTarget: store.inspectorTargetID != nil,
-      activationKey: "\(store.inspectorTargetID?.targetID?.encoded ?? "")"
+      activationKey: (store.inspectorTargetID?.targetID?.encoded ?? "")
         + "\u{1F}\(store.historySectionShown)",
-      selectedCommitID: { [store, sessions] in
-        FocusedTabSelection.current(store: store, sessions: sessions)?.changesetCommitID
+      // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
+      selectedCommitID: { [store] in
+        FocusedTabSelection.current(store: store, sessions: store.terminals)?.changesetCommitID
       },
       themeGeneration: ThemeService.shared.generation
     )
@@ -216,14 +216,14 @@ struct HistoryPanelAdapter: View {
 
   private var actions: HistoryPanelActions {
     HistoryPanelActions(
-      activate: { [store, model] in
+      activate: { [store] in
         guard store.historySectionShown else { return }
         // `activate` (not `focus`): on re-entry with the same workroom it pulls fresh (and retries
         // a prior failure), so switching away and back after a terminal commit shows the new log —
         // where `focus` would no-op on the unchanged root. The store's eager `focus` on selection
         // still fires first; `activate`'s settled-state guard means this won't double that fresh
         // load.
-        model.activate(target: store.inspectorTarget)
+        store.commitHistory.activate(target: store.inspectorTarget)
       },
       // `[store]` + `Self.title` on purpose: the capture list is what makes this closure
       // behaviour-constant, which is what lets `HistoryRow.==` exclude it.

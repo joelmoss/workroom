@@ -377,11 +377,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 /// A remote workroom's teardown script, run on its host before the host goes
 /// (`docs/designs/scripts-on-every-workroom.md`: D3, R1).
 final class RemoteTeardownTests: XCTestCase {
-  private final class Log: Sendable {
-    private let entries = Mutex<[String]>([])
-    var all: [String] { entries.withLock { $0 } }
-    func add(_ entry: String) { entries.withLock { $0.append(entry) } }
-  }
+  private typealias Log = Calls<String>
 
   private final class Driver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
     let log: Log

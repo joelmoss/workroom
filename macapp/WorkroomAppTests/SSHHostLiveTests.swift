@@ -46,12 +46,6 @@ final class SSHHostLiveTests: XCTestCase {
     }
   }
 
-  private final class Lines: Sendable {
-    private let saved = Mutex<[String]>([])
-    func add(_ line: String) { saved.withLock { $0.append(line) } }
-    var all: [String] { saved.withLock { $0 } }
-  }
-
   // The async helpers run in their caller's isolation, so the main-actor test can call them without
   // handing the test case to another executor.
   @discardableResult
@@ -212,7 +206,7 @@ final class SSHHostLiveTests: XCTestCase {
           setupText, to: item.instance.path + "/scripts/workroom_setup", driver: driver)
         try await upload(
           teardownText, to: item.instance.path + "/scripts/workroom_teardown", driver: driver)
-        let lines = Lines()
+        let lines = Calls<String>()
         let setup = await RemoteProvisioning.runScript(
           .setup, workroom: item.name, at: item.instance.path, hostKind: "ssh", rootScript: nil,
           daemonBinary: binary, on: driver.hostID, driver: driver, judge: judge,
@@ -282,7 +276,7 @@ final class SSHHostLiveTests: XCTestCase {
       }
       for (index, item) in created.enumerated() {
         let descriptor = try XCTUnwrap(records.descriptors[item.name])
-        let lines = Lines()
+        let lines = Calls<String>()
         try await RemoteWorkrooms.delete(
           item.name, host: descriptor, environment: environment, recorder: records.recorder,
           teardown: .init(

@@ -36,9 +36,6 @@ struct CommitSheet: View {
   @State private var flow = CommitFlow()
   @FocusState private var summaryFocused: Bool
 
-  private var phase: CommitFlow.Phase { flow.phase }
-  private var isSpent: Bool { flow.isSpent }
-
   /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
   private static let renderCap = 200
 
@@ -79,10 +76,10 @@ struct CommitSheet: View {
       fileSection
       messageSection
       amendTargetNotice
-      if case .confirmingStagedLoss(let paths) = phase { stagedLossNotice(paths) }
-      if case .failed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
-      if case .landedThenFailed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
-      if case .outcomeUnknown(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
+      if case .confirmingStagedLoss(let paths) = flow.phase { stagedLossNotice(paths) }
+      if case .failed(let dialog) = flow.phase { CommitFailureNotice(dialog: dialog) }
+      if case .landedThenFailed(let dialog) = flow.phase { CommitFailureNotice(dialog: dialog) }
+      if case .outcomeUnknown(let dialog) = flow.phase { CommitFailureNotice(dialog: dialog) }
       Divider()
       buttons
     }
@@ -114,7 +111,7 @@ struct CommitSheet: View {
   /// The primary button's label, which becomes an explicit confirmation while the staged-work
   /// warning is up so it can never read as an ordinary Commit.
   private var primaryLabel: String {
-    if case .confirmingStagedLoss = phase { return "Commit anyway" }
+    if case .confirmingStagedLoss = flow.phase { return "Commit anyway" }
     return CommitDraft.commitLabel(selectedCount: selectedCount)
   }
 
@@ -257,8 +254,8 @@ struct CommitSheet: View {
           .padding(2)
           .accessibilityIdentifier("commit.description")
       }
-      .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
-      .overlay(RoundedRectangle(cornerRadius: 6).stroke(tokens.border, lineWidth: 1))
+      .background(RoundedRectangle(cornerRadius: Radius.s).fill(.quaternary.opacity(0.4)))
+      .overlay(RoundedRectangle(cornerRadius: Radius.s).stroke(tokens.border, lineWidth: 1))
     }
   }
 
@@ -268,14 +265,14 @@ struct CommitSheet: View {
     HStack(spacing: 8) {
       // A persistent line, never a tooltip: nobody hovers a button that looks dead, and a tooltip is
       // unreachable by keyboard and invisible to VoiceOver.
-      if let blockedReason, phase == .editing {
+      if let blockedReason, flow.phase == .editing {
         Text(blockedReason)
           .font(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("commit.blocked")
       }
-      if phase == .committing {
+      if flow.phase == .committing {
         ProgressView().controlSize(.small)
         Text("Running hooks…").font(.caption).foregroundStyle(.secondary)
       } else if flow.preflightState.isLoading {
@@ -288,15 +285,15 @@ struct CommitSheet: View {
       // already running — so dismissing here would only tear down the `@State` the completion writes
       // its outcome into. A rejected hook, a signing failure or a left-behind `index.lock` would then
       // be reported to a view that no longer exists, and the user would be told nothing at all.
-      Button(isSpent ? "Close" : "Cancel") { onDismiss() }
+      Button(flow.isSpent ? "Close" : "Cancel") { onDismiss() }
         .keyboardShortcut(.cancelAction)
-        .disabled(phase == .committing)
+        .disabled(flow.phase == .committing)
         .accessibilityIdentifier("commit.cancel")
       secondaryButton
       Button(primaryLabel) {
         // Once the warning is on screen the same button confirms it — the guard has already told the
         // user what it is about to replace, so a second warning would just be a speed bump.
-        if case .confirmingStagedLoss = phase {
+        if case .confirmingStagedLoss = flow.phase {
           commit(mode: .commit)
         } else {
           commitChecking(mode: .commit)
@@ -304,7 +301,8 @@ struct CommitSheet: View {
       }
       .sheetDefaultAction()
       .disabled(
-        blockedReason != nil || phase == .committing || isSpent || flow.preflightState.isLoading
+        blockedReason != nil || flow.phase == .committing || flow.isSpent
+          || flow.preflightState.isLoading
       )
       .help("Commit the selected files")
       .accessibilityIdentifier("commit.commit")
@@ -323,7 +321,7 @@ struct CommitSheet: View {
       commit(mode: .amendMessage)
     }
     .disabled(
-      secondaryBlockedReason != nil || phase == .committing || isSpent
+      secondaryBlockedReason != nil || flow.phase == .committing || flow.isSpent
         || flow.preflightState.isLoading
     )
     .help(
@@ -343,7 +341,7 @@ struct CommitSheet: View {
   /// only through the reflog. Showing the target is the cheapest thing that makes the trade visible
   /// before the click instead of after it.
   @ViewBuilder private var amendTargetNotice: some View {
-    if let amendTarget = flow.amendTarget, phase == .editing {
+    if let amendTarget = flow.amendTarget, flow.phase == .editing {
       Text("“Amend last commit” would replace the message of \(amendTarget)")
         .font(.caption)
         .foregroundStyle(.tertiary)
@@ -369,20 +367,21 @@ struct CommitSheet: View {
       dismiss: onDismiss)
   }
 
-  // A preflight retried from a button focuses the summary as the one on appear does, so the view
-  // checks readiness before handing a press to the flow (which retries without focus).
+  // A preflight retried from a button focuses the summary as the one on appear does. The flow
+  // does the retry itself (without focus) when a press finds the preflight not ready, so the view
+  // adds only the focus.
   private func prefill() {
     summaryFocused = true
     flow.prefill(flowContext)
   }
 
   private func commitChecking(mode: VCSCommitMode) {
-    guard flow.preflightState.isReady else { return prefill() }
+    if !flow.preflightState.isReady { summaryFocused = true }
     flow.commitChecking(mode: mode, flowContext)
   }
 
   private func commit(mode: VCSCommitMode) {
-    guard flow.preflightState.isReady else { return prefill() }
+    if !flow.preflightState.isReady { summaryFocused = true }
     flow.commit(mode: mode, flowContext)
   }
 }

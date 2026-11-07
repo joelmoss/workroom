@@ -155,14 +155,14 @@ final class DaemonFileIntegrationTests: XCTestCase {
       host: .local, socketPath: fake.socketPath)
     connections.append(connection)
     let stuck = DaemonVCSRequest(method: "status", path: String(repeating: "x", count: 900_000))
-    let finished = Flag()
+    let finished = Locked(false)
     let outcome = Task {
       _ = try? await connection.request(stuck, timeout: 20)
-      finished.set()
+      finished.set(true)
     }
     try await Task.sleep(for: .seconds(3))
     XCTAssertFalse(
-      finished.isSet, "the handshake's expired deadline retired the connection under a live send")
+      finished.get(), "the handshake's expired deadline retired the connection under a live send")
     await connection.close()
     await outcome.value
   }
@@ -192,12 +192,6 @@ final class DaemonFileIntegrationTests: XCTestCase {
     }
     XCTAssertLessThan(
       ContinuousClock.now - started, .seconds(1), "must fail at once, not queue behind the send")
-  }
-
-  private final class Flag: Sendable {
-    private let value = Mutex(false)
-    func set() { value.withLock { $0 = true } }
-    var isSet: Bool { value.withLock { $0 } }
   }
 
   func testARequestStuckBehindAPeerThatStoppedReadingRetiresTheConnection() async throws {
@@ -679,7 +673,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
     daemons.append(daemon)
     let root = try root()
     let seen = Deliveries()
-    let current = ConnectionBox()
+    let current = Locked<DaemonClient?>(nil)
     let router = RepositoryRouter(localFiles: { [socket = daemon.socketPath] context in
       let connection = try await DaemonClient.connect(host: .local, socketPath: socket)
       current.set(connection)
@@ -694,7 +688,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
     XCTAssertTrue(first)
 
     let before = seen.all.filter { $0.paths.isEmpty && $0.overflow }.count
-    await current.connection?.close()
+    await current.get()?.close()
     let refreshed = await seen.wait {
       seen.all.filter { $0.paths.isEmpty && $0.overflow }.count == before + 1
     }
@@ -726,11 +720,5 @@ final class DaemonFileIntegrationTests: XCTestCase {
     let got = await seen.wait { !seen.all.isEmpty }
     XCTAssertTrue(got)
     XCTAssertTrue(seen.all.allSatisfy { !$0.overflow })
-  }
-
-  private final class ConnectionBox: Sendable {
-    private let value = Mutex<DaemonClient?>(nil)
-    func set(_ connection: DaemonClient) { value.withLock { $0 = connection } }
-    var connection: DaemonClient? { value.withLock { $0 } }
   }
 }

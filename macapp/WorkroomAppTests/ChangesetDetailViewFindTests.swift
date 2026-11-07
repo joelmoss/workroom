@@ -37,25 +37,25 @@ final class ChangesetDetailViewFindTests: XCTestCase {
 
   func testEmptyChangesetHasNoSearchableDiff() {
     // The retarget case: a selection left over from the previous commit, and no files in this one.
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: []))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: []))
     XCTAssertFalse(ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: "a.swift"))
   }
 
   func testStaleSelectionHasNoSearchableDiff() {
     // A selectedPath left over from a PREVIOUS commit that doesn't exist in the new one.
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: ["b.swift"]))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: ["b.swift"]))
     XCTAssertFalse(
       ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: "a.swift"))
   }
 
   func testLoadedWithMatchingSelectionHasSearchableDiff() {
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: ["a.swift", "b.swift"]))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: ["a.swift", "b.swift"]))
     XCTAssertTrue(
       ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: "a.swift"))
   }
 
   func testNilSelectedPathHasNoSearchableDiff() {
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: ["a.swift"]))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: ["a.swift"]))
     XCTAssertFalse(ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: nil))
   }
 }

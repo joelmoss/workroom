@@ -25,8 +25,8 @@ struct DiffLineID: Hashable {
 /// highlighting arrives off-main.
 ///
 /// The viewer holds it as `@State`, so it lives exactly as long as the view's identity does: a pane
-/// retargeted to another file keeps the same loader (and so `loadedKey` and the generation tokens
-/// below), and a reopened tab gets a fresh one, which loads again.
+/// retargeted to another file keeps the same loader (and so the generation tokens below), and a
+/// reopened tab gets a fresh one, which loads again.
 @MainActor
 @Observable
 final class DiffLoader {
@@ -83,46 +83,38 @@ final class DiffLoader {
   /// deletion run with the addition run that follows it, so row count ≠ line count and the visual
   /// order differs from document order). `⌘G` must step through whichever ordering is on screen.
   final class FindIndex {
-    let unifiedLines: [String]
-    let unifiedIDs: [DiffLineID]
-    let unifiedIndexByID: [DiffLineID: Int]
-    let sideBySideLines: [String]
-    let sideBySideIDs: [DiffLineID]
-    let sideBySideIndexByID: [DiffLineID: Int]
+    /// One layout's lines in its visual order, their identities, and each identity's index.
+    struct Ordering {
+      let lines: [String]
+      let ids: [DiffLineID]
+      let indexByID: [DiffLineID: Int]
+
+      init(_ source: (lines: [String], ids: [DiffLineID]), layout: String) {
+        lines = source.lines
+        ids = source.ids
+        #if DEBUG
+          precondition(
+            !DiffLoader.hasDuplicateIDs(ids),
+            "DiffLineID collision in \(layout) ordering — (kind,oldLine,newLine) invariant violated"
+          )
+        #endif
+        // `uniquingKeysWith` (not `Dictionary(uniqueKeysWithValues:)`): a collision — which the
+        // debug precondition above already asserts can't happen for any current call path —
+        // degrades to "first line wins" in RELEASE rather than crashing.
+        indexByID = Dictionary(zip(ids, ids.indices), uniquingKeysWith: { first, _ in first })
+      }
+    }
+
+    let unified: Ordering
+    let sideBySide: Ordering
 
     init(_ diff: UnifiedDiff, sbsRows: [[UnifiedDiff.SideBySideRow]]) {
-      let unified = DiffLoader.findSource(for: diff)
-      unifiedLines = unified.lines
-      unifiedIDs = unified.ids
-      #if DEBUG
-        precondition(
-          !DiffLoader.hasDuplicateIDs(unified.ids),
-          "DiffLineID collision in unified ordering — (kind,oldLine,newLine) invariant violated")
-      #endif
-      // `uniquingKeysWith` (not `Dictionary(uniqueKeysWithValues:)`): a collision — which the debug
-      // precondition above already asserts can't happen for any current call path — degrades to
-      // "first line wins" in RELEASE rather than crashing.
-      unifiedIndexByID = Dictionary(
-        zip(unifiedIDs, unifiedIDs.indices), uniquingKeysWith: { first, _ in first })
-
-      let sideBySide = DiffLoader.findSourceSideBySide(sbsRows: sbsRows)
-      sideBySideLines = sideBySide.lines
-      sideBySideIDs = sideBySide.ids
-      #if DEBUG
-        precondition(
-          !DiffLoader.hasDuplicateIDs(sideBySide.ids),
-          "DiffLineID collision in side-by-side ordering — (kind,oldLine,newLine) invariant violated"
-        )
-      #endif
-      sideBySideIndexByID = Dictionary(
-        zip(sideBySideIDs, sideBySideIDs.indices), uniquingKeysWith: { first, _ in first })
+      unified = Ordering(DiffLoader.findSource(for: diff), layout: "unified")
+      sideBySide = Ordering(
+        DiffLoader.findSourceSideBySide(sbsRows: sbsRows), layout: "side-by-side")
     }
 
-    func lines(sideBySide: Bool) -> [String] { sideBySide ? sideBySideLines : unifiedLines }
-    func ids(sideBySide: Bool) -> [DiffLineID] { sideBySide ? sideBySideIDs : unifiedIDs }
-    func indexByID(sideBySide: Bool) -> [DiffLineID: Int] {
-      sideBySide ? sideBySideIndexByID : unifiedIndexByID
-    }
+    func ordering(sideBySide: Bool) -> Ordering { sideBySide ? self.sideBySide : unified }
   }
 
   private(set) var state: LoadState<UnifiedDiff> = .loading
@@ -154,16 +146,15 @@ final class DiffLoader {
   /// orderings — see `FindIndex`). `nil` until a diff is loaded.
   private(set) var findIndex: FindIndex?
 
-  /// The file identity (`FetchKey`) the current diff was loaded for — so a spurious `.task` re-run
-  /// for the SAME file no-ops instead of re-entering `load` (see `DiffViewer`'s load task).
-  @ObservationIgnored private var loadedKey: FetchKey?
   /// The key of whichever `.task(id:)` invocation most recently started a load at this
-  /// view-identity slot — a generation token, held ALONGSIDE `Task.isCancelled` rather than
-  /// instead of it. Retargeting the pane swaps the id value at a stable slot (the view instance is
-  /// reused, not recreated), and cancellation delivery for that shape does not measure the same
-  /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
-  /// invocation in the live app (2026-08-13), while `DiffViewer` measured it DELIVERED in a
-  /// hosted-view harness (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and
+  /// view-identity slot. Two jobs. It is the re-load guard: a spurious `.task` re-run for the SAME
+  /// file no-ops instead of re-entering `load` (see `DiffViewer`'s load task). And it is a
+  /// generation token, held ALONGSIDE `Task.isCancelled` rather than instead of it. Retargeting
+  /// the pane swaps the id value at a stable slot (the view instance is reused, not recreated),
+  /// and cancellation delivery for that shape does not measure the same way everywhere:
+  /// `AvatarView` measured `Task.isCancelled == false` throughout the outgoing invocation in the
+  /// live app (2026-08-13), while `DiffViewer` measured it DELIVERED in a hosted-view harness
+  /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and
   /// the flag's delivery is an unspecified SwiftUI detail, so the flag is the guard the test proves
   /// and the token is the belt. The loader survives the slot being reused (it is the view's
   /// `@State`), so whichever invocation started LAST wins.
@@ -181,14 +172,9 @@ final class DiffLoader {
   /// a new state — false for a same-key re-fire, and for a result that went stale while it was read.
   func loadIfNeeded(_ request: Request) async -> Bool {
     let key = request.key
-    guard Self.shouldLoad(loadedKey: loadedKey, fetchKey: key) else { return false }
-    loadedKey = key
+    guard activeFetchKey != key else { return false }
     activeFetchKey = key
     return await load(request, key: key)
-  }
-
-  nonisolated static func shouldLoad<Key: Equatable>(loadedKey: Key?, fetchKey: Key) -> Bool {
-    loadedKey != fetchKey
   }
 
   private func resolveRepositoryDiff(_ request: Request) async -> DiffResult {
@@ -337,7 +323,7 @@ final class DiffLoader {
   }
 
   /// Bounds-checked lookup into paired side-by-side rows for a hunk index — pulled out as a pure
-  /// static func (mirrors `shouldLoad`) so the boxed-`sbsRows` refactor (WORKROOM-2S: an AppHang
+  /// static func so the boxed-`sbsRows` refactor (WORKROOM-2S: an AppHang
   /// from AttributeGraph deep-comparing the array on every file switch) stays regression-tested
   /// without needing a live view. A `nil` box (no diff loaded) or an out-of-range/negative index
   /// reads empty rather than trapping.

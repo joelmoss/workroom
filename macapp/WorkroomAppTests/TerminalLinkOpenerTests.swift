@@ -1,5 +1,4 @@
 import DaemonConnection
-import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -883,7 +882,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
-      asked.bump()
+      asked.add()
       return HostFiles(
         context: FileContext(location: location, sharedLocation: nil),
         files: ["a.rb": Data("x\n".utf8)])
@@ -897,12 +896,6 @@ final class TerminalLinkOpenerTests: XCTestCase {
     view.onEvent?(.cmdClickFile("a.rb", cwd: nil))
     for _ in 0..<200 where asked.count == 0 { try await Task.sleep(for: .milliseconds(5)) }
     XCTAssertEqual(asked.count, 1, "the click did not ask the host")
-  }
-
-  private final class Counter: Sendable {
-    private let value = Mutex(0)
-    func bump() { value.withLock { $0 += 1 } }
-    var count: Int { value.withLock { $0 } }
   }
 
   /// A newer remote ⌘-click replaces the one before it (#254): the host can take seconds, and a

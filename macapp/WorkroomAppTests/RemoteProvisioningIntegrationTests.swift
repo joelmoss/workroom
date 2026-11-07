@@ -494,7 +494,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     ).communicate(script, timeout: 30)
     XCTAssertEqual(written, 0, said)
 
-    let lines = Lines()
+    let lines = Calls<String>()
     let result = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
       daemonBinary: environment.daemonBinary(on: instance.host), on: instance.host, driver: driver,
@@ -506,7 +506,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(lines.all, want.split(separator: "\n").map(String.init))
 
     // The login shell's profile reaches the script, as a terminal's shell gets it.
-    let profile = Lines()
+    let profile = Calls<String>()
     let teardown = await RemoteProvisioning.runScript(
       .teardown, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
       daemonBinary: environment.daemonBinary(on: instance.host), on: instance.host, driver: driver,
@@ -536,12 +536,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(output.contains("gone"), output)
     XCTAssertFalse(output.contains("alive"), output)
     XCTAssertTrue(output.contains("timed out after 1 s"), output)
-  }
-
-  private final class Lines: Sendable {
-    private let lines = Mutex<[String]>([])
-    var all: [String] { lines.withLock { $0 } }
-    func add(_ line: String) { lines.withLock { $0.append(line) } }
   }
 
   // MARK: Workrooms
@@ -856,7 +850,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let project = Project(
       path: "/p", vcs: "git", workrooms: [],
       host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: host))
-    let forgotten = Forgotten()
+    let forgotten = Calls<String>()
     let effects = { (driver: ContainerHostDriver, forget: @escaping @Sendable () throws -> Void) in
       BaseRetirement.Effects(
         setHost: { _, _, _ in try forget() },
@@ -885,12 +879,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       XCTFail("an unknown base was destroyed")
     } catch HostDriverError.unknownHost {}
     XCTAssertEqual(forgotten.all, ["forgot"])
-  }
-
-  private final class Forgotten: Sendable {
-    private let said = Mutex<[String]>([])
-    func add(_ what: String) { said.withLock { $0.append(what) } }
-    var all: [String] { said.withLock { $0 } }
   }
 
   /// A teardown whose removal fails names the box still up.

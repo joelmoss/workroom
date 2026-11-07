@@ -96,6 +96,8 @@ struct DiffViewer: View {
   private static let sideBySideMinWidth: CGFloat = 700
 
   var body: some View {
+    // Built once per pass: both tasks and their keys read it.
+    let request = loadRequest
     Group {
       if showsFileHeader {
         VStack(spacing: 0) {
@@ -126,8 +128,8 @@ struct DiffViewer: View {
     // made `applyHighlight` actually populate lines for a History file diff. A genuine file switch
     // changes the key; a tab reopen recreates the view (so the `@State` loader resets) — both
     // re-run. The guard itself is `DiffLoader.loadIfNeeded`'s.
-    .task(id: loadRequest.key) {
-      guard await loader.loadIfNeeded(loadRequest) else { return }
+    .task(id: request.key) {
+      guard await loader.loadIfNeeded(request) else { return }
       if isFocused { find.setSource(findLines(sideBySide: isSideBySideActive)) }
       #if DEBUG
         onCommit?(loader.state)
@@ -136,8 +138,8 @@ struct DiffViewer: View {
     // Build (or rebuild) highlighting once a diff is loaded, and re-colour on theme change. Keyed
     // on source+path+theme-generation+load-token so a superseded run is cancelled and a stale
     // result (wrong file or old theme) is never applied.
-    .task(id: highlightKey) {
-      await loader.applyHighlight(loadRequest, key: highlightKey, tokens: tokens)
+    .task(id: highlightKey(for: request.key)) {
+      await loader.applyHighlight(request, key: highlightKey(for: request.key), tokens: tokens)
     }
   }
 
@@ -148,13 +150,13 @@ struct DiffViewer: View {
       cannedDiffs: cannedDiffs, resolveDiff: resolveDiff)
   }
 
-  private var highlightKey: DiffLoader.HighlightKey {
-    loader.highlightKey(for: loadRequest.key, theme: ThemeService.shared.generation)
+  private func highlightKey(for fetch: DiffLoader.FetchKey) -> DiffLoader.HighlightKey {
+    loader.highlightKey(for: fetch, theme: ThemeService.shared.generation)
   }
 
   /// The loaded diff's find source in the given ordering; empty until a diff is loaded.
   private func findLines(sideBySide: Bool) -> [String] {
-    loader.findIndex?.lines(sideBySide: sideBySide) ?? []
+    loader.findIndex?.ordering(sideBySide: sideBySide).lines ?? []
   }
 
   @ViewBuilder private var content: some View {
@@ -366,7 +368,7 @@ struct DiffViewer: View {
     guard isFocused, let findIndex = loader.findIndex else { return }
     guard
       let id = Self.matchedLineID(
-        match: find.currentMatch, ids: findIndex.ids(sideBySide: sideBySide))
+        match: find.currentMatch, ids: findIndex.ordering(sideBySide: sideBySide).ids)
     else { return }
     let scrollID: DiffLineID?
     if sideBySide {
@@ -596,7 +598,7 @@ struct DiffViewer: View {
     range: Range<Int>, isCurrent: Bool
   )] {
     guard isFocused, let findIndex = loader.findIndex,
-      let idx = findIndex.indexByID(sideBySide: sideBySide)[DiffLineID.id(for: line)]
+      let idx = findIndex.ordering(sideBySide: sideBySide).indexByID[DiffLineID.id(for: line)]
     else { return [] }
     return find.highlights(onLine: idx)
   }

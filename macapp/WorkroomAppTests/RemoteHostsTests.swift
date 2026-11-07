@@ -712,7 +712,7 @@ final class RemoteHostsTests: XCTestCase {
           directory: FileManager.default.temporaryDirectory)
       }).registry
       let deletion = try XCTUnwrap(try remote.environment(toDelete: [row.host]))
-      XCTAssertEqual(asked.keys, [row.key], "\(row.key)")
+      XCTAssertEqual(asked.all, [row.key], "\(row.key)")
       let environment = try XCTUnwrap(deletion.environment(for: row.host))
       XCTAssertEqual(environment.daemonSocket, row.socket, "\(row.key)")
       XCTAssertNotEqual(environment.daemonSocket, RemoteWorkrooms.daemonSocket, "\(row.key)")
@@ -1124,11 +1124,7 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
-  private final class Asked: Sendable {
-    private let made = Mutex<[RemoteHosts.DriverKey]>([])
-    var keys: [RemoteHosts.DriverKey] { made.withLock { $0 } }
-    func add(_ key: RemoteHosts.DriverKey) { made.withLock { $0.append(key) } }
-  }
+  private typealias Asked = Calls<RemoteHosts.DriverKey>
 
   final class Swept: Sendable {
     private let made = Mutex<[(context: String?, known: Set<UUID>)]>([])

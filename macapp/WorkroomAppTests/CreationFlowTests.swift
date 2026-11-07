@@ -1071,19 +1071,6 @@ final class CreationFlowTests: XCTestCase {
     func cancel() {}
   }
 
-  private final class Counter: Sendable {
-    private let value = Mutex(0)
-    var count: Int { value.withLock { $0 } }
-    func add() { value.withLock { $0 += 1 } }
-  }
-
-  /// What a fake closure was called with, from any thread.
-  private final class Calls<Value: Sendable>: Sendable {
-    private let values = Mutex<[Value]>([])
-    var all: [Value] { values.withLock { $0 } }
-    func add(_ value: Value) { values.withLock { $0.append(value) } }
-  }
-
   private static let gitFails =
     #"{"stdout":"","stderr":"fatal: repository 'https://github.com/o/r.git/' not found","exit_code":128,"timed_out":false,"signaled":false}"#
   private static let gitSucceeds =

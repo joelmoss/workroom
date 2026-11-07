@@ -191,10 +191,10 @@ struct OpenWorkroomDialog: View {
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
     .background(
-      RoundedRectangle(cornerRadius: 8)
+      RoundedRectangle(cornerRadius: Radius.m)
         .fill(tokens.surface)
         .overlay(
-          RoundedRectangle(cornerRadius: 8).strokeBorder(tokens.border, lineWidth: 0.5))
+          RoundedRectangle(cornerRadius: Radius.m).strokeBorder(tokens.border, lineWidth: 0.5))
     )
     .padding(10)
   }

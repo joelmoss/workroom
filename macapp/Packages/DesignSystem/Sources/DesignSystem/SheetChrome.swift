@@ -39,9 +39,7 @@ public struct WarningHeader<Content: View>: View {
   }
 
   public var body: some View {
-    SheetHeader(
-      systemImage: "exclamationmark.triangle.fill", glyphStyle: tokens.warning
-    ) { content }
+    SheetHeader(systemImage: warningSymbol, glyphStyle: tokens.warning) { content }
   }
 }
 

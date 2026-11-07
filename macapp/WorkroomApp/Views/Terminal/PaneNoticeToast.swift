@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// A toast over one terminal pane, for something that happened to that pane rather than to the
@@ -37,15 +38,15 @@ struct PaneNoticeToast: View {
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
     .frame(width: width, alignment: .leading)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    .overlay(RoundedRectangle(cornerRadius: 12).fill(tokens.hover.opacity(hovering ? 1 : 0)))
-    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tokens.border, lineWidth: 0.5))
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.l))
+    .overlay(RoundedRectangle(cornerRadius: Radius.l).fill(tokens.hover.opacity(hovering ? 1 : 0)))
+    .overlay(RoundedRectangle(cornerRadius: Radius.l).strokeBorder(tokens.border, lineWidth: 0.5))
     .overlay(alignment: .topTrailing) { closeButton }
     .shadow(
       color: .black.opacity(hovering ? 0.34 : 0.28), radius: hovering ? 22 : 18,
       y: hovering ? 10 : 8
     )
-    .contentShape(RoundedRectangle(cornerRadius: 12))
+    .contentShape(RoundedRectangle(cornerRadius: Radius.l))
     .onTapGesture { onDismiss() }
     .onHover { hovering = $0 }
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)

@@ -18,9 +18,6 @@ let package = Package(
     .package(path: "../WorkroomDomain"),
     .package(path: "../WorkroomVCS"),
     .package(path: "../WorkroomSystem"),
-    // For `SyntaxLanguage.byteCap` only: a blob over the highlight cap reads as nil, so the diff
-    // renders plain rather than mapping offsets into a truncated read.
-    .package(path: "../SyntaxHighlighting"),
     // SwiftGitX (libgit2, pure Swift) serves the local reads.
     .package(url: "https://github.com/ibrahimcetin/SwiftGitX", exact: "0.4.0"),
     // Raw libgit2, linked DIRECTLY as well as through SwiftGitX. SwiftGitX cannot express a commit
@@ -34,7 +31,7 @@ let package = Package(
     .target(
       name: "WorkroomGit",
       dependencies: [
-        "WorkroomDomain", "WorkroomVCS", "WorkroomSystem", "SyntaxHighlighting",
+        "WorkroomDomain", "WorkroomVCS", "WorkroomSystem",
         .product(name: "SwiftGitX", package: "SwiftGitX"),
         .product(name: "libgit2", package: "libgit2"),
       ]),

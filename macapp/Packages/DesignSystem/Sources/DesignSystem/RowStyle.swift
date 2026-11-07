@@ -9,27 +9,22 @@ public struct RowHighlight: View {
   let tokens: ThemeTokens
   let selected: Bool
   let hovered: Bool
-  let cornerRadius: CGFloat
   let horizontalPadding: CGFloat
-  let verticalPadding: CGFloat
 
   public init(
-    tokens: ThemeTokens, selected: Bool, hovered: Bool, cornerRadius: CGFloat = Radius.s,
-    horizontalPadding: CGFloat = Spacing.m, verticalPadding: CGFloat = 1
+    tokens: ThemeTokens, selected: Bool, hovered: Bool, horizontalPadding: CGFloat = Spacing.m
   ) {
     self.tokens = tokens
     self.selected = selected
     self.hovered = hovered
-    self.cornerRadius = cornerRadius
     self.horizontalPadding = horizontalPadding
-    self.verticalPadding = verticalPadding
   }
 
   public var body: some View {
-    RoundedRectangle(cornerRadius: cornerRadius)
+    RoundedRectangle(cornerRadius: Radius.s)
       .fill(selected ? tokens.surface : (hovered ? tokens.hover : Color.clear))
       .padding(.horizontal, horizontalPadding)
-      .padding(.vertical, verticalPadding)
+      .padding(.vertical, 1)
   }
 }
 

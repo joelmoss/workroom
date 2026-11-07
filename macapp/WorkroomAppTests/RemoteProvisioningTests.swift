@@ -162,8 +162,8 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
         #"{"stdout":"","stderr":"Cloning into 'p'...","exit_code":0,"timed_out":false,"signaled":false}"#
     )
     defer { fake.stop() }
-    let lines = LineLog()
-    let sink: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add($0, $1) }
+    let lines = Calls<(ProvisioningProgress.Step, String)>()
+    let sink: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add(($0, $1)) }
 
     let instance = try await ProvisioningProgress.$log.withValue(sink) {
       try await RemoteProvisioning.provision(
@@ -372,14 +372,6 @@ private final class StepLog: Sendable {
       return seen
     }
   }
-}
-
-private final class LineLog: Sendable {
-  private let seen = Mutex<[(ProvisioningProgress.Step, String)]>([])
-  func add(_ step: ProvisioningProgress.Step, _ line: String) {
-    seen.withLock { $0.append((step, line)) }
-  }
-  var all: [(ProvisioningProgress.Step, String)] { seen.withLock { $0 } }
 }
 
 /// Copying the root's included files into a remote workroom's checkout (#367): the CLI's archive,

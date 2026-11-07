@@ -26,6 +26,9 @@ struct TerminalStatusBar<DetachedSessions: View>: View {
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
+    #if DEBUG
+      StatusBarPasses.count += 1
+    #endif
     // Computed once per render so a divider between two segments only appears when BOTH sides are
     // actually showing something — each segment is independently optional.
     let cwd = model.cwd
@@ -38,14 +41,14 @@ struct TerminalStatusBar<DetachedSessions: View>: View {
     let runStatePresentation = runStatePresentation
     let hasRun = runStatePresentation != nil
 
-    HStack(spacing: 12) {
+    return HStack(spacing: 12) {
       // A terminal's cwd leads the bar. The file path a content pane used to show here moved to the
       // pane's own title bar (issue #150), which names the pane; this bar is its live working state.
       if let cwd { StatusBarCwdSegment(cwd: cwd, onHost: model.cwdIsOnHost) }
-      if hasLeading, hasBranch { statusBarDivider }
+      if hasLeading, hasBranch { StatusBarDivider() }
       if let branch { StatusBarBranchSegment(branch: branch) }
       // Diagnosis sits left-aligned right after the branch, not pushed to the far edge.
-      if hasLeading || hasBranch, hasDiagnosis { statusBarDivider }
+      if hasLeading || hasBranch, hasDiagnosis { StatusBarDivider() }
       if let diagnosis { diagnosisSegment(diagnosis) }
       if isQuickTerminal {
         // Its empty middle drags the Quick Terminal along the screen edges.
@@ -65,15 +68,11 @@ struct TerminalStatusBar<DetachedSessions: View>: View {
           .layoutPriority(-1)
       }
       detachedSessions()
-      if hasDetached, hasRun { statusBarDivider }
+      if hasDetached, hasRun { StatusBarDivider() }
       if let run = runStatePresentation { runSegment(run) }
     }
     .statusBarChrome()
   }
-
-  /// A thin vertical rule between two segments, shorter than the 28pt bar so it reads as a
-  /// separator rather than a full-height rail.
-  private var statusBarDivider: some View { StatusBarDivider() }
 
   // MARK: Run state (run tab only)
 
@@ -195,11 +194,19 @@ struct TerminalStatusBar<DetachedSessions: View>: View {
   }
 }
 
+#if DEBUG
+  /// How many times any pane's `TerminalStatusBar` body has run, read by
+  /// `AdapterGateInvalidationTests` (a generic type can't hold the counter itself).
+  @MainActor enum StatusBarPasses {
+    static var count = 0
+  }
+#endif
+
 /// What a pane's status bar shows. Every segment is optional: a content pane has no cwd, run state
 /// or diagnosis, only the branch.
-struct TerminalStatusBarModel {
+struct TerminalStatusBarModel: Equatable {
   /// The running coding agent whose usage the bar shows.
-  struct Usage {
+  struct Usage: Equatable {
     let backend: CodingAgentBackend
     let claudeProfile: PaneClaudeProfile?
   }
@@ -252,8 +259,35 @@ struct TerminalStatusBarAdapter: View {
   @ObservedObject private var sessionsStore = DetachedSessionList.shared
 
   var body: some View {
-    TerminalStatusBar(model: model, actions: actions) {
-      DetachedSessionsButton(target: target)
+    Gated(
+      model: model, target: target, tabID: tabID, surface: surface.map(ObjectIdentifier.init),
+      actions: actions
+    )
+    .equatable()
+  }
+
+  /// The bar behind an equality gate, so a store publish that changes nothing this pane shows
+  /// skips the bar's body. The gate covers what the closures capture as well as the model:
+  /// `actions` and the slot close over `target`, `tabID` and `surface`, so a gate on the model
+  /// alone could keep one that types into the wrong surface. `@State` and the environment still
+  /// invalidate the bar past the gate.
+  private struct Gated: View, Equatable {
+    let model: TerminalStatusBarModel
+    let target: TerminalTarget
+    let tabID: TerminalTab.ID
+    /// The surface `actions` holds, by identity.
+    let surface: ObjectIdentifier?
+    let actions: TerminalStatusBarActions
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+      lhs.model == rhs.model && lhs.target == rhs.target && lhs.tabID == rhs.tabID
+        && lhs.surface == rhs.surface
+    }
+
+    var body: some View {
+      TerminalStatusBar(model: model, actions: actions) {
+        DetachedSessionsButton(target: target)
+      }
     }
   }
 

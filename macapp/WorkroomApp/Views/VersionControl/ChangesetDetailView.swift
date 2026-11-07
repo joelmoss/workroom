@@ -22,15 +22,11 @@ struct ChangesetDetailView: View {
   var vcsReader: (@Sendable (URL) throws -> LocalVCSProviding)? = nil
   /// The fixture's canned diffs, handed to the embedded `DiffViewer`; nil in a live app.
   var cannedDiffs: AppServices.CannedDiffs? = nil
-  let actions: Actions
+  /// Show a file's diff: nil for the first file. Routed through the tab (which records a
+  /// back/forward step), rather than a view-local `@State`.
+  let onSelectFile: (String?) -> Void
 
-  struct Actions {
-    /// Show a file's diff: nil for the first file. Routed through the tab (which records a
-    /// back/forward step), rather than a view-local `@State`.
-    var selectFile: (String?) -> Void
-  }
-
-  @State private var state: LoadState = .loading
+  @State private var state: ChangesetLoad = .loading
   /// The id of whichever `.task(id:)` invocation most recently started a load at this
   /// view-identity slot — a generation token, held ALONGSIDE `Task.isCancelled` rather than
   /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
@@ -78,7 +74,8 @@ struct ChangesetDetailView: View {
   private static let minListWidth: CGFloat = 180
   private static let maxListWidth: CGFloat = 400
 
-  enum LoadState: Equatable {
+  /// Not the app-wide `LoadState`: a changeset has no empty, binary or too-large state.
+  enum ChangesetLoad: Equatable {
     case loading
     case loaded(VCSChangeset)
     case failed(String)
@@ -109,12 +106,11 @@ struct ChangesetDetailView: View {
     Self.diffPaneHasContent(state: state, selectedPath: selectedPath)
   }
 
-  /// Pure form of `hasSearchableDiff` (mirrors `DiffLoader.shouldLoad`'s "extract the bounds-checked
-  /// logic" pattern) — unit-testable without hosting a live view. `false` for loading/failed/empty
-  /// states, or a `selectedPath` that doesn't match any current file (a stale selection after a
+  /// Pure form of `hasSearchableDiff` — unit-testable without hosting a live view. `false` for
+  /// loading/failed/empty states, or a `selectedPath` that doesn't match any current file (a stale selection after a
   /// retarget) — every case where `diffPane` falls back to its "no file" message instead of a
   /// `DiffViewer`.
-  static func diffPaneHasContent(state: LoadState, selectedPath: String?) -> Bool {
+  static func diffPaneHasContent(state: ChangesetLoad, selectedPath: String?) -> Bool {
     guard case .loaded(let changeset) = state, !changeset.files.isEmpty, let path = selectedPath
     else { return false }
     return changeset.files.contains { $0.path == path }
@@ -381,7 +377,7 @@ struct ChangesetDetailView: View {
     // name instead would make two history entries that render identically, and Back would spend a press
     // going nowhere visible. With one spelling, `setChangesetSelectedPath`'s own "did it change" guard
     // is enough; no view-level tap guard is needed.
-    .onTapGesture { actions.selectFile(isFirst ? nil : file.path) }
+    .onTapGesture { onSelectFile(isFirst ? nil : file.path) }
     .help(ChangeBadge.pathLine(path: file.path, oldPath: file.oldPath))
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("ChangesetFileRow")
@@ -491,7 +487,7 @@ private struct DescriptionTruncationKey: PreferenceKey {
       vcsReader: { _ in UITestFixture.vcsProvider },
       cannedDiffs: AppServices.CannedDiffs(
         diff: UITestFixture.diff(for:), fileContent: UITestFixture.fileContent(for:)),
-      actions: .init(selectFile: { _ in })
+      onSelectFile: { _ in }
     )
     .frame(width: 900, height: 560)
   }

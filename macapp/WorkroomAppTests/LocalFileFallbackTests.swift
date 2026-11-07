@@ -1,5 +1,4 @@
 import DaemonConnection
-import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -107,11 +106,11 @@ final class LocalFileFallbackTests: XCTestCase {
   /// acquisition, the FILE service fails fast for the cooldown (VCS reads and writes are unaffected —
   /// they never consult it).
   func testAFailedAcquisitionMakesFilesFailFastForTheCooldown() async throws {
-    let attempts = Attempts()
+    let attempts = Counter()
     let daemon = LocalDaemonVCS(
       manager: HostConnectionManager(),
       resolveSocketPath: {
-        attempts.count += 1
+        attempts.add()
         return "/private/tmp/definitely-not-a-socket-\(UUID().uuidString)"
       },
       binaryURL: { nil })
@@ -131,13 +130,5 @@ final class LocalFileFallbackTests: XCTestCase {
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.local)) }
     XCTAssertEqual(attempts.count, 1, "inside the cooldown nothing is attempted")
     XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
-  }
-
-  private final class Attempts: Sendable {
-    private let value = Mutex(0)
-    var count: Int {
-      get { value.withLock { $0 } }
-      set { value.withLock { $0 = newValue } }
-    }
   }
 }

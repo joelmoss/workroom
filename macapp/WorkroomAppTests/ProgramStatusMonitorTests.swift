@@ -233,7 +233,8 @@ final class ProgramStatusMonitorTests: XCTestCase {
     monitor.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
     let back = SleepGate()
     monitor.reconnected = { _ in await back.wait() }
-    let attempts = Attempts()
+    // How many times the monitor tried to connect, from its `connect` closure.
+    let attempts = Counter()
     let connection = FakeProgramStatusConnection()
     monitor.connect = { _ in
       if attempts.next() == 1 { throw VCSError.io("the host is asleep") }
@@ -449,18 +450,6 @@ final class ProgramStatusMonitorTests: XCTestCase {
 }
 
 /// Holds every sleep handed to `wait` until the test releases them.
-/// How many times a monitor tried to connect, from its `connect` closure.
-private final class Attempts: Sendable {
-  private let value = Mutex(0)
-  var count: Int { value.withLock { $0 } }
-  func next() -> Int {
-    value.withLock {
-      $0 += 1
-      return $0
-    }
-  }
-}
-
 private final class SleepGate: Sendable {
   private let waiters = Mutex<[CheckedContinuation<Void, Never>]>([])
 

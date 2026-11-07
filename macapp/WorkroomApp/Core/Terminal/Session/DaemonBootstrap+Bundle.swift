@@ -15,7 +15,7 @@ extension DaemonBootstrap {
   ) async throws -> DaemonClient {
     try await connect(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: bundledScript(named:))
+      resources: resources, scripts: scripts)
   }
 
   /// Makes sure the host runs this app's daemon, as far as the bootstrap's policy allows.
@@ -26,16 +26,14 @@ extension DaemonBootstrap {
   ) async throws -> Outcome {
     try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: bundledScript(named:))
+      resources: resources, scripts: scripts)
   }
 
   /// The bundled far-side script `name`.
   static func script(named name: String) throws -> String {
-    try script(named: name, in: bundledScript(named:))
+    try script(named: name, in: scripts)
   }
 
-  /// Where the build phase put the scripts: `Contents/Resources/daemon-bootstrap`.
-  static func bundledScript(named name: String) -> URL? {
-    Bundle.main.url(forResource: name, withExtension: "sh", subdirectory: "daemon-bootstrap")
-  }
+  /// The far-side scripts, in `Contents/Resources/daemon-bootstrap`.
+  static let scripts = bundledScripts(in: "daemon-bootstrap")
 }

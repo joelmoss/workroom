@@ -561,9 +561,9 @@ struct PaneLeafView: View {
         repositoryLocation: target.remoteLocation,
         isFocused: focused, find: store.contentFind,
         vcsReader: store.services.vcsReader, cannedDiffs: store.services.cannedDiffs,
-        actions: .init(selectFile: { [store, tabID, target] path in
+        onSelectFile: { [store, tabID, target] path in
           store.selectChangesetFile(path, tab: tabID, in: target)
-        }))
+        })
       if let tab {
         contentPanel(
           detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))

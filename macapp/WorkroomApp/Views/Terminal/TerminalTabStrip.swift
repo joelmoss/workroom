@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -924,7 +925,7 @@ struct DiffModeSwitch: View {
       segment(.sideBySide, help: "Side-by-side diff", identifier: "tab.toolbar.diffSideBySide")
     }
     .padding(1.5)
-    .background(RoundedRectangle(cornerRadius: 6).fill(tokens.surface))
+    .background(RoundedRectangle(cornerRadius: Radius.s).fill(tokens.surface))
   }
 
   @ViewBuilder
@@ -940,7 +941,7 @@ struct DiffModeSwitch: View {
         .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 5).fill(active ? tokens.bg : .clear))
+        .background(RoundedRectangle(cornerRadius: Radius.xs).fill(active ? tokens.bg : .clear))
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -972,7 +973,7 @@ struct MarkdownModeSwitch: View {
         identifier: "tab.toolbar.markdownSource")
     }
     .padding(1.5)
-    .background(RoundedRectangle(cornerRadius: 6).fill(tokens.surface))
+    .background(RoundedRectangle(cornerRadius: Radius.s).fill(tokens.surface))
   }
 
   @ViewBuilder
@@ -988,7 +989,7 @@ struct MarkdownModeSwitch: View {
         .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 5).fill(active ? tokens.bg : .clear))
+        .background(RoundedRectangle(cornerRadius: Radius.xs).fill(active ? tokens.bg : .clear))
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)

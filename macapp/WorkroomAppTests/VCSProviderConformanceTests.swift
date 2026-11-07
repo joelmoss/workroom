@@ -1,3 +1,4 @@
+import SyntaxHighlighting
 import WorkroomGit
 import WorkroomSystem
 import WorkroomVCS
@@ -203,6 +204,12 @@ final class VCSProviderConformanceTests: XCTestCase {
     // A path that doesn't exist at that revision → nil (render plain, never throw out).
     let gitMissing = try await GitProvider().fileContent(root: url, rev: cid, path: "nope.txt")
     XCTAssertNil(gitMissing)
+  }
+
+  /// WorkroomGit spells the highlighter's cap itself so it needn't build tree-sitter; a blob read
+  /// over it renders plain, so the two must not drift apart.
+  func testContentCapMatchesTheHighlightCap() {
+    XCTAssertEqual(GitProvider.maxContentBytes, SyntaxLanguage.byteCap)
   }
 
   /// `GitProvider.log` (SwiftGitX) against a real repo: newest-first ordering and the `reachedEnd`

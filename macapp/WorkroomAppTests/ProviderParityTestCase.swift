@@ -346,7 +346,8 @@ class ProviderParityTestCase: XCTestCase {
     addTeardownBlock { try? await driver.destroy(host) }
     let connection = try await connect(provider, host)
     XCTAssertGreaterThanOrEqual(connection.helloVersion, DaemonHandshake.minRunVersion)
-    let runs = RunLines()
+    // The run's state lines as its host's daemon publishes them, in order.
+    let runs = Calls<String>()
     let session = UUID()
     let availability = try await connection.subscribeProgramStatus { event in
       if case .status(_, let reported, _, _, _, let run?) = event, reported == session {
@@ -373,16 +374,16 @@ class ProviderParityTestCase: XCTestCase {
       XCTFail("the run command never ran on the host: \(seen)")
       return
     }
-    try await until("the run reports running") { runs.last?.hasPrefix("running ") == true }
+    try await until("the run reports running") { runs.all.last?.hasPrefix("running ") == true }
 
     // Stop parks it in its session; Restart runs it again there.
     let stop = try await connection.signalSession(session, .stop)
     XCTAssertEqual(stop, .delivered)
-    try await until("the run parks on Stop") { runs.last == "stopped 1" }
+    try await until("the run parks on Stop") { runs.all.last == "stopped 1" }
     let restart = try await connection.signalSession(session, .restart)
     XCTAssertEqual(restart, .delivered)
     try await until("the run starts again on Restart") {
-      runs.last?.hasPrefix("running ") == true && runs.all.contains("stopped 1")
+      runs.all.last?.hasPrefix("running ") == true && runs.all.contains("stopped 1")
     }
     let restarted = pane.read(until: "RUN-42", within: 20)
     let allLeaves = Self.numbers(after: "LEAF=", in: restarted)
@@ -393,7 +394,7 @@ class ProviderParityTestCase: XCTestCase {
     // The link drops and comes back: the run carried on.
     pane.dropLink()
     try await Task.sleep(for: .seconds(2))
-    XCTAssertEqual(runs.last?.hasPrefix("running "), true, "the run ended with its link")
+    XCTAssertEqual(runs.all.last?.hasPrefix("running "), true, "the run ended with its link")
     let again = try attach(true)
     defer { again.dropLink() }
     let reattached = again.read(until: "RUN-42", within: 30)
@@ -413,14 +414,6 @@ class ProviderParityTestCase: XCTestCase {
 
     try await driver.destroy(host)
     XCTAssertEqual(try provider.leftovers(), [])
-  }
-
-  /// A run's state lines as its host's daemon publishes them, in order.
-  final class RunLines: Sendable {
-    private let lines = Mutex<[String]>([])
-    func add(_ line: String) { lines.withLock { $0.append(line) } }
-    var all: [String] { lines.withLock { $0 } }
-    var last: String? { all.last }
   }
 
   /// Polls `condition` for up to `seconds`, and fails the test there if it never holds: the steps

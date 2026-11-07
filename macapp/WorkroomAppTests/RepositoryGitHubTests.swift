@@ -48,9 +48,6 @@ private final class GHRunner: StatusCommandRunning, Sendable {
   }
 }
 
-private func ok(_ stdout: String) -> CommandResult {
-  CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
-}
 private func failed(_ stderr: String = "boom", exit: Int32 = 1) -> CommandResult {
   CommandResult(stdout: "", stderr: stderr, exitCode: exit, timedOut: false)
 }

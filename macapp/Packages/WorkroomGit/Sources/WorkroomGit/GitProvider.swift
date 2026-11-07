@@ -1,6 +1,5 @@
 import Foundation
 import SwiftGitX
-import SyntaxHighlighting
 import WorkroomSystem
 import WorkroomVCS
 
@@ -18,6 +17,11 @@ import WorkroomVCS
 /// error (`catch let e as SwiftGitXError`) trips a Swift 6 SIL ownership error across the async
 /// boundary.
 public struct GitProvider: LocalVCSProviding {
+  /// The largest blob a content read returns: the syntax highlighter's cap. It equals
+  /// `SyntaxLanguage.byteCap`, spelled here so this package needn't build tree-sitter and its
+  /// grammars; a hosted test pins the two together.
+  public static let maxContentBytes = 2 * 1024 * 1024
+
   public init() {}
 
   public func log(root: URL, limit: Int) throws -> VCSHistoryPage {
@@ -227,7 +231,7 @@ public struct GitProvider: LocalVCSProviding {
     guard let blobID = try Self.blobID(in: commit.tree, path: path, repo: repo) else { return nil }
     let blob: Blob = try repo.show(id: blobID)
     // Over the highlight cap → render plain (a truncated read would mis-map byte offsets).
-    guard blob.content.count <= SyntaxLanguage.byteCap else { return nil }
+    guard blob.content.count <= maxContentBytes else { return nil }
     return String(data: blob.content, encoding: .utf8)  // nil ⇒ binary / non-UTF-8
   }
 

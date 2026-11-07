@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// Resolve a notification's origin label from the live model so a workroom's display label
@@ -264,7 +265,7 @@ private struct NotificationRow: View {
     // The hover fill covers the ENTIRE row — content and the trailing accessory — so hovering anywhere
     // on the row (including over the `+N` badge) highlights the whole thing.
     .background(
-      RoundedRectangle(cornerRadius: 5).fill(tokens.hover.opacity(hovering ? 1 : 0))
+      RoundedRectangle(cornerRadius: Radius.xs).fill(tokens.hover.opacity(hovering ? 1 : 0))
     )
     .contentShape(Rectangle())
     .onHover {

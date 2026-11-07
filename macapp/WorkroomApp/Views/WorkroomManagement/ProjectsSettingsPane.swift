@@ -160,11 +160,10 @@ private struct ProjectSettingsForm: View {
     Form {
       Section {
         if SettingsRoute.shared.warnedProject == project.path, commandIsBlank {
-          Label(
+          WarningLabel(
             "No run command is defined yet — you can't run this workroom until you set one.",
-            systemImage: "exclamationmark.triangle.fill"
+            tokens: tokens
           )
-          .foregroundStyle(tokens.warning)
           // Stable identifier so the XCUITest doesn't match on the exact warning string.
           .accessibilityIdentifier("projectSettings.runWarning")
         }

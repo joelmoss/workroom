@@ -2,7 +2,6 @@ import WorkroomVCS
 import XCTest
 
 @testable import Workroom
-@testable import WorkroomGit
 
 /// `VCSSyncPresenter` — the toolbar's middle-segment state machine.
 ///
@@ -28,7 +27,8 @@ final class VCSSyncPresentationTests: XCTestCase {
         ? VCSTracking(
           comparedTo: "origin/\(branch ?? "?")", ahead: ahead, behind: behind, gone: gone)
         : nil,
-      remotes: remotes, primaryRemote: CLIVCSWriter.primaryRemote(remotes),
+      // The writer's rule (`CLIVCSWriter.primaryRemote`, pinned by WorkroomGit's own tests).
+      remotes: remotes, primaryRemote: remotes.contains("origin") ? "origin" : remotes.first,
       lastFetch: lastFetch, resolvedAt: now)
   }
 

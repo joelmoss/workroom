@@ -2066,6 +2066,11 @@ final class AppStore: ObservableObject {
   /// The app-wide base branch as the CLI's config holds it now (nil: none set, or the CLI could not
   /// be read), for Settings ▸ General to edit.
   func globalBaseBranch() async -> String? {
+    await Self.globalBaseBranch(cli: cli)
+  }
+
+  /// `globalBaseBranch()` over `cli` alone, for Settings with no window open.
+  static func globalBaseBranch(cli: WorkroomCLIProtocol) async -> String? {
     (try? await cli.list(warnings: "none", project: nil))?.baseBranch
   }
 
@@ -2074,6 +2079,14 @@ final class AppStore: ObservableObject {
   /// window's store reads it from there, so a remote create before the next reload still uses the
   /// new default. Throws the CLI's refusal, recording nothing.
   func setGlobalBaseBranch(_ branch: String?) async throws {
+    try await Self.setGlobalBaseBranch(branch, cli: cli, projectStore: projectStore)
+  }
+
+  /// `setGlobalBaseBranch(_:)` over `cli` and `projectStore` alone, for Settings with no window
+  /// open.
+  static func setGlobalBaseBranch(
+    _ branch: String?, cli: WorkroomCLIProtocol, projectStore: ProjectStore
+  ) async throws {
     try await cli.setGlobalBaseBranch(branch)
     projectStore.globalBaseBranch = branch
   }

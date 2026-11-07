@@ -423,25 +423,27 @@ private struct NewWorkroomsSection: View {
           + "base branch in Projects wins.")
     }
     .task {
-      let current = await store.globalBaseBranch()
+      let current = await AppStore.globalBaseBranch(cli: owner.cli)
       branch = current ?? ""
       saved = branch
     }
   }
 
-  /// The CLI owns the branch; any window's store can ask it, and with none open a throwaway one
-  /// can, as Settings ▸ Projects' does, since every store shares `ProjectStore.shared`.
-  private var store: AppStore {
-    WindowRegistry.shared.lastActiveStore ?? AppStore(runCommands: .shared, lifecycle: .shared)
+  /// The CLI owns the branch: the last active window's CLI asks it, and with no window open the
+  /// app's own does, recording into the project store every window's store shares.
+  private var owner: (cli: WorkroomCLIProtocol, projectStore: ProjectStore) {
+    if let store = WindowRegistry.shared.lastActiveStore { return (store.cli, store.projectStore) }
+    return (AppServices.current.cli, WorkroomLifecycle.shared.projectStore)
   }
 
   private func save() {
     let value = branch.trimmingCharacters(in: .whitespacesAndNewlines)
     guard value != saved else { return }
-    let store = store
+    let owner = owner
     Task {
       do {
-        try await store.setGlobalBaseBranch(value.isEmpty ? nil : value)
+        try await AppStore.setGlobalBaseBranch(
+          value.isEmpty ? nil : value, cli: owner.cli, projectStore: owner.projectStore)
         saved = value
         failure = nil
       } catch {
