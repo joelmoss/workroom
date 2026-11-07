@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkroomDomain
 import XCTest
 
@@ -9,29 +10,70 @@ import XCTest
 /// blocks until the test flips `allowDelete`, so the deletion tombstone stays active across a
 /// concurrent reload — exactly the window in which the bug resurrects a deleted workroom.
 private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
+  // The test sets these while the store's calls read them on other tasks (`delete` polls
+  // `allowDelete`), so they live behind one lock.
+  private struct State {
+    var listResult: [Project] = []
+    var deleteStarted = false
+    var allowDelete = false
+    var deleteFails = false
+    var deleteError: Error = WorkroomCLIError.timedOut
+    var deleteLog: [String] = []
+    var skips: [Bool] = []
+    var trashPaths: [URL] = []
+    var listCalls = 0
+    var listFails = false
+    var approvals: [String] = []
+  }
+  private let state = Mutex(State())
+
   /// What `list` returns — mutate between reloads to model stale vs fresh config snapshots.
-  var listResult: [Project] = []
+  var listResult: [Project] {
+    get { state.withLock { $0.listResult } }
+    set { state.withLock { $0.listResult = newValue } }
+  }
   /// Set true once `delete` has been entered (its teardown is in flight, tombstone active).
-  private(set) var deleteStarted = false
+  var deleteStarted: Bool { state.withLock { $0.deleteStarted } }
   /// Flip true to let the gated `delete` complete (teardown finishes).
-  var allowDelete = false
+  var allowDelete: Bool {
+    get { state.withLock { $0.allowDelete } }
+    set { state.withLock { $0.allowDelete = newValue } }
+  }
   /// When true, the released `delete` throws — modelling a failed teardown (workroom stays on disk).
-  var deleteFails = false
+  var deleteFails: Bool {
+    get { state.withLock { $0.deleteFails } }
+    set { state.withLock { $0.deleteFails = newValue } }
+  }
   /// What a failing delete throws, and the script output it streams first.
-  var deleteError: Error = WorkroomCLIError.timedOut
-  var deleteLog: [String] = []
+  var deleteError: Error {
+    get { state.withLock { $0.deleteError } }
+    set { state.withLock { $0.deleteError = newValue } }
+  }
+  var deleteLog: [String] {
+    get { state.withLock { $0.deleteLog } }
+    set { state.withLock { $0.deleteLog = newValue } }
+  }
   /// Each delete's `skipTeardown`, in order, workroom and project deletes alike.
-  private(set) var skips: [Bool] = []
+  var skips: [Bool] { state.withLock { $0.skips } }
   /// What a released `deleteProject` hands back to move to the Bin.
-  var trashPaths: [URL] = []
-  private(set) var listCalls = 0
+  var trashPaths: [URL] {
+    get { state.withLock { $0.trashPaths } }
+    set { state.withLock { $0.trashPaths = newValue } }
+  }
+  var listCalls: Int { state.withLock { $0.listCalls } }
   /// When true, `list` throws — modelling a config read that fails after a delete succeeded.
-  var listFails = false
+  var listFails: Bool {
+    get { state.withLock { $0.listFails } }
+    set { state.withLock { $0.listFails = newValue } }
+  }
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
-    listCalls += 1
-    if listFails { throw WorkroomCLIError.timedOut }
-    return ListResponse(projects: listResult, workroomsDir: nil, configPath: nil)
+    let (fails, projects) = state.withLock {
+      $0.listCalls += 1
+      return ($0.listFails, $0.listResult)
+    }
+    if fails { throw WorkroomCLIError.timedOut }
+    return ListResponse(projects: projects, workroomsDir: nil, configPath: nil)
   }
 
   func addProject(_ path: String, create: Bool) async throws -> String { path }
@@ -45,31 +87,32 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   }
 
   func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {
-    skips.append(false)
+    state.withLock { $0.skips.append(false) }
     try await gatedDelete(onLog)
   }
 
   func delete(
     name: String, project: String, skipTeardown: Bool, onLog: (@Sendable (String) -> Void)?
   ) async throws {
-    skips.append(skipTeardown)
+    state.withLock { $0.skips.append(skipTeardown) }
     try await gatedDelete(onLog)
   }
 
   private func gatedDelete(_ onLog: ((String) -> Void)?) async throws {
-    deleteStarted = true
+    state.withLock { $0.deleteStarted = true }
     // Gate: hold the teardown open until the test releases it, keeping the tombstone live.
     while !allowDelete { await Task.yield() }
-    if deleteFails {
-      for line in deleteLog { onLog?(line) }
-      throw deleteError
+    let (fails, log, error) = state.withLock { ($0.deleteFails, $0.deleteLog, $0.deleteError) }
+    if fails {
+      for line in log { onLog?(line) }
+      throw error
     }
   }
 
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
   ) async throws -> [URL] {
-    skips.append(false)
+    state.withLock { $0.skips.append(false) }
     return try await gatedDeleteProject(onLog)
   }
 
@@ -77,25 +120,20 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, skipTeardown: Bool,
     onLog: (@Sendable (String) -> Void)?
   ) async throws -> [URL] {
-    skips.append(skipTeardown)
+    state.withLock { $0.skips.append(skipTeardown) }
     return try await gatedDeleteProject(onLog)
   }
 
   /// Each script approved (#363), as "<name> <text>".
-  private(set) var approvals: [String] = []
+  var approvals: [String] { state.withLock { $0.approvals } }
 
   func trustScript(_ name: String, text: Data, project: String) async throws {
-    approvals.append("\(name) \(String(decoding: text, as: UTF8.self))")
+    state.withLock { $0.approvals.append("\(name) \(String(decoding: text, as: UTF8.self))") }
   }
 
   private func gatedDeleteProject(_ onLog: ((String) -> Void)?) async throws -> [URL] {
     // Gated like `delete`, so the project tombstone stays live across a concurrent reload (#287).
-    deleteStarted = true
-    while !allowDelete { await Task.yield() }
-    if deleteFails {
-      for line in deleteLog { onLog?(line) }
-      throw deleteError
-    }
+    try await gatedDelete(onLog)
     return trashPaths
   }
 }

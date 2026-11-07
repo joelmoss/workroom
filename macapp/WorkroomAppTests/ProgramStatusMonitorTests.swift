@@ -67,9 +67,9 @@ final class ProgramStatusMonitorTests: XCTestCase {
     .status(boot: "b", session: session, revision: revision, reporting: reporting, records: records)
   }
 
-  func until(_ condition: @autoclosure () -> Bool, file: StaticString = #file, line: UInt = #line)
-    async
-  {
+  func until(
+    _ condition: @autoclosure () -> Bool, file: StaticString = #filePath, line: UInt = #line
+  ) async {
     for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
     XCTAssertTrue(condition(), file: file, line: line)
   }

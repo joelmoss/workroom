@@ -5,6 +5,7 @@ import XCTest
 /// The block classifier behind `ReleaseNotesMarkdown` — it splits release-note markdown into
 /// headings / bullets / paragraphs so block layout survives (SwiftUI's `AttributedString(markdown:)`
 /// alone flattens it). Inline markup and the plain-text fallback are exercised at render time.
+@MainActor
 final class ReleaseNotesMarkdownTests: XCTestCase {
   func testHeadingLevels() {
     XCTAssertEqual(ReleaseNotesMarkdown.blocks(from: "# Title"), [.heading("Title", level: 1)])

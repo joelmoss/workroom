@@ -167,14 +167,16 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   }
 
   /// A shell command on the host and its exit status: through the driver's ssh, never the daemon.
-  private func onHost(_ driver: ContainerHostDriver, _ host: HostID, _ command: String)
-    async throws -> (status: Int32, output: String)
-  {
+  /// This and `provision` run in their caller's isolation, so a main-actor test can call them
+  /// without handing the test case to another executor.
+  nonisolated(nonsending) private func onHost(
+    _ driver: ContainerHostDriver, _ host: HostID, _ command: String
+  ) async throws -> (status: Int32, output: String) {
     let (status, output) = try await driver.exec(command, on: host).communicate(nil, timeout: 30)
     return (status, output.trimmingCharacters(in: .whitespacesAndNewlines))
   }
 
-  private func provision(
+  nonisolated(nonsending) private func provision(
     _ environment: RemoteProvisioning.Environment, branch: String,
     cloneURL: String = "/srv/origin.git", startBranch: String? = nil,
     checkpoint: @Sendable (_ host: HostID) async throws -> Void = { _ in }
@@ -420,6 +422,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   /// kept (#367); fails_when=`-p` or `-k` is dropped, or the stream never reaches tar;
   /// no_claim=boxd's and exe.dev's images (Debian here), and the CLI's own archive (a ustar the
   /// test makes stands in)
+  @MainActor
   func testIncludedFilesLandInTheCheckoutOnALinuxHost() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
@@ -467,11 +470,12 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   /// `descendants`); fails_when=the Linux daemon probes or kills differently from the macOS one the
   /// unit tests drive; no_claim=boxd's and exe.dev's own images and users (Debian here), and a
   /// hangup when the Mac side ends
+  @MainActor
   func testAWorkroomScriptRunsOnALinuxHostAsTheContractSays() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    let environment = await environment(fixture, driver: driver)
+    let environment = environment(fixture, driver: driver)
     let instance = try await provision(environment, branch: "wr-script")
     await instance.connection.close()
     cleanups.append { try? await driver.destroy(instance.host) }

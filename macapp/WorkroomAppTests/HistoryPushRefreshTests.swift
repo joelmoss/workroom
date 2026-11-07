@@ -21,10 +21,10 @@ import XCTest
 final class HistoryPushRefreshTests: XCTestCase {
   private var dirs: [String] = []
 
-  override func tearDown() {
+  override func tearDown() async throws {
     for d in dirs { try? FileManager.default.removeItem(atPath: d) }
     dirs = []
-    super.tearDown()
+    try await super.tearDown()
   }
 
   // MARK: - fixture

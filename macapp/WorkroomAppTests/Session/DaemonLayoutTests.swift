@@ -6,9 +6,18 @@ import XCTest
 /// `DaemonLayoutService` against a real `workroomd serve` (#255): the request and reply shapes are
 /// written in Rust (`layout.rs`) and decoded by hand here, so only the two together prove they agree.
 final class DaemonLayoutTests: XCTestCase {
+  private var daemons: [DaemonHarness] = []
+
+  // After the teardown blocks, which close the connections first.
+  override func tearDown() {
+    for daemon in daemons { daemon.stop() }
+    daemons = []
+    super.tearDown()
+  }
+
   private func connect(screens: Bool) async throws -> (DaemonLayoutService, DaemonHarness) {
     let daemon = try DaemonHarness.start(screens: screens)
-    addTeardownBlock { daemon.stop() }
+    daemons.append(daemon)
     let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     addTeardownBlock { await connection.close() }

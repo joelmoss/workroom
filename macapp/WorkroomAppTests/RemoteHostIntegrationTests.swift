@@ -64,7 +64,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
       daemon: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_DAEMON")))
   }
 
-  private func connect(_ host: SSHTransport.Host) async throws -> (
+  /// In its caller's isolation, so a main-actor test can call it without handing the test case to
+  /// another executor.
+  nonisolated(nonsending) private func connect(_ host: SSHTransport.Host) async throws -> (
     DaemonClient, UUID
   ) {
     let id = UUID()
@@ -333,7 +335,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     )
     let gone = Date().addingTimeInterval(10)
     while try onHost(fixture, "\(Self.supervisedDaemon) || true") != "", Date() < gone {
-      Thread.sleep(forTimeInterval: 0.2)
+      try await Task.sleep(for: .milliseconds(200))
     }
     XCTAssertEqual(try onHost(fixture, "\(Self.supervisedDaemon) || true"), "")
     let id = UUID()
@@ -388,7 +390,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       command: driver.attachCommand(
         to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: false))
     defer { pane.dropLink() }
-    Thread.sleep(forTimeInterval: 1)
+    try await Task.sleep(for: .seconds(1))
     // `sudo` is the integration's wrapper, which keeps `TERMINFO` across it.
     pane.type(
       "echo \"T=$TERM\"; type sudo; infocmp -x \"$TERM\" >/dev/null && echo FOU\"\"ND\n")
@@ -404,7 +406,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       command: driver.attachCommand(
         to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: false))
     defer { plain.dropLink() }
-    Thread.sleep(forTimeInterval: 1)
+    try await Task.sleep(for: .seconds(1))
     plain.type("echo \"T=$TERM\"; echo DO\"\"NE\n")
     let fallback = plain.read(until: "DONE")
     XCTAssertTrue(fallback.contains("T=xterm-256color"), fallback)
@@ -505,7 +507,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     for _ in 0..<50 {
       state = try onHost(fixture, "kill -0 \(pid) 2>/dev/null && echo alive || echo gone")
       if state == "gone" { break }
-      Thread.sleep(forTimeInterval: 0.1)
+      try await Task.sleep(for: .milliseconds(100))
     }
     XCTAssertEqual(state, "gone", "the shell outlived its session")
     let listed = try await connection.workingDirectory(of: session)
@@ -532,7 +534,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       command: driver.attachCommand(
         to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: false))
     defer { first.dropLink() }
-    Thread.sleep(forTimeInterval: 1)
+    try await Task.sleep(for: .seconds(1))
     first.type("echo PID=$$; echo READ\"\"Y\n")
     let before = first.read(until: "READY")
     let pid = try XCTUnwrap(
@@ -552,7 +554,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     defer { second.dropLink() }
     let repainted = second.read(until: "READY")
     XCTAssertTrue(repainted.contains(pid), repainted)
-    Thread.sleep(forTimeInterval: 0.5)
+    try await Task.sleep(for: .milliseconds(500))
     second.type("echo NOW=$$ DO\"\"NE; exit 7\n")
     let after = second.read(until: "DONE")
     XCTAssertTrue(after.contains("NOW=\(pid.dropFirst(4)) DONE"), after)

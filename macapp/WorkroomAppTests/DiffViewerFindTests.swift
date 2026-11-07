@@ -9,6 +9,7 @@ import XCTest
 /// guard, the `AttributedString` highlight compositor (`applyFindHighlight`), and the row/match
 /// lookup helpers (`rowID`, `matchedLineID`). Rendering + scroll-to-match integration is manual QA, matching this
 /// feature's established convention (`FileFindTests.swift`'s doc comment on `PlainFileViewer`).
+@MainActor
 final class DiffViewerFindTests: XCTestCase {
 
   // MARK: Fixtures

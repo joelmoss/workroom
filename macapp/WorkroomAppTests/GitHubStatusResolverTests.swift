@@ -131,8 +131,8 @@ final class GitHubStatusResolverTests: XCTestCase {
 
   func testResolveCIPassing() async {
     let r = GitHubStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        (exe == "gh" && args.contains("graphql")) ? ok(self.rollupPassing) : ok("")
+      runner: MockStatusRunner { [rollupPassing] exe, args in
+        (exe == "gh" && args.contains("graphql")) ? ok(rollupPassing) : ok("")
       })
     let res = await r.resolveCI(repo: repo, commit: sha)
     XCTAssertEqual(res, .state(.passing))
@@ -163,7 +163,7 @@ final class GitHubStatusResolverTests: XCTestCase {
   /// The commit is interpolated into the GraphQL query, so anything that is not a hex object id is
   /// refused before a process is spawned.
   func testResolveCIRefusesANonCommit() async {
-    let runner = RecordingStatusRunner { _, _ in ok(self.rollupPassing) }
+    let runner = RecordingStatusRunner { [rollupPassing] _, _ in ok(rollupPassing) }
     let r = GitHubStatusResolver(runner: runner)
     for bad in ["", "HEADSHA", "abc", "0123456\"){x", String(repeating: "a", count: 65)] {
       let res = await r.resolveCI(repo: repo, commit: bad)
@@ -176,8 +176,8 @@ final class GitHubStatusResolverTests: XCTestCase {
   /// because a neutral directory can no longer supply it from a git remote.
   func testEnterpriseHostReachesEveryProbe() async {
     let ghe = GitHubRepository(host: "ghe.example.com", owner: "o", name: "r")!
-    let runner = RecordingStatusRunner { exe, args in
-      args.contains("graphql") ? ok(self.rollupPassing) : ok("[]")
+    let runner = RecordingStatusRunner { [rollupPassing] exe, args in
+      args.contains("graphql") ? ok(rollupPassing) : ok("[]")
     }
     let r = GitHubStatusResolver(runner: runner)
     _ = await r.resolveCI(repo: ghe, commit: sha)

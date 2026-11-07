@@ -600,7 +600,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
     func touched(_ name: String) -> Bool {
       all.contains { $0.paths.contains { $0.hasSuffix(name) } }
     }
-    func wait(_ timeout: TimeInterval = 8, until condition: () -> Bool) async -> Bool {
+    func wait(_ timeout: TimeInterval = 8, until condition: @Sendable () -> Bool) async -> Bool {
       let deadline = Date().addingTimeInterval(timeout)
       while Date() < deadline {
         if condition() { return true }

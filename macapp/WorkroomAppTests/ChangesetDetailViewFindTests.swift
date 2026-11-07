@@ -9,6 +9,7 @@ import XCTest
 /// empty-changeset stale-matches bug (eng review, outside-voice finding, 2026-09-01): a changeset tab
 /// retargeted to a different commit with zero changed files, without a focus change, used to leave
 /// `contentFind` holding the previous commit's matches with no bar visible to show them.
+@MainActor
 final class ChangesetDetailViewFindTests: XCTestCase {
   private func commit(_ id: String = "abc123") -> VCSCommit {
     VCSCommit(

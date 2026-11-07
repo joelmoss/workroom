@@ -10,6 +10,7 @@ import XCTest
 /// That is how a version problem would have inherited a sign-in message. The mapping is the part that
 /// regresses silently — a wrong-but-plausible warning still renders perfectly — so it is pinned per
 /// state here rather than left to the view.
+@MainActor
 final class PullRequestPanelCopyTests: XCTestCase {
   func testNotInstalledOffersTheInstallLink() {
     let copy = PullRequestPanel.ghWarningCopy(for: .notInstalled)
@@ -60,7 +61,6 @@ final class PullRequestPanelCopyTests: XCTestCase {
   /// Nothing is wrong until a probe says so: a fresh store starts `.available`, and the fixture seeds
   /// no status without its launch argument. With the gate on `!= .available` and the copy above,
   /// that is why a default fixture launch warns about nothing (the reported bug's shape).
-  @MainActor
   func testTheDefaultStatusRaisesNoWarning() {
     XCTAssertEqual(AppStore().vcsStatus.githubCLIStatus, .available)
     XCTAssertNil(UITestFixture.ghStatus, "no -WorkroomUITestGHStatus argument, so nothing seeded")

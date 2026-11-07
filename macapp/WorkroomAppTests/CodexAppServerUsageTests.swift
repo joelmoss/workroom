@@ -18,9 +18,9 @@ final class CodexAppServerUsageTests: XCTestCase {
   func testSendsInitializeThenTheRateLimitsRead() async {
     let sent = Recorder<[String]>()
     _ = await CodexAppServerUsage.read(
-      transport: { requests, _ in
+      transport: { [reply] requests, _ in
         await sent.set(requests.map { String(decoding: $0, as: UTF8.self) })
-        return self.reply
+        return reply
       }, now: now)
     let methods = await sent.value?.compactMap {
       (try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])?["method"]
@@ -30,7 +30,7 @@ final class CodexAppServerUsageTests: XCTestCase {
   }
 
   func testDecodesBothWindowsFromTheReply() async {
-    let read = await CodexAppServerUsage.read(transport: { _, _ in self.reply }, now: now)
+    let read = await CodexAppServerUsage.read(transport: { [reply] _, _ in reply }, now: now)
     guard case .snapshot(let snapshot) = read else { return XCTFail("got \(read)") }
     XCTAssertEqual(snapshot.backend, .codex)
     XCTAssertEqual(snapshot.windows.map(\.kind), [.fiveHour, .weekly])
@@ -44,13 +44,13 @@ final class CodexAppServerUsageTests: XCTestCase {
   func testOnlyTheRateLimitsReplyEndsTheExchange() async {
     let seen = Recorder<[Bool]>()
     _ = await CodexAppServerUsage.read(
-      transport: { _, isReply in
+      transport: { [reply] _, isReply in
         let lines = [
           #"{"id":1,"result":{}}"#, #"{"method":"remoteControl/status/changed","params":{}}"#,
-          String(decoding: self.reply, as: UTF8.self),
+          String(decoding: reply, as: UTF8.self),
         ]
         await seen.set(lines.map { isReply(Data($0.utf8)) })
-        return self.reply
+        return reply
       }, now: now)
     let matches = await seen.value
     XCTAssertEqual(matches, [false, false, true])

@@ -20,8 +20,8 @@ final class WorkroomHandOverTests: XCTestCase {
   private let sid = SidebarID.workroom(project: "/p", name: "a")
   private let otherSid = SidebarID.workroom(project: "/p", name: "b")
 
-  override func setUp() {
-    super.setUp()
+  override func setUp() async throws {
+    try await super.setUp()
     shared.projects = [
       Project(
         path: "/p", vcs: "git",

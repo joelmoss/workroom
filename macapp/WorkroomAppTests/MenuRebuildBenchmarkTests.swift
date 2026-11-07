@@ -51,19 +51,27 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
 
   private func menuStateWhileOpen(_ title: String, window: NSWindow) -> [String: Bool]? {
     guard let menu = item(title, in: NSApp.mainMenu)?.submenu else { return nil }
-    var state: [String: Bool]?
+    // The timer's block is `@Sendable`. It runs on the main run loop, so it reaches the menu and
+    // keeps what it saw through a main-actor object.
+    @MainActor final class Reading {
+      let menu: NSMenu
+      var state: [String: Bool]?
+      init(_ menu: NSMenu) { self.menu = menu }
+    }
+    let reading = Reading(menu)
     let timer = Timer(timeInterval: 0.1, repeats: false) { _ in
       MainActor.assumeIsolated {
-        state = Dictionary(
-          menu.items.filter { !$0.isSeparatorItem }.map { ($0.title, $0.isEnabled) },
+        reading.state = Dictionary(
+          reading.menu.items.filter { !$0.isSeparatorItem }.map { ($0.title, $0.isEnabled) },
           uniquingKeysWith: { _, new in new })
-        menu.cancelTracking()
+        reading.menu.cancelTracking()
       }
     }
     RunLoop.main.add(timer, forMode: .eventTracking)
     defer { timer.invalidate() }
-    menu.popUp(positioning: nil, at: NSPoint(x: window.frame.midX, y: window.frame.midY), in: nil)
-    return state
+    reading.menu.popUp(
+      positioning: nil, at: NSPoint(x: window.frame.midX, y: window.frame.midY), in: nil)
+    return reading.state
   }
 
   private func commitEnabledWhileOpen(_ window: NSWindow) -> Bool? {

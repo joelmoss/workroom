@@ -14,17 +14,17 @@ final class SessionSaveTests: XCTestCase {
   /// What the injected capture returns. Mutate it to simulate the session changing.
   private var captured: [WindowSession] = []
 
-  override func setUpWithError() throws {
-    try super.setUpWithError()
+  override func setUp() async throws {
+    try await super.setUp()
     directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("session-save-tests-\(UUID().uuidString)", isDirectory: true)
     url = directory.appendingPathComponent("session.json")
     captured = [window(tabCount: 1)]
   }
 
-  override func tearDownWithError() throws {
+  override func tearDown() async throws {
     try? FileManager.default.removeItem(at: directory)
-    try super.tearDownWithError()
+    try await super.tearDown()
   }
 
   private func window(tabCount: Int, key: String = "W1") -> WindowSession {

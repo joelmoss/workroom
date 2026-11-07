@@ -196,7 +196,7 @@ final class PortForwardingModelTests: XCTestCase {
     continuation?.yield(snapshot)
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     continuation?.finish()
     // Every listener a test left bound is stopped here, not left to ARC.
     for model in models { for entry in model.forwards { model.remove(entry.id) } }
@@ -204,7 +204,7 @@ final class PortForwardingModelTests: XCTestCase {
     for fake in fakes { fake.stop() }
     fakes = []
     connections = []
-    super.tearDown()
+    try await super.tearDown()
   }
 
   private func lease() -> HostConnectionManager.Lease {
@@ -936,7 +936,7 @@ final class PortForwardingModelTests: XCTestCase {
     model.draft = "3000"
     await model.add()
     let reads = Counter()
-    let read = { () -> (path: String, data: Data)? in
+    let read = { @Sendable () -> (path: String, data: Data)? in
       reads.bump()
       return (".devcontainer.json", Data(#"{"forwardPorts": [3000, 5173]}"#.utf8))
     }
@@ -994,7 +994,7 @@ final class PortForwardingModelTests: XCTestCase {
         if fails.count == 1 { throw RepositoryRoutingError.unavailable(.remote(UUID())) }
         return held
       })
-    let read = { () -> (path: String, data: Data)? in
+    let read = { @Sendable () -> (path: String, data: Data)? in
       (".devcontainer.json", Data(#"{"forwardPorts": [5173]}"#.utf8))
     }
     await model.forwardDeclared(read: read)

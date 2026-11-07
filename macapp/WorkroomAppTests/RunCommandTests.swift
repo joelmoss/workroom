@@ -24,18 +24,18 @@ final class RunCommandTests: XCTestCase {
   /// assertion could leak a stale registration into a later test (issue #127).
   private var registeredWindows: [NSWindow] = []
 
-  override func setUp() {
-    super.setUp()
+  override func setUp() async throws {
+    try await super.setUp()
     captured = []
     signals = []
     Defaults[.runCommands] = [:]
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     Defaults[.runCommands] = [:]
     for window in registeredWindows { WindowRegistry.shared.unregister(window: window) }
     registeredWindows = []
-    super.tearDown()
+    try await super.tearDown()
   }
 
   /// `runCommands`: the app's run commands, for tests of two windows that must share them.
@@ -203,16 +203,11 @@ final class RunCommandTests: XCTestCase {
   func testARunCommandSavedFromSettingsReachesEveryWindow() {
     let shared = RunCommands()
     let window = AppStore(runCommands: shared)
-    var changed = false
-    withObservationTracking {
-      _ = window.runCommands.hasRunCommand(forProject: "/a")
-    } onChange: {
-      changed = true
-    }
+    let changed = observeChange { _ = window.runCommands.hasRunCommand(forProject: "/a") }
 
     shared.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
 
-    XCTAssertTrue(changed, "a window showing the run command wasn't told it changed")
+    XCTAssertTrue(changed.happened, "a window showing the run command wasn't told it changed")
     XCTAssertTrue(window.runCommands.hasRunCommand(forProject: "/a"))
   }
 
@@ -1655,14 +1650,11 @@ final class RunCommandTests: XCTestCase {
   /// write must invalidate that read.
   func testAReadThroughTheStoreIsInvalidatedByARunStateWrite() {
     let store = makeStore([])
-    var invalidated = false
-    withObservationTracking {
+    let invalidated = observeChange {
       _ = store.runCommand.isRunCommandRunning(for: .root(project: "t"))
-    } onChange: {
-      invalidated = true
     }
     store.runCommand.armAutoRun(forWorkroom: .root(project: "t"))
-    XCTAssertTrue(invalidated, "a forwarded read must track RunCommandController")
+    XCTAssertTrue(invalidated.happened, "a forwarded read must track RunCommandController")
   }
 
   /// A run-state write that changes nothing notifies no one, so the sidebar, tab bar and toolbar
@@ -1672,18 +1664,15 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([])
     let id = TerminalTarget.ID.root(project: "t")
     store.runCommand.runningToastAutoHidden.insert(id)
-    var notified = false
-    withObservationTracking {
+    let notified = observeChange {
       _ = store.runCommand.runStates
       _ = store.runCommand.runningToastAutoHidden
-    } onChange: {
-      notified = true
     }
     store.runCommand.runStates[id] = nil
     store.runCommand.runningToastAutoHidden.insert(id)
-    XCTAssertFalse(notified, "a write that changed nothing must not redraw")
+    XCTAssertFalse(notified.happened, "a write that changed nothing must not redraw")
     store.runCommand.runStates[id] = .armed
-    XCTAssertTrue(notified, "a write that changes the state still notifies")
+    XCTAssertTrue(notified.happened, "a write that changes the state still notifies")
   }
 
   // MARK: Run sessions (#522)

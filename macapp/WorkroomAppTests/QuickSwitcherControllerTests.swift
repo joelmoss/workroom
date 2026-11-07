@@ -19,8 +19,8 @@ final class QuickSwitcherControllerTests: XCTestCase {
   /// `WindowRegistry` holds windows weakly and prunes dead entries, so the test must keep them alive.
   private var windows: [NSWindow] = []
 
-  override func setUp() {
-    super.setUp()
+  override func setUp() async throws {
+    try await super.setUp()
     Defaults[.switcherWorkroomModifier] = .option
     Defaults[.switcherPaneModifier] = .control
     recency = SwitcherRecency()
@@ -28,9 +28,9 @@ final class QuickSwitcherControllerTests: XCTestCase {
     windows = []
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     Defaults.reset(.switcherWorkroomModifier, .switcherPaneModifier)
-    super.tearDown()
+    try await super.tearDown()
   }
 
   /// A controller with every real-world seam replaced. `held` is the fake hardware modifier state.

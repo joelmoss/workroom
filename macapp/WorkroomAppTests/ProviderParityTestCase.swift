@@ -45,8 +45,10 @@ class ProviderParityTestCase: XCTestCase {
     try await super.tearDown()
   }
 
+  // The async helpers run in their caller's isolation, so a main-actor test can call them without
+  // handing the test case to another executor.
   @discardableResult
-  func onHost(_ driver: any HostDriver, _ host: HostID, _ command: String)
+  nonisolated(nonsending) func onHost(_ driver: any HostDriver, _ host: HostID, _ command: String)
     async throws -> String
   {
     let (status, output) = try await driver.exec(command, on: host).communicate(nil, timeout: 30)
@@ -56,7 +58,9 @@ class ProviderParityTestCase: XCTestCase {
 
   /// The machine identity open question 9 lists (Phase 0, item 6): the sshd host key the machine
   /// presents, its machine-id, and its boot_id.
-  func identity(_ provider: LiveProvider, _ host: HostID) async throws -> [String] {
+  nonisolated(nonsending) func identity(_ provider: LiveProvider, _ host: HostID) async throws
+    -> [String]
+  {
     [
       try await onHost(provider.driver, host, "cut -d' ' -f1,2 \(provider.sshHostKey)"),
       try await onHost(provider.driver, host, "cat /etc/machine-id"),
@@ -64,7 +68,9 @@ class ProviderParityTestCase: XCTestCase {
     ]
   }
 
-  func connect(_ provider: LiveProvider, _ host: HostID) async throws -> DaemonClient {
+  nonisolated(nonsending) func connect(_ provider: LiveProvider, _ host: HostID) async throws
+    -> DaemonClient
+  {
     let connection = try await DaemonBootstrap.connect(
       host: host, driver: provider.driver, socket: provider.socket, handOff: false)
     connections.append(connection)
@@ -419,7 +425,7 @@ class ProviderParityTestCase: XCTestCase {
 
   /// Polls `condition` for up to `seconds`, and fails the test there if it never holds: the steps
   /// after it would only wait out their own timeouts on a paid host.
-  func until(
+  nonisolated(nonsending) func until(
     _ what: String, within seconds: Double = 60, _ condition: () async throws -> Bool
   ) async throws {
     let deadline = Date().addingTimeInterval(seconds)

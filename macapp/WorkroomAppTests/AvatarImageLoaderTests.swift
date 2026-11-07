@@ -59,7 +59,9 @@ final class AvatarImageLoaderTests: XCTestCase {
     func reset() { state.withLock { $0 = State() } }
   }
 
-  private final class StubURLProtocol: URLProtocol {
+  // Unchecked: URLSession drives an instance from its own threads, and this one keeps no state of
+  // its own, only the `Sendable` registry.
+  private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     static let registry = StubRegistry()
 
     override class func canInit(with request: URLRequest) -> Bool { true }

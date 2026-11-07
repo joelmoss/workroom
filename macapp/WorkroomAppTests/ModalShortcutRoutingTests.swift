@@ -173,14 +173,9 @@ final class ModalShortcutRoutingTests: XCTestCase {
   /// must be invalidated by a write, or every sheet and the inert-shortcut gate stop updating.
   func testAReadThroughTheStoreIsInvalidatedByAModalWrite() {
     let store = AppStore()
-    var invalidated = false
-    withObservationTracking {
-      _ = store.modals.hasModalPresentation
-    } onChange: {
-      invalidated = true
-    }
+    let invalidated = observeChange { _ = store.modals.hasModalPresentation }
     store.modals.activePicker = .open
-    XCTAssertTrue(invalidated, "a forwarded read must track ModalState")
+    XCTAssertTrue(invalidated.happened, "a forwarded read must track ModalState")
   }
 
   /// Value: protects=an error (or a provider's setup sheet, or a start choice) that arrives when its
@@ -212,17 +207,12 @@ final class ModalShortcutRoutingTests: XCTestCase {
     let modals = ModalState()
     modals.activePicker = .new
     modals.errorMessage = "boom"
-    var invalidated = false
-    withObservationTracking {
-      _ = modals.hasModalPresentation
-    } onChange: {
-      invalidated = true
-    }
+    let invalidated = observeChange { _ = modals.hasModalPresentation }
 
     modals.activePicker = .new
     modals.errorMessage = "boom"
     modals.auxSheetPresented = false
     modals.pendingDeletion = nil
-    XCTAssertFalse(invalidated, "nothing changed, so nothing redraws")
+    XCTAssertFalse(invalidated.happened, "nothing changed, so nothing redraws")
   }
 }

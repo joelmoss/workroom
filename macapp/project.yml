@@ -374,7 +374,7 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom.tests
-        SWIFT_VERSION: "5.0"
+        SWIFT_VERSION: "6.0"
         DEVELOPMENT_TEAM: B898J443L9
         CODE_SIGN_STYLE: Automatic
         # XcodeGen derives TEST_HOST from the target name (WorkroomApp), but the Debug product is

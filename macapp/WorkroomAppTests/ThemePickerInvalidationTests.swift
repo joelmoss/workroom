@@ -20,14 +20,16 @@ final class ThemePickerInvalidationTests: XCTestCase {
   private var savedFamily: String!
   private var savedAppearance: ThemePreference!
 
-  override func setUp() {
+  override func setUp() async throws {
+    try await super.setUp()
     savedFamily = Defaults[.themeFamily]
     savedAppearance = Defaults[.theme]
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     Defaults[.themeFamily] = savedFamily
     Defaults[.theme] = savedAppearance
+    try await super.tearDown()
   }
 
   private func host() -> (NSWindow, NSView) {

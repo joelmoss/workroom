@@ -63,6 +63,7 @@ final class VCSToolbarMetricsTests: XCTestCase {
   }
 
   /// The fetch cell has to hold a standard 22pt hover well.
+  @MainActor
   func testFetchCellFitsAStandardWell() {
     XCTAssertGreaterThanOrEqual(
       VCSToolbarMetrics.fetchWidth, ToolbarIconButtonStyle.wellSize,

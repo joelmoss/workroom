@@ -70,17 +70,12 @@ final class MultiWindowTests: XCTestCase {
     let store = AppStore()
     store.projectStore.projects = [project("/p", workrooms: ["w"])]
     let gone = Workroom(name: "gone", path: "/p/gone", vcsName: "git", warnings: [])
-    var notified = false
-    withObservationTracking {
-      _ = store.projectStore.projects
-    } onChange: {
-      notified = true
-    }
+    let notified = observeChange { _ = store.projectStore.projects }
     store.relabelLocally("w", in: "/p", to: nil)
     store.removeWorkroomLocally(gone, in: store.projectStore.projects[0])
-    XCTAssertFalse(notified, "a write that changed nothing must not redraw")
+    XCTAssertFalse(notified.happened, "a write that changed nothing must not redraw")
     store.relabelLocally("w", in: "/p", to: "Auth")
-    XCTAssertTrue(notified, "a write that changes the list still notifies")
+    XCTAssertTrue(notified.happened, "a write that changes the list still notifies")
   }
 
   /// Value: protects=a create or delete set write that changes nothing (a create's release after
@@ -90,22 +85,19 @@ final class MultiWindowTests: XCTestCase {
   func testACreateOrDeleteSetWriteThatChangesNothingNotifiesNoOne() {
     let lifecycle = WorkroomLifecycle(vcsStatus: VCSStatusService(projectStore: ProjectStore()))
     let id = TargetID.workroom(project: "/p", name: "w")
-    var notified = false
-    withObservationTracking {
+    let notified = observeChange {
       _ = lifecycle.creatingWorkrooms
       _ = lifecycle.creationRunForTarget
       _ = lifecycle.deletingWorkrooms
       _ = lifecycle.deletingProjects
-    } onChange: {
-      notified = true
     }
     lifecycle.creatingWorkrooms.remove(id)
     lifecycle.creationRunForTarget[id] = nil
     lifecycle.deletingWorkrooms.remove(id)
     lifecycle.deletingProjects.remove("/p")
-    XCTAssertFalse(notified, "a write that changed nothing must not redraw")
+    XCTAssertFalse(notified.happened, "a write that changed nothing must not redraw")
     lifecycle.creatingWorkrooms.insert(id)
-    XCTAssertTrue(notified, "a write that changes a set still notifies")
+    XCTAssertTrue(notified.happened, "a write that changes a set still notifies")
   }
 
   // MARK: Blank new windows
@@ -262,10 +254,10 @@ final class MultiWindowTests: XCTestCase {
   /// into a later test.
   private var registeredWindows: [NSWindow] = []
 
-  override func tearDown() {
+  override func tearDown() async throws {
     for window in registeredWindows { WindowRegistry.shared.unregister(window: window) }
     registeredWindows = []
-    super.tearDown()
+    try await super.tearDown()
   }
 
   /// Two windows over one lifecycle and project list, each registered as the app registers a window.

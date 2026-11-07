@@ -16,14 +16,16 @@ final class GhosttyConfigLocationTests: XCTestCase {
   private var root: URL!
   private var fileManager: FileManager!
 
-  override func setUpWithError() throws {
+  override func setUp() async throws {
+    try await super.setUp()
     root = FileManager.default.temporaryDirectory
       .appendingPathComponent("ghostty-config-location-\(UUID().uuidString)", isDirectory: true)
     fileManager = ApplicationSupportRedirect(root: root)
   }
 
-  override func tearDownWithError() throws {
+  override func tearDown() async throws {
     try? FileManager.default.removeItem(at: root)
+    try await super.tearDown()
   }
 
   /// The bug itself, through the production writer: two identities write in turn, and each must read

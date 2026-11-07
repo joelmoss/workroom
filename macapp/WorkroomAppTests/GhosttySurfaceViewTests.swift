@@ -10,6 +10,7 @@ import XCTest
 /// as function-key private-use scalars (U+F700–U+F8FF), which must NOT be forwarded as text (else
 /// they insert a stray glyph), while DEL (U+007F, the Backspace key) stays as text, matching upstream
 /// (it encodes to the same `\x7f` either way). See `GhosttySurfaceView.filterSpecialCharacters`.
+@MainActor
 final class TerminalKeyTextFilterTests: XCTestCase {
   private func filter(_ s: String) -> String { GhosttySurfaceView.filterSpecialCharacters(s) }
 
@@ -46,6 +47,7 @@ final class TerminalKeyTextFilterTests: XCTestCase {
 /// Guards the overlay-scrollbar geometry (the indicator restored after the SwiftTerm → libghostty
 /// migration). Pure math over libghostty's `total`/`offset`/`len` (rows). Bottom-left origin: the
 /// live position sits at the bottom of the track. See `GhosttySurfaceView.scrollbarThumbRect`.
+@MainActor
 final class ScrollbarGeometryTests: XCTestCase {
   // 200pt track: bounds height 204 minus 2*inset(2).
   private let bounds = CGRect(x: 0, y: 0, width: 100, height: 204)

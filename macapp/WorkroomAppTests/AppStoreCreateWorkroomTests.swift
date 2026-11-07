@@ -58,14 +58,32 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   let existingWorkrooms: [String]
   /// The create's warning, as the CLI reports a failed fetch.
   let warning: String?
+  // Set by the test, read and written by the store's calls off the main actor.
+  private struct State {
+    var globalBase: String?
+    var projectBase: String?
+    var baseBranches: [String?] = []
+    var globalBaseBranches: [String?] = []
+    var baseBranchRefusal: Error?
+  }
+  private let state = Mutex(State())
   /// The app-wide base branch `list` reports.
-  var globalBase: String?
+  var globalBase: String? {
+    get { state.withLock { $0.globalBase } }
+    set { state.withLock { $0.globalBase = newValue } }
+  }
   /// The project's own base branch `list` reports.
-  var projectBase: String?
+  var projectBase: String? {
+    get { state.withLock { $0.projectBase } }
+    set { state.withLock { $0.projectBase = newValue } }
+  }
   /// What `setBaseBranch` was asked to store, in order.
-  private(set) var baseBranches: [String?] = []
+  var baseBranches: [String?] { state.withLock { $0.baseBranches } }
   /// Thrown by `setBaseBranch`, as the CLI refuses a branch.
-  var baseBranchRefusal: Error?
+  var baseBranchRefusal: Error? {
+    get { state.withLock { $0.baseBranchRefusal } }
+    set { state.withLock { $0.baseBranchRefusal = newValue } }
+  }
 
   init(
     projectPath: String, workroomName: String, hasSetup: Bool, logLines: [String] = [],
@@ -81,16 +99,22 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   }
 
   func setBaseBranch(project: String, branch: String?) async throws {
-    baseBranches.append(branch)
-    if let baseBranchRefusal { throw baseBranchRefusal }
+    let refusal = state.withLock {
+      $0.baseBranches.append(branch)
+      return $0.baseBranchRefusal
+    }
+    if let refusal { throw refusal }
   }
 
   /// What `setGlobalBaseBranch` was asked to store, in order.
-  private(set) var globalBaseBranches: [String?] = []
+  var globalBaseBranches: [String?] { state.withLock { $0.globalBaseBranches } }
 
   func setGlobalBaseBranch(_ branch: String?) async throws {
-    globalBaseBranches.append(branch)
-    if let baseBranchRefusal { throw baseBranchRefusal }
+    let refusal = state.withLock {
+      $0.globalBaseBranches.append(branch)
+      return $0.baseBranchRefusal
+    }
+    if let refusal { throw refusal }
   }
 
   private var workroomAbsPath: String { "\(projectPath)/.workrooms/\(workroomName)" }
@@ -1537,14 +1561,9 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     var same = WorkroomStatus.unresolved
     same.dirty = true
     same.localReadAt = early.addingTimeInterval(2)
-    var notified = false
-    withObservationTracking {
-      _ = store.vcsStatus.workroomStatuses
-    } onChange: {
-      notified = true
-    }
+    let notified = observeChange { _ = store.vcsStatus.workroomStatuses }
     store.vcsStatus.mergeLocalStatus(same, into: sid)
-    XCTAssertFalse(notified, "a probe that changed nothing on screen must not redraw")
+    XCTAssertFalse(notified.happened, "a probe that changed nothing on screen must not redraw")
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.localReadAt, same.localReadAt)
     XCTAssertGreaterThan(
       store.vcsStatus.workroomStatuses[sid]?.lastChecked ?? .distantPast, .distantPast,
@@ -1561,17 +1580,12 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     // A first check with nothing else new still redraws: "Checking…" has to clear.
     store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(
       dirty: true, localReadAt: early.addingTimeInterval(3))
-    notified = false
-    withObservationTracking {
-      _ = store.vcsStatus.workroomStatuses
-    } onChange: {
-      notified = true
-    }
+    let notifiedAgain = observeChange { _ = store.vcsStatus.workroomStatuses }
     var firstCheck = WorkroomStatus.unresolved
     firstCheck.dirty = true
     firstCheck.localReadAt = early.addingTimeInterval(4)
     store.vcsStatus.mergeLocalStatus(firstCheck, into: sid)
-    XCTAssertTrue(notified, "a clock that appears must redraw")
+    XCTAssertTrue(notifiedAgain.happened, "a clock that appears must redraw")
   }
 
   /// The resolver stamps the read itself, and the post-create probe goes through that same shared

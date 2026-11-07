@@ -85,7 +85,7 @@ class ContainerIntegrationTestCase: XCTestCase {
 
   /// The stock image with git, which a workroom needs: built through the driver, so its build is
   /// exercised too, and labelled as this test's.
-  func gitImage(_ driver: ContainerHostDriver) async throws -> String {
+  nonisolated(nonsending) func gitImage(_ driver: ContainerHostDriver) async throws -> String {
     let context = directory.appendingPathComponent("image", isDirectory: true)
     try FileManager.default.createDirectory(at: context, withIntermediateDirectories: true)
     let dockerfile = context.appendingPathComponent("Dockerfile")
@@ -101,7 +101,16 @@ class ContainerIntegrationTestCase: XCTestCase {
     return tag
   }
 
-  func create(
+  // The async helpers run in their caller's isolation, so a main-actor test can call them without
+  // handing the test case to another executor.
+  nonisolated(nonsending) func create(
+    _ driver: ContainerHostDriver, image: String, workspace: String = "/workspaces/app"
+  ) async throws -> HostID {
+    try await Self.create(driver, image: image, workspace: workspace)
+  }
+
+  /// `create`, for a child task, which cannot take the test case along.
+  static func create(
     _ driver: ContainerHostDriver, image: String, workspace: String = "/workspaces/app"
   ) async throws -> HostID {
     try await driver.create(spec: .init(image: image, workspaceFolder: workspace))
@@ -146,9 +155,9 @@ class ContainerIntegrationTestCase: XCTestCase {
   }
 
   @discardableResult
-  func onHost(_ driver: ContainerHostDriver, _ host: HostID, _ command: String) async throws
-    -> String
-  {
+  nonisolated(nonsending) func onHost(
+    _ driver: ContainerHostDriver, _ host: HostID, _ command: String
+  ) async throws -> String {
     let (status, output) = try await driver.exec(command, on: host).communicate(nil, timeout: 30)
     XCTAssertEqual(status, 0, "in the container, \(command) failed: \(output)")
     return output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -167,9 +176,9 @@ class ContainerIntegrationTestCase: XCTestCase {
       command: "/usr/bin/script -q /dev/null /bin/sh -c \(PosixShell.quoted(attach))")
   }
 
-  func connect(_ driver: ContainerHostDriver, _ host: HostID, daemon: URL? = nil) async throws
-    -> DaemonClient
-  {
+  nonisolated(nonsending) func connect(
+    _ driver: ContainerHostDriver, _ host: HostID, daemon: URL? = nil
+  ) async throws -> DaemonClient {
     let bundled = daemon ?? self.daemon!
     let connection = try await DaemonBootstrap.connect(
       host: host, driver: driver, socket: ContainerHostDriver.containerSocket,
@@ -407,7 +416,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     let driver = driver()
     let image = try await gitImage(driver)
     let hosts = try await withThrowingTaskGroup(of: HostID.self) { group in
-      for _ in 0..<3 { group.addTask { try await self.create(driver, image: image) } }
+      for _ in 0..<3 { group.addTask { try await Self.create(driver, image: image) } }
       return try await group.reduce(into: [HostID]()) { $0.append($1) }
     }
     XCTAssertEqual(Set(hosts).count, 3)

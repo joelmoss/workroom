@@ -110,7 +110,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     return Fixture(directory: directory, store: store, recorder: recorder, project: project)
   }
 
-  private func cleanUp(_ fixture: Fixture) async {
+  private static func cleanUp(_ fixture: Fixture) async {
     let store = fixture.store
     store.vcsStatus.statusSweepTask?.cancel()
     store.selectionStatusTask?.cancel()
@@ -127,7 +127,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
 
   func testSelectionsReuseFreshCIForTheSameCommit() async throws {
     let fixture = try await fixture(workrooms: 1)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
     store.projectStore.projects = [fixture.project]
     RepositoryRouter.shared.replaceLocal(
@@ -161,7 +161,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
       ProcessInfo.processInfo.environment["WORKROOM_BENCH"] == "1",
       "benchmark: run make app-bench-status")
     let fixture = try await fixture(workrooms: 20)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
     let recorder = fixture.recorder
     let output = BenchmarkFixtures.reportURL(named: "status-sweep")
@@ -198,7 +198,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
 
   func testNewCommitsAndManualRefreshStillQueryCI() async throws {
     let fixture = try await fixture(workrooms: 1)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
     store.projectStore.projects = [fixture.project]
     RepositoryRouter.shared.replaceLocal(
@@ -230,7 +230,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
 
   func testIgnoredFileBatchesDoNotSpawnStatusCommandsLocally() async throws {
     let fixture = try await fixture(workrooms: 1)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
     try "ignored/\n".write(
       toFile: fixture.project.path + "/.git/info/exclude", atomically: true, encoding: .utf8)

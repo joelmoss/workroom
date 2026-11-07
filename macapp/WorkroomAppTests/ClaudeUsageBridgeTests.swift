@@ -9,14 +9,16 @@ final class ClaudeUsageBridgeTests: XCTestCase {
   private var settings: URL!
   private var support: URL!
 
-  override func setUpWithError() throws {
+  override func setUp() async throws {
+    try await super.setUp()
     root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     settings = root.appendingPathComponent(".claude/settings.json")
     support = root.appendingPathComponent("Application Support/Workroom/Agent Usage")
   }
 
-  override func tearDownWithError() throws {
+  override func tearDown() async throws {
     try? FileManager.default.removeItem(at: root)
+    try await super.tearDown()
   }
 
   func testEnableWithNoPriorStatusLineAndDisableRestoresAbsence() throws {

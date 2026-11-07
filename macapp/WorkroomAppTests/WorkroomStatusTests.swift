@@ -661,6 +661,7 @@ final class WorkroomStatusTests: XCTestCase {
 
   // MARK: - ChangesPanel.splitPath (filename + dimmed directory rendering)
 
+  @MainActor
   func testSplitPath() {
     // root-level file → no directory
     XCTAssertEqual(ChangesPanel.splitPath(".gitignore").dir, "")

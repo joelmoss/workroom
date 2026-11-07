@@ -32,7 +32,8 @@ final class WhatsNewServiceTests: XCTestCase {
     resetDefaults()
     super.tearDown()
   }
-  private func resetDefaults() {
+  // Nonisolated: XCTest's `setUp` and `tearDown` are, and a defaults write needs no actor.
+  nonisolated private func resetDefaults() {
     Defaults[.lastSeenVersion] = nil
     Defaults[.whatsNewAttemptVersion] = nil
     Defaults[.whatsNewAttempts] = 0

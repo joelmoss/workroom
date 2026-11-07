@@ -543,11 +543,12 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
     let attempts = Counter()
+    let socketPath = daemon.socketPath
     let localDaemon = LocalDaemonVCS(
       manager: HostConnectionManager(),
       resolveSocketPath: {
         attempts.increment()
-        return daemon.socketPath
+        return socketPath
       },
       binaryURL: { try? DaemonHarness.binaryURL() })
     let location = try await RepositoryLocation.local(root.path)

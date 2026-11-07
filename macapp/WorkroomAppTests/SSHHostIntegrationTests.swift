@@ -107,8 +107,12 @@ final class SSHHostIntegrationTests: XCTestCase {
       directory: directory)
   }
 
+  // The async helpers run in their caller's isolation, so a main-actor test can call them without
+  // handing the test case to another executor.
   @discardableResult
-  private func onHost(_ fixture: Fixture, _ command: String) async throws -> String {
+  nonisolated(nonsending) private func onHost(_ fixture: Fixture, _ command: String) async throws
+    -> String
+  {
     let result = await StatusCommandRunner().run(
       "/usr/bin/ssh", ["-F", fixture.config, "fixture", command], in: NSHomeDirectory(), timeout: 30
     )
@@ -119,7 +123,7 @@ final class SSHHostIntegrationTests: XCTestCase {
     return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func ensure(
+  nonisolated(nonsending) private func ensure(
     _ driver: SSHHostDriver, daemon: URL
   ) async throws -> DaemonBootstrap.Outcome {
     try await DaemonBootstrap.ensure(
@@ -127,7 +131,9 @@ final class SSHHostIntegrationTests: XCTestCase {
       daemon: { _ in daemon }, resources: nil)
   }
 
-  private func connect(_ driver: SSHHostDriver) async throws -> DaemonClient {
+  nonisolated(nonsending) private func connect(_ driver: SSHHostDriver) async throws
+    -> DaemonClient
+  {
     let connection = try await DaemonClient.connect(
       host: driver.hostID, stream: try await driver.openStream(to: driver.hostID))
     connections.append(connection)

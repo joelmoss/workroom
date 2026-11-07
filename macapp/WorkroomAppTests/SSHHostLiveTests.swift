@@ -52,14 +52,20 @@ final class SSHHostLiveTests: XCTestCase {
     var all: [String] { saved.withLock { $0 } }
   }
 
+  // The async helpers run in their caller's isolation, so the main-actor test can call them without
+  // handing the test case to another executor.
   @discardableResult
-  private func shell(_ command: String, driver: SSHHostDriver) async throws -> String {
+  nonisolated(nonsending) private func shell(_ command: String, driver: SSHHostDriver)
+    async throws -> String
+  {
     let result = try await driver.exec(command, on: driver.hostID).communicate(nil, timeout: 30)
     guard result.status == 0 else { throw VCSError.io("\(command): \(result.output)") }
     return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func upload(_ text: String, to path: String, driver: SSHHostDriver) async throws {
+  nonisolated(nonsending) private func upload(
+    _ text: String, to path: String, driver: SSHHostDriver
+  ) async throws {
     let q = PosixShell.quoted
     let parent = (path as NSString).deletingLastPathComponent
     let command =

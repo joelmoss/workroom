@@ -39,10 +39,10 @@ final class FilesPanelInvalidationTests: XCTestCase {
 
   private var tempDirs: [String] = []
 
-  override func tearDown() {
+  override func tearDown() async throws {
     for d in tempDirs { try? FileManager.default.removeItem(atPath: d) }
     tempDirs = []
-    super.tearDown()
+    try await super.tearDown()
   }
 
   /// A real throwaway directory holding a `.git` with a `HEAD` — `FileTreeModel.activate` requires the

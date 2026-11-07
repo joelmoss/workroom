@@ -25,15 +25,17 @@ import XCTest
 final class ThemeTokensEnvironmentTests: XCTestCase {
   private var savedFamily: String!
 
-  override func setUp() {
+  override func setUp() async throws {
+    try await super.setUp()
     savedFamily = Defaults[.themeFamily]
     Probe.bodyPasses = 0
     Probe.lastBackground = nil
     Root.bodyPasses = 0
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     ThemeService.shared.applyFamily(savedFamily)
+    try await super.tearDown()
   }
 
   /// Reads the theme and nothing else, and has no inputs, so only an environment change rebuilds it.

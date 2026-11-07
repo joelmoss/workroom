@@ -48,7 +48,11 @@ final class ReverseForwardTests: XCTestCase {
     return daemon
   }
 
-  private func connection(to daemon: DaemonHarness) async throws -> DaemonClient {
+  /// In its caller's isolation, so a main-actor test can call it without handing the test case or
+  /// its daemon to another executor.
+  nonisolated(nonsending) private func connection(to daemon: DaemonHarness) async throws
+    -> DaemonClient
+  {
     let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)

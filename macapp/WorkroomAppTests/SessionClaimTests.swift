@@ -15,16 +15,16 @@ final class SessionClaimTests: XCTestCase {
   private var directory: URL!
   private var url: URL!
 
-  override func setUpWithError() throws {
-    try super.setUpWithError()
+  override func setUp() async throws {
+    try await super.setUp()
     directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("session-claim-\(UUID().uuidString)", isDirectory: true)
     url = directory.appendingPathComponent("session.json")
   }
 
-  override func tearDownWithError() throws {
+  override func tearDown() async throws {
     try? FileManager.default.removeItem(at: directory)
-    try super.tearDownWithError()
+    try await super.tearDown()
   }
 
   private func window(key: UUID, isKey: Bool = false, selected: String? = nil) -> WindowSession {

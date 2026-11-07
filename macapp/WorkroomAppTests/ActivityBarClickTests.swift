@@ -18,16 +18,12 @@ final class ActivityBarClickTests: XCTestCase {
     defer { Defaults[.showInspector] = shown }
     Defaults[.showInspector] = true
 
-    var invalidated = false
-    withObservationTracking {
-      _ = store.inspectorToggles
-    } onChange: {
-      invalidated = true
-    }
+    let invalidated = observeChange { _ = store.inspectorToggles }
     store.apply(.iconClick(.changes))
 
     XCTAssertFalse(Defaults[.showInspector], "clicking the active icon closes the inspector")
     XCTAssertEqual(store.activeInspectorSection, .changes)
-    XCTAssertTrue(invalidated, "the click must invalidate the views that read showInspector")
+    XCTAssertTrue(
+      invalidated.happened, "the click must invalidate the views that read showInspector")
   }
 }
