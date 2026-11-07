@@ -1,7 +1,8 @@
 # Host options: image and size for boxd and exe.dev hosts
 
-Status: decided by grilling on 2026-11-04 and amended by its eng review the same day (section 7),
-not built. Terms: **Host options** and **Host image** in [`CONTEXT.md`](../../CONTEXT.md). Why the
+Status: shipped in #580 (merged 2026-11-05; issue #575). Its Save as Host Image follow-up (#576)
+is open. Decided by grilling on 2026-11-04 and amended by its eng review the same day (section 7).
+Terms: **Host options** and **Host image** in [`CONTEXT.md`](../../CONTEXT.md). Why the
 options are this Mac's settings and not the repository's:
 [ADR 0065](../adr/0065-host-options-are-this-macs-not-the-repositorys.md).
 

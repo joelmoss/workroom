@@ -1,5 +1,8 @@
 # Review: SwiftUI/AppKit view layer and DesignSystem
 
+Status: research. Evidence for the [cleanup plan](../architecture-cleanup-2026-11.md), measured at
+`65f01f1fa`; its paths and counts are not updated as the plan is built.
+
 Scope: `macapp/WorkroomApp/Views/` (97 files, excluding PaneTreeView, TerminalTabStrip, WorkroomSplitView, WorkroomTabBar) and `macapp/Packages/DesignSystem`. All counts below are from grep over `macapp/WorkroomApp/Views` unless stated. Nothing was built or run.
 
 ## 1. Top complaints (ranked)

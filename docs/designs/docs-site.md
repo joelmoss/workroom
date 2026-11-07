@@ -1,6 +1,6 @@
 # Workroom documentation site
 
-Status: built (2026-10-20) in workroom PR #512 and Codaset PR #58, not yet merged or deployed.
+Status: shipped in #512 and Codaset PR #58, both merged 2026-10-20.
 Every decision below was made by the owner in a grilling session (Q1–Q32); "As built" notes record
 where the build differs.
 

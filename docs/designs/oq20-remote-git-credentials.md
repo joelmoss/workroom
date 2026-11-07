@@ -1,5 +1,7 @@
 # OQ20: how a remote workroom pushes when the user is not a repo admin
 
+Status: research. The decision it led to is ADR 0049, which reversed its recommendation.
+
 **Reversed 2026-10-12 (ADR 0049):** option C, each provider's own credentials, replaced the broker
 (D) after a spike proved boxd and exe.dev clone and push in the user's name with their defaults.
 

@@ -1,6 +1,6 @@
 # Setup and teardown scripts on every kind of workroom
 
-Status: built (2026-10-17), on branch `workroom/mild-spire`; reviewed with `/plan-eng-review` (below).
+Status: shipped in #498 (merged 2026-10-18); reviewed with `/plan-eng-review` (below).
 PR #495 (#367, `.worktreeinclude`), which this needed first, merged the same day. "As built" records
 where the build differs from the plan.
 

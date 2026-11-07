@@ -1,5 +1,9 @@
 # v3 screencast: shot list
 
+Status: unknown — owner to confirm. Archived. The cut was recorded (Codaset `34440c7`, 2026-10-22)
+on Codaset's `feat/workroom-v3-screencast` branch, which is not merged, so the homepage still plays
+the old video.
+
 The homepage video (`codaset/public/images/workroom-demo.mp4`, 39 s) predates remote workrooms, agent status and the creation pane. This is the 40-second replacement for v3. It began as a 30-second cut, but at that length the create, the alert and the review each got five seconds, too little to read a change and then see its result. Forty seconds gives each state change about two seconds to land, and it's the old cut's length. Going longer would mostly add beats, which the cut doesn't need. Nothing defines v3's scope yet, so the beats come from what master has shipped since v2.1.0.
 
 The pitch: every task gets its own room, on this Mac or a machine in the cloud, and Workroom tells you when an agent needs you.

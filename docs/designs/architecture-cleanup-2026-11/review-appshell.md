@@ -1,5 +1,8 @@
 # App shell and state ownership review (macapp)
 
+Status: research. Evidence for the [cleanup plan](../architecture-cleanup-2026-11.md), measured at
+`65f01f1fa`; its paths and counts are not updated as the plan is built.
+
 Scope: `Core/AppStore.swift` and its 12 `AppStore+*.swift` extensions, `WorkroomApp.swift`, `Core/WindowRegistry.swift`, `Core/ProjectStore.swift`, `Core/ModalState.swift`, `Core/RunCommandController.swift`, `Core/QuickTerminalController.swift`, `Core/AppEnvironment.swift`, `Core/UITestFixture.swift`, `macapp/project.yml`. Read-only; nothing was built.
 
 ## Corrections to the brief's numbers (measured)

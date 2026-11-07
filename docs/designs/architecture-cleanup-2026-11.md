@@ -1,6 +1,6 @@
 # Architecture review and cleanup plan (November 2026)
 
-Status: accepted, 2026-11-05 (decisions D1–D8 below). Reviewed at `65f01f1fa`. Phases 0–3 are built (rows with a "Landed shape" note record where the built code differs from the row), except 3.7, which waits for the shim to retire, and 3.9's `RunCommands` part. Phase 4 is built except 4.9's `PaneHost` slice. Phase 5 is not.
+Status: live. Accepted 2026-11-05 (decisions D1–D8 below). Reviewed at `65f01f1fa`. Phases 0–3 are built (rows with a "Landed shape" note record where the built code differs from the row), except 3.7, which waits for the shim to retire, and 3.9's `RunCommands` part. Phase 4 is built except 4.9's `PaneHost` slice. Phase 5 is not.
 
 Since the last cleanup (2026-10-10, Lanes A–C, Go and Rust lanes), 686 commits have added 48k lines and removed 22k. This review asks what a top-tier Swift, Rust and Go architect would complain about, with the goal that people can work on separate parts of the app in parallel.
 

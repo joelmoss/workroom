@@ -1,5 +1,8 @@
 # Jev opportunities for Workroom
 
+Status: research. Archived: nothing here was built, and its source links name files from before
+the app's per-context folders.
+
 Research and product exploration consolidated September 18, 2026.
 
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj

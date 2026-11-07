@@ -1,5 +1,8 @@
 # Architecture review: Version control, Remote hosts, CLI bridge (macapp)
 
+Status: research. Evidence for the [cleanup plan](../architecture-cleanup-2026-11.md), measured at
+`65f01f1fa`; its paths and counts are not updated as the plan is built.
+
 Scope: `macapp/WorkroomApp/Core` VCS and remote files, `Packages/{HostDrivers,WorkroomVCS,WorkroomDomain,DaemonConnection,SyntaxHighlighting}`, `Core/WorkroomCLI.swift`. Read-only. All line numbers are as of `65f01f1fa` (master, 2026-11-05).
 
 How the "app-only symbol" claims were measured: I listed all 706 top-level type names declared under `WorkroomApp/` (`grep -ohE "^(…)(enum|struct|class|actor|protocol|typealias) Name"`), then for each file grepped which of those names it uses outside `//` comment lines. "No app references" below means that scan found none.

@@ -1,5 +1,8 @@
 # Performance hill climb for #534
 
+Status: shipped in #545 (merged 2026-10-25; issue #534, closed). Archived: a measurement record,
+not updated since.
+
 ## Item 1: sidebar, 2026-10-24
 
 Baseline: `646ef6c8c`, with the counters and fixture introduced in this change. Run
@@ -483,7 +486,7 @@ also rule out SwiftUI pane/title reconstruction as the dominant cost in this fix
 
 In a macOS 27.0.1 arm64 C API host, one 1100 × 700-point surface at 2× backing scale running
 `/usr/bin/yes` uses 145% of a core in two unprofiled 60-second runs. The engine is the exact
-[Workroom pin](../macapp/project.yml), with the package's embedding patches, and reports ReleaseFast.
+[Workroom pin](../../macapp/project.yml), with the package's embedding patches, and reports ReleaseFast.
 Named-thread deltas show about 94% reader CPU, 39% gather, 7% renderer and 3% main. With the surface
 occluded, app CPU remains about 142% (99% reader, 42% gather). The producer is measured separately.
 App BSD syscalls are around 331k/s visible; the gather sample contains repeated `read`/`poll` calls.
@@ -502,7 +505,7 @@ engine build; the prebuilt archive's stripped Zig frames limit symbol attributio
 This handoff is a local draft, not a published upstream issue. Stop item 6 here: there is no measured
 app-side runtime improvement to commit, and changing the engine pipeline needs the upstream
 throughput/latency comparison. No bytes are dropped or delayed to lower a CPU counter, and the
-embedding/pin architecture in [ADR 0001](adr/0001-raw-ghosttykit-exact-pin.md) is unchanged.
+embedding/pin architecture in [ADR 0001](../adr/0001-raw-ghosttykit-exact-pin.md) is unchanged.
 
 Validation: app-build, strict app-lint and docs-check pass. The full app suite reports 3,501 passed,
 zero failed and 87 skipped. The added opt-in flood benchmark is one of those skips; it passes
@@ -1016,7 +1019,7 @@ returned just because a renderer is freed.
 
 The issue's proposed `maximumDrawableCount = 2` is not an applicable app-side knob. The running
 layer class is `IOSurfaceLayer`, not `CAMetalLayer`. The clean upstream source matching the pin
-in [project.yml](../macapp/project.yml) uses a custom CALayer-backed IOSurface target and a
+in [project.yml](../../macapp/project.yml) uses a custom CALayer-backed IOSurface target and a
 compile-time `swap_chain_count = 3`; there is no public runtime buffer-count option. Reducing
 that count requires an engine build/change and rendering/latency validation, not setting a
 different property on the app's layer.

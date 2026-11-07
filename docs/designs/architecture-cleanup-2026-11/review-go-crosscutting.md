@@ -1,5 +1,8 @@
 # Review: Go CLI, cross-language contracts, repo organization
 
+Status: research. Evidence for the [cleanup plan](../architecture-cleanup-2026-11.md), measured at
+`65f01f1fa`; its paths and counts are not updated as the plan is built.
+
 Read-only review, 2026-11-05, master at 65f01f1fa. Scope: Go (`cmd/`, `internal/`), cross-language duplication, repo-level layout.
 
 ## 1. Top complaints (ranked)

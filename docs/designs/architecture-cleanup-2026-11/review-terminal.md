@@ -1,5 +1,8 @@
 # Terminal context review (Swift app side)
 
+Status: research. Evidence for the [cleanup plan](../architecture-cleanup-2026-11.md), measured at
+`65f01f1fa`; its paths and counts are not updated as the plan is built.
+
 Scope: `Core/TerminalSessions.swift`, `Core/GhosttySurfaceView.swift`, `Core/GhosttyRuntimeAdapter.swift`, `Core/Session/*`, `Core/SessionSnapshot.swift`, `Core/AppStore+RunCommand.swift`, `Views/PaneTreeView.swift`, `Views/TerminalTabStrip.swift`, `Views/WorkroomSplitView.swift`, `Views/WorkroomTabBar.swift`, packages `DaemonConnection` and `WorkroomWire`. All paths below are under `macapp/` unless they start with `docs/`. Read-only; no builds run.
 
 Growth since the 2026-10-10 cleanup (`git show <rev before 2026-10-10>:<file> | wc -l` vs now, and `git log --since=2026-10-10 -- <file> | wc -l`):

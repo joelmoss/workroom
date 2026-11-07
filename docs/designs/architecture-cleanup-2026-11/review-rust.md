@@ -1,5 +1,8 @@
 # Rust workspace review: `vcs/` (workroomd, wr-protocol, wr-vcs-git, wr-vcs-model)
 
+Status: research. Evidence for the [cleanup plan](../architecture-cleanup-2026-11.md), measured at
+`65f01f1fa`; its paths and counts are not updated as the plan is built.
+
 Read-only. Measured on master at 65f01f1fa. Line numbers are from that tree.
 
 **How the numbers were taken**
