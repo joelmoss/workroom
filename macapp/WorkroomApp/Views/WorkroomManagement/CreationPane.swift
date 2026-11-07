@@ -1,6 +1,7 @@
 import Defaults
 import DesignSystem
 import SwiftUI
+import WorkroomDomain
 
 /// A create's pane (#483): a GitHub Actions-style checklist of the steps its kind runs, each with its
 /// time and its log one click away, what to do next on failure under the step that failed, and
@@ -11,11 +12,17 @@ import SwiftUI
 /// Layout (design D4): one continuous `panel` surface, a leading column at most 640pt wide holding the
 /// header and the rows. A row's open log is as tall as its lines, up to what the pane has left, with
 /// the rows below straight after it (D9); only below a 3-line log does the whole column scroll.
+///
+/// Store-free: `CreationPaneAdapter` builds `expandedLog` and `actions` from the window's `AppStore`.
 struct CreationPane: View {
   @ObservedObject var run: CreationRun
   /// Whether this is its window's active pane (`TargetTerminalDetail.surfaceActive`).
   var isActive = true
-  @EnvironmentObject private var store: AppStore
+  /// The row whose log is open, as the window keeps it (`AppStore.expandedCreationLogs`): kept off
+  /// the view so it survives the pane's id becoming the workroom's. Read in this body, so a change
+  /// re-runs the pane and nothing around it.
+  let expandedLog: Binding<String?>
+  let actions: CreationPaneActions
   @EnvironmentObject private var modals: ModalState
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @FocusState private var focusedRow: String?
@@ -48,7 +55,7 @@ struct CreationPane: View {
         // runs; gone once it fails or stops to ask, where the notice says what to do instead.
         if run.isRunning || isDone {
           CreationDoneFooter(inset: narrow ? 16 : 32, isDone: isDone) {
-            store.lifecycle.finishCreation(run)
+            actions.finish()
           }
           .transition(.move(edge: .bottom))
         }
@@ -105,7 +112,7 @@ struct CreationPane: View {
                   rowHeights[step.id] = $0
                 }
               if let footer, noticeStep == step.id {
-                CreationFailureNotice(footer: footer) { perform($0) }
+                CreationFailureNotice(footer: footer) { actions.perform($0) }
                   .id(Self.noticeID)
                   .padding(.leading, CreationStepRow.titleInset)
                   .padding(.vertical, 6)
@@ -192,11 +199,10 @@ struct CreationPane: View {
     .focused($focusedRow, equals: step.id)
   }
 
-  /// The row whose log is open: one at a time, and none until the user opens one (D7). Kept on this
-  /// window's store, not in the view, so it survives the pane's id becoming the workroom's. Only a
-  /// row that `isExpandable` shows its log.
+  /// The row whose log is open: one at a time, and none until the user opens one (D7). Only a row
+  /// that `isExpandable` shows its log.
   private var expanded: String? {
-    store.expandedCreationLogs[run.id].flatMap { id in
+    expandedLog.wrappedValue.flatMap { id in
       run.steps.contains { $0.id == id && P.isExpandable($0) } ? id : nil
     }
   }
@@ -204,7 +210,7 @@ struct CreationPane: View {
   private func setExpanded(_ id: String?) {
     guard id != expanded else { return }
     logContentHeight = 0
-    store.expandedCreationLogs[run.id] = id
+    expandedLog.wrappedValue = id
   }
 
   // MARK: Actions
@@ -212,17 +218,46 @@ struct CreationPane: View {
   private func answer(_ action: (P.Footer) -> P.Action?) -> KeyPress.Result {
     // Return and Escape both answer Done.
     if isDone {
-      store.lifecycle.finishCreation(run)
+      actions.finish()
       return .handled
     }
     guard let footer = P.footer(for: run), let chosen = action(footer) else {
       return .ignored
     }
-    perform(chosen)
+    actions.perform(chosen)
     return .handled
   }
+}
 
-  private func perform(_ action: P.Action) {
+/// What a create's pane asks of its window: to finish the run (Done), or to answer its footer.
+struct CreationPaneActions {
+  var finish: () -> Void
+  var perform: (CreationPanePresentation.Action) -> Void
+}
+
+/// Builds `CreationPane`'s expanded-log binding and actions from the window's `AppStore`.
+///
+/// Its inputs are the pane's own (the run and whether it is active), so it re-runs exactly when the
+/// pane did; it reads nothing from the store in its body (the binding reads it in the pane's).
+struct CreationPaneAdapter: View {
+  @ObservedObject var run: CreationRun
+  var isActive = true
+  @EnvironmentObject private var store: AppStore
+
+  var body: some View {
+    CreationPane(
+      run: run, isActive: isActive,
+      expandedLog: Binding(
+        get: { [store, run] in store.expandedCreationLogs[run.id] },
+        set: { [store, run] in store.expandedCreationLogs[run.id] = $0 }),
+      actions: CreationPaneActions(
+        finish: { [store, run] in store.lifecycle.finishCreation(run) },
+        perform: { [store, run] in Self.perform($0, run: run, store: store) }))
+  }
+
+  private static func perform(
+    _ action: CreationPanePresentation.Action, run: CreationRun, store: AppStore
+  ) {
     let lifecycle = store.lifecycle
     switch action {
     case .tryAgain: Task { await lifecycle.retryCreation(run, from: store) }
@@ -234,13 +269,13 @@ struct CreationPane: View {
       Task { await lifecycle.retryCreation(run, hostOptions: .providerDefaults, from: store) }
     case .close, .cancel: lifecycle.closeCreation(run, from: store)
     case .openAnyway: lifecycle.openCreatedWorkroomAnyway(run)
-    case .deleteWorkroom: deleteWorkroom()
+    case .deleteWorkroom: deleteWorkroom(run, store: store)
     }
   }
 
   /// The existing delete confirmation, for the workroom this create made; for one left behind it
   /// takes the machine down too.
-  private func deleteWorkroom() {
+  private static func deleteWorkroom(_ run: CreationRun, store: AppStore) {
     guard let project = store.projectStore.project(at: run.project.path),
       let workroom = project.workrooms.first(where: { $0.name == run.name })
     else { return }
@@ -541,3 +576,20 @@ private struct CreationDoneFooter: View {
     .background(tokens.panel)
   }
 }
+
+#if DEBUG
+  #Preview("Creating") {
+    // A local create past its fetch (no remote) and making the worktree.
+    let project = Project(path: "/tmp/platform", vcs: "git", workrooms: [])
+    let run = CreationRun(project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
+    run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
+    run.begin("worktree")
+    return CreationPane(
+      run: run, expandedLog: .constant(nil),
+      actions: CreationPaneActions(finish: {}, perform: { _ in })
+    )
+    .environmentObject(ModalState())
+    .themeTokensRoot()
+    .frame(width: 640, height: 420)
+  }
+#endif
