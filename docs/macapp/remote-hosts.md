@@ -87,7 +87,11 @@ CLI (`--json`) and reached over `SSHTransport` (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
 `Resources/host-setup/systemd.sh` (an identity unit and the daemon's supervisor, both systemd; shared
-with every provider driver whose machines run systemd, #259). Each provider workroom is a fresh
+with every provider driver whose machines run systemd, #259). The package never reads the app's
+bundle for it: each driver's `Configuration.hostSetup` finds the scripts, and the app passes
+`HostSetup.bundled` (`Core/RemoteHosts/HostSetup+Bundle.swift`). So the boxd and exe.dev driver
+tests run under `swift test` with the checkout's scripts, and `HostSetupBundleTests` checks the
+bundle holds them. Each provider workroom is a fresh
 machine of its own: `RemoteProvisioning.provision` has the driver `create()` it, then
 clones and checks out the branch, and no driver derives a host from another. The identity unit
 stays: every fresh boxd machine boots with the image's machine-id and ssh host key (measured,
