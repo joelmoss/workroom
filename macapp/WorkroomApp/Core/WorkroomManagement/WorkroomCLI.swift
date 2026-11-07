@@ -168,6 +168,8 @@ protocol WorkroomCLIProtocol: Sendable {
   func setHost(project: String, workroom: String?, descriptor: Data?) async throws
   /// Sets the branch a project's new workrooms start from; nil clears it.
   func setBaseBranch(project: String, branch: String?) async throws
+  /// Sets the app-wide base branch for projects that name none; nil clears it.
+  func setGlobalBaseBranch(_ branch: String?) async throws
   func createRemote(project: String, hostPath: String, descriptor: Data) async throws
     -> CreateResponse
   func createRemote(project: String, hostParent: String, descriptor: Data) async throws
@@ -252,6 +254,10 @@ extension WorkroomCLIProtocol {
 
   func setBaseBranch(project: String, branch: String?) async throws {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "setBaseBranch is not faked")
+  }
+
+  func setGlobalBaseBranch(_ branch: String?) async throws {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "setGlobalBaseBranch is not faked")
   }
 
   func trustStatus(project: String, base: String, devcontainer: Bool) async throws -> TrustStatus {

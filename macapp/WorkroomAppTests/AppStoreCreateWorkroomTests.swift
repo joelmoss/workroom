@@ -84,6 +84,14 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
     if let baseBranchRefusal { throw baseBranchRefusal }
   }
 
+  /// What `setGlobalBaseBranch` was asked to store, in order.
+  private(set) var globalBaseBranches: [String?] = []
+
+  func setGlobalBaseBranch(_ branch: String?) async throws {
+    globalBaseBranches.append(branch)
+    if let baseBranchRefusal { throw baseBranchRefusal }
+  }
+
   private var workroomAbsPath: String { "\(projectPath)/.workrooms/\(workroomName)" }
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
@@ -518,6 +526,41 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     await store.setBaseBranch("featur", forProject: projectPath)
     XCTAssertNotNil(store.modals.errorMessage, "a window's own save didn't show the refusal")
+  }
+
+  /// Settings ▸ General reads the app-wide base branch from the CLI's config.
+  func testGlobalBaseBranchIsReadFromTheCLI() async {
+    let fake = CreatingFakeCLI(projectPath: projectPath, workroomName: "x", hasSetup: false)
+    fake.globalBase = "upstream/main"
+    let store = makeStore(fake)
+
+    let branch = await store.globalBaseBranch()
+
+    XCTAssertEqual(branch, "upstream/main")
+  }
+
+  /// An accepted app-wide base branch reaches the shared project store, which every window's
+  /// remote create reads; a refused one leaves it as it was.
+  func testSetGlobalBaseBranchRecordsOnlyWhatTheCLIAccepted() async throws {
+    let fake = CreatingFakeCLI(projectPath: projectPath, workroomName: "x", hasSetup: false)
+    let store = makeStore(fake)
+
+    try await store.setGlobalBaseBranch("develop")
+    XCTAssertEqual(store.projectStore.globalBaseBranch, "develop")
+
+    fake.baseBranchRefusal = NSError(
+      domain: "workroom", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "No branch featur on origin."])
+    do {
+      try await store.setGlobalBaseBranch("featur")
+      XCTFail("the refusal was swallowed")
+    } catch {}
+    XCTAssertEqual(store.projectStore.globalBaseBranch, "develop", "a refused branch was recorded")
+
+    fake.baseBranchRefusal = nil
+    try await store.setGlobalBaseBranch(nil)
+    XCTAssertNil(store.projectStore.globalBaseBranch)
+    XCTAssertEqual(fake.globalBaseBranches, ["develop", "featur", nil])
   }
 
   /// With NO setup script the create clears itself when it completes: no run survives, and the new

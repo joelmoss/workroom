@@ -423,21 +423,25 @@ private struct NewWorkroomsSection: View {
           + "base branch in Projects wins.")
     }
     .task {
-      let current = (try? await WorkroomCLI.shared.list(warnings: "none", project: nil))?.baseBranch
+      let current = await store.globalBaseBranch()
       branch = current ?? ""
       saved = branch
     }
   }
 
+  /// The CLI owns the branch; any window's store can ask it, and with none open a throwaway one
+  /// can, as Settings ▸ Projects' does, since every store shares `ProjectStore.shared`.
+  private var store: AppStore {
+    WindowRegistry.shared.lastActiveStore ?? AppStore(runCommands: .shared, lifecycle: .shared)
+  }
+
   private func save() {
     let value = branch.trimmingCharacters(in: .whitespacesAndNewlines)
     guard value != saved else { return }
+    let store = store
     Task {
       do {
-        try await WorkroomCLI.shared.setGlobalBaseBranch(value.isEmpty ? nil : value)
-        // Every window's store reads it from here; otherwise a remote create before the next
-        // reload would still use the old default.
-        ProjectStore.shared.globalBaseBranch = value.isEmpty ? nil : value
+        try await store.setGlobalBaseBranch(value.isEmpty ? nil : value)
         saved = value
         failure = nil
       } catch {

@@ -2062,6 +2062,21 @@ final class AppStore: ObservableObject {
   // window is the `LifecycleWindow` of the ones it asks for, and applies what every create and
   // delete does to it (`handleLifecycleEvent`).
 
+  /// The app-wide base branch as the CLI's config holds it now (nil: none set, or the CLI could not
+  /// be read), for Settings ▸ General to edit.
+  func globalBaseBranch() async -> String? {
+    (try? await cli.list(warnings: "none", project: nil))?.baseBranch
+  }
+
+  /// Set the app-wide base branch (nil: origin's default branch) through the CLI, which owns it so
+  /// `workroom create` in a terminal agrees, then record it in the shared project store: every
+  /// window's store reads it from there, so a remote create before the next reload still uses the
+  /// new default. Throws the CLI's refusal, recording nothing.
+  func setGlobalBaseBranch(_ branch: String?) async throws {
+    try await cli.setGlobalBaseBranch(branch)
+    projectStore.globalBaseBranch = branch
+  }
+
   /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
   /// through the CLI, which owns it so `workroom create` in a terminal agrees.
   /// Returns the CLI's error when it refused, which this window shows unless `presentingError` is
