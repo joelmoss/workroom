@@ -50,11 +50,10 @@ public enum ContainerExecTransport {
       context: target.dialect == .docker ? target.context : nil)
   }
 
-  /// The few variables that say which runtime daemon to talk to, never the app's whole environment.
-  static var environment: [String: String] {
-    ProcessInfo.processInfo.environment.filter {
-      ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
-    }
+  /// The environment `target`'s runtime runs with (`ContainerHostDriver.runtimeEnvironment`).
+  static func environment(_ target: Target) -> [String: String] {
+    ContainerHostDriver.runtimeEnvironment(
+      ProcessInfo.processInfo.environment, runtime: target.runtime)
   }
 
   /// Runs `command`, a line for the container's `sh`, as the remote user. The container's shell is
@@ -64,7 +63,7 @@ public enum ContainerExecTransport {
   {
     try HostStream.spawn(
       target.runtime, arguments(target, tty: false, command: ["sh", "-c", ownHome + command]),
-      environment: environment, handshakeTimeout: 20, purpose: purpose)
+      environment: environment(target), handshakeTimeout: 20, purpose: purpose)
   }
 
   /// Sets `HOME` to the remote user's, from the container's passwd file, ahead of a command: Docker's
@@ -78,8 +77,8 @@ public enum ContainerExecTransport {
   /// The daemon's relay, by path: the service stream.
   public static func openStream(on target: Target) throws -> HostStream {
     try HostStream.spawn(
-      target.runtime, relayArguments(target), environment: environment, handshakeTimeout: 20,
-      purpose: .connection)
+      target.runtime, relayArguments(target), environment: environment(target),
+      handshakeTimeout: 20, purpose: .connection)
   }
 
   /// The runtime's arguments for `openStream`: the relay, with no shell in between.
