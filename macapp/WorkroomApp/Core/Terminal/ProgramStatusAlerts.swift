@@ -34,7 +34,8 @@ final class ProgramStatusAlerts: ObservableObject {
   @Published private(set) var waiting: [WaitingRequest] = []
 
   var monitor: ProgramStatusMonitor = .shared
-  var stores: () -> [AppStore] = { WindowRegistry.shared.notifyingStores }
+  /// Every host whose terminals raise notifications: each window's and the Quick Terminal's.
+  var stores: () -> [any NotifyingHost] = { WindowRegistry.shared.notifyingHosts }
   var isEnabled: () -> Bool = { Defaults[.notifyWhenTerminalNeedsMe] }
   var isFinishEnabled: () -> Bool = { Defaults[.notifyWhenTurnFinishes] }
   var now: () -> Date = Date.init
@@ -306,7 +307,7 @@ final class ProgramStatusAlerts: ObservableObject {
   }
 
   private struct Attachment {
-    let store: AppStore
+    let store: any NotifyingHost
     let target: TerminalTarget.ID
     let tab: TerminalTab.ID
     let focused: Bool
@@ -354,12 +355,12 @@ final class ProgramStatusAlerts: ObservableObject {
   /// Go to the terminal that has waited longest; from a waiting terminal, to the next one, wrapping.
   /// Returns false (the caller beeps) when there is nowhere else to go.
   @discardableResult
-  func goToNextWaiting(from keyStore: AppStore?) -> Bool {
+  func goToNextWaiting(from keyHost: (any NotifyingHost)?) -> Bool {
     var sessions: [UUID] = []
     for request in waiting where !sessions.contains(request.session) {
       sessions.append(request.session)
     }
-    guard let next = Self.next(after: keyStore?.focusedTerminalSession, in: sessions),
+    guard let next = Self.next(after: keyHost?.focusedTerminalSession, in: sessions),
       let destination = attachments(of: next).first
     else { return false }
     WindowRegistry.shared.open(targetID: destination.target, tabID: destination.tab, notifID: nil)

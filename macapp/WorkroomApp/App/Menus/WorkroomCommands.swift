@@ -677,7 +677,7 @@ struct WorkroomCommands: Commands {
       // ⇧⌘M: the terminal that has waited longest for the user, across every window (#358);
       // repeating it steps through the rest. Next Notification goes through unread notifications.
       Button("Go to Terminal That Needs You") {
-        if !ProgramStatusAlerts.shared.goToNextWaiting(from: WindowRegistry.shared.frontStore) {
+        if !ProgramStatusAlerts.shared.goToNextWaiting(from: WindowRegistry.shared.frontHost) {
           NSSound.beep()
         }
       }

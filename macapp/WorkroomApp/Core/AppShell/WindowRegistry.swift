@@ -345,26 +345,28 @@ final class WindowRegistry: ObservableObject {
   /// A toast shows in the front window, whichever window raised it, the Quick Terminal included
   /// (#573 D2).
   func showToast(_ note: WorkroomNotification) {
-    frontStore?.enqueueToast(note)
+    frontHost?.enqueueToast(note)
   }
 
-  /// Drop the notifications `store` raised, banners too, as its window closes (#573 D3). Not on
+  /// Drop the notifications `host` raised, banners too, as its window closes (#573 D3). Not on
   /// quit: they die with the process anyway, and a quit should leave delivered banners be.
-  func dropNotifications(raisedBy store: AppStore) {
+  func dropNotifications(raisedBy host: any NotifyingHost) {
     guard !isTerminating else { return }
-    let dropped = notifications.removeAll(from: ObjectIdentifier(store))
-    store.services.notifier.withdraw(
+    let dropped = notifications.removeAll(from: ObjectIdentifier(host))
+    host.systemNotifier.withdraw(
       identifiers: dropped.map { SystemNotifier.payload(for: $0).identifier })
   }
 
   /// The Quick Terminal: in no window entry here, but its terminals share the notification list.
   weak var quickTerminal: QuickTerminalController?
 
-  /// Every store whose terminals raise notifications: each window's and the Quick Terminal's.
-  var notifyingStores: [AppStore] { allStores + [quickTerminal?.store].compactMap { $0 } }
+  /// Every host whose terminals raise notifications: each window's and the Quick Terminal's.
+  var notifyingHosts: [any NotifyingHost] {
+    allStores + [quickTerminal?.store].compactMap { $0 }
+  }
 
-  /// The store of the window in front: the Quick Terminal's while it is the key window.
-  var frontStore: AppStore? {
+  /// The host of the window in front: the Quick Terminal's while it is the key window.
+  var frontHost: (any NotifyingHost)? {
     if let quickTerminal, let window = quickTerminal.currentWindow, keyWindow() === window,
       let store = quickTerminal.store
     {

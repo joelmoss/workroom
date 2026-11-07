@@ -2251,7 +2251,7 @@ final class TerminalPanes {
   }
 
   /// Flash a visible non-focused pane's border to acknowledge activity without a banner/badge (D3).
-  /// Driven from `AppStore.handleActivity`.
+  /// Driven from `PaneNotifier.handleActivity`.
   func pulsePaneActivity(_ tabID: TerminalTab.ID) {
     activityPulses[tabID, default: 0] += 1
   }
