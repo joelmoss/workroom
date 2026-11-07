@@ -59,6 +59,21 @@ app by name, since every workroom's app, test host and XCUITest app is called "W
   hosted tests share live in a test-support library of that package, imported by tests only:
   `DaemonConnectionTestSupport` (`FakeDaemon`, `EchoServer`, `TCPClient`). It imports nothing of
   its own package, so the hosted test bundle never holds a second copy of the package's types.
+  A fixture that needs its package's types can't go in such a library, so it is copied into the
+  hosted test that uses it (as `ExeDevSetupTests` copies `StubExeDev`). Measured with a
+  `HostDriversTestSupport` that imported `HostDrivers` (Xcode 27.2): a package the app links
+  is linked into the app and the test bundle as one shared framework, but a test-support library
+  is linked into WorkroomAppTests alone, so Xcode links it statically, and with it its
+  same-package target dependency as that target's own object (`HostDrivers.o`). Its other
+  packages' dependencies (`WorkroomSystem`) still came from the shared framework. The test bundle
+  then held a second `HostDrivers`: 86 type descriptors of its own, eight classes the ObjC
+  runtime reported as "implemented in both", task-locals (`ProvisioningProgress.$log`) the app
+  never read, and a SIGSEGV when the framework's `ExeDevHostDriver.run` ran on an instance built
+  by the test's copy. An `is`/`as?` on a value the app made still passed. To check a change to
+  these libraries, `nm -U` the bundle
+  (`Workroom Dev.app/Contents/PlugIns/WorkroomAppTests.xctest/Contents/MacOS/WorkroomAppTests`)
+  must define no `$s<length><Module>…Mn` descriptor of a package the app links, and the test log
+  must have no "is implemented in both" line.
 
 - **The Swift module is `Workroom`** (the target is `WorkroomApp`; `PRODUCT_MODULE_NAME` is pinned
   to `Workroom` in `project.yml`). Tests use `@testable import Workroom`. The pin matters because
