@@ -283,7 +283,7 @@ and branch management.
 **Where the write seam actually is — this changed.** The original plan put write methods on
 `VCSProviding` with a `CLIVCSProvider` fallback. That is **not** what shipped, and new work should not
 follow it. Writes live behind a **separate**, context-bound `VCSWriting` protocol
-(`Core/VersionControl/RepositoryServices.swift`), constructed by `RepositoryRouter.writer(for:)`. Its local adapter
+(`Packages/WorkroomVCS`), constructed by `RepositoryRouter.writer(for:)`. Its local adapter
 delegates to `CLIVCSWriter`, which implements `LocalVCSWriting`. Three properties hold it there:
 
 - **Context binding.** `RepositoryRouter.reader(for:)` and `writer(for:)` each capture one
@@ -332,12 +332,12 @@ version floor actually bites a user.
 **Why:** This is a roadmap phase, not a tactical follow-up. The authoritative scope + sequencing live
 in the issue #59 plan; this entry is the pointer that makes it discoverable.
 
-**How to start:** Read `Core/VersionControl/VCSWriting.swift` — its doc comment carries the routing diagram, the
+**How to start:** Read `Packages/WorkroomGit/Sources/WorkroomGit/CLIVCSWriter.swift` — its doc comment carries the routing diagram, the
 per-backend command table and the placement rules (fetch always runs at the project root). The read
 layer blocks nothing. What's left of the error taxonomy is that git still flattens to `.io`.
 
 **Depends on:** the VCS read foundation (shipped, Phase 1) and the write seam (shipped with the
-toolbar). Spans `Core/VersionControl/VCSWriting.swift`, possibly `vcs/` (Rust), and new write-flow UI.
+toolbar). Spans `Packages/WorkroomGit` (`CLIVCSWriter`), possibly `vcs/` (Rust), and new write-flow UI.
 
 **Priority:** P2 (the product direction; large — see the plan for the real breakdown).
 
@@ -512,8 +512,8 @@ rewrite touches the whole diff UI (regression surface).
 `maxDiffBytes` gate. Rewrite `DiffViewer` (and `IntraLineDiff`/side-by-side pairing) to consume hunks.
 
 **Depends on:** the shipped Option-1 diff pipeline (`VCSProviding.fileDiff`/`workingFileDiff` +
-`DiffResolver` + `DiffViewer`). Touches `VCSProviding` (`Core/VersionControl/RepositoryServices.swift`),
-`LocalVCSProviding` (`Packages/WorkroomVCS`), `GitProvider`,
+`DiffResolver` + `DiffViewer`). Touches `VCSProviding` and `LocalVCSProviding` (`Packages/WorkroomVCS`), `GitProvider`
+(`Packages/WorkroomGit`),
 `Core/VersionControl/DiffResolver.swift`, `Views/VersionControl/DiffViewer.swift`.
 
 **Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).

@@ -18,19 +18,23 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
   `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `DaemonVCSReader` /
   `DaemonClient`.
 
-**Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
-in `project.yml`, URL + version identical to SwiftGitX's own dependency so SwiftPM sees one package
-identity). `Core/VersionControl/LibGit2.swift` owns the single `git_libgit2_init` and hands out raw `git_repository`
-handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't rely on); these four
-files are the only ones in the app touching raw libgit2:
+The local git engine is the `WorkroomGit` package (`macapp/Packages/WorkroomGit`): `GitProvider`,
+the four libgit2 files below, `UnifiedDiff` and its line algorithms, `CLIVCSWriter` and
+`RepositoryWriteGate`. Its tests run under `swift test` (`make app-package-test`).
 
-- **Push state — `Core/VersionControl/GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
+**Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
+in `WorkroomGit`'s `Package.swift`, URL + version identical to SwiftGitX's own dependency so SwiftPM
+sees one package identity). `LibGit2.swift` owns the single `git_libgit2_init` and hands out raw
+`git_repository` handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't
+rely on); these four files are the only ones touching raw libgit2 (ADR 0002):
+
+- **Push state — `GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
   `CommitSequence` only calls `git_revwalk_push`, never `git_revwalk_hide`, it exposes no
   merge-base/graph helper, and its repository pointer is `internal` — so "which commits aren't on
   `origin` yet" (`HEAD --not refs/remotes/origin/*`) needs the C API. Push state is
   **origin-scoped** and any unreadable ref degrades the WHOLE page to "unknown" (no badge) rather than
   a partial answer.
-- **Commit diffs — `Core/VersionControl/GitCommitDiff.swift`.** Rename detection is `git_diff_find_similar` run over a
+- **Commit diffs — `GitCommitDiff.swift`.** Rename detection is `git_diff_find_similar` run over a
   live `git_diff`, and a SwiftGitX `Diff` materializes its deltas/patches in an `internal` init and
   frees the `git_diff` before returning, so there's nothing left to detect on. Without it a committed
   rename read as delete + add while `git show` showed one rename row (git defaults to
@@ -41,7 +45,7 @@ files are the only ones in the app touching raw libgit2:
   (`GIT_DIFF_INCLUDE_TYPECHANGE`); without it libgit2 splits a file↔symlink change into delete + add
   on the SAME path, giving the file list two rows with one `id`. `GitProvider.changeset`/`.fileDiff`
   both read through it, so the History file list and the patch text can't disagree.
-- **Working-tree ± line counts — `Core/VersionControl/GitDiffStats.swift`**, via `git_diff_get_stats`. SwiftGitX
+- **Working-tree ± line counts — `GitDiffStats.swift`**, via `git_diff_get_stats`. SwiftGitX
   surfaces no diffstat, and its `Diff` is **eager**: `Diff.init` builds a `Patch` per delta and
   materializes every hunk line into a Swift `String` before the caller sees it. Summing those for the
   badge cost one `String` per changed line of the whole worktree on **every** status refresh, so the
@@ -56,8 +60,10 @@ files are the only ones in the app touching raw libgit2:
   a staged rename rendered as one "renamed" row badged `+N −N` while `git diff HEAD --shortstat`
   reported `0 insertions(+), 0 deletions(-)`.
 
-**Read surface & routing.** `Core/VersionControl/RepositoryServices.swift` defines the context-bound `VCSProviding`
-protocol. `RepositoryRouter` captures the shared ownership for a validated host/path identity;
+**Read surface & routing.** `WorkroomVCS` defines the context-bound `VCSProviding` and
+`VCSWriting` protocols and the validated `RepositoryLocation` / `RepositoryContext` they bind to;
+only `RepositoryRouter` (`Core/VersionControl/RepositoryRouter.swift`) builds a context, through an
+SPI initializer. `RepositoryRouter` captures the shared ownership for a validated host/path identity;
 native engines implement `LocalVCSProviding` behind its local adapter, and `GitProvider` wraps
 SwiftGitX. `WorkingStatusResolver` and `BranchResolver` read through this layer — no CLI text
 parsing. Reads never take a repository lock and are not gated. The exceptions run `git` themselves
@@ -68,7 +74,7 @@ only the probes that follow its selection.
 
 **Writes are serialized per project.** git worktrees of one project share the backing `.git`, so a
 commit in one workroom and a fetch or pull in another contend for the same `index.lock` /
-`packed-refs.lock`. `RepositoryWriteGate` (`Core/VersionControl/RepositoryWriteGate.swift`) is a per-project
+`packed-refs.lock`. `RepositoryWriteGate` (in `WorkroomGit`) is a per-project
 serializer that every commit, fetch, push and pull goes through (`CLIVCSWriter.gated`); callers pass
 the raw, untimed call as the operation and wrap the gate in `withTimeout`, never the reverse (see the
 type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
