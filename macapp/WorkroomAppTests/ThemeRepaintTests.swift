@@ -312,22 +312,17 @@ final class ThemeRepaintTests: XCTestCase {
     try assertRepaints(
       "the Quick Terminal", size: NSSize(width: 600, height: 400), at: NSPoint(x: 3, y: 200)
     ) {
-      // A store each: a terminal's view can sit in one window only.
-      let store = makeStore()
-      let sessions = store.terminals
+      // A host each: a terminal's view can sit in one window only.
+      let host = QuickTerminalHost(notifications: NotificationCenterStore())
+      let sessions = host.terminals
+      sessions.makeView = { _, cwd, command in
+        GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+      }
+      sessions.sessionService = PersistentSessionService(
+        probe: { _ in .notBundled }, ownership: { _ in .notOwned })
       _ = sessions.addTab(for: QuickTerminalController.target())
       opened.append(sessions)
-      return QuickTerminalContent(sessions: sessions)
-        .themeTokensRoot()
-        .environment(\.isQuickTerminal, true)
-        .paneHost(store)
-        .environmentObject(store.modals)
-        .environmentObject(store.runCommand)
-        .environmentObject(store.lifecycle)
-        .environmentObject(store.notifications)
-        .environmentObject(sessions.codingAgentManager)
-        .environmentObject(CodingAgentUsageMonitor.shared)
-        .environmentObject(ClaudeUsageBridge.shared)
+      return QuickTerminalContent(sessions: sessions).quickTerminalEnvironment(host: host)
     }
   }
 

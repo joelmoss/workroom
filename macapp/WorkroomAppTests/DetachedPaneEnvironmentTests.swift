@@ -24,23 +24,35 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   /// `AppStore` is among them: the pane views ask their window through the pane host instead
   /// (`testOnlyMainWindowViewsTakeTheStoreFromTheEnvironment` below), and only the main window's
   /// chrome and composition still take the store from the environment.
+  ///
+  /// So is `WorkroomLifecycle`: its readers are `RootView`, `TargetTerminalDetail`, the workroom tab
+  /// bar (`WorkroomTabBar`) and `ProjectSidebar`, all main-window only (`mainWindowOnly` below).
   private let sceneOnly: Set<String> = [
     "Updater", "WhatsNewService", "RemoteStateModel", "ProjectStore", "VCSStatusService",
-    "RunCommands", "AppStore",
+    "RunCommands", "AppStore", "WorkroomLifecycle",
   ]
 
   /// How each type is supplied, since several arrive through an owner rather than by their own name
   /// (`store.notifications`, `sessions.codingAgentManager`) — matching on the type alone would report those
-  /// as missing while they are injected.
+  /// as missing while they are injected. One map per window that hosts panes outside the main one.
   ///
   /// A NEW environment object has no entry here, which fails the test rather than passing silently:
   /// that is the direction that matters, because the alternative is a crash in the field.
-  private let supplier: [String: String] = [
+  private let detachedSupplier: [String: String] = [
     "ModalState": "store.modals",
     "RunCommandController": "store.runCommand",
-    "WorkroomLifecycle": "store.lifecycle",
     "NotificationCenterStore": "store.notifications",
     "TerminalCodingAgentManager": "sessions.codingAgentManager",
+    "CodingAgentUsageMonitor": "CodingAgentUsageMonitor.shared",
+    "ClaudeUsageBridge": "ClaudeUsageBridge.shared",
+  ]
+
+  /// The same for the Quick Terminal's window, whose owners are its host's.
+  private let quickTerminalSupplier: [String: String] = [
+    "ModalState": "host.modals",
+    "RunCommandController": "host.runCommand",
+    "NotificationCenterStore": "host.notifications",
+    "TerminalCodingAgentManager": "host.terminals.codingAgentManager",
     "CodingAgentUsageMonitor": "CodingAgentUsageMonitor.shared",
     "ClaudeUsageBridge": "ClaudeUsageBridge.shared",
   ]
@@ -52,6 +64,25 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   }
 
   func testEveryEnvironmentObjectAPaneCanReachIsInjectedIntoDetachedWindows() throws {
+    try assertInjectsEveryEnvironmentObjectAPaneCanReach(
+      file: "WorkroomApp/Views/Terminal/DetachedPaneView.swift",
+      function: "detachedPaneEnvironment", supplier: detachedSupplier,
+      paneHost: ".paneHost(store)")
+  }
+
+  /// The Quick Terminal's window renders the same pane views, so it owes them the same.
+  func testEveryEnvironmentObjectAPaneCanReachIsInjectedIntoTheQuickTerminal() throws {
+    try assertInjectsEveryEnvironmentObjectAPaneCanReach(
+      file: "WorkroomApp/Views/Terminal/QuickTerminalContent.swift",
+      function: "quickTerminalEnvironment", supplier: quickTerminalSupplier,
+      paneHost: ".paneHost(host)")
+  }
+
+  /// `function` in `file` (everything from it to the file's end) injects, as its `supplier` entry
+  /// names, every environment object a view declares and a pane can reach, and the pane host.
+  private func assertInjectsEveryEnvironmentObjectAPaneCanReach(
+    file: String, function: String, supplier: [String: String], paneHost: String
+  ) throws {
     let appRoot = macappRoot.appendingPathComponent("WorkroomApp")
     let files =
       FileManager.default.enumerator(at: appRoot, includingPropertiesForKeys: nil)?
@@ -89,12 +120,10 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
       "parser regressed — `Updater` is declared only as `@EnvironmentObject private var`")
 
     let injected = try String(
-      contentsOf: macappRoot.appendingPathComponent(
-        "WorkroomApp/Views/Terminal/DetachedPaneView.swift"),
-      encoding: .utf8)
+      contentsOf: macappRoot.appendingPathComponent(file), encoding: .utf8)
     // The modifier body: everything between the function and the end of its chain.
-    guard let modifier = injected.range(of: "func detachedPaneEnvironment") else {
-      return XCTFail("detachedPaneEnvironment is gone — detached windows inject nothing")
+    guard let modifier = injected.range(of: "func \(function)") else {
+      return XCTFail("\(function) is gone — its window injects nothing")
     }
     let body = String(injected[modifier.lowerBound...])
 
@@ -103,7 +132,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
         XCTFail(
           """
           `\(type)` is a new @EnvironmentObject and this test does not know how it is supplied. \
-          Inject it in `detachedPaneEnvironment` and add it to `supplier`, or add it to `sceneOnly` \
+          Inject it in `\(function)` and add it to its supplier map, or add it to `sceneOnly` \
           if a pane genuinely cannot reach it.
           """)
         continue
@@ -111,14 +140,54 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
       XCTAssertTrue(
         body.contains(expression),
         """
-        `\(type)` is an @EnvironmentObject some view reaches, but `detachedPaneEnvironment` does not \
-        inject it (expected `\(expression)`). A detached pane that renders that view will TRAP, not \
+        `\(type)` is an @EnvironmentObject some view reaches, but `\(function)` does not \
+        inject it (expected `\(expression)`). A pane there that renders that view will TRAP, not \
         degrade.
         """)
     }
     XCTAssertTrue(
-      body.contains(".paneHost(store)"),
-      "`detachedPaneEnvironment` must inject the pane host: every pane view reads `\\.paneHost`")
+      body.contains(paneHost),
+      "`\(function)` must inject the pane host: every pane view reads `\\.paneHost`")
+  }
+
+  /// The Quick Terminal's panes are hosted by its `QuickTerminalHost`, not a window's store, so its
+  /// files build no store and keep none: a store built there would bring fresh owners of its own,
+  /// whose project lookups never see the app's projects. A `windows: [AppStore]` destination is the
+  /// windows its panes move into, and allowed.
+  func testTheQuickTerminalBuildsNoStore() throws {
+    let construction = try NSRegularExpression(pattern: #"\bAppStore\s*\("#)
+    let stored = try NSRegularExpression(
+      pattern:
+        #"\b(?:var|let)\s+\w+\s*:\s*(?:AppStore|Optional<AppStore>|AppStore\?|AppStore!)(?![\w\]])"#
+    )
+    let files = [
+      "WorkroomApp/Core/AppShell/QuickTerminalController.swift",
+      "WorkroomApp/Core/AppShell/QuickTerminalHost.swift",
+      "WorkroomApp/Views/Terminal/QuickTerminalContent.swift",
+      "WorkroomApp/Views/Terminal/QuickTerminalDragHandle.swift",
+    ]
+    for file in files {
+      let source = try String(
+        contentsOf: macappRoot.appendingPathComponent(file), encoding: .utf8)
+      // Comments may name the store; only code counts.
+      let code = source.components(separatedBy: "\n")
+        .map { $0.components(separatedBy: "//").first ?? "" }
+        .joined(separator: "\n")
+      let range = NSRange(code.startIndex..., in: code)
+      XCTAssertNil(
+        construction.firstMatch(in: code, range: range), "\(file) builds an AppStore")
+      XCTAssertNil(stored.firstMatch(in: code, range: range), "\(file) keeps an AppStore")
+    }
+    // Pins the patterns: they catch what they exist to catch, and let the destination parameter by.
+    let built = "let store = AppStore(notifications: list)"
+    let kept = "  private(set) var store: AppStore?"
+    let destination = "windows: [AppStore] = WindowRegistry.shared.allStores"
+    XCTAssertNotNil(
+      construction.firstMatch(in: built, range: NSRange(built.startIndex..., in: built)))
+    XCTAssertNotNil(stored.firstMatch(in: kept, range: NSRange(kept.startIndex..., in: kept)))
+    XCTAssertNil(
+      stored.firstMatch(
+        in: destination, range: NSRange(destination.startIndex..., in: destination)))
   }
 
   /// The views that may take the store from the environment: the main window's chrome, inspector,

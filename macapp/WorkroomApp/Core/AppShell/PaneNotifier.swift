@@ -33,7 +33,8 @@ protocol PaneNotifierHost: AnyObject {
 @MainActor
 @Observable
 final class PaneNotifier {
-  /// The identity of the host this raises for, on every record.
+  /// The identity of the host this raises for, on every record. Taken from the host itself, so no
+  /// host can hand in another's.
   let origin: ObjectIdentifier
   @ObservationIgnored private weak var host: (any PaneNotifierHost)?
   @ObservationIgnored private let terminals: TerminalPanes
@@ -48,17 +49,16 @@ final class PaneNotifier {
   /// overflow the window (matches the "stack a few, drop oldest" decision).
   private static let maxToasts = 4
   /// Where this host's in-app toasts go instead of its own `toasts`: the front window, set by
-  /// `WindowRegistry` for every window it registers and by the Quick Terminal for its own store.
+  /// `WindowRegistry` for every window it registers and by the Quick Terminal for its host.
   @ObservationIgnored var forwardToast: ((WorkroomNotification) -> Void)?
   /// Whether the app is frontmost, which picks an in-app toast over a banner. A seam so a test can
   /// take the banner path (`ProgramStatusAlertsTests`).
   @ObservationIgnored var isAppActive: () -> Bool = { NSApp.isActive }
 
   init(
-    origin: ObjectIdentifier, host: any PaneNotifierHost, terminals: TerminalPanes,
-    notifications: NotificationCenterStore
+    host: any PaneNotifierHost, terminals: TerminalPanes, notifications: NotificationCenterStore
   ) {
-    self.origin = origin
+    self.origin = ObjectIdentifier(host)
     self.host = host
     self.terminals = terminals
     self.notifications = notifications

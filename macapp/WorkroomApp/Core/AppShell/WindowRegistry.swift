@@ -362,15 +362,17 @@ final class WindowRegistry: ObservableObject {
 
   /// Every host whose terminals raise notifications: each window's and the Quick Terminal's.
   var notifyingHosts: [any NotifyingHost] {
-    allStores + [quickTerminal?.store].compactMap { $0 }
+    let windows: [any NotifyingHost] = allStores
+    guard let host = quickTerminal?.host else { return windows }
+    return windows + [host]
   }
 
   /// The host of the window in front: the Quick Terminal's while it is the key window.
   var frontHost: (any NotifyingHost)? {
     if let quickTerminal, let window = quickTerminal.currentWindow, keyWindow() === window,
-      let store = quickTerminal.store
+      let host = quickTerminal.host
     {
-      return store
+      return host
     }
     return keyStore
   }

@@ -392,20 +392,15 @@ extension AppStore {
   /// `bannerState`. `surface` is the pane's live terminal surface (if any), used to derive cwd —
   /// takes the surface rather than a pre-computed `cwd: String` so both call sites share one cwd
   /// derivation instead of each re-deriving `?? target.path` themselves (the same drift shape issue
-  /// #146 fixed for the command). The one caller of `addRunTab` for Investigate (issue #146) —
-  /// tracks the tab in `runCommand.investigateTabs` so it isn't invisible to quit/close teardown.
+  /// #146 fixed for the command). The session itself is `RunCommandController.startInvestigate`.
   @discardableResult
   func startInvestigate(
     bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?,
     codingAgentSetting: String = Defaults[.terminalCodingAgentBackend]
   ) -> TerminalTab {
-    let cwd = surface?.lastKnownCwd ?? target.path
-    let agent = CodingAgentBackend.forInvestigate(
-      setting: codingAgentSetting, claudeMissing: bannerState.claudeMissing)
-    let command = CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: agent)
-    let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
-    runCommand.investigateTabs[tab.id] = target.id
-    return tab
+    runCommand.startInvestigate(
+      bannerState: bannerState, target: target, surface: surface,
+      codingAgentSetting: codingAgentSetting)
   }
 
   /// Respawn the run command in place of `oldTab` (issue #40): the replacement takes the old run tab's

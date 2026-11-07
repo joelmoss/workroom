@@ -177,7 +177,7 @@ extension NSImage {
 
 /// "Move to Workroom" for a Quick Terminal pane: every workroom open in every Workroom window, in
 /// each window's tab order and under the window's name when there is more than one
-/// (`AppStore.quickTerminalPaneWorkroomChoices`), moving the pane into the one chosen. One on a host,
+/// (`QuickTerminalHost.quickTerminalPaneWorkroomChoices`), moving the pane into the one chosen. One on a host,
 /// or still being created, is listed but disabled. A submenu in the tab chip's menu, a button in the
 /// pane's title bar.
 struct QuickTerminalMoveToWorkroomMenu: View {

@@ -982,11 +982,18 @@ final class WorkroomHandOverTests: XCTestCase {
 
   // MARK: A Quick Terminal pane into a window
 
-  /// The Quick Terminal's store and its one pane, and a window with workroom `a` selected and open.
+  /// The Quick Terminal's host and its one pane, and a window with workroom `a` selected and open.
   private func makeQuickTerminalMove(
     retag: ((UUID, String) async -> Bool)? = nil
-  ) -> (quick: AppStore, pane: TerminalTab, window: AppStore) {
-    let quick = makeStore()
+  ) -> (quick: QuickTerminalHost, pane: TerminalTab, window: AppStore) {
+    let quick = QuickTerminalHost(notifications: notifications)
+    quick.services.notifier = notifier
+    quick.closeFlow.confirmOnCloseOverride = false
+    quick.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    quick.terminals.recordUnrecognizedTool = { _ in }
+    quick.terminals.recency = SwitcherRecency()
     quick.terminals.allowsDetach = false
     quick.terminals.moveToWorkroomChoices = { _, _ in [] }
     quick.terminals.sessionService = PersistentSessionService(
@@ -1281,6 +1288,18 @@ final class WorkroomHandOverTests: XCTestCase {
     let nothing = WindowRegistry.frontmostDropWindow(
       skipping: [9], numberBelow: { $0 == 0 ? 9 : 0 }, resolve: { _ in .none })
     guard case .none = nothing else { return XCTFail("only the ghost is there") }
+  }
+}
+
+extension QuickTerminalHost {
+  /// What a "Move to Workroom" choice or a drop does with this host's pane `tabID`.
+  fileprivate func moveQuickTerminalPane(
+    _ tabID: TerminalTab.ID, of target: TerminalTarget, to destination: AppStore,
+    into workroom: SidebarID
+  ) async {
+    await QuickTerminalPaneMove.move(
+      tabID, of: target, source: terminals, notifications: notifications, to: destination,
+      into: workroom)
   }
 }
 

@@ -172,6 +172,24 @@ final class RunCommandController: ObservableObject {
     }
   }
 
+  /// Start an interactive Investigate session (issue #49) seeded with the failure captured in
+  /// `bannerState`, in `surface`'s last known folder, else `target`'s. The one caller of
+  /// `addRunTab` for Investigate (issue #146): it marks the tab in `investigateTabs` so it isn't
+  /// invisible to quit/close teardown. Here so every host that runs one makes the same tab.
+  @discardableResult
+  func startInvestigate(
+    bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?,
+    codingAgentSetting: String
+  ) -> TerminalTab {
+    let cwd = surface?.lastKnownCwd ?? target.path
+    let agent = CodingAgentBackend.forInvestigate(
+      setting: codingAgentSetting, claudeMissing: bannerState.claudeMissing)
+    let command = CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: agent)
+    let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
+    investigateTabs[tab.id] = target.id
+    return tab
+  }
+
   // MARK: The target's run's bookkeeping
   //
   // What is known of a run is its run tab's (`RunCommands.TabRun`, in the app's `TerminalTabs`), so
