@@ -17,3 +17,9 @@ include mk/cli.mk mk/docs.mk mk/actions.mk mk/vcs.mk mk/app.mk
 # Every target is a task, not a file, and every one has the `## ` line `help` lists, so the phony
 # list is read the same way and a new target can't be left off it.
 .PHONY: $(shell sed -nE 's/^([a-z][a-zA-Z0-9_-]*):.*\#\# .*/\1/p' $(MAKEFILE_LIST))
+
+# `make print-VAR` prints VAR as make has it, for the tests that pin a value
+# (macapp/Scripts/test-invariants_test.sh, scripts/ci/): they ask make rather than grep the file
+# that sets it, so moving the line between files breaks none of them. Not listed by `help`.
+print-%:
+	@:$(info $($*))
