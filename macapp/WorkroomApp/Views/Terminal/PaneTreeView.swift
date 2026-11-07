@@ -605,7 +605,7 @@ struct PaneLeafView: View {
           TerminalSearchBar(model: surface.searchModel)
         }
       }
-      TerminalStatusBar(target: target, tabID: tabID, state: s, surface: surface)
+      TerminalStatusBarAdapter(target: target, tabID: tabID, state: s, surface: surface)
     }
   }
 
@@ -615,7 +615,7 @@ struct PaneLeafView: View {
   private func contentPanel(_ view: some View) -> some View {
     VStack(spacing: 0) {
       view
-      TerminalStatusBar(target: target, tabID: tabID, state: nil)
+      TerminalStatusBarAdapter(target: target, tabID: tabID, state: nil)
     }
   }
 

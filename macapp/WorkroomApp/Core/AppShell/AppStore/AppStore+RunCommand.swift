@@ -96,8 +96,9 @@ extension AppStore {
   /// pane and the Quick Terminal).
   ///
   /// Compares **ids only**. Materialising `rootTarget` here would `stat` every project directory on
-  /// the render path (`TerminalStatusBar.body` → `branchLabel` → `validatedSelection`), which is
-  /// what hung the app in WORKROOM-3D. A lookup never needs the `isMissing`/`title` a target carries.
+  /// the render path (`TerminalStatusBarAdapter.body` → `branchLabel` → `validatedSelection`),
+  /// which is what hung the app in WORKROOM-3D. A lookup never needs the `isMissing`/`title` a
+  /// target carries.
   func project(forTargetID id: TerminalTarget.ID) -> Project? {
     guard let path = id.projectPath, let project = projectStore.project(at: path) else {
       return nil

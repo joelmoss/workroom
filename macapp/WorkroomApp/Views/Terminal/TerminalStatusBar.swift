@@ -13,55 +13,35 @@ import SwiftUI
 /// The diagnosis is a compact indicator that opens the full `TerminalCodingAgentBanner` in a POPOVER — not
 /// an overlay. A SwiftUI overlay's controls sit over the terminal's Metal `NSView`, which wins AppKit
 /// hit-testing, so overlay buttons silently swallow clicks; a popover lives in its own window.
-struct TerminalStatusBar: View {
-  let target: TerminalTarget
-  let tabID: TerminalTab.ID
-  /// The pane's terminal, or nil for a non-terminal (diff / file / changeset) pane — which shows no
-  /// cwd, run state or diagnosis, only the branch.
-  let state: TerminalState?
-  /// The pane's terminal surface, for the diagnosis' "Insert fix" and Investigate; nil with `state`.
-  var surface: GhosttySurfaceView?
-  @EnvironmentObject var store: AppStore
-  @EnvironmentObject var runCommand: RunCommandController
-  @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
-  /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
-  /// button can know whether it's actually showing anything.
-  @ObservedObject private var sessionsStore = DetachedSessionList.shared
+///
+/// Store-free: it renders `model` and forwards the diagnosis' buttons to `actions`.
+/// `TerminalStatusBarAdapter` builds both for a pane. The detached-sessions button is a slot
+/// (`detachedSessions`), since that button reads the window's sessions itself.
+struct TerminalStatusBar<DetachedSessions: View>: View {
+  let model: TerminalStatusBarModel
+  let actions: TerminalStatusBarActions
+  @ViewBuilder let detachedSessions: () -> DetachedSessions
   @State private var showingDiagnosis = false
   @Environment(\.isQuickTerminal) private var isQuickTerminal
   @Environment(\.themeTokens) private var tokens
 
-  /// This pane's live cwd (a remote pane's host path, else the shell's last report); nil for a diff
-  /// pane. The surface is the live read for a detached pane, whose `state` is the copy taken when
-  /// its window opened (`DetachedPaneController` reads its content once).
-  private var cwd: String? {
-    guard let state else { return nil }
-    return state.hostCwd ?? state.cwd ?? surface?.lastKnownCwd
-  }
-
-  /// Whether `cwd` is a path on a remote pane's host (#239), which names nothing on this Mac.
-  private var cwdIsOnHost: Bool { state?.hostCwd != nil }
-
-  private var isRunTab: Bool { state != nil && runCommand.runTabID(for: target.id) == tabID }
-
-  private var diagnosis: CodingAgentBannerState? {
-    state == nil ? nil : codingAgentManager.banners[tabID]
-  }
-
   var body: some View {
     // Computed once per render so a divider between two segments only appears when BOTH sides are
     // actually showing something — each segment is independently optional.
+    let cwd = model.cwd
     let hasLeading = cwd != nil
-    let branch = store.branchLabel(for: target) ?? state?.liveBranch
+    let branch = model.branch
     let hasBranch = branch != nil
+    let diagnosis = model.diagnosis
     let hasDiagnosis = diagnosis != nil
-    let hasDetached = !sessionsStore.detached(for: target.id.encoded).isEmpty
-    let hasRun = isRunTab && runStatePresentation != nil
+    let hasDetached = model.hasDetachedSessions
+    let runStatePresentation = runStatePresentation
+    let hasRun = runStatePresentation != nil
 
     HStack(spacing: 12) {
       // A terminal's cwd leads the bar. The file path a content pane used to show here moved to the
       // pane's own title bar (issue #150), which names the pane; this bar is its live working state.
-      if let cwd { StatusBarCwdSegment(cwd: cwd, onHost: cwdIsOnHost) }
+      if let cwd { StatusBarCwdSegment(cwd: cwd, onHost: model.cwdIsOnHost) }
       if hasLeading, hasBranch { statusBarDivider }
       if let branch { StatusBarBranchSegment(branch: branch) }
       // Diagnosis sits left-aligned right after the branch, not pushed to the far edge.
@@ -80,13 +60,13 @@ struct TerminalStatusBar: View {
       // The running agent's usage (#480). Before the detached-sessions button, so nothing trailing
       // moves when it comes and goes, and lowest priority, so it gives way before cwd or branch. Not
       // in a remote pane: its agent bills the host's login, which this Mac's readings may not be.
-      if let state, let backend = state.activeCodingAgentBackend, !target.isRemoteWorkroom {
-        PaneUsageSlot(backend: backend, claudeProfile: state.claudeProfile)
+      if let usage = model.usage {
+        PaneUsageSlot(backend: usage.backend, claudeProfile: usage.claudeProfile)
           .layoutPriority(-1)
       }
-      DetachedSessionsButton(target: target)
+      detachedSessions()
       if hasDetached, hasRun { statusBarDivider }
-      if isRunTab, let run = runStatePresentation { runSegment(run) }
+      if let run = runStatePresentation { runSegment(run) }
     }
     .statusBarChrome()
   }
@@ -94,14 +74,6 @@ struct TerminalStatusBar: View {
   /// A thin vertical rule between two segments, shorter than the 28pt bar so it reads as a
   /// separator rather than a full-height rail.
   private var statusBarDivider: some View { StatusBarDivider() }
-
-  /// `~`-abbreviate a home-relative path; leave others untouched. Truncation is left to the label.
-  static func abbreviate(_ path: String) -> String {
-    let home = NSHomeDirectory()
-    if path == home { return "~" }
-    if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
-    return path
-  }
 
   // MARK: Run state (run tab only)
 
@@ -125,7 +97,7 @@ struct TerminalStatusBar: View {
   }
 
   private var runStatePresentation: RunPresentation? {
-    guard let state = runCommand.runStates[target.id] else { return nil }
+    guard let state = model.run else { return nil }
     switch state {
     case .armed:
       return nil
@@ -139,7 +111,7 @@ struct TerminalStatusBar: View {
       return RunPresentation(
         icon: "arrow.clockwise", text: "Restarting…", color: AnyShapeStyle(tokens.warning))
     case .stopped:
-      switch runCommand.runOutcomes[target.id] {
+      switch model.runOutcome {
       case .exited(let code) where code != 0:
         return RunPresentation(
           icon: "xmark.octagon.fill", text: "Failed (exit \(code))",
@@ -159,14 +131,14 @@ struct TerminalStatusBar: View {
   // MARK: Diagnosis
 
   private func diagnosisSegment(_ bannerState: CodingAgentBannerState) -> some View {
-    let model = CodingAgentBannerViewModel(state: bannerState)
-    let tint = diagnosisTint(model.style)
+    let banner = CodingAgentBannerViewModel(state: bannerState)
+    let tint = diagnosisTint(banner.style)
     return Button {
       showingDiagnosis.toggle()
     } label: {
       HStack(spacing: 4) {
-        diagnosisIcon(model.style)
-        Text(model.headline).truncationMode(.tail).frame(maxWidth: 220, alignment: .leading)
+        diagnosisIcon(banner.style)
+        Text(banner.headline).truncationMode(.tail).frame(maxWidth: 220, alignment: .leading)
       }
       // A diagnosis means a command FAILED — colour it red on any tab (not only the run tab's run
       // state), so a failure reads red everywhere.
@@ -174,23 +146,22 @@ struct TerminalStatusBar: View {
     }
     .buttonStyle(.plain)
     .help("Show the agent's diagnosis")
-    .accessibilityLabel("Diagnosis: \(model.headline)")
+    .accessibilityLabel("Diagnosis: \(banner.headline)")
     .accessibilityIdentifier("terminal.statusBar.diagnosis")
     .popover(isPresented: $showingDiagnosis, arrowEdge: .bottom) {
       TerminalCodingAgentBanner(
         state: bannerState,
-        onDiagnose: { codingAgentManager.diagnose(tab: tabID, target: target.id) },
+        onDiagnose: actions.diagnose,
         onInsertFix: { fix in
-          surface?.sendText(fix)
+          actions.insertFix(fix)
           showingDiagnosis = false
         },
         onInvestigate: {
-          _ = store.startInvestigate(bannerState: bannerState, target: target, surface: surface)
-          codingAgentManager.dismiss(tab: tabID)
+          actions.investigate(bannerState)
           showingDiagnosis = false
         },
         onDismiss: {
-          codingAgentManager.dismiss(tab: tabID)
+          actions.dismissDiagnosis()
           showingDiagnosis = false
         }
       )
@@ -221,6 +192,109 @@ struct TerminalStatusBar: View {
     case .remote:
       Image(systemName: "network")
     }
+  }
+}
+
+/// What a pane's status bar shows. Every segment is optional: a content pane has no cwd, run state
+/// or diagnosis, only the branch.
+struct TerminalStatusBarModel {
+  /// The running coding agent whose usage the bar shows.
+  struct Usage {
+    let backend: CodingAgentBackend
+    let claudeProfile: PaneClaudeProfile?
+  }
+
+  /// The pane's live cwd (a remote pane's host path, else the shell's last report).
+  var cwd: String? = nil
+  /// Whether `cwd` is a path on a remote pane's host (#239), which names nothing on this Mac.
+  var cwdIsOnHost = false
+  var branch: String? = nil
+  var diagnosis: CodingAgentBannerState? = nil
+  /// Nil without a running agent, and always in a remote pane: its agent bills the host's login,
+  /// which this Mac's readings may not be.
+  var usage: Usage? = nil
+  /// Whether the detached-sessions slot is showing anything, so the divider beside it can know.
+  var hasDetachedSessions = false
+  /// The run command's state, on the run tab only.
+  var run: RunCommandController.RunState? = nil
+  /// How a stopped run ended; read only once `run` is `.stopped`.
+  var runOutcome: RunCommandController.RunOutcome? = nil
+}
+
+/// What the diagnosis popover's buttons do. The bar closes the popover itself.
+struct TerminalStatusBarActions {
+  var diagnose: () -> Void
+  /// Type the agent's suggested fix into the pane's terminal.
+  var insertFix: (String) -> Void
+  /// Open an agent tab to investigate the failure, and dismiss the diagnosis.
+  var investigate: (CodingAgentBannerState) -> Void
+  var dismissDiagnosis: () -> Void
+}
+
+/// Builds a pane's `TerminalStatusBar` from the window's stores.
+///
+/// A view of its own, not a computation in `PaneLeafView`: this body is where the branch, run state,
+/// diagnosis and detached sessions are read, so a change to any of them re-evaluates the bar and
+/// not the pane (and its surface) around it.
+struct TerminalStatusBarAdapter: View {
+  let target: TerminalTarget
+  let tabID: TerminalTab.ID
+  /// The pane's terminal, or nil for a non-terminal (diff / file / changeset) pane — which shows no
+  /// cwd, run state or diagnosis, only the branch.
+  let state: TerminalState?
+  /// The pane's terminal surface, for the diagnosis' "Insert fix" and Investigate; nil with `state`.
+  var surface: GhosttySurfaceView?
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
+  /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
+  /// button can know whether it's actually showing anything.
+  @ObservedObject private var sessionsStore = DetachedSessionList.shared
+
+  var body: some View {
+    TerminalStatusBar(model: model, actions: actions) {
+      DetachedSessionsButton(target: target)
+    }
+  }
+
+  private var model: TerminalStatusBarModel {
+    // The run state is read only on the run tab, and the outcome only once it has stopped, so a
+    // pane observes no more of the run controller than it shows.
+    let isRunTab = state != nil && runCommand.runTabID(for: target.id) == tabID
+    let run = isRunTab ? runCommand.runStates[target.id] : nil
+    let runOutcome: RunCommandController.RunOutcome? =
+      if case .stopped = run { runCommand.runOutcomes[target.id] } else { nil }
+    return TerminalStatusBarModel(
+      // The surface is the live read for a detached pane, whose `state` is the copy taken when its
+      // window opened (`DetachedPaneController` reads its content once).
+      cwd: state.flatMap { $0.hostCwd ?? $0.cwd ?? surface?.lastKnownCwd },
+      cwdIsOnHost: state?.hostCwd != nil,
+      branch: store.branchLabel(for: target) ?? state?.liveBranch,
+      diagnosis: state == nil ? nil : codingAgentManager.banners[tabID],
+      usage: state.flatMap { state in
+        guard let backend = state.activeCodingAgentBackend, !target.isRemoteWorkroom else {
+          return nil
+        }
+        return .init(backend: backend, claudeProfile: state.claudeProfile)
+      },
+      hasDetachedSessions: !sessionsStore.detached(for: target.id.encoded).isEmpty,
+      run: run,
+      runOutcome: runOutcome
+    )
+  }
+
+  private var actions: TerminalStatusBarActions {
+    TerminalStatusBarActions(
+      diagnose: { [codingAgentManager, tabID, target] in
+        codingAgentManager.diagnose(tab: tabID, target: target.id)
+      },
+      insertFix: { [surface] fix in surface?.sendText(fix) },
+      investigate: { [store, codingAgentManager, tabID, target, surface] bannerState in
+        _ = store.startInvestigate(bannerState: bannerState, target: target, surface: surface)
+        codingAgentManager.dismiss(tab: tabID)
+      },
+      dismissDiagnosis: { [codingAgentManager, tabID] in codingAgentManager.dismiss(tab: tabID) }
+    )
   }
 }
 
@@ -308,7 +382,7 @@ struct StatusBarCwdSegment: View {
     } label: {
       Label {
         // Not `~`-abbreviated on a host: this Mac's home says nothing about the host's.
-        Text(onHost ? cwd : TerminalStatusBar.abbreviate(cwd)).truncationMode(.middle)
+        Text(onHost ? cwd : Self.abbreviate(cwd)).truncationMode(.middle)
       } icon: {
         Image(systemName: "folder")
       }
@@ -322,6 +396,14 @@ struct StatusBarCwdSegment: View {
     .help(cwd)
     .accessibilityLabel("Working directory \(cwd)")
     .accessibilityIdentifier("terminal.statusBar.cwd")
+  }
+
+  /// `~`-abbreviate a home-relative path; leave others untouched. Truncation is left to the label.
+  static func abbreviate(_ path: String) -> String {
+    let home = NSHomeDirectory()
+    if path == home { return "~" }
+    if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+    return path
   }
 
   /// On a host there is nothing for Finder to reveal. Revealing it would select whatever this Mac
@@ -432,3 +514,28 @@ struct StatusBarSegmentButtonStyle: ButtonStyle {
     }
   }
 }
+
+#if DEBUG
+  #Preview("Status bar") {
+    let actions = TerminalStatusBarActions(
+      diagnose: {}, insertFix: { _ in }, investigate: { _ in }, dismissDiagnosis: {})
+    VStack(spacing: 12) {
+      // A terminal on its run tab, with a failed command diagnosed.
+      TerminalStatusBar(
+        model: TerminalStatusBarModel(
+          cwd: NSHomeDirectory() + "/dev/platform", branch: "fix-auth",
+          diagnosis: .awaitingDiagnose(
+            FailedCommand(
+              command: "npm test", cwd: nil, exitCode: 1, shell: "zsh", output: "1 failing",
+              isRunTab: false, isRemote: false)),
+          run: .running(tab: UUID(), interrupted: false)),
+        actions: actions
+      ) { EmptyView() }
+      // A content pane: the branch alone.
+      TerminalStatusBar(model: TerminalStatusBarModel(branch: "main"), actions: actions) {
+        EmptyView()
+      }
+    }
+    .frame(width: 640)
+  }
+#endif
