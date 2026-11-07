@@ -316,8 +316,7 @@ extension WorkroomLifecycle {
                 name: name, run: run, setup: event.setup ?? false, landing: landing, from: window)
             })
         } else {
-          // One queue for every event, so a line is never filed after the next step began.
-          DispatchQueue.main.async { MainActor.assumeIsolated { run.apply(event) } }
+          Self.onMain { run.apply(event) }
         }
       }
       await landing.finish()
@@ -373,6 +372,13 @@ extension WorkroomLifecycle {
     guard landing.claim(id) else { return }
     await nameCreationRun(run, name, from: window)
     window.armAutoRunIfConfigured(id, in: run.project)
+  }
+
+  /// Runs `body` on the main queue, after everything a create's progress callbacks queued before
+  /// it. Every step, line and pull update goes through this one FIFO queue, so a line is never
+  /// filed after the next step began; `drainMainQueue` waits it out.
+  nonisolated private static func onMain(_ body: @escaping @MainActor () -> Void) {
+    DispatchQueue.main.async { MainActor.assumeIsolated(body) }
   }
 
   /// Waits until every block already queued on the main queue has run: the CLI's events hop there.
@@ -623,21 +629,17 @@ extension WorkroomLifecycle {
     from window: any LifecycleWindow
   ) async throws -> (RemoteWorkrooms.Created, ContainerCreate.Prepared?) {
     let path = run.project.path
-    // One queue for steps, lines and the pull, so a line is never filed after the next step began.
-    let onMain: @Sendable (@escaping @MainActor () -> Void) -> Void = { body in
-      DispatchQueue.main.async { MainActor.assumeIsolated(body) }
-    }
     let stepped: @Sendable (ProvisioningProgress.Step) -> Void = { step in
-      onMain { run.begin(step.rawValue) }
+      Self.onMain { run.begin(step.rawValue) }
     }
     let logged: @Sendable (ProvisioningProgress.Step, String) -> Void = { step, line in
-      onMain { run.append(line, to: step.rawValue) }
+      Self.onMain { run.append(line, to: step.rawValue) }
     }
     // Set once the driver reports a pull: still nil after the image step, the image was here.
     let pulled = CreationWarningBox()
     let report: @Sendable (Double?) -> Void = { fraction in
       pulled.value = "pulled"
-      onMain { run.pullFraction = fraction }
+      Self.onMain { run.pullFraction = fraction }
     }
     // Weak, as the store was when it ran the create itself; the flow's own frames hold the window
     // while these run. Giving the pane back is lifecycle state, so it never waits on the window.
@@ -730,16 +732,13 @@ extension WorkroomLifecycle {
     _ run: CreationRun, _ hooks: [(hook: DevContainerConfig.Hook, script: String)],
     on host: HostID, environment: RemoteProvisioning.Environment
   ) async -> String? {
-    let onMain: @Sendable (@escaping @MainActor () -> Void) -> Void = { body in
-      DispatchQueue.main.async { MainActor.assumeIsolated(body) }
-    }
     for (hook, script) in hooks {
       let step = hook.step.rawValue
       run.begin(step)
       let failure = await ContainerCreate.runHook(
         hook, script: script, on: host, driver: environment.driver,
         daemonBinary: environment.daemonBinary(on: host),
-        onLine: { line in onMain { run.append(line, to: step) } })
+        onLine: { line in Self.onMain { run.append(line, to: step) } })
       await Self.drainMainQueue()  // its last lines, before its row ends
       if let failure { return failure }
       run.finish(step, as: .done)
@@ -756,18 +755,14 @@ extension WorkroomLifecycle {
     cli: any WorkroomCLIProtocol
   ) async -> String? {
     let step = "script"
-    // One queue for the start and the lines, so a line is never filed before its row began.
-    let onMain: @Sendable (@escaping @MainActor () -> Void) -> Void = { body in
-      DispatchQueue.main.async { MainActor.assumeIsolated(body) }
-    }
     let request = RemoteWorkrooms.ScriptRequest(
       script: .setup, workroom: created.name, path: created.instance.path,
       host: created.instance.host, key: host.key, driver: host.driver,
       daemonBinary: host.environment.daemonBinary(on: created.instance.host),
       rootScript: URL(fileURLWithPath: run.project.path + "/scripts/workroom_setup"),
       judge: Self.judge(.setup, in: run.project.path, cli: cli),
-      onStart: { onMain { run.begin(step) } },
-      onLine: { line in onMain { run.append(line, to: step) } }, environment: environment)
+      onStart: { Self.onMain { run.begin(step) } },
+      onLine: { line in Self.onMain { run.append(line, to: step) } }, environment: environment)
     let result = await services.script(request)
     await Self.drainMainQueue()  // the script's last lines, before its row ends
     switch result {
