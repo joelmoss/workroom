@@ -127,8 +127,9 @@ final class SplitPaneUITests: XCTestCase {
 
   /// The terminal divider (plan step 3.5): a drag moves it locally and the release commits its
   /// ratio once. After letting go the panes keep the ratio the drag left, rather than snapping back
-  /// to the even split they started from. The divider's accessibility value is its ratio, so it is
-  /// read there; the pane frames say the same in points.
+  /// to the even split they started from. Read in points: XCUITest doesn't expose the divider's
+  /// SwiftUI accessibility value (its ratio) on macOS, so the divider's and the left pane's frames
+  /// say where the split sits.
   func testDraggingTheDividerKeepsTheReleasedRatio() throws {
     let app = launchedApp()
     try openWorkroom(app)
@@ -136,31 +137,27 @@ final class SplitPaneUITests: XCTestCase {
     assertCount(panes(app), reaches: 2)
     let divider = app.descendants(matching: .any).matching(identifier: "pane.divider").firstMatch
     XCTAssertTrue(divider.waitForExistence(timeout: 5), "a split shows its divider")
-    let evenRatio = try XCTUnwrap(ratio(of: divider), "the divider reports its ratio")
+    let evenX = divider.frame.midX
     let evenLeft = leftPaneWidth(app)
 
     let grip = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-    grip.press(forDuration: 0.3, thenDragTo: grip.withOffset(CGVector(dx: -160, dy: 0)))
+    // `click(forDuration:thenDragTo:)`, the mouse drag: `press` never reaches the divider's gesture.
+    grip.click(forDuration: 0.3, thenDragTo: grip.withOffset(CGVector(dx: -160, dy: 0)))
 
-    let released = NSPredicate { _, _ in (self.ratio(of: divider) ?? evenRatio) <= evenRatio - 8 }
-    XCTAssertEqual(
-      XCTWaiter().wait(
-        for: [XCTNSPredicateExpectation(predicate: released, object: nil)], timeout: 5),
-      .completed, "the release moved the divider left")
-    let releasedRatio = try XCTUnwrap(ratio(of: divider))
+    // Polled by hand: an XCTNSPredicateExpectation would read a cached snapshot.
+    let deadline = Date().addingTimeInterval(5)
+    while divider.frame.midX > evenX - 80, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+    XCTAssertLessThan(divider.frame.midX, evenX - 80, "the release moved the divider left")
+    let releasedX = divider.frame.midX
     XCTAssertLessThan(leftPaneWidth(app), evenLeft - 80, "the left pane is narrower")
 
     // A drag that only drew its ratio locally, and never stored it, snaps back on the next update.
     // Give the app a moment and an update (focus the right pane), then read again.
     panes(app).allElementsBoundByIndex.max { $0.frame.minX < $1.frame.minX }?.click()
     Thread.sleep(forTimeInterval: 1)
-    XCTAssertEqual(ratio(of: divider), releasedRatio, "the panes keep the released ratio")
-    XCTAssertLessThan(leftPaneWidth(app), evenLeft - 80, "…in points as well")
-  }
-
-  /// A divider's ratio, in percent, from its accessibility value ("38%").
-  private func ratio(of divider: XCUIElement) -> Int? {
-    (divider.value as? String).flatMap { Int($0.replacingOccurrences(of: "%", with: "")) }
+    XCTAssertEqual(
+      divider.frame.midX, releasedX, accuracy: 2, "the divider stays where it was let go")
+    XCTAssertLessThan(leftPaneWidth(app), evenLeft - 80, "…and so does the left pane")
   }
 
   /// The width of the leftmost rendered pane.
