@@ -1,7 +1,8 @@
 // swift-tools-version: 6.0
 //
 // The VCS layer's values and interfaces: history, changesets, refs and remote state, the write
-// results, the working-tree status record, routing errors, the file-service values, a repository's
+// results, the working-tree status record, routing errors, the file service's values and its
+// interface (`FileProviding`, which the native and daemon providers conform to), a repository's
 // validated location and routing context, the bound services every reader and writer conforms to
 // (`VCSProviding`, `VCSWriting`), and the local engines' interfaces (LocalVCSProviding,
 // LocalVCSWriting). No engine, transport, routing or process: the git engine is WorkroomGit, and the
