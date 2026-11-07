@@ -114,12 +114,24 @@ enum QuickTerminalPaneDrag {
     refusing = on
   }
 
-  /// The drag was let go outside the Quick Terminal.
-  static func end(store: AppStore, tabID: TerminalTab.ID, target: TerminalTarget) {
+  /// The drag of `source`'s pane was let go outside the Quick Terminal.
+  static func end(
+    source: TerminalPanes, notifications: NotificationCenterStore, tabID: TerminalTab.ID,
+    target: TerminalTarget
+  ) {
     defer { cancel() }
     // The workroom under the pointer, when the window shows several side by side.
     guard let (window, workroom) = destination() else { return }
-    Task { await store.moveQuickTerminalPane(tabID, of: target, to: window, into: workroom) }
+    Task {
+      await QuickTerminalPaneMove.move(
+        tabID, of: target, source: source, notifications: notifications, to: window,
+        into: workroom)
+    }
+  }
+
+  /// `end(source:notifications:tabID:target:)` for a store's own panes.
+  static func end(store: AppStore, tabID: TerminalTab.ID, target: TerminalTarget) {
+    end(source: store.terminals, notifications: store.notifications, tabID: tabID, target: target)
   }
 
   /// The Workroom window under the pointer and its workroom there, when that can take the pane.
@@ -188,83 +200,25 @@ extension AppStore {
     return plan.panes.first { $0.value.contains(local) }?.key
   }
 
-  /// "Move to Workroom" for this store's pane `tabID` in `target` (the Quick Terminal's): every
-  /// workroom open in `windows`, in each window's tab order, a group per window. Shared by the
-  /// title-bar button, the tab menu and the terminal's right-click menu.
+  /// "Move to Workroom" for this store's pane `tabID` in `target` (the Quick Terminal's), over
+  /// every workroom open in `windows` (`QuickTerminalPaneMove.choices`).
   func quickTerminalPaneWorkroomChoices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget,
     windows: [AppStore] = WindowRegistry.shared.allStores
   ) -> [PaneWorkroomGroup] {
-    let groups = windows.map { window in
-      window.displayedWorkroomTargets().map { workroom in
-        let sid = workroom.sid
-        let glyph = if case .root = sid { "house" } else { workroom.target.workroomGlyph }
-        return PaneWorkroomChoice(
-          title: window.title(for: sid), glyph: glyph,
-          enabled: window.quickTerminalPaneTarget(sid) != nil
-        ) { [weak self, weak window] in
-          guard let self, let window else { return }
-          Task { await self.moveQuickTerminalPane(tabID, of: target, to: window, into: sid) }
-        }
-      }
-    }
-    let named = groups.filter { !$0.isEmpty }.count > 1
-    return zip(windows, groups).compactMap { window, choices in
-      choices.isEmpty
-        ? nil
-        : PaneWorkroomGroup(
-          header: named ? window.defaultWindowTitle : nil, choices: choices)
-    }
+    QuickTerminalPaneMove.choices(
+      tabID, of: target, source: terminals, notifications: notifications, windows: windows)
   }
 
   /// Move this store's pane `tabID`, in `target` (the Quick Terminal's), live into `destination`'s
-  /// workroom `workroom` and focus it. Its session is retagged as that workroom's first; if that
-  /// fails nothing moves and the window says why.
+  /// workroom `workroom` (`QuickTerminalPaneMove.move`).
   func moveQuickTerminalPane(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, to destination: AppStore,
     into workroom: SidebarID
   ) async {
-    guard destination !== self,
-      let (sid, into) = destination.quickTerminalPaneTarget(workroom),
-      terminals.tab(tabID, for: target) != nil
-    else { return }
-    // Nil for a pane with no background session (an Investigate tab's agent): nothing to retag.
-    let sessionID = terminals.sessionID(forTab: tabID, inTarget: target.id)
-    let service = terminals.sessionService
-    if let sessionID,
-      !(await service.retag(sessionID: sessionID, workroom: into.sessionWorkroomKey))
-    {
-      destination.modals.errorTitle = "Couldn't move the terminal to \(destination.windowTitle)"
-      destination.modals.errorMessage =
-        "Workroom's background helper couldn't hand the terminal over to \(into.title), so it stays in the Quick Terminal."
-      // Its alert shows in that window, which may be behind the Quick Terminal.
-      NSApp.activate(ignoringOtherApps: true)
-      destination.hostWindow?.makeKeyAndOrderFront(nil)
-      return
-    }
-    // Checked again after the wait: the workroom may have gone, or the window moved on. The shell
-    // stays a Quick Terminal one then, so it is ended at quit like the rest.
-    guard destination.quickTerminalPaneTarget(sid)?.target.id == into.id else {
-      if let sessionID {
-        _ = await service.retag(sessionID: sessionID, workroom: target.sessionWorkroomKey)
-      }
-      return
-    }
-    // Before the hand-off, whose `.tabsRemoved` may close the Quick Terminal and drop what it raised.
-    notifications.repoint(
-      tab: tabID, to: into.id, in: ObjectIdentifier(destination))
-    // An Investigate pane stays one there (the mark is its tab's), so deleting its workroom asks
-    // first (#146), and its exit, which the destination's sessions now raise, ends it there.
-    guard let handOff = terminals.handOffTab(tabID, from: target, to: into) else { return }
-    destination.terminals.adopt(handOff)
-    // A split member's pane: that member becomes the focused workroom, so the pane has the keys.
-    destination.selectedTargetID = sid
-    destination.selectedProjectID = Self.projectPath(of: sid)
-    destination.refreshSelectionHasTabs()
-    WindowRegistry.shared.recomputeBadge()
-    destination.markSessionDirty()
-    NSApp.activate(ignoringOtherApps: true)
-    destination.hostWindow?.makeKeyAndOrderFront(nil)
+    await QuickTerminalPaneMove.move(
+      tabID, of: target, source: terminals, notifications: notifications, to: destination,
+      into: workroom)
   }
 }
 
