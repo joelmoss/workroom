@@ -1189,8 +1189,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
   }
 
   /// One runtime command; its first line of output, which is all most of these print on success,
-  /// or with `allLines` all of it. Its environment is the few variables that say which daemon to
-  /// talk to, never the app's whole one.
+  /// or with `allLines` all of it. Its environment is `runtimeEnvironment`'s.
   private func runtime(
     _ arguments: [String], timeout: TimeInterval = 120, allLines: Bool = false,
     onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)? = nil, quiet: Bool = false,
@@ -1200,9 +1199,8 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     // `quiet` is for a poll, which would log the same line a hundred times. The environment is never
     // logged, and `commandLine` hides any `--env` the arguments carry.
     let full = Self.runtimeArguments(arguments, context: provisioning.context)
-    let environment = ProcessInfo.processInfo.environment.filter {
-      ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
-    }
+    let environment = Self.runtimeEnvironment(
+      ProcessInfo.processInfo.environment, runtime: provisioning.runtime)
     // A pull streams progress bars (`onOutput`); its failure says what it printed.
     let logOutput: (Int32) -> Bool = { onOutput == nil || $0 != 0 }
     let (status, said) = try await ProvisioningProgress.logged(
@@ -1238,6 +1236,37 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
   public static func runtimeArguments(_ arguments: [String], context: String?) -> [String] {
     guard let context else { return arguments }
     return ["--context", context] + arguments
+  }
+
+  /// The environment a runtime command runs with: of `inherited`, only the few variables that say
+  /// which daemon to talk to, never the app's whole one. Its `PATH` starts with `runtime`'s own
+  /// folder, then `userBin`: `docker build` execs the credential helper the config's `credsStore`
+  /// names (Docker Desktop's `docker-credential-desktop`) by `PATH`, a Finder-launched app's has
+  /// neither, and the helpers sit beside `docker`, in `Docker.app/Contents/Resources/bin` and in a
+  /// per-user install's `~/.docker/bin` (#586).
+  public static func runtimeEnvironment(
+    _ inherited: [String: String], runtime: URL, userBin: URL? = dockerUserBin()
+  ) -> [String: String] {
+    var environment = inherited.filter {
+      ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
+    }
+    var front = [runtime.deletingLastPathComponent().path]
+    if let userBin, !front.contains(userBin.path) { front.append(userBin.path) }
+    let rest = (inherited["PATH"] ?? "").split(separator: ":").map(String.init).filter {
+      !front.contains($0)
+    }
+    environment["PATH"] = (front + rest).joined(separator: ":")
+    return environment
+  }
+
+  /// Docker Desktop's per-user folder of symlinks to its CLI and credential helpers, or nil when
+  /// there is none.
+  public static func dockerUserBin() -> URL? {
+    let bin = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+      ".docker/bin", isDirectory: true)
+    var isDirectory: ObjCBool = false
+    let exists = FileManager.default.fileExists(atPath: bin.path, isDirectory: &isDirectory)
+    return exists && isDirectory.boolValue ? bin : nil
   }
 
   /// The Docker context the CLI would use now, to pin a new host to (#309), or nil for `default`:
